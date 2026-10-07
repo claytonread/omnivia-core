@@ -6,7 +6,9 @@ SDK v2. The default ``restricted`` profile is a bounded non-authoring surface:
 allow-listed reads and one allow-listed advisory decision evaluation, which
 records a durable evaluation and changes no business record. The ``authoring``
 profile, admitted only by explicit owner configuration, adds evidence capture,
-import start, proposed-only memory creation and job observation.
+import start, proposed-only memory creation, trigger configuration and
+ingestion, skill authoring, governed knowledge sharing and sharing
+observation, and job observation.
 
 **Three MCP modules, three separable decisions:**
 

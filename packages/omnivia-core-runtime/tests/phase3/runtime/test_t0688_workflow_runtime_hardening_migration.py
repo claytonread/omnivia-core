@@ -804,8 +804,8 @@ def test_neither_half_of_the_pair_may_commit_alone(bound: m1.Owned, table: str) 
     row = bundle_row() if table == BUNDLES else event_row()
     with pytest.raises(sqlite3.IntegrityError, match=PAIR_MISSING):
         record(bound, (table, row))
-    # A COMMIT refused by a deferred foreign key leaves its transaction open.
-    bound.connection.execute("ROLLBACK")
+    # The fence rolls back a COMMIT that a deferred foreign key refuses, so nothing is left open.
+    assert not bound.connection.in_transaction
     assert counts(bound) == (0, 0)
 
 
@@ -889,7 +889,7 @@ def test_an_event_that_names_no_bundle_of_its_run_never_commits(
     """No bundle to disagree with, so the deferred pair is what refuses -- at COMMIT."""
     with pytest.raises(sqlite3.IntegrityError, match=PAIR_MISSING):
         record(bound, (BUNDLES, bundle_row()), (JOURNAL, event_row(**overrides)))
-    bound.connection.execute("ROLLBACK")
+    assert not bound.connection.in_transaction
     assert counts(bound) == (0, 0)
 
 

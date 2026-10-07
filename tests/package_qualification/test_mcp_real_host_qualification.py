@@ -17,7 +17,6 @@ import sqlite3
 import stat
 import subprocess
 import sys
-import threading
 import time
 import tomllib
 import zipfile
@@ -1286,7 +1285,7 @@ def test_observer_is_exclusive_private_closed_and_sequence_checked(tmp_path: Pat
         {"event": "initialize_request", "seq": 2},
     ]
     with pytest.raises(FileExistsError):
-        q._Observer(path)
+        q._Observer(path).emit("proxy_started")
     path.write_text('{"event":"proxy_started","seq":2}\n', encoding="ascii")
     with pytest.raises(q.QualificationError) as error:
         q.read_observation(path)
@@ -1455,16 +1454,342 @@ def test_relay_refuses_duplicate_ids_and_malformed_inventory(tmp_path: Path) -> 
     assert inventory.value.kind == "invalid_tool_inventory"
 
 
-def _proxy_child() -> str:
+def _proxy_child(discover: object = None, discover_error: bool = False) -> str:
     return (
         "import json,sys\n"
+        f"D={discover!r}\n"
         "for line in sys.stdin:\n"
         " m=json.loads(line); method=m.get('method'); result={}\n"
+        f" if method=='server/discover' and {discover_error!r}:\n"
+        "  print(json.dumps({'jsonrpc':'2.0','id':m['id'],'error':{'code':-32601,'message':'no'}},separators=(',',':')),flush=True); continue\n"
+        " if method=='server/discover' and D is not None: result=D\n"
         " if method=='initialize': result={'protocolVersion':'2025-06-18','capabilities':{},'serverInfo':{'name':'test','version':'1'}}\n"
         " elif method=='tools/list': result={'tools':[{'name':'workspace_inspect'}]}\n"
         " elif method=='tools/call': result={'content':[],'isError':False,'structuredContent':{'workspace':{}}}\n"
         " print(json.dumps({'jsonrpc':'2.0','id':m['id'],'result':result},separators=(',',':')),flush=True)\n"
     )
+
+
+def _run_proxy(spec: Path, payload: bytes) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), q.INTERNAL_PROXY, str(spec)],
+        input=payload,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+
+@posix_only
+def test_a_pre_initialize_probe_leaves_no_observation_for_the_real_launch(tmp_path: Path) -> None:
+    """Claude Code closes the server before ``initialize``, then launches it again."""
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    q.write_proxy_spec(spec, child=[sys.executable, "-u", "-c", _proxy_child()], observation=observation)
+    probe = _run_proxy(spec, b"")
+    assert probe.returncode == 0 and probe.stdout == b""
+    assert not os.path.lexists(observation)
+    launch = _run_proxy(spec, _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
+    assert launch.returncode == 0
+    assert q.summarize_observation(q.read_observation(observation)).initialized
+
+
+@posix_only
+def test_a_non_modern_server_discover_probe_is_relayed_unobserved_and_leaves_the_real_launch_its_path(
+    tmp_path: Path,
+) -> None:
+    """A ``server/discover`` answered without the modern version leaves no evidence at all."""
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    q.write_proxy_spec(spec, child=[sys.executable, "-u", "-c", _proxy_child()], observation=observation)
+    discover = _frame({"jsonrpc": "2.0", "id": "server-discover-probe-1", "method": "server/discover"})
+    probe = _run_proxy(spec, discover)
+    assert probe.returncode == 0
+    assert probe.stdout == _frame({"jsonrpc": "2.0", "id": "server-discover-probe-1", "result": {}})
+    assert not os.path.lexists(observation)
+    launch = _run_proxy(spec, _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
+    assert launch.returncode == 0
+    events = q.read_observation(observation)
+    assert [event["event"] for event in events][:2] == ["proxy_started", "initialize_request"]
+    assert q.summarize_observation(events).initialized
+
+
+RESERVED_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
+RESERVED_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+
+
+def _modern_discovery(**overrides: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "supportedVersions": [q.MCP_MODERN_PROTOCOL_VERSION],
+        "capabilities": {"tools": {}},
+        "resultType": "complete",
+        "ttlMs": 0,
+        "cacheScope": "public",
+        "serverInfo": {"name": "test", "version": "1"},
+    }
+    return {**result, **overrides}
+
+
+def _discover_frame(identifier: object = "d1") -> bytes:
+    return _frame({"jsonrpc": "2.0", "id": identifier, "method": "server/discover"})
+
+
+def _modern_session(spec: Path) -> tuple[int, bytes]:
+    """Drive a host that waits for each answer, as Claude Code does, then return the exit and stdout."""
+    requests = [
+        _discover_frame(),
+        _frame({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        _frame(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "workspace_inspect", "arguments": {}},
+            }
+        ),
+    ]
+    proxy = subprocess.Popen(
+        [sys.executable, "-I", str(SCRIPT), q.INTERNAL_PROXY, str(spec)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    assert proxy.stdin is not None and proxy.stdout is not None
+    answers = b""
+    for request in requests:
+        proxy.stdin.write(request)
+        proxy.stdin.flush()
+        answers += proxy.stdout.readline()
+    proxy.stdin.close()
+    answers += proxy.stdout.read()
+    return proxy.wait(timeout=60), answers
+
+
+@posix_only
+def test_modern_discovery_then_tools_is_observed_in_order_and_relayed_exactly(tmp_path: Path) -> None:
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    discovery = _modern_discovery()
+    q.write_proxy_spec(
+        spec, child=[sys.executable, "-u", "-c", _proxy_child(discovery)], observation=observation
+    )
+    returncode, stdout = _modern_session(spec)
+    assert returncode == 0
+    assert stdout.splitlines(keepends=True)[0] == _frame(
+        {"jsonrpc": "2.0", "id": "d1", "result": discovery}
+    )
+    events = q.read_observation(observation)
+    assert [event["event"] for event in events] == [
+        "proxy_started",
+        "initialize_request",
+        "initialize_response",
+        "tools_list_request",
+        "tools_list_response",
+        "tool_call_request",
+        "tool_call_response",
+    ]
+    assert events[2]["ok"] is True
+    summary = q.summarize_observation(events)
+    assert summary.initialized and not summary.initialized_after_pause
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "variant",
+    [
+        {"discover_error": True},
+        {"discover": {}},
+        {"discover": _modern_discovery(supportedVersions=["2025-06-18"])},
+        {"discover": _modern_discovery(supportedVersions=["2026-07-28-rc"])},
+        {"discover": _modern_discovery(supportedVersions="2026-07-28")},
+    ],
+)
+def test_a_discovery_that_is_not_modern_is_relayed_unobserved_and_legacy_initialize_follows(
+    tmp_path: Path, variant: dict[str, Any]
+) -> None:
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    q.write_proxy_spec(
+        spec, child=[sys.executable, "-u", "-c", _proxy_child(**variant)], observation=observation
+    )
+    probe = _run_proxy(spec, _discover_frame())
+    assert probe.returncode == 0 and probe.stdout.count(b"\n") == 1
+    assert not os.path.lexists(observation)
+    both = _run_proxy(
+        spec,
+        _discover_frame()
+        + _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    )
+    assert both.returncode == 0
+    events = q.read_observation(observation)
+    assert [event["event"] for event in events] == [
+        "proxy_started",
+        "initialize_request",
+        "initialize_response",
+    ]
+    assert q.summarize_observation(events).initialized
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"capabilities": []},
+        {"resultType": "incomplete"},
+        {"ttlMs": -1},
+        {"ttlMs": True},
+        {"ttlMs": 1.5},
+        {"cacheScope": "global"},
+        {"supportedVersions": ["2026-07-28", "2026-07-28"]},
+        {"supportedVersions": ["2026-07-28", 1]},
+        {"serverInfo": "test"},
+        {"serverInfo": {"name": 1}},
+        {"serverInfo": None},
+        {"serverInfo": []},
+        {"serverInfo": {"version": "1"}},
+        {"serverInfo": {"name": "", "version": "1"}},
+        {"serverInfo": {"name": "n" * 257, "version": "1"}},
+        {"serverInfo": {"name": "test"}},
+        {"protocolVersion": "2025-06-18"},
+        {"protocolVersion": None},
+        {"_meta": []},
+        {"_meta": None},
+        {"_meta": "meta"},
+        {"_meta": 1},
+        {"_meta": {RESERVED_SERVER_INFO: None}},
+        {"_meta": {RESERVED_SERVER_INFO: []}},
+        {"_meta": {RESERVED_SERVER_INFO: "x"}},
+        {"_meta": {RESERVED_SERVER_INFO: {"version": "1"}}},
+        {"_meta": {RESERVED_SERVER_INFO: {"name": "", "version": "1"}}},
+        {"_meta": {RESERVED_SERVER_INFO: {"name": "n" * 257, "version": "1"}}},
+        {"_meta": {RESERVED_PROTOCOL_VERSION: "2025-06-18"}},
+        {"_meta": {RESERVED_PROTOCOL_VERSION: None}},
+    ],
+)
+def test_a_malformed_claimed_modern_discovery_fails_closed(
+    tmp_path: Path, overrides: dict[str, Any]
+) -> None:
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    discovery = _modern_discovery(**overrides)
+    q.write_proxy_spec(
+        spec, child=[sys.executable, "-u", "-c", _proxy_child(discovery)], observation=observation
+    )
+    run = _run_proxy(spec, _discover_frame())
+    assert run.returncode == q.PROXY_VIOLATION_EXIT
+    assert run.stdout == b""
+    events = q.read_observation(observation)
+    assert [event["event"] for event in events] == [
+        "proxy_started",
+        "initialize_request",
+        "initialize_response",
+        "protocol_violation",
+    ]
+    assert events[2]["ok"] is False and events[3]["kind"] == "invalid_initialize"
+    assert not q.summarize_observation(events).initialized
+
+
+def test_actual_style_reserved_discovery_metadata_and_open_extensions_pass() -> None:
+    meta = {
+        RESERVED_SERVER_INFO: {"name": "omnivia-core", "version": "1.0.0", "title": "Core"},
+        RESERVED_PROTOCOL_VERSION: q.MCP_MODERN_PROTOCOL_VERSION,
+        "example.com/extension": {"anything": [1, None]},
+    }
+    assert q._valid_modern_discovery(_modern_discovery(_meta=meta, extra="open"))
+    assert q._valid_modern_discovery(
+        {k: v for k, v in _modern_discovery(_meta=meta).items() if k != "serverInfo"}
+    )
+
+
+def test_a_discovery_request_alone_or_unanswered_leaves_no_evidence(tmp_path: Path) -> None:
+    observer = q._Observer(tmp_path / "events")
+    relay = q._Relay(observer, None)
+    relay.request(_discover_frame())
+    relay.request(_frame({"jsonrpc": "2.0", "method": "server/discover"}))
+    observer.close()
+    assert not os.path.lexists(tmp_path / "events")
+
+
+def test_a_discovery_id_cannot_be_reused_while_pending(tmp_path: Path) -> None:
+    observer = q._Observer(tmp_path / "events")
+    relay = q._Relay(observer, None)
+    relay.request(_discover_frame())
+    with pytest.raises(q._Violation) as error:
+        relay.request(_discover_frame())
+    observer.close()
+    assert error.value.kind == "duplicate_request"
+
+
+@posix_only
+def test_a_violation_still_observes_proxy_started_first(tmp_path: Path) -> None:
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    q.write_proxy_spec(spec, child=[sys.executable, "-u", "-c", _proxy_child()], observation=observation)
+    assert _run_proxy(spec, b"not json\n").returncode == q.PROXY_VIOLATION_EXIT
+    assert [event["event"] for event in q.read_observation(observation)] == ["proxy_started", "protocol_violation"]
+
+
+@posix_only
+def test_a_launch_that_emitted_an_event_keeps_its_observation(tmp_path: Path) -> None:
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    q.write_proxy_spec(spec, child=[sys.executable, "-u", "-c", _proxy_child()], observation=observation)
+    assert _run_proxy(spec, _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})).returncode == 0
+    before = observation.read_bytes()
+    assert before
+    again = _run_proxy(spec, _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
+    assert again.returncode == q.PROXY_FAILED_EXIT  # exclusive creation refuses reuse
+    assert observation.read_bytes() == before
+
+
+@posix_only
+def test_a_launch_that_emitted_never_overwrites_an_existing_observation(tmp_path: Path) -> None:
+    spec = tmp_path / "spec"
+    observation = tmp_path / "events"
+    observation.write_bytes(b"earlier\n")
+    observation.chmod(0o600)
+    q.write_proxy_spec(spec, child=[sys.executable, "-u", "-c", _proxy_child()], observation=observation)
+    launch = _run_proxy(spec, _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
+    assert launch.returncode == q.PROXY_FAILED_EXIT
+    assert observation.read_bytes() == b"earlier\n"
+    assert _run_proxy(spec, b"").returncode == 0  # a probe touches nothing
+    assert observation.read_bytes() == b"earlier\n"
+
+
+@posix_only
+def test_the_observer_creates_its_file_only_for_the_first_event_and_never_removes_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the observer must not remove or replace anything")
+
+    for name in ("unlink", "remove", "rename", "replace", "rmdir"):
+        monkeypatch.setattr(q.os, name, forbidden)
+    path = tmp_path / "events"
+    observer = q._Observer(path)
+    assert not os.path.lexists(path)
+    observer.close()
+    assert not os.path.lexists(path)
+    observer = q._Observer(path)
+    observer.emit("proxy_started")
+    observer.emit("initialize_request")
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    observer.close()
+    assert [event["event"] for event in q.read_observation(path)] == ["proxy_started", "initialize_request"]
+    with pytest.raises(OSError):
+        observer.emit("initialize_request")
+    with pytest.raises(FileExistsError):
+        q._Observer(path).emit("initialize_request")
+    assert [event["event"] for event in q.read_observation(path)] == ["proxy_started", "initialize_request"]
+
+
+@posix_only
+def test_the_observer_refuses_a_symlink_without_following_it(tmp_path: Path) -> None:
+    target = tmp_path / "elsewhere"
+    path = tmp_path / "events"
+    path.symlink_to(target)
+    with pytest.raises(OSError):
+        q._Observer(path).emit("initialize_request")
+    assert not target.exists() and path.is_symlink()
 
 
 @posix_only
@@ -2867,6 +3192,7 @@ def test_the_validation_only_mode_checks_a_record(
 def _outcome_result(
     requests: tuple[tuple[str, str], ...],
     outcomes: tuple[tuple[str, str, str], ...],
+    continuation: Any = None,
 ) -> Any:
     return q.HostRunResult(
         q.ObservationSummary(
@@ -2887,6 +3213,7 @@ def _outcome_result(
         exited_cleanly=True,
         interrupted=False,
         paused=False,
+        continuation=continuation,
     )
 
 
@@ -3277,39 +3604,56 @@ def _owner_pages(count: int) -> list[dict[str, Any]]:
     ]
 
 
-def _chained_session(pages: list[dict[str, Any]], kind: str = "exact") -> Any:
-    """One host session: its one call, then the proxy's pages, each as the owner page answers.
+def _host_token(index: int) -> str:
+    """The token the host's successful call for page ``index`` returns: never the owner's ``t{index}``."""
+    return f"h{index}"
 
+
+def _page_request(index: int) -> dict[str, Any]:
+    """The exact arguments of host page ``index``: the base arguments, then the prior host token."""
+    if index == 0:
+        return dict(_TRAVERSAL_ARGUMENTS)
+    return {**_TRAVERSAL_ARGUMENTS, "page": {"continuation_token": _host_token(index - 1)}}
+
+
+def _page_session(index: int, page: dict[str, Any], kind: str = "exact") -> Any:
+    """One host session that makes the single call for owner page ``index``.
+
+    The proxy hands off the token its own answer carried, so an exact session returns
+    ``_host_token(index)`` when the owner page continues, and ``None`` when it does not.
     ``kind`` names the way that session can be wrong.
     """
-    base = dict(_TRAVERSAL_ARGUMENTS)
-    requests: tuple[tuple[str, str], ...] = ((_TRAVERSAL_TOOL, q.arguments_digest(base)),)
-    outcomes: tuple[tuple[str, str, str], ...] = (
-        (_TRAVERSAL_TOOL, "none", q.canonical_result_digest(pages[0])),
-    )
-    chained = [(_TRAVERSAL_TOOL, q.canonical_result_digest(page)) for page in pages[1:]]
-    if kind == "wrong_arguments":
-        requests = ((_TRAVERSAL_TOOL, q.arguments_digest({**base, "limit": 2})),)
-    elif kind == "extra_host_call":
+    tool = _TRAVERSAL_TOOL
+    continues = bool(page["page"].get("continuation_token"))
+    token: str | None = _host_token(index) if continues else None
+    requests: tuple[tuple[str, str], ...] = ((tool, q.arguments_digest(_page_request(index))),)
+    outcomes: tuple[tuple[str, str, str], ...] = ((tool, "none", q.canonical_result_digest(page)),)
+    if kind == "wrong_token":
+        forged = {**_TRAVERSAL_ARGUMENTS, "page": {"continuation_token": "forged"}}
+        requests = ((tool, q.arguments_digest(forged)),)
+    elif kind == "wrong_arguments":
+        requests = ((tool, q.arguments_digest({**_page_request(index), "limit": 2})),)
+    elif kind == "extra":
         requests, outcomes = requests * 2, outcomes * 2
     elif kind == "tool_error":
-        outcomes = ((_TRAVERSAL_TOOL, "idempotency_conflict", q.canonical_result_digest(None)),)
-    elif kind == "wrong_first_page":
-        outcomes = ((_TRAVERSAL_TOOL, "none", q.canonical_result_digest({"events": [99]})),)
+        outcomes = ((tool, "idempotency_conflict", q.canonical_result_digest(None)),)
+        return _outcome_result(requests, outcomes)
     elif kind == "wrong_digest":
-        chained[-1] = (_TRAVERSAL_TOOL, q.canonical_result_digest({"events": [99]}))
-    elif kind == "short":
-        chained = chained[:-1]
-    elif kind == "extra":
-        chained = [*chained, chained[-1]]
-    result = _outcome_result(requests, outcomes)
-    summary = dataclasses.replace(
-        result.summary, chained=tuple(chained), violation=kind == "violation"
-    )
-    result = dataclasses.replace(result, summary=summary)
-    if kind == "completion":
-        return dataclasses.replace(result, exited_cleanly=False, marker_seen=False)
-    return result
+        outcomes = ((tool, "none", q.canonical_result_digest({"events": [99]})),)
+    elif kind == "no_capture":
+        return _outcome_result(requests, outcomes)
+    elif kind == "dropped_token":
+        token = None
+    elif kind == "extra_token":
+        token = "h-extra"
+    elif kind == "completion":
+        cut = _outcome_result(requests, outcomes, _continuation_of(tool, token))
+        return dataclasses.replace(cut, exited_cleanly=False, marker_seen=False)
+    return _outcome_result(requests, outcomes, _continuation_of(tool, token))
+
+
+def _continuation_of(tool: str, token: str | None) -> Any:
+    return q.CapturedContinuation(tool, token)
 
 
 def _missing_session() -> Any:
@@ -3317,72 +3661,141 @@ def _missing_session() -> Any:
     return _outcome_result((), ())
 
 
-def test_the_owner_pages_are_read_by_one_session_whose_proxy_chains_the_rest(
+def test_each_owner_page_is_read_by_its_own_fresh_session_with_the_token_its_host_returned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pages = _owner_pages(3)
     prompts: list[str] = []
-    chains: list[Any] = []
+    captures: list[Any] = []
+    sessions = iter([_page_session(index, page) for index, page in enumerate(pages)])
 
     def run(**kwargs: Any) -> Any:
         prompts.append(kwargs["prompt"])
-        chains.append(kwargs["chain"])
-        return _chained_session(pages)
+        captures.append(kwargs["capture"])
+        return next(sessions)
 
     monkeypatch.setattr(q, "run_host_session", run)
-    driver = _driver(tmp_path)
-    q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
-    assert driver.sequence == 1
-    assert chains == [q.PageChain(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, 3)]
-    # The host's prompt names only the first call: no continuation token, owner or host.
-    payload = json.dumps(_TRAVERSAL_ARGUMENTS, sort_keys=True, separators=(",", ":"))
-    assert "Call exactly one tool named job_events" in prompts[0]
-    assert prompts[0].endswith(f"JSON:{payload}")
-    assert "continuation" not in prompts[0]
+    q.host_read_pages(_driver(tmp_path), _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert len(prompts) == 3
+    for index, prompt in enumerate(prompts):
+        payload = json.dumps(_page_request(index), sort_keys=True, separators=(",", ":"))
+        assert "Call exactly one tool named job_events" in prompt
+        assert prompt.endswith(f"JSON:{payload}")
+    # Page two carries page one's host token: distinct from the owner's ``t0``.
+    assert _page_request(1)["page"]["continuation_token"] == "h0"
+    assert _page_request(2)["page"]["continuation_token"] == "h1"
+    assert all("t0" not in prompt and "t1" not in prompt for prompt in prompts)
+    # Each session asked the proxy for its own handoff, in its own directory.
+    assert [capture.handoff.parent.name for capture in captures] == [
+        "session-01",
+        "session-02",
+        "session-03",
+    ]
+    assert all(capture.tool == _TRAVERSAL_TOOL for capture in captures)
+
+
+def test_the_final_page_has_no_token_and_an_intermediate_page_must_hand_one_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pages = _owner_pages(2)
+    sessions = iter([_page_session(0, pages[0]), _page_session(1, pages[1])])
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
+    q.host_read_pages(_driver(tmp_path), _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
 
 
 @pytest.mark.parametrize(
-    ("kind", "reason"),
-    [
-        ("wrong_arguments", Reason.GATE_FAILED),
-        ("extra_host_call", Reason.GATE_FAILED),
-        ("tool_error", Reason.GATE_FAILED),
-        ("wrong_first_page", Reason.GATE_FAILED),
-        ("wrong_digest", Reason.GATE_FAILED),
-        ("short", Reason.GATE_FAILED),
-        ("extra", Reason.GATE_FAILED),
-        ("completion", Reason.HOST_OUTPUT_AMBIGUOUS),
-        ("violation", Reason.PROTOCOL_VIOLATION),
-    ],
+    ("position", "kind"),
+    [(1, "extra_token"), (0, "dropped_token")],
 )
-def test_a_wrong_traversal_fails_closed_in_its_one_session_without_a_retry(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    kind: str,
-    reason: Reason,
+def test_a_host_token_must_be_present_exactly_when_the_owner_page_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, position: int, kind: str
 ) -> None:
-    pages = _owner_pages(3)
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _chained_session(pages, kind))
+    pages = _owner_pages(2)
+    sessions = iter(
+        [_page_session(index, pages[index]) for index in range(position)]
+        + [_page_session(position, pages[position], kind)]
+    )
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
     log: list[str] = []
     driver = _driver(tmp_path, progress=log.append)
     with pytest.raises(q.QualificationError) as error:
         q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
-    assert _code(error) is reason
+    assert _code(error) is Reason.GATE_FAILED
+    assert log == ["host_continuation_mismatch"]
+    assert driver.sequence == position + 1
+
+
+@pytest.mark.parametrize("position", [0, 1])
+def test_a_missing_capture_is_refused_on_any_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, position: int
+) -> None:
+    pages = _owner_pages(2)
+    sessions = iter(
+        [_page_session(index, pages[index]) for index in range(position)]
+        + [_page_session(position, pages[position], "no_capture")]
+    )
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
+    log: list[str] = []
+    driver = _driver(tmp_path, progress=log.append)
+    with pytest.raises(q.QualificationError) as error:
+        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert _code(error) is Reason.GATE_FAILED
+    assert log == ["host_capture_missing"]
+    assert driver.sequence == position + 1
+
+
+def test_a_retried_page_chains_from_the_prior_host_token_on_every_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pages = _owner_pages(3)
+    prompts: list[str] = []
+    sessions = iter(
+        [_page_session(0, pages[0]), _missing_session(), _missing_session(), _page_session(1, pages[1]), _page_session(2, pages[2])]
+    )
+
+    def run(**kwargs: Any) -> Any:
+        prompts.append(kwargs["prompt"])
+        return next(sessions)
+
+    monkeypatch.setattr(q, "run_host_session", run)
+    driver = _driver(tmp_path)
+    q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert driver.sequence == 5
+    # Every attempt at page two, the two missing ones included, asks for h0, never t0.
+    for prompt in prompts[1:4]:
+        assert prompt.endswith('JSON:' + json.dumps(_page_request(1), sort_keys=True, separators=(",", ":")))
+    assert '"h0"' in prompts[1] and '"h0"' in prompts[2] and '"h0"' in prompts[3]
+    assert prompts[4].endswith('JSON:' + json.dumps(_page_request(2), sort_keys=True, separators=(",", ":")))
+    assert all('"t0"' not in prompt for prompt in prompts)
+
+
+def test_a_page_without_a_token_cannot_be_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pages = [{"events": [0], "page": {}}, {"events": [1], "page": {}}]
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _page_session(0, pages[0]))
+    driver = _driver(tmp_path)
+    with pytest.raises(q.QualificationError) as error:
+        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert _code(error) is Reason.GATE_FAILED
     assert driver.sequence == 1
-    assert "host_target_call_missing" not in log
 
 
 @pytest.mark.parametrize("bad_attempts", [1, 2])
-def test_a_missing_target_is_retried_within_the_bound_before_any_page_is_chained(
+def test_a_missing_target_is_retried_within_the_bound_for_one_page_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_attempts: int
 ) -> None:
     pages = _owner_pages(2)
-    sessions = iter([_missing_session()] * bad_attempts + [_chained_session(pages)])
+    sessions = iter(
+        [_page_session(0, pages[0])]
+        + [_missing_session()] * bad_attempts
+        + [_page_session(1, pages[1])]
+    )
     monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
     log: list[str] = []
     driver = _driver(tmp_path, progress=log.append)
     q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
-    assert driver.sequence == bad_attempts + 1
+    assert driver.sequence == bad_attempts + 2
     assert log == ["host_target_call_missing"] * bad_attempts
 
 
@@ -3400,12 +3813,46 @@ def test_a_missing_target_is_refused_after_three_sessions_without_the_call(
     assert log == ["host_target_call_missing"] * 3
 
 
+@pytest.mark.parametrize("position", [0, 1])
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [
+        ("wrong_token", Reason.GATE_FAILED),
+        ("wrong_arguments", Reason.GATE_FAILED),
+        ("extra", Reason.GATE_FAILED),
+        ("tool_error", Reason.GATE_FAILED),
+        ("wrong_digest", Reason.GATE_FAILED),
+        ("completion", Reason.HOST_OUTPUT_AMBIGUOUS),
+    ],
+)
+def test_a_wrong_page_call_fails_closed_without_a_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    position: int,
+    kind: str,
+    reason: Reason,
+) -> None:
+    pages = _owner_pages(2)
+    sessions = iter(
+        [_page_session(index, pages[index]) for index in range(position)]
+        + [_page_session(position, pages[position], kind)]
+    )
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
+    log: list[str] = []
+    driver = _driver(tmp_path, progress=log.append)
+    with pytest.raises(q.QualificationError) as error:
+        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert _code(error) is reason
+    assert driver.sequence == position + 1
+    assert "host_target_call_missing" not in log
+
+
 def test_a_page_that_answers_with_the_wrong_digest_is_named_as_a_page_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pages = _owner_pages(2)
     monkeypatch.setattr(
-        q, "run_host_session", lambda **_kwargs: _chained_session(pages, "wrong_digest")
+        q, "run_host_session", lambda **_kwargs: _page_session(0, pages[0], "wrong_digest")
     )
     log: list[str] = []
     driver = _driver(tmp_path, progress=log.append)
@@ -3415,11 +3862,11 @@ def test_a_page_that_answers_with_the_wrong_digest_is_named_as_a_page_mismatch(
     assert log == ["host_page_mismatch"]
 
 
-def test_core_health_is_checked_after_the_one_host_session_exits(
+def test_core_health_is_checked_after_each_page_host_exits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pages = _owner_pages(2)
-    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _chained_session(pages))
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: _page_session(0, pages[0]))
     driver = _driver(tmp_path, healthy=lambda: False)
     with pytest.raises(q.QualificationError) as error:
         q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
@@ -3427,334 +3874,320 @@ def test_core_health_is_checked_after_the_one_host_session_exits(
     assert driver.sequence == 1
 
 
-@pytest.mark.parametrize(
-    ("arguments", "pages"),
-    [
-        ({"job_id": "job-1", "page": {}}, 2),
-        ({"job_id": "job-1"}, 0),
-        ({"job_id": "job-1"}, True),
-        ({"job_id": "job-1"}, 1.0),
-        ({"job_id": "job-1"}, q.MAX_EVENT_PAGES + 1),
-    ],
-)
-def test_a_page_chain_refuses_a_token_bearing_base_or_an_unbounded_count(
-    arguments: dict[str, Any], pages: Any
+def test_core_health_failure_on_a_later_page_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    pages = _owner_pages(2)
+    health = iter([True, False])
+    sessions = iter([_page_session(0, pages[0]), _page_session(1, pages[1])])
+    monkeypatch.setattr(q, "run_host_session", lambda **_kwargs: next(sessions))
+    driver = _driver(tmp_path, healthy=lambda: next(health))
     with pytest.raises(q.QualificationError) as error:
-        q.PageChain(_TRAVERSAL_TOOL, arguments, pages)
-    assert _code(error) is Reason.RECORD_INVALID
+        q.host_read_pages(driver, _TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages)
+    assert _code(error) is Reason.GATE_FAILED
+    assert driver.sequence == 2
 
 
-def test_the_private_spec_names_the_base_arguments_and_count_and_never_a_token(
-    tmp_path: Path,
-) -> None:
-    spec = tmp_path / "spec.json"
-    chain = q.PageChain(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, 3)
-    q.write_proxy_spec(spec, child=["server"], observation=tmp_path / "events", chain=chain)
-    assert json.loads(spec.read_text(encoding="utf-8"))["chain"] == {
-        "tool": _TRAVERSAL_TOOL,
-        "arguments": _TRAVERSAL_ARGUMENTS,
-        "pages": 3,
-    }
-    assert "continuation" not in spec.read_text(encoding="utf-8")
-    assert q._load_spec(spec)[4] == chain
+_SECRET = "SECRET-CONTINUATION-7f3a9c"
+_DIGEST_OF_PAGE = q.arguments_digest({"job_id": "job-1", "limit": 1})
 
 
-def _page_result(page: dict[str, Any]) -> dict[str, Any]:
-    return {"isError": False, "content": [], "structuredContent": page}
-
-
-def _page_frame(identifier: Any, result: dict[str, Any]) -> bytes:
-    return _frame({"jsonrpc": "2.0", "id": identifier, "result": result})
-
-
-def _call_frame(identifier: int) -> bytes:
-    return _frame(
-        {
-            "jsonrpc": "2.0",
-            "id": identifier,
-            "method": "tools/call",
-            "params": {"name": _TRAVERSAL_TOOL, "arguments": _TRAVERSAL_ARGUMENTS},
-        }
-    )
-
-
-def _paged_relay(directory: Path, pages: int) -> tuple[Any, Any, Path]:
-    directory.mkdir()
-    path = directory / "events.jsonl"
-    observer = q._Observer(path)
-    relay = q._Relay(observer, None, chain=q.PageChain(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, pages))
-    return relay, observer, path
-
-
-def _hold_first(relay: Any, sink: io.BytesIO, first: dict[str, Any]) -> None:
-    """The host's one call is written to the child; its first page is answered and held."""
-    relay.request(_call_frame(7), sink)
-    assert not relay.response(_page_frame(7, _page_result(first)))
-    assert relay.holding
-
-
-def test_the_proxy_chains_each_page_on_the_connection_with_the_token_copied_verbatim(
-    tmp_path: Path,
-) -> None:
-    pages = [
-        {"events": [0], "page": {"continuation_token": "secret-token-one"}},
-        {"events": [1], "page": {"continuation_token": "secret-token-two"}},
-        {"events": [2], "page": {}},
-    ]
-    relay, observer, path = _paged_relay(tmp_path / "exact", 3)
-    child_in = io.BytesIO()
-    _hold_first(relay, child_in, pages[0])
-    child_out = io.BytesIO(
-        _page_frame("omnivia-page-1", _page_result(pages[1]))
-        + _page_frame("omnivia-page-2", _page_result(pages[2]))
-    )
-    relay.chain_pages(child_in, child_out)
-    relay.release()
-    observer.close()
-    assert not relay.holding
-    sent = [json.loads(line) for line in child_in.getvalue().splitlines()]
-    assert [message["id"] for message in sent] == [7, "omnivia-page-1", "omnivia-page-2"]
-    assert sent[1]["params"]["arguments"] == {
-        **_TRAVERSAL_ARGUMENTS,
-        "page": {"continuation_token": "secret-token-one"},
-    }
-    assert sent[2]["params"]["arguments"] == {
-        **_TRAVERSAL_ARGUMENTS,
-        "page": {"continuation_token": "secret-token-two"},
-    }
-    events = q.read_observation(path)
-    assert [event["event"] for event in events] == [
-        "tool_call_request",
-        "tool_call_response",
-        "page_request",
-        "page_response",
-        "page_request",
-        "page_response",
-    ]
-    # Tokens and page bodies are never retained: only closed names and canonical digests.
-    assert "secret-token" not in path.read_text(encoding="ascii")
-    summary = q.summarize_observation(events)
-    assert summary.called == (_TRAVERSAL_TOOL,) and not summary.violation
-    assert summary.chained == (
-        (_TRAVERSAL_TOOL, q.canonical_result_digest(pages[1])),
-        (_TRAVERSAL_TOOL, q.canonical_result_digest(pages[2])),
-    )
-
-
-def test_the_held_answer_waits_for_release_and_no_host_frame_is_admitted_meanwhile(
-    tmp_path: Path,
-) -> None:
-    relay, observer, _path = _paged_relay(tmp_path / "held", 2)
-    child_in = io.BytesIO()
-    _hold_first(relay, child_in, {"events": [0], "page": {"continuation_token": "t0"}})
-    with pytest.raises(q._Violation) as error:
-        relay.request(_frame({"jsonrpc": "2.0", "id": 8, "method": "tools/list", "params": {}}), child_in)
-    assert error.value.kind == "host_frame_during_injection"
-    relay.chain_pages(child_in, io.BytesIO(_page_frame("omnivia-page-1", _page_result({"events": [1], "page": {}}))))
-    assert relay.holding  # the chain alone never lifts the hold
-    relay.release()
-    observer.close()
-    assert not relay.holding
-
-
-def test_the_host_drain_waits_out_a_hold_before_closing_the_childs_input(tmp_path: Path) -> None:
-    relay, observer, _path = _paged_relay(tmp_path / "drain", 1)
-    _hold_first(relay, io.BytesIO(), {"events": [0], "page": {}})
-    waiter = threading.Thread(target=relay.drain, args=(5,))
-    waiter.start()
-    waiter.join(0.2)
-    assert waiter.is_alive()
-    relay.chain_pages(io.BytesIO(), io.BytesIO())
-    relay.release()
-    waiter.join(5)
-    observer.close()
-    assert not waiter.is_alive()
+def _handoff_document(path: Path, text: str, mode: int = 0o600) -> Path:
+    path.write_text(text, encoding="utf-8")
+    path.chmod(mode)
+    return path
 
 
 @pytest.mark.parametrize(
-    ("reply", "kind"),
+    "text",
     [
-        (_frame({"jsonrpc": "2.0", "method": "notifications/message", "params": {}}), "interleaved_frame"),
-        (_page_frame("omnivia-page-9", _page_result({"events": [1], "page": {"continuation_token": "t1"}})), "wrong_page_id"),
-        (_frame({"jsonrpc": "2.0", "id": "omnivia-page-1", "error": {"code": -1, "message": "x"}}), "page_tool_error"),
-        (_page_frame("omnivia-page-1", {**_page_result({"events": [1], "page": {}}), "isError": True}), "page_tool_error"),
-        (_page_frame("omnivia-page-1", {"isError": False, "content": []}), "invalid_tool_result"),
-        (_page_frame("omnivia-page-1", _page_result({"events": [1], "page": {}})), "page_token_missing"),
-        (b"", "early_eof"),
-        (b"not-json\n", "not_json"),
-        (b"x" * (q.MAX_FRAME_BYTES + 1), "oversized_frame"),
+        "",
+        "not json",
+        "[]",
+        "{}",
+        '{"continuation_token": ""}',
+        '{"continuation_token": 5}',
+        '{"continuation_token": true}',
+        '{"continuation_token": {"nested": "x"}}',
+        '{"continuation_token": "t", "extra": 1}',
+        '{"token": "t"}',
+        '{"continuation_token": NaN}',
     ],
 )
-def test_a_faulty_chained_reply_is_a_violation_and_the_held_answer_is_never_released(
-    tmp_path: Path, reply: bytes, kind: str
+def test_a_malformed_handoff_is_refused(tmp_path: Path, text: str) -> None:
+    with pytest.raises(q.QualificationError) as error:
+        q._read_handoff(_handoff_document(tmp_path / "handoff.json", text))
+    assert _code(error) is Reason.GATE_FAILED
+    assert _SECRET not in str(error.value)
+
+
+def test_a_handoff_must_be_a_private_regular_file_within_its_bound(tmp_path: Path) -> None:
+    body = json.dumps({"continuation_token": _SECRET})
+    with pytest.raises(q.QualificationError) as error:
+        q._read_handoff(_handoff_document(tmp_path / "wide", body, mode=0o644))
+    assert _code(error) is Reason.GATE_FAILED
+    target = _handoff_document(tmp_path / "target", body)
+    os.symlink(target, tmp_path / "linked")
+    with pytest.raises(q.QualificationError):
+        q._read_handoff(tmp_path / "linked")
+    with pytest.raises(q.QualificationError):
+        q._read_handoff(_handoff_document(tmp_path / "large", " " * q.HANDOFF_MAX_BYTES + body))
+    with pytest.raises(q.QualificationError):
+        q._read_handoff(tmp_path / "absent")
+
+
+def test_a_well_formed_handoff_yields_its_token_or_an_exhausted_page(tmp_path: Path) -> None:
+    token = _handoff_document(tmp_path / "token", json.dumps({"continuation_token": _SECRET}))
+    exhausted = _handoff_document(tmp_path / "exhausted", json.dumps({"continuation_token": None}))
+    assert q._read_handoff(token) == _SECRET
+    assert q._read_handoff(exhausted) is None
+
+
+def test_the_handoff_and_the_observation_must_agree_before_a_continuation_is_taken(
+    tmp_path: Path,
 ) -> None:
-    relay, observer, _path = _paged_relay(tmp_path / kind, 3)
-    _hold_first(relay, io.BytesIO(), {"events": [0], "page": {"continuation_token": "t0"}})
-    with pytest.raises(q._Violation) as error:
-        relay.chain_pages(io.BytesIO(), io.BytesIO(reply))
-    observer.close()
-    assert error.value.kind == kind
-    assert relay.holding
+    capture = q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json")
+
+    def summary(*captured: tuple[str, bool]) -> Any:
+        return dataclasses.replace(_outcome_result((), ()).summary, captured=captured)
+
+    assert q._take_continuation(capture, summary()) is None
+    _handoff_document(capture.handoff, json.dumps({"continuation_token": _SECRET}))
+    for observed in [(), (("job_events", False),), (("other", True),)]:
+        with pytest.raises(q.QualificationError) as error:
+            q._take_continuation(capture, summary(*observed))
+        assert _code(error) is Reason.GATE_FAILED
+    taken = q._take_continuation(capture, summary(("job_events", True)))
+    assert taken == q.CapturedContinuation("job_events", _SECRET)
+    _handoff_document(capture.handoff, json.dumps({"continuation_token": None}))
+    assert q._take_continuation(capture, summary(("job_events", False))).token is None
+    with pytest.raises(q.QualificationError):
+        q._take_continuation(capture, summary(("job_events", True)))
+    os.unlink(capture.handoff)
+    with pytest.raises(q.QualificationError):
+        q._take_continuation(capture, summary(("job_events", True)))
 
 
-def test_the_final_chained_page_must_be_exhausted(tmp_path: Path) -> None:
-    relay, observer, _path = _paged_relay(tmp_path / "final", 2)
-    _hold_first(relay, io.BytesIO(), {"events": [0], "page": {"continuation_token": "t0"}})
-    still_more = _page_frame("omnivia-page-1", _page_result({"events": [1], "page": {"continuation_token": "t1"}}))
-    with pytest.raises(q._Violation) as error:
-        relay.chain_pages(io.BytesIO(), io.BytesIO(still_more))
+def _capture_result(*, captured: bool) -> Any:
+    base = _outcome_result((), ())
+    observed = (("job_events", True),) if captured else ()
+    return dataclasses.replace(base, summary=dataclasses.replace(base.summary, captured=observed))
+
+
+def test_run_host_unlinks_the_handoff_on_success_and_takes_the_token_only_transiently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json")
+
+    def host(**_kwargs: Any) -> Any:
+        q._write_private(capture.handoff, json.dumps({"continuation_token": _SECRET}))
+        return _capture_result(captured=True)
+
+    monkeypatch.setattr(q, "_run_host_process", lambda *_a, **kwargs: host(**kwargs))
+    result = q.run_host(["host"], env={}, cwd=tmp_path, observation=tmp_path / "o", marker="M", timeout=1, capture=capture)
+    assert result.continuation == q.CapturedContinuation("job_events", _SECRET)
+    assert _SECRET not in repr(result)
+    assert not os.path.lexists(capture.handoff)
+
+
+def test_run_host_unlinks_the_handoff_when_the_host_run_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json")
+
+    def failing(*_args: Any, **_kwargs: Any) -> Any:
+        q._write_private(capture.handoff, json.dumps({"continuation_token": _SECRET}))
+        raise q.QualificationError(q.ReasonCode.HOST_TIMEOUT)
+
+    monkeypatch.setattr(q, "_run_host_process", failing)
+    with pytest.raises(q.QualificationError) as error:
+        q.run_host(["host"], env={}, cwd=tmp_path, observation=tmp_path / "o", marker="M", timeout=1, capture=capture)
+    assert _code(error) is Reason.HOST_TIMEOUT
+    assert not os.path.lexists(capture.handoff)
+
+
+def test_run_host_unlinks_a_malformed_handoff_before_refusing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json")
+
+    def malformed(*_args: Any, **_kwargs: Any) -> Any:
+        _handoff_document(capture.handoff, json.dumps({"continuation_token": 7}))
+        return _capture_result(captured=True)
+
+    monkeypatch.setattr(q, "_run_host_process", malformed)
+    with pytest.raises(q.QualificationError) as error:
+        q.run_host(["host"], env={}, cwd=tmp_path, observation=tmp_path / "o", marker="M", timeout=1, capture=capture)
+    assert _code(error) is Reason.GATE_FAILED
+    assert not os.path.lexists(capture.handoff)
+
+
+def test_run_host_reports_no_continuation_when_the_target_never_answered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json")
+    monkeypatch.setattr(q, "_run_host_process", lambda *_a, **_k: _capture_result(captured=False))
+    result = q.run_host(["host"], env={}, cwd=tmp_path, observation=tmp_path / "o", marker="M", timeout=1, capture=capture)
+    assert result.continuation is None
+
+
+def test_run_host_refuses_to_pass_when_the_handoff_cannot_be_proved_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json")
+    monkeypatch.setattr(q, "_run_host_process", lambda *_a, **_k: _capture_result(captured=False))
+    monkeypatch.setattr(q, "_unlink_handoff", lambda _path: False)
+    with pytest.raises(q.QualificationError) as error:
+        q.run_host(["host"], env={}, cwd=tmp_path, observation=tmp_path / "o", marker="M", timeout=1, capture=capture)
+    assert _code(error) is Reason.CLEANUP_INCOMPLETE
+
+
+def test_the_relay_hands_off_only_the_first_matching_successful_page_token(tmp_path: Path) -> None:
+    def call(identifier: int, arguments: dict[str, Any]) -> bytes:
+        return _frame({"jsonrpc": "2.0", "id": identifier, "method": "tools/call", "params": {"name": "job_events", "arguments": arguments}})
+
+    def answer(identifier: int, structured: dict[str, Any], *, failed: bool = False) -> bytes:
+        result: dict[str, Any] = {"content": [], "isError": failed}
+        if not failed:
+            result["structuredContent"] = structured
+        return _frame({"jsonrpc": "2.0", "id": identifier, "result": result})
+
+    handoff = tmp_path / "handoff.json"
+    observation = tmp_path / "events"
+    observer = q._Observer(observation)
+    relay = q._Relay(observer, None, None, q.CaptureTarget("job_events", _DIGEST_OF_PAGE, handoff))
+    other = {"job_id": "other", "limit": 1}
+    relay.request(call(1, other))
+    assert relay.response(answer(1, {"page": {"continuation_token": _SECRET}})) is False
+    assert not handoff.exists()
+    relay.request(call(2, {"job_id": "job-1", "limit": 1}))
+    assert relay.response(answer(2, {}, failed=True)) is False
+    # The first matching request is the one eligible; a later identical one is not handed off.
+    relay.request(call(3, {"job_id": "job-1", "limit": 1}))
+    assert relay.response(answer(3, {"page": {"continuation_token": _SECRET}})) is False
+    assert not handoff.exists()
     observer.close()
-    assert error.value.kind == "page_not_exhausted"
+    assert _SECRET.encode() not in observation.read_bytes()
+    assert not any(e["event"] == "continuation_captured" for e in q.read_observation(observation))
+
+
+def test_the_relay_writes_a_private_handoff_and_observes_only_its_presence(tmp_path: Path) -> None:
+    handoff = tmp_path / "handoff.json"
+    observation = tmp_path / "events"
+    observer = q._Observer(observation)
+    relay = q._Relay(observer, None, None, q.CaptureTarget("job_events", _DIGEST_OF_PAGE, handoff))
+    relay.request(_frame({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "job_events", "arguments": {"job_id": "job-1", "limit": 1}}}))
+    assert relay.response(_frame({"jsonrpc": "2.0", "id": 1, "result": {"content": [], "isError": False, "structuredContent": {"events": [], "page": {"continuation_token": _SECRET}}}})) is False
+    observer.close()
+    assert json.loads(handoff.read_text(encoding="utf-8")) == {"continuation_token": _SECRET}
+    assert stat.S_IMODE(os.lstat(handoff).st_mode) == 0o600
+    captured = [e for e in q.read_observation(observation) if e["event"] == "continuation_captured"]
+    assert captured == [{"event": "continuation_captured", "seq": captured[0]["seq"], "tool": "job_events", "present": True}]
+    assert _SECRET.encode() not in observation.read_bytes()
+
+
+def test_a_violating_handoff_is_a_protocol_violation_not_a_silent_capture(tmp_path: Path) -> None:
+    observer = q._Observer(tmp_path / "events")
+    relay = q._Relay(observer, None, None, q.CaptureTarget("job_events", _DIGEST_OF_PAGE, tmp_path / "handoff.json"))
+    relay.request(_frame({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "job_events", "arguments": {"job_id": "job-1", "limit": 1}}}))
+    with pytest.raises(q._Violation) as error:
+        relay.response(_frame({"jsonrpc": "2.0", "id": 1, "result": {"content": [], "isError": False, "structuredContent": {"events": []}}}))
+    observer.close()
+    assert error.value.kind == "invalid_tool_result"
+    assert not (tmp_path / "handoff.json").exists()
+
+
+def _answer_with_token(token: Any) -> bytes:
+    page = {"events": [], "page": {"continuation_token": token}}
+    return _frame({"jsonrpc": "2.0", "id": 1, "result": {"content": [], "isError": False, "structuredContent": page}})
 
 
 @pytest.mark.parametrize(
-    ("frame", "pages", "kind"),
-    [
-        (_page_frame(7, _page_result({"events": [0], "page": {}})), 2, "page_token_missing"),
-        (_page_frame(7, _page_result({"events": [0], "page": {"continuation_token": "t0"}})), 1, "page_not_exhausted"),
-        (_page_frame(7, {"isError": False, "content": []}), 2, "invalid_tool_result"),
-        (_page_frame(7, {"isError": True, "content": []}), 2, "page_tool_error"),
-    ],
+    "token",
+    [5, True, [], {}, "", "é" * 3000, "x" * q.HANDOFF_MAX_BYTES],
 )
-def test_the_first_page_must_carry_the_traversal_shape_before_any_hold(
-    tmp_path: Path, frame: bytes, pages: int, kind: str
+def test_a_malformed_or_oversized_service_token_creates_no_handoff_and_no_capture(
+    tmp_path: Path, token: Any
 ) -> None:
-    relay, observer, _path = _paged_relay(tmp_path / kind, pages)
-    relay.request(_call_frame(7), io.BytesIO())
+    handoff = tmp_path / "handoff.json"
+    observer = q._Observer(tmp_path / "events")
+    relay = q._Relay(observer, None, None, q.CaptureTarget("job_events", _DIGEST_OF_PAGE, handoff))
+    relay.request(_frame({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "job_events", "arguments": {"job_id": "job-1", "limit": 1}}}))
     with pytest.raises(q._Violation) as error:
-        relay.response(frame)
+        relay.response(_answer_with_token(token))
     observer.close()
-    assert error.value.kind == kind
-    assert not relay.holding
+    assert error.value.kind == "invalid_tool_result"
+    assert not os.path.lexists(handoff)
+    assert not any(e["event"] == "continuation_captured" for e in q.read_observation(tmp_path / "events"))
 
 
-def test_a_second_host_request_pending_at_the_hold_is_an_interleaving(tmp_path: Path) -> None:
-    relay, observer, _path = _paged_relay(tmp_path / "pending", 2)
-    sink = io.BytesIO()
-    relay.request(_call_frame(7), sink)
-    relay.request(_frame({"jsonrpc": "2.0", "id": 8, "method": "tools/list", "params": {}}), sink)
-    with pytest.raises(q._Violation) as error:
-        relay.response(_page_frame(7, _page_result({"events": [0], "page": {"continuation_token": "t0"}})))
+def test_a_token_whose_closed_handoff_is_exactly_the_bound_is_accepted(tmp_path: Path) -> None:
+    room = q.HANDOFF_MAX_BYTES - len(json.dumps({"continuation_token": ""}).encode("utf-8"))
+    handoff = tmp_path / "handoff.json"
+    observer = q._Observer(tmp_path / "events")
+    relay = q._Relay(observer, None, None, q.CaptureTarget("job_events", _DIGEST_OF_PAGE, handoff))
+    relay.request(_frame({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "job_events", "arguments": {"job_id": "job-1", "limit": 1}}}))
+    assert relay.response(_answer_with_token("t" * room)) is False
     observer.close()
-    assert error.value.kind == "interleaving"
+    assert os.lstat(handoff).st_size == q.HANDOFF_MAX_BYTES
+    assert json.loads(handoff.read_text(encoding="utf-8")) == {"continuation_token": "t" * room}
 
 
-_PAGED_CHILD = r'''
-import json, sys
-mode, log_path = sys.argv[1], sys.argv[2]
-pages = [
-    {"events": [0], "page": {"continuation_token": "tok-1"}},
-    {"events": [1], "page": {"continuation_token": "tok-2"}},
-    {"events": [2], "page": {}},
-]
-log = open(log_path, "a")
-def send(message):
-    print(json.dumps(message, separators=(",", ":")), flush=True)
-for line in sys.stdin:
-    message = json.loads(line)
-    method, identifier = message.get("method"), message.get("id")
-    log.write(f"{method}:{identifier}\n"); log.flush()
-    if identifier is None:
-        continue
-    if method == "initialize":
-        result = {"protocolVersion": "2025-06-18", "capabilities": {}, "serverInfo": {"name": "t", "version": "1"}}
-    elif method == "tools/list":
-        result = {"tools": [{"name": "job_events"}]}
-    else:
-        arguments = message["params"]["arguments"]
-        index = 0 if "page" not in arguments else int(arguments["page"]["continuation_token"].split("-")[1])
-        page = dict(pages[index])
-        if mode == "token_missing" and index == 0:
-            page = {"events": [0], "page": {}}
-        if mode == "notify" and index == 1:
-            send({"jsonrpc": "2.0", "method": "notifications/message", "params": {}})
-        reply_id = "other" if mode == "wrong_id" and index == 1 else identifier
-        send({"jsonrpc": "2.0", "id": reply_id, "result": {"content": [], "isError": False, "structuredContent": page}})
-        if mode == "eof" and index == 0:
-            sys.exit(0)
-        continue
-    send({"jsonrpc": "2.0", "id": identifier, "result": result})
-'''
+_HANDOFF_CHILD: str = (
+    "import json,sys\n"
+    "for line in sys.stdin:\n"
+    " m=json.loads(line); method=m.get('method'); result={}\n"
+    " if method=='initialize': result={'protocolVersion':'2025-06-18','capabilities':{},'serverInfo':{'name':'test','version':'1'}}\n"
+    " elif method=='tools/list': result={'tools':[{'name':'job_events'}]}\n"
+    " elif method=='tools/call': result={'content':[],'isError':False,'structuredContent':{'events':[],'page':{'continuation_token':'" + _SECRET + "'}}}\n"
+    " print(json.dumps({'jsonrpc':'2.0','id':m['id'],'result':result},separators=(',',':')),flush=True)\n"
+)
+_HANDOFF_HOST: str = """
+import subprocess, sys
+spec, script, payload = sys.argv[1], sys.argv[2], sys.argv[3].encode()
+proxy = subprocess.Popen([sys.executable, "-I", script, "--internal-proxy", spec], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+proxy.stdin.write(payload)
+proxy.stdin.flush()
+for _ in range(3):
+    proxy.stdout.readline()
+proxy.stdin.close()
+proxy.wait()
+print("OMNIVIA_HANDOFF_DONE", flush=True)
+"""
 
 
-def _paged_proxy(tmp_path: Path, mode: str) -> tuple[subprocess.CompletedProcess[bytes], Path, Path]:
-    directory = tmp_path / mode
-    directory.mkdir()
-    observation, spec, log = directory / "events", directory / "spec", directory / "child-log"
-    q.write_proxy_spec(
-        spec,
-        child=[sys.executable, "-u", "-c", _PAGED_CHILD, mode, str(log)],
-        observation=observation,
-        chain=q.PageChain(_TRAVERSAL_TOOL, _TRAVERSAL_ARGUMENTS, 3),
-    )
+@posix_only
+def test_a_real_proxy_hands_off_the_token_to_run_host_without_retaining_it(tmp_path: Path) -> None:
     messages = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
-        {"jsonrpc": "2.0", "method": "notifications/initialized"},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": _TRAVERSAL_TOOL, "arguments": _TRAVERSAL_ARGUMENTS}},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "job_events", "arguments": {"job_id": "job-1", "limit": 1}}},
     ]
-    completed = subprocess.run(
-        [sys.executable, "-I", str(SCRIPT), q.INTERNAL_PROXY, str(spec)],
-        input=b"".join(_frame(message) for message in messages),
-        capture_output=True,
-        check=False,
-        timeout=20,
+    payload = "".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages)
+    observation = tmp_path / "observation.jsonl"
+    handoff = tmp_path / "handoff.json"
+    spec = tmp_path / "spec.json"
+    q.write_proxy_spec(
+        spec,
+        child=[sys.executable, "-u", "-c", _HANDOFF_CHILD],
+        observation=observation,
+        capture=q.CaptureTarget("job_events", _DIGEST_OF_PAGE, handoff),
     )
-    return completed, observation, log
-
-
-@posix_only
-def test_the_proxy_pages_on_the_child_that_initialized_and_releases_the_first_answer_last(
-    tmp_path: Path,
-) -> None:
-    completed, observation, log = _paged_proxy(tmp_path, "exact")
-    assert completed.returncode == 0 and completed.stderr == b""
-    host = [json.loads(line) for line in completed.stdout.splitlines()]
-    assert [message["id"] for message in host] == [1, 2, 3]
-    assert host[2]["result"]["structuredContent"]["page"] == {"continuation_token": "tok-1"}
-    # One child process: it initialized once, then served the host's call and both pages.
-    assert log.read_text(encoding="utf-8").splitlines() == [
-        "initialize:1",
-        "notifications/initialized:None",
-        "tools/list:2",
-        "tools/call:3",
-        "tools/call:omnivia-page-1",
-        "tools/call:omnivia-page-2",
-    ]
-    summary = q.summarize_observation(q.read_observation(observation))
-    assert not summary.violation and summary.called == (_TRAVERSAL_TOOL,)
-    assert summary.chained == (
-        (_TRAVERSAL_TOOL, q.canonical_result_digest({"events": [1], "page": {"continuation_token": "tok-2"}})),
-        (_TRAVERSAL_TOOL, q.canonical_result_digest({"events": [2], "page": {}})),
+    result = q.run_host(
+        [sys.executable, "-I", "-c", _HANDOFF_HOST, str(spec), str(SCRIPT), payload],
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        observation=observation,
+        marker="OMNIVIA_HANDOFF_DONE",
+        timeout=60,
+        capture=q.CaptureTarget("job_events", _DIGEST_OF_PAGE, handoff),
     )
-    assert "tok-" not in observation.read_text(encoding="ascii")
-
-
-@posix_only
-@pytest.mark.parametrize(
-    ("mode", "kind"),
-    [
-        ("notify", "interleaved_frame"),
-        ("wrong_id", "wrong_page_id"),
-        ("token_missing", "page_token_missing"),
-        ("eof", None),
-    ],
-)
-def test_a_faulty_traversal_never_releases_the_held_first_answer(
-    tmp_path: Path, mode: str, kind: str | None
-) -> None:
-    completed, observation, _log = _paged_proxy(tmp_path, mode)
-    host = [json.loads(line) for line in completed.stdout.splitlines()]
-    # Only the two answers before the traversal reached the host; the held one never did.
-    assert [message["id"] for message in host] == [1, 2]
-    assert completed.returncode in {q.PROXY_VIOLATION_EXIT, q.PROXY_FAILED_EXIT}
-    events = q.read_observation(observation)
-    observed = [event["kind"] for event in events if event["event"] == "protocol_violation"]
-    if kind is None:
-        assert observed in ([], ["early_eof"])
-    else:
-        assert observed == [kind]
+    assert result.continuation == q.CapturedContinuation("job_events", _SECRET)
+    assert result.summary.captured == (("job_events", True),)
+    assert result.summary.violation is False
+    assert not os.path.lexists(handoff)
+    assert _SECRET not in repr(result)
+    assert _SECRET.encode() not in observation.read_bytes()
 
 
 def _event(sequence: int) -> dict[str, Any]:
@@ -3938,6 +4371,12 @@ class FakeCore:
             return self.mutate(tool, arguments)
         if self.revoked and self.tamper != "revocation_ignored" and tool != "workspace_inspect":
             return "credential_missing", None
+        if tool == "job_events" and "page" in arguments:
+            # Tokens bind to the principal: the host's own token is accepted, an owner token is not.
+            token = arguments["page"]["continuation_token"]
+            if not token.startswith("host:"):
+                return "other", None
+            arguments = {**arguments, "page": {"continuation_token": token[len("host:"):]}}
         return "none", self.read(tool, arguments)
 
 
@@ -4018,7 +4457,7 @@ def _journey(
 
     def run(self: Any, calls: Any, arguments: Any = None, *, interrupt: bool = False,
             on_withheld: Any = lambda: None, pause_before: bool = False, on_paused: Any = lambda: None,
-            chain: Any = None) -> Any:
+            capture: bool = False) -> Any:
         tool, first = calls, arguments
         steps = [(tool, first)]
         core = cores[Path(self.core_config).parent]
@@ -4060,32 +4499,22 @@ def _journey(
             )
         requests: list[tuple[str, str]] = []
         outcomes: list[tuple[str, str, str]] = []
-        chained: list[tuple[str, str]] = []
-
-        def served_result(name: str, args: dict[str, Any]) -> tuple[str, Any]:
-            refusal, structured = core.serve(name, args)
-            if core.tamper == "wrong_refusal" and refusal == "credential_missing":
-                refusal = "idempotency_conflict"
-            if refusal == "none" and name == "job_events" and core.tamper == "host_page_differs":
-                structured = {**structured, "events": [{**structured["events"][0], "state": "failed"}, *structured["events"][1:]]}
-            return refusal, structured
-
+        handed: q.CapturedContinuation | None = None
         # Only the paused post-revocation request is tampered; earlier sessions are honest.
         served = _tampered(core.tamper, steps) if pause_before else steps
         for name, args in served:
             log.append(f"call:{name}")
             requests.append((name, q.arguments_digest(args)))
-            refusal, structured = served_result(name, args)
+            refusal, structured = core.serve(name, args)
+            if core.tamper == "wrong_refusal" and refusal == "credential_missing":
+                refusal = "idempotency_conflict"
+            if refusal == "none" and name == "job_events" and core.tamper == "host_page_differs":
+                structured = {**structured, "events": [{**structured["events"][0], "state": "failed"}, *structured["events"][1:]]}
             outcomes.append((name, refusal, q.canonical_result_digest(structured)))
-        if chain is not None:
-            # The proxy's own pages, on the host's connection: each token copied from the page before.
-            token = structured["page"].get("continuation_token")
-            for _ in range(chain.pages - 1):
-                log.append(f"call:{chain.tool}")
-                refusal, page = served_result(chain.tool, {**chain.arguments, "page": {"continuation_token": token}})
-                assert refusal == "none"
-                chained.append((chain.tool, q.canonical_result_digest(page)))
-                token = page["page"].get("continuation_token")
+            if capture and handed is None and name == tool and refusal == "none":
+                # The proxy hands off the first successful answer's token: the host's, never the owner's.
+                token = structured["page"].get("continuation_token")
+                handed = q.CapturedContinuation(tool, None if token is None else f"host:{token}")
         if core.tamper == "core_replaced_unexpectedly" and tool == "evidence_capture":
             core.replace()  # Core exited mid-session; a managed-local client replaced it
         if not self.healthy():
@@ -4100,10 +4529,9 @@ def _journey(
                 tool_errors=tuple(name for name, refusal, _ in outcomes if refusal != "none"),
                 paused=pause_before, withheld=False, violation=False, outcomes=tuple(outcomes),
                 initialized_after_pause=pause_before and core.tamper == "initialized_after_pause",
-                chained=tuple(chained),
             ),
             marker_seen=not timed_out, exited_cleanly=not timed_out, interrupted=False,
-            paused=pause_before,
+            paused=pause_before, continuation=handed,
         )
 
     monkeypatch.setattr(q, "initialize_core", initialize)
@@ -4221,10 +4649,6 @@ def test_the_journey_proves_every_gate_in_the_pinned_order(
     # Both contexts end revoked and are re-verified after the final refusal, before shutdown.
     final = log.index("call:import_start", imported) + 1
     assert log[final : final + 2] == ["verified:core", "verified:import-core"]
-    # The import's paged read is one host session: its one call, the proxy's own second page,
-    # and the revocation probe's one call.  No page is read by a fresh host session.
-    assert log.count("host:job_events:call") == 1
-    assert log.count("call:job_events") == 3
 
 
 @pytest.mark.parametrize(
@@ -5445,12 +5869,13 @@ def test_the_mcp_child_redirects_the_profile_only_for_an_existing_login(tmp_path
     assert AMBIENT_HOME not in existing_text and AMBIENT_USER not in existing_text
 
 
-def test_the_existing_login_command_adds_only_the_safe_and_restricted_flags(tmp_path: Path) -> None:
+def test_the_existing_login_command_is_identical_to_token_mode(tmp_path: Path) -> None:
     arguments = {"mcp_config": tmp_path / "m.json", "prompt": "p", "tools": q.RESTRICTED_TOOLS}
     token = q.claude_command(_claude_binary(tmp_path), **arguments)
     existing = q.claude_command(_claude_binary(tmp_path), **arguments, existing_login=True)
     assert "--safe-mode" not in token and "--restricted" not in token
-    assert existing == [*token, "--safe-mode", "--restricted"]
+    assert existing == token and "--tools" not in existing
+    assert token[token.index("--allowedTools") + 1]
 
 
 def test_the_token_mode_keeps_its_redirects_and_its_command_without_the_hardening_flags(
@@ -5500,8 +5925,12 @@ def test_an_existing_login_session_runs_hardened_with_no_token_and_no_profile_re
     }
     assert "CLAUDE_CONFIG_DIR" not in seen["env"]
     command = seen["command"]
-    for flag in ("--safe-mode", "--restricted", "--strict-mcp-config", "--no-session-persistence"):
+    for flag in ("--strict-mcp-config", "--no-session-persistence"):
         assert flag in command
+    assert "--safe-mode" not in command and "--restricted" not in command
+    assert "--tools" not in command
+    assert command[command.index("--setting-sources") + 1] == "project"
+    assert command[command.index("--allowedTools") + 1]
     assert command[command.index("--permission-mode") + 1] == "dontAsk"
     config_text = (layout.root / "claude-mcp.json").read_text(encoding="utf-8")
     server = json.loads(config_text)["mcpServers"]

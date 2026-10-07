@@ -376,7 +376,8 @@ RESTRICTED_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
 #: The purposes are the service's own -- `memory_authoring` for memory,
 #: `content_ingestion` for both ways content enters a workspace,
 #: `trigger_configuration` for declaring and changing triggers, `trigger_ingestion`
-#: for admitting a stimulus, and `job_observation` for watching what that produced.
+#: for admitting a stimulus, `skill_authoring` for drafting and submitting a skill,
+#: and `job_observation` for watching what that produced.
 #: `knowledge_sharing` proposes and accepts a share, and `knowledge_share_observation`
 #: reads one.
 #: A purpose invented here would be refused at the first call rather than caught

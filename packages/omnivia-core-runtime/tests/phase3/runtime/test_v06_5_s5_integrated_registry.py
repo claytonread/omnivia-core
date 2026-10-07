@@ -16,6 +16,7 @@ import test_application_audit_idempotency_migration as m1
 import test_v06_5_s0_mutation_foundation as s0
 from omnivia_core_runtime.ownership.identity import SystemClock
 from omnivia_core_runtime.service.application import (
+    DECISION_RESULT_USE_PURPOSE,
     ProductionApplicationSurface,
     build_installation_application_dispatcher,
     compose_production_application_surface,
@@ -29,7 +30,12 @@ from omnivia_core_runtime.service.operations import (
 )
 from test_v06_5_s2_memory_migration import _apply_through
 
-from omnivia_core.contracts.v1 import OPERATION_CATALOGUE
+from omnivia_core.contracts.v1 import (
+    OPERATION_CATALOGUE,
+    ErrorResponseEnvelope,
+    decode_request,
+    encode_response,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 CORPUS = (
@@ -43,7 +49,7 @@ ARCHITECTURE_TRACEABILITY = (
     REPO_ROOT
     / "tests/fixtures/service_conformance/architecture-gate-traceability-v1.json"
 )
-CORPUS_SHA256 = "848653081bf45783ae93a2e133dc149a33de1bf5a4bae0c56a40edec3c8cb72f"
+CORPUS_SHA256 = "9e68189f2459b86d7303d6bccc368fd0fceb38f379084379d94492bb844e8fec"
 ADAPTERS = ("in_process", "ipc", "http")
 
 
@@ -234,6 +240,33 @@ def test_v06_5_s5_candidate_head_tree_and_corpus_digest() -> None:
     assert architecture["operation_traceability"]["file"] == (
         "tests/fixtures/service_conformance/operation-traceability-v1.json"
     )
+
+
+def test_v06_5_s5_result_use_unsupported_minor_matches_corpus(
+    surface: ProductionApplicationSurface,
+) -> None:
+    """One corpus case through the production bridge: the error the adapters return
+    is the corpus's own text, not a message re-typed beside the handler."""
+    document = _document(CORPUS)
+    case = next(
+        item
+        for item in document["cases"]
+        if item["id"] == "error/due-unsupported-minor"
+    )
+    request = case["request"]
+    wire = {
+        "operation": request["operation"],
+        "input": request["input"],
+        "metadata": {
+            **document["defaults"]["request_metadata"],
+            **request["metadata"],
+            "workspace_id": m1.WORKSPACE_ID,
+            "purpose": DECISION_RESULT_USE_PURPOSE,
+        },
+    }
+    response = surface.dispatch(decode_request(wire))
+    assert isinstance(response, ErrorResponseEnvelope)
+    assert encode_response(response)["error"] == case["response"]["error"]
 
 
 def test_the_production_surface_installs_the_chat_generation_executor(

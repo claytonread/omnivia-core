@@ -26,7 +26,8 @@ REVIEWER = "independent-reviewer"
 CRITERIA = ("artefact-verified", "tests-pass")
 DEFINITION_DIGEST = "sha256:" + sha256(b"accepted-definition-v1").hexdigest()
 
-Answer = Callable[[sqlite3.Connection, str, str], EvidenceReadout]
+#: What a scripted reader answers for (workspace_id, run_id, fencing_generation).
+Answer = Callable[[str, str, int], EvidenceReadout]
 
 
 def digest_for(*parts: str) -> str:
@@ -98,20 +99,22 @@ def proven_readout(
 
 
 class ScriptedReader:
-    """Reports proven evidence for every run unless a test scripts a different answer."""
+    """Reports proven evidence for every run unless a test scripts a different answer.
+
+    It is handed the identifiers and the fence and nothing else, as the production boundary is, and it
+    records each call so a test can prove what it was given.
+    """
 
     def __init__(self) -> None:
         self.answer: Answer | None = None
+        self.calls: list[tuple[str, str, int]] = []
 
-    def read(
-        self, connection: sqlite3.Connection, *, workspace_id: str, run_id: str
-    ) -> EvidenceReadout:
+    def read(self, *, workspace_id: str, run_id: str, fencing_generation: int) -> EvidenceReadout:
+        self.calls.append((workspace_id, run_id, fencing_generation))
         if self.answer is not None:
-            return self.answer(connection, workspace_id, run_id)
+            return self.answer(workspace_id, run_id, fencing_generation)
         return proven_readout(
-            accepted_for(run_id),
-            generation=current_generation(connection),
-            workspace_id=workspace_id,
+            accepted_for(run_id), generation=fencing_generation, workspace_id=workspace_id
         )
 
 
@@ -120,11 +123,9 @@ def reader_answering(
 ) -> ScriptedReader:
     """A reader whose honest proven observation is altered by `change`."""
     reader = ScriptedReader()
-    reader.answer = lambda connection, workspace_id, run_id: change(
+    reader.answer = lambda workspace_id, run_id, generation: change(
         proven_readout(
-            accepted_for(run_id),
-            generation=current_generation(connection),
-            workspace_id=workspace_id,
+            accepted_for(run_id), generation=generation, workspace_id=workspace_id
         )
     )
     return reader
