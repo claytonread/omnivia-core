@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import sys
-import sysconfig
 from pathlib import Path
 
 import omnivia_core.semantic_registry as registry
@@ -130,7 +129,6 @@ def test_phase2_modules_import_only_stdlib_or_omnivia_core() -> None:
 
 
 def test_barrel_import_has_no_third_party_dependency(tmp_path: Path) -> None:
-    stdlib_dir = sysconfig.get_paths()["stdlib"]
     script = tmp_path / "check_imports.py"
     script.write_text(
         "import sys\n"
@@ -142,9 +140,12 @@ def test_barrel_import_has_no_third_party_dependency(tmp_path: Path) -> None:
         "    file = getattr(mod, '__file__', None)\n"
         "    if file is None or name.startswith('omnivia_core'):\n"
         "        continue\n"
-        "    if name.split('.')[0] in sys.builtin_module_names:\n"
+        "    root = name.split('.')[0]\n"
+        "    if root in sys.builtin_module_names:\n"
         "        continue\n"
-        f"    if not file.startswith({str(stdlib_dir)!r}):\n"
+        "    if root.startswith('_sysconfigdata'):\n"
+        "        continue\n"
+        "    if root not in sys.stdlib_module_names:\n"
         "        print('THIRD_PARTY:' + name)\n"
     )
     import subprocess
