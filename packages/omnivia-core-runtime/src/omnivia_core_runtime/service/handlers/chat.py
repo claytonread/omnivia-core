@@ -32,7 +32,6 @@ from datetime import UTC, datetime
 from typing import Any, Final
 
 from omnivia_core.chat_contract.v1 import CHAT_COMMAND_NAMES, ChatEvent
-from omnivia_core.contracts.v1.generated import ChatDraftInput
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
@@ -44,6 +43,7 @@ from omnivia_core.contracts.v1 import (
 from omnivia_core.contracts.v1.generated import (
     ChatCommandInput,
     ChatCommandResult,
+    ChatDraftInput,
     ChatEventsInput,
     ChatEventsResult,
     ChatGenerationEvent,

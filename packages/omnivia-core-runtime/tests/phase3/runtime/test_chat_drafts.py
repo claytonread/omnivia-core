@@ -7,12 +7,16 @@ versions, duplicate command IDs, same ID with different content, discard
 replay, and the identity-continuity save-after-discard cycle.
 """
 
+# Pytest fixtures must be re-exported into this module under the names requested
+# by the tests below; Ruff otherwise treats those fixture parameters as ordinary
+# redefinitions of the imported symbols.
+# ruff: noqa: F811
+
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
 
-import pytest
 import test_application_audit_idempotency_migration as m1
 import test_chat_offline_queue as gb05
 import test_v06_5_s0_mutation_foundation as s0
@@ -49,8 +53,8 @@ def _save_command(
     source_message_id: str | None = None,
     draft_id: str | None = None,
     expected_version: int | None = None,
-    attachment_references: Any = [],
-    context_references: Any = [],
+    attachment_references: Any = None,
+    context_references: Any = None,
     **extra: Any,
 ) -> dict[str, Any]:
     command: dict[str, Any] = {
@@ -61,8 +65,10 @@ def _save_command(
         "actorId": actor_id,
         "mode": mode,
         "text": text,
-        "attachmentReferences": attachment_references,
-        "contextReferences": context_references,
+        "attachmentReferences": []
+        if attachment_references is None
+        else attachment_references,
+        "contextReferences": [] if context_references is None else context_references,
     }
     if source_message_id is not None:
         command["sourceMessageId"] = source_message_id
