@@ -264,6 +264,12 @@ BEGIN
     WHERE NEW.event_kind IS NOT 'run_succeeded';
     SELECT RAISE(ABORT, 'omnivia: a scheduler-owned succeeded run event must carry a well-formed JSON detail')
     WHERE json_valid(NEW.details_json) IS NOT 1;
+    SELECT RAISE(ABORT, 'omnivia: a scheduler-owned succeeded run event must carry exactly the canonical lineage keys')
+    WHERE (SELECT COUNT(*) FROM json_each(NEW.details_json)) IS NOT 10
+       OR (SELECT COUNT(DISTINCT key) FROM json_each(NEW.details_json)
+           WHERE key IN ('workspace_id', 'run_id', 'job_id', 'run_step_id', 'runtime_attempt_id',
+                         'runtime_attempt_number', 'application_attempt_number', 'service_instance_id',
+                         'fencing_generation', 'completion_decision_digest')) IS NOT 10;
     SELECT RAISE(ABORT, 'omnivia: a succeeded run event must carry the completion decision that settles it')
     WHERE NOT EXISTS (
         SELECT 1 FROM omnivia_runtime_completion_decisions d
@@ -322,6 +328,11 @@ BEGIN
           AND e.sequence = (
               SELECT MAX(x.sequence) FROM omnivia_runtime_events x
               WHERE x.workspace_id = d.workspace_id AND x.run_id = d.run_id)
+          AND (SELECT COUNT(*) FROM json_each(e.details_json)) = 10
+          AND (SELECT COUNT(DISTINCT key) FROM json_each(e.details_json)
+               WHERE key IN ('workspace_id', 'run_id', 'job_id', 'run_step_id', 'runtime_attempt_id',
+                             'runtime_attempt_number', 'application_attempt_number', 'service_instance_id',
+                             'fencing_generation', 'completion_decision_digest')) = 10
           AND d.decision_digest IS json_extract(e.details_json, '$.completion_decision_digest')
           AND d.workspace_id IS json_extract(e.details_json, '$.workspace_id')
           AND d.run_id IS json_extract(e.details_json, '$.run_id')

@@ -82,7 +82,7 @@ from omnivia_core_runtime.storage.completion_decisions import (
 )
 from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
 
-from omnivia_core.contracts.v1 import to_canonical_json
+from omnivia_core.contracts.v1 import ApiError, to_canonical_json
 
 WORKSPACE_ID = m1.WORKSPACE_ID
 OTHER_WORKSPACE_ID = "ws-completion-other-0001"
@@ -1512,6 +1512,7 @@ def test_an_older_application_attempt_cannot_settle_while_a_newer_one_runs(owned
 def test_a_succeeded_event_without_its_decision_is_refused_by_the_database(owned: m1.Owned) -> None:
     claim = _claim(owned, "run-bare-event")
     _close(owned, claim, attempt=SUCCEEDED, step=SUCCEEDED)
+    decision = _decision(owned, claim)
 
     with pytest.raises(sqlite3.DatabaseError, match="must carry the completion decision"), fenced_transaction(
             owned.connection,
@@ -1526,7 +1527,10 @@ def test_a_succeeded_event_without_its_decision_is_refused_by_the_database(owned
             event_kind=SETTLED,
             run_status="succeeded",
             run_step_id=claim.run_step_id,
-            details={"completion_decision_digest": _decision(owned, claim).decision_digest},
+            details={
+                "completion_decision_digest": decision.decision_digest,
+                **_detail_lineage(owned, claim, decision),
+            },
         )
     assert _count(owned) == 0
 
@@ -1607,6 +1611,53 @@ def test_a_succeeded_event_that_substitutes_any_settled_fact_is_refused_with_its
         )
     assert _count(owned) == 0
     assert _events(owned, first.run_id) == 0
+
+
+_EVENT_DETAIL_SHAPES = [
+    pytest.param(lambda d: {**d, "unexpected": "extra"}, id="extra-key"),
+    pytest.param(lambda d: {k: v for k, v in d.items() if k != "service_instance_id"}, id="missing-key"),
+]
+
+
+@pytest.mark.parametrize("reshape", _EVENT_DETAIL_SHAPES)
+def test_a_succeeded_event_whose_detail_keys_are_not_the_canonical_lineage_is_refused_at_write_time(
+    owned: m1.Owned, reshape: Callable[[dict[str, Any]], dict[str, Any]]
+) -> None:
+    """An otherwise-valid succeeded event with an extra (or missing) key never commits, so it can
+    never become the unreadable row the key-shape guard exists to prevent."""
+    claim = _claim(owned, "run-key-shape")
+    _close(owned, claim, attempt=SUCCEEDED, step=SUCCEEDED)
+    decision = _decision(owned, claim)
+    details = reshape(
+        {"completion_decision_digest": decision.decision_digest, **_detail_lineage(owned, claim, decision)}
+    )
+
+    # The specific error proves the event-insert guard refuses this. If the insert landed, the absent
+    # terminal observation would only produce a generic deferred-FK error when the transaction commits.
+    with pytest.raises(sqlite3.DatabaseError, match="must carry exactly the canonical lineage keys"), fenced_transaction(
+            owned.connection,
+            owned.identity,
+            workspace_id=WORKSPACE_ID,
+            fencing_generation=owned.generation,
+        ) as fenced:
+        record_decision(
+            fenced,
+            decision=decision,
+            decided_at_us=DECIDED_US,
+            service_instance_id=owned.identity.service_instance_id,
+        )
+        transaction_local_writer(fenced, workspace_id=WORKSPACE_ID).append_run_event(
+            run_id=claim.run_id,
+            runtime_event_id=f"evt-key-shape-{claim.run_id}",
+            occurred_at_us=DECIDED_US,
+            event_kind=SETTLED,
+            run_status="succeeded",
+            run_step_id=claim.run_step_id,
+            message="wrong key shape",
+            details=details,
+        )
+    assert _count(owned) == 0
+    assert _events(owned, claim.run_id) == 0
 
 
 def test_a_decision_sequence_admits_only_its_succeeded_event(owned: m1.Owned) -> None:
@@ -1876,6 +1927,7 @@ def test_a_failed_application_attempt_cannot_be_followed_by_a_bare_succeeded_eve
     """Terminalizing the attempt first does not open a route: the event is still scheduler-owned and undecided."""
     claim = _claim(owned, "run-terminal-first")
     _close(owned, claim, attempt=SUCCEEDED, step=SUCCEEDED)
+    decision = _decision(owned, claim)
     _terminal(owned, claim, state="failed")
 
     with pytest.raises(sqlite3.DatabaseError, match="must carry the completion decision"), fenced_transaction(
@@ -1892,7 +1944,10 @@ def test_a_failed_application_attempt_cannot_be_followed_by_a_bare_succeeded_eve
             run_status="succeeded",
             run_step_id=claim.run_step_id,
             message="succeeded after the attempt was terminalized",
-            details={"completion_decision_digest": digest_for("bare")},
+            details={
+                "completion_decision_digest": decision.decision_digest,
+                **_detail_lineage(owned, claim, decision),
+            },
         )
     assert _events(owned, claim.run_id) == 0
 
@@ -2181,23 +2236,33 @@ def _succeeded_details(owned: m1.Owned, run: str) -> dict[str, Any]:
     return json.loads(text)  # type: ignore[no-any-return]
 
 
-def test_a_final_completion_on_the_second_runtime_attempt_states_and_reads_back_that_number(
+def test_a_final_completion_on_an_in_application_retry_states_and_reads_back_both_attempt_numbers(
     owned: m1.Owned,
 ) -> None:
-    _claim(owned, "run-attempt-two")
-    successor = rt106._takeover(owned)
-    assert [job.requeued for job in _scheduler(successor, None).recover_stranded()] == [True]
-    newer = _scheduler(successor, None).claim_next()
-    assert newer is not None and newer.runtime_attempt_number == 2
+    """A retryable failure reopens the same step under the same application attempt (0018 / `Attempt`:
+    `runtime_attempt_number` counts within the step, not across the run) -- not a lease takeover."""
+    claim = _claim(owned, "run-attempt-two")
+    retry = _scheduler(owned, None).fail(
+        claim,
+        failure=ApiError(
+            code="internal_recoverable", message="closed for the test", retry_class="retryable"
+        ),
+    )
+    assert retry is not None
+    assert (retry.application_attempt_number, retry.runtime_attempt_number) == (1, 2)
 
-    _scheduler(successor, gate()).complete(newer, result_kind="runtime_completion", result={"ok": True})
+    _scheduler(owned, gate()).complete(retry, result_kind="runtime_completion", result={"ok": True})
 
-    stored = read_decision(successor.connection, workspace_id=WORKSPACE_ID, run_id=newer.run_id)
+    stored = read_decision(owned.connection, workspace_id=WORKSPACE_ID, run_id=retry.run_id)
     assert stored is not None
-    assert stored.service_instance_id == successor.identity.service_instance_id
-    details = _succeeded_details(successor, newer.run_id)
+    assert stored.service_instance_id == owned.identity.service_instance_id
+    assert stored.decision.runtime_attempt_id == retry.runtime_attempt_id
+    assert stored.decision.application_attempt_number == 1
+    assert _record(owned, stored.decision, decided_at_us=BASE_US + 7) == stored
+    details = _succeeded_details(owned, retry.run_id)
     assert details["runtime_attempt_number"] == 2
-    assert details["service_instance_id"] == successor.identity.service_instance_id
+    assert details["application_attempt_number"] == 1
+    assert details["service_instance_id"] == owned.identity.service_instance_id
 
 
 def test_a_settled_decision_reads_and_replays_after_a_different_service_instance_takes_over(
