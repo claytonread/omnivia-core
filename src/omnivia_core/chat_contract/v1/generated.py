@@ -2,14 +2,17 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (182 files)
-# Governed by:
+#   contracts/chat/v1/fixtures/**           (270 files)
+# Approved BASELINE provenance (the governance decision this tree started from;
+# NOT a claim that these bytes are the approved copy -- they are a
+# `review-candidate`, neither Approved, Published nor Effective):
 #   Approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001;
 #   proposal commit 04c0b2f768b8a74c515936e548c4a28fa4af514d;
 #   proposal content-set inventory SHA-256 521893fefc9d33f5507e5bde84be12713359fe1c4ec041164280096b797e2bf2;
-#   fixture manifest SHA-256 7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54;
+#   baseline fixture manifest SHA-256 7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54;
 #   effective Architecture release tag architecture-v1.4.0;
-#   effective payload commit eb14159d73c8d9339cfeb347f8de61bd67497974.
+#   effective payload commit eb14159d73c8d9339cfeb347f8de61bd67497974;
+#   current fixture manifest SHA-256 2f8168f77bb587359ae836ee8700bac8541d0605523ff6cdaa94e42d8f37d9f6.
 # Generator:
 #   scripts/generate-chat-contract.py
 #
@@ -46,6 +49,8 @@ __all__ = [
     "CHAT_EVENT_TYPES",
     "COMMAND_RESULT_STATUSES",
     "CONTRACT_VERSION",
+    "CURRENT_FIXTURE_MANIFEST_SHA256",
+    "DIRECTION_CONTENT_MAX_UTF8_BYTES",
     "EFFECTIVE_ARCHITECTURE_TAG",
     "EFFECTIVE_PAYLOAD_COMMIT",
     "ERROR_CODES",
@@ -77,31 +82,38 @@ __all__ = [
 # Approval, provenance and version constants
 # --------------------------------------------------------------------------
 
-#: Approval identifier binding this exact, unchanged copy to its governance decision.
+#: Approved BASELINE governance decision this tree started from. Not a claim
+#: that the current bytes are the exact approved copy (they are a review candidate).
 APPROVAL_ID: Final[str] = 'GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001'
-#: The proposal-stage Git commit this copy's bytes were taken from.
+#: The proposal-stage Git commit the approved BASELINE bytes were taken from.
 PROPOSAL_COMMIT: Final[str] = '04c0b2f768b8a74c515936e548c4a28fa4af514d'
-#: SHA-256 of the proposal's own ``PROPOSAL-SHA256SUMS.txt`` inventory file.
+#: SHA-256 of the approved BASELINE proposal's own ``PROPOSAL-SHA256SUMS.txt`` inventory file.
 PROPOSAL_CONTENT_SET_INVENTORY_SHA256: Final[str] = '521893fefc9d33f5507e5bde84be12713359fe1c4ec041164280096b797e2bf2'
-#: SHA-256 of ``fixtures/FIXTURE-MANIFEST.json`` at the approved bytes.
+#: SHA-256 of ``fixtures/FIXTURE-MANIFEST.json`` at the approved BASELINE bytes.
+#: Deliberately not the digest of the current manifest, which has since changed:
+#: see :data:`CURRENT_FIXTURE_MANIFEST_SHA256`. Never repinned.
 FIXTURE_MANIFEST_SHA256: Final[str] = '7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54'
-#: The Masterdocs Git tag this copy was read through.
+#: SHA-256 of the CURRENT ``fixtures/FIXTURE-MANIFEST.json`` bytes, computed by the
+#: generator from the checked-in file. It identifies this review candidate's
+#: manifest and claims nothing about approval.
+CURRENT_FIXTURE_MANIFEST_SHA256: Final[str] = '2f8168f77bb587359ae836ee8700bac8541d0605523ff6cdaa94e42d8f37d9f6'
+#: The Masterdocs Git tag the approved BASELINE was read through.
 EFFECTIVE_ARCHITECTURE_TAG: Final[str] = 'architecture-v1.4.0'
-#: The exact Masterdocs payload commit ``EFFECTIVE_ARCHITECTURE_TAG`` resolves to.
+#: The exact Masterdocs payload commit ``EFFECTIVE_ARCHITECTURE_TAG`` resolves to (baseline).
 EFFECTIVE_PAYLOAD_COMMIT: Final[str] = 'eb14159d73c8d9339cfeb347f8de61bd67497974'
 #: The contract candidate version the approved catalogue encodes.
 CONTRACT_VERSION: Final[str] = '1.0.0-rc.1'
 #: The one wire protocol version this bundle supports. A v1 decoder rejects an
 #: unsupported major and never silently downgrades
 #: (CHAT-RUNTIME-CONTRACT-V1-COMPATIBILITY-AND-MIGRATION.md §1, §3).
-PROTOCOL_VERSION: Final[str] = '1.0'
+PROTOCOL_VERSION: Final[str] = '2.0'
 #: The major component of :data:`PROTOCOL_VERSION`, the compatibility boundary.
-PROTOCOL_MAJOR: Final[str] = '1'
+PROTOCOL_MAJOR: Final[str] = '2'
 #: The one F2b hosted-bridge protocol version this bundle supports
 #: (bridge.schema.json SupportedBridgeProtocolVersion). An independent axis from
 #: :data:`PROTOCOL_VERSION` (the D07 wire protocol): a strict F2b decoder
-#: rejects every other version, including the superseded "1.0".
-BRIDGE_PROTOCOL_VERSION: Final[str] = '1.1'
+#: rejects every other version, including the superseded "1.0" and "1.1".
+BRIDGE_PROTOCOL_VERSION: Final[str] = '2.0'
 #: The outer Platform Module Host Contract envelope version
 #: (bridge.schema.json PlatformCarrierContractVersion). Independent of
 #: :data:`BRIDGE_PROTOCOL_VERSION`; a bridge protocol change never moves it.
@@ -109,12 +121,16 @@ PLATFORM_CARRIER_CONTRACT_VERSION: Final[str] = '1.0'
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = 13
-#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 181 governed fixtures).
-RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 182
+#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 269 governed fixtures).
+RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 270
+#: A Direction's durable content row cap: the canonical JSON object
+#: ``{"editableParts": [...]}`` (``to_canonical_json``) is at most this many UTF-8
+#: bytes. Not expressible in JSON Schema, so the codec enforces it.
+DIRECTION_CONTENT_MAX_UTF8_BYTES: Final[int] = 16384
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = 'b3f9a8c61ecaad29ba7a1f11fc3d6a36dab83db9499ace868f01349ed87d037b'
+RESOURCE_INVENTORY_DIGEST: Final[str] = 'b3dbefdbbf9206418e92086bfdd46836dde6d6cbac98628acd0c85ff9de8e8e0'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (
@@ -152,7 +168,7 @@ SCHEMA_IDS: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 
-#: The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem), 7 members as of bridge protocol 1.1.
+#: The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem), 8 members as of bridge protocol 2.0.
 BRIDGE_SNAPSHOT_ITEM_KINDS: Final[tuple[str, ...]] = (
     'conversation',
     'message',
@@ -161,6 +177,7 @@ BRIDGE_SNAPSHOT_ITEM_KINDS: Final[tuple[str, ...]] = (
     'generation_job',
     'queued_submission',
     'composer_draft',
+    'direction',
 )
 
 #: The closed v1 initial Chat command registry (commands.schema.json ChatCommandName), 30 members.
@@ -197,7 +214,7 @@ CHAT_COMMAND_NAMES: Final[tuple[str, ...]] = (
     'ExportConversation',
 )
 
-#: The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType), 16 members. Additive-decode point.
+#: The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType), 18 members. Additive-decode point.
 CHAT_EVENT_TYPES: Final[tuple[str, ...]] = (
     'chat.conversation.created',
     'chat.message.committed',
@@ -213,6 +230,8 @@ CHAT_EVENT_TYPES: Final[tuple[str, ...]] = (
     'chat.generation.failed',
     'chat.generation.cancelled',
     'chat.generation.text_appended',
+    'chat.generation.iteration_completed',
+    'chat.direction.state_changed',
     'chat.share.created',
     'chat.export.created',
 )
@@ -416,6 +435,23 @@ CHAT_EVENT_FIELDS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             'schemaVersion',
             'workspaceId',
         ),
+        'chat.direction.state_changed': (
+            'actorId',
+            'branchId',
+            'conversationId',
+            'cursor',
+            'directionId',
+            'directionVersion',
+            'eventId',
+            'eventType',
+            'generationEventSequence',
+            'generationJobId',
+            'jobSequence',
+            'occurredAt',
+            'schemaVersion',
+            'state',
+            'workspaceId',
+        ),
         'chat.export.created': (
             'conversationId',
             'cursor',
@@ -454,6 +490,22 @@ CHAT_EVENT_FIELDS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             'generationJobId',
             'occurredAt',
             'resultMessageId',
+            'schemaVersion',
+            'triggerMessageId',
+            'workspaceId',
+        ),
+        'chat.generation.iteration_completed': (
+            'branchId',
+            'conversationId',
+            'cursor',
+            'eventId',
+            'eventType',
+            'generationAttemptId',
+            'generationEventSequence',
+            'generationJobId',
+            'generationJobVersion',
+            'iteration',
+            'occurredAt',
             'schemaVersion',
             'triggerMessageId',
             'workspaceId',
@@ -641,6 +693,23 @@ CHAT_EVENT_REQUIRED_FIELDS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyT
             'schemaVersion',
             'workspaceId',
         ),
+        'chat.direction.state_changed': (
+            'actorId',
+            'branchId',
+            'conversationId',
+            'cursor',
+            'directionId',
+            'directionVersion',
+            'eventId',
+            'eventType',
+            'generationEventSequence',
+            'generationJobId',
+            'jobSequence',
+            'occurredAt',
+            'schemaVersion',
+            'state',
+            'workspaceId',
+        ),
         'chat.export.created': (
             'conversationId',
             'cursor',
@@ -674,6 +743,22 @@ CHAT_EVENT_REQUIRED_FIELDS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyT
             'eventType',
             'generationEventSequence',
             'generationJobId',
+            'occurredAt',
+            'schemaVersion',
+            'triggerMessageId',
+            'workspaceId',
+        ),
+        'chat.generation.iteration_completed': (
+            'branchId',
+            'conversationId',
+            'cursor',
+            'eventId',
+            'eventType',
+            'generationAttemptId',
+            'generationEventSequence',
+            'generationJobId',
+            'generationJobVersion',
+            'iteration',
             'occurredAt',
             'schemaVersion',
             'triggerMessageId',
@@ -797,9 +882,11 @@ CHAT_EVENT_SCHEMA_REFS: Final[Mapping[str, str]] = MappingProxyType(
         'chat.branch.head_advanced': 'events.schema.json#/$defs/BranchHeadAdvancedEvent',
         'chat.branch.selected': 'events.schema.json#/$defs/BranchSelectedEvent',
         'chat.conversation.created': 'events.schema.json#/$defs/ConversationCreatedEvent',
+        'chat.direction.state_changed': 'events.schema.json#/$defs/DirectionStateChangedEvent',
         'chat.export.created': 'events.schema.json#/$defs/ExportCreatedEvent',
         'chat.generation.cancelled': 'events.schema.json#/$defs/GenerationEvent',
         'chat.generation.failed': 'events.schema.json#/$defs/GenerationEvent',
+        'chat.generation.iteration_completed': 'events.schema.json#/$defs/GenerationIterationCompletedEvent',
         'chat.generation.queued': 'events.schema.json#/$defs/GenerationEvent',
         'chat.generation.started': 'events.schema.json#/$defs/GenerationEvent',
         'chat.generation.succeeded': 'events.schema.json#/$defs/GenerationEvent',
@@ -824,15 +911,17 @@ ADDITIVE_DECODE_VOCABULARIES: Final[Mapping[str, tuple[str, ...]]] = MappingProx
 )
 
 
-#: Bounded codec record class name -> the VALIDATION_SCHEMAS key of the exact canonical subschema its emitted document must satisfy.
+#: Bounded codec validation root name -> the VALIDATION_SCHEMAS key of the exact canonical subschema its emitted document must satisfy.
 RECORD_VALIDATION_REFS: Final[Mapping[str, str]] = MappingProxyType(
     {
         'ChatEvent': 'events.schema.json#/$defs/ChatEvent',
         'CommandError': 'commands.schema.json#/$defs/CommandResultEnvelope/properties/error',
         'CommandResultEnvelope': 'commands.schema.json#/$defs/CommandResultEnvelope',
+        'Direction': 'generation.schema.json#/$defs/Direction',
         'ProviderInvocationRecord': 'provider.schema.json#/$defs/ProviderInvocationRecord',
         'ProviderInvocationRequest': 'provider.schema.json#/$defs/ProviderInvocationRequest',
         'ResnapshotResponse': 'events.schema.json#/$defs/ResnapshotResponse',
+        'SubmitSteeringInputRequest': 'commands.schema.json#/$defs/SubmitSteeringInputRequest',
     }
 )
 
@@ -867,7 +956,7 @@ VALIDATION_KEYWORDS: Final[tuple[str, ...]] = (
     'uniqueItems',
 )
 
-#: The transitive $ref closure of the six bounded codec record roots, read
+#: The transitive $ref closure of the bounded codec validation roots, read
 #: from the approved contracts/chat/v1/schemas bytes with the annotation-only
 #: keywords dropped and every $ref rewritten to a flat '<file>#<pointer>' key
 #: of this same mapping. This is the sole authority the codec's strict
@@ -974,6 +1063,78 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
             ],
             'type': 'object',
         },
+        'commands.schema.json#/$defs/SubmitSteeringInputRequest': {
+            'additionalProperties': False,
+            'properties': {
+                'actorId': {
+                    '$ref': 'common.schema.json#/$defs/ActorId',
+                },
+                'attachmentReferences': {
+                    'items': {
+                        '$ref': 'common.schema.json#/$defs/AttachmentReference',
+                    },
+                    'maxItems': 0,
+                    'type': 'array',
+                },
+                'commandId': {
+                    '$ref': 'common.schema.json#/$defs/CommandId',
+                },
+                'contextReferences': {
+                    'items': {
+                        '$ref': 'common.schema.json#/$defs/ContextReference',
+                    },
+                    'maxItems': 0,
+                    'type': 'array',
+                },
+                'conversationId': {
+                    '$ref': 'common.schema.json#/$defs/ConversationId',
+                },
+                'editableParts': {
+                    'items': {
+                        '$ref': 'common.schema.json#/$defs/DirectionTextPart',
+                    },
+                    'maxItems': 16,
+                    'minItems': 1,
+                    'type': 'array',
+                },
+                'expectedActiveState': {
+                    'const': 'running',
+                },
+                'expectedGenerationVersion': {
+                    '$ref': 'common.schema.json#/$defs/GenerationJobVersion',
+                },
+                'protocolVersion': {
+                    '$ref': 'common.schema.json#/$defs/ProtocolVersion',
+                },
+                'requestedBoundary': {
+                    '$ref': 'common.schema.json#/$defs/RequestedDirectionBoundary',
+                },
+                'supersedesDirectionId': {
+                    '$ref': 'common.schema.json#/$defs/DirectionId',
+                },
+                'targetGenerationJobId': {
+                    '$ref': 'common.schema.json#/$defs/GenerationJobId',
+                },
+                'workspaceId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceId',
+                },
+            },
+            'required': [
+                'actorId',
+                'attachmentReferences',
+                'commandId',
+                'contextReferences',
+                'conversationId',
+                'editableParts',
+                'expectedActiveState',
+                'expectedGenerationVersion',
+                'protocolVersion',
+                'requestedBoundary',
+                'targetGenerationJobId',
+                'workspaceId',
+            ],
+            'type': 'object',
+        },
         'common.schema.json#/$defs/ActorId': {
             '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
         },
@@ -1025,6 +1186,30 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
         'common.schema.json#/$defs/CommandId': {
             '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
         },
+        'common.schema.json#/$defs/ContentHash': {
+            'pattern': '^[a-f0-9]{64}$(?![\\s\\S])',
+            'type': 'string',
+        },
+        'common.schema.json#/$defs/ContextReference': {
+            'additionalProperties': False,
+            'properties': {
+                'referenceId': {
+                    '$ref': 'common.schema.json#/$defs/ContextReferenceId',
+                },
+                'sourceRevision': {
+                    'maxLength': 128,
+                    'minLength': 1,
+                    'type': 'string',
+                },
+            },
+            'required': [
+                'referenceId',
+            ],
+            'type': 'object',
+        },
+        'common.schema.json#/$defs/ContextReferenceId': {
+            '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
+        },
         'common.schema.json#/$defs/ConversationId': {
             '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
         },
@@ -1046,6 +1231,70 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
         },
         'common.schema.json#/$defs/DeviceId': {
             '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
+        },
+        'common.schema.json#/$defs/DirectionId': {
+            '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
+        },
+        'common.schema.json#/$defs/DirectionJobSequence': {
+            'maximum': 9007199254740991,
+            'minimum': 1,
+            'type': 'integer',
+        },
+        'common.schema.json#/$defs/DirectionState': {
+            'enum': [
+                'pending',
+                'applied',
+                'superseded',
+                'rejected',
+                'cancelled',
+            ],
+        },
+        'common.schema.json#/$defs/DirectionTerminalReasonCode': {
+            'enum': [
+                'superseded',
+                'stale_generation_version',
+                'target_attempt_ended',
+                'boundary_unavailable',
+                'job_not_running',
+                'policy_refused',
+                'generation_stopped',
+                'job_terminal',
+            ],
+        },
+        'common.schema.json#/$defs/DirectionTextPart': {
+            'additionalProperties': False,
+            'properties': {
+                'payload': {
+                    'additionalProperties': False,
+                    'properties': {
+                        'text': {
+                            'maxLength': 4000,
+                            'minLength': 1,
+                            'type': 'string',
+                        },
+                    },
+                    'required': [
+                        'text',
+                    ],
+                    'type': 'object',
+                },
+                'type': {
+                    'const': 'text',
+                },
+            },
+            'required': [
+                'payload',
+                'type',
+            ],
+            'type': 'object',
+        },
+        'common.schema.json#/$defs/DirectionVersion': {
+            'maximum': 9007199254740991,
+            'minimum': 1,
+            'type': 'integer',
+        },
+        'common.schema.json#/$defs/EffectiveDirectionBoundary': {
+            'const': 'next_iteration',
         },
         'common.schema.json#/$defs/ErrorCode': {
             'enum': [
@@ -1114,6 +1363,11 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
         'common.schema.json#/$defs/GenerationJobId': {
             '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
         },
+        'common.schema.json#/$defs/GenerationJobVersion': {
+            'maximum': 9007199254740991,
+            'minimum': 1,
+            'type': 'integer',
+        },
         'common.schema.json#/$defs/GraphRevision': {
             'maximum': 9007199254740991,
             'minimum': 0,
@@ -1143,6 +1397,20 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
             'minLength': 1,
             'type': 'string',
         },
+        'common.schema.json#/$defs/ProtocolVersion': {
+            'allOf': [
+                {
+                    '$ref': 'common.schema.json#/$defs/ProtocolVersionSyntax',
+                },
+                {
+                    'const': '2.0',
+                },
+            ],
+        },
+        'common.schema.json#/$defs/ProtocolVersionSyntax': {
+            'pattern': '^[1-9][0-9]*\\.(0|[1-9][0-9]*)$',
+            'type': 'string',
+        },
         'common.schema.json#/$defs/ProviderAttemptId': {
             '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
         },
@@ -1160,6 +1428,12 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
         },
         'common.schema.json#/$defs/ProviderPartId': {
             '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
+        },
+        'common.schema.json#/$defs/RequestManifestId': {
+            '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
+        },
+        'common.schema.json#/$defs/RequestedDirectionBoundary': {
+            'const': 'earliest_safe',
         },
         'common.schema.json#/$defs/ResourceVersion': {
             'maximum': 9007199254740991,
@@ -1436,6 +1710,12 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
                     '$ref': 'events.schema.json#/$defs/GenerationTextAppendedEvent',
                 },
                 {
+                    '$ref': 'events.schema.json#/$defs/GenerationIterationCompletedEvent',
+                },
+                {
+                    '$ref': 'events.schema.json#/$defs/DirectionStateChangedEvent',
+                },
+                {
                     '$ref': 'events.schema.json#/$defs/ShareCreatedEvent',
                 },
                 {
@@ -1486,6 +1766,74 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
                 'graphRevision',
                 'occurredAt',
                 'schemaVersion',
+                'workspaceId',
+            ],
+            'type': 'object',
+        },
+        'events.schema.json#/$defs/DirectionStateChangedEvent': {
+            'additionalProperties': False,
+            'properties': {
+                'actorId': {
+                    '$ref': 'common.schema.json#/$defs/ActorId',
+                },
+                'branchId': {
+                    '$ref': 'common.schema.json#/$defs/BranchId',
+                },
+                'conversationId': {
+                    '$ref': 'common.schema.json#/$defs/ConversationId',
+                },
+                'cursor': {
+                    '$ref': 'common.schema.json#/$defs/OpaqueCursor',
+                },
+                'directionId': {
+                    '$ref': 'common.schema.json#/$defs/DirectionId',
+                },
+                'directionVersion': {
+                    '$ref': 'common.schema.json#/$defs/DirectionVersion',
+                },
+                'eventId': {
+                    '$ref': 'common.schema.json#/$defs/TransportEventId',
+                },
+                'eventType': {
+                    'const': 'chat.direction.state_changed',
+                },
+                'generationEventSequence': {
+                    '$ref': 'common.schema.json#/$defs/GenerationEventSequence',
+                },
+                'generationJobId': {
+                    '$ref': 'common.schema.json#/$defs/GenerationJobId',
+                },
+                'jobSequence': {
+                    '$ref': 'common.schema.json#/$defs/DirectionJobSequence',
+                },
+                'occurredAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'schemaVersion': {
+                    '$ref': 'common.schema.json#/$defs/SchemaVersion',
+                },
+                'state': {
+                    '$ref': 'common.schema.json#/$defs/DirectionState',
+                },
+                'workspaceId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceId',
+                },
+            },
+            'required': [
+                'actorId',
+                'branchId',
+                'conversationId',
+                'cursor',
+                'directionId',
+                'directionVersion',
+                'eventId',
+                'eventType',
+                'generationEventSequence',
+                'generationJobId',
+                'jobSequence',
+                'occurredAt',
+                'schemaVersion',
+                'state',
                 'workspaceId',
             ],
             'type': 'object',
@@ -1595,6 +1943,72 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
                 'eventType',
                 'generationEventSequence',
                 'generationJobId',
+                'occurredAt',
+                'schemaVersion',
+                'triggerMessageId',
+                'workspaceId',
+            ],
+            'type': 'object',
+        },
+        'events.schema.json#/$defs/GenerationIterationCompletedEvent': {
+            'additionalProperties': False,
+            'properties': {
+                'branchId': {
+                    '$ref': 'common.schema.json#/$defs/BranchId',
+                },
+                'conversationId': {
+                    '$ref': 'common.schema.json#/$defs/ConversationId',
+                },
+                'cursor': {
+                    '$ref': 'common.schema.json#/$defs/OpaqueCursor',
+                },
+                'eventId': {
+                    '$ref': 'common.schema.json#/$defs/TransportEventId',
+                },
+                'eventType': {
+                    'const': 'chat.generation.iteration_completed',
+                },
+                'generationAttemptId': {
+                    '$ref': 'common.schema.json#/$defs/GenerationAttemptId',
+                },
+                'generationEventSequence': {
+                    '$ref': 'common.schema.json#/$defs/GenerationEventSequence',
+                },
+                'generationJobId': {
+                    '$ref': 'common.schema.json#/$defs/GenerationJobId',
+                },
+                'generationJobVersion': {
+                    '$ref': 'common.schema.json#/$defs/GenerationJobVersion',
+                },
+                'iteration': {
+                    'maximum': 1000000,
+                    'minimum': 0,
+                    'type': 'integer',
+                },
+                'occurredAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'schemaVersion': {
+                    '$ref': 'common.schema.json#/$defs/SchemaVersion',
+                },
+                'triggerMessageId': {
+                    '$ref': 'common.schema.json#/$defs/MessageId',
+                },
+                'workspaceId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceId',
+                },
+            },
+            'required': [
+                'branchId',
+                'conversationId',
+                'cursor',
+                'eventId',
+                'eventType',
+                'generationAttemptId',
+                'generationEventSequence',
+                'generationJobId',
+                'generationJobVersion',
+                'iteration',
                 'occurredAt',
                 'schemaVersion',
                 'triggerMessageId',
@@ -1914,6 +2328,377 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
                 'schemaVersion',
                 'shareId',
                 'workspaceId',
+            ],
+            'type': 'object',
+        },
+        'generation.schema.json#/$defs/Direction': {
+            'additionalProperties': False,
+            'allOf': [
+                {
+                    'if': {
+                        'properties': {
+                            'state': {
+                                'const': 'pending',
+                            },
+                        },
+                        'required': [
+                            'state',
+                        ],
+                    },
+                    'then': {
+                        'not': {
+                            'anyOf': [
+                                {
+                                    'required': [
+                                        'application',
+                                    ],
+                                },
+                                {
+                                    'required': [
+                                        'effectiveBoundary',
+                                    ],
+                                },
+                                {
+                                    'required': [
+                                        'supersession',
+                                    ],
+                                },
+                                {
+                                    'required': [
+                                        'terminalReason',
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                },
+                {
+                    'if': {
+                        'properties': {
+                            'state': {
+                                'const': 'applied',
+                            },
+                        },
+                        'required': [
+                            'state',
+                        ],
+                    },
+                    'then': {
+                        'not': {
+                            'anyOf': [
+                                {
+                                    'required': [
+                                        'supersession',
+                                    ],
+                                },
+                                {
+                                    'required': [
+                                        'terminalReason',
+                                    ],
+                                },
+                            ],
+                        },
+                        'required': [
+                            'application',
+                            'effectiveBoundary',
+                        ],
+                    },
+                },
+                {
+                    'if': {
+                        'properties': {
+                            'state': {
+                                'const': 'superseded',
+                            },
+                        },
+                        'required': [
+                            'state',
+                        ],
+                    },
+                    'then': {
+                        'not': {
+                            'anyOf': [
+                                {
+                                    'required': [
+                                        'application',
+                                    ],
+                                },
+                                {
+                                    'required': [
+                                        'effectiveBoundary',
+                                    ],
+                                },
+                            ],
+                        },
+                        'properties': {
+                            'terminalReason': {
+                                'properties': {
+                                    'code': {
+                                        'const': 'superseded',
+                                    },
+                                },
+                            },
+                        },
+                        'required': [
+                            'supersession',
+                            'terminalReason',
+                        ],
+                    },
+                },
+                {
+                    'if': {
+                        'properties': {
+                            'state': {
+                                'const': 'rejected',
+                            },
+                        },
+                        'required': [
+                            'state',
+                        ],
+                    },
+                    'then': {
+                        'not': {
+                            'anyOf': [
+                                {
+                                    'required': [
+                                        'application',
+                                    ],
+                                },
+                                {
+                                    'required': [
+                                        'effectiveBoundary',
+                                    ],
+                                },
+                                {
+                                    'required': [
+                                        'supersession',
+                                    ],
+                                },
+                            ],
+                        },
+                        'properties': {
+                            'terminalReason': {
+                                'properties': {
+                                    'code': {
+                                        'enum': [
+                                            'stale_generation_version',
+                                            'target_attempt_ended',
+                                            'boundary_unavailable',
+                                            'job_not_running',
+                                            'policy_refused',
+                                        ],
+                                    },
+                                },
+                            },
+                        },
+                        'required': [
+                            'terminalReason',
+                        ],
+                    },
+                },
+                {
+                    'if': {
+                        'properties': {
+                            'state': {
+                                'const': 'cancelled',
+                            },
+                        },
+                        'required': [
+                            'state',
+                        ],
+                    },
+                    'then': {
+                        'not': {
+                            'anyOf': [
+                                {
+                                    'required': [
+                                        'application',
+                                    ],
+                                },
+                                {
+                                    'required': [
+                                        'effectiveBoundary',
+                                    ],
+                                },
+                                {
+                                    'required': [
+                                        'supersession',
+                                    ],
+                                },
+                            ],
+                        },
+                        'properties': {
+                            'terminalReason': {
+                                'properties': {
+                                    'code': {
+                                        'enum': [
+                                            'generation_stopped',
+                                            'job_terminal',
+                                        ],
+                                    },
+                                },
+                            },
+                        },
+                        'required': [
+                            'terminalReason',
+                        ],
+                    },
+                },
+            ],
+            'properties': {
+                'actorId': {
+                    '$ref': 'common.schema.json#/$defs/ActorId',
+                },
+                'application': {
+                    '$ref': 'generation.schema.json#/$defs/DirectionApplication',
+                },
+                'branchId': {
+                    '$ref': 'common.schema.json#/$defs/BranchId',
+                },
+                'contentHash': {
+                    '$ref': 'common.schema.json#/$defs/ContentHash',
+                },
+                'conversationId': {
+                    '$ref': 'common.schema.json#/$defs/ConversationId',
+                },
+                'createdAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'directionId': {
+                    '$ref': 'common.schema.json#/$defs/DirectionId',
+                },
+                'editableParts': {
+                    'items': {
+                        '$ref': 'common.schema.json#/$defs/DirectionTextPart',
+                    },
+                    'maxItems': 16,
+                    'minItems': 1,
+                    'type': 'array',
+                },
+                'effectiveBoundary': {
+                    '$ref': 'common.schema.json#/$defs/EffectiveDirectionBoundary',
+                },
+                'jobId': {
+                    '$ref': 'common.schema.json#/$defs/GenerationJobId',
+                },
+                'jobSequence': {
+                    '$ref': 'common.schema.json#/$defs/DirectionJobSequence',
+                },
+                'requestedBoundary': {
+                    '$ref': 'common.schema.json#/$defs/RequestedDirectionBoundary',
+                },
+                'schemaVersion': {
+                    '$ref': 'common.schema.json#/$defs/SchemaVersion',
+                },
+                'state': {
+                    '$ref': 'common.schema.json#/$defs/DirectionState',
+                },
+                'supersedesDirectionId': {
+                    '$ref': 'common.schema.json#/$defs/DirectionId',
+                },
+                'supersession': {
+                    '$ref': 'generation.schema.json#/$defs/DirectionSupersession',
+                },
+                'targetAttemptId': {
+                    '$ref': 'common.schema.json#/$defs/GenerationAttemptId',
+                },
+                'terminalReason': {
+                    '$ref': 'generation.schema.json#/$defs/DirectionTerminalReason',
+                },
+                'updatedAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'version': {
+                    '$ref': 'common.schema.json#/$defs/DirectionVersion',
+                },
+                'workspaceId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceId',
+                },
+            },
+            'required': [
+                'actorId',
+                'branchId',
+                'contentHash',
+                'conversationId',
+                'createdAt',
+                'directionId',
+                'editableParts',
+                'jobId',
+                'jobSequence',
+                'requestedBoundary',
+                'schemaVersion',
+                'state',
+                'targetAttemptId',
+                'updatedAt',
+                'version',
+                'workspaceId',
+            ],
+            'type': 'object',
+        },
+        'generation.schema.json#/$defs/DirectionApplication': {
+            'additionalProperties': False,
+            'properties': {
+                'appliedAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'attemptId': {
+                    '$ref': 'common.schema.json#/$defs/GenerationAttemptId',
+                },
+                'iteration': {
+                    'maximum': 1000000,
+                    'minimum': 0,
+                    'type': 'integer',
+                },
+                'providerInvocationId': {
+                    '$ref': 'common.schema.json#/$defs/ProviderInvocationId',
+                },
+                'requestManifestId': {
+                    '$ref': 'common.schema.json#/$defs/RequestManifestId',
+                },
+            },
+            'required': [
+                'appliedAt',
+                'attemptId',
+                'iteration',
+                'providerInvocationId',
+                'requestManifestId',
+            ],
+            'type': 'object',
+        },
+        'generation.schema.json#/$defs/DirectionSupersession': {
+            'additionalProperties': False,
+            'properties': {
+                'supersededAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'supersededByDirectionId': {
+                    '$ref': 'common.schema.json#/$defs/DirectionId',
+                },
+            },
+            'required': [
+                'supersededAt',
+                'supersededByDirectionId',
+            ],
+            'type': 'object',
+        },
+        'generation.schema.json#/$defs/DirectionTerminalReason': {
+            'additionalProperties': False,
+            'properties': {
+                'code': {
+                    '$ref': 'common.schema.json#/$defs/DirectionTerminalReasonCode',
+                },
+                'occurredAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'safeMessage': {
+                    'maxLength': 500,
+                    'minLength': 1,
+                    'type': 'string',
+                },
+            },
+            'required': [
+                'code',
+                'occurredAt',
             ],
             'type': 'object',
         },

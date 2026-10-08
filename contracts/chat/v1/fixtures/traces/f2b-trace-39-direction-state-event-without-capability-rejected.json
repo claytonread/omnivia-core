@@ -1,0 +1,63 @@
+{
+  "messages": [
+    {
+      "messageType": "bridge.context-bound",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-39",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "maxMessageBytes": 32768,
+      "maxBatchEvents": 20,
+      "maxSnapshotItems": 20,
+      "boundAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-39",
+      "requestedAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-39",
+      "snapshotId": "bsnap-t39",
+      "snapshotGraphRevision": 1,
+      "pageIndex": 0,
+      "items": [],
+      "hasMore": false,
+      "snapshotBoundaryCursor": "cursor-0"
+    },
+    {
+      "messageType": "bridge.event-batch",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-39",
+      "events": [
+        {
+          "eventId": "evt-dir-0001",
+          "eventType": "chat.direction.state_changed",
+          "schemaVersion": 1,
+          "workspaceId": "ws-acme",
+          "conversationId": "conv-0001",
+          "branchId": "branch-0001-original",
+          "actorId": "actor-alice",
+          "generationJobId": "job-0002",
+          "directionId": "dir-0001",
+          "jobSequence": 1,
+          "state": "applied",
+          "directionVersion": 2,
+          "generationEventSequence": 7,
+          "occurredAt": "2026-08-20T10:00:20Z",
+          "cursor": "cursor-opaque-0010"
+        }
+      ],
+      "fromCursor": "cursor-0",
+      "nextCursor": "cursor-1"
+    }
+  ]
+}

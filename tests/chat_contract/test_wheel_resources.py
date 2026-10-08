@@ -6,8 +6,8 @@ locally built artifacts:
 
 1. build the ``omnivia-core`` wheel from this checkout with build isolation
    disabled (no index, no environment provisioning);
-2. read the wheel's own file list and require *exactly* the 195 approved Chat
-   Runtime Contract resources (13 schemas plus 182 fixture-tree files) under
+2. read the wheel's own file list and require *exactly* the 277 approved Chat
+   Runtime Contract resources (13 schemas plus 270 fixture-tree files) under
    ``omnivia_core/chat_contract/v1/resources/`` -- none missing, none extra;
 3. install that wheel alone into a throwaway virtual environment with
    ``--no-index --no-deps``;
@@ -113,9 +113,9 @@ report["manifest_counts"] = manifest["counts"]
 # Bounded codec exercise, out of the installed artifact.
 envelope = codec.CommandResultEnvelope(command_id="cmd-1", status="accepted")
 report["canonical_json"] = codec.to_canonical_json(envelope.to_wire())
-report["negotiated_version"] = codec.negotiate_protocol_version("1.0")
+report["negotiated_version"] = codec.negotiate_protocol_version("2.0")
 try:
-    codec.negotiate_protocol_version("2.0")
+    codec.negotiate_protocol_version("3.0")
 except codec.UnsupportedProtocolVersionError:
     report["unsupported_major_refused"] = True
 
@@ -201,7 +201,7 @@ def installed_report() -> dict[str, object]:
 def test_the_installed_package_reports_the_governed_contract_identity(
     installed_report: dict[str, object]
 ) -> None:
-    assert installed_report["protocol_version"] == "1.0"
+    assert installed_report["protocol_version"] == "2.0"
     assert installed_report["contract_version"] == "1.0.0-rc.1"
     assert installed_report["approval_id"] == "GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001"
     assert installed_report["command_count"] == 30
@@ -219,7 +219,7 @@ def test_every_packaged_fixture_survives_packaging_byte_for_byte(
 ) -> None:
     digests = installed_report["digests"]
     assert isinstance(digests, dict)
-    assert installed_report["fixture_count"] == 181
+    assert installed_report["fixture_count"] == 269
     for relative, digest in digests.items():
         source = CANONICAL_ROOT / "fixtures" / relative
         assert digest == hashlib.sha256(source.read_bytes()).hexdigest(), relative
@@ -228,12 +228,12 @@ def test_every_packaged_fixture_survives_packaging_byte_for_byte(
 def test_the_packaged_manifest_declares_the_governed_counts(
     installed_report: dict[str, object]
 ) -> None:
-    assert installed_report["manifest_counts"] == {"total": 181, "valid": 83, "invalid": 98}
+    assert installed_report["manifest_counts"] == {"total": 269, "valid": 105, "invalid": 164}
 
 
 def test_the_installed_bounded_codec_still_works(installed_report: dict[str, object]) -> None:
     assert installed_report["canonical_json"] == '{"commandId":"cmd-1","status":"accepted"}'
-    assert installed_report["negotiated_version"] == "1.0"
+    assert installed_report["negotiated_version"] == "2.0"
     assert installed_report["unsupported_major_refused"] is True
     assert installed_report["event_round_trip_ok"] is True
 

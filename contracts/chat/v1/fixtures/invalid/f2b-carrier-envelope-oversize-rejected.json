@@ -4,13 +4,13 @@
   "kind": "module/chat.command",
   "payload": {
     "messageType": "bridge.command",
-    "bridgeProtocolVersion": "1.1",
+    "bridgeProtocolVersion": "2.0",
     "schemaVersion": 1,
     "contextId": "bctx-carrier-05",
     "commandId": "cmd-carrier-05",
     "commandKind": "SubmitMessage",
     "payload": {
-      "protocolVersion": "1.0",
+      "protocolVersion": "2.0",
       "commandId": "cmd-carrier-05",
       "workspaceId": "ws-acme",
       "conversationId": "conv-0001",

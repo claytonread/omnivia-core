@@ -1,0 +1,134 @@
+{
+  "messages": [
+    {
+      "messageType": "bridge.context-bound",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-34",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "maxMessageBytes": 32768,
+      "maxBatchEvents": 20,
+      "maxSnapshotItems": 20,
+      "boundAt": "2026-08-20T10:00:00Z",
+      "supportsDirection": true
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-34",
+      "requestedAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-34",
+      "snapshotId": "bsnap-t34",
+      "snapshotGraphRevision": 1,
+      "pageIndex": 0,
+      "items": [
+        {
+          "itemKind": "direction",
+          "payload": {
+            "workspaceId": "ws-acme",
+            "conversationId": "conv-0001",
+            "branchId": "branch-0001-original",
+            "actorId": "actor-alice",
+            "directionId": "dir-0001",
+            "jobId": "job-0002",
+            "targetAttemptId": "attempt-0002-1",
+            "jobSequence": 1,
+            "state": "pending",
+            "version": 1,
+            "editableParts": [
+              {
+                "type": "text",
+                "payload": {
+                  "text": "Please focus the answer on the cost section."
+                }
+              }
+            ],
+            "contentHash": "c7e53b28a18b384fa46e77dc03b2ea8b0d859c20088859e54d7822fca17f3c50",
+            "requestedBoundary": "earliest_safe",
+            "schemaVersion": 1,
+            "createdAt": "2026-08-20T10:00:10Z",
+            "updatedAt": "2026-08-20T10:00:10Z"
+          }
+        }
+      ],
+      "hasMore": false,
+      "snapshotBoundaryCursor": "cursor-0"
+    },
+    {
+      "messageType": "bridge.command",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-34",
+      "commandId": "cmd-steer-0001",
+      "commandKind": "SubmitSteeringInput",
+      "payload": {
+        "protocolVersion": "2.0",
+        "commandId": "cmd-steer-0001",
+        "workspaceId": "ws-acme",
+        "conversationId": "conv-0001",
+        "actorId": "actor-alice",
+        "targetGenerationJobId": "job-0002",
+        "expectedGenerationVersion": 3,
+        "expectedActiveState": "running",
+        "requestedBoundary": "earliest_safe",
+        "editableParts": [
+          {
+            "type": "text",
+            "payload": {
+              "text": "Please focus the answer on the cost section."
+            }
+          }
+        ],
+        "attachmentReferences": [],
+        "contextReferences": []
+      },
+      "sentAt": "2026-08-20T10:01:00Z"
+    },
+    {
+      "messageType": "bridge.command-result",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-34",
+      "commandId": "cmd-steer-0001",
+      "result": {
+        "commandId": "cmd-steer-0001",
+        "status": "accepted"
+      }
+    },
+    {
+      "messageType": "bridge.event-batch",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-34",
+      "events": [
+        {
+          "eventId": "evt-dir-0001",
+          "eventType": "chat.direction.state_changed",
+          "schemaVersion": 1,
+          "workspaceId": "ws-acme",
+          "conversationId": "conv-0001",
+          "branchId": "branch-0001-original",
+          "actorId": "actor-alice",
+          "generationJobId": "job-0002",
+          "directionId": "dir-0001",
+          "jobSequence": 1,
+          "state": "applied",
+          "directionVersion": 2,
+          "generationEventSequence": 7,
+          "occurredAt": "2026-08-20T10:00:20Z",
+          "cursor": "cursor-opaque-0010"
+        }
+      ],
+      "fromCursor": "cursor-0",
+      "nextCursor": "cursor-1"
+    }
+  ]
+}

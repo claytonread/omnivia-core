@@ -1,0 +1,78 @@
+{
+  "messages": [
+    {
+      "messageType": "bridge.context-bound",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-37",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "maxMessageBytes": 32768,
+      "maxBatchEvents": 20,
+      "maxSnapshotItems": 20,
+      "boundAt": "2026-08-20T10:00:00Z",
+      "supportsDirection": false
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-37",
+      "requestedAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-37",
+      "snapshotId": "bsnap-t37",
+      "snapshotGraphRevision": 1,
+      "pageIndex": 0,
+      "items": [],
+      "hasMore": false,
+      "snapshotBoundaryCursor": "cursor-0"
+    },
+    {
+      "messageType": "bridge.command",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-37",
+      "commandId": "cmd-steer-0001",
+      "commandKind": "SubmitSteeringInput",
+      "payload": {
+        "protocolVersion": "2.0",
+        "commandId": "cmd-steer-0001",
+        "workspaceId": "ws-acme",
+        "conversationId": "conv-0001",
+        "actorId": "actor-alice",
+        "targetGenerationJobId": "job-0002",
+        "expectedGenerationVersion": 3,
+        "expectedActiveState": "running",
+        "requestedBoundary": "earliest_safe",
+        "editableParts": [
+          {
+            "type": "text",
+            "payload": {
+              "text": "Please focus the answer on the cost section."
+            }
+          }
+        ],
+        "attachmentReferences": [],
+        "contextReferences": []
+      },
+      "sentAt": "2026-08-20T10:01:00Z"
+    },
+    {
+      "messageType": "bridge.command-result",
+      "bridgeProtocolVersion": "2.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-37",
+      "commandId": "cmd-steer-0001",
+      "result": {
+        "commandId": "cmd-steer-0001",
+        "status": "accepted"
+      }
+    }
+  ]
+}

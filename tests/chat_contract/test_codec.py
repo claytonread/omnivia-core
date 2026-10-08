@@ -115,17 +115,26 @@ def test_encoding_a_value_twice_produces_identical_bytes() -> None:
 
 
 def test_negotiate_accepts_the_exact_supported_version() -> None:
-    assert codec.negotiate_protocol_version("1.0") == PROTOCOL_VERSION
+    assert PROTOCOL_VERSION == "2.0"
+    assert codec.negotiate_protocol_version("2.0") == PROTOCOL_VERSION
 
 
 def test_negotiate_rejects_an_unsupported_major() -> None:
     with pytest.raises(codec.UnsupportedProtocolVersionError):
-        codec.negotiate_protocol_version("2.0")
+        codec.negotiate_protocol_version("3.0")
+
+
+def test_negotiate_refuses_the_legacy_1_0_whole() -> None:
+    # GenerationJob.version is required from 2.0: a 1.0 peer's documents do not
+    # carry it, so 1.0 is a different, refused version and never downgraded to.
+    for legacy in ("1.0", "1.1"):
+        with pytest.raises(codec.UnsupportedProtocolVersionError):
+            codec.negotiate_protocol_version(legacy)
 
 
 def test_negotiate_rejects_an_unsupported_minor_of_the_supported_major() -> None:
     with pytest.raises(codec.UnsupportedProtocolVersionError):
-        codec.negotiate_protocol_version("1.1")
+        codec.negotiate_protocol_version("2.1")
 
 
 def test_negotiate_rejects_a_malformed_version_string() -> None:
@@ -1145,3 +1154,176 @@ def test_an_additive_optional_field_is_still_tolerated_and_still_inert() -> None
     event = codec.ChatEvent.from_wire({**_BASE_EVENT, "futureField": "ignored"})
     assert event.additive_fields["futureField"] == "ignored"
     assert _oracle_errors("ChatEvent", event.to_wire()) == []
+
+
+# --------------------------------------------------------------------------
+# C6 Direction validators: exact D07 wire version, durable-row content bound,
+# successor-Attempt application
+# --------------------------------------------------------------------------
+
+CANONICAL_ROOT = SCHEMAS_DIR.parent
+_STEERING_REQUEST = json.loads(
+    (CANONICAL_ROOT / "fixtures" / "valid" / "submit-steering-input-request.json").read_text(encoding="utf-8")
+)
+_DIRECTION_APPLIED = json.loads(
+    (CANONICAL_ROOT / "fixtures" / "valid" / "direction-applied.json").read_text(encoding="utf-8")
+)
+_DIRECTION_LIMIT = 16384
+
+
+def _text_part(text: str) -> dict[str, Any]:
+    return {"type": "text", "payload": {"text": text}}
+
+
+def _as_request(parts: list[dict[str, Any]]) -> dict[str, Any]:
+    return {**_STEERING_REQUEST, "editableParts": parts}
+
+
+def _as_direction(parts: list[dict[str, Any]]) -> dict[str, Any]:
+    return {**_DIRECTION_APPLIED, "editableParts": parts, "contentHash": codec.direction_content_hash(parts)}
+
+
+def _oracle_ok(ref: str, document: Any) -> bool:
+    validator = Draft202012Validator({"$ref": ref}, registry=_REGISTRY)
+    return not list(validator.iter_errors(document))
+
+
+_CMD_REQUEST_REF = f"{SCHEMA_IDS['commands']}#/$defs/SubmitSteeringInputRequest"
+_DIRECTION_REF = f"{SCHEMA_IDS['generation']}#/$defs/Direction"
+
+
+@pytest.mark.parametrize("version", ["1.0", "1.1", "2.1"])
+def test_a_steering_request_with_a_wrong_wire_version_is_rejected_by_schema_and_codec(version: str) -> None:
+    document = {**_STEERING_REQUEST, "protocolVersion": version}
+    assert not _oracle_ok(_CMD_REQUEST_REF, document)
+    with pytest.raises(codec.ChatContractDecodeError) as raised:
+        codec.validate_submit_steering_input_request(document)
+    assert raised.value.path == "protocolVersion"
+    codec.validate_submit_steering_input_request(_STEERING_REQUEST)
+
+
+def test_the_package_axes_are_independent_of_the_d07_wire_version() -> None:
+    from omnivia_core.chat_contract.v1 import generated
+
+    assert (generated.CONTRACT_VERSION, generated.PROTOCOL_VERSION) == ("1.0.0-rc.1", "2.0")
+    assert (generated.BRIDGE_PROTOCOL_VERSION, generated.PLATFORM_CARRIER_CONTRACT_VERSION) == ("2.0", "1.0")
+    assert generated.SCHEMA_IDS["common"].endswith("/chat/v1/common.schema.json")
+
+
+def test_one_part_at_the_per_part_limit_is_accepted_when_the_aggregate_fits() -> None:
+    parts = [_text_part("x" * 4000)]
+    assert codec.direction_content_byte_size(parts) < _DIRECTION_LIMIT
+    codec.validate_submit_steering_input_request(_as_request(parts))
+    codec.validate_direction(_as_direction(parts))
+
+
+def test_a_part_of_4001_code_points_is_rejected_on_both_surfaces() -> None:
+    parts = [_text_part("x" * 4001)]
+    assert not _oracle_ok(_CMD_REQUEST_REF, _as_request(parts))
+    for validate, document in (
+        (codec.validate_submit_steering_input_request, _as_request(parts)),
+        (codec.validate_direction, _as_direction(parts)),
+    ):
+        with pytest.raises(codec.ChatContractDecodeError) as raised:
+            validate(document)
+        assert raised.value.path.startswith("editableParts[0]"), raised.value.path
+
+
+def test_more_than_sixteen_parts_are_rejected() -> None:
+    parts = [_text_part("x")] * 17
+    with pytest.raises(codec.ChatContractDecodeError):
+        codec.validate_submit_steering_input_request(_as_request(parts))
+    codec.validate_submit_steering_input_request(_as_request(parts[:16]))
+
+
+def test_individually_valid_parts_whose_canonical_object_exceeds_16384_bytes_are_rejected() -> None:
+    parts = [_text_part("x" * 4000) for _ in range(5)]
+    assert _oracle_ok(_CMD_REQUEST_REF, _as_request(parts)), "every part and the count are schema-valid"
+    assert codec.direction_content_byte_size(parts) > _DIRECTION_LIMIT
+    for validate, document in (
+        (codec.validate_submit_steering_input_request, _as_request(parts)),
+        (codec.validate_direction, _as_direction(parts)),
+    ):
+        with pytest.raises(codec.ChatContractDecodeError) as raised:
+            validate(document)
+        assert raised.value.path == "editableParts"
+        assert "UTF-8 bytes" in raised.value.rule
+        assert "xxxx" not in str(raised.value), "the diagnostic never reproduces authored text"
+
+
+def test_the_aggregate_bound_is_exactly_16384_bytes_of_the_canonical_object() -> None:
+    def parts_with_tail(length: int) -> list[dict[str, Any]]:
+        return [*(_text_part("x" * 4000) for _ in range(4)), _text_part("x" * length)]
+
+    tail = next(n for n in range(1, 4001) if codec.direction_content_byte_size(parts_with_tail(n)) == _DIRECTION_LIMIT)
+    at_limit, over = parts_with_tail(tail), parts_with_tail(tail + 1)
+    assert codec.direction_content_byte_size(at_limit) == _DIRECTION_LIMIT
+    assert codec.direction_content_byte_size(over) == _DIRECTION_LIMIT + 1
+    codec.validate_direction_content(at_limit)
+    with pytest.raises(codec.ChatContractDecodeError):
+        codec.validate_direction_content(over)
+    # the counted object is the one containing editableParts, canonically serialised
+    expected = json.dumps({"editableParts": at_limit}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    assert len(expected.encode("utf-8")) == _DIRECTION_LIMIT
+
+
+def test_multibyte_content_is_counted_in_utf8_bytes_not_characters() -> None:
+    # 3 x 4000 two-byte characters: 12000 characters (< 16384) but > 16384 bytes.
+    two_byte = [_text_part("\u00e9" * 4000) for _ in range(3)]
+    assert sum(len(p["payload"]["text"]) for p in two_byte) < _DIRECTION_LIMIT
+    assert codec.direction_content_byte_size(two_byte) > _DIRECTION_LIMIT
+    with pytest.raises(codec.ChatContractDecodeError):
+        codec.validate_direction_content(two_byte)
+    # non-ASCII is written as itself, so one e-acute costs 2 bytes, not a 6-byte escape.
+    assert codec.direction_content_byte_size([_text_part("\u00e9")]) == codec.direction_content_byte_size(
+        [_text_part("e")]
+    ) + 1
+    # 4000 four-byte code points is a legal part (maxLength counts code points) that fits once...
+    emoji = [_text_part("\U0001f600" * 4000)]
+    codec.validate_submit_steering_input_request(_as_request(emoji))
+    # ...but not twice.
+    with pytest.raises(codec.ChatContractDecodeError):
+        codec.validate_submit_steering_input_request(_as_request(emoji * 2))
+
+
+def test_direction_content_hash_is_the_sha256_of_the_canonical_stored_object() -> None:
+    import hashlib
+
+    parts = [_text_part("caf\u00e9 \U0001f600")]
+    stored = json.dumps({"editableParts": parts}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    assert codec.direction_content_hash(parts) == hashlib.sha256(stored.encode("utf-8")).hexdigest()
+    assert "\\u" not in stored, "non-ASCII is hashed as itself, not escaped"
+    codec.validate_direction(_as_direction(parts))
+    assert codec.direction_content_hash(_DIRECTION_APPLIED["editableParts"]) == _DIRECTION_APPLIED["contentHash"]
+
+
+def test_a_direction_whose_content_hash_does_not_match_its_content_is_refused_without_echoing_text() -> None:
+    wrong = {**_DIRECTION_APPLIED, "contentHash": "0" * 64}
+    assert _oracle_ok(_DIRECTION_REF, wrong), "schema-valid: only the codec recomputes the digest"
+    with pytest.raises(codec.ChatContractDecodeError) as raised:
+        codec.validate_direction(wrong)
+    assert raised.value.path == "contentHash" and "does not match" in raised.value.rule
+    rendered = str(raised.value)
+    assert _DIRECTION_APPLIED["editableParts"][0]["payload"]["text"] not in rendered
+    assert _DIRECTION_APPLIED["contentHash"] not in rendered and "0" * 64 not in rendered
+    # a content change with the old hash is refused too
+    with pytest.raises(codec.ChatContractDecodeError):
+        codec.validate_direction({**_DIRECTION_APPLIED, "editableParts": [_text_part("changed")]})
+
+
+def test_an_applied_direction_must_be_applied_by_a_successor_attempt() -> None:
+    codec.validate_direction(_DIRECTION_APPLIED)
+    assert _DIRECTION_APPLIED["application"]["attemptId"] != _DIRECTION_APPLIED["targetAttemptId"]
+    same = {**_DIRECTION_APPLIED, "application": {**_DIRECTION_APPLIED["application"], "attemptId": _DIRECTION_APPLIED["targetAttemptId"]}}
+    assert _oracle_ok(_DIRECTION_REF, same), "schema-valid; only the relational rule rejects it"
+    with pytest.raises(codec.ChatContractDecodeError) as raised:
+        codec.validate_direction(same)
+    assert raised.value.path == "application.attemptId" and "must differ" in raised.value.rule
+
+
+@pytest.mark.parametrize(
+    "name", ["direction-pending", "direction-pending-supersedes", "direction-superseded", "direction-rejected", "direction-cancelled"]
+)
+def test_every_non_applied_governed_direction_passes_the_package_validator(name: str) -> None:
+    document = json.loads((CANONICAL_ROOT / "fixtures" / "valid" / f"{name}.json").read_text(encoding="utf-8"))
+    codec.validate_direction(document)

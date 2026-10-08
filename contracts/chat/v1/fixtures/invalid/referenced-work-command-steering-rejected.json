@@ -1,0 +1,13 @@
+{
+  "protocolVersion": "2.0",
+  "commandId": "cmd-steer-generic",
+  "commandName": "SubmitSteeringInput",
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "actorId": "actor-alice",
+  "targetReference": {
+    "kind": "agent",
+    "referenceId": "agent-0001"
+  },
+  "input": {}
+}

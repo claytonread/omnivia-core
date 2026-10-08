@@ -1,0 +1,25 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "branchId": "branch-0001-original",
+  "actorId": "actor-alice",
+  "directionId": "dir-0001",
+  "jobId": "job-0002",
+  "targetAttemptId": "attempt-0002-1",
+  "jobSequence": 1,
+  "state": "pending",
+  "version": 1,
+  "editableParts": [
+    {
+      "type": "image",
+      "payload": {
+        "url": "https://example.invalid/x.png"
+      }
+    }
+  ],
+  "contentHash": "69c575542e1969abd9db257860ea7b81283bfc4226464026ee6366194b1bdbef",
+  "requestedBoundary": "earliest_safe",
+  "schemaVersion": 1,
+  "createdAt": "2026-08-20T10:00:10Z",
+  "updatedAt": "2026-08-20T10:00:10Z"
+}

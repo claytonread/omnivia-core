@@ -5,11 +5,19 @@
   "description": "Shared scalar, identity and envelope types reused across the Chat Runtime Contract v1 schema bundle. Every record here is closed: additionalProperties is false and unknown fields fail unless a field is explicitly named as an additive-decode extension point. This bundle is a proposal-stage freeze subject; it defines Chat's own wire shapes and reuses trusted actor/workspace admission, transport framing, Runtime, Provider and Evidence semantics by reference (DOC-005, REF-019, REF-034) without redefining their authority.",
   "type": "object",
   "$defs": {
-    "ProtocolVersion": {
-      "title": "ProtocolVersion",
-      "description": "The Chat Runtime Contract wire protocol version, e.g. \"1.0\". Major identifies a compatibility boundary; a strict decoder rejects an unsupported major and never silently downgrades.",
+    "ProtocolVersionSyntax": {
+      "title": "ProtocolVersionSyntax",
+      "description": "The Chat Runtime Contract (D07) wire protocol version *syntax*: a `major.minor` string, e.g. \"2.0\". It states only what a well-formed version string looks like and never which version this bundle supports -- that is `ProtocolVersion`, and every D07 message binds to the supported constant, never to this pattern alone.",
       "type": "string",
       "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)$"
+    },
+    "ProtocolVersion": {
+      "title": "ProtocolVersion",
+      "description": "The exact, frozen D07 wire protocol version this bundle supports: **\"2.0\"**, and nothing else. Every command, result and amendment `protocolVersion` binds to this def, so the schema itself -- not only the codec's `negotiate_protocol_version` -- rejects the legacy \"1.0\", an unsupported minor of the supported major (\"2.1\", and the intermediate \"1.1\") and any other well-formed version. 2.0 is an explicit protocol version change from 1.0 because `GenerationJob.version` became required, which a 1.0 document does not carry; a legacy 1.0 document stays correctly labelled 1.0 and is never read as a C6 one. A syntactically well-formed but unsupported version fails the `const`, not merely the pattern. Widening this constant is itself a D07 protocol version change, never a silent admission. Independent of `bridge.schema.json#/$defs/SupportedBridgeProtocolVersion` (F2b), of `PlatformCarrierContractVersion` (the outer carrier `v`) and of the `chat_contract.v1` package namespace / `CONTRACT_VERSION`.",
+      "allOf": [
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersionSyntax" },
+        { "const": "2.0" }
+      ]
     },
     "SchemaVersion": {
       "title": "SchemaVersion",
@@ -41,6 +49,11 @@
     "ContextReferenceId": { "title": "ContextReferenceId", "$ref": "#/$defs/WorkspaceScopedId" },
     "EvidenceReferenceId": { "title": "EvidenceReferenceId", "$ref": "#/$defs/WorkspaceScopedId" },
     "QueuedSubmissionId": { "title": "QueuedSubmissionId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "DirectionId": {
+      "title": "DirectionId",
+      "description": "The server-issued identity of one Direction: one actor-authored, text-only steering input aimed at one running Generation Job (C6). Never client-minted authority.",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
     "ProviderInvocationId": {
       "title": "ProviderInvocationId",
       "description": "One attributable, duplicate-safe logical Provider Invocation identity (REF-019 §5.7), reused by reference. Stable across the invocation's transport Attempts.",
@@ -199,6 +212,8 @@
         "chat.generation.failed",
         "chat.generation.cancelled",
         "chat.generation.text_appended",
+        "chat.generation.iteration_completed",
+        "chat.direction.state_changed",
         "chat.share.created",
         "chat.export.created"
       ]
@@ -293,6 +308,79 @@
       "title": "GenerationAttemptState",
       "description": "The closed v1 Generation Attempt state vocabulary, one bounded execution attempt for one Generation Job (DOC-005 §4.12 Attempt, reused by reference).",
       "enum": ["running", "succeeded", "failed", "cancelled"]
+    },
+    "GenerationJobVersion": {
+      "title": "GenerationJobVersion",
+      "description": "The optimistic-concurrency and control token of one Generation Job (C6): a positive integer the owning authority advances on every durable change to the Job, so a control command such as `SubmitSteeringInput.expectedGenerationVersion` states the Job version its caller observed and a stale view is refused rather than applied to a Job that has moved on. Never a graph revision and never a view-state version. The initial authoritative token is `1`, matching the durable Generation Job status projection that initializes `version` at `1` and enforces `version >= 1`; zero is never a valid token.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "DirectionVersion": {
+      "title": "DirectionVersion",
+      "description": "The optimistic-concurrency token of one Direction (C6): a positive integer that advances on every durable change to that Direction, including each state transition.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "DirectionJobSequence": {
+      "title": "DirectionJobSequence",
+      "description": "A monotonic per-Generation-Job ordering value assigned to each Direction aimed at that Job (C6), so concurrent Directions order deterministically independent of client clocks.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "DirectionState": {
+      "title": "DirectionState",
+      "description": "The closed v1 Direction state vocabulary (C6). `pending` is the one non-terminal state: the Direction is durably accepted and not yet taken into the Generation. `applied` is terminal and means the Generation took the Direction in at an iteration boundary. `superseded`, `rejected` and `cancelled` are terminal and mean it was never applied; each carries a structured terminal reason.",
+      "enum": ["pending", "applied", "superseded", "rejected", "cancelled"]
+    },
+    "RequestedDirectionBoundary": {
+      "title": "RequestedDirectionBoundary",
+      "description": "The boundary a caller may request for a Direction in C6: exactly `earliest_safe`, the earliest point at which the running Generation can take a Direction in without corrupting an in-flight step. No other value is requestable; the boundary the Generation actually used is reported separately as `EffectiveDirectionBoundary`.",
+      "const": "earliest_safe"
+    },
+    "EffectiveDirectionBoundary": {
+      "title": "EffectiveDirectionBoundary",
+      "description": "The boundary at which an applied Direction actually took effect (C6): exactly `next_iteration`. A caller requests `earliest_safe`, but a Direction is only ever applied by being bound into the request manifest of a provider invocation of a later iteration, so the applied boundary is always the next iteration and never `earliest_safe`. `next_iteration` is unambiguous: the iteration that takes the Direction in belongs to a successor continuation Attempt (`DirectionApplication.attemptId`), never to the running Attempt that accepted it (`Direction.targetAttemptId`). Present only on an applied Direction.",
+      "const": "next_iteration"
+    },
+    "RequestManifestId": {
+      "title": "RequestManifestId",
+      "description": "The server-issued identity of one committed provider request manifest: the durable record of exactly what a provider invocation was sent (C6). Direction application is evidenced only by a committed request manifest that binds the Direction. Never client-minted authority.",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "DirectionTextPart": {
+      "title": "DirectionTextPart",
+      "description": "One authored text part of a Direction (C6), in the repository's canonical authored-text representation (`type` `text`, `payload.text`). Closed and text-only: it admits no other part type (no `image`, no `file`, no URL or reference) and no payload key beyond `text`, so a Direction cannot carry anything but bounded authored text. The server assigns part identity and order; `visibility` is not caller-statable and is not carried. Direction-specific bound: `payload.text` is at most 4000 Unicode code points (the aggregate 16384-byte canonical-object limit is stated on `editableParts` and enforced by the package codec).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["payload", "type"],
+      "properties": {
+        "type": { "const": "text" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["text"],
+          "properties": {
+            "text": { "type": "string", "minLength": 1, "maxLength": 4000 }
+          }
+        }
+      }
+    },
+    "DirectionTerminalReasonCode": {
+      "title": "DirectionTerminalReasonCode",
+      "description": "The closed v1 reason vocabulary for a Direction that ended without being applied (C6). `superseded` is the only reason of a `superseded` Direction; `stale_generation_version`, `target_attempt_ended`, `boundary_unavailable`, `job_not_running` and `policy_refused` are the reasons of a `rejected` Direction; `generation_stopped` and `job_terminal` are the reasons of a `cancelled` Direction.",
+      "enum": [
+        "superseded",
+        "stale_generation_version",
+        "target_attempt_ended",
+        "boundary_unavailable",
+        "job_not_running",
+        "policy_refused",
+        "generation_stopped",
+        "job_terminal"
+      ]
     },
     "ReferenceRevalidationOutcome": {
       "title": "ReferenceRevalidationOutcome",

@@ -1,0 +1,35 @@
+{
+  "messageType": "bridge.event-batch",
+  "bridgeProtocolVersion": "2.0",
+  "schemaVersion": 1,
+  "contextId": "bctx-0001",
+  "events": [
+    {
+      "eventId": "evt-dir-0001",
+      "eventType": "chat.direction.state_changed",
+      "schemaVersion": 1,
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "branchId": "branch-0001-original",
+      "actorId": "actor-alice",
+      "generationJobId": "job-0002",
+      "directionId": "dir-0001",
+      "jobSequence": 1,
+      "state": "applied",
+      "directionVersion": 2,
+      "generationEventSequence": 7,
+      "occurredAt": "2026-08-20T10:00:20Z",
+      "cursor": "cursor-opaque-0010",
+      "editableParts": [
+        {
+          "type": "text",
+          "payload": {
+            "text": "Please focus the answer on the cost section."
+          }
+        }
+      ]
+    }
+  ],
+  "fromCursor": "cursor-snap-boundary-0001",
+  "nextCursor": "cursor-b-0002"
+}

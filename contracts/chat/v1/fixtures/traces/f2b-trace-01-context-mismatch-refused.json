@@ -2,7 +2,7 @@
   "messages": [
     {
       "messageType": "bridge.context-bound",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-01",
       "workspaceId": "ws-acme",
@@ -15,20 +15,20 @@
     },
     {
       "messageType": "bridge.snapshot-request",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-01",
       "requestedAt": "2026-08-20T10:00:00Z"
     },
     {
       "messageType": "bridge.command",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-01",
       "commandId": "cmd-t01-a",
       "commandKind": "SubmitMessage",
       "payload": {
-        "protocolVersion": "1.0",
+        "protocolVersion": "2.0",
         "commandId": "cmd-t01-a",
         "workspaceId": "ws-acme",
         "conversationId": "conv-0001",
@@ -51,13 +51,13 @@
     },
     {
       "messageType": "bridge.command",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-WRONG",
       "commandId": "cmd-t01-b",
       "commandKind": "SubmitMessage",
       "payload": {
-        "protocolVersion": "1.0",
+        "protocolVersion": "2.0",
         "commandId": "cmd-t01-b",
         "workspaceId": "ws-acme",
         "conversationId": "conv-0001",
@@ -80,7 +80,7 @@
     },
     {
       "messageType": "bridge.refusal",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "reason": "context_mismatch",
       "refusedCommandId": "cmd-t01-b"

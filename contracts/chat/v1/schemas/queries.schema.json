@@ -253,7 +253,7 @@
       "title": "ConversationSnapshotResult",
       "type": "object",
       "additionalProperties": false,
-      "required": ["conversation", "path", "viewState"],
+      "required": ["conversation", "directions", "generationJobs", "path", "viewState"],
       "properties": {
         "conversation": { "$ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Conversation" },
         "path": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/BranchPathResult" },
@@ -273,6 +273,18 @@
           "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ComposerDraft" },
           "maxItems": 3,
           "description": "The authenticated actor's own active ComposerDrafts for this conversation at the queried device, one per `ComposerDraftMode`, ordered by `mode` then `draftId` (C5A). Optional and compatible: an existing snapshot consumer that has never seen this field stays valid, and its absence here means the actor holds no active draft, not that it was skipped. A draft is composition state, never a committed Message fact (REF-042 \u00a77.8); its `version` is the optimistic token a later SaveDraft's `expectedVersion` states. The mode vocabulary is closed at three, so no snapshot can be partial: the answering authority either states every active draft or fails the whole snapshot closed."
+        },
+        "generationJobs": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob" },
+          "maxItems": 200,
+          "description": "The complete durable Generation Job projection for this snapshot's selected branch (C6), ordered by `createdAt` then `jobId`, each carrying its real `version` control token. REQUIRED (C6, bridge/wire 2.0): always present, an empty array when the branch has no Generation Job, so a snapshot that omits it is invalid rather than silently incomplete; a snapshot without it is a pre-C6 document. The answering authority MUST either state every Job of the selected branch or fail the whole snapshot closed (`size_limit_exceeded`) rather than publish a partial list bounded by this array's own `maxItems`; it is the same set `path.generationJobIds` names."
+        },
+        "directions": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction" },
+          "maxItems": 200,
+          "description": "The authenticated actor's own Directions (C6) on the Generation Jobs `generationJobs` states, in any Direction state, ordered by `jobId`, then `jobSequence`, then `directionId`. Actor-scoped: every entry's `actorId` is the snapshot's own `viewState.actorId` and every entry's `jobId` names a Job listed in `generationJobs`, never another actor's Direction or a Job the snapshot does not state. REQUIRED (C6, bridge/wire 2.0): always present, an empty array when the actor authored no Direction on those Jobs, so an omitted `directions` is invalid rather than read as \"none\". The answering authority MUST either state the actor's complete set or fail the whole snapshot closed (`size_limit_exceeded`) rather than publish a partial one."
         }
       }
     },

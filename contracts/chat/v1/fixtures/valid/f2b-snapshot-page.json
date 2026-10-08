@@ -1,6 +1,6 @@
 {
   "messageType": "bridge.snapshot-page",
-  "bridgeProtocolVersion": "1.1",
+  "bridgeProtocolVersion": "2.0",
   "schemaVersion": 1,
   "contextId": "bctx-0001",
   "snapshotId": "bsnap-0001",

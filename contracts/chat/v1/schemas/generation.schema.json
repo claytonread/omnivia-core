@@ -10,7 +10,7 @@
       "description": "Distinct from the final Message record it may produce (REF-042 §7.9, REF042-RULE-008). A failed Attempt does not require a failed assistant Message; the branch may remain headed by the triggering user Message (REF-042 §17.4).",
       "type": "object",
       "additionalProperties": false,
-      "required": ["branchId", "conversationId", "createdAt", "graphRevisionObserved", "jobId", "schemaVersion", "state", "triggerMessageId", "updatedAt", "workspaceId"],
+      "required": ["branchId", "conversationId", "createdAt", "graphRevisionObserved", "jobId", "schemaVersion", "state", "triggerMessageId", "updatedAt", "version", "workspaceId"],
       "properties": {
         "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
         "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
@@ -27,6 +27,10 @@
         "resultMessageId": {
           "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId",
           "description": "Present only when `state` is `succeeded` (REF-042 §17.3)."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobVersion",
+          "description": "The Job's real control token (C6): the owning authority advances it on every durable change to this Job, and a control command (`SubmitSteeringInput.expectedGenerationVersion`) states the value its caller observed. A reader never infers a version it was not given."
         },
         "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
         "createdAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
@@ -54,6 +58,124 @@
         "startedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
         "endedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
       }
+    },
+    "DirectionApplication": {
+      "title": "DirectionApplication",
+      "description": "The explicit, complete evidence that a Generation took a Direction in (C6): which successor continuation Attempt applied it, through which provider invocation and committed request manifest, at which zero-based iteration, and when. `attemptId` is the successor Attempt whose committed request manifest binds the Direction for its next iteration, and therefore MUST differ from the enclosing `Direction.targetAttemptId` (the running Attempt that accepted it); a Direction is never applied inside the Attempt that accepted it. JSON Schema cannot compare two members of one document, so that inequality is a relational rule enforced by the package codec (`validate_direction`). Present exactly on an `applied` Direction. `applied` is established only after the committed request manifest (`requestManifestId`) for that provider invocation (`providerInvocationId`) binds the Direction's identity, version and content digest: a Direction merely read, queued for an iteration or placed in an uncommitted request is still `pending`, never `applied`. Every member is required; evidence with any member missing is not evidence.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["appliedAt", "attemptId", "iteration", "providerInvocationId", "requestManifestId"],
+      "properties": {
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationAttemptId" },
+        "providerInvocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "requestManifestId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/RequestManifestId" },
+        "iteration": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "appliedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "DirectionSupersession": {
+      "title": "DirectionSupersession",
+      "description": "The explicit evidence that a later Direction replaced this one before it was applied (C6): the replacing Direction's identity and when. Present exactly on a `superseded` Direction. The replacing Direction names this one back through its own `supersedesDirectionId`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["supersededAt", "supersededByDirectionId"],
+      "properties": {
+        "supersededByDirectionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionId" },
+        "supersededAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "DirectionTerminalReason": {
+      "title": "DirectionTerminalReason",
+      "description": "The structured reason a Direction ended without being applied (C6): a closed code, when it happened, and optionally one bounded display-safe sentence that is never parsed and never branched on.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "occurredAt"],
+      "properties": {
+        "code": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionTerminalReasonCode" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "safeMessage": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    },
+    "Direction": {
+      "title": "Direction",
+      "description": "The actor-scoped projection of one Direction (C6): a text-only steering input the actor authored for one running Generation Job. It carries its full scope (workspace, conversation, branch, job, target Attempt, actor), its canonical authored content and that content's digest, its requested boundary and, once applied, the boundary actually used, a per-Job `jobSequence`, and an optimistic `version`. Because it carries authored content it is projected only to the authoring actor; the transport event for a state change (`chat.direction.state_changed`) is identity-only. State semantics are structural: a `pending` Direction carries no application, supersession, effective boundary or terminal reason; an `applied` Direction carries `application` and `effectiveBoundary` and no terminal reason, and its `application.attemptId` is a successor Attempt distinct from `targetAttemptId` (relational, enforced by the package codec: `validate_direction`); every other state is terminal, carries a `terminalReason` whose code belongs to that state, never an application, and a `superseded` Direction alone carries `supersession`. `supersedesDirectionId` is the one supersession seam on the replacing side and may appear in any state.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "branchId", "contentHash", "conversationId", "createdAt", "directionId", "editableParts", "jobId", "jobSequence", "requestedBoundary", "schemaVersion", "state", "targetAttemptId", "updatedAt", "version", "workspaceId"],
+      "properties": {
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "directionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionId" },
+        "jobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "targetAttemptId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationAttemptId",
+          "description": "The running Attempt of the Job that accepted this Direction (its aim when it was submitted). It is NOT where the Direction is applied: `application.attemptId` is a different, successor Attempt."
+        },
+        "jobSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionJobSequence" },
+        "state": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionState" },
+        "version": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionVersion" },
+        "editableParts": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionTextPart" },
+          "minItems": 1,
+          "maxItems": 16,
+          "description": "The canonical authored content: bounded, text-only `DirectionTextPart`s, closed so no non-text part, URL or arbitrary payload key can appear. Bounded to fit the Direction's durable row: at most 16 parts of at most 4000 Unicode code points each, and the canonical JSON object `{\"editableParts\": [...]}` stored as the Direction's content -- keys sorted, compact separators, non-ASCII emitted as itself, as `to_canonical_json` serializes it -- is at most 16384 UTF-8 bytes. JSON Schema cannot compare an aggregate UTF-8 byte length, so that limit is normative contract metadata enforced by the package codec (`validate_direction_content`; `DIRECTION_CONTENT_MAX_UTF8_BYTES`), not by this keyword set."
+        },
+        "contentHash": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ContentHash",
+          "description": "The bare lowercase 64-hex SHA-256 of the UTF-8 bytes of the canonical stored content object `{\"editableParts\": [...]}` -- the exact object serialized by `to_canonical_json` (keys sorted, compact separators, non-ASCII emitted as itself) whose size is capped at 16384 UTF-8 bytes and which storage writes as `content_json` -- so a reader can verify the content it holds without the digest standing in for it. Storage and request-manifest digests (`content_digest`, `contentDigest`) are the same 64 hex written `sha256:<hex>`; the representation differs only by that prefix, the byte basis is identical. The pattern cannot recompute a hash, so a structurally valid mismatch is refused by the package codec (`direction_content_hash`; `validate_direction`)."
+        },
+        "requestedBoundary": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/RequestedDirectionBoundary" },
+        "effectiveBoundary": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/EffectiveDirectionBoundary" },
+        "supersedesDirectionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionId" },
+        "application": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/DirectionApplication" },
+        "supersession": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/DirectionSupersession" },
+        "terminalReason": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/DirectionTerminalReason" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "createdAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "updatedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "pending" } }, "required": ["state"] },
+          "then": {
+            "not": { "anyOf": [{ "required": ["application"] }, { "required": ["effectiveBoundary"] }, { "required": ["supersession"] }, { "required": ["terminalReason"] }] }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "applied" } }, "required": ["state"] },
+          "then": {
+            "required": ["application", "effectiveBoundary"],
+            "not": { "anyOf": [{ "required": ["supersession"] }, { "required": ["terminalReason"] }] }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "superseded" } }, "required": ["state"] },
+          "then": {
+            "required": ["supersession", "terminalReason"],
+            "properties": { "terminalReason": { "properties": { "code": { "const": "superseded" } } } },
+            "not": { "anyOf": [{ "required": ["application"] }, { "required": ["effectiveBoundary"] }] }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "rejected" } }, "required": ["state"] },
+          "then": {
+            "required": ["terminalReason"],
+            "properties": { "terminalReason": { "properties": { "code": { "enum": ["stale_generation_version", "target_attempt_ended", "boundary_unavailable", "job_not_running", "policy_refused"] } } } },
+            "not": { "anyOf": [{ "required": ["application"] }, { "required": ["effectiveBoundary"] }, { "required": ["supersession"] }] }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "cancelled" } }, "required": ["state"] },
+          "then": {
+            "required": ["terminalReason"],
+            "properties": { "terminalReason": { "properties": { "code": { "enum": ["generation_stopped", "job_terminal"] } } } },
+            "not": { "anyOf": [{ "required": ["application"] }, { "required": ["effectiveBoundary"] }, { "required": ["supersession"] }] }
+          }
+        }
+      ]
     },
     "WorkKind": {
       "title": "WorkKind",

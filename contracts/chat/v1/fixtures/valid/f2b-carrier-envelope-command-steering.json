@@ -1,0 +1,35 @@
+{
+  "v": "1.0",
+  "dir": "module->host",
+  "kind": "module/chat.command",
+  "payload": {
+    "messageType": "bridge.command",
+    "bridgeProtocolVersion": "2.0",
+    "schemaVersion": 1,
+    "contextId": "bctx-dir-01",
+    "commandId": "cmd-steer-0001",
+    "commandKind": "SubmitSteeringInput",
+    "payload": {
+      "protocolVersion": "2.0",
+      "commandId": "cmd-steer-0001",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "targetGenerationJobId": "job-0002",
+      "expectedGenerationVersion": 3,
+      "expectedActiveState": "running",
+      "requestedBoundary": "earliest_safe",
+      "editableParts": [
+        {
+          "type": "text",
+          "payload": {
+            "text": "Please focus the answer on the cost section."
+          }
+        }
+      ],
+      "attachmentReferences": [],
+      "contextReferences": []
+    },
+    "sentAt": "2026-08-20T10:01:00Z"
+  }
+}

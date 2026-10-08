@@ -1,0 +1,15 @@
+{
+  "eventId": "evt-iter-0001",
+  "eventType": "chat.generation.iteration_completed",
+  "schemaVersion": 1,
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "branchId": "branch-0001-original",
+  "generationJobId": "job-0002",
+  "generationAttemptId": "attempt-0002-1",
+  "triggerMessageId": "msg-0001-root",
+  "iteration": 3,
+  "generationEventSequence": 6,
+  "occurredAt": "2026-08-20T10:00:20Z",
+  "cursor": "cursor-opaque-0009"
+}

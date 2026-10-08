@@ -41,6 +41,7 @@ from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
+from omnivia_core.chat_contract.v1 import PROTOCOL_VERSION
 from omnivia_core.contracts.v1 import (
     ErrorResponseEnvelope,
     RequestEnvelope,
@@ -281,7 +282,7 @@ def _submit_command(
     **extra: Any,
 ) -> dict[str, Any]:
     command: dict[str, Any] = {
-        "protocolVersion": "1.0",
+        "protocolVersion": PROTOCOL_VERSION,
         "commandId": command_id,
         "workspaceId": workspace_id,
         "conversationId": CONVERSATION_ID,
@@ -314,7 +315,7 @@ def _reorder_command(
     **extra: Any,
 ) -> dict[str, Any]:
     command: dict[str, Any] = {
-        "protocolVersion": "1.0",
+        "protocolVersion": PROTOCOL_VERSION,
         "commandId": command_id,
         "workspaceId": workspace_id,
         "conversationId": conversation_id,
@@ -337,7 +338,7 @@ def _cancel_queue_command(
     **extra: Any,
 ) -> dict[str, Any]:
     command: dict[str, Any] = {
-        "protocolVersion": "1.0",
+        "protocolVersion": PROTOCOL_VERSION,
         "commandId": command_id,
         "workspaceId": workspace_id,
         "conversationId": conversation_id,
@@ -358,7 +359,7 @@ def _stop_generation_command(
     **extra: Any,
 ) -> dict[str, Any]:
     command: dict[str, Any] = {
-        "protocolVersion": "1.0",
+        "protocolVersion": PROTOCOL_VERSION,
         "commandId": command_id,
         "workspaceId": workspace_id,
         "conversationId": conversation_id,
@@ -379,7 +380,7 @@ def _retry_generation_command(
     **extra: Any,
 ) -> dict[str, Any]:
     command: dict[str, Any] = {
-        "protocolVersion": "1.0",
+        "protocolVersion": PROTOCOL_VERSION,
         "commandId": command_id,
         "workspaceId": workspace_id,
         "conversationId": conversation_id,
@@ -398,7 +399,7 @@ def _create_conversation_command(
     **extra: Any,
 ) -> dict[str, Any]:
     command: dict[str, Any] = {
-        "protocolVersion": "1.0",
+        "protocolVersion": PROTOCOL_VERSION,
         "commandId": command_id,
         "workspaceId": workspace_id,
         "actorId": actor_id,
@@ -418,7 +419,7 @@ def _first_send_command(
 ) -> dict[str, Any]:
     """A `SubmitMessageRequest` in the first-send variant: no expected-head group."""
     command: dict[str, Any] = {
-        "protocolVersion": "1.0",
+        "protocolVersion": PROTOCOL_VERSION,
         "commandId": command_id,
         "workspaceId": workspace_id,
         "conversationId": conversation_id,
@@ -1311,7 +1312,7 @@ def test_gb01_unsupported_chat_commands_keep_dependency_refusal(
     before = _counts(seeded)
     response = _dispatcher(seeded).dispatch(
         _request(
-            {"protocolVersion": "1.0", "commandId": "cmd-gb01-rename"},
+            {"protocolVersion": PROTOCOL_VERSION, "commandId": "cmd-gb01-rename"},
             command_name="RenameConversation",
             idempotency_key="idem-gb01-rename",
             request_id="req-gb01-rename",
@@ -1626,6 +1627,25 @@ def test_gb01_workspace_mismatch_refuses_before_any_durable_write(
             ),
             idempotency_key="idem-gb01-other-workspace",
             request_id="req-gb01-other-workspace",
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "invalid_request"
+    assert _counts(seeded) == before
+
+
+def test_gb01_superseded_wire_version_1_0_is_refused_before_any_durable_write(
+    seeded: m1.Owned,
+) -> None:
+    """Intentional negative: the legacy `1.0` literal stays here to prove it is refused."""
+    before = _counts(seeded)
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            {**_submit_command(command_id="cmd-gb01-legacy"), "protocolVersion": "1.0"},
+            idempotency_key="idem-gb01-legacy",
+            request_id="req-gb01-legacy",
         )
     )
 

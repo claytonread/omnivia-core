@@ -1,0 +1,22 @@
+{
+  "messageType": "bridge.command",
+  "bridgeProtocolVersion": "2.0",
+  "schemaVersion": 1,
+  "contextId": "bctx-dir-01",
+  "commandId": "cmd-steer-generic",
+  "commandKind": "SubmitSteeringInput",
+  "payload": {
+    "protocolVersion": "2.0",
+    "commandId": "cmd-steer-generic",
+    "commandName": "SubmitSteeringInput",
+    "workspaceId": "ws-acme",
+    "conversationId": "conv-0001",
+    "actorId": "actor-alice",
+    "targetReference": {
+      "kind": "agent",
+      "referenceId": "agent-0001"
+    },
+    "input": {}
+  },
+  "sentAt": "2026-08-20T10:01:00Z"
+}

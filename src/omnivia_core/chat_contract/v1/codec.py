@@ -5,7 +5,7 @@ This is deliberately not a generated, exhaustive dataclass mirror of every
 ``scripts/generate-chat-contract.py``'s module docstring. It covers exactly:
 
 - deterministic canonical JSON emission;
-- one-version negotiation for wire ``protocolVersion`` major ``1``
+- one-version negotiation for wire ``protocolVersion`` major ``2`` (exactly D07 ``2.0``)
   (:data:`~omnivia_core.chat_contract.v1.generated.PROTOCOL_VERSION`);
 - :class:`CommandResultEnvelope` (``commands.schema.json``), the one stable
   result envelope every Chat command uses;
@@ -13,7 +13,12 @@ This is deliberately not a generated, exhaustive dataclass mirror of every
   the transport event envelope and the cursor/gap/resnapshot shapes a
   snapshot/suffix read needs;
 - :class:`ProviderInvocationRequest` and :class:`ProviderInvocationRecord`
-  (``provider.schema.json``), the F2a request and durable-record projections.
+  (``provider.schema.json``), the F2a request and durable-record projections;
+- the C6 Direction validators (:func:`validate_submit_steering_input_request`,
+  :func:`validate_direction`, :func:`validate_direction_content`): the schema
+  rules plus the two rules JSON Schema cannot state -- the aggregate UTF-8 byte
+  bound of a Direction's durable content and the applied-Direction successor
+  Attempt rule.
 
 Every decoded value is an immutable, frozen dataclass; every nested JSON
 object or array a record carries is frozen too (:func:`_freeze_json`), whether
@@ -69,6 +74,7 @@ MCP, CLI, Platform, Dev, or a validation framework.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -81,6 +87,7 @@ from omnivia_core.chat_contract.v1.generated import (
     CHAT_EVENT_FIELDS,
     CHAT_EVENT_SCHEMA_REFS,
     CHAT_EVENT_TYPES,
+    DIRECTION_CONTENT_MAX_UTF8_BYTES,
     PROTOCOL_VERSION,
     RECORD_VALIDATION_REFS,
 )
@@ -94,9 +101,15 @@ __all__ = [
     "ProviderInvocationRequest",
     "ResnapshotResponse",
     "UnsupportedProtocolVersionError",
+    "direction_content_byte_size",
+    "direction_content_hash",
     "negotiate_protocol_version",
     "to_canonical_json",
     "to_canonical_json_document",
+    "validate_direction",
+    "validate_direction_content",
+    "validate_direction_content_hash",
+    "validate_submit_steering_input_request",
 ]
 
 class ChatContractDecodeError(ValueError):
@@ -199,6 +212,85 @@ def negotiate_protocol_version(offered: str) -> str:
     if offered != PROTOCOL_VERSION:
         raise UnsupportedProtocolVersionError()
     return PROTOCOL_VERSION
+
+
+# --------------------------------------------------------------------------
+# C6 Direction validators (commands.schema.json / generation.schema.json)
+# --------------------------------------------------------------------------
+
+
+def direction_content_byte_size(editable_parts: Sequence[Mapping[str, Any]]) -> int:
+    """Return the UTF-8 byte length of a Direction's canonical stored content.
+
+    The stored object is exactly ``{"editableParts": [...]}``, serialised by
+    :func:`to_canonical_json` (sorted keys, compact separators, non-ASCII written
+    as itself) and counted in UTF-8 bytes -- bytes, not characters, so a multibyte
+    text costs what the durable row actually stores.
+    """
+    return len(to_canonical_json({"editableParts": editable_parts}).encode("utf-8"))
+
+
+def direction_content_hash(editable_parts: Sequence[Mapping[str, Any]]) -> str:
+    """Return the public ``Direction.contentHash``: the bare lowercase 64-hex
+    SHA-256 of the UTF-8 bytes of the canonical stored object
+    ``{"editableParts": [...]}`` (:func:`to_canonical_json`).
+
+    This is the same byte basis as :func:`direction_content_byte_size` and the
+    durable ``content_json``. Storage and request-manifest digests carry the same
+    64 hex as ``sha256:<hex>``; only the prefix differs, never the bytes.
+    """
+    return hashlib.sha256(to_canonical_json({"editableParts": editable_parts}).encode("utf-8")).hexdigest()
+
+
+def validate_direction_content_hash(document: Mapping[str, Any]) -> None:
+    """Refuse a Direction whose ``contentHash`` is not
+    :func:`direction_content_hash` of its ``editableParts``. The diagnostic names
+    the rule, never the authored text or either digest."""
+    if document["contentHash"] != direction_content_hash(document["editableParts"]):
+        raise ChatContractDecodeError("contentHash", "does not match the SHA-256 of the canonical editableParts")
+
+
+def validate_direction_content(editable_parts: Sequence[Mapping[str, Any]]) -> None:
+    """Refuse Direction content whose canonical stored object exceeds
+    :data:`~omnivia_core.chat_contract.v1.generated.DIRECTION_CONTENT_MAX_UTF8_BYTES`.
+
+    This is the aggregate bound JSON Schema cannot express (the per-part and
+    part-count bounds are schema ``maxLength`` / ``maxItems``). The diagnostic
+    names the rule, never the authored text.
+    """
+    if direction_content_byte_size(editable_parts) > DIRECTION_CONTENT_MAX_UTF8_BYTES:
+        raise ChatContractDecodeError(
+            "editableParts",
+            f"canonical content exceeds {DIRECTION_CONTENT_MAX_UTF8_BYTES} UTF-8 bytes",
+        )
+
+
+def validate_submit_steering_input_request(document: Mapping[str, Any]) -> None:
+    """Refuse a ``SubmitSteeringInputRequest`` the contract rejects: the exact
+    schema (including the exact D07 ``protocolVersion``) plus the aggregate
+    :func:`validate_direction_content` bound."""
+    _require_governed_emission(
+        document, RECORD_VALIDATION_REFS["SubmitSteeringInputRequest"], "SubmitSteeringInputRequest"
+    )
+    validate_direction_content(document["editableParts"])
+
+
+def validate_direction(document: Mapping[str, Any]) -> None:
+    """Refuse a ``Direction`` projection the contract rejects: the exact schema,
+    the aggregate :func:`validate_direction_content` bound, that ``contentHash``
+    is the digest of the canonical content (:func:`validate_direction_content_hash`),
+    and -- for an applied
+    Direction -- that ``application.attemptId`` (the successor continuation
+    Attempt whose committed request manifest binds it) differs from
+    ``targetAttemptId`` (the running Attempt that accepted it)."""
+    _require_governed_emission(document, RECORD_VALIDATION_REFS["Direction"], "Direction")
+    validate_direction_content(document["editableParts"])
+    validate_direction_content_hash(document)
+    application = document.get("application")
+    if application is not None and application["attemptId"] == document["targetAttemptId"]:
+        raise ChatContractDecodeError(
+            "application.attemptId", "must differ from targetAttemptId (applied by a successor Attempt)"
+        )
 
 
 # --------------------------------------------------------------------------

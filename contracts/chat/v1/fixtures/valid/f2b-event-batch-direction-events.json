@@ -1,0 +1,43 @@
+{
+  "messageType": "bridge.event-batch",
+  "bridgeProtocolVersion": "2.0",
+  "schemaVersion": 1,
+  "contextId": "bctx-0001",
+  "events": [
+    {
+      "eventId": "evt-iter-0001",
+      "eventType": "chat.generation.iteration_completed",
+      "schemaVersion": 1,
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "branchId": "branch-0001-original",
+      "generationJobId": "job-0002",
+      "generationAttemptId": "attempt-0002-1",
+      "triggerMessageId": "msg-0001-root",
+      "generationJobVersion": 4,
+      "iteration": 3,
+      "generationEventSequence": 6,
+      "occurredAt": "2026-08-20T10:00:20Z",
+      "cursor": "cursor-opaque-0009"
+    },
+    {
+      "eventId": "evt-dir-0001",
+      "eventType": "chat.direction.state_changed",
+      "schemaVersion": 1,
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "branchId": "branch-0001-original",
+      "actorId": "actor-alice",
+      "generationJobId": "job-0002",
+      "directionId": "dir-0001",
+      "jobSequence": 1,
+      "state": "applied",
+      "directionVersion": 2,
+      "generationEventSequence": 7,
+      "occurredAt": "2026-08-20T10:00:20Z",
+      "cursor": "cursor-opaque-0010"
+    }
+  ],
+  "fromCursor": "cursor-snap-boundary-0001",
+  "nextCursor": "cursor-b-0002"
+}

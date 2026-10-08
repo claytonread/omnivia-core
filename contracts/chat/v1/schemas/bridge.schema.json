@@ -13,10 +13,10 @@
     },
     "SupportedBridgeProtocolVersion": {
       "title": "SupportedBridgeProtocolVersion",
-      "description": "The exact, frozen F2b bridge protocol version this bundle supports: **\"1.1\"**, and nothing else. A strict decoder rejects an unsupported major (\"2.0\") and never silently downgrades, and rejects an unsupported minor of the supported major (\"1.0\", \"1.2\") rather than guessing which additive fields it may ignore. 1.1 is an explicit protocol version change from 1.0, not a silent widening of the 1.0 grammar: it adds exactly one `BridgeSnapshotItem.itemKind`, `composer_draft` (the closed `itemKind` vocabulary of 1.0 could not carry a ComposerDraft), and this bundle therefore refuses 1.0 whole. This is what makes \"supported version\" executable rather than a syntax-only claim: a syntactically well-formed but unsupported version fails the `const`, not merely the pattern (freeze §12.0.3; catalogue `f2b.bridgeProtocolVersion`). Widening this constant is itself a bridge-version change under `BridgeProtocolVersion`, never a silent admission. Deliberately NOT the same axis as `PlatformCarrierContractVersion` (the outer Platform Module Host Contract envelope's own `v`): the two are versioned, and validated, independently.",
+      "description": "The exact, frozen F2b bridge protocol version this bundle supports: **\"2.0\"**, and nothing else. A strict decoder rejects an unsupported major (\"1.0\", \"1.1\", \"3.0\") and never silently downgrades, and rejects an unsupported minor of the supported major (\"2.1\") rather than guessing which additive fields it may ignore. 2.0 is an explicit protocol version change from 1.1 (itself an explicit change from 1.0), not a silent widening of the 1.1 grammar: it adds the Direction surface (C6) -- one `BridgeSnapshotItem.itemKind`, `direction`; one `HostedCommandKind`, `SubmitSteeringInput`, bound to its own dedicated payload; one `BridgeRefusalReason`, `capability_unavailable`; and the optional `ContextBoundMessage.supportsDirection` capability flag -- and moves the major because the closed `itemKind`, command and refusal vocabularies of 1.x could not carry it. This bundle therefore refuses 1.0 and 1.1 whole. This is what makes \"supported version\" executable rather than a syntax-only claim: a syntactically well-formed but unsupported version fails the `const`, not merely the pattern (freeze §12.0.3; catalogue `f2b.bridgeProtocolVersion`). Widening this constant is itself a bridge-version change under `BridgeProtocolVersion`, never a silent admission. Deliberately NOT the same axis as `PlatformCarrierContractVersion` (the outer Platform Module Host Contract envelope's own `v`): the two are versioned, and validated, independently.",
       "allOf": [
         { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeProtocolVersion" },
-        { "const": "1.1" }
+        { "const": "2.0" }
       ]
     },
     "BridgeSnapshotId": {
@@ -64,7 +64,7 @@
     },
     "BridgeRefusalReason": {
       "title": "BridgeRefusalReason",
-      "description": "The closed v1 refusal-reason vocabulary for one host refusal of one specific inbound module message. `forbidden_capability` covers a hosted command payload that structurally attempts to carry a denied capability (freeze §12.4); `command_timeout` covers a bridge-transport timeout waiting for a command to settle, treated as bridge lifecycle rather than a new Chat domain outcome (freeze §12.6.2) -- never `BridgeCommandResultMessage.result.status`, which is exactly D07's closed `accepted | completed | rejected | conflict`; `not_ready` is the precise closed lifecycle reason for module traffic that arrives after `bridge.context-bound` but before the module has opened its snapshot handshake (freeze §12.0.1 pre-ready traffic; validator `f2b_lifecycle_state_machine`), so pre-ready traffic fails closed on its own reason rather than being conflated with `context_mismatch` or silently processed.",
+      "description": "The closed v1 refusal-reason vocabulary for one host refusal of one specific inbound module message. `capability_unavailable` (added with bridge protocol 2.0) refuses a well-formed command that needs a host capability this bound context has not declared -- today a `SubmitSteeringInput` command in a context whose `supportsDirection` is not `true` -- and is deliberately not `forbidden_capability`: nothing was smuggled or denied as a hosted-renderer privilege, the host simply does not offer the feature here, so it carries no `deniedCapability`. `forbidden_capability` covers a hosted command payload that structurally attempts to carry a denied capability (freeze §12.4); `command_timeout` covers a bridge-transport timeout waiting for a command to settle, treated as bridge lifecycle rather than a new Chat domain outcome (freeze §12.6.2) -- never `BridgeCommandResultMessage.result.status`, which is exactly D07's closed `accepted | completed | rejected | conflict`; `not_ready` is the precise closed lifecycle reason for module traffic that arrives after `bridge.context-bound` but before the module has opened its snapshot handshake (freeze §12.0.1 pre-ready traffic; validator `f2b_lifecycle_state_machine`), so pre-ready traffic fails closed on its own reason rather than being conflated with `context_mismatch` or silently processed.",
       "enum": [
         "context_mismatch",
         "context_disposed",
@@ -73,7 +73,8 @@
         "oversize",
         "command_timeout",
         "unrecognised_message_type",
-        "forbidden_capability"
+        "forbidden_capability",
+        "capability_unavailable"
       ]
     },
     "BridgeLifecycleState": {
@@ -107,7 +108,7 @@
     },
     "RefusalSafeMessage": {
       "title": "RefusalSafeMessage",
-      "description": "The closed v1 catalogue of display-safe refusal copy. A refusal never carries free text: `safeMessage`, when present, is one fixed, pre-approved string from this enum -- never derived from, or echoing any fragment of, the refused message's own content (freeze §12.4.2). The \"keyed by `reason`\" claim is not prose: `RefusalMessage.allOf` binds each `BridgeRefusalReason` member to exactly one member of this enum by `const`, and the mapping is total and bijective (validator `validate_f2b_refusal_safe_message_mapping`), so a refusal cannot pair a reason with another reason's copy. This is what makes non-reflection a structural (schema-closed) property rather than a runtime sanitisation claim.",
+      "description": "The closed v1 catalogue of display-safe refusal copy (nine members as of bridge protocol 2.0). A refusal never carries free text: `safeMessage`, when present, is one fixed, pre-approved string from this enum -- never derived from, or echoing any fragment of, the refused message's own content (freeze §12.4.2). The \"keyed by `reason`\" claim is not prose: `RefusalMessage.allOf` binds each `BridgeRefusalReason` member to exactly one member of this enum by `const`, and the mapping is total and bijective (validator `validate_f2b_refusal_safe_message_mapping`), so a refusal cannot pair a reason with another reason's copy. This is what makes non-reflection a structural (schema-closed) property rather than a runtime sanitisation claim.",
       "enum": [
         "This message does not belong to your current session.",
         "Your session has ended.",
@@ -116,19 +117,21 @@
         "This message is too large to send.",
         "This request took too long to complete.",
         "This message type is not recognised.",
-        "This action is not available from the hosted view."
+        "This action is not available from the hosted view.",
+        "This feature is not available in your current session."
       ]
     },
     "HostedCommandKind": {
       "title": "HostedCommandKind",
-      "description": "The closed, deliberately narrower v1 first-horizon hosted command allowlist -- a strict subset of `commands.schema.json#/$defs/ChatCommandName` (validator `validate_f2b_command_binding`). Excludes, by design, the eight `ReferencedWorkCommandRequest`-shaped owner-execution commands (`RespondToWorkRequest`, `SubmitSteeringInput`, `InvokeTool`, `InvokeApp`, `StartWorkflow`, `StartAgentRun`, `ReviseArtifact`, `PlaceArtifactVersion`), since W4-H3's exit evidence names only send/cancel/retry/composer/thread interaction and D08 §4.3 keeps the renderer from ever calling Core, a provider or another authority directly; and excludes `CreateConversationShare` and `ExportConversation`, deferred until Gate F `CHAT-029` accepts Share (W4 launch packet §4 W4-H3 exit evidence: \"Share remains disabled with an owner-issued reason until Gate F CHAT-029 is accepted\"). A future accepted horizon MAY widen this allowlist; widening is itself a bridge-major change under `BridgeProtocolVersion`, never a silent addition.",
+      "description": "The closed, deliberately narrower v1 first-horizon hosted command allowlist -- a strict subset of `commands.schema.json#/$defs/ChatCommandName` (validator `validate_f2b_command_binding`). Admits `SubmitSteeringInput` (bridge protocol 2.0, C6) bound to its own dedicated `SubmitSteeringInputRequest` payload and never to the generic referenced-work shape. Excludes, by design, the seven `ReferencedWorkCommandRequest`-shaped owner-execution commands (`RespondToWorkRequest`, `InvokeTool`, `InvokeApp`, `StartWorkflow`, `StartAgentRun`, `ReviseArtifact`, `PlaceArtifactVersion`), since W4-H3's exit evidence names only send/cancel/retry/composer/thread interaction and D08 §4.3 keeps the renderer from ever calling Core, a provider or another authority directly; and excludes `CreateConversationShare` and `ExportConversation`, deferred until Gate F `CHAT-029` accepts Share (W4 launch packet §4 W4-H3 exit evidence: \"Share remains disabled with an owner-issued reason until Gate F CHAT-029 is accepted\"). A future accepted horizon MAY widen this allowlist; widening is itself a bridge-major change under `BridgeProtocolVersion`, never a silent addition.",
       "enum": [
         "CreateConversation", "CreateScopedConversation", "RenameConversation", "ArchiveConversation", "DeleteConversation",
         "SaveDraft", "DiscardDraft",
         "EnqueueMessage", "UpdateQueuedSubmission", "ReorderQueuedSubmission", "CancelQueuedSubmission",
         "SubmitMessage", "StopGeneration", "RetryGeneration", "RegenerateResponse", "CommitMessageAmendment",
         "SelectConversationPath", "SetDefaultConversationPath",
-        "StageAttachment", "RemoveStagedAttachment"
+        "StageAttachment", "RemoveStagedAttachment",
+        "SubmitSteeringInput"
       ]
     },
     "ContextBoundMessage": {
@@ -157,6 +160,10 @@
         "acceptsDurableFollowUp": {
           "type": "boolean",
           "description": "Optional host capability flag: true when the host accepts a durable follow-up for this bound context, false when it does not. Absence is valid and means the older, pre-capability posture; consumers never infer either value from absence. A non-boolean value is refused structurally and never coerced."
+        },
+        "supportsDirection": {
+          "type": "boolean",
+          "description": "Optional host capability flag (bridge protocol 2.0, C6): true when the host serves Directions for this bound context, so the renderer may send `SubmitSteeringInput` and receive `direction` snapshot items and `chat.direction.state_changed` events. Absence means the capability is unavailable, exactly as `false` does -- unlike `acceptsDurableFollowUp`, absence here is a defined posture, not an unknown one. A `SubmitSteeringInput` command in a context where it is not `true` is refused `capability_unavailable`. A non-boolean value is refused structurally and never coerced."
         }
       }
     },
@@ -177,12 +184,12 @@
     },
     "BridgeSnapshotItem": {
       "title": "BridgeSnapshotItem",
-      "description": "One Chat record projected to the hosted renderer, identified by which Chat Runtime Contract record kind it carries. The bridge adds no domain meaning of its own: `payload` is required to validate against the exact already-defined Chat schema `itemKind` names, never an arbitrary or mismatched shape — `conversation` -> `graph.schema.json#/$defs/Conversation`; `message` -> `graph.schema.json#/$defs/Message`; `message_branch` -> `branch.schema.json#/$defs/MessageBranch`; `view_state` -> `viewstate.schema.json#/$defs/ConversationViewState`; `generation_job` -> `generation.schema.json#/$defs/GenerationJob`; `queued_submission` -> `queries.schema.json#/$defs/QueuedSubmissionProjection` (W5 GB-05); `composer_draft` -> `viewstate.schema.json#/$defs/ComposerDraft` (C5A, added with bridge protocol 1.1: the actor's own active draft, whose `workspaceId`/`conversationId`/`actorId` are all cross-checked against the bound context). Every record naming `workspaceId`/`conversationId` is cross-checked against the bound context (freeze §12.9; validator `f2b_event_and_snapshot_context_consistent`). The `itemKind`/`payload` binding is total over the closed `itemKind` enum: each member names its own payload schema explicitly, so an added `itemKind` can never fall through an existing `else` and be validated against the wrong record kind.",
+      "description": "One Chat record projected to the hosted renderer, identified by which Chat Runtime Contract record kind it carries. The bridge adds no domain meaning of its own: `payload` is required to validate against the exact already-defined Chat schema `itemKind` names, never an arbitrary or mismatched shape — `conversation` -> `graph.schema.json#/$defs/Conversation`; `message` -> `graph.schema.json#/$defs/Message`; `message_branch` -> `branch.schema.json#/$defs/MessageBranch`; `view_state` -> `viewstate.schema.json#/$defs/ConversationViewState`; `generation_job` -> `generation.schema.json#/$defs/GenerationJob`; `queued_submission` -> `queries.schema.json#/$defs/QueuedSubmissionProjection` (W5 GB-05); `composer_draft` -> `viewstate.schema.json#/$defs/ComposerDraft` (C5A, added with bridge protocol 1.1: the actor's own active draft, whose `workspaceId`/`conversationId`/`actorId` are all cross-checked against the bound context); `direction` -> `generation.schema.json#/$defs/Direction` (C6, added with bridge protocol 2.0: the actor's own Direction, projected only to its author, whose `workspaceId`/`conversationId`/`actorId` are all cross-checked against the bound context). Every record naming `workspaceId`/`conversationId` is cross-checked against the bound context (freeze §12.9; validator `f2b_event_and_snapshot_context_consistent`). The `itemKind`/`payload` binding is total over the closed `itemKind` enum: each member names its own payload schema explicitly, so an added `itemKind` can never fall through an existing `else` and be validated against the wrong record kind.",
       "type": "object",
       "additionalProperties": false,
       "required": ["itemKind", "payload"],
       "properties": {
-        "itemKind": { "enum": ["conversation", "message", "message_branch", "view_state", "generation_job", "queued_submission", "composer_draft"] },
+        "itemKind": { "enum": ["conversation", "message", "message_branch", "view_state", "generation_job", "queued_submission", "composer_draft", "direction"] },
         "payload": { "type": "object", "additionalProperties": true, "maxProperties": 128 }
       },
       "if": { "properties": { "itemKind": { "const": "conversation" } }, "required": ["itemKind"] },
@@ -203,7 +210,11 @@
                 "if": { "properties": { "itemKind": { "const": "queued_submission" } }, "required": ["itemKind"] },
                 "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/QueuedSubmissionProjection" } } },
                 "else": {
-                  "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ComposerDraft" } }
+                  "if": { "properties": { "itemKind": { "const": "composer_draft" } }, "required": ["itemKind"] },
+                  "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ComposerDraft" } } },
+                  "else": {
+                    "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction" } }
+                  }
                 }
               }
             }
@@ -240,7 +251,7 @@
     },
     "EventBatchMessage": {
       "title": "EventBatchMessage",
-      "description": "One bounded, ordered batch of Chat transport events forwarded to the hosted renderer (freeze §12.5). Ordering and dedupe follow events.schema.json; the batch adds only bounded transport, never reordering. `fromCursor` is the exact position this batch continues from -- either the most recent snapshot's `snapshotBoundaryCursor` or the previous `bridge.event-batch.nextCursor` -- so a consumer detects a gap by comparing `fromCursor` to its own last-known position; a mismatch forces `bridge.resnapshot`, never a guessed continuation (validator `f2b_snapshot_event_cursor_continuity`).",
+      "description": "One bounded, ordered batch of Chat transport events forwarded to the hosted renderer (freeze §12.5). Ordering and dedupe follow events.schema.json; the batch adds only bounded transport, never reordering. Every event is bound by its own closed `eventType` to exactly one `ChatEvent` branch, so the two C6 events (`chat.generation.iteration_completed`, `chat.direction.state_changed`) are admitted only in their identity-only shapes and a Direction state change can never carry authored content through the bridge. `fromCursor` is the exact position this batch continues from -- either the most recent snapshot's `snapshotBoundaryCursor` or the previous `bridge.event-batch.nextCursor` -- so a consumer detects a gap by comparing `fromCursor` to its own last-known position; a mismatch forces `bridge.resnapshot`, never a guessed continuation (validator `f2b_snapshot_event_cursor_continuity`).",
       "type": "object",
       "additionalProperties": false,
       "required": ["bridgeProtocolVersion", "contextId", "events", "fromCursor", "messageType", "nextCursor", "schemaVersion"],
@@ -371,6 +382,10 @@
         {
           "if": { "properties": { "commandKind": { "const": "RemoveStagedAttachment" } }, "required": ["commandKind"] },
           "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/RemoveStagedAttachmentRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "SubmitSteeringInput" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest" } } }
         }
       ]
     },
@@ -406,7 +421,7 @@
     },
     "RefusalMessage": {
       "title": "RefusalMessage",
-      "description": "Refuses one specific inbound message rather than tearing down the context (freeze §12.4). `deniedCapability` is present if and only if `reason` is `forbidden_capability`. `safeMessage` is optional and, when present, is the single `RefusalSafeMessage` member this `reason` maps to -- never free text, never another reason's copy, never a reflection of the refused message's content (freeze §12.4.2). The `allOf` below is that mapping, executable: eight reasons, eight display strings, one `const` binding each (validator `validate_f2b_refusal_safe_message_mapping`; `invalid/f2b-refusal-safe-message-reason-mismatch-rejected.json`).",
+      "description": "Refuses one specific inbound message rather than tearing down the context (freeze §12.4). `deniedCapability` is present if and only if `reason` is `forbidden_capability`. `safeMessage` is optional and, when present, is the single `RefusalSafeMessage` member this `reason` maps to -- never free text, never another reason's copy, never a reflection of the refused message's content (freeze §12.4.2). The `allOf` below is that mapping, executable: nine reasons, nine display strings, one `const` binding each (validator `validate_f2b_refusal_safe_message_mapping`; `invalid/f2b-refusal-safe-message-reason-mismatch-rejected.json`).",
       "type": "object",
       "additionalProperties": false,
       "required": ["bridgeProtocolVersion", "messageType", "reason", "schemaVersion"],
@@ -455,6 +470,10 @@
         {
           "if": { "properties": { "reason": { "const": "forbidden_capability" } }, "required": ["reason"] },
           "then": { "properties": { "safeMessage": { "const": "This action is not available from the hosted view." } } }
+        },
+        {
+          "if": { "properties": { "reason": { "const": "capability_unavailable" } }, "required": ["reason"] },
+          "then": { "properties": { "safeMessage": { "const": "This feature is not available in your current session." } } }
         }
       ]
     },

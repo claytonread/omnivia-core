@@ -4,14 +4,18 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (182 files: FIXTURE-MANIFEST.json
-#                                             plus 181 governed fixtures)
-# Governed by:
+#   contracts/chat/v1/fixtures/**           (270 files: FIXTURE-MANIFEST.json
+#                                             plus 269 governed fixtures)
+# Approved BASELINE provenance (the governance decision this tree started from;
+# NOT a claim that this tree's bytes are that approved copy -- they are a
+# `review-candidate` that has been widened since, and is neither Approved,
+# Published nor Effective):
 #   Approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001;
 #   proposal commit 04c0b2f768b8a74c515936e548c4a28fa4af514d;
 #   proposal content-set inventory SHA-256
 #     521893fefc9d33f5507e5bde84be12713359fe1c4ec041164280096b797e2bf2;
-#   fixture manifest SHA-256
+#   baseline fixture manifest SHA-256 (the approved manifest's digest, never
+#   repinned; the CURRENT manifest's digest is computed, below)
 #     7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54;
 #   effective Architecture release tag architecture-v1.4.0;
 #   effective payload commit eb14159d73c8d9339cfeb347f8de61bd67497974.
@@ -19,9 +23,10 @@
 # Regenerate: python scripts/generate-chat-contract.py
 # Verify:     python scripts/generate-chat-contract.py --check
 #
-# This never reads the Masterdocs checkout: the 13 schemas and 182 fixture
-# files under contracts/chat/v1 are this repository's own checked-in copy of
-# the approved bytes, and are the only source this script reads.
+# This never reads the Masterdocs checkout: the 13 schemas and 270 fixture
+# files under contracts/chat/v1 are this repository's own checked-in review
+# candidate (the approved baseline bytes plus the authorized widenings below),
+# and are the only source this script reads.
 #
 # Authorized widening on top of those bytes, pinned by the digest below:
 #   commands.schema.json#/$defs/SubmitMessageRequest -- the expected-head group
@@ -93,8 +98,112 @@
 #     `PLATFORM_CARRIER_CONTRACT_VERSION` and `BRIDGE_SNAPSHOT_ITEM_KINDS` are
 #     generated from these schema bytes. Carried back to the Masterdocs
 #     authority before the next tag, with the other five widenings.
+#   C6 Direction surface, D07 wire protocol 2.0 and F2b bridge protocol 2.0
+#     (owner authorization, Clayton Read, 8 October 2026) -- two EXPLICIT
+#     version changes, not silent widenings. The F2b bridge protocol moves from
+#     1.1 to 2.0: `SupportedBridgeProtocolVersion` is now exactly "2.0" (this
+#     bundle refuses "1.0" and "1.1" whole, and any other 2.x). The D07 wire
+#     protocol (`PROTOCOL_VERSION`, the `protocolVersion` every command and
+#     result states) moves from 1.0 to 2.0, because `GenerationJob.version`
+#     becomes REQUIRED, which a 1.0 document does not carry: this bundle's
+#     decoder negotiates exactly "2.0" and refuses "1.0" whole, so a legacy 1.0
+#     document stays correctly labelled 1.0 and is never read as a C6 one.
+#     `PLATFORM_CARRIER_CONTRACT_VERSION` is a third, independent axis and stays
+#     "1.0". Contract changes:
+#     commands.schema.json -- `SubmitSteeringInput` leaves the generic
+#       `ReferencedWorkCommandRequest` (its `commandName` enum is now seven
+#       members) and gets the dedicated closed `SubmitSteeringInputRequest`
+#       (target job, `expectedGenerationVersion`, `expectedActiveState` exactly
+#       `running`, `requestedBoundary` exactly `earliest_safe`, bounded
+#       `editableParts`, attachment/context arrays that may only be empty,
+#       optional `supersedesDirectionId`) and its identity-only
+#       `DirectionSubmittedResult`;
+#     common.schema.json -- `DirectionId`, `GenerationJobVersion`,
+#       `DirectionVersion`, `DirectionJobSequence`, `DirectionState`,
+#       `RequestedDirectionBoundary` (exactly `earliest_safe`),
+#       `EffectiveDirectionBoundary` (exactly `next_iteration`: an applied
+#       Direction is only ever bound into a later iteration's request manifest),
+#       `RequestManifestId`, the closed text-only `DirectionTextPart`,
+#       `DirectionTerminalReasonCode`, `GenerationJobVersion` (positive;
+#       `1` is the initial authoritative token), and `ChatEventType` gains
+#       `chat.generation.iteration_completed` and `chat.direction.state_changed`;
+#     generation.schema.json -- `GenerationJob.version` is a REQUIRED real
+#       control token (NOT additive-compatible: a Job without it no longer
+#       validates), and the `Direction` projection with structural state,
+#       application, supersession and terminal-reason semantics.
+#       `DirectionApplication` requires the complete evidence (`attemptId`,
+#       `providerInvocationId`, `requestManifestId`, `iteration`, `appliedAt`):
+#       `applied` is established only after the committed request manifest for
+#       that provider invocation binds the Direction's identity, version and
+#       content digest. `Direction.editableParts` are closed text-only parts;
+#     commands.schema.json -- `SubmitSteeringInputRequest.editableParts` are the
+#       same closed text-only parts, and `DirectionSubmittedResult.state` is
+#       exactly `pending`;
+#     queries.schema.json -- `ConversationSnapshotResult` REQUIRES
+#       `generationJobs` and actor-scoped `directions` (empty when there is
+#       nothing to state; omission is invalid);
+#     events.schema.json -- the identity-only `DirectionStateChangedEvent` and
+#       `GenerationIterationCompletedEvent` join the `ChatEvent` union;
+#     bridge.schema.json -- `BridgeSnapshotItem.itemKind` gains `direction`
+#       (bound to `Direction`; the `composer_draft` branch of the item binding
+#       is now an explicit `if`), `HostedCommandKind` gains `SubmitSteeringInput`
+#       bound to the dedicated request only, `BridgeRefusalReason` gains
+#       `capability_unavailable` (own safe copy, never `deniedCapability`), and
+#       `ContextBoundMessage` gains optional strict-boolean `supportsDirection`
+#       (absence means unavailable) beside the preserved `acceptsDurableFollowUp`.
+#     Every F2b fixture's `bridgeProtocolVersion` moves 1.1 -> 2.0; 87 governed
+#     fixtures (22 valid, 65 invalid) are added after the correction passes (the
+#     invalid zero-version composer-draft fixture becomes a negative-version
+#     one, and a zero GenerationJob version is invalid). NOT additive-compatible for a 1.x
+#     peer, and a 1.0 D07 peer: it is the version change that says so. Carried back to the Masterdocs
+#     authority before the next tag, with the other widenings.
+#   C6 correction pass (final cross-layer audit, owner authorization, Clayton
+#     Read, 8 October 2026):
+#     common.schema.json -- the D07 wire version is closed IN THE SCHEMA, not only
+#       in the codec: `ProtocolVersionSyntax` is the new syntax-only primitive and
+#       `ProtocolVersion` (the def every D07 message already references) is now
+#       the exact supported version, `allOf` [syntax, `const` "2.0"], exactly as
+#       `SupportedBridgeProtocolVersion` is for F2b. "1.0", "1.1" and "2.1" fail
+#       schema validation; five governed invalid fixtures are added (three
+#       `SubmitSteeringInputRequest` versions, one `DirectionSubmittedResult`).
+#       The package namespace `chat_contract.v1`, `CONTRACT_VERSION`
+#       1.0.0-rc.1, F2b 2.0 and the outer carrier 1.0 remain four independent axes.
+#     Direction content bounds are made honest against the durable row (migration
+#       0069's 16384-byte `content_json`): `DirectionTextPart.payload.text`
+#       `maxLength` 262144 -> 4000 code points and `editableParts` `maxItems`
+#       4096 -> 16 on both `Direction` and `SubmitSteeringInputRequest`. The
+#       aggregate -- the canonical JSON object `{"editableParts": [...]}` at most
+#       `DIRECTION_CONTENT_MAX_UTF8_BYTES` (16384) UTF-8 bytes -- is not
+#       expressible in JSON Schema; it is normative description prose here and is
+#       enforced by the package codec (`validate_direction_content`,
+#       `validate_direction`, `validate_submit_steering_input_request`).
+#     Applied Direction semantics follow the frozen continuation design:
+#       `targetAttemptId` is the running Attempt that accepted the Direction;
+#       `application.attemptId` is the SUCCESSOR continuation Attempt whose
+#       committed request manifest binds it for its next iteration and MUST
+#       differ from `targetAttemptId` (a relational rule, `validate_direction`).
+#       The valid applied fixture moves to a successor Attempt with consistent
+#       provider invocation / request manifest identities; one governed invalid
+#       fixture proves a same-Attempt application is rejected.
+#     `Direction.contentHash` has ONE byte basis: the bare lowercase 64-hex
+#       SHA-256 of the UTF-8 bytes of the canonical stored object
+#       `{"editableParts": [...]}` (`to_canonical_json`; the object capped at
+#       16384 bytes and written as `content_json`). Storage `content_digest` and
+#       request-manifest `contentDigest` are `sha256:<same hex>` -- only the prefix
+#       differs. The codec computes and verifies it (`direction_content_hash`,
+#       `validate_direction_content_hash`; `validate_direction` fails closed on a
+#       mismatch without echoing text). Every governed Direction fixture carries
+#       the correct digest and one governed invalid fixture proves a mismatch.
+#     `GenerationIterationCompletedEvent.generationJobVersion` stays REQUIRED:
+#       its description now states it is immutable event-time evidence that can
+#       never be reconstructed from a later mutable Job status projection.
+#     Provenance labels: the approval / proposal / manifest constants are the
+#       approved BASELINE, not a claim about these bytes. A distinct
+#       `CURRENT_FIXTURE_MANIFEST_SHA256` is computed from the actual current
+#       FIXTURE-MANIFEST.json; the baseline digest is never repinned and the
+#       manifest status stays `review-candidate`.
 # The first five are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
-# COMPATIBILITY-AND-MIGRATION.md §3, and all six must be carried back to the
+# COMPATIBILITY-AND-MIGRATION.md §3, and all must be carried back to the
 # Masterdocs authority before the next tag: until then this tree is
 # deliberately not byte-identical to architecture-v1.4.0, and the digest is
 # what says so.
@@ -103,7 +212,7 @@ Chat Runtime Contract v1 schemas and fixtures.
 
 Verifies, deterministically:
 
-- the exact packaged resource *count* (13 schemas, 182 fixture-tree files);
+- the exact packaged resource *count* (13 schemas, 270 fixture-tree files);
 - a single pinned SHA-256 digest over every relative resource path and its
   exact byte payload, so a changed, missing or extra resource under
   ``contracts/chat/v1`` fails closed rather than silently regenerating a
@@ -123,7 +232,7 @@ required field sets read straight off ``events.schema.json``'s ``ChatEvent``
 union, so the codec's strict emission of a known event is single-sourced on the
 approved schema bytes rather than a hand-maintained second registry; and the
 validation metadata that emission is actually checked against -- the transitive
-``$ref`` closure of the six bounded record roots, annotation keywords dropped
+``$ref`` closure of the bounded validation roots, annotation keywords dropped
 and references flattened to lookup keys (:func:`extract_validation_schemas`).
 
 That closure is what makes the codec's strict emission fail-closed on the whole
@@ -166,27 +275,36 @@ PROPOSAL_COMMIT = "04c0b2f768b8a74c515936e548c4a28fa4af514d"
 PROPOSAL_CONTENT_SET_INVENTORY_SHA256 = (
     "521893fefc9d33f5507e5bde84be12713359fe1c4ec041164280096b797e2bf2"
 )
+#: The approved BASELINE manifest digest. Never repinned: the current manifest
+#: has legitimately moved on, and its own digest is CURRENT_FIXTURE_MANIFEST_SHA256.
 FIXTURE_MANIFEST_SHA256 = "7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54"
 EFFECTIVE_ARCHITECTURE_TAG = "architecture-v1.4.0"
 EFFECTIVE_PAYLOAD_COMMIT = "eb14159d73c8d9339cfeb347f8de61bd67497974"
 CONTRACT_VERSION = "1.0.0-rc.1"
-PROTOCOL_VERSION = "1.0"
-PROTOCOL_MAJOR = "1"
+PROTOCOL_VERSION = "2.0"
+PROTOCOL_MAJOR = "2"
 
 EXPECTED_SCHEMA_COUNT = 13
-EXPECTED_FIXTURE_TREE_COUNT = 182  # FIXTURE-MANIFEST.json + 181 governed fixtures
-EXPECTED_FIXTURE_CASE_COUNT = 181
-EXPECTED_FIXTURE_VALID_COUNT = 83
-EXPECTED_FIXTURE_INVALID_COUNT = 98
+EXPECTED_FIXTURE_TREE_COUNT = 270  # FIXTURE-MANIFEST.json + 269 governed fixtures
+EXPECTED_FIXTURE_CASE_COUNT = 269
+EXPECTED_FIXTURE_VALID_COUNT = 105
+EXPECTED_FIXTURE_INVALID_COUNT = 164
+
+#: A Direction's durable content row is capped at 16384 bytes (migration 0069
+#: `content_json`). The cap applies to the canonical JSON object
+#: ``{"editableParts": [...]}`` serialised as ``to_canonical_json`` does, counted
+#: in UTF-8 bytes. JSON Schema cannot compare an aggregate byte length, so the
+#: codec enforces it; the schemas state it as normative prose.
+DIRECTION_CONTENT_MAX_UTF8_BYTES = 16384
 
 #: Pinned over the approved bytes verified byte-for-byte against the tagged
-#: Masterdocs authority (``architecture-v1.4.0``) at copy time, plus the six
+#: Masterdocs authority (``architecture-v1.4.0``) at copy time, plus the
 #: authorized widenings the header names. Recomputed on every run by
 #: :func:`compute_resource_inventory_digest` and compared; any changed, missing
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "b3f9a8c61ecaad29ba7a1f11fc3d6a36dab83db9499ace868f01349ed87d037b"
+    "b3dbefdbbf9206418e92086bfdd46836dde6d6cbac98628acd0c85ff9de8e8e0"
 )
 
 
@@ -353,6 +471,28 @@ def extract_bridge_versions() -> tuple[str, str]:
     return bridge, carrier
 
 
+def extract_protocol_version() -> str:
+    """The D07 wire protocol version, read from ``common.schema.json``'s exact
+    ``ProtocolVersion`` ``const`` and required to equal the pinned
+    :data:`PROTOCOL_VERSION`, so the schema and the generated constant cannot
+    drift (the schema closes the version; the constant only reports it)."""
+    try:
+        version = load_schema("common")["$defs"]["ProtocolVersion"]["allOf"][1]["const"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ChatContractError("ProtocolVersion is not pinned as an exact `const`") from exc
+    if version != PROTOCOL_VERSION:
+        raise ChatContractError(
+            f"common.schema.json ProtocolVersion const {version!r} != pinned {PROTOCOL_VERSION!r}"
+        )
+    return version
+
+
+def current_fixture_manifest_sha256() -> str:
+    """SHA-256 of the CURRENT ``FIXTURE-MANIFEST.json`` bytes. Distinct from
+    :data:`FIXTURE_MANIFEST_SHA256`, the approved baseline's digest."""
+    return hashlib.sha256((FIXTURES_ROOT / "FIXTURE-MANIFEST.json").read_bytes()).hexdigest()
+
+
 def extract_chat_event_field_metadata() -> tuple[
     dict[str, tuple[str, ...]], dict[str, tuple[str, ...]], dict[str, str]
 ]:
@@ -413,9 +553,11 @@ VALIDATION_ROOTS: dict[str, str] = {
     "ChatEvent": "events.schema.json#/$defs/ChatEvent",
     "CommandError": "commands.schema.json#/$defs/CommandResultEnvelope/properties/error",
     "CommandResultEnvelope": "commands.schema.json#/$defs/CommandResultEnvelope",
+    "Direction": "generation.schema.json#/$defs/Direction",
     "ProviderInvocationRecord": "provider.schema.json#/$defs/ProviderInvocationRecord",
     "ProviderInvocationRequest": "provider.schema.json#/$defs/ProviderInvocationRequest",
     "ResnapshotResponse": "events.schema.json#/$defs/ResnapshotResponse",
+    "SubmitSteeringInputRequest": "commands.schema.json#/$defs/SubmitSteeringInputRequest",
 }
 
 #: Keywords that assert nothing about an instance. They are dropped, so the
@@ -426,7 +568,7 @@ ANNOTATION_KEYWORDS = frozenset(
 
 #: The exact JSON Schema assertion keywords
 #: ``omnivia_core.chat_contract.v1._validation`` implements. A keyword outside
-#: this set anywhere under one of the six roots fails generation closed rather
+#: this set anywhere under one of the roots fails generation closed rather
 #: than shipping metadata whose rule the runtime validator would silently skip
 #: -- an under-validating codec is precisely the defect this metadata exists to
 #: prevent, so it must never be reachable by adding a schema keyword.
@@ -470,7 +612,7 @@ def _resolve_key(key: str, documents_by_file: dict[str, dict[str, Any]]) -> tupl
 
 
 def extract_validation_schemas() -> dict[str, Any]:
-    """Return the transitive ``$ref`` closure of the six bounded record roots.
+    """Return the transitive ``$ref`` closure of the bounded validation roots.
 
     Every entry is the approved subschema with the annotation-only keywords
     dropped and every ``$ref`` rewritten to a flat ``<file>#<json-pointer>``
@@ -620,18 +762,23 @@ def render_generated_module(
     validation_schemas: dict[str, Any],
 ) -> str:
     bridge_protocol_version, platform_carrier_contract_version = extract_bridge_versions()
+    protocol_version = extract_protocol_version()
+    current_manifest_sha256 = current_fixture_manifest_sha256()
     header = f'''# GENERATED FILE - DO NOT EDIT.
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (182 files)
-# Governed by:
+#   contracts/chat/v1/fixtures/**           (270 files)
+# Approved BASELINE provenance (the governance decision this tree started from;
+# NOT a claim that these bytes are the approved copy -- they are a
+# `review-candidate`, neither Approved, Published nor Effective):
 #   Approval {APPROVAL_ID};
 #   proposal commit {PROPOSAL_COMMIT};
 #   proposal content-set inventory SHA-256 {PROPOSAL_CONTENT_SET_INVENTORY_SHA256};
-#   fixture manifest SHA-256 {FIXTURE_MANIFEST_SHA256};
+#   baseline fixture manifest SHA-256 {FIXTURE_MANIFEST_SHA256};
 #   effective Architecture release tag {EFFECTIVE_ARCHITECTURE_TAG};
-#   effective payload commit {EFFECTIVE_PAYLOAD_COMMIT}.
+#   effective payload commit {EFFECTIVE_PAYLOAD_COMMIT};
+#   current fixture manifest SHA-256 {current_manifest_sha256}.
 # Generator:
 #   scripts/generate-chat-contract.py
 #
@@ -668,6 +815,8 @@ __all__ = [
     "CHAT_EVENT_TYPES",
     "COMMAND_RESULT_STATUSES",
     "CONTRACT_VERSION",
+    "CURRENT_FIXTURE_MANIFEST_SHA256",
+    "DIRECTION_CONTENT_MAX_UTF8_BYTES",
     "EFFECTIVE_ARCHITECTURE_TAG",
     "EFFECTIVE_PAYLOAD_COMMIT",
     "ERROR_CODES",
@@ -699,30 +848,37 @@ __all__ = [
 # Approval, provenance and version constants
 # --------------------------------------------------------------------------
 
-#: Approval identifier binding this exact, unchanged copy to its governance decision.
+#: Approved BASELINE governance decision this tree started from. Not a claim
+#: that the current bytes are the exact approved copy (they are a review candidate).
 APPROVAL_ID: Final[str] = {APPROVAL_ID!r}
-#: The proposal-stage Git commit this copy's bytes were taken from.
+#: The proposal-stage Git commit the approved BASELINE bytes were taken from.
 PROPOSAL_COMMIT: Final[str] = {PROPOSAL_COMMIT!r}
-#: SHA-256 of the proposal's own ``PROPOSAL-SHA256SUMS.txt`` inventory file.
+#: SHA-256 of the approved BASELINE proposal's own ``PROPOSAL-SHA256SUMS.txt`` inventory file.
 PROPOSAL_CONTENT_SET_INVENTORY_SHA256: Final[str] = {PROPOSAL_CONTENT_SET_INVENTORY_SHA256!r}
-#: SHA-256 of ``fixtures/FIXTURE-MANIFEST.json`` at the approved bytes.
+#: SHA-256 of ``fixtures/FIXTURE-MANIFEST.json`` at the approved BASELINE bytes.
+#: Deliberately not the digest of the current manifest, which has since changed:
+#: see :data:`CURRENT_FIXTURE_MANIFEST_SHA256`. Never repinned.
 FIXTURE_MANIFEST_SHA256: Final[str] = {FIXTURE_MANIFEST_SHA256!r}
-#: The Masterdocs Git tag this copy was read through.
+#: SHA-256 of the CURRENT ``fixtures/FIXTURE-MANIFEST.json`` bytes, computed by the
+#: generator from the checked-in file. It identifies this review candidate's
+#: manifest and claims nothing about approval.
+CURRENT_FIXTURE_MANIFEST_SHA256: Final[str] = {current_manifest_sha256!r}
+#: The Masterdocs Git tag the approved BASELINE was read through.
 EFFECTIVE_ARCHITECTURE_TAG: Final[str] = {EFFECTIVE_ARCHITECTURE_TAG!r}
-#: The exact Masterdocs payload commit ``EFFECTIVE_ARCHITECTURE_TAG`` resolves to.
+#: The exact Masterdocs payload commit ``EFFECTIVE_ARCHITECTURE_TAG`` resolves to (baseline).
 EFFECTIVE_PAYLOAD_COMMIT: Final[str] = {EFFECTIVE_PAYLOAD_COMMIT!r}
 #: The contract candidate version the approved catalogue encodes.
 CONTRACT_VERSION: Final[str] = {CONTRACT_VERSION!r}
 #: The one wire protocol version this bundle supports. A v1 decoder rejects an
 #: unsupported major and never silently downgrades
 #: (CHAT-RUNTIME-CONTRACT-V1-COMPATIBILITY-AND-MIGRATION.md §1, §3).
-PROTOCOL_VERSION: Final[str] = {PROTOCOL_VERSION!r}
+PROTOCOL_VERSION: Final[str] = {protocol_version!r}
 #: The major component of :data:`PROTOCOL_VERSION`, the compatibility boundary.
 PROTOCOL_MAJOR: Final[str] = {PROTOCOL_MAJOR!r}
 #: The one F2b hosted-bridge protocol version this bundle supports
 #: (bridge.schema.json SupportedBridgeProtocolVersion). An independent axis from
 #: :data:`PROTOCOL_VERSION` (the D07 wire protocol): a strict F2b decoder
-#: rejects every other version, including the superseded "1.0".
+#: rejects every other version, including the superseded "1.0" and "1.1".
 BRIDGE_PROTOCOL_VERSION: Final[str] = {bridge_protocol_version!r}
 #: The outer Platform Module Host Contract envelope version
 #: (bridge.schema.json PlatformCarrierContractVersion). Independent of
@@ -731,8 +887,12 @@ PLATFORM_CARRIER_CONTRACT_VERSION: Final[str] = {platform_carrier_contract_versi
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = {EXPECTED_SCHEMA_COUNT!r}
-#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 181 governed fixtures).
+#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 269 governed fixtures).
 RESOURCE_FIXTURE_TREE_COUNT: Final[int] = {EXPECTED_FIXTURE_TREE_COUNT!r}
+#: A Direction's durable content row cap: the canonical JSON object
+#: ``{{"editableParts": [...]}}`` (``to_canonical_json``) is at most this many UTF-8
+#: bytes. Not expressible in JSON Schema, so the codec enforces it.
+DIRECTION_CONTENT_MAX_UTF8_BYTES: Final[int] = {DIRECTION_CONTENT_MAX_UTF8_BYTES!r}
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
@@ -748,10 +908,10 @@ RESOURCE_INVENTORY_DIGEST: Final[str] = {digest!r}
     )
 
     vocab_docs = {
-        "BRIDGE_SNAPSHOT_ITEM_KINDS": "The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem), 7 members as of bridge protocol 1.1.",
+        "BRIDGE_SNAPSHOT_ITEM_KINDS": "The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem), 8 members as of bridge protocol 2.0.",
         "CHAT_COMMAND_NAMES": "The closed v1 initial Chat command registry (commands.schema.json ChatCommandName), 30 members.",
         "ERROR_CODES": "The closed v1 shared error-code registry (common.schema.json ErrorCode), 24 members.",
-        "CHAT_EVENT_TYPES": "The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType), 16 members. Additive-decode point.",
+        "CHAT_EVENT_TYPES": "The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType), 18 members. Additive-decode point.",
         "RESNAPSHOT_REASONS": "The closed reason vocabulary for events.schema.json ResnapshotResponse.reason, 4 members.",
         "COMMAND_RESULT_STATUSES": "The closed status vocabulary for commands.schema.json CommandResultEnvelope.status, 4 members.",
         "F2A_FINISH_REASONS": "The closed v1 F2a normalised finish-reason vocabulary (provider.schema.json FinishReason), 7 members.",
@@ -802,7 +962,7 @@ RESOURCE_INVENTORY_DIGEST: Final[str] = {digest!r}
     record_refs_block = _render_mapping(
         "RECORD_VALIDATION_REFS",
         VALIDATION_ROOTS,
-        "Bounded codec record class name -> the VALIDATION_SCHEMAS key of the "
+        "Bounded codec validation root name -> the VALIDATION_SCHEMAS key of the "
         "exact canonical subschema its emitted document must satisfy.",
     )
     validation_keywords_block = _render_str_tuple(
@@ -813,7 +973,7 @@ RESOURCE_INVENTORY_DIGEST: Final[str] = {digest!r}
         "a keyword added here without an implementation fails closed.",
     )
     validation_block = (
-        "#: The transitive $ref closure of the six bounded codec record roots, read\n"
+        "#: The transitive $ref closure of the bounded codec validation roots, read\n"
         "#: from the approved contracts/chat/v1/schemas bytes with the annotation-only\n"
         "#: keywords dropped and every $ref rewritten to a flat '<file>#<pointer>' key\n"
         "#: of this same mapping. This is the sole authority the codec's strict\n"

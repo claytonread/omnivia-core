@@ -5,9 +5,9 @@
   "authority": "This manifest is proposal-stage Evidence only. It is not Approved, not Published, not Effective. It lists every normative valid, invalid and canonical-trace fixture in this change set.",
   "schema_host": "https://contracts.omnivia.dev/chat/v1/",
   "counts": {
-    "total": 181,
-    "valid": 83,
-    "invalid": 98
+    "total": 269,
+    "valid": 105,
+    "invalid": 164
   },
   "fixtures": [
     {
@@ -992,16 +992,16 @@
     {
       "path": "fixtures/invalid/f2b-context-bound-unsupported-major-rejected.json",
       "expect": "invalid",
-      "focus": "The supported bridge protocol version is the exact constant 1.0, not merely a major.minor syntax: an unsupported major (2.0) is rejected structurally, never silently downgraded.",
+      "focus": "The supported bridge protocol version is the exact constant 2.0, not merely a major.minor syntax: an unsupported major (3.0) is rejected structurally, never silently downgraded.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
-      "expected_error_contains": "const '1.0'"
+      "expected_error_contains": "const '2.0'"
     },
     {
       "path": "fixtures/invalid/f2b-context-bound-unsupported-minor-rejected.json",
       "expect": "invalid",
-      "focus": "A version mismatch within the supported major (1.2) is rejected too: the bundle supports exactly 1.1 and never guesses which additive fields an unknown minor added.",
+      "focus": "A version mismatch within the supported major (2.1) is rejected too: the bundle supports exactly 2.0 and never guesses which additive fields an unknown minor added.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
-      "expected_error_contains": "const '1.1'"
+      "expected_error_contains": "const '2.0'"
     },
     {
       "path": "fixtures/invalid/f2b-refusal-safe-message-reason-mismatch-rejected.json",
@@ -1713,13 +1713,13 @@
     {
       "path": "fixtures/valid/f2b-snapshot-item-composer-draft.json",
       "expect": "valid",
-      "focus": "BridgeSnapshotItem itemKind composer_draft maps its payload to viewstate.schema.json#/$defs/ComposerDraft (C5A, F2b bridge protocol 1.1).",
+      "focus": "BridgeSnapshotItem itemKind composer_draft maps its payload to viewstate.schema.json#/$defs/ComposerDraft (C5A, introduced with F2b bridge protocol 1.1 and carried by 2.0).",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem"
     },
     {
       "path": "fixtures/valid/f2b-carrier-envelope-snapshot-page-composer-draft.json",
       "expect": "valid",
-      "focus": "A host->module snapshot-page carrier whose one item is itemKind composer_draft: the inner bridge protocol is 1.1 while the outer Platform carrier `v` stays 1.0 (independent axes), within the 65536-byte encoded carrier bound (C5A).",
+      "focus": "A host->module snapshot-page carrier whose one item is itemKind composer_draft: the inner bridge protocol is 2.0 while the outer Platform carrier `v` stays 1.0 (independent axes), within the 65536-byte encoded carrier bound (C5A).",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
       "checks": [
         "f2b_encoded_envelope_within_carrier_bound"
@@ -1742,9 +1742,9 @@
     {
       "path": "fixtures/invalid/f2b-context-bound-superseded-1-0-rejected.json",
       "expect": "invalid",
-      "focus": "Bridge protocol 1.0 is rejected by this 1.1 bundle: the closed 1.0 itemKind grammar cannot carry composer_draft, so the version change is explicit and 1.0 is never silently admitted (C5A).",
+      "focus": "Bridge protocol 1.0 is rejected by this 2.0 bundle: the superseded 1.x grammar cannot carry the Direction surface, so the version change is explicit and 1.0 is never silently admitted (C5A, C6).",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
-      "expected_error_contains": "const '1.1'"
+      "expected_error_contains": "const '2.0'"
     },
     {
       "path": "fixtures/invalid/f2b-carrier-envelope-outer-version-bumped-rejected.json",
@@ -1801,7 +1801,7 @@
     {
       "path": "fixtures/valid/f2b-context-bound-durable-follow-up.json",
       "expect": "valid",
-      "focus": "Host-issued admission handshake optionally declaring acceptsDurableFollowUp as a strict boolean (F2b 1.1 capability flag); absence stays valid as the pre-capability posture.",
+      "focus": "Host-issued admission handshake optionally declaring acceptsDurableFollowUp as a strict boolean (F2b capability flag, introduced in 1.1 and preserved in 2.0); absence stays valid as the pre-capability posture.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage"
     },
     {
@@ -1810,6 +1810,764 @@
       "focus": "acceptsDurableFollowUp is a strict boolean: a string such as \"yes\" is rejected and never coerced.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
       "expected_error_contains": "boolean"
+    },
+    {
+      "path": "fixtures/invalid/f2b-context-bound-superseded-1-1-rejected.json",
+      "expect": "invalid",
+      "focus": "Bridge protocol 1.1 is rejected by this 2.0 bundle: the closed 1.1 itemKind, command and refusal vocabularies cannot carry the Direction surface, so the move to 2.0 is explicit and 1.1 is never silently admitted (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
+      "expected_error_contains": "const '2.0'"
+    },
+    {
+      "path": "fixtures/valid/submit-steering-input-request.json",
+      "expect": "valid",
+      "focus": "The dedicated closed SubmitSteeringInputRequest (C6): target job, observed job version as the control token, expected active state exactly running, requested boundary exactly earliest_safe, bounded editable parts, and honestly empty attachment/context arrays.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest"
+    },
+    {
+      "path": "fixtures/valid/submit-steering-input-request-supersedes.json",
+      "expect": "valid",
+      "focus": "supersedesDirectionId is the one optional supersession seam on the request: it names the earlier Direction this one replaces and nothing else changes shape (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-extra-field-rejected.json",
+      "expect": "invalid",
+      "focus": "The request is closed: a targetReference (or any field the generic referenced-work shape carried) is rejected by additionalProperties:false (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-nonempty-attachments-rejected.json",
+      "expect": "invalid",
+      "focus": "attachmentReferences may only be empty in C6: a request naming an attachment is rejected by maxItems:0 rather than silently dropping it.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
+      "expected_error_contains": "maxItems"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-nonempty-context-rejected.json",
+      "expect": "invalid",
+      "focus": "contextReferences may only be empty in C6: a request naming a context reference is rejected by maxItems:0 rather than silently dropping it.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
+      "expected_error_contains": "maxItems"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-wrong-boundary-rejected.json",
+      "expect": "invalid",
+      "focus": "requestedBoundary is exactly earliest_safe in C6: next_iteration is only ever the effective boundary an applied Direction reports, never one a caller requests.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-wrong-expected-state-rejected.json",
+      "expect": "invalid",
+      "focus": "expectedActiveState is exactly running: a Direction is never aimed at a queued or terminal Job.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-missing-expected-version-rejected.json",
+      "expect": "invalid",
+      "focus": "expectedGenerationVersion is required: the Job's control token is stated on every steering request, never defaulted.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-empty-parts-rejected.json",
+      "expect": "invalid",
+      "focus": "editableParts keeps the existing authored-text bound (minItems 1): an empty steering input is rejected.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
+      "expected_error_contains": "minItems"
+    },
+    {
+      "path": "fixtures/invalid/referenced-work-command-steering-rejected.json",
+      "expect": "invalid",
+      "focus": "SubmitSteeringInput is removed from the generic ReferencedWorkCommandRequest commandName enum: steering can no longer be expressed in the owner-execution shape (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/ReferencedWorkCommandRequest",
+      "expected_error_contains": "enum"
+    },
+    {
+      "path": "fixtures/valid/direction-submitted-result.json",
+      "expect": "valid",
+      "focus": "The typed SubmitSteeringInput result is identity and state only: Direction identity, job sequence, version and the exact state `pending`, never the authored content (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/DirectionSubmittedResult"
+    },
+    {
+      "path": "fixtures/valid/direction-pending.json",
+      "expect": "valid",
+      "focus": "A pending Direction: full actor/workspace/conversation/branch/job/target-attempt scope, canonical content and digest, requested boundary, job sequence and version, and none of the application, supersession, effective-boundary or terminal-reason members (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction"
+    },
+    {
+      "path": "fixtures/valid/direction-pending-supersedes.json",
+      "expect": "valid",
+      "focus": "supersedesDirectionId on the replacing side is valid in the pending state: it is the explicit supersession seam of the new Direction (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction"
+    },
+    {
+      "path": "fixtures/valid/direction-applied.json",
+      "expect": "valid",
+      "focus": "An applied Direction carries the complete application evidence (the successor continuation attempt, which differs from targetAttemptId, provider invocation, committed request manifest, iteration, time) and the effective boundary `next_iteration`, and no terminal reason (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "checks": [
+        "direction_application_attempt_differs_from_target",
+        "direction_content_within_canonical_bound"
+      ]
+    },
+    {
+      "path": "fixtures/valid/direction-superseded.json",
+      "expect": "valid",
+      "focus": "A superseded Direction carries explicit supersession evidence naming the replacing Direction and a terminal reason coded superseded, and no application (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction"
+    },
+    {
+      "path": "fixtures/valid/direction-rejected.json",
+      "expect": "valid",
+      "focus": "A rejected Direction carries a structured terminal reason from the rejected code group and never an application or supersession (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction"
+    },
+    {
+      "path": "fixtures/valid/direction-cancelled.json",
+      "expect": "valid",
+      "focus": "A cancelled Direction carries a structured terminal reason from the cancelled code group and never an application or supersession (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction"
+    },
+    {
+      "path": "fixtures/invalid/direction-unknown-state-rejected.json",
+      "expect": "invalid",
+      "focus": "DirectionState is closed to pending|applied|superseded|rejected|cancelled: an unknown state is rejected by enum, not preserved.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "enum"
+    },
+    {
+      "path": "fixtures/invalid/direction-pending-with-application-rejected.json",
+      "expect": "invalid",
+      "focus": "A pending Direction has not been applied: carrying application evidence is rejected structurally (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "not"
+    },
+    {
+      "path": "fixtures/invalid/direction-applied-without-application-rejected.json",
+      "expect": "invalid",
+      "focus": "An applied Direction without its application evidence and effective boundary is rejected: applied is a claim that must be evidenced by the committed request manifest (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/direction-applied-with-terminal-reason-rejected.json",
+      "expect": "invalid",
+      "focus": "applied is terminal-success: a terminal reason belongs only to Directions that were never applied (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "not"
+    },
+    {
+      "path": "fixtures/invalid/direction-superseded-without-supersession-rejected.json",
+      "expect": "invalid",
+      "focus": "A superseded Direction must name its replacement through supersession evidence: a terminal reason alone does not say what superseded it (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/direction-superseded-wrong-reason-code-rejected.json",
+      "expect": "invalid",
+      "focus": "A superseded Direction's terminal reason code is exactly superseded: another state's code is rejected by const (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/direction-rejected-without-reason-rejected.json",
+      "expect": "invalid",
+      "focus": "A rejected Direction without its structured terminal reason is rejected: a terminal non-application is always explained (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/direction-rejected-wrong-reason-code-rejected.json",
+      "expect": "invalid",
+      "focus": "A rejected Direction's reason belongs to the rejected code group: a cancelled-group code is rejected by enum (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "enum"
+    },
+    {
+      "path": "fixtures/invalid/direction-cancelled-with-supersession-rejected.json",
+      "expect": "invalid",
+      "focus": "Only a superseded Direction carries supersession evidence: a cancelled Direction naming one is rejected (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "not"
+    },
+    {
+      "path": "fixtures/invalid/direction-missing-target-attempt-rejected.json",
+      "expect": "invalid",
+      "focus": "targetAttemptId is part of the required scope: a Direction that does not name the running Attempt it was aimed at is rejected (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/direction-wrong-requested-boundary-rejected.json",
+      "expect": "invalid",
+      "focus": "The projected requestedBoundary mirrors the request: exactly earliest_safe in C6 (the effective boundary is the separate field, exactly next_iteration once applied).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/direction-extra-field-rejected.json",
+      "expect": "invalid",
+      "focus": "The Direction projection is closed: an unmodelled member such as a provider note is rejected by additionalProperties:false.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/valid/generation-job-running-versioned.json",
+      "expect": "valid",
+      "focus": "A running GenerationJob exposes its real control token: `version` is the value a later SubmitSteeringInput states as expectedGenerationVersion (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob"
+    },
+    {
+      "path": "fixtures/invalid/generation-job-missing-version-rejected.json",
+      "expect": "invalid",
+      "focus": "GenerationJob.version is required: a Job projection without its control token cannot be steered against and is rejected, never defaulted (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/generation-job-zero-version-rejected.json",
+      "expect": "invalid",
+      "focus": "GenerationJob.version is a positive integer: zero is not a control token, because the authoritative durable projection initializes the Job version at 1 and enforces version >= 1 (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob",
+      "expected_error_contains": "minimum"
+    },
+    {
+      "path": "fixtures/invalid/generation-job-negative-version-rejected.json",
+      "expect": "invalid",
+      "focus": "GenerationJob.version is a positive integer: a negative value is not a control token (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob",
+      "expected_error_contains": "minimum"
+    },
+    {
+      "path": "fixtures/valid/snapshot-generation-jobs-and-directions.json",
+      "expect": "valid",
+      "focus": "ConversationSnapshotResult carries the complete generationJobs projection (each with its version) and the actor's own directions: path.generationJobIds equals the listed jobs, every direction is the viewing actor's and names a listed job (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ConversationSnapshotResult",
+      "checks": [
+        "snapshot_generation_projection_consistent"
+      ]
+    },
+    {
+      "path": "fixtures/invalid/snapshot-direction-unlisted-job-rejected.json",
+      "expect": "invalid",
+      "focus": "A direction naming a Generation Job the snapshot's generationJobs does not state is rejected relationally: a Direction is never projected without the Job it steers (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ConversationSnapshotResult",
+      "checks": [
+        "snapshot_generation_projection_consistent"
+      ],
+      "expected_error_contains": "not listed in generationJobs"
+    },
+    {
+      "path": "fixtures/invalid/snapshot-direction-other-actor-rejected.json",
+      "expect": "invalid",
+      "focus": "directions is actor-scoped: a Direction authored by any actor other than the snapshot's own viewState.actorId is rejected relationally (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ConversationSnapshotResult",
+      "checks": [
+        "snapshot_generation_projection_consistent"
+      ],
+      "expected_error_contains": "actorId"
+    },
+    {
+      "path": "fixtures/invalid/snapshot-generation-jobs-incomplete-rejected.json",
+      "expect": "invalid",
+      "focus": "generationJobs is the complete job projection: a snapshot whose path.generationJobIds names a Job generationJobs omits is a partial publish and is rejected relationally (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ConversationSnapshotResult",
+      "checks": [
+        "snapshot_generation_projection_consistent"
+      ],
+      "expected_error_contains": "does not equal"
+    },
+    {
+      "path": "fixtures/valid/direction-state-changed-event.json",
+      "expect": "valid",
+      "focus": "chat.direction.state_changed is identity only: Direction and Job identity, actor scope, state, versions and sequences -- no authored content (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/DirectionStateChangedEvent"
+    },
+    {
+      "path": "fixtures/valid/generation-iteration-completed-event.json",
+      "expect": "valid",
+      "focus": "chat.generation.iteration_completed is job-scoped identity and counters only: attempt, zero-based iteration and the Job's control token after the iteration (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationIterationCompletedEvent"
+    },
+    {
+      "path": "fixtures/invalid/direction-state-changed-event-authored-content-rejected.json",
+      "expect": "invalid",
+      "focus": "The Direction state-change event carries no authored content: editableParts is rejected by additionalProperties:false (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/DirectionStateChangedEvent",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/invalid/direction-state-changed-event-content-hash-rejected.json",
+      "expect": "invalid",
+      "focus": "Not even the content digest rides on the state-change event: it is minimised to identity, so contentHash is rejected by additionalProperties:false (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/DirectionStateChangedEvent",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/invalid/direction-state-changed-event-unknown-state-rejected.json",
+      "expect": "invalid",
+      "focus": "The event's state is the closed DirectionState: an unknown state is rejected by enum (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/DirectionStateChangedEvent",
+      "expected_error_contains": "enum"
+    },
+    {
+      "path": "fixtures/invalid/generation-iteration-completed-event-missing-job-version-rejected.json",
+      "expect": "invalid",
+      "focus": "generationJobVersion is required on an iteration-completed event: a consumer must learn the Job's new control token from it (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationIterationCompletedEvent",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/valid/f2b-event-batch-direction-events.json",
+      "expect": "valid",
+      "focus": "An F2b event batch forwards both C6 events through the closed ChatEvent union in their identity-only shapes (C6, bridge protocol 2.0).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/EventBatchMessage"
+    },
+    {
+      "path": "fixtures/invalid/f2b-event-batch-direction-authored-content-rejected.json",
+      "expect": "invalid",
+      "focus": "A Direction state-change event carrying editableParts is rejected when forwarded through the bridge: the event binding is exact, so authored content cannot ride the event stream (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/EventBatchMessage",
+      "expected_error_contains": "oneOf"
+    },
+    {
+      "path": "fixtures/valid/f2b-context-bound-supports-direction.json",
+      "expect": "valid",
+      "focus": "Host-issued admission handshake declaring supportsDirection true (F2b 2.0 capability flag): the renderer may send SubmitSteeringInput and receive direction items and events.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage"
+    },
+    {
+      "path": "fixtures/valid/f2b-context-bound-supports-direction-false.json",
+      "expect": "valid",
+      "focus": "supportsDirection false is a valid explicit declaration that Directions are unavailable; it is equivalent to absence and refuses SubmitSteeringInput the same way.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage"
+    },
+    {
+      "path": "fixtures/invalid/f2b-context-bound-supports-direction-not-boolean-rejected.json",
+      "expect": "invalid",
+      "focus": "supportsDirection is a strict boolean: a string such as \"yes\" is rejected and never coerced.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
+      "expected_error_contains": "boolean"
+    },
+    {
+      "path": "fixtures/invalid/f2b-context-bound-supports-direction-number-rejected.json",
+      "expect": "invalid",
+      "focus": "supportsDirection is a strict boolean: the integer 1 is rejected and never coerced to true.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
+      "expected_error_contains": "boolean"
+    },
+    {
+      "path": "fixtures/valid/f2b-command-submit-steering-input.json",
+      "expect": "valid",
+      "focus": "SubmitSteeringInput is a hosted command kind whose payload validates against the dedicated SubmitSteeringInputRequest (bridge protocol 2.0, C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandMessage"
+    },
+    {
+      "path": "fixtures/invalid/f2b-command-steering-generic-payload-rejected.json",
+      "expect": "invalid",
+      "focus": "A SubmitSteeringInput command whose payload is the generic referenced-work shape is rejected: the kind is bound to the dedicated request only (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandMessage",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/f2b-command-steering-nonempty-attachments-rejected.json",
+      "expect": "invalid",
+      "focus": "A SubmitSteeringInput command naming an attachment is rejected through the bound payload schema: attachments may only be empty in C6.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandMessage",
+      "expected_error_contains": "maxItems"
+    },
+    {
+      "path": "fixtures/valid/f2b-carrier-envelope-command-steering.json",
+      "expect": "valid",
+      "focus": "A module->host command carrier whose payload is a SubmitSteeringInput bridge command: the inner protocol is 2.0 while the outer Platform carrier `v` stays 1.0 (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
+      "checks": [
+        "f2b_encoded_envelope_within_carrier_bound"
+      ]
+    },
+    {
+      "path": "fixtures/valid/f2b-snapshot-item-direction.json",
+      "expect": "valid",
+      "focus": "BridgeSnapshotItem itemKind direction maps its payload to generation.schema.json#/$defs/Direction (C6, bridge protocol 2.0).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem"
+    },
+    {
+      "path": "fixtures/invalid/f2b-snapshot-item-direction-mismatched-payload-rejected.json",
+      "expect": "invalid",
+      "focus": "itemKind direction with a GenerationJob-shaped payload is rejected: the itemKind/payload mapping is exact for the new member too (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/f2b-snapshot-item-direction-invalid-state-rejected.json",
+      "expect": "invalid",
+      "focus": "itemKind direction whose Direction payload is structurally inconsistent (applied without application evidence) is rejected: the payload is validated against the exact Direction schema, not merely its shape (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/f2b-snapshot-item-direction-extra-field-rejected.json",
+      "expect": "invalid",
+      "focus": "itemKind direction rejects an unmodelled payload member, exactly as the bare Direction projection does (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/valid/f2b-refusal-capability-unavailable.json",
+      "expect": "valid",
+      "focus": "A capability_unavailable refusal: the host does not offer Directions in this bound context. It carries no deniedCapability and is not forbidden_capability (C6, bridge protocol 2.0).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/RefusalMessage"
+    },
+    {
+      "path": "fixtures/invalid/f2b-refusal-capability-unavailable-denied-capability-rejected.json",
+      "expect": "invalid",
+      "focus": "capability_unavailable never carries deniedCapability: that member is present if and only if the reason is forbidden_capability, so the two reasons cannot be conflated.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/RefusalMessage",
+      "expected_error_contains": "not"
+    },
+    {
+      "path": "fixtures/invalid/f2b-refusal-capability-unavailable-wrong-safe-message-rejected.json",
+      "expect": "invalid",
+      "focus": "capability_unavailable is bound to its own display copy: forbidden_capability's copy is rejected by the reason->safeMessage const binding.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/RefusalMessage",
+      "expected_error_contains": "This feature is not available in your current session."
+    },
+    {
+      "path": "fixtures/invalid/f2b-refusal-forbidden-capability-with-unavailable-copy-rejected.json",
+      "expect": "invalid",
+      "focus": "The new copy does not leak into forbidden_capability: a forbidden_capability refusal carrying the capability_unavailable string is rejected by the const binding.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/RefusalMessage",
+      "expected_error_contains": "This action is not available from the hosted view."
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-34-direction-command-capability-supported.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "valid",
+      "focus": "In a context that declares supportsDirection true, a pending direction snapshot item, a SubmitSteeringInput command, its accepted result and the identity-only state-change event are all admissible (C6).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches",
+        "f2b_direction_requires_capability"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-35-direction-command-capability-unavailable-refused.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "valid",
+      "focus": "In a context that does not declare supportsDirection, a SubmitSteeringInput command is refused capability_unavailable immediately: absence of the flag means unavailable, never inferred availability (C6).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches",
+        "f2b_direction_requires_capability"
+      ]
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-36-direction-command-capability-unavailable-not-refused-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A SubmitSteeringInput command in a context that does not declare supportsDirection and is not refused capability_unavailable is a capability violation: the host must not process it (C6).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches",
+        "f2b_direction_requires_capability"
+      ],
+      "expected_error_contains": "capability_unavailable"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-37-direction-command-supports-direction-false-not-refused-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "supportsDirection false is unavailable exactly like absence: a SubmitSteeringInput command that is not refused capability_unavailable is rejected (C6).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches",
+        "f2b_direction_requires_capability"
+      ],
+      "expected_error_contains": "capability_unavailable"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-38-direction-item-without-capability-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A direction snapshot item delivered into a context that does not declare supportsDirection is a protocol violation: the host projects Directions only where the capability was declared (C6).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches",
+        "f2b_direction_requires_capability"
+      ],
+      "expected_error_contains": "supportsDirection"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-39-direction-state-event-without-capability-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A chat.direction.state_changed event delivered into a context that does not declare supportsDirection is a protocol violation, exactly as a direction snapshot item is (C6).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches",
+        "f2b_direction_requires_capability"
+      ],
+      "expected_error_contains": "supportsDirection"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-40-direction-item-actor-mismatch-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A direction item whose actorId differs from the bound context's actorId is another actor's authored content leaking into this context, caught relationally (C6, F2b freeze §12.9).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches",
+        "f2b_direction_requires_capability"
+      ],
+      "expected_error_contains": "payload.actorId"
+    },
+    {
+      "path": "fixtures/invalid/direction-applied-effective-boundary-earliest-safe-rejected.json",
+      "expect": "invalid",
+      "focus": "An applied Direction whose effectiveBoundary is `earliest_safe` is rejected: a requested boundary may be `earliest_safe`, but an applied Direction took effect exactly at `next_iteration` (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/direction-applied-application-missing-provider-invocation-id-rejected.json",
+      "expect": "invalid",
+      "focus": "DirectionApplication requires providerInvocationId: applied is evidenced by the committed request manifest of a provider invocation, so evidence without the invocation is rejected (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/direction-applied-application-missing-request-manifest-id-rejected.json",
+      "expect": "invalid",
+      "focus": "DirectionApplication requires requestManifestId: applied is established only after the committed request manifest binds the Direction, so evidence without the manifest is rejected (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/direction-applied-application-extra-field-rejected.json",
+      "expect": "invalid",
+      "focus": "DirectionApplication is closed: an unmodelled member such as a manifest digest is rejected by additionalProperties:false (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "additionalProperties"
+    },
+    {
+      "path": "fixtures/invalid/direction-applied-application-wrong-shape-rejected.json",
+      "expect": "invalid",
+      "focus": "DirectionApplication.requestManifestId is a RequestManifestId string identity: a number is rejected (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "expected_error_contains": "type"
+    },
+    {
+      "path": "fixtures/invalid/direction-image-part-rejected.json",
+      "expect": "invalid",
+      "focus": "A Direction is text-only: an `image` part carrying a URL is rejected by the closed DirectionTextPart shape (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-image-part-rejected.json",
+      "expect": "invalid",
+      "focus": "SubmitSteeringInput is text-only: an `image` part carrying a URL is rejected by the closed DirectionTextPart shape (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-text-payload-extra-key-rejected.json",
+      "expect": "invalid",
+      "focus": "A steering text part admits only payload.text: an arbitrary payload key such as a URL is rejected by additionalProperties:false (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-empty-text-rejected.json",
+      "expect": "invalid",
+      "focus": "A steering text part carries non-empty bounded text: an empty string is rejected by minLength (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
+      "expected_error_contains": "minLength"
+    },
+    {
+      "path": "fixtures/invalid/direction-submitted-result-applied-state-rejected.json",
+      "expect": "invalid",
+      "focus": "A successful SubmitSteeringInput durably creates the Direction `pending`: a result stating any other state, here `applied`, is rejected by const (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/DirectionSubmittedResult",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/snapshot-generation-jobs-omitted-rejected.json",
+      "expect": "invalid",
+      "focus": "ConversationSnapshotResult requires generationJobs even when empty: a snapshot omitting it is invalid, never read as `no Jobs` (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ConversationSnapshotResult",
+      "checks": [
+        "snapshot_generation_projection_consistent"
+      ],
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/snapshot-directions-omitted-rejected.json",
+      "expect": "invalid",
+      "focus": "ConversationSnapshotResult requires the actor-scoped directions even when empty: a snapshot omitting it is invalid, never read as `no Directions` (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ConversationSnapshotResult",
+      "checks": [
+        "snapshot_generation_projection_consistent"
+      ],
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/traces/f2b-trace-41-direction-event-actor-mismatch-rejected.json",
+      "kind": "trace",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeMessage",
+      "expect": "invalid",
+      "focus": "A chat.direction.state_changed event whose actorId differs from the bound context's actorId is another actor's Direction activity leaking into this context, caught relationally; the event stays identity-only (C6, F2b freeze §12.9).",
+      "checks": [
+        "f2b_context_mismatch_refused",
+        "f2b_no_duplicate_bind",
+        "f2b_lifecycle_state_machine",
+        "f2b_late_command_refused",
+        "f2b_dispose_cleanup_no_further_host_traffic",
+        "f2b_backpressure_honoured",
+        "f2b_backpressure_pause_watermark_and_overflow",
+        "f2b_snapshot_paging_discipline",
+        "f2b_snapshot_event_cursor_continuity",
+        "f2b_resnapshot_triggers_snapshot_request",
+        "f2b_negotiated_bounds_enforced",
+        "f2b_event_and_snapshot_context_consistent",
+        "f2b_no_duplicate_event_ids_across_batches",
+        "f2b_direction_requires_capability"
+      ],
+      "expected_error_contains": "actorId does not match"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-protocol-version-1-0-rejected.json",
+      "expect": "invalid",
+      "focus": "The SCHEMA, not only the codec negotiation helper, closes the D07 wire version: a SubmitSteeringInputRequest stating protocolVersion 1.0 (the legacy D07 wire protocol 1.0) is well-formed but unsupported, so it fails the exact `const` \"2.0\" (C6; GenerationJob.version became required, so a 1.0 document is never read as a C6 one).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-protocol-version-1-1-rejected.json",
+      "expect": "invalid",
+      "focus": "The SCHEMA, not only the codec negotiation helper, closes the D07 wire version: a SubmitSteeringInputRequest stating protocolVersion 1.1 (the intermediate 1.1) is well-formed but unsupported, so it fails the exact `const` \"2.0\" (C6; GenerationJob.version became required, so a 1.0 document is never read as a C6 one).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-protocol-version-2-1-rejected.json",
+      "expect": "invalid",
+      "focus": "The SCHEMA, not only the codec negotiation helper, closes the D07 wire version: a SubmitSteeringInputRequest stating protocolVersion 2.1 (an unsupported minor of the supported major) is well-formed but unsupported, so it fails the exact `const` \"2.0\" (C6; GenerationJob.version became required, so a 1.0 document is never read as a C6 one).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/direction-submitted-result-protocol-version-1-0-rejected.json",
+      "expect": "invalid",
+      "focus": "Every D07 result is bound to the exact wire version too: a DirectionSubmittedResult stating the legacy protocolVersion 1.0 is rejected by const \"2.0\" in the schema (C6).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/DirectionSubmittedResult",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/direction-applied-same-attempt-rejected.json",
+      "expect": "invalid",
+      "focus": "An applied Direction whose application.attemptId equals its targetAttemptId is rejected relationally: targetAttemptId is the running Attempt that accepted the Direction, and application.attemptId is the successor continuation Attempt whose committed request manifest binds it for its next iteration, so the two MUST differ (C6). The document is schema-valid; only the cross-member rule rejects it.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "checks": [
+        "direction_application_attempt_differs_from_target"
+      ],
+      "expected_error_contains": "must differ"
+    },
+    {
+      "path": "fixtures/invalid/direction-content-hash-mismatch-rejected.json",
+      "expect": "invalid",
+      "focus": "A structurally valid pending Direction whose contentHash is well-formed lowercase 64-hex but is not the SHA-256 of the UTF-8 bytes of its canonical stored content object {\"editableParts\": [...]} (as to_canonical_json serializes it) is rejected relationally. The pattern cannot recompute a hash, so only the package codec rule (direction_content_hash; validate_direction) rejects it; the diagnostic never reproduces authored text.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction",
+      "checks": [
+        "direction_content_hash_matches_content"
+      ],
+      "expected_error_contains": "does not match"
     }
   ]
 }

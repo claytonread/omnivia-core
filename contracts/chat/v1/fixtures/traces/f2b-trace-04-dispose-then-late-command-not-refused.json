@@ -2,7 +2,7 @@
   "messages": [
     {
       "messageType": "bridge.context-bound",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-03",
       "workspaceId": "ws-acme",
@@ -15,14 +15,14 @@
     },
     {
       "messageType": "bridge.snapshot-request",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-03",
       "requestedAt": "2026-08-20T10:00:00Z"
     },
     {
       "messageType": "bridge.snapshot-page",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-03",
       "snapshotId": "bsnap-t04",
@@ -34,7 +34,7 @@
     },
     {
       "messageType": "bridge.event-batch",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-03",
       "events": [
@@ -58,7 +58,7 @@
     },
     {
       "messageType": "bridge.context-disposed",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-03",
       "reason": "explicit_dispose",
@@ -66,13 +66,13 @@
     },
     {
       "messageType": "bridge.command",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-03",
       "commandId": "cmd-t04-late",
       "commandKind": "SubmitMessage",
       "payload": {
-        "protocolVersion": "1.0",
+        "protocolVersion": "2.0",
         "commandId": "cmd-t04-late",
         "workspaceId": "ws-acme",
         "conversationId": "conv-0001",

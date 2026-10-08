@@ -229,6 +229,58 @@
         "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
       }
     },
+    "GenerationIterationCompletedEvent": {
+      "title": "GenerationIterationCompletedEvent",
+      "description": "One iteration of a running Generation Attempt finished (`chat.generation.iteration_completed`, C6). Job-scoped like `GenerationEvent`: it carries `generationEventSequence`, never a graph revision, because no Message is committed by an iteration. Identity and counters only, minimised exactly as every other transport event is (REF042-RULE-010): it names no generated text, Direction content, Provider endpoint, model, header or credential. `generationJobVersion` is REQUIRED immutable event-time evidence: the Job's control token as durably recorded when the iteration completed, written into the event payload at that moment. It can never be reconstructed from a later, mutable Job status projection (the Job's `version` advances on every later change), so an event stored without it is invalid rather than back-filled. A consumer holding an older version knows to re-read before stating `expectedGenerationVersion`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchId", "conversationId", "cursor", "eventId", "eventType", "generationAttemptId", "generationEventSequence", "generationJobId", "generationJobVersion", "iteration", "occurredAt", "schemaVersion", "triggerMessageId", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": { "const": "chat.generation.iteration_completed" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "generationJobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "generationAttemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationAttemptId" },
+        "triggerMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "generationJobVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobVersion" },
+        "iteration": {
+          "description": "Zero-based position of the iteration that just completed within its Generation Attempt.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "generationEventSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationEventSequence" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "DirectionStateChangedEvent": {
+      "title": "DirectionStateChangedEvent",
+      "description": "A Direction entered a new state (`chat.direction.state_changed`, C6). IDENTITY ONLY: it names the Direction, its scope, the new state and the versions a consumer needs to decide whether to re-read, and it carries no authored content -- no `editableParts`, no text, no `contentHash` and no terminal-reason sentence -- because the Direction is actor-scoped authored content and a transport event is minimised (REF042-RULE-010). The closed field set admits no arbitrary metadata, so content cannot ride in on it. A consumer reads the Direction itself through the actor-scoped `Direction` projection. Job-scoped like `GenerationEvent`: it carries `generationEventSequence`, never a graph revision.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "branchId", "conversationId", "cursor", "directionId", "directionVersion", "eventId", "eventType", "generationEventSequence", "generationJobId", "jobSequence", "occurredAt", "schemaVersion", "state", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": { "const": "chat.direction.state_changed" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "generationJobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "directionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionId" },
+        "jobSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionJobSequence" },
+        "state": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionState" },
+        "directionVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionVersion" },
+        "generationEventSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationEventSequence" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
     "ShareCreatedEvent": {
       "title": "ShareCreatedEvent",
       "type": "object",
@@ -268,7 +320,7 @@
     },
     "ChatEvent": {
       "title": "ChatEvent",
-      "description": "The discriminated union of every durable Chat transport event $def, keyed by `eventType` (REF-042 §23, CGAP-042-008). `GenerationEvent` alone represents the five terminal-and-lifecycle `chat.generation.*` discriminators; `GenerationTextAppendedEvent` is the separate closed branch for the live `chat.generation.text_appended` delta. Referenced by `bridge.schema.json#/$defs/EventBatchMessage` so F2b forwards only already-defined Chat events and adds no domain meaning of its own (freeze §12).",
+      "description": "The discriminated union of every durable Chat transport event $def, keyed by `eventType` (REF-042 §23, CGAP-042-008). `GenerationEvent` alone represents the five terminal-and-lifecycle `chat.generation.*` discriminators; `GenerationTextAppendedEvent` is the separate closed branch for the live `chat.generation.text_appended` delta, and `GenerationIterationCompletedEvent` and `DirectionStateChangedEvent` are the separate closed, identity-only branches for `chat.generation.iteration_completed` and `chat.direction.state_changed` (C6). Referenced by `bridge.schema.json#/$defs/EventBatchMessage` so F2b forwards only already-defined Chat events and adds no domain meaning of its own (freeze §12).",
       "oneOf": [
         { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/ConversationCreatedEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/MessageCommittedEvent" },
@@ -280,6 +332,8 @@
         { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/MessageTombstonedEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationIterationCompletedEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/DirectionStateChangedEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/ShareCreatedEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/ExportCreatedEvent" }
       ]

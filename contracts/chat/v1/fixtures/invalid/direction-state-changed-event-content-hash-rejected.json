@@ -1,0 +1,18 @@
+{
+  "eventId": "evt-dir-0001",
+  "eventType": "chat.direction.state_changed",
+  "schemaVersion": 1,
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "branchId": "branch-0001-original",
+  "actorId": "actor-alice",
+  "generationJobId": "job-0002",
+  "directionId": "dir-0001",
+  "jobSequence": 1,
+  "state": "applied",
+  "directionVersion": 2,
+  "generationEventSequence": 7,
+  "occurredAt": "2026-08-20T10:00:20Z",
+  "cursor": "cursor-opaque-0010",
+  "contentHash": "9aeaa1df9758c2a0d2d8636200724d70ca7395414018062e32f61a9c9cbc7d7a"
+}

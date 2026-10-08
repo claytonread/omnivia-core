@@ -2,7 +2,7 @@
   "messages": [
     {
       "messageType": "bridge.context-bound",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-26",
       "workspaceId": "ws-acme",
@@ -15,14 +15,14 @@
     },
     {
       "messageType": "bridge.snapshot-request",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-26",
       "requestedAt": "2026-08-20T10:00:00Z"
     },
     {
       "messageType": "bridge.snapshot-page",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-26",
       "snapshotId": "bsnap-t26",
@@ -34,7 +34,7 @@
     },
     {
       "messageType": "bridge.event-batch",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-26",
       "events": [
@@ -59,7 +59,7 @@
     },
     {
       "messageType": "bridge.event-batch",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-26",
       "events": [
@@ -84,7 +84,7 @@
     },
     {
       "messageType": "bridge.backpressure",
-      "bridgeProtocolVersion": "1.1",
+      "bridgeProtocolVersion": "2.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-26",
       "action": "pause",

@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "1.0",
+  "protocolVersion": "2.0",
   "commandId": "cmd-amend-0001",
   "failure": {
     "code": "idempotency_conflict",

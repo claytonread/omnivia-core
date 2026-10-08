@@ -547,9 +547,49 @@
         "idempotentReplay": { "type": "boolean" }
       }
     },
+    "SubmitSteeringInputRequest": {
+      "title": "SubmitSteeringInputRequest",
+      "description": "Submits one text-only Direction (C6) to a running Generation Job. Closed and deliberately narrow: it names the target Job and the Job `version` the caller observed (`expectedGenerationVersion`, a real control token), states that it expects the Job to be exactly `running` and asks for exactly the `earliest_safe` boundary, and carries only bounded authored `editableParts` as closed, text-only `DirectionTextPart`s (canonical authored text; no image, URL or arbitrary payload key). `attachmentReferences` and `contextReferences` are required but may only be empty in C6: there is no reference or target seam on this command. `supersedesDirectionId` is the one optional seam, naming an earlier Direction this one replaces. `commandId` is the sole idempotency key; the Direction identity is server-issued and never stated here.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "attachmentReferences", "commandId", "contextReferences", "conversationId", "editableParts", "expectedActiveState", "expectedGenerationVersion", "protocolVersion", "requestedBoundary", "targetGenerationJobId", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "targetGenerationJobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "expectedGenerationVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobVersion" },
+        "expectedActiveState": { "const": "running" },
+        "requestedBoundary": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/RequestedDirectionBoundary" },
+        "editableParts": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionTextPart" }, "minItems": 1, "maxItems": 16,
+          "description": "The authored Direction content: closed, text-only `DirectionTextPart`s. Bounded to fit the Direction's durable row: at most 16 parts of at most 4000 Unicode code points each, and the canonical JSON object `{\"editableParts\": [...]}` stored as the Direction's content -- keys sorted, compact separators, non-ASCII emitted as itself, as `to_canonical_json` serializes it -- is at most 16384 UTF-8 bytes. JSON Schema cannot compare an aggregate UTF-8 byte length, so that limit is normative contract metadata enforced by the package codec (`validate_direction_content`; `DIRECTION_CONTENT_MAX_UTF8_BYTES`), not by this keyword set." },
+        "attachmentReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReference" }, "maxItems": 0 },
+        "contextReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ContextReference" }, "maxItems": 0 },
+        "supersedesDirectionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionId" }
+      }
+    },
+    "DirectionSubmittedResult": {
+      "title": "DirectionSubmittedResult",
+      "description": "The typed result of `SubmitSteeringInput` (C6). Identity and state only: a successful submit durably creates the Direction `pending` (it is never applied, superseded, rejected or cancelled by the act of submitting), so `state` is exactly `pending`; a Direction that is already terminal is read back through the `Direction` projection, not through this result. It never echoes the authored content, which is read back through the actor-scoped `Direction` projection.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commandId", "directionId", "directionVersion", "generationJobId", "idempotentReplay", "jobSequence", "protocolVersion", "state"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "directionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionId" },
+        "generationJobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "jobSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionJobSequence" },
+        "directionVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DirectionVersion" },
+        "state": { "const": "pending" },
+        "idempotentReplay": { "type": "boolean" }
+      }
+    },
     "ReferencedWorkCommandRequest": {
       "title": "ReferencedWorkCommandRequest",
-      "description": "The shared shape for `RespondToWorkRequest`, `SubmitSteeringInput`, `InvokeTool`, `InvokeApp`, `StartWorkflow`, `StartAgentRun`, `ReviseArtifact` and `PlaceArtifactVersion`. Every one of these commands triggers or responds to execution owned entirely by another authority (App, Workflow, Agent, Tool or Artifact ownership); Chat contributes only the triggering Message context, a `TargetReference` and a bounded opaque `input`, and never originates operation semantics for the referenced authority (freeze §7).",
+      "description": "The shared shape for `RespondToWorkRequest`, `InvokeTool`, `InvokeApp`, `StartWorkflow`, `StartAgentRun`, `ReviseArtifact` and `PlaceArtifactVersion`. `SubmitSteeringInput` is deliberately not part of this shape: it steers Chat's own running Generation Job and has its own closed `SubmitSteeringInputRequest`. Every one of these commands triggers or responds to execution owned entirely by another authority (App, Workflow, Agent, Tool or Artifact ownership); Chat contributes only the triggering Message context, a `TargetReference` and a bounded opaque `input`, and never originates operation semantics for the referenced authority (freeze §7).",
       "type": "object",
       "additionalProperties": false,
       "required": ["actorId", "commandId", "commandName", "conversationId", "input", "protocolVersion", "targetReference", "workspaceId"],
@@ -557,7 +597,7 @@
         "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
         "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
         "commandName": {
-          "enum": ["RespondToWorkRequest", "SubmitSteeringInput", "InvokeTool", "InvokeApp", "StartWorkflow", "StartAgentRun", "ReviseArtifact", "PlaceArtifactVersion"]
+          "enum": ["RespondToWorkRequest", "InvokeTool", "InvokeApp", "StartWorkflow", "StartAgentRun", "ReviseArtifact", "PlaceArtifactVersion"]
         },
         "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
         "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },

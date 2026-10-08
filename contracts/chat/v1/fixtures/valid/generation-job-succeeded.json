@@ -6,6 +6,7 @@
   "jobId": "job-0001",
   "state": "succeeded",
   "graphRevisionObserved": 1,
+  "version": 3,
   "resultMessageId": "msg-0002-a1",
   "schemaVersion": 1,
   "createdAt": "2026-08-20T10:00:00Z",

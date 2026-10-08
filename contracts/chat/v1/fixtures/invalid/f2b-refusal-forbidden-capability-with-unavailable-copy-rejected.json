@@ -1,0 +1,10 @@
+{
+  "messageType": "bridge.refusal",
+  "bridgeProtocolVersion": "2.0",
+  "schemaVersion": 1,
+  "reason": "forbidden_capability",
+  "deniedCapability": "core_direct",
+  "safeMessage": "This feature is not available in your current session.",
+  "contextId": "bctx-0001",
+  "refusedCommandId": "cmd-hosted-0004"
+}

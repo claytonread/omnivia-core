@@ -1,0 +1,108 @@
+{
+  "conversation": {
+    "workspaceId": "ws-m1-audit-0001",
+    "conversationId": "conv-gb01-01",
+    "createdBy": "principal-s0",
+    "createdAt": "2052-05-22T14:13:20Z",
+    "state": "active",
+    "graphRevision": 1,
+    "latestConversationSequence": 1,
+    "schemaVersion": 1
+  },
+  "path": {
+    "workspaceId": "ws-m1-audit-0001",
+    "conversationId": "conv-gb01-01",
+    "branchId": "branch-gb01-main",
+    "headMessageId": "msg-gb01-root",
+    "graphRevision": 1,
+    "messages": [
+      {
+        "workspaceId": "ws-m1-audit-0001",
+        "conversationId": "conv-gb01-01",
+        "messageId": "msg-gb01-root",
+        "role": "user",
+        "authorType": "human",
+        "conversationSequence": 1,
+        "schemaVersion": 1,
+        "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "completionStatus": "complete",
+        "visibility": "standard",
+        "parts": [],
+        "createdAt": "2052-05-22T14:13:20Z",
+        "committedAt": "2052-05-22T14:13:20Z",
+        "authorId": "principal-s0"
+      }
+    ],
+    "generationJobIds": [
+      "job-gb01-01"
+    ],
+    "viewStateVersion": 1
+  },
+  "branch": {
+    "workspaceId": "ws-m1-audit-0001",
+    "conversationId": "conv-gb01-01",
+    "branchId": "branch-gb01-main",
+    "originKind": "original",
+    "initialHeadMessageId": "msg-gb01-root",
+    "currentHeadMessageId": "msg-gb01-root",
+    "createdBy": "principal-s0",
+    "createdAt": "2052-05-22T14:13:20Z",
+    "createdConversationSequence": 1,
+    "headVersion": 1,
+    "schemaVersion": 1,
+    "state": "open"
+  },
+  "viewState": {
+    "workspaceId": "ws-m1-audit-0001",
+    "conversationId": "conv-gb01-01",
+    "actorId": "principal-s0",
+    "activeBranchId": "branch-gb01-main",
+    "lastSeenGraphRevision": 1,
+    "schemaVersion": 1,
+    "updatedAt": "2052-05-22T14:13:20Z",
+    "version": 1
+  },
+  "generationJobs": [
+    {
+      "workspaceId": "ws-m1-audit-0001",
+      "conversationId": "conv-gb01-01",
+      "branchId": "branch-gb01-main",
+      "triggerMessageId": "msg-gb01-root",
+      "jobId": "job-gb01-01",
+      "state": "running",
+      "graphRevisionObserved": 1,
+      "currentAttemptId": "attempt-gb01-01",
+      "version": 3,
+      "schemaVersion": 1,
+      "createdAt": "2052-05-22T14:13:21Z",
+      "updatedAt": "2052-05-22T14:13:22Z"
+    }
+  ],
+  "directions": [
+    {
+      "workspaceId": "ws-m1-audit-0001",
+      "conversationId": "conv-gb01-01",
+      "branchId": "branch-gb01-main",
+      "actorId": "principal-other",
+      "directionId": "dir-gb01-01",
+      "jobId": "job-gb01-01",
+      "targetAttemptId": "attempt-gb01-01",
+      "jobSequence": 1,
+      "state": "pending",
+      "version": 1,
+      "editableParts": [
+        {
+          "type": "text",
+          "payload": {
+            "text": "Please focus the answer on the cost section."
+          }
+        }
+      ],
+      "contentHash": "c7e53b28a18b384fa46e77dc03b2ea8b0d859c20088859e54d7822fca17f3c50",
+      "requestedBoundary": "earliest_safe",
+      "schemaVersion": 1,
+      "createdAt": "2052-05-22T14:13:23Z",
+      "updatedAt": "2052-05-22T14:13:23Z"
+    }
+  ]
+}

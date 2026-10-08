@@ -1,12 +1,12 @@
 {
   "messageType": "bridge.command",
-  "bridgeProtocolVersion": "1.1",
+  "bridgeProtocolVersion": "2.0",
   "schemaVersion": 1,
   "contextId": "bctx-0001",
   "commandId": "cmd-hosted-0009",
   "commandKind": "SubmitMessage",
   "payload": {
-    "protocolVersion": "1.0",
+    "protocolVersion": "2.0",
     "commandId": "cmd-hosted-0009",
     "workspaceId": "ws-acme",
     "conversationId": "conv-0001",

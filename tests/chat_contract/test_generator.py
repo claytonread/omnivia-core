@@ -62,7 +62,7 @@ def test_the_pinned_digest_matches_the_currently_computed_one() -> None:
     digest, schema_count, fixture_count = generator.compute_resource_inventory_digest()
     assert digest == generator.EXPECTED_RESOURCE_INVENTORY_DIGEST
     assert schema_count == generator.EXPECTED_SCHEMA_COUNT == 13
-    assert fixture_count == generator.EXPECTED_FIXTURE_TREE_COUNT == 182
+    assert fixture_count == generator.EXPECTED_FIXTURE_TREE_COUNT == 270
 
 
 # --------------------------------------------------------------------------
@@ -128,7 +128,7 @@ def test_extract_vocabularies_returns_the_governed_counts() -> None:
     vocab = generator.extract_vocabularies()
     assert len(vocab["CHAT_COMMAND_NAMES"]) == 30
     assert len(vocab["ERROR_CODES"]) == 24
-    assert len(vocab["CHAT_EVENT_TYPES"]) == 16
+    assert len(vocab["CHAT_EVENT_TYPES"]) == 18
     assert len(vocab["F2A_PROVIDER_EVENT_TYPES"]) == 20
     assert len(vocab["F2A_FINISH_REASONS"]) == 7
     assert len(vocab["F2A_PROVIDER_ERROR_CODES"]) == 16
@@ -157,8 +157,8 @@ def _walk(node: object) -> Iterator[dict[str, object]]:
 def test_the_validation_metadata_covers_every_bounded_record() -> None:
     schemas = generator.extract_validation_schemas()
     assert set(generator.VALIDATION_ROOTS) == {
-        "ChatEvent", "CommandError", "CommandResultEnvelope", "ProviderInvocationRecord",
-        "ProviderInvocationRequest", "ResnapshotResponse",
+        "ChatEvent", "CommandError", "CommandResultEnvelope", "Direction", "ProviderInvocationRecord",
+        "ProviderInvocationRequest", "ResnapshotResponse", "SubmitSteeringInputRequest",
     }
     for root in generator.VALIDATION_ROOTS.values():
         assert root in schemas
@@ -202,3 +202,38 @@ def test_generation_is_deterministic() -> None:
     """The metadata is rendered as a Python literal, so its text has to be a
     function of the schema bytes alone -- otherwise ``--check`` would flap."""
     assert generator.generate() == generator.generate()
+
+
+# --------------------------------------------------------------------------
+# Provenance labels: approved baseline vs. the current review candidate
+# --------------------------------------------------------------------------
+
+
+def test_the_current_manifest_digest_is_computed_independently_of_the_approved_baseline() -> None:
+    import hashlib
+
+    from omnivia_core.chat_contract.v1 import generated
+
+    manifest_path = REPO_ROOT / "contracts" / "chat" / "v1" / "fixtures" / "FIXTURE-MANIFEST.json"
+    actual = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    assert generated.CURRENT_FIXTURE_MANIFEST_SHA256 == actual == generator.current_fixture_manifest_sha256()
+    assert "CURRENT_FIXTURE_MANIFEST_SHA256" in generated.__all__
+    # The approved baseline digest is never repinned to make the candidate look approved.
+    assert generated.FIXTURE_MANIFEST_SHA256 == "7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54"
+    assert generated.FIXTURE_MANIFEST_SHA256 != generated.CURRENT_FIXTURE_MANIFEST_SHA256
+
+
+def test_the_candidate_is_labelled_a_review_candidate_not_approved() -> None:
+    manifest = json.loads(
+        (REPO_ROOT / "contracts" / "chat" / "v1" / "fixtures" / "FIXTURE-MANIFEST.json").read_text(encoding="utf-8")
+    )
+    assert manifest["status"] == "review-candidate"
+    assert "not Approved, not Published, not Effective" in manifest["authority"]
+    text = GENERATED.read_text(encoding="utf-8")
+    assert "Approved BASELINE provenance" in text and "unchanged copy" not in text
+    assert "review-candidate" in text
+
+
+def test_the_d07_wire_version_constant_is_read_from_the_exact_schema_const() -> None:
+    assert generator.extract_protocol_version() == generator.PROTOCOL_VERSION == "2.0"
+    assert generator.DIRECTION_CONTENT_MAX_UTF8_BYTES == 16384

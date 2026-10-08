@@ -1,0 +1,25 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "branchId": "branch-0001-original",
+  "actorId": "actor-alice",
+  "directionId": "dir-0001",
+  "jobId": "job-0002",
+  "targetAttemptId": "attempt-0002-1",
+  "jobSequence": 1,
+  "state": "applied",
+  "version": 2,
+  "editableParts": [
+    {
+      "type": "text",
+      "payload": {
+        "text": "Please focus the answer on the cost section."
+      }
+    }
+  ],
+  "contentHash": "c7e53b28a18b384fa46e77dc03b2ea8b0d859c20088859e54d7822fca17f3c50",
+  "requestedBoundary": "earliest_safe",
+  "schemaVersion": 1,
+  "createdAt": "2026-08-20T10:00:10Z",
+  "updatedAt": "2026-08-20T10:00:20Z"
+}

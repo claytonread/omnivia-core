@@ -1,0 +1,21 @@
+{
+  "protocolVersion": "2.0",
+  "commandId": "cmd-steer-0001",
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "actorId": "actor-alice",
+  "targetGenerationJobId": "job-0002",
+  "expectedGenerationVersion": 3,
+  "expectedActiveState": "running",
+  "requestedBoundary": "next_iteration",
+  "editableParts": [
+    {
+      "type": "text",
+      "payload": {
+        "text": "Please focus the answer on the cost section."
+      }
+    }
+  ],
+  "attachmentReferences": [],
+  "contextReferences": []
+}

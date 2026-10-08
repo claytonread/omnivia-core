@@ -1,7 +1,7 @@
 {
   "boundContext": {
     "messageType": "bridge.context-bound",
-    "bridgeProtocolVersion": "1.1",
+    "bridgeProtocolVersion": "2.0",
     "schemaVersion": 1,
     "contextId": "bctx-0001",
     "workspaceId": "ws-acme",
@@ -14,13 +14,13 @@
   },
   "command": {
     "messageType": "bridge.command",
-    "bridgeProtocolVersion": "1.1",
+    "bridgeProtocolVersion": "2.0",
     "schemaVersion": 1,
     "contextId": "bctx-0001",
     "commandId": "cmd-hosted-0011",
     "commandKind": "SubmitMessage",
     "payload": {
-      "protocolVersion": "1.0",
+      "protocolVersion": "2.0",
       "commandId": "cmd-hosted-0011",
       "workspaceId": "ws-OTHER",
       "conversationId": "conv-0001",

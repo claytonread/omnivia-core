@@ -35,6 +35,7 @@ from test_chat_submit_message_resolver import (
     _request,
 )
 
+from omnivia_core.chat_contract.v1 import PROTOCOL_VERSION
 from omnivia_core.contracts.v1 import (
     ErrorResponseEnvelope,
     SuccessResponseEnvelope,
@@ -58,7 +59,7 @@ def _save_command(
     **extra: Any,
 ) -> dict[str, Any]:
     command: dict[str, Any] = {
-        "protocolVersion": "1.0",
+        "protocolVersion": PROTOCOL_VERSION,
         "commandId": command_id,
         "workspaceId": WORKSPACE_ID,
         "conversationId": CONVERSATION_ID,
@@ -109,7 +110,7 @@ def _discard(
     return _dispatcher(holder).dispatch(
         _request(
             {
-                "protocolVersion": "1.0",
+                "protocolVersion": PROTOCOL_VERSION,
                 "commandId": command_id,
                 "workspaceId": WORKSPACE_ID,
                 "conversationId": CONVERSATION_ID,

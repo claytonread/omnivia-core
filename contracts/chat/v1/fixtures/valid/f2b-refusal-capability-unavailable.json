@@ -1,0 +1,9 @@
+{
+  "messageType": "bridge.refusal",
+  "bridgeProtocolVersion": "2.0",
+  "schemaVersion": 1,
+  "reason": "capability_unavailable",
+  "safeMessage": "This feature is not available in your current session.",
+  "contextId": "bctx-dir-02",
+  "refusedCommandId": "cmd-steer-0001"
+}

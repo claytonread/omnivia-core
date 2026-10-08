@@ -1,4 +1,4 @@
-"""Fixture conformance for the 169 governed Chat Runtime Contract v1 fixtures.
+"""Fixture conformance for the governed Chat Runtime Contract v1 fixtures.
 
 Preloads all 13 canonical schemas (``contracts/chat/v1/schemas``) into one
 Draft 2020-12 ``referencing`` registry so cross-file ``$ref``s resolve, then
@@ -618,12 +618,18 @@ def _f2b_command_context_consistent(content: Document) -> CheckResult:
     return _problems(problems)
 
 
+#: Snapshot items that are the bound actor's own authored state, so their
+#: ``actorId`` is held to the bound context's, not merely workspace/conversation.
+_F2B_ACTOR_SCOPED_ITEM_KINDS = ("composer_draft", "direction")
+
+
 @_check("f2b_event_and_snapshot_context_consistent")
 def _f2b_event_and_snapshot_context_consistent(content: Document) -> CheckResult:
     """Every carried D07 record's ``workspaceId``/``conversationId`` inside a
     ``bridge.event-batch`` or ``bridge.snapshot-page`` is cross-checked against
-    the currently bound context. A ``composer_draft`` item is the bound actor's
-    own draft, so its ``actorId`` is cross-checked too."""
+    the currently bound context. A ``composer_draft`` or ``direction`` item, and a
+    ``chat.direction.state_changed`` event, are the bound actor's own, so their
+    ``actorId`` is cross-checked too."""
     bound = None
     problems = []
     for i, message in enumerate(content["messages"]):
@@ -646,7 +652,9 @@ def _f2b_event_and_snapshot_context_consistent(content: Document) -> CheckResult
             continue
         for j, record in carried:
             claims = ("workspaceId", "conversationId")
-            if label == "items" and message["items"][j].get("itemKind") == "composer_draft":
+            if (
+                label == "items" and message["items"][j].get("itemKind") in _F2B_ACTOR_SCOPED_ITEM_KINDS
+            ) or record.get("eventType") == "chat.direction.state_changed":
                 claims += ("actorId",)
             for claim in claims:
                 if claim in record and record[claim] != bound.get(claim):
@@ -654,6 +662,140 @@ def _f2b_event_and_snapshot_context_consistent(content: Document) -> CheckResult
                     problems.append(
                         f"message[{i}].{label}[{j}] {suffix} does not match the bound context"
                     )
+    return _problems(problems)
+
+
+@_check("f2b_direction_requires_capability")
+def _f2b_direction_requires_capability(content: Document) -> CheckResult:
+    """Directions exist in a bound context only if its ``bridge.context-bound``
+    declared ``supportsDirection: true`` (bridge protocol 2.0, C6). Absence and
+    ``false`` are the same posture: unavailable. There, a ``SubmitSteeringInput``
+    command must be refused ``capability_unavailable`` (never ``forbidden_capability``),
+    and the host must not project a ``direction`` snapshot item or deliver a
+    ``chat.direction.state_changed`` event at all."""
+    messages = content["messages"]
+    bound = None
+    problems = []
+    for i, message in enumerate(messages):
+        message_type = message.get("messageType")
+        if message_type == "bridge.context-bound":
+            bound = message
+            continue
+        if message_type == "bridge.context-disposed":
+            bound = None
+            continue
+        if bound is None or bound.get("supportsDirection") is True:
+            continue
+        if message_type == "bridge.command" and message.get("commandKind") == "SubmitSteeringInput":
+            following = messages[i + 1] if i + 1 < len(messages) else None
+            if not (
+                following
+                and following.get("messageType") == "bridge.refusal"
+                and following.get("reason") == "capability_unavailable"
+            ):
+                problems.append(
+                    f"message[{i}] SubmitSteeringInput arrived in a context whose supportsDirection "
+                    "is not true with no immediately following capability_unavailable refusal"
+                )
+        elif message_type == "bridge.snapshot-page":
+            for j, item in enumerate(message.get("items", [])):
+                if item.get("itemKind") == "direction":
+                    problems.append(
+                        f"message[{i}].items[{j}] is a direction item delivered into a context whose "
+                        "supportsDirection is not true"
+                    )
+        elif message_type == "bridge.event-batch":
+            for j, event in enumerate(message.get("events", [])):
+                if event.get("eventType") == "chat.direction.state_changed":
+                    problems.append(
+                        f"message[{i}].events[{j}] is a chat.direction.state_changed event delivered "
+                        "into a context whose supportsDirection is not true"
+                    )
+    return _problems(problems)
+
+
+@_check("direction_application_attempt_differs_from_target")
+def _direction_application_attempt_differs_from_target(content: Document) -> CheckResult:
+    """C6: an applied Direction's ``application.attemptId`` is the successor
+    continuation Attempt that bound it; ``targetAttemptId`` is the running Attempt
+    that accepted it. JSON Schema cannot compare the two members, so the package
+    codec's ``validate_direction`` states the rule and this check delegates to it."""
+    application = content.get("application")
+    if application is not None and application.get("attemptId") == content.get("targetAttemptId"):
+        return (False, "application.attemptId must differ from targetAttemptId (applied by a successor Attempt)")
+    return (True, "")
+
+
+@_check("direction_content_hash_matches_content")
+def _direction_content_hash_matches_content(content: Document) -> CheckResult:
+    """C6: ``contentHash`` is the bare SHA-256 of the UTF-8 bytes of the canonical
+    ``{"editableParts": [...]}`` object. A pattern cannot recompute a hash, so the
+    package codec states the rule and this check delegates to it."""
+    from omnivia_core.chat_contract.v1 import codec
+
+    try:
+        codec.validate_direction_content_hash(content)
+    except codec.ChatContractDecodeError as exc:
+        return (False, f"contentHash {exc.rule}")
+    return (True, "")
+
+
+@_check("direction_content_within_canonical_bound")
+def _direction_content_within_canonical_bound(content: Document) -> CheckResult:
+    """C6: the canonical ``{"editableParts": [...]}`` object is at most
+    ``DIRECTION_CONTENT_MAX_UTF8_BYTES`` UTF-8 bytes (the durable row cap)."""
+    from omnivia_core.chat_contract.v1 import codec
+
+    try:
+        codec.validate_direction_content(content["editableParts"])
+    except codec.ChatContractDecodeError as exc:
+        return (False, str(exc))
+    return (True, "")
+
+
+@_check("snapshot_generation_projection_consistent")
+def _snapshot_generation_projection_consistent(content: Document) -> CheckResult:
+    """C6: ``ConversationSnapshotResult.generationJobs`` and ``directions`` are
+    both required (empty when there is nothing to state); ``generationJobs`` is the complete job
+    projection of the selected branch (the same set ``path.generationJobIds``
+    names) and ``directions`` is the viewing actor's own, each on a listed Job
+    and in the snapshot's own scope. JSON Schema cannot compare one member of a
+    document to another, so the relation is checked here."""
+    jobs = content.get("generationJobs")
+    directions = content.get("directions")
+    path, viewer = content["path"], content["viewState"]
+    problems = []
+    # Both members are required, even when empty: omission is never "none".
+    if jobs is None:
+        problems.append("generationJobs is missing (required, an empty array when the branch has no Job)")
+    if directions is None:
+        problems.append("directions is missing (required, an empty array when the actor has none)")
+    if jobs is None or directions is None:
+        return _problems(problems)
+    listed = {job["jobId"] for job in jobs}
+    if set(path.get("generationJobIds", [])) != listed:
+        problems.append("path.generationJobIds does not equal the jobIds listed in generationJobs (partial projection)")
+    for job in jobs:
+        for claim in ("workspaceId", "conversationId", "branchId"):
+            if job.get(claim) != path.get(claim):
+                problems.append(f"generationJobs job {job['jobId']!r} {claim} does not match the snapshot path")
+    for direction in directions:
+        label = f"directions {direction.get('directionId')!r}"
+        if direction.get("actorId") != viewer.get("actorId"):
+            problems.append(f"{label} actorId does not match viewState.actorId (another actor's Direction)")
+        for claim in ("workspaceId", "conversationId", "branchId"):
+            if direction.get(claim) != path.get(claim):
+                problems.append(f"{label} {claim} does not match the snapshot path")
+        if direction.get("jobId") not in listed:
+            problems.append(f"{label} jobId {direction.get('jobId')!r} is not listed in generationJobs")
+        for check in (
+            "direction_application_attempt_differs_from_target",
+            "direction_content_hash_matches_content",
+            "direction_content_within_canonical_bound",
+        ):
+            ok, detail = _CHECKS[check](direction)
+            if not ok:
+                problems.append(f"{label} {detail}")
     return _problems(problems)
 
 
@@ -945,8 +1087,8 @@ def test_each_schema_is_a_valid_draft_2020_12_schema(name: str) -> None:
 
 
 def test_the_manifest_declares_the_governed_counts() -> None:
-    assert MANIFEST["counts"] == {"total": 181, "valid": 83, "invalid": 98}
-    assert len(MANIFEST["fixtures"]) == 181
+    assert MANIFEST["counts"] == {"total": 269, "valid": 105, "invalid": 164}
+    assert len(MANIFEST["fixtures"]) == 269
 
 
 def test_every_check_the_manifest_names_is_implemented() -> None:
@@ -1044,11 +1186,329 @@ def test_the_governed_relational_pair_fixtures_are_all_present() -> None:
         assert entry["checks"], entry["path"]
 
 
-def test_the_bridge_protocol_is_1_1_while_the_outer_carrier_stays_1_0() -> None:
-    """C5A: the explicit F2b protocol change (1.0 -> 1.1) leaves the independent
-    outer Platform carrier version untouched, and `composer_draft` is the one
-    added `itemKind`, bound to ComposerDraft."""
+def test_the_bridge_protocol_is_2_0_while_the_outer_carrier_stays_1_0() -> None:
+    """C6: the explicit F2b protocol change (1.1 -> 2.0) leaves the independent
+    outer Platform carrier version untouched, and `direction` is the one added
+    `itemKind`, bound to Direction."""
     defs = SCHEMAS["bridge.schema.json"]["$defs"]
-    assert defs["SupportedBridgeProtocolVersion"]["allOf"][1] == {"const": "1.1"}
+    assert defs["SupportedBridgeProtocolVersion"]["allOf"][1] == {"const": "2.0"}
     assert defs["PlatformCarrierContractVersion"]["const"] == "1.0"
-    assert defs["BridgeSnapshotItem"]["properties"]["itemKind"]["enum"][-1] == "composer_draft"
+    assert defs["BridgeSnapshotItem"]["properties"]["itemKind"]["enum"][-2:] == ["composer_draft", "direction"]
+
+
+# --------------------------------------------------------------------------
+# C6 Direction surface: structure the manifest fixtures cannot state alone
+# --------------------------------------------------------------------------
+
+
+def _def(schema: str, name: str) -> dict[str, Any]:
+    return SCHEMAS[f"{schema}.schema.json"]["$defs"][name]
+
+
+def test_steering_has_a_dedicated_request_and_leaves_the_generic_referenced_work_shape() -> None:
+    generic = _def("commands", "ReferencedWorkCommandRequest")["properties"]["commandName"]["enum"]
+    assert "SubmitSteeringInput" not in generic
+    assert len(generic) == 7
+    request = _def("commands", "SubmitSteeringInputRequest")
+    assert request["additionalProperties"] is False
+    assert set(request["required"]) == {
+        "actorId", "attachmentReferences", "commandId", "contextReferences", "conversationId", "editableParts",
+        "expectedActiveState", "expectedGenerationVersion", "protocolVersion", "requestedBoundary",
+        "targetGenerationJobId", "workspaceId",
+    }
+    assert request["properties"]["expectedActiveState"] == {"const": "running"}
+    assert request["properties"]["attachmentReferences"]["maxItems"] == 0
+    assert request["properties"]["contextReferences"]["maxItems"] == 0
+    assert "SubmitSteeringInput" in _def("commands", "ChatCommandName")["enum"]
+
+
+def test_the_hosted_command_allowlist_binds_steering_to_the_dedicated_request_only() -> None:
+    assert "SubmitSteeringInput" in _def("bridge", "HostedCommandKind")["enum"]
+    bindings = {
+        branch["if"]["properties"]["commandKind"]["const"]: branch["then"]["properties"]["payload"]["$ref"]
+        for branch in _def("bridge", "BridgeCommandMessage")["allOf"]
+    }
+    assert bindings["SubmitSteeringInput"].endswith("commands.schema.json#/$defs/SubmitSteeringInputRequest")
+    assert set(bindings) == set(_def("bridge", "HostedCommandKind")["enum"]), "the binding is total"
+
+
+def test_direction_enumerations_are_the_governed_closed_vocabularies() -> None:
+    assert _def("common", "DirectionState")["enum"] == ["pending", "applied", "superseded", "rejected", "cancelled"]
+    assert _def("common", "RequestedDirectionBoundary")["const"] == "earliest_safe"
+    assert _def("common", "EffectiveDirectionBoundary")["const"] == "next_iteration"
+    for retired in ("DirectionRequestedBoundary", "DirectionEffectiveBoundary"):
+        assert retired not in SCHEMAS["common.schema.json"]["$defs"]
+    assert {"chat.direction.state_changed", "chat.generation.iteration_completed"} <= set(
+        _def("common", "ChatEventType")["enum"]
+    )
+
+
+def test_the_direction_state_changed_event_is_identity_only() -> None:
+    event = _def("events", "DirectionStateChangedEvent")
+    assert event["additionalProperties"] is False
+    authored = {"editableParts", "text", "textDelta", "contentHash", "terminalReason", "safeMessage", "payload"}
+    assert authored.isdisjoint(event["properties"])
+    assert event["properties"]["eventType"] == {"const": "chat.direction.state_changed"}
+
+
+def test_the_snapshot_projections_are_required_and_bounded() -> None:
+    snapshot = _def("queries", "ConversationSnapshotResult")
+    assert set(snapshot["required"]) == {"conversation", "directions", "generationJobs", "path", "viewState"}
+    for name, target in (("generationJobs", "GenerationJob"), ("directions", "Direction")):
+        member = snapshot["properties"][name]
+        assert member["type"] == "array" and member["maxItems"] == 200
+        assert member["items"]["$ref"].endswith(f"generation.schema.json#/$defs/{target}")
+    assert "version" in _def("generation", "GenerationJob")["required"]
+
+
+def test_the_refusal_vocabulary_keeps_capability_unavailable_distinct_from_forbidden_capability() -> None:
+    reasons = _def("bridge", "BridgeRefusalReason")["enum"]
+    assert "capability_unavailable" in reasons and "forbidden_capability" in reasons
+    copies = _def("bridge", "RefusalSafeMessage")["enum"]
+    assert len(copies) == len(reasons) == 9
+    bindings = {
+        branch["if"]["properties"]["reason"]["const"]: branch["then"]["properties"]["safeMessage"]["const"]
+        for branch in _def("bridge", "RefusalMessage")["allOf"]
+    }
+    assert set(bindings) == set(reasons) and set(bindings.values()) == set(copies), "total and bijective"
+    assert bindings["capability_unavailable"] != bindings["forbidden_capability"]
+
+
+def test_supports_direction_is_an_optional_strict_boolean_and_durable_follow_up_is_preserved() -> None:
+    properties = _def("bridge", "ContextBoundMessage")["properties"]
+    required = _def("bridge", "ContextBoundMessage")["required"]
+    for name in ("supportsDirection", "acceptsDurableFollowUp"):
+        assert properties[name]["type"] == "boolean"
+        assert name not in required
+
+
+def test_capability_absent_false_and_true_are_each_valid_and_a_malformed_value_is_not() -> None:
+    base = load("fixtures/valid/f2b-context-bound.json")
+    ref = "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage"
+    assert "supportsDirection" not in base and _errors(ref, base) == []
+    for value in (True, False):
+        assert _errors(ref, {**base, "supportsDirection": value}) == []
+    for value in ("true", "yes", 1, 0, None, [], {}):
+        assert _errors(ref, {**base, "supportsDirection": value}) != [], value
+
+
+def test_only_bridge_protocol_2_0_is_accepted() -> None:
+    ref = "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage"
+    base = load("fixtures/valid/f2b-context-bound.json")
+    assert _errors(ref, base) == []
+    for version in ("1.0", "1.1", "2.1", "3.0", "2", "2.0.0"):
+        assert _errors(ref, {**base, "bridgeProtocolVersion": version}) != [], version
+
+
+_GEN = "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/"
+_CMD = "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/"
+_QRY = "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/"
+
+
+def test_applied_evidence_is_complete_and_closed() -> None:
+    application = _def("generation", "DirectionApplication")
+    assert application["additionalProperties"] is False
+    assert set(application["required"]) == {
+        "appliedAt", "attemptId", "iteration", "providerInvocationId", "requestManifestId",
+    }
+    assert application["properties"]["requestManifestId"]["$ref"].endswith("common.schema.json#/$defs/RequestManifestId")
+    assert _def("common", "RequestManifestId")["$ref"] == "#/$defs/WorkspaceScopedId"
+    for phrase in ("committed request manifest", "identity, version and content digest"):
+        assert phrase in application["description"]
+    applied = load("fixtures/valid/direction-applied.json")
+    assert _errors(_GEN + "Direction", applied) == []
+    for member in application["required"]:
+        broken = {**applied, "application": {k: v for k, v in applied["application"].items() if k != member}}
+        assert _errors(_GEN + "Direction", broken) != [], member
+    for value in (7, None, "", [], {}, "bad id!"):
+        broken = {**applied, "application": {**applied["application"], "requestManifestId": value}}
+        assert _errors(_GEN + "Direction", broken) != [], value
+    extra = {**applied, "application": {**applied["application"], "note": "x"}}
+    assert _errors(_GEN + "Direction", extra) != []
+
+
+def test_an_applied_effective_boundary_is_next_iteration_only() -> None:
+    applied = load("fixtures/valid/direction-applied.json")
+    assert applied["effectiveBoundary"] == "next_iteration"
+    for value in ("earliest_safe", "immediate", None):
+        assert _errors(_GEN + "Direction", {**applied, "effectiveBoundary": value}) != [], value
+    request = load("fixtures/valid/submit-steering-input-request.json")
+    assert request["requestedBoundary"] == "earliest_safe"
+    assert _errors(_CMD + "SubmitSteeringInputRequest", request) == []
+    assert _errors(_CMD + "SubmitSteeringInputRequest", {**request, "requestedBoundary": "next_iteration"}) != []
+
+
+def test_an_applied_direction_is_applied_by_a_successor_attempt() -> None:
+    """``targetAttemptId`` accepted the Direction; ``application.attemptId`` is the
+    successor continuation Attempt whose committed request manifest binds it."""
+    applied = load("fixtures/valid/direction-applied.json")
+    assert applied["application"]["attemptId"] != applied["targetAttemptId"]
+    assert _CHECKS["direction_application_attempt_differs_from_target"](applied)[0]
+    same = load("fixtures/invalid/direction-applied-same-attempt-rejected.json")
+    assert _errors(_GEN + "Direction", same) == [], "schema-valid: only the relational rule rejects it"
+    ok, detail = _CHECKS["direction_application_attempt_differs_from_target"](same)
+    assert not ok and "must differ" in detail
+    for text in (_def("generation", "DirectionApplication")["description"], _def("common", "EffectiveDirectionBoundary")["description"]):
+        assert "successor" in text and "targetAttemptId" in text
+
+
+def test_the_iteration_completed_job_version_is_required_immutable_event_evidence() -> None:
+    event = _def("events", "GenerationIterationCompletedEvent")
+    assert "generationJobVersion" in event["required"]
+    for phrase in ("REQUIRED immutable event-time evidence", "never be reconstructed from a later, mutable Job status projection"):
+        assert phrase in event["description"]
+    valid = load("fixtures/valid/generation-iteration-completed-event.json")
+    assert _errors("https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationIterationCompletedEvent", valid) == []
+
+
+def test_the_direction_content_hash_is_the_stored_object_digest_in_two_representations() -> None:
+    """One byte basis, two spellings: the public bare 64-hex ``contentHash`` and the
+    storage / request-manifest ``sha256:<hex>`` are the SHA-256 of the same UTF-8
+    bytes -- the canonical stored ``content_json`` object -- differing only by prefix."""
+    import hashlib
+
+    from omnivia_core.chat_contract.v1 import codec
+
+    direction = load("fixtures/valid/direction-pending.json")
+    stored = codec.to_canonical_json({"editableParts": direction["editableParts"]})
+    assert stored == (
+        '{"editableParts":[{"payload":{"text":"Please focus the answer on the cost section."},"type":"text"}]}'
+    )
+    assert len(stored.encode("utf-8")) <= 16384
+    bare = hashlib.sha256(stored.encode("utf-8")).hexdigest()
+    assert direction["contentHash"] == bare == codec.direction_content_hash(direction["editableParts"])
+    assert _errors(_GEN + "Direction", direction) == []
+    codec.validate_direction(direction)
+    migration_digest = f"sha256:{bare}"  # content_digest / request-manifest contentDigest
+    assert migration_digest.removeprefix("sha256:") == direction["contentHash"]
+    for description in (_def("generation", "Direction")["properties"]["contentHash"]["description"],):
+        for phrase in ("to_canonical_json", "content_json", "sha256:<hex>", "byte basis is identical"):
+            assert phrase in description
+
+
+def test_a_structurally_valid_direction_with_a_wrong_content_hash_is_refused() -> None:
+    from omnivia_core.chat_contract.v1 import codec
+
+    document = load("fixtures/invalid/direction-content-hash-mismatch-rejected.json")
+    assert _errors(_GEN + "Direction", document) == [], "well-formed hex: only the codec can refuse it"
+    with pytest.raises(codec.ChatContractDecodeError) as raised:
+        codec.validate_direction(document)
+    assert raised.value.path == "contentHash" and "does not match" in raised.value.rule
+    assert "cost section" not in str(raised.value), "the diagnostic never reproduces authored text"
+    good = load("fixtures/valid/direction-pending.json")
+    assert document["contentHash"] != good["contentHash"] and document["editableParts"] == good["editableParts"]
+
+
+def test_direction_bounds_are_honest_against_the_durable_row() -> None:
+    from omnivia_core.chat_contract.v1 import generated
+
+    assert generated.DIRECTION_CONTENT_MAX_UTF8_BYTES == 16384
+    text = _def("common", "DirectionTextPart")["properties"]["payload"]["properties"]["text"]
+    assert text["maxLength"] == 4000
+    for schema in (_def("generation", "Direction"), _def("commands", "SubmitSteeringInputRequest")):
+        parts = schema["properties"]["editableParts"]
+        assert parts["maxItems"] == 16
+        assert "16384 UTF-8 bytes" in parts["description"] and "validate_direction_content" in parts["description"]
+    request = load("fixtures/valid/submit-steering-input-request.json")
+    ref = _CMD + "SubmitSteeringInputRequest"
+    assert _errors(ref, {**request, "editableParts": [{"type": "text", "payload": {"text": "x" * 4000}}]}) == []
+    assert _errors(ref, {**request, "editableParts": [{"type": "text", "payload": {"text": "x" * 4001}}]}) != []
+    part = {"type": "text", "payload": {"text": "x"}}
+    assert _errors(ref, {**request, "editableParts": [part] * 16}) == []
+    assert _errors(ref, {**request, "editableParts": [part] * 17}) != []
+
+
+def test_the_d07_schema_closes_the_wire_version_to_exactly_2_0() -> None:
+    """The schema itself, not only the codec negotiation helper, refuses every
+    other well-formed version -- on every D07 command and result carrying it."""
+    syntax = _def("common", "ProtocolVersionSyntax")
+    assert "pattern" in syntax and "const" not in syntax
+    exact = _def("common", "ProtocolVersion")
+    assert exact["allOf"][1] == {"const": "2.0"}
+    request = load("fixtures/valid/submit-steering-input-request.json")
+    result = load("fixtures/valid/direction-submitted-result.json")
+    for ref, document in ((_CMD + "SubmitSteeringInputRequest", request), (_CMD + "DirectionSubmittedResult", result)):
+        assert _errors(ref, document) == []
+        for version in ("1.0", "1.1", "2.1", "3.0", "02.0", "2", "", None, 2.0):
+            assert _errors(ref, {**document, "protocolVersion": version}) != [], (ref, version)
+
+
+def test_direction_content_is_structurally_text_only() -> None:
+    part = _def("common", "DirectionTextPart")
+    assert part["additionalProperties"] is False and part["properties"]["payload"]["additionalProperties"] is False
+    for schema in (_def("generation", "Direction"), _def("commands", "SubmitSteeringInputRequest")):
+        items = schema["properties"]["editableParts"]
+        assert items["items"]["$ref"].endswith("common.schema.json#/$defs/DirectionTextPart")
+        assert items["minItems"] == 1 and items["maxItems"] == 16
+    request = load("fixtures/valid/submit-steering-input-request.json")
+    ref = _CMD + "SubmitSteeringInputRequest"
+    good = {"type": "text", "payload": {"text": "Focus on cost."}}
+    assert _errors(ref, {**request, "editableParts": [good]}) == []
+    bad_parts = [
+        {"type": "image", "payload": {"url": "https://example.invalid/x.png"}},
+        {"type": "image", "payload": {"text": "x"}},
+        {"type": "markdown", "payload": {"text": "x"}},
+        {"type": "text", "payload": {"text": "x", "url": "https://example.invalid/x"}},
+        {"type": "text", "payload": {"url": "https://example.invalid/x"}},
+        {"type": "text", "payload": {"text": ""}},
+        {"type": "text", "payload": {"text": "x" * 4001}},
+        {"type": "text", "payload": {"text": "x"}, "visibility": "standard"},
+        {"type": "text", "payload": {"text": "x"}, "extra": 1},
+        {"type": "text", "payload": {}},
+        {"type": "text"},
+        {"payload": {"text": "x"}},
+    ]
+    for bad in bad_parts:
+        assert _errors(ref, {**request, "editableParts": [bad]}) != [], bad
+        assert _errors(_GEN + "Direction", {**load("fixtures/valid/direction-pending.json"), "editableParts": [bad]}) != [], bad
+    assert _errors(ref, {**request, "editableParts": [good, bad_parts[0]]}) != []
+    assert _errors(ref, {**request, "editableParts": []}) != []
+
+
+def test_a_submitted_direction_is_exactly_pending() -> None:
+    assert _def("commands", "DirectionSubmittedResult")["properties"]["state"] == {"const": "pending"}
+    result = load("fixtures/valid/direction-submitted-result.json")
+    assert result["state"] == "pending" and _errors(_CMD + "DirectionSubmittedResult", result) == []
+    for state in ("applied", "superseded", "rejected", "cancelled", "Pending", None):
+        assert _errors(_CMD + "DirectionSubmittedResult", {**result, "state": state}) != [], state
+
+
+def test_generation_job_version_is_positive_and_one_is_the_initial_token() -> None:
+    version = _def("common", "GenerationJobVersion")
+    assert version["minimum"] == 1 and "initial authoritative token is `1`" in version["description"]
+    job = load("fixtures/valid/generation-job-running-versioned.json")
+    for good in (1, 2, 9007199254740991):
+        assert _errors(_GEN + "GenerationJob", {**job, "version": good}) == [], good
+    for bad in (0, -1, 9007199254740992, 1.5, "1", None):
+        assert _errors(_GEN + "GenerationJob", {**job, "version": bad}) != [], bad
+    assert _errors(_GEN + "GenerationJob", {k: v for k, v in job.items() if k != "version"}) != []
+
+
+def test_a_snapshot_must_state_jobs_and_directions_even_when_empty() -> None:
+    snapshot = load("fixtures/valid/snapshot-composer-drafts-present.json")
+    assert snapshot["generationJobs"] == [] and snapshot["directions"] == []
+    assert _errors(_QRY + "ConversationSnapshotResult", snapshot) == []
+    assert _CHECKS["snapshot_generation_projection_consistent"](snapshot)[0]
+    for member in ("generationJobs", "directions"):
+        omitted = {k: v for k, v in snapshot.items() if k != member}
+        assert _errors(_QRY + "ConversationSnapshotResult", omitted) != [], member
+        ok, detail = _CHECKS["snapshot_generation_projection_consistent"](omitted)
+        assert not ok and member in detail, member
+    full = load("fixtures/valid/snapshot-generation-jobs-and-directions.json")
+    assert _errors(_QRY + "ConversationSnapshotResult", full) == []
+
+
+def test_the_d07_wire_protocol_is_2_0_because_job_version_became_required() -> None:
+    from omnivia_core.chat_contract.v1 import generated
+
+    assert (generated.PROTOCOL_VERSION, generated.PROTOCOL_MAJOR) == ("2.0", "2")
+    assert generated.BRIDGE_PROTOCOL_VERSION == "2.0"
+    assert generated.PLATFORM_CARRIER_CONTRACT_VERSION == "1.0", "the outer carrier is an independent axis"
+    assert "version" in _def("generation", "GenerationJob")["required"]
+    assert all(
+        load(path)["protocolVersion"] == "2.0"
+        for path in (
+            "fixtures/valid/submit-steering-input-request.json",
+            "fixtures/valid/direction-submitted-result.json",
+        )
+    )
