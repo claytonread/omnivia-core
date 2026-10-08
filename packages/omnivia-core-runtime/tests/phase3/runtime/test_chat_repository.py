@@ -20,6 +20,8 @@ from types import MappingProxyType
 
 import pytest
 import test_application_audit_idempotency_migration as m1
+import test_chat_direction_migration as dm
+import test_chat_foundation_migration as foundation
 from omnivia_core_runtime.storage import chat
 from omnivia_core_runtime.storage.chat import StaleVersion
 from omnivia_core_runtime.storage.connection import StorageError
@@ -1424,3 +1426,540 @@ def test_snapshot_inputs_roll_back_only_a_transaction_it_opened(
 def test_this_lane_moved_no_public_contract() -> None:
     """W2-R is persistence over 0029; the frozen Chat wire surface is untouched."""
     assert CONTRACT_VERSION == "1.0.0-rc.1"
+
+
+# --- 13. C6 Directions and continuations (migration 0069) --------------------------
+
+DIRECTION_TEXT = "Focus on evidence."
+OTHER_ACTOR_ID = "actor-other"
+
+
+def direction_content(text: str = DIRECTION_TEXT) -> dict[str, object]:
+    return {"editableParts": [{"payload": {"text": text}, "type": "text"}]}
+
+
+def append_direction(w: chat.ChatWriter, sequence: int = 1, **overrides: object) -> None:
+    """A Direction on the migration fixture's running Job; `direction-<sequence>`."""
+    fields: dict[str, object] = {
+        "direction_id": f"direction-{sequence}",
+        "conversation_id": foundation.CONVERSATION_ID,
+        "branch_id": foundation.BRANCH_ID,
+        "generation_job_id": dm.JOB_ID,
+        "target_attempt_id": dm.ATTEMPT_1,
+        "direction_sequence": sequence,
+        "actor_id": foundation.ACTOR_ID,
+        "content": direction_content(),
+        "created_at_us": BASE_US + 300 + sequence,
+    }
+    fields.update(overrides)
+    w.append_direction(**fields)  # type: ignore[arg-type]
+
+
+def seed_direction(holder: m1.Owned, sequence: int = 1, **overrides: object) -> None:
+    dm.seed_job(holder)
+    with writer(holder) as w:
+        append_direction(w, sequence, **overrides)
+
+
+def read_direction(holder: m1.Owned, direction_id: str = "direction-1") -> chat.Direction:
+    found = chat.read_direction(
+        holder.connection, workspace_id=WORKSPACE_ID, direction_id=direction_id
+    )
+    assert found is not None
+    return found
+
+
+def apply_direction(holder: m1.Owned) -> None:
+    """direction-1 applied by attempt 2 with its bound manifest, through the repository."""
+    dm.add_manifest(holder)
+    with writer(holder) as w:
+        w.update_direction(
+            direction_id="direction-1",
+            expected_version=1,
+            state="applied",
+            terminal_at_us=BASE_US + 400,
+            effective_boundary="next_iteration",
+            applied_attempt_id=dm.ATTEMPT_2,
+            applied_provider_invocation_id=dm.INVOCATIONS[dm.ATTEMPT_2],
+            applied_request_manifest_id=dm.MANIFEST_IDS[dm.ATTEMPT_2],
+            applied_iteration=1,
+        )
+
+
+def continuation_fields(**overrides: object) -> dict[str, object]:
+    fields = dm.continuation_row(**overrides)
+    del fields["workspace_id"]
+    return fields
+
+
+def test_a_pending_direction_round_trips_exact_canonical_content_and_digest(
+    owned: m1.Owned,
+) -> None:
+    seed_direction(owned)
+
+    stored = owned.connection.execute(
+        "SELECT content_json, content_digest FROM omnivia_chat_directions "
+        "WHERE workspace_id = ? AND direction_id = 'direction-1'",
+        (WORKSPACE_ID,),
+    ).fetchone()
+    assert stored == (dm.CONTENT_JSON, dm.CONTENT_DIGEST)
+
+    expected = chat.Direction(
+        workspace_id=WORKSPACE_ID,
+        conversation_id=foundation.CONVERSATION_ID,
+        branch_id=foundation.BRANCH_ID,
+        generation_job_id=dm.JOB_ID,
+        target_attempt_id=dm.ATTEMPT_1,
+        direction_id="direction-1",
+        direction_sequence=1,
+        actor_id=foundation.ACTOR_ID,
+        state="pending",
+        version=1,
+        content=direction_content(),
+        content_digest=dm.CONTENT_DIGEST,
+        requested_boundary="earliest_safe",
+        effective_boundary=None,
+        supersedes_direction_id=None,
+        superseded_by_direction_id=None,
+        applied_attempt_id=None,
+        applied_provider_invocation_id=None,
+        applied_request_manifest_id=None,
+        applied_iteration=None,
+        terminal_reason=None,
+        schema_version=1,
+        created_at_us=BASE_US + 301,
+        updated_at_us=BASE_US + 301,
+        terminal_at_us=None,
+    )
+    assert read_direction(owned) == expected
+    assert chat.read_pending_direction(
+        owned.connection, workspace_id=WORKSPACE_ID, generation_job_id=dm.JOB_ID
+    ) == expected
+    assert chat.read_direction(
+        owned.connection, workspace_id=WORKSPACE_ID, direction_id="direction-absent"
+    ) is None
+    assert owned.connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert owned.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_append_direction_accepts_no_state_version_boundary_digest_or_evidence(
+    owned: m1.Owned,
+) -> None:
+    dm.seed_job(owned)
+    for field in ("state", "version", "requested_boundary", "content_digest", "applied_iteration"):
+        with pytest.raises(TypeError), writer(owned) as w:
+            append_direction(w, **{field: "x"})
+
+
+SIDE_JOB_ID = "generation-job-side"
+SIDE_ATTEMPT_ID = "generation-attempt-side-1"
+SUPERSEDED_REASON = {"code": "direction.superseded", "by": "direction-2"}
+
+
+def seed_side_branch_job(holder: m1.Owned) -> None:
+    """A running Job on a second branch of the same conversation, one Attempt."""
+    with foundation.guarded(holder):
+        foundation.insert(holder, foundation.BRANCHES, foundation.branch_row(branch_id="branch-side"))
+        foundation.insert(
+            holder,
+            foundation.JOBS,
+            foundation.generation_job_row(
+                generation_job_id=SIDE_JOB_ID,
+                branch_id="branch-side",
+                idempotency_key="generation-key-side",
+                created_at_us=BASE_US + 102,
+                updated_at_us=BASE_US + 102,
+            ),
+        )
+        foundation.insert(
+            holder,
+            foundation.PROVIDER_INVOCATIONS,
+            foundation.provider_invocation_row(
+                invocation_id="provider-invocation-side-1",
+                job_id=SIDE_JOB_ID,
+                generation_attempt_id=SIDE_ATTEMPT_ID,
+            ),
+        )
+        foundation.insert(
+            holder,
+            foundation.ATTEMPTS,
+            foundation.generation_attempt_row(
+                generation_attempt_id=SIDE_ATTEMPT_ID,
+                generation_job_id=SIDE_JOB_ID,
+                attempt_number=1,
+                retry_of_attempt_id=None,
+                provider_invocation_id="provider-invocation-side-1",
+                started_at_us=BASE_US + 201,
+            ),
+        )
+        foundation.insert(holder, dm.STATUS, dm.status_row(SIDE_JOB_ID, SIDE_ATTEMPT_ID))
+
+
+def test_direction_reads_are_workspace_conversation_branch_and_actor_scoped_and_ordered(
+    owned: m1.Owned,
+) -> None:
+    dm.seed_job(owned)
+    seed_side_branch_job(owned)
+    with writer(owned) as w:
+        append_direction(w, 1, direction_id="direction-other", generation_job_id=dm.OTHER_JOB_ID,
+                         target_attempt_id=dm.OTHER_ATTEMPT_1)
+        append_direction(w, 1, direction_id="direction-side", generation_job_id=SIDE_JOB_ID,
+                         target_attempt_id=SIDE_ATTEMPT_ID, branch_id="branch-side")
+        append_direction(w, 1)
+        # Supersession is one caller-held transaction: old row first, then the successor.
+        w.update_direction(
+            direction_id="direction-1",
+            expected_version=1,
+            state="superseded",
+            terminal_at_us=BASE_US + 400,
+            terminal_reason=SUPERSEDED_REASON,
+            superseded_by_direction_id="direction-2",
+        )
+        append_direction(
+            w, 2, supersedes_direction_id="direction-1", actor_id=OTHER_ACTOR_ID,
+            created_at_us=BASE_US + 400,
+        )
+
+    def ids(rows: tuple[chat.Direction, ...]) -> list[str]:
+        return [row.direction_id for row in rows]
+
+    scope = {"workspace_id": WORKSPACE_ID, "conversation_id": foundation.CONVERSATION_ID}
+    by_job = chat.read_directions_for_generation_job(
+        owned.connection, workspace_id=WORKSPACE_ID, generation_job_id=dm.JOB_ID
+    )
+    assert ids(by_job) == ["direction-1", "direction-2"]
+    assert (by_job[0].state, by_job[0].version) == ("superseded", 2)
+    assert by_job[0].terminal_reason == SUPERSEDED_REASON
+    assert by_job[1].supersedes_direction_id == "direction-1"
+    pending = chat.read_pending_direction(
+        owned.connection, workspace_id=WORKSPACE_ID, generation_job_id=dm.JOB_ID
+    )
+    assert pending is not None and pending.direction_id == "direction-2"
+
+    def actor_rows(branch_id: str, actor_id: str, **overrides: str):
+        return chat.read_actor_directions_for_branch(
+            owned.connection, **{**scope, **overrides}, branch_id=branch_id, actor_id=actor_id
+        )
+
+    # Job order, then sequence: generation-job-1 sorts before generation-job-2.
+    assert ids(actor_rows(foundation.BRANCH_ID, foundation.ACTOR_ID)) == [
+        "direction-1",
+        "direction-other",
+    ]
+    assert ids(actor_rows(foundation.BRANCH_ID, OTHER_ACTOR_ID)) == ["direction-2"]
+    assert ids(actor_rows("branch-side", foundation.ACTOR_ID)) == ["direction-side"]
+    assert actor_rows("branch-side", OTHER_ACTOR_ID) == ()
+    assert actor_rows(foundation.BRANCH_ID, foundation.ACTOR_ID, conversation_id="conv-nope") == ()
+    assert actor_rows(
+        foundation.BRANCH_ID, foundation.ACTOR_ID, workspace_id=OTHER_WORKSPACE_ID
+    ) == ()
+    assert chat.read_direction(
+        owned.connection, workspace_id=OTHER_WORKSPACE_ID, direction_id="direction-1"
+    ) is None
+    assert chat.read_pending_direction(
+        owned.connection, workspace_id=OTHER_WORKSPACE_ID, generation_job_id=dm.JOB_ID
+    ) is None
+    assert chat.read_directions_for_generation_job(
+        owned.connection, workspace_id=OTHER_WORKSPACE_ID, generation_job_id=dm.JOB_ID
+    ) == ()
+    assert owned.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_direction_cas_rejects_a_stale_version_and_a_second_terminal_transition(
+    owned: m1.Owned,
+) -> None:
+    seed_direction(owned)
+    before = read_direction(owned)
+    reason = {"code": "direction.rejected"}
+    for stale in (0, 2):
+        with pytest.raises(StaleVersion), writer(owned) as w:
+            w.update_direction(
+                direction_id="direction-1", expected_version=stale, state="rejected",
+                terminal_at_us=BASE_US + 400, terminal_reason=reason,
+            )
+    assert read_direction(owned) == before
+
+    # 0069 refuses a non-terminal target state even when the token matches.
+    with pytest.raises(sqlite3.IntegrityError, match="transition is invalid"), writer(owned) as w:
+        w.update_direction(
+            direction_id="direction-1", expected_version=1, state="pending",
+            terminal_at_us=BASE_US + 400,
+        )
+    assert read_direction(owned) == before
+
+    with writer(owned) as w:
+        w.update_direction(
+            direction_id="direction-1", expected_version=1, state="rejected",
+            terminal_at_us=BASE_US + 400, terminal_reason=reason,
+        )
+    terminal = read_direction(owned)
+    assert (terminal.state, terminal.version) == ("rejected", 2)
+    assert terminal.updated_at_us == terminal.terminal_at_us == BASE_US + 400
+    # A terminal row is never matched again, at its old or its new version.
+    for version in (1, 2):
+        with pytest.raises(StaleVersion), writer(owned) as w:
+            w.update_direction(
+                direction_id="direction-1", expected_version=version, state="cancelled",
+                terminal_at_us=BASE_US + 500, terminal_reason=reason,
+            )
+    assert read_direction(owned) == terminal
+
+
+@pytest.mark.parametrize("state", ["rejected", "cancelled"])
+def test_a_rejected_or_cancelled_direction_stores_its_reason_as_canonical_json(
+    owned: m1.Owned, state: str
+) -> None:
+    seed_direction(owned)
+    with writer(owned) as w:
+        w.update_direction(
+            direction_id="direction-1", expected_version=1, state=state,
+            terminal_at_us=BASE_US + 400, terminal_reason={"detail": "é", "code": "direction.closed"},
+        )
+    stored = owned.connection.execute(
+        "SELECT terminal_reason_json FROM omnivia_chat_directions WHERE direction_id = 'direction-1'"
+    ).fetchone()[0]
+    assert stored == '{"code":"direction.closed","detail":"é"}'
+    direction = read_direction(owned)
+    assert direction.state == state
+    assert direction.terminal_reason == {"code": "direction.closed", "detail": "é"}
+    assert direction.effective_boundary is None and direction.applied_attempt_id is None
+    # The terminal rule itself still demands a reason.
+    with pytest.raises(sqlite3.IntegrityError), writer(owned) as w:
+        append_direction(w, 2)
+        w.update_direction(
+            direction_id="direction-2", expected_version=1, state=state,
+            terminal_at_us=BASE_US + 500,
+        )
+    assert chat.read_direction(
+        owned.connection, workspace_id=WORKSPACE_ID, direction_id="direction-2"
+    ) is None
+
+
+def test_an_applied_direction_carries_its_complete_application_evidence(owned: m1.Owned) -> None:
+    seed_direction(owned)
+    apply_direction(owned)
+    applied = read_direction(owned)
+    assert (applied.state, applied.version) == ("applied", 2)
+    assert applied.effective_boundary == "next_iteration"
+    assert applied.requested_boundary == "earliest_safe"
+    assert applied.applied_attempt_id == dm.ATTEMPT_2
+    assert applied.applied_provider_invocation_id == dm.INVOCATIONS[dm.ATTEMPT_2]
+    assert applied.applied_request_manifest_id == dm.MANIFEST_IDS[dm.ATTEMPT_2]
+    assert applied.applied_iteration == 1
+    assert applied.terminal_reason is None
+    assert applied.updated_at_us == applied.terminal_at_us == BASE_US + 400
+    assert applied.content_digest == dm.CONTENT_DIGEST
+    # Incomplete evidence is refused by 0069 and leaves the row pending.
+    with pytest.raises(sqlite3.IntegrityError), writer(owned) as w:
+        append_direction(w, 2)
+        w.update_direction(
+            direction_id="direction-2", expected_version=1, state="applied",
+            terminal_at_us=BASE_US + 450, effective_boundary="next_iteration",
+        )
+    assert chat.read_direction(
+        owned.connection, workspace_id=WORKSPACE_ID, direction_id="direction-2"
+    ) is None
+
+
+def test_supersession_is_atomic_and_rolls_back_when_the_successor_insert_fails(
+    owned: m1.Owned,
+) -> None:
+    seed_direction(owned)
+    before = read_direction(owned)
+    with pytest.raises(sqlite3.IntegrityError, match="contiguous"), writer(owned) as w:
+        w.update_direction(
+            direction_id="direction-1", expected_version=1, state="superseded",
+            terminal_at_us=BASE_US + 400, terminal_reason=SUPERSEDED_REASON,
+            superseded_by_direction_id="direction-3",
+        )
+        append_direction(w, 3, supersedes_direction_id="direction-1")
+    assert read_direction(owned) == before
+    assert chat.read_directions_for_generation_job(
+        owned.connection, workspace_id=WORKSPACE_ID, generation_job_id=dm.JOB_ID
+    ) == (before,)
+
+    # Two standalone transactions cannot work: the successor insert needs the old row
+    # already superseded, and the superseded row needs its successor by commit.
+    with pytest.raises(sqlite3.IntegrityError):
+        chat.update_direction(
+            owned.connection, owned.identity, workspace_id=WORKSPACE_ID,
+            fencing_generation=owned.generation, direction_id="direction-1",
+            expected_version=1, state="superseded", terminal_at_us=BASE_US + 400,
+            terminal_reason=SUPERSEDED_REASON, superseded_by_direction_id="direction-2",
+        )
+    assert read_direction(owned) == before
+    with pytest.raises(sqlite3.IntegrityError, match="already superseded"):
+        chat.append_direction(
+            owned.connection, owned.identity, workspace_id=WORKSPACE_ID,
+            fencing_generation=owned.generation, direction_id="direction-2",
+            conversation_id=foundation.CONVERSATION_ID, branch_id=foundation.BRANCH_ID,
+            generation_job_id=dm.JOB_ID, target_attempt_id=dm.ATTEMPT_1, direction_sequence=2,
+            actor_id=foundation.ACTOR_ID, content=direction_content("again"),
+            created_at_us=BASE_US + 402, supersedes_direction_id="direction-1",
+        )
+    assert read_direction(owned) == before
+
+
+def test_a_continuation_reads_back_through_both_readers_and_refuses_duplicates(
+    owned: m1.Owned,
+) -> None:
+    seed_direction(owned)
+    apply_direction(owned)
+    fields = continuation_fields()
+    with writer(owned) as w:
+        w.append_generation_continuation(**fields)  # type: ignore[arg-type]
+
+    expected = chat.GenerationContinuation(workspace_id=WORKSPACE_ID, **fields)  # type: ignore[arg-type]
+    assert chat.read_generation_continuation(
+        owned.connection, workspace_id=WORKSPACE_ID, continuation_id="continuation-1"
+    ) == expected
+    assert chat.read_generation_continuation_for_direction(
+        owned.connection, workspace_id=WORKSPACE_ID, direction_id="direction-1"
+    ) == expected
+    for reader, key in (
+        (chat.read_generation_continuation, {"continuation_id": "continuation-1"}),
+        (chat.read_generation_continuation_for_direction, {"direction_id": "direction-1"}),
+    ):
+        assert reader(owned.connection, workspace_id=OTHER_WORKSPACE_ID, **key) is None
+    assert chat.read_generation_continuation_for_direction(
+        owned.connection, workspace_id=WORKSPACE_ID, direction_id="direction-absent"
+    ) is None
+
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"), writer(owned) as w:
+        w.append_generation_continuation(**continuation_fields(continuation_id="continuation-2"))  # type: ignore[arg-type]
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE|PRIMARY"), writer(owned) as w:
+        w.append_generation_continuation(**fields)  # type: ignore[arg-type]
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"), writer(owned) as w:
+        w.connection.execute(
+            "UPDATE omnivia_chat_generation_continuations SET created_at_us = created_at_us + 1"
+        )
+    assert owned.connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert owned.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_an_invalid_continuation_is_refused(owned: m1.Owned) -> None:
+    seed_direction(owned)
+    with pytest.raises(sqlite3.IntegrityError, match="applied direction"), writer(owned) as w:
+        w.append_generation_continuation(**continuation_fields())  # type: ignore[arg-type]
+    apply_direction(owned)
+    for override in (
+        {"direction_version": 3},
+        {"provider_finish_id": "provider-finish-wrong"},
+        {"prior_output_digest": dm.OTHER_DIGEST},
+    ):
+        with pytest.raises(sqlite3.IntegrityError), writer(owned) as w:
+            w.append_generation_continuation(**continuation_fields(**override))  # type: ignore[arg-type]
+    assert chat.read_generation_continuation_for_direction(
+        owned.connection, workspace_id=WORKSPACE_ID, direction_id="direction-1"
+    ) is None
+
+
+def test_standalone_direction_wrappers_and_the_transaction_local_writer(owned: m1.Owned) -> None:
+    dm.seed_job(owned)
+    fence = {
+        "workspace_id": WORKSPACE_ID,
+        "fencing_generation": owned.generation,
+    }
+    chat.append_direction(
+        owned.connection, owned.identity, **fence,
+        direction_id="direction-1", conversation_id=foundation.CONVERSATION_ID,
+        branch_id=foundation.BRANCH_ID, generation_job_id=dm.JOB_ID,
+        target_attempt_id=dm.ATTEMPT_1, direction_sequence=1, actor_id=foundation.ACTOR_ID,
+        content=direction_content(), created_at_us=BASE_US + 301,
+    )
+    assert owned.connection.in_transaction is False
+    chat.update_direction(
+        owned.connection, owned.identity, **fence, direction_id="direction-1",
+        expected_version=1, state="cancelled", terminal_at_us=BASE_US + 400,
+        terminal_reason={"code": "direction.cancelled"},
+    )
+    assert read_direction(owned).state == "cancelled"
+
+    # The transaction-local writer opens nothing of its own: it joins a caller-held fence,
+    # and outside one 0069 refuses the write.
+    local = chat.transaction_local_writer(owned.connection, workspace_id=WORKSPACE_ID)
+    with foundation.guarded(owned):
+        append_direction(local, 2)
+    assert read_direction(owned, "direction-2").state == "pending"
+    owned.connection.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized|unguarded INSERT"):
+            append_direction(local, 3)
+    finally:
+        owned.connection.execute("ROLLBACK")
+    assert chat.read_direction(
+        owned.connection, workspace_id=WORKSPACE_ID, direction_id="direction-3"
+    ) is None
+
+
+def test_the_standalone_continuation_wrapper_writes_one_fenced_row(owned: m1.Owned) -> None:
+    seed_direction(owned)
+    apply_direction(owned)
+    chat.append_generation_continuation(
+        owned.connection, owned.identity, workspace_id=WORKSPACE_ID,
+        fencing_generation=owned.generation, **continuation_fields(),  # type: ignore[arg-type]
+    )
+    assert owned.connection.in_transaction is False
+    assert chat.read_generation_continuation(
+        owned.connection, workspace_id=WORKSPACE_ID, continuation_id="continuation-1"
+    ) is not None
+
+
+TAMPER_TRIGGER = "DROP TRIGGER omnivia_guard_chat_directions_update"
+TAMPER_WHERE = f"WHERE workspace_id = '{WORKSPACE_ID}' AND direction_id = 'direction-1'"
+
+
+def read_every_direction_way(connection: sqlite3.Connection) -> list[object]:
+    scope = {"workspace_id": WORKSPACE_ID}
+    return [
+        lambda: chat.read_direction(connection, direction_id="direction-1", **scope),
+        lambda: chat.read_pending_direction(connection, generation_job_id=dm.JOB_ID, **scope),
+        lambda: chat.read_directions_for_generation_job(
+            connection, generation_job_id=dm.JOB_ID, **scope
+        ),
+        lambda: chat.read_actor_directions_for_branch(
+            connection, conversation_id=foundation.CONVERSATION_ID,
+            branch_id=foundation.BRANCH_ID, actor_id=foundation.ACTOR_ID, **scope,
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("update", "message"),
+    [
+        (f"content_digest = '{dm.OTHER_DIGEST}'", "digest does not match"),
+        ("content_json = '{\"editableParts\": []}'", "not canonical JSON"),
+        ("content_json = 'not-json-at-all'", "not valid JSON"),
+        ("content_json = '[]'", "not a JSON object"),
+    ],
+)
+def test_a_tampered_direction_fails_closed_on_every_reader(
+    owned: m1.Owned, update: str, message: str
+) -> None:
+    seed_direction(owned)
+    connection = tamper(owned, TAMPER_TRIGGER, f"UPDATE omnivia_chat_directions SET {update} {TAMPER_WHERE}")
+    try:
+        for read in read_every_direction_way(connection):
+            with pytest.raises(StorageError, match=message):
+                read()  # type: ignore[operator]
+    finally:
+        connection.close()
+
+
+def test_a_noncanonical_stored_terminal_reason_fails_closed(owned: m1.Owned) -> None:
+    seed_direction(owned)
+    with writer(owned) as w:
+        w.update_direction(
+            direction_id="direction-1", expected_version=1, state="rejected",
+            terminal_at_us=BASE_US + 400, terminal_reason={"code": "x"},
+        )
+    connection = tamper(
+        owned,
+        TAMPER_TRIGGER,
+        f"UPDATE omnivia_chat_directions SET terminal_reason_json = '{{\"code\": \"x\"}}' {TAMPER_WHERE}",
+    )
+    try:
+        with pytest.raises(StorageError, match="terminal reason is not canonical JSON"):
+            chat.read_direction(connection, workspace_id=WORKSPACE_ID, direction_id="direction-1")
+    finally:
+        connection.close()

@@ -40,6 +40,15 @@ and requires the stored bytes to match it exactly, so a file edited outside this
 database's own guards -- the case 0029's `CHECK` constraints do not run again on
 read -- fails with :class:`StorageError` rather than returning something that
 merely parses.
+
+Migration 0069 adds two more tables, both reached the same way. A Direction
+(`omnivia_chat_directions`) is inserted pending at version one and takes exactly one
+guarded transition to a terminal state; its own `version` is the compare-and-set
+token and is unrelated to the Generation Job's public CAS token, which stays 0030's
+status projection version. A generation continuation is append-only. Direction
+content is stored as exact canonical JSON with `content_digest` = `sha256:` plus the
+SHA-256 of those exact UTF-8 bytes; SQLite cannot compute that, so this module
+computes it on append and every Direction reader recomputes it and fails closed.
 """
 
 from __future__ import annotations
@@ -69,9 +78,11 @@ __all__ = [
     "ChatWriter",
     "Conversation",
     "ConversationSnapshotInputs",
+    "Direction",
     "Draft",
     "GenerationAttempt",
     "GenerationAttemptOutcome",
+    "GenerationContinuation",
     "GenerationEvent",
     "GenerationJob",
     "GenerationJobStatusProjection",
@@ -93,8 +104,10 @@ __all__ = [
     "append_chat_turn",
     "append_chat_turn_step",
     "append_conversation",
+    "append_direction",
     "append_generation_attempt",
     "append_generation_attempt_outcome",
+    "append_generation_continuation",
     "append_generation_event",
     "append_generation_job",
     "append_generation_text_chunk",
@@ -112,6 +125,7 @@ __all__ = [
     "read_active_draft",
     "read_active_drafts",
     "read_active_queue_for_actor",
+    "read_actor_directions_for_branch",
     "read_actor_view_state",
     "read_branch",
     "read_branch_head_events",
@@ -123,11 +137,15 @@ __all__ = [
     "read_chat_turn_steps",
     "read_conversation",
     "read_conversation_snapshot_inputs",
+    "read_direction",
+    "read_directions_for_generation_job",
     "read_draft",
     "read_generation_attempt",
     "read_generation_attempt_outcome",
     "read_generation_attempt_outcomes",
     "read_generation_attempts",
+    "read_generation_continuation",
+    "read_generation_continuation_for_direction",
     "read_generation_events",
     "read_generation_job",
     "read_generation_job_status_projection",
@@ -138,6 +156,7 @@ __all__ = [
     "read_next_queued_submission",
     "read_outbox_event",
     "read_outbox_events_since",
+    "read_pending_direction",
     "read_queue_order_for_conversation",
     "read_queue_order_projection",
     "read_queued_submission",
@@ -148,6 +167,7 @@ __all__ = [
     "update_chat_turn",
     "update_chat_turn_step",
     "update_conversation",
+    "update_direction",
     "update_draft",
     "update_generation_job",
     "update_generation_job_status_projection",
@@ -660,6 +680,58 @@ class OutboxEntry:
     next_delivery_after_us: int | None
     delivered_at_us: int | None
     retained_until_us: int | None
+    created_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class Direction:
+    """One `omnivia_chat_directions` row; every column decoded one-for-one.
+
+    `content` is the verified canonical object and `content_digest` keeps the
+    prefixed storage form (`sha256:<64 hex>`); the bare public `contentHash` is a
+    later service projection.
+    """
+
+    workspace_id: str
+    conversation_id: str
+    branch_id: str
+    generation_job_id: str
+    target_attempt_id: str
+    direction_id: str
+    direction_sequence: int
+    actor_id: str
+    state: str
+    version: int
+    content: Mapping[str, Any]
+    content_digest: str
+    requested_boundary: str
+    effective_boundary: str | None
+    supersedes_direction_id: str | None
+    superseded_by_direction_id: str | None
+    applied_attempt_id: str | None
+    applied_provider_invocation_id: str | None
+    applied_request_manifest_id: str | None
+    applied_iteration: int | None
+    terminal_reason: Mapping[str, Any] | None
+    schema_version: int
+    created_at_us: int
+    updated_at_us: int
+    terminal_at_us: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationContinuation:
+    workspace_id: str
+    conversation_id: str
+    generation_job_id: str
+    continuation_id: str
+    prior_attempt_id: str
+    next_attempt_id: str
+    direction_id: str
+    direction_version: int
+    provider_finish_id: str
+    prior_output_digest: str
+    schema_version: int
     created_at_us: int
 
 
@@ -1344,6 +1416,104 @@ class ChatWriter:
             ),
         )
 
+    def append_direction(
+        self,
+        *,
+        direction_id: str,
+        conversation_id: str,
+        branch_id: str,
+        generation_job_id: str,
+        target_attempt_id: str,
+        direction_sequence: int,
+        actor_id: str,
+        content: Mapping[str, Any],
+        created_at_us: int,
+        supersedes_direction_id: str | None = None,
+        schema_version: int = 1,
+    ) -> None:
+        """Insert a Direction pending at version one aimed at `earliest_safe`.
+
+        State, version, boundary, digest and every application or terminal column
+        are fixed here, never caller-supplied. The digest is computed from the exact
+        UTF-8 bytes stored. 0069 enforces the running-Job, contiguity and
+        successor-linkage rules.
+
+        A valid supersession MUST use one caller-held :func:`chat_writer`
+        transaction: :meth:`update_direction` to `superseded` on the old row first,
+        then this insert naming it in `supersedes_direction_id`, before commit. The
+        two cannot be separate transactions: the insert guard needs the old row
+        already superseded by the successor, and the deferred foreign key on the old
+        row needs the successor present at commit.
+        """
+        content_json = _canonical_json_object(content)
+        content_digest = "sha256:" + sha256(content_json.encode("utf-8")).hexdigest()
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_directions "
+            "(workspace_id, conversation_id, branch_id, generation_job_id, "
+            "target_attempt_id, direction_id, direction_sequence, actor_id, state, "
+            "version, content_json, content_digest, requested_boundary, "
+            "effective_boundary, supersedes_direction_id, superseded_by_direction_id, "
+            "applied_attempt_id, applied_provider_invocation_id, "
+            "applied_request_manifest_id, applied_iteration, terminal_reason_json, "
+            "schema_version, created_at_us, updated_at_us, terminal_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, 'earliest_safe', "
+            "NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, NULL)",
+            (
+                self.workspace_id,
+                conversation_id,
+                branch_id,
+                generation_job_id,
+                target_attempt_id,
+                direction_id,
+                direction_sequence,
+                actor_id,
+                content_json,
+                content_digest,
+                supersedes_direction_id,
+                schema_version,
+                created_at_us,
+                created_at_us,
+            ),
+        )
+
+    def append_generation_continuation(
+        self,
+        *,
+        continuation_id: str,
+        conversation_id: str,
+        generation_job_id: str,
+        prior_attempt_id: str,
+        next_attempt_id: str,
+        direction_id: str,
+        direction_version: int,
+        provider_finish_id: str,
+        prior_output_digest: str,
+        schema_version: int,
+        created_at_us: int,
+    ) -> None:
+        """0069 requires the applied Direction and the prior Attempt's event."""
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_generation_continuations "
+            "(workspace_id, conversation_id, generation_job_id, continuation_id, "
+            "prior_attempt_id, next_attempt_id, direction_id, direction_version, "
+            "provider_finish_id, prior_output_digest, schema_version, created_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                generation_job_id,
+                continuation_id,
+                prior_attempt_id,
+                next_attempt_id,
+                direction_id,
+                direction_version,
+                provider_finish_id,
+                prior_output_digest,
+                schema_version,
+                created_at_us,
+            ),
+        )
+
     def append_chat_turn(
         self,
         *,
@@ -1926,6 +2096,60 @@ class ChatWriter:
         )
         _require_cas_match(cursor, "generation job status projection", generation_job_id)
 
+    def update_direction(
+        self,
+        *,
+        direction_id: str,
+        expected_version: int,
+        state: str,
+        terminal_at_us: int,
+        terminal_reason: Mapping[str, Any] | None = None,
+        superseded_by_direction_id: str | None = None,
+        effective_boundary: str | None = None,
+        applied_attempt_id: str | None = None,
+        applied_provider_invocation_id: str | None = None,
+        applied_request_manifest_id: str | None = None,
+        applied_iteration: int | None = None,
+    ) -> None:
+        """The one transition out of `pending`, guarded by the Direction's own version.
+
+        Matches only a `pending` row at `expected_version`; any other row (stale,
+        or already terminal) raises :class:`StaleVersion`. The version advances by
+        exactly one and `updated_at_us` equals `terminal_at_us`. Identity, scope,
+        content and digest are never touched. Which columns each terminal state
+        needs (`applied` evidence, `superseded_by`, `terminal_reason`) is enforced
+        by 0069, whose evidence checks run at this statement. A `superseded`
+        transition is only valid inside the same transaction as its successor
+        insert; see :meth:`append_direction`.
+        """
+        reason_json = None if terminal_reason is None else _canonical_json_object(terminal_reason)
+        cursor = self.connection.execute(
+            "UPDATE omnivia_chat_directions SET state = ?, version = ?, "
+            "effective_boundary = ?, superseded_by_direction_id = ?, "
+            "applied_attempt_id = ?, applied_provider_invocation_id = ?, "
+            "applied_request_manifest_id = ?, applied_iteration = ?, "
+            "terminal_reason_json = ?, updated_at_us = ?, terminal_at_us = ? "
+            "WHERE workspace_id = ? AND direction_id = ? AND state = 'pending' "
+            "AND version = ?",
+            (
+                state,
+                expected_version + 1,
+                effective_boundary,
+                superseded_by_direction_id,
+                applied_attempt_id,
+                applied_provider_invocation_id,
+                applied_request_manifest_id,
+                applied_iteration,
+                reason_json,
+                terminal_at_us,
+                terminal_at_us,
+                self.workspace_id,
+                direction_id,
+                expected_version,
+            ),
+        )
+        _require_cas_match(cursor, "direction", direction_id)
+
     def update_queue_order_projection(
         self,
         *,
@@ -2390,6 +2614,38 @@ def append_request_manifest_once(
     return appended
 
 
+def append_direction(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    """One Direction in its own transaction. Not for supersession: use one
+    caller-held :func:`chat_writer` transaction (old `update_direction`, then the
+    successor insert), because two standalone transactions cannot work.
+    """
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_direction(**fields)
+
+
+def append_generation_continuation(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_generation_continuation(**fields)
+
+
 def append_chat_turn(
     connection: sqlite3.Connection,
     identity: ServiceInstanceIdentity,
@@ -2584,6 +2840,24 @@ def update_generation_job_status_projection(
         connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
     ) as writer:
         writer.update_generation_job_status_projection(**fields)
+
+
+def update_direction(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    """One terminal transition in its own transaction. Never a `superseded`
+    transition: that must share one caller-held :func:`chat_writer` transaction with
+    the successor insert, or the deferred successor foreign key fails the commit.
+    """
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.update_direction(**fields)
 
 
 def update_queue_order_projection(
@@ -3462,6 +3736,152 @@ def read_generation_text_chunks(
     query += " ORDER BY generation_attempt_id, chunk_ordinal"
     rows = connection.execute(query, params).fetchall()
     return tuple(_generation_text_chunk_from_row(row) for row in rows)
+
+
+_DIRECTION_COLUMNS = (
+    "workspace_id, conversation_id, branch_id, generation_job_id, target_attempt_id, "
+    "direction_id, direction_sequence, actor_id, state, version, content_json, "
+    "content_digest, requested_boundary, effective_boundary, supersedes_direction_id, "
+    "superseded_by_direction_id, applied_attempt_id, applied_provider_invocation_id, "
+    "applied_request_manifest_id, applied_iteration, terminal_reason_json, "
+    "schema_version, created_at_us, updated_at_us, terminal_at_us"
+)
+
+
+def _direction_from_row(row: tuple[Any, ...]) -> Direction:
+    content = _verified_json_object(row[10], "chat direction content")
+    if "sha256:" + sha256(str(row[10]).encode("utf-8")).hexdigest() != row[11]:
+        raise StorageError("a stored chat direction content digest does not match its content")
+    return Direction(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        branch_id=row[2],
+        generation_job_id=row[3],
+        target_attempt_id=row[4],
+        direction_id=row[5],
+        direction_sequence=row[6],
+        actor_id=row[7],
+        state=row[8],
+        version=row[9],
+        content=content,
+        content_digest=row[11],
+        requested_boundary=row[12],
+        effective_boundary=row[13],
+        supersedes_direction_id=row[14],
+        superseded_by_direction_id=row[15],
+        applied_attempt_id=row[16],
+        applied_provider_invocation_id=row[17],
+        applied_request_manifest_id=row[18],
+        applied_iteration=row[19],
+        terminal_reason=(
+            None
+            if row[20] is None
+            else _verified_json_object(row[20], "chat direction terminal reason")
+        ),
+        schema_version=row[21],
+        created_at_us=row[22],
+        updated_at_us=row[23],
+        terminal_at_us=row[24],
+    )
+
+
+def read_direction(
+    connection: sqlite3.Connection, *, workspace_id: str, direction_id: str
+) -> Direction | None:
+    row = connection.execute(
+        f"SELECT {_DIRECTION_COLUMNS} FROM omnivia_chat_directions "
+        "WHERE workspace_id = ? AND direction_id = ?",
+        (workspace_id, direction_id),
+    ).fetchone()
+    return None if row is None else _direction_from_row(row)
+
+
+def read_pending_direction(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_job_id: str
+) -> Direction | None:
+    row = connection.execute(
+        f"SELECT {_DIRECTION_COLUMNS} FROM omnivia_chat_directions "
+        "WHERE workspace_id = ? AND generation_job_id = ? AND state = 'pending'",
+        (workspace_id, generation_job_id),
+    ).fetchone()
+    return None if row is None else _direction_from_row(row)
+
+
+def read_directions_for_generation_job(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_job_id: str
+) -> tuple[Direction, ...]:
+    rows = connection.execute(
+        f"SELECT {_DIRECTION_COLUMNS} FROM omnivia_chat_directions "
+        "WHERE workspace_id = ? AND generation_job_id = ? "
+        "ORDER BY direction_sequence, direction_id",
+        (workspace_id, generation_job_id),
+    ).fetchall()
+    return tuple(_direction_from_row(row) for row in rows)
+
+
+def read_actor_directions_for_branch(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    branch_id: str,
+    actor_id: str,
+) -> tuple[Direction, ...]:
+    rows = connection.execute(
+        f"SELECT {_DIRECTION_COLUMNS} FROM omnivia_chat_directions "
+        "WHERE workspace_id = ? AND conversation_id = ? AND branch_id = ? "
+        "AND actor_id = ? ORDER BY generation_job_id, direction_sequence, direction_id",
+        (workspace_id, conversation_id, branch_id, actor_id),
+    ).fetchall()
+    return tuple(_direction_from_row(row) for row in rows)
+
+
+_GENERATION_CONTINUATION_COLUMNS = (
+    "workspace_id, conversation_id, generation_job_id, continuation_id, "
+    "prior_attempt_id, next_attempt_id, direction_id, direction_version, "
+    "provider_finish_id, prior_output_digest, schema_version, created_at_us"
+)
+
+
+def _generation_continuation_from_row(row: tuple[Any, ...]) -> GenerationContinuation:
+    return GenerationContinuation(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        generation_job_id=row[2],
+        continuation_id=row[3],
+        prior_attempt_id=row[4],
+        next_attempt_id=row[5],
+        direction_id=row[6],
+        direction_version=row[7],
+        provider_finish_id=row[8],
+        prior_output_digest=row[9],
+        schema_version=row[10],
+        created_at_us=row[11],
+    )
+
+
+def read_generation_continuation(
+    connection: sqlite3.Connection, *, workspace_id: str, continuation_id: str
+) -> GenerationContinuation | None:
+    row = connection.execute(
+        f"SELECT {_GENERATION_CONTINUATION_COLUMNS} "
+        "FROM omnivia_chat_generation_continuations "
+        "WHERE workspace_id = ? AND continuation_id = ?",
+        (workspace_id, continuation_id),
+    ).fetchone()
+    return None if row is None else _generation_continuation_from_row(row)
+
+
+def read_generation_continuation_for_direction(
+    connection: sqlite3.Connection, *, workspace_id: str, direction_id: str
+) -> GenerationContinuation | None:
+    row = connection.execute(
+        f"SELECT {_GENERATION_CONTINUATION_COLUMNS} "
+        "FROM omnivia_chat_generation_continuations "
+        "WHERE workspace_id = ? AND direction_id = ?",
+        (workspace_id, direction_id),
+    ).fetchone()
+    return None if row is None else _generation_continuation_from_row(row)
 
 
 _REQUEST_MANIFEST_COLUMNS = (
