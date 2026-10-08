@@ -3117,7 +3117,17 @@ def test_the_cold_started_conversation_answers_a_complete_snapshot(
         "branch",
         "viewState",
         "queuedSubmissions",
+        "generationJobs",
+        "directions",
     }
+    # C6: both are required. Nobody has directed anything yet, and the submit's own
+    # job is stated while still queued at its born control token.
+    assert snapshot["directions"] == []
+    assert [
+        (job["jobId"], job["state"], job["version"])
+        for job in snapshot["generationJobs"]
+    ] == [(f"{FIRST_SEND_COMMAND_ID}.gen", "queued", 1)]
+    assert "currentAttemptId" not in snapshot["generationJobs"][0]
     # The first send also opened a queued-submission row (the generation work
     # item every SubmitMessage opens), and it is still `queued` -- not yet
     # claimed -- so the actor's snapshot surfaces it (W5 GB-05).
