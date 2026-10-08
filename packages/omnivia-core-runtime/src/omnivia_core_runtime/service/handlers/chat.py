@@ -79,8 +79,10 @@ from omnivia_core_runtime.service.operations import (
     application_refusal,
 )
 from omnivia_core_runtime.storage.chat import (
+    Direction,
     GenerationEvent,
     GenerationTextChunk,
+    read_directions_for_generation_job,
     read_generation_text_chunks,
 )
 from omnivia_core_runtime.storage.memory import IdentifierAllocator
@@ -106,6 +108,7 @@ _MESSAGE_NO_COMMAND: Final = (
     "this build serves no implementation of the chat command this request names"
 )
 _TEXT_APPENDED: Final = "chat.generation.text_appended"
+_DIRECTION_STATE_CHANGED: Final = "chat.direction.state_changed"
 #: `ChatEventsResult.events` and `.transport_events` are both `maxItems: 1000`, so
 #: one page is the first 1000 of the replayed suffix and the last cursor it returns
 #: is what the caller continues from. Not a new pagination field: the cursor the
@@ -148,8 +151,40 @@ def _event(event: GenerationEvent) -> ChatGenerationEvent:
     )
 
 
+def _direction_event_fields(
+    event: GenerationEvent, directions: Mapping[str, Direction]
+) -> dict[str, Any]:
+    """The exact `DirectionStateChangedEvent` fields, identity only.
+
+    The event-time facts (`directionId`, `directionVersion`, `state`) come from the
+    durable payload and the actor and job sequence from the durable Direction they name.
+    The event carries no attempt, trigger or result message, and no authored content.
+    """
+    payload = event.payload
+    direction = directions.get(str(payload.get("directionId")))
+    if (
+        direction is None
+        or direction.generation_job_id != event.generation_job_id
+        or direction.conversation_id != event.conversation_id
+        or direction.branch_id != event.branch_id
+    ):
+        raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
+    return {
+        "actorId": direction.actor_id,
+        "branchId": event.branch_id,
+        "directionId": direction.direction_id,
+        "directionVersion": payload.get("directionVersion"),
+        "generationEventSequence": event.generation_event_sequence,
+        "generationJobId": event.generation_job_id,
+        "jobSequence": direction.direction_sequence,
+        "state": payload.get("state"),
+    }
+
+
 def _transport_event(
-    event: GenerationEvent, chunks: Mapping[tuple[str, int], GenerationTextChunk]
+    event: GenerationEvent,
+    chunks: Mapping[tuple[str, int], GenerationTextChunk],
+    directions: Mapping[str, Direction],
 ) -> Mapping[str, Any]:
     """One durable event as the *Chat* contract states it, or nothing at all.
 
@@ -167,16 +202,20 @@ def _transport_event(
     generated text is the one exception the contract does define, and it is read
     from the chunk that holds it, never from a payload that has never carried it.
     """
-    fields: dict[str, Any] = {
-        "branchId": event.branch_id,
-        "generationJobId": event.generation_job_id,
-        "triggerMessageId": event.trigger_message_id,
-        "generationEventSequence": event.generation_event_sequence,
-    }
-    if event.generation_attempt_id is not None:
-        fields["generationAttemptId"] = event.generation_attempt_id
-    if event.result_message_id is not None:
-        fields["resultMessageId"] = event.result_message_id
+    fields: dict[str, Any]
+    if event.event_type == _DIRECTION_STATE_CHANGED:
+        fields = _direction_event_fields(event, directions)
+    else:
+        fields = {
+            "branchId": event.branch_id,
+            "generationJobId": event.generation_job_id,
+            "triggerMessageId": event.trigger_message_id,
+            "generationEventSequence": event.generation_event_sequence,
+        }
+        if event.generation_attempt_id is not None:
+            fields["generationAttemptId"] = event.generation_attempt_id
+        if event.result_message_id is not None:
+            fields["resultMessageId"] = event.result_message_id
     if event.event_type == _TEXT_APPENDED:
         ordinal = event.payload.get("chunkOrdinal")
         if (
@@ -398,10 +437,22 @@ class ChatHandlers:
                     generation_job_id=request.generation_job_id,
                 )
             }
+        directions: dict[str, Direction] = {}
+        if any(event.event_type == _DIRECTION_STATE_CHANGED for event in events):
+            directions = {
+                direction.direction_id: direction
+                for direction in read_directions_for_generation_job(
+                    connection,
+                    workspace_id=context.workspace_id,
+                    generation_job_id=request.generation_job_id,
+                )
+            }
         return ChatEventsResult(
             generation_job_id=request.generation_job_id,
             events=tuple(_event(event) for event in events),
-            transport_events=tuple(_transport_event(event, chunks) for event in events),
+            transport_events=tuple(
+                _transport_event(event, chunks, directions) for event in events
+            ),
             requires_resnapshot=replay.requires_resnapshot,
             resnapshot_reason=replay.reason,
         ).to_wire()

@@ -70,6 +70,7 @@ from omnivia_core.chat_contract.v1 import (
     ChatContractDecodeError,
     CommandResultEnvelope,
     UnsupportedProtocolVersionError,
+    codec,
     negotiate_protocol_version,
     to_canonical_json,
 )
@@ -90,6 +91,7 @@ from omnivia_core_runtime.storage.chat import (
     read_active_queue_for_actor,
     read_branch,
     read_conversation,
+    read_directions_for_generation_job,
     read_draft,
     read_generation_attempt_outcome,
     read_generation_attempts,
@@ -112,6 +114,7 @@ __all__ = [
     "SAVE_DRAFT_COMMAND",
     "STOP_GENERATION_COMMAND",
     "SUBMIT_MESSAGE_COMMAND",
+    "SUBMIT_STEERING_INPUT_COMMAND",
     "UPDATE_QUEUED_SUBMISSION_COMMAND",
     "resolve_chat_command",
     "retry_generation_attempt_id",
@@ -124,6 +127,7 @@ REORDER_QUEUED_SUBMISSION_COMMAND: Final = "ReorderQueuedSubmission"
 RETRY_GENERATION_COMMAND: Final = "RetryGeneration"
 STOP_GENERATION_COMMAND: Final = "StopGeneration"
 SUBMIT_MESSAGE_COMMAND: Final = "SubmitMessage"
+SUBMIT_STEERING_INPUT_COMMAND: Final = "SubmitSteeringInput"
 UPDATE_QUEUED_SUBMISSION_COMMAND: Final = "UpdateQueuedSubmission"
 SAVE_DRAFT_COMMAND: Final = "SaveDraft"
 DISCARD_DRAFT_COMMAND: Final = "DiscardDraft"
@@ -1015,6 +1019,7 @@ def _ack(
     *,
     conversation_authority: ChatConversationExpectation | None = None,
     result_ref: str | None = None,
+    status: str = "completed",
 ) -> Mapping[str, Any]:
     """One settled command's result envelope.
 
@@ -1028,7 +1033,7 @@ def _ack(
     return ChatCommandResult(
         command_name=command_name,
         command_result=CommandResultEnvelope(
-            command_id=command_id, status="completed", result_ref=result_ref
+            command_id=command_id, status=status, result_ref=result_ref
         ).to_wire(),
         conversation_id=conversation_id,
         conversation_authority=conversation_authority,
@@ -2226,6 +2231,246 @@ def _discard_draft(request: _DiscardDraft) -> ChatCommand:
 
     return command
 
+# --- C6: private Direction admission ---------------------------------------------------
+
+
+_STEERING_TARGET: Final = (
+    "the generation job is not a running job this command may steer at the version "
+    "the request expects"
+)
+_STEERING_DIRECTION: Final = (
+    "the direction this command names cannot be superseded, or an unsuperseded "
+    "direction is already pending"
+)
+_DIRECTION_STATE_CHANGED: Final = "chat.direction.state_changed"
+_TERMINAL_GENERATION_EVENTS: Final = frozenset(
+    {"chat.generation.succeeded", "chat.generation.failed", "chat.generation.cancelled"}
+)
+#: `direction:<id>` names the durable Direction row the command just wrote, the same
+#: opaque resultRef convention as `draft:<id>`: identity only. The typed
+#: `DirectionSubmittedResult` is that row; the closed envelope carries no part of it.
+_DIRECTION_RESULT_REF_PREFIX: Final = "direction:"
+
+
+@dataclass(frozen=True, slots=True)
+class _SubmitSteeringInput:
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
+    job_id: str
+    expected_version: int
+    parts: tuple[Mapping[str, Any], ...]
+    supersedes_direction_id: str | None
+
+
+def _decode_steering_input(command: Mapping[str, Any]) -> _SubmitSteeringInput:
+    """The closed `SubmitSteeringInputRequest`, decided by the package codec alone.
+
+    The codec holds the exact schema (closed field set, `2.0`, bool-vs-int, text-only
+    parts, empty references) and the aggregate UTF-8 content bound. Its diagnostic is
+    discarded: the document is authored content and this refusal names no value.
+    """
+    plain = _plain_json(command)
+    try:
+        codec.validate_submit_steering_input_request(plain)
+    except ChatContractDecodeError:
+        pass
+    else:
+        supersedes = plain.get("supersedesDirectionId")
+        return _SubmitSteeringInput(
+            command_id=plain["commandId"],
+            workspace_id=plain["workspaceId"],
+            conversation_id=plain["conversationId"],
+            actor_id=plain["actorId"],
+            job_id=plain["targetGenerationJobId"],
+            expected_version=plain["expectedGenerationVersion"],
+            parts=tuple(plain["editableParts"]),
+            supersedes_direction_id=supersedes,
+        )
+    raise OperationError(
+        ERROR_CODE_INVALID_REQUEST,
+        "the chat command is not a valid SubmitSteeringInput request",
+    )
+
+
+def steering_direction_id(workspace_id: str, command_id: str) -> str:
+    """The server-issued Direction identity: a pure function of the command's own identity.
+
+    Derived, never read from the request, so a `commandId` reused under any other outer
+    key reaches the same identity and collides rather than minting a second Direction.
+    """
+    document = to_canonical_json(
+        {
+            "commandId": command_id,
+            "kind": SUBMIT_STEERING_INPUT_COMMAND,
+            "workspaceId": workspace_id,
+        }
+    )
+    return f"direction-{hashlib.sha256(document.encode('utf-8')).hexdigest()[:40]}"
+
+
+def _submit_steering_input(request: _SubmitSteeringInput) -> ChatCommand:
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        connection, workspace_id = writer.connection, writer.workspace_id
+        job = read_generation_job(
+            connection, workspace_id=workspace_id, generation_job_id=request.job_id
+        )
+        status = read_generation_job_status_projection(
+            connection, workspace_id=workspace_id, generation_job_id=request.job_id
+        )
+        if (
+            job is None
+            or status is None
+            or job.conversation_id != request.conversation_id
+            or status.conversation_id != request.conversation_id
+            or job.state != "running"
+            or status.state != "running"
+            or job.current_attempt_id is None
+            or status.current_attempt_id != job.current_attempt_id
+            or status.version != request.expected_version
+        ):
+            raise ChatAggregateConflict(_STEERING_TARGET)
+        attempt_id = job.current_attempt_id
+        attempt = next(
+            (
+                candidate
+                for candidate in read_generation_attempts(
+                    connection, workspace_id=workspace_id, generation_job_id=request.job_id
+                )
+                if candidate.generation_attempt_id == attempt_id
+            ),
+            None,
+        )
+        events = read_generation_events(
+            connection, workspace_id=workspace_id, generation_job_id=request.job_id
+        )
+        sequence = events[-1].generation_event_sequence if events else 0
+        if (
+            attempt is None
+            or attempt.state != "running"
+            or attempt.ended_at_us is not None
+            or sequence != job.last_event_sequence
+            or any(event.event_type in _TERMINAL_GENERATION_EVENTS for event in events)
+        ):
+            raise ChatAggregateConflict(_STEERING_TARGET)
+
+        directions = read_directions_for_generation_job(
+            connection, workspace_id=workspace_id, generation_job_id=request.job_id
+        )
+        direction_id = steering_direction_id(workspace_id, request.command_id)
+        pending = [direction for direction in directions if direction.state == "pending"]
+        superseded = None
+        if request.supersedes_direction_id is not None:
+            superseded = next(
+                (d for d in directions if d.direction_id == request.supersedes_direction_id),
+                None,
+            )
+            if (
+                superseded is None
+                or superseded.state != "pending"
+                or superseded.actor_id != request.actor_id
+                or superseded.branch_id != job.branch_id
+                or superseded.conversation_id != job.conversation_id
+                or superseded.target_attempt_id != attempt_id
+            ):
+                raise ChatAggregateConflict(_STEERING_DIRECTION)
+        if (
+            any(direction.direction_id == direction_id for direction in directions)
+            or len(pending) != (superseded is not None)
+        ):
+            raise ChatAggregateConflict(_STEERING_DIRECTION)
+
+        job_sequence = max((d.direction_sequence for d in directions), default=0) + 1
+        now = settlement.settled_at_us
+
+        def state_changed(identity: str, version: int, state: str) -> None:
+            nonlocal sequence
+            sequence += 1
+            writer.append_generation_event(
+                event_id=_generation_event_id(request.job_id, sequence),
+                conversation_id=job.conversation_id,
+                branch_id=job.branch_id,
+                generation_job_id=request.job_id,
+                event_type=_DIRECTION_STATE_CHANGED,
+                generation_event_sequence=sequence,
+                trigger_message_id=job.trigger_message_id,
+                cursor=_generation_cursor(request.job_id, sequence),
+                payload={"directionId": identity, "directionVersion": version, "state": state},
+                occurred_at_us=now,
+                schema_version=1,
+            )
+
+        try:
+            # Old row first, successor second, before commit: 0069's insert guard needs
+            # the old row already superseded by the successor.
+            if superseded is not None:
+                writer.update_direction(
+                    direction_id=superseded.direction_id,
+                    expected_version=superseded.version,
+                    state="superseded",
+                    terminal_at_us=now,
+                    terminal_reason={"code": "superseded"},
+                    superseded_by_direction_id=direction_id,
+                )
+            writer.append_direction(
+                direction_id=direction_id,
+                conversation_id=job.conversation_id,
+                branch_id=job.branch_id,
+                generation_job_id=request.job_id,
+                target_attempt_id=attempt_id,
+                direction_sequence=job_sequence,
+                actor_id=request.actor_id,
+                content={"editableParts": list(request.parts)},
+                created_at_us=now,
+                supersedes_direction_id=request.supersedes_direction_id,
+            )
+            if superseded is not None:
+                state_changed(superseded.direction_id, superseded.version + 1, "superseded")
+            state_changed(direction_id, 1, "pending")
+            writer.update_generation_job(
+                generation_job_id=request.job_id,
+                expected_state=job.state,
+                expected_lease_epoch=job.lease_epoch,
+                state=job.state,
+                lease_epoch=job.lease_epoch,
+                updated_at_us=job.updated_at_us,
+                current_attempt_id=job.current_attempt_id,
+                result_message_id=job.result_message_id,
+                lease_owner=job.lease_owner,
+                lease_expires_at_us=job.lease_expires_at_us,
+                heartbeat_at_us=job.heartbeat_at_us,
+                last_event_sequence=sequence,
+                sanitized_error_code=job.sanitized_error_code,
+                sanitized_error_detail=job.sanitized_error_detail,
+                started_at_us=job.started_at_us,
+                finished_at_us=job.finished_at_us,
+            )
+            writer.update_generation_job_status_projection(
+                generation_job_id=request.job_id,
+                expected_version=request.expected_version,
+                state=status.state,
+                updated_at_us=now,
+                current_attempt_id=status.current_attempt_id,
+                result_message_id=status.result_message_id,
+                sanitized_error_code=status.sanitized_error_code,
+                sanitized_error_detail=status.sanitized_error_detail,
+                finished_at_us=status.finished_at_us,
+            )
+        except StaleVersion as error:
+            raise ChatAggregateConflict(_STEERING_TARGET) from error
+        return _ack(
+            SUBMIT_STEERING_INPUT_COMMAND,
+            request.command_id,
+            request.conversation_id,
+            status="accepted",
+            result_ref=f"{_DIRECTION_RESULT_REF_PREFIX}{direction_id}",
+        )
+
+    return command
+
 
 def resolve_chat_command(
     request: ChatCommandInput, context: OperationContext
@@ -2319,6 +2564,17 @@ def resolve_chat_command(
             # dependency_unavailable refusal, not a silent drop.
             return None
         return _save_draft(save)
+    if request.command_name == SUBMIT_STEERING_INPUT_COMMAND:
+        steer = _decode_steering_input(request.command)
+        if steer.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if steer.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        if context.request.metadata.idempotency_key != steer.command_id:
+            raise _invalid("commandId", "is not the idempotency key of this request")
+        return _submit_steering_input(steer)
     if request.command_name == DISCARD_DRAFT_COMMAND:
         discard = _decode_discard_draft(request.command)
         if discard.workspace_id != context.workspace_id:
