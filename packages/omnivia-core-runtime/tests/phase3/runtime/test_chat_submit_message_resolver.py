@@ -522,6 +522,10 @@ def test_gb01_production_chat_command_submits_message_and_opens_generation(
         ]
         + 1,
         "omnivia_chat_generation_jobs": before["omnivia_chat_generation_jobs"] + 1,
+        "omnivia_chat_generation_job_status_projection": before[
+            "omnivia_chat_generation_job_status_projection"
+        ]
+        + 1,
         "omnivia_chat_queue_order_projection": before[
             "omnivia_chat_queue_order_projection"
         ]
@@ -597,6 +601,20 @@ def test_gb01_production_chat_command_submits_message_and_opens_generation(
     assert job.trigger_message_id == "msg-gb01-submitted"
     assert job.current_attempt_id is None
     assert job.last_event_sequence == 0
+    # The Job's C6 control token is born with the Job: queued, no attempt, version 1.
+    queued_status = chat.read_generation_job_status_projection(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id="cmd-gb01-submit.gen",
+    )
+    assert queued_status is not None
+    assert (
+        queued_status.conversation_id,
+        queued_status.state,
+        queued_status.current_attempt_id,
+        queued_status.version,
+        queued_status.updated_at_us,
+    ) == (CONVERSATION_ID, "queued", None, 1, job.created_at_us)
 
     outbox = chat.read_outbox_event(
         seeded.connection,
@@ -947,6 +965,8 @@ def test_stop_generation_cancels_a_running_job_and_records_successor_evidence(
     assert status.current_attempt_id == "cmd-gb01-stoppable.attempt1"
     assert status.sanitized_error_code == "cancelled"
     assert status.finished_at_us == job.finished_at_us
+    # submit 1 -> claim 2 -> stop 3: exactly one advance for the stop.
+    assert status.version == 3
     assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
@@ -1015,6 +1035,80 @@ def test_stop_generation_terminal_job_conflicts_without_writes(
     ] == ["chat.generation.queued", "chat.generation.cancelled"]
 
 
+def test_stop_generation_refuses_a_running_job_whose_status_is_not_running(
+    seeded: m1.Owned,
+) -> None:
+    """A Job row that ran without the projection following it gets no late token."""
+    _submit_queued(
+        seeded,
+        command_id="cmd-gb01-stop-drift",
+        expected_head_message_id=ROOT_MESSAGE_ID,
+        expected_head_version=1,
+        expected_sequence=SEEDED_SEQUENCE,
+    )
+    with chat.chat_writer(
+        seeded.connection,
+        seeded.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=seeded.generation,
+    ) as writer:
+        writer.append_generation_attempt(
+            generation_attempt_id="cmd-gb01-stop-drift.attempt1",
+            conversation_id=CONVERSATION_ID,
+            generation_job_id="cmd-gb01-stop-drift.gen",
+            attempt_number=1,
+            state="running",
+            schema_version=1,
+            started_at_us=BASE_US + 2_000_000,
+        )
+        writer.update_generation_job(
+            generation_job_id="cmd-gb01-stop-drift.gen",
+            expected_state="queued",
+            expected_lease_epoch=0,
+            state="running",
+            lease_epoch=1,
+            current_attempt_id="cmd-gb01-stop-drift.attempt1",
+            lease_owner="runner-gb01",
+            lease_expires_at_us=BASE_US + 62_000_000,
+            heartbeat_at_us=BASE_US + 2_000_000,
+            last_event_sequence=0,
+            updated_at_us=BASE_US + 2_000_000,
+            started_at_us=BASE_US + 2_000_000,
+        )
+    before = _counts(seeded)
+    status_before = chat.read_generation_job_status_projection(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id="cmd-gb01-stop-drift.gen",
+    )
+    assert status_before is not None and status_before.state == "queued"
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _stop_generation_command(
+                command_id="cmd-gb01-stop-drift-stop",
+                job_id="cmd-gb01-stop-drift.gen",
+            ),
+            command_name="StopGeneration",
+            idempotency_key="idem-gb01-stop-drift",
+            request_id="req-gb01-stop-drift",
+            expected_sequence=SEEDED_SEQUENCE + 1,
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(seeded) == before
+    assert (
+        chat.read_generation_job_status_projection(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            generation_job_id="cmd-gb01-stop-drift.gen",
+        )
+        == status_before
+    )
+
+
 def test_stop_missing_generation_conflicts_without_writes(seeded: m1.Owned) -> None:
     before = _counts(seeded)
 
@@ -1059,6 +1153,7 @@ def test_retry_generation_opens_successor_attempt_and_executes_provider(
     assert status.current_attempt_id == original_attempt_id
     assert status.sanitized_error_code == "provider-unavailable"
     assert status.finished_at_us is None
+    version_before_retry = status.version
 
     calls: list[Any] = []
 
@@ -1153,6 +1248,8 @@ def test_retry_generation_opens_successor_attempt_and_executes_provider(
     assert updated_status is not None
     assert updated_status.state == "succeeded"
     assert updated_status.current_attempt_id == expected_attempt_id
+    # retry open, started, one text delta and the terminal event: one advance each.
+    assert updated_status.version == version_before_retry + 4
     assert updated_status.result_message_id is not None
     parts = chat.read_message_parts(
         seeded.connection,
@@ -2631,6 +2728,9 @@ def test_first_send_creates_the_root_message_branch_and_selection(
         ),
         "omnivia_chat_queued_submissions": before["omnivia_chat_queued_submissions"] + 1,
         "omnivia_chat_generation_jobs": before["omnivia_chat_generation_jobs"] + 1,
+        "omnivia_chat_generation_job_status_projection": (
+            before["omnivia_chat_generation_job_status_projection"] + 1
+        ),
         "omnivia_chat_queue_order_projection": (
             before["omnivia_chat_queue_order_projection"] + 1
         ),

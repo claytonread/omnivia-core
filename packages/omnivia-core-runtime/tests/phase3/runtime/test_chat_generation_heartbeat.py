@@ -55,6 +55,16 @@ def _job(holder: manifest.m1.Owned) -> chat.GenerationJob:
     return job
 
 
+def _status(holder: manifest.m1.Owned) -> chat.GenerationJobStatusProjection:
+    status = chat.read_generation_job_status_projection(
+        holder.connection,
+        workspace_id=manifest.WORKSPACE_ID,
+        generation_job_id=manifest.JOB_ID,
+    )
+    assert status is not None
+    return status
+
+
 def _move_branch_head_to_trigger(holder: manifest.m1.Owned) -> None:
     with manifest.writer(holder) as writer:
         writer.append_branch_head_event(
@@ -274,3 +284,85 @@ def test_executor_heartbeat_can_be_ticked_during_provider_silence(
     assert len(expiries) == 2
     assert expiries[1] > expiries[0]
     assert _job(owned).state == "succeeded"
+
+
+def test_heartbeat_and_recovery_each_advance_the_control_token_once(
+    running: manifest.m1.Owned,
+) -> None:
+    clock = FakeClock(wall=manifest.WALL)
+    initial = _job(running)
+    assert initial.lease_expires_at_us is not None
+    assert _status(running).version == 2
+    heartbeat = _heartbeat(running, clock)
+    heartbeat.start(initial.lease_expires_at_us)
+
+    # Still inside the first half of the lease: the tick renews nothing.
+    heartbeat.tick()
+    assert _status(running).version == 2
+
+    clock.advance_wall(DEFAULT_LEASE_US / 1_000_000)
+    heartbeat.tick()
+    renewed = _status(running)
+    assert (renewed.version, renewed.state, renewed.current_attempt_id) == (
+        3,
+        "running",
+        manifest.ATTEMPT_ID,
+    )
+
+    expired = _job(running).lease_expires_at_us
+    assert expired is not None
+    recover_generation_attempt_lease(
+        running.connection,
+        running.identity,
+        workspace_id=manifest.WORKSPACE_ID,
+        fencing_generation=running.generation,
+        generation_job_id=manifest.JOB_ID,
+        generation_attempt_id=manifest.ATTEMPT_ID,
+        recovery_owner="worker-heartbeat-recovery",
+        now_us=expired + 1,
+    )
+    recovered = _status(running)
+    assert (recovered.version, recovered.state) == (4, "running")
+    assert recovered.updated_at_us == expired + 1
+
+
+def test_refused_stale_or_foreign_lease_calls_do_not_advance_the_control_token(
+    running: manifest.m1.Owned,
+) -> None:
+    clock = FakeClock(wall=manifest.WALL)
+    before_job = _job(running)
+    before_status = _status(running)
+    assert before_job.lease_expires_at_us is not None
+
+    # An active lease cannot be recovered.
+    with pytest.raises(GenerationConflict, match="active lease"):
+        recover_generation_attempt_lease(
+            running.connection,
+            running.identity,
+            workspace_id=manifest.WORKSPACE_ID,
+            fencing_generation=running.generation,
+            generation_job_id=manifest.JOB_ID,
+            generation_attempt_id=manifest.ATTEMPT_ID,
+            recovery_owner="worker-heartbeat-recovery",
+            now_us=manifest.BASE_US + 1,
+        )
+    # A foreign attempt cannot be recovered.
+    with pytest.raises(GenerationConflict, match="not running this attempt"):
+        recover_generation_attempt_lease(
+            running.connection,
+            running.identity,
+            workspace_id=manifest.WORKSPACE_ID,
+            fencing_generation=running.generation,
+            generation_job_id=manifest.JOB_ID,
+            generation_attempt_id="generation-attempt-foreign",
+            recovery_owner="worker-heartbeat-recovery",
+            now_us=before_job.lease_expires_at_us + 1,
+        )
+    # A foreign lease owner cannot renew.
+    foreign = _heartbeat(running, clock, lease_owner="worker-heartbeat-foreign")
+    foreign.start(before_job.lease_expires_at_us)
+    with pytest.raises(GenerationConflict, match="leased by another instance"):
+        foreign.tick()
+
+    assert _job(running) == before_job
+    assert _status(running) == before_status

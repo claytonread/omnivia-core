@@ -1277,6 +1277,13 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
             created_at_us=now,
             updated_at_us=now,
         )
+        # The Job's C6 control token starts here, at version 1.
+        writer.insert_generation_job_status_projection(
+            generation_job_id=generation_job_id,
+            conversation_id=request.conversation_id,
+            state="queued",
+            updated_at_us=now,
+        )
         payload: dict[str, Any] = {
             "conversationId": request.conversation_id,
             "branchId": branch_id,
@@ -1722,6 +1729,16 @@ def _stop_generation(request: _StopGeneration) -> ChatCommand:
             or job.current_attempt_id is None
         ):
             raise ChatAggregateConflict("the generation job is not running")
+        status = read_generation_job_status_projection(
+            writer.connection, workspace_id=writer.workspace_id, generation_job_id=request.job_id
+        )
+        if (
+            status is None
+            or status.conversation_id != request.conversation_id
+            or status.state != "running"
+            or status.current_attempt_id != job.current_attempt_id
+        ):
+            raise ChatAggregateConflict("the generation job has no running status projection")
         events = read_generation_events(
             writer.connection, workspace_id=writer.workspace_id, generation_job_id=request.job_id
         )
@@ -1767,29 +1784,15 @@ def _stop_generation(request: _StopGeneration) -> ChatCommand:
             started_at_us=job.started_at_us,
             finished_at_us=now,
         )
-        projection = read_generation_job_status_projection(
-            writer.connection, workspace_id=writer.workspace_id, generation_job_id=request.job_id
+        writer.update_generation_job_status_projection(
+            generation_job_id=request.job_id,
+            expected_version=status.version,
+            state="cancelled",
+            current_attempt_id=job.current_attempt_id,
+            sanitized_error_code="cancelled",
+            updated_at_us=now,
+            finished_at_us=now,
         )
-        if projection is None:
-            writer.insert_generation_job_status_projection(
-                generation_job_id=request.job_id,
-                conversation_id=job.conversation_id,
-                state="cancelled",
-                current_attempt_id=job.current_attempt_id,
-                sanitized_error_code="cancelled",
-                updated_at_us=now,
-                finished_at_us=now,
-            )
-        else:
-            writer.update_generation_job_status_projection(
-                generation_job_id=request.job_id,
-                expected_version=projection.version,
-                state="cancelled",
-                current_attempt_id=job.current_attempt_id,
-                sanitized_error_code="cancelled",
-                updated_at_us=now,
-                finished_at_us=now,
-            )
         return _ack(STOP_GENERATION_COMMAND, request.command_id, request.conversation_id)
 
     return command

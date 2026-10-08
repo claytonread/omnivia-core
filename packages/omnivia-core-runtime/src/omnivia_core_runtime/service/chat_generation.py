@@ -416,6 +416,53 @@ def _sanitized_failure(event_type: str, payload: Mapping[str, Any]) -> tuple[str
     return str(code), None if detail is None else str(detail)
 
 
+# --- status projection ---------------------------------------------------------------
+
+
+def _require_status(
+    connection: sqlite3.Connection, *, workspace_id: str, job: chat.GenerationJob
+) -> chat.GenerationJobStatusProjection:
+    """The job's 0030 status projection, or a refusal before anything is written.
+
+    The projection's `version` is the Job's C6 control token, so a job without one --
+    or one whose projection names another conversation -- is refused rather than given
+    a token late.
+    """
+    status = chat.read_generation_job_status_projection(
+        connection, workspace_id=workspace_id, generation_job_id=job.generation_job_id
+    )
+    if status is None or status.conversation_id != job.conversation_id:
+        raise GenerationConflict(
+            f"generation job {job.generation_job_id!r} has no valid status projection"
+        )
+    return status
+
+
+def _restate_status(
+    writer: chat.ChatWriter,
+    status: chat.GenerationJobStatusProjection,
+    *,
+    updated_at_us: int,
+    **changes: Any,
+) -> None:
+    """Advance the projection by one, carrying over every fact `changes` does not set."""
+    facts: dict[str, Any] = {
+        "state": status.state,
+        "current_attempt_id": status.current_attempt_id,
+        "result_message_id": status.result_message_id,
+        "sanitized_error_code": status.sanitized_error_code,
+        "sanitized_error_detail": status.sanitized_error_detail,
+        "finished_at_us": status.finished_at_us,
+    }
+    facts.update(changes)
+    writer.update_generation_job_status_projection(
+        generation_job_id=status.generation_job_id,
+        expected_version=status.version,
+        updated_at_us=updated_at_us,
+        **facts,
+    )
+
+
 # --- claim -------------------------------------------------------------------------
 
 
@@ -462,7 +509,28 @@ def claim_queued_generation(
             raise GenerationConflict(
                 f"queued submission {queued_submission_id!r} was already submitted under another job"
             )
-        return _claimed(connection, workspace_id=workspace_id, submission=submission)
+        claimed = _claimed(connection, workspace_id=workspace_id, submission=submission)
+        # A replay only verifies, and only the exact authority the claim left: a
+        # running projection on the durable submitted attempt, which is the attempt
+        # the caller names. The claim already advanced the token to 2 and a repeat of
+        # it must not move it again; anything else fails closed without a write.
+        replayed = _require_status(connection, workspace_id=workspace_id, job=claimed.job)
+        if (
+            replayed.version < 2
+            or replayed.state != "running"
+            or claimed.job.state != "running"
+            or replayed.current_attempt_id != claimed.generation_attempt_id
+            or generation_attempt_id != claimed.generation_attempt_id
+            or replayed.result_message_id is not None
+            or replayed.sanitized_error_code is not None
+            or replayed.sanitized_error_detail is not None
+            or replayed.finished_at_us is not None
+        ):
+            raise GenerationConflict(
+                f"generation job {generation_job_id!r} has no claimed status projection "
+                f"for attempt {generation_attempt_id!r}"
+            )
+        return claimed
 
     if submission.state != "queued":
         raise GenerationConflict(
@@ -494,6 +562,20 @@ def claim_queued_generation(
         raise GenerationConflict(
             f"generation job {generation_job_id!r} is not the queued job for this submission"
         )
+    if existing_job is not None:
+        queued_status = _require_status(connection, workspace_id=workspace_id, job=existing_job)
+        if (
+            queued_status.state != "queued"
+            or queued_status.version != 1
+            or queued_status.current_attempt_id is not None
+            or queued_status.result_message_id is not None
+            or queued_status.sanitized_error_code is not None
+            or queued_status.sanitized_error_detail is not None
+            or queued_status.finished_at_us is not None
+        ):
+            raise GenerationConflict(
+                f"generation job {generation_job_id!r} is not the queued job for this submission"
+            )
 
     expires_at_us = now_us + lease_duration_us
     with chat.chat_writer(
@@ -518,6 +600,12 @@ def claim_queued_generation(
                 idempotency_key=submission.idempotency_key,
                 schema_version=1,
                 created_at_us=now_us,
+                updated_at_us=now_us,
+            )
+            writer.insert_generation_job_status_projection(
+                generation_job_id=generation_job_id,
+                conversation_id=submission.conversation_id,
+                state="queued",
                 updated_at_us=now_us,
             )
         writer.append_generation_attempt(
@@ -556,9 +644,9 @@ def claim_queued_generation(
             updated_at_us=now_us,
             started_at_us=now_us,
         )
-        writer.insert_generation_job_status_projection(
+        writer.update_generation_job_status_projection(
             generation_job_id=generation_job_id,
-            conversation_id=submission.conversation_id,
+            expected_version=1,
             state="running",
             current_attempt_id=generation_attempt_id,
             updated_at_us=now_us,
@@ -672,37 +760,34 @@ def append_provider_generation_event(
         connection, workspace_id=workspace_id, generation_job_id=generation_job_id
     )
     provider_event_id = payload.get("providerEventId")
+    existing = None
     if provider_event_id is not None:
         existing = _existing_provider_event(
             events,
             generation_attempt_id=generation_attempt_id,
             provider_event_id=str(provider_event_id),
         )
-        if existing is not None:
-            if (
-                existing.event_type == event_type
-                and dict(existing.payload) == payload
-                and existing.result_message_id == result_message_id
-            ):
-                return existing
+        if existing is not None and not (
+            existing.event_type == event_type
+            and dict(existing.payload) == payload
+            and existing.result_message_id == result_message_id
+        ):
             raise DuplicateProviderEvent(
                 f"provider event {provider_event_id!r} is already durable on this attempt "
                 "carrying a different durable event"
             )
 
-    projection = chat.read_generation_job_status_projection(
-        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
-    )
-    effective_state = projection.state if projection is not None else job.state
-    effective_attempt_id = (
-        projection.current_attempt_id if projection is not None else job.current_attempt_id
-    )
-    if effective_state in _TERMINAL_JOB_STATES:
+    # Status authority is decided before an exact replay is answered: a redelivery is
+    # served only to the caller whose running attempt still owns the job.
+    status = _require_status(connection, workspace_id=workspace_id, job=job)
+    if status.state in _TERMINAL_JOB_STATES:
         raise GenerationTerminal(f"generation job {generation_job_id!r} already ended")
-    if effective_state != "running" or effective_attempt_id != generation_attempt_id:
+    if status.state != "running" or status.current_attempt_id != generation_attempt_id:
         raise GenerationConflict(
             f"generation job {generation_job_id!r} is not running this attempt"
         )
+    if existing is not None:
+        return existing
     if (
         lease_owner is not None
         and job.state == "running"
@@ -765,22 +850,7 @@ def append_provider_generation_event(
                     updated_at_us=now_us,
                     started_at_us=job.started_at_us,
                 )
-            if projection is None:
-                writer.insert_generation_job_status_projection(
-                    generation_job_id=generation_job_id,
-                    conversation_id=job.conversation_id,
-                    state=effective_state,
-                    current_attempt_id=effective_attempt_id,
-                    updated_at_us=now_us,
-                )
-            else:
-                writer.update_generation_job_status_projection(
-                    generation_job_id=generation_job_id,
-                    expected_version=projection.version,
-                    state=effective_state,
-                    current_attempt_id=effective_attempt_id,
-                    updated_at_us=now_us,
-                )
+            _restate_status(writer, status, updated_at_us=now_us)
         else:
             retryable = bool(payload.get("retryable", False))
             projected_state = (
@@ -826,30 +896,16 @@ def append_provider_generation_event(
                     started_at_us=job.started_at_us,
                     finished_at_us=now_us,
                 )
-            if projection is None:
-                writer.insert_generation_job_status_projection(
-                    generation_job_id=generation_job_id,
-                    conversation_id=job.conversation_id,
-                    state=projected_state,
-                    current_attempt_id=effective_attempt_id,
-                    result_message_id=result_message_id if terminal_state == "succeeded" else None,
-                    sanitized_error_code=code,
-                    sanitized_error_detail=detail,
-                    updated_at_us=now_us,
-                    finished_at_us=projected_finished_at_us,
-                )
-            else:
-                writer.update_generation_job_status_projection(
-                    generation_job_id=generation_job_id,
-                    expected_version=projection.version,
-                    state=projected_state,
-                    current_attempt_id=effective_attempt_id,
-                    result_message_id=result_message_id if terminal_state == "succeeded" else None,
-                    sanitized_error_code=code,
-                    sanitized_error_detail=detail,
-                    updated_at_us=now_us,
-                    finished_at_us=projected_finished_at_us,
-                )
+            _restate_status(
+                writer,
+                status,
+                updated_at_us=now_us,
+                state=projected_state,
+                result_message_id=result_message_id if terminal_state == "succeeded" else None,
+                sanitized_error_code=code,
+                sanitized_error_detail=detail,
+                finished_at_us=projected_finished_at_us,
+            )
 
     appended = chat.read_generation_events(
         connection, workspace_id=workspace_id, generation_job_id=generation_job_id
@@ -979,6 +1035,7 @@ def append_provider_text_delta(
         generation_attempt_id=generation_attempt_id,
     )
     provider_event_id = payload.get("providerEventId")
+    existing = None
     if provider_event_id is not None:
         existing = _existing_provider_event(
             events,
@@ -994,7 +1051,7 @@ def append_provider_text_delta(
                 ),
                 None,
             )
-            if (
+            if not (
                 existing.event_type == _TEXT_APPENDED
                 and dict(existing.payload) == payload
                 and existing.result_message_id is None
@@ -1003,23 +1060,19 @@ def append_provider_text_delta(
                 and durable.text_content == delta
                 and durable.content_hash == content_hash
             ):
-                return existing
-            raise DuplicateProviderEvent(
-                f"provider event {provider_event_id!r} is already durable on this attempt "
-                "carrying a different durable text append"
-            )
+                raise DuplicateProviderEvent(
+                    f"provider event {provider_event_id!r} is already durable on this attempt "
+                    "carrying a different durable text append"
+                )
 
-    projection = chat.read_generation_job_status_projection(
-        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
-    )
-    effective_state = projection.state if projection is not None else job.state
-    effective_attempt_id = (
-        projection.current_attempt_id if projection is not None else job.current_attempt_id
-    )
-    if effective_state in _TERMINAL_JOB_STATES:
+    # Status authority is decided before an exact replay is answered, as for events.
+    status = _require_status(connection, workspace_id=workspace_id, job=job)
+    if status.state in _TERMINAL_JOB_STATES:
         raise GenerationTerminal(f"generation job {generation_job_id!r} already ended")
-    if effective_state != "running" or effective_attempt_id != generation_attempt_id:
+    if status.state != "running" or status.current_attempt_id != generation_attempt_id:
         raise GenerationConflict(f"generation job {generation_job_id!r} is not running this attempt")
+    if existing is not None:
+        return existing
     if any(
         event.generation_attempt_id == generation_attempt_id
         and event.event_type in _TERMINAL_EVENT_TYPES
@@ -1103,22 +1156,7 @@ def append_provider_text_delta(
                 updated_at_us=now_us,
                 started_at_us=job.started_at_us,
             )
-        if projection is None:
-            writer.insert_generation_job_status_projection(
-                generation_job_id=generation_job_id,
-                conversation_id=job.conversation_id,
-                state=effective_state,
-                current_attempt_id=effective_attempt_id,
-                updated_at_us=now_us,
-            )
-        else:
-            writer.update_generation_job_status_projection(
-                generation_job_id=generation_job_id,
-                expected_version=projection.version,
-                state=effective_state,
-                current_attempt_id=effective_attempt_id,
-                updated_at_us=now_us,
-            )
+        _restate_status(writer, status, updated_at_us=now_us)
 
     appended = chat.read_generation_events(
         connection, workspace_id=workspace_id, generation_job_id=generation_job_id
@@ -1177,6 +1215,9 @@ def renew_generation_lease(
         raise GenerationConflict(
             f"generation job {generation_job_id!r} is leased by another instance"
         )
+    status = _require_status(connection, workspace_id=workspace_id, job=job)
+    if status.state != "running" or status.current_attempt_id != job.current_attempt_id:
+        raise GenerationConflict(f"generation job {generation_job_id!r} is not running")
 
     expires_at_us = now_us + lease_duration_us
     with chat.chat_writer(
@@ -1196,6 +1237,7 @@ def renew_generation_lease(
             updated_at_us=now_us,
             started_at_us=job.started_at_us,
         )
+        _restate_status(writer, status, updated_at_us=now_us)
     return expires_at_us
 
 
@@ -1223,18 +1265,12 @@ def recover_generation_attempt_lease(
     job = chat.read_generation_job(
         connection, workspace_id=workspace_id, generation_job_id=generation_job_id
     )
-    projection = chat.read_generation_job_status_projection(
-        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
-    )
     if job is None:
         raise GenerationNotFound(f"generation job {generation_job_id!r} is not in this workspace")
-    effective_state = projection.state if projection is not None else job.state
-    effective_attempt_id = (
-        projection.current_attempt_id if projection is not None else job.current_attempt_id
-    )
-    if effective_state in _TERMINAL_JOB_STATES:
+    status = _require_status(connection, workspace_id=workspace_id, job=job)
+    if status.state in _TERMINAL_JOB_STATES:
         raise GenerationTerminal(f"generation job {generation_job_id!r} already ended")
-    if effective_state != "running" or effective_attempt_id != generation_attempt_id:
+    if status.state != "running" or status.current_attempt_id != generation_attempt_id:
         raise GenerationConflict(
             f"generation job {generation_job_id!r} is not running this attempt"
         )
@@ -1265,6 +1301,7 @@ def recover_generation_attempt_lease(
             started_at_us=job.started_at_us,
             finished_at_us=job.finished_at_us,
         )
+        _restate_status(writer, status, updated_at_us=now_us)
     recovered = chat.read_generation_job(
         connection, workspace_id=workspace_id, generation_job_id=generation_job_id
     )

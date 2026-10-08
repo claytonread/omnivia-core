@@ -25,6 +25,7 @@ never written by the service.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -44,6 +45,8 @@ from omnivia_core_runtime.service.chat_generation import (
     append_provider_generation_event,
     append_provider_text_delta,
     claim_queued_generation,
+    recover_generation_attempt_lease,
+    renew_generation_lease,
     replay_generation_events,
 )
 from omnivia_core_runtime.storage import chat
@@ -1102,4 +1105,525 @@ def test_a_fault_mid_transaction_rolls_the_whole_text_delta_back(
     monkeypatch.undo()
     assert snapshot(seeded) == before
     assert "chat.generation.text_appended" not in event_types(seeded)
+    assert seeded.connection.in_transaction is False
+
+
+# --- the C6 control token: the status projection's version ---------------------------
+
+
+def status_of(holder: m1.Owned) -> chat.GenerationJobStatusProjection:
+    found = chat.read_generation_job_status_projection(
+        holder.connection, workspace_id=WORKSPACE_ID, generation_job_id=JOB_ID
+    )
+    assert found is not None
+    return found
+
+
+def seed_queued_job(holder: m1.Owned, *, projection: bool) -> None:
+    """The submitter's queued Job, with or without the projection that gives it a token."""
+    with writer(holder) as w:
+        w.append_generation_job(
+            generation_job_id=JOB_ID,
+            conversation_id=CONVERSATION_ID,
+            branch_id=BRANCH_ID,
+            trigger_message_id=TRIGGER_MESSAGE_ID,
+            graph_revision_observed=GRAPH_REVISION,
+            idempotency_key="m4-idem-1",
+            schema_version=1,
+            created_at_us=BASE_US + 11,
+            updated_at_us=BASE_US + 11,
+        )
+        if projection:
+            w.insert_generation_job_status_projection(
+                generation_job_id=JOB_ID,
+                conversation_id=CONVERSATION_ID,
+                state="queued",
+                updated_at_us=BASE_US + 11,
+            )
+
+
+def test_create_on_claim_produces_a_running_projection_at_version_two(
+    seeded: m1.Owned,
+) -> None:
+    claimed = claim(seeded)
+
+    running = status_of(seeded)
+    assert (running.state, running.current_attempt_id, running.version) == (
+        "running",
+        ATTEMPT_ID,
+        2,
+    )
+    assert running.conversation_id == claimed.job.conversation_id
+    assert running.updated_at_us == BASE_US + 20
+
+
+def test_claiming_the_submitters_queued_job_moves_version_one_to_two(
+    seeded: m1.Owned,
+) -> None:
+    seed_queued_job(seeded, projection=True)
+    assert status_of(seeded).version == 1
+
+    claim(seeded)
+
+    running = status_of(seeded)
+    assert (running.state, running.current_attempt_id, running.version) == (
+        "running",
+        ATTEMPT_ID,
+        2,
+    )
+
+
+def test_a_repeated_claim_leaves_the_version_alone(seeded: m1.Owned) -> None:
+    seed_queued_job(seeded, projection=True)
+    claim(seeded)
+    first = status_of(seeded)
+
+    claim(seeded, now_us=BASE_US + 999)
+
+    assert status_of(seeded) == first
+
+
+def refuse_missing(holder: m1.Owned) -> None:
+    seed_queued_job(holder, projection=False)
+
+
+def refuse_advanced(holder: m1.Owned) -> None:
+    seed_queued_job(holder, projection=True)
+    with writer(holder) as w:
+        w.update_generation_job_status_projection(
+            generation_job_id=JOB_ID,
+            expected_version=1,
+            state="queued",
+            updated_at_us=BASE_US + 12,
+        )
+
+
+@pytest.mark.parametrize("prepare", [refuse_missing, refuse_advanced], ids=["missing", "advanced"])
+def test_a_claim_without_the_exact_queued_initial_projection_refuses_atomically(
+    seeded: m1.Owned, prepare: Any
+) -> None:
+    prepare(seeded)
+    before = counts(seeded.connection)
+    queue_before = chat.read_queued_submission(
+        seeded.connection, workspace_id=WORKSPACE_ID, queued_submission_id=QUEUE_ID
+    )
+
+    with pytest.raises(GenerationConflict):
+        claim(seeded)
+
+    assert counts(seeded.connection) == before
+    assert (
+        chat.read_queued_submission(
+            seeded.connection, workspace_id=WORKSPACE_ID, queued_submission_id=QUEUE_ID
+        )
+        == queue_before
+    )
+    job = chat.read_generation_job(
+        seeded.connection, workspace_id=WORKSPACE_ID, generation_job_id=JOB_ID
+    )
+    assert job is not None and job.state == "queued"
+
+
+def test_a_job_that_ran_without_a_projection_gets_no_late_token(seeded: m1.Owned) -> None:
+    """Every lifecycle write refuses a Job with no projection rather than inserting one."""
+    seed_queued_job(seeded, projection=False)
+    with writer(seeded) as w:
+        w.append_generation_attempt(
+            generation_attempt_id=ATTEMPT_ID,
+            conversation_id=CONVERSATION_ID,
+            generation_job_id=JOB_ID,
+            attempt_number=1,
+            state="running",
+            schema_version=1,
+            started_at_us=BASE_US + 20,
+        )
+        w.update_generation_job(
+            generation_job_id=JOB_ID,
+            expected_state="queued",
+            expected_lease_epoch=0,
+            state="running",
+            lease_epoch=1,
+            current_attempt_id=ATTEMPT_ID,
+            lease_owner=LEASE_OWNER,
+            lease_expires_at_us=BASE_US + 60_000_020,
+            heartbeat_at_us=BASE_US + 20,
+            last_event_sequence=0,
+            updated_at_us=BASE_US + 20,
+            started_at_us=BASE_US + 20,
+        )
+    before = counts(seeded.connection)
+
+    with pytest.raises(GenerationConflict):
+        append(seeded, STREAM_START)
+    with pytest.raises(GenerationConflict):
+        append_text(seeded)
+    with pytest.raises(GenerationConflict):
+        renew_generation_lease(
+            seeded.connection,
+            seeded.identity,
+            workspace_id=WORKSPACE_ID,
+            fencing_generation=seeded.generation,
+            generation_job_id=JOB_ID,
+            lease_owner=LEASE_OWNER,
+            now_us=BASE_US + 30,
+        )
+    with pytest.raises(GenerationConflict):
+        recover_generation_attempt_lease(
+            seeded.connection,
+            seeded.identity,
+            workspace_id=WORKSPACE_ID,
+            fencing_generation=seeded.generation,
+            generation_job_id=JOB_ID,
+            generation_attempt_id=ATTEMPT_ID,
+            recovery_owner="worker-m4-2",
+            now_us=BASE_US + 60_000_021,
+        )
+
+    assert counts(seeded.connection) == before
+    assert (
+        chat.read_generation_job_status_projection(
+            seeded.connection, workspace_id=WORKSPACE_ID, generation_job_id=JOB_ID
+        )
+        is None
+    )
+
+
+def test_each_durable_job_change_advances_the_version_exactly_once(seeded: m1.Owned) -> None:
+    claim(seeded)
+    seen = [status_of(seeded).version]
+
+    append(seeded, STREAM_START, now_us=BASE_US + 30)
+    seen.append(status_of(seeded).version)
+    append_text(seeded, now_us=BASE_US + 31)
+    seen.append(status_of(seeded).version)
+    renew_generation_lease(
+        seeded.connection,
+        seeded.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=seeded.generation,
+        generation_job_id=JOB_ID,
+        lease_owner=LEASE_OWNER,
+        now_us=BASE_US + 32,
+    )
+    seen.append(status_of(seeded).version)
+    commit_result_message(seeded)
+    append(seeded, FINISH, now_us=BASE_US + 33, result_message_id=RESULT_MESSAGE_ID)
+    seen.append(status_of(seeded).version)
+
+    assert seen == [2, 3, 4, 5, 6]
+    final = status_of(seeded)
+    assert (final.state, final.result_message_id, final.finished_at_us) == (
+        "succeeded",
+        RESULT_MESSAGE_ID,
+        BASE_US + 33,
+    )
+
+
+def test_a_same_state_advance_keeps_the_attempt_and_leaves_no_result_or_error(
+    seeded: m1.Owned,
+) -> None:
+    started(seeded)
+    append_text(seeded, now_us=BASE_US + 31)
+
+    after = status_of(seeded)
+
+    assert (
+        after.state,
+        after.current_attempt_id,
+        after.result_message_id,
+        after.sanitized_error_code,
+        after.sanitized_error_detail,
+        after.finished_at_us,
+        after.updated_at_us,
+    ) == ("running", ATTEMPT_ID, None, None, None, None, BASE_US + 31)
+
+
+def test_a_retryable_error_keeps_the_projection_internal_and_advances_once(
+    seeded: m1.Owned,
+) -> None:
+    started(seeded)
+    before = status_of(seeded).version
+
+    append(seeded, ERROR, now_us=BASE_US + 31)
+
+    after = status_of(seeded)
+    job = chat.read_generation_job(
+        seeded.connection, workspace_id=WORKSPACE_ID, generation_job_id=JOB_ID
+    )
+    assert job is not None
+    # The Job row stays on the public vocabulary; only the 0030 projection is internal.
+    assert job.state == "failed"
+    assert (after.state, after.finished_at_us, after.version) == ("retryable", None, before + 1)
+
+
+def test_an_exact_event_or_text_replay_does_not_advance_the_version(seeded: m1.Owned) -> None:
+    started(seeded)
+    append_text(seeded, now_us=BASE_US + 31)
+    settled = status_of(seeded)
+
+    append(seeded, STREAM_START, now_us=BASE_US + 90)
+    append_text(seeded, now_us=BASE_US + 91)
+
+    assert status_of(seeded) == settled
+
+
+def test_a_claim_replay_for_another_attempt_is_refused_without_writes(seeded: m1.Owned) -> None:
+    claim(seeded)
+    before = snapshot(seeded)
+
+    with pytest.raises(GenerationConflict):
+        claim(seeded, generation_attempt_id="attempt-m4-other", now_us=BASE_US + 99)
+
+    assert snapshot(seeded) == before
+    assert status_of(seeded).version == 2
+
+
+def test_a_claim_replay_over_a_terminal_projection_is_refused_without_writes(
+    seeded: m1.Owned,
+) -> None:
+    started(seeded)
+    append(seeded, ERROR, now_us=BASE_US + 31)
+    commit_result_message(seeded)
+    with writer(seeded) as w:
+        w.update_generation_job_status_projection(
+            generation_job_id=JOB_ID,
+            expected_version=status_of(seeded).version,
+            state="failed",
+            current_attempt_id=ATTEMPT_ID,
+            sanitized_error_code="rate-limited",
+            finished_at_us=BASE_US + 40,
+            updated_at_us=BASE_US + 40,
+        )
+    assert status_of(seeded).state == "failed"
+    before = snapshot(seeded)
+    version = status_of(seeded).version
+
+    with pytest.raises(GenerationConflict):
+        claim(seeded, now_us=BASE_US + 99)
+
+    assert snapshot(seeded) == before
+    assert status_of(seeded).version == version
+
+
+def test_an_exact_claim_replay_after_progress_does_not_advance_the_version(
+    seeded: m1.Owned,
+) -> None:
+    started(seeded)
+    settled = status_of(seeded)
+    assert settled.version == 3
+
+    claim(seeded, now_us=BASE_US + 99)
+
+    assert status_of(seeded) == settled
+
+
+def seed_replayable_job_without_projection(holder: m1.Owned) -> None:
+    """A running Job whose started event and first text chunk are durable, with no projection."""
+    seed_queued_job(holder, projection=False)
+    text = "hello"
+    with writer(holder) as w:
+        w.append_generation_attempt(
+            generation_attempt_id=ATTEMPT_ID,
+            conversation_id=CONVERSATION_ID,
+            generation_job_id=JOB_ID,
+            attempt_number=1,
+            state="running",
+            schema_version=1,
+            started_at_us=BASE_US + 20,
+        )
+        for sequence, event_type, payload in (
+            (1, "chat.generation.started", {"providerEventType": "stream-start", "providerEventId": "provider-event-m4-1"}),
+            (
+                2,
+                "chat.generation.text_appended",
+                {"providerEventType": "text-delta", "providerEventId": "provider-event-m4-d1", "chunkOrdinal": 0},
+            ),
+        ):
+            if sequence == 2:
+                w.append_generation_text_chunk(
+                    conversation_id=CONVERSATION_ID,
+                    generation_job_id=JOB_ID,
+                    generation_attempt_id=ATTEMPT_ID,
+                    chunk_ordinal=0,
+                    provider_event_id="provider-event-m4-d1",
+                    text_content=text,
+                    content_hash="sha256:" + hashlib.sha256(text.encode()).hexdigest(),
+                    occurred_at_us=BASE_US + 20 + sequence,
+                    schema_version=1,
+                )
+            w.append_generation_event(
+                event_id=f"event-m4-{sequence}",
+                conversation_id=CONVERSATION_ID,
+                branch_id=BRANCH_ID,
+                generation_job_id=JOB_ID,
+                generation_attempt_id=ATTEMPT_ID,
+                event_type=event_type,
+                generation_event_sequence=sequence,
+                trigger_message_id=TRIGGER_MESSAGE_ID,
+                provider_event_id=payload["providerEventId"],
+                cursor=f"{JOB_ID}:{sequence}",
+                payload=payload,
+                occurred_at_us=BASE_US + 20 + sequence,
+                schema_version=1,
+            )
+        w.update_generation_job(
+            generation_job_id=JOB_ID,
+            expected_state="queued",
+            expected_lease_epoch=0,
+            state="running",
+            lease_epoch=1,
+            current_attempt_id=ATTEMPT_ID,
+            lease_owner=LEASE_OWNER,
+            lease_expires_at_us=BASE_US + 60_000_020,
+            heartbeat_at_us=BASE_US + 20,
+            last_event_sequence=2,
+            updated_at_us=BASE_US + 22,
+            started_at_us=BASE_US + 20,
+        )
+
+
+def other_attempt(holder: m1.Owned) -> None:
+    with writer(holder) as w:
+        w.append_generation_attempt(
+            generation_attempt_id="attempt-m4-other",
+            conversation_id=CONVERSATION_ID,
+            generation_job_id=JOB_ID,
+            attempt_number=2,
+            retry_of_attempt_id=ATTEMPT_ID,
+            state="running",
+            schema_version=1,
+            started_at_us=BASE_US + 39,
+        )
+        w.update_generation_job_status_projection(
+            generation_job_id=JOB_ID,
+            expected_version=status_of(holder).version,
+            state="running",
+            current_attempt_id="attempt-m4-other",
+            updated_at_us=BASE_US + 40,
+        )
+
+
+def non_running(holder: m1.Owned) -> None:
+    with writer(holder) as w:
+        w.update_generation_job_status_projection(
+            generation_job_id=JOB_ID,
+            expected_version=status_of(holder).version,
+            state="retryable",
+            current_attempt_id=ATTEMPT_ID,
+            sanitized_error_code="rate-limited",
+            updated_at_us=BASE_US + 40,
+        )
+
+
+@pytest.mark.parametrize("replay", ["event", "text"])
+@pytest.mark.parametrize(
+    ("break_authority", "expected"),
+    [
+        (seed_replayable_job_without_projection, GenerationConflict),
+        (other_attempt, GenerationConflict),
+        (non_running, GenerationConflict),
+    ],
+    ids=["missing", "other-attempt", "non-running"],
+)
+def test_an_exact_replay_without_running_status_authority_refuses_atomically(
+    seeded: m1.Owned, replay: str, break_authority: Any, expected: type[Exception]
+) -> None:
+    if break_authority is seed_replayable_job_without_projection:
+        break_authority(seeded)
+    else:
+        started(seeded)
+        append_text(seeded, now_us=BASE_US + 31)
+        break_authority(seeded)
+    before = snapshot(seeded)
+    events_before = event_types(seeded)
+
+    with pytest.raises(expected):
+        if replay == "event":
+            append(seeded, STREAM_START, now_us=BASE_US + 90)
+        else:
+            append_text(seeded, now_us=BASE_US + 91)
+
+    assert snapshot(seeded) == before
+    assert event_types(seeded) == events_before
+    assert seeded.connection.in_transaction is False
+
+
+@pytest.mark.parametrize(
+    "operation", ["event", "text", "claim", "heartbeat", "recover"]
+)
+def test_a_stale_projection_cas_rolls_every_companion_write_back(
+    seeded: m1.Owned, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    if operation == "claim":
+        pass
+    else:
+        started(seeded)
+    before = snapshot(seeded)
+    events_before = event_types(seeded)
+    attempts_before = seeded.connection.execute(
+        "SELECT count(*) FROM omnivia_chat_generation_attempts"
+    ).fetchone()
+    original = chat.ChatWriter.update_generation_job_status_projection
+
+    def stale(self: chat.ChatWriter, **fields: Any) -> None:
+        fields["expected_version"] -= 1
+        original(self, **fields)
+
+    monkeypatch.setattr(chat.ChatWriter, "update_generation_job_status_projection", stale)
+
+    def attempt() -> None:
+        if operation == "event":
+            append(seeded, ERROR, now_us=BASE_US + 50)
+        elif operation == "text":
+            append_text(seeded, now_us=BASE_US + 50)
+        elif operation == "claim":
+            claim(seeded)
+        elif operation == "heartbeat":
+            renew_generation_lease(
+                seeded.connection,
+                seeded.identity,
+                workspace_id=WORKSPACE_ID,
+                fencing_generation=seeded.generation,
+                generation_job_id=JOB_ID,
+                lease_owner=LEASE_OWNER,
+                now_us=BASE_US + 50,
+            )
+        else:
+            recover_generation_attempt_lease(
+                seeded.connection,
+                seeded.identity,
+                workspace_id=WORKSPACE_ID,
+                fencing_generation=seeded.generation,
+                generation_job_id=JOB_ID,
+                generation_attempt_id=ATTEMPT_ID,
+                recovery_owner="worker-m4-2",
+                now_us=BASE_US + 60_000_100,
+            )
+
+    if operation == "claim":
+        with pytest.raises(chat.StaleVersion):
+            attempt()
+        monkeypatch.undo()
+        assert (
+            seeded.connection.execute(
+                "SELECT count(*) FROM omnivia_chat_generation_jobs"
+            ).fetchone()
+            == (0,)
+        )
+        queue = chat.read_queued_submission(
+            seeded.connection, workspace_id=WORKSPACE_ID, queued_submission_id=QUEUE_ID
+        )
+        assert queue is not None and queue.state == "queued"
+        return
+
+    with pytest.raises(chat.StaleVersion):
+        attempt()
+
+    monkeypatch.undo()
+    assert snapshot(seeded) == before
+    assert event_types(seeded) == events_before
+    assert (
+        seeded.connection.execute("SELECT count(*) FROM omnivia_chat_generation_attempts").fetchone()
+        == attempts_before
+    )
     assert seeded.connection.in_transaction is False
