@@ -42,6 +42,21 @@ packet added the fifth:
    `BRIDGE_SNAPSHOT_ITEM_KINDS`. Platform must move its bridge version to 1.1
    in lockstep; that change is outside this repository.
 
+   **Pre-publication parity correction within 1.1 (8 October 2026; not a new
+   version).** `bridge.schema.json#/$defs/ContextBoundMessage` gains one
+   optional `acceptsDurableFollowUp`, a strict boolean, so Core matches the
+   accepted C5 Platform decoder. It is not `required`; absence stays valid and
+   means the older, pre-capability posture; both `true` and `false` are valid;
+   a string such as `"yes"` is rejected and never coerced;
+   `additionalProperties: false` is preserved. Two governed fixtures added
+   (`f2b-context-bound-durable-follow-up.json`,
+   `f2b-context-bound-durable-follow-up-not-boolean.json`); manifest now 181
+   cases (83 valid, 98 invalid), 182 fixture-tree JSON files including the
+   manifest; resource inventory digest repinned to
+   `b3f9a8c61ecaad29ba7a1f11fc3d6a36dab83db9499ace868f01349ed87d037b`
+   (this supersedes the digest above; `FIXTURE_MANIFEST_SHA256` is unchanged as
+   proposal-authority provenance). `HostedCommandKind` is not widened.
+
 ## What the Application Contract side changed (no Masterdocs schema text)
 
 - `operations.schema.json#/$defs/x-omnivia-operation-catalogue`: one new entry

@@ -4,8 +4,8 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (180 files: FIXTURE-MANIFEST.json
-#                                             plus 179 governed fixtures)
+#   contracts/chat/v1/fixtures/**           (182 files: FIXTURE-MANIFEST.json
+#                                             plus 181 governed fixtures)
 # Governed by:
 #   Approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001;
 #   proposal commit 04c0b2f768b8a74c515936e548c4a28fa4af514d;
@@ -19,7 +19,7 @@
 # Regenerate: python scripts/generate-chat-contract.py
 # Verify:     python scripts/generate-chat-contract.py --check
 #
-# This never reads the Masterdocs checkout: the 13 schemas and 170 fixture
+# This never reads the Masterdocs checkout: the 13 schemas and 182 fixture
 # files under contracts/chat/v1 are this repository's own checked-in copy of
 # the approved bytes, and are the only source this script reads.
 #
@@ -103,7 +103,7 @@ Chat Runtime Contract v1 schemas and fixtures.
 
 Verifies, deterministically:
 
-- the exact packaged resource *count* (13 schemas, 170 fixture-tree files);
+- the exact packaged resource *count* (13 schemas, 182 fixture-tree files);
 - a single pinned SHA-256 digest over every relative resource path and its
   exact byte payload, so a changed, missing or extra resource under
   ``contracts/chat/v1`` fails closed rather than silently regenerating a
@@ -174,10 +174,10 @@ PROTOCOL_VERSION = "1.0"
 PROTOCOL_MAJOR = "1"
 
 EXPECTED_SCHEMA_COUNT = 13
-EXPECTED_FIXTURE_TREE_COUNT = 180  # FIXTURE-MANIFEST.json + 179 governed fixtures
-EXPECTED_FIXTURE_CASE_COUNT = 179
-EXPECTED_FIXTURE_VALID_COUNT = 82
-EXPECTED_FIXTURE_INVALID_COUNT = 97
+EXPECTED_FIXTURE_TREE_COUNT = 182  # FIXTURE-MANIFEST.json + 181 governed fixtures
+EXPECTED_FIXTURE_CASE_COUNT = 181
+EXPECTED_FIXTURE_VALID_COUNT = 83
+EXPECTED_FIXTURE_INVALID_COUNT = 98
 
 #: Pinned over the approved bytes verified byte-for-byte against the tagged
 #: Masterdocs authority (``architecture-v1.4.0``) at copy time, plus the six
@@ -186,7 +186,7 @@ EXPECTED_FIXTURE_INVALID_COUNT = 97
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "877390ddd69934e26bc8bfc9bdbb9cb8f29d8726b602a58cf0f50bbcf16658b4"
+    "b3f9a8c61ecaad29ba7a1f11fc3d6a36dab83db9499ace868f01349ed87d037b"
 )
 
 
@@ -624,7 +624,7 @@ def render_generated_module(
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (180 files)
+#   contracts/chat/v1/fixtures/**           (182 files)
 # Governed by:
 #   Approval {APPROVAL_ID};
 #   proposal commit {PROPOSAL_COMMIT};
@@ -731,7 +731,7 @@ PLATFORM_CARRIER_CONTRACT_VERSION: Final[str] = {platform_carrier_contract_versi
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = {EXPECTED_SCHEMA_COUNT!r}
-#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 168 governed fixtures).
+#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 181 governed fixtures).
 RESOURCE_FIXTURE_TREE_COUNT: Final[int] = {EXPECTED_FIXTURE_TREE_COUNT!r}
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``

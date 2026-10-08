@@ -153,7 +153,11 @@
         },
         "maxBatchEvents": { "type": "integer", "minimum": 1, "maximum": 25 },
         "maxSnapshotItems": { "type": "integer", "minimum": 1, "maximum": 25 },
-        "boundAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+        "boundAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "acceptsDurableFollowUp": {
+          "type": "boolean",
+          "description": "Optional host capability flag: true when the host accepts a durable follow-up for this bound context, false when it does not. Absence is valid and means the older, pre-capability posture; consumers never infer either value from absence. A non-boolean value is refused structurally and never coerced."
+        }
       }
     },
     "ContextDisposedMessage": {

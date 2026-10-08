@@ -945,8 +945,8 @@ def test_each_schema_is_a_valid_draft_2020_12_schema(name: str) -> None:
 
 
 def test_the_manifest_declares_the_governed_counts() -> None:
-    assert MANIFEST["counts"] == {"total": 179, "valid": 82, "invalid": 97}
-    assert len(MANIFEST["fixtures"]) == 179
+    assert MANIFEST["counts"] == {"total": 181, "valid": 83, "invalid": 98}
+    assert len(MANIFEST["fixtures"]) == 181
 
 
 def test_every_check_the_manifest_names_is_implemented() -> None:

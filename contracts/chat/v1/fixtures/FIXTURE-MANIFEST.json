@@ -5,9 +5,9 @@
   "authority": "This manifest is proposal-stage Evidence only. It is not Approved, not Published, not Effective. It lists every normative valid, invalid and canonical-trace fixture in this change set.",
   "schema_host": "https://contracts.omnivia.dev/chat/v1/",
   "counts": {
-    "total": 179,
-    "valid": 82,
-    "invalid": 97
+    "total": 181,
+    "valid": 83,
+    "invalid": 98
   },
   "fixtures": [
     {
@@ -1797,6 +1797,19 @@
         "f2b_no_duplicate_event_ids_across_batches"
       ],
       "expected_error_contains": "payload.actorId"
+    },
+    {
+      "path": "fixtures/valid/f2b-context-bound-durable-follow-up.json",
+      "expect": "valid",
+      "focus": "Host-issued admission handshake optionally declaring acceptsDurableFollowUp as a strict boolean (F2b 1.1 capability flag); absence stays valid as the pre-capability posture.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage"
+    },
+    {
+      "path": "fixtures/invalid/f2b-context-bound-durable-follow-up-not-boolean.json",
+      "expect": "invalid",
+      "focus": "acceptsDurableFollowUp is a strict boolean: a string such as \"yes\" is rejected and never coerced.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
+      "expected_error_contains": "boolean"
     }
   ]
 }
