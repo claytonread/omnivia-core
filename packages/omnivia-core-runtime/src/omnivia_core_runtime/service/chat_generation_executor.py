@@ -7,28 +7,52 @@ F2a event mappings; credentials, SDK objects and endpoints remain outside Core.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import re
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
-from omnivia_core.chat_contract.v1 import ProviderInvocationRequest, to_canonical_json
-from omnivia_core.chat_contract.v1.generated import F2A_PROVIDER_EVENT_TYPES
+from omnivia_core.chat_contract.v1 import (
+    ProviderInvocationRequest,
+    codec,
+    to_canonical_json,
+)
+from omnivia_core.chat_contract.v1.generated import (
+    DIRECTION_CONTENT_MAX_UTF8_BYTES,
+    F2A_PROVIDER_EVENT_TYPES,
+)
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
 from omnivia_core_runtime.service.chat_compaction import derive_model_visible_context
 from omnivia_core_runtime.service.chat_generation import (
     DEFAULT_LEASE_US,
+    MAX_GENERATION_ATTEMPTS,
     MAX_RESPONSE_TEXT_BYTES,
+    BoundaryUnavailable,
+    ContinuationIdentities,
+    DirectionNotPending,
+    GenerationConflict,
     GenerationHeartbeat,
     GenerationLifecycleError,
+    GenerationNotFound,
+    GenerationTerminal,
+    StaleGenerationVersion,
     append_provider_generation_event,
     append_provider_text_delta,
+    apply_direction_continuation,
     claim_queued_generation,
+    close_unapplied_direction,
+    continuation_identities,
+    generated_text_digest,
+    provider_finish_id,
+    stage_direction_continuation,
 )
 from omnivia_core_runtime.storage import chat
+from omnivia_core_runtime.storage.connection import StorageError
 
 __all__ = [
     "ChatGenerationExecutor",
@@ -49,10 +73,41 @@ _SAFE_MESSAGES: Final = {
     "malformed-response": "the provider stream could not be completed safely",
 }
 _TERMINAL_PROVIDER_EVENTS: Final = frozenset({"finish", "error"})
+#: `common.schema.json#/$defs/ProviderAttemptId` is a WorkspaceScopedId used for one
+#: provider transport attempt.
+_TRANSPORT_ATTEMPT_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _PROMPT_BUNDLE: Final = {
     "id": "core.chat.default-model-visible-context",
     "version": 1,
     "kind": "message-lineage",
+}
+#: A continuation assembles its context differently (the output so far and the Direction
+#: are model-visible too), so its manifest names a different bundle rather than passing
+#: itself off as the default one.
+_CONTINUATION_PROMPT_BUNDLE: Final = {
+    "id": "core.chat.direction-continuation-context",
+    "version": 1,
+    "kind": "message-lineage-continuation",
+}
+#: `provider.schema.json` bounds one request to 4096 messages.
+_MAX_REQUEST_MESSAGES: Final = 4096
+#: `common.schema.json#/$defs/DirectionTextPart` and `generation.schema.json#/$defs/Direction`.
+_DIRECTION_MAX_PARTS: Final = 16
+_DIRECTION_TEXT_MAX_CHARS: Final = 4000
+#: How often one boundary re-reads the pending Direction after it changed under the
+#: transition (a supersession landing between the read and the commit). Each try is
+#: fully re-proved; the bound only stops a writer who keeps replacing it from holding the
+#: boundary open for ever.
+_MAX_DIRECTION_TRIES: Final = 3
+#: How a Direction still pending ends once its Generation has, by the status the
+#: Generation ended in: a stopped Generation cancels it as `generation_stopped`, one that
+#: ended any other way as `job_terminal`, and one paused for a retry has lost the Attempt
+#: the Direction was aimed at.
+_UNAPPLIED_OF_JOB_STATE: Final = {
+    "cancelled": ("cancelled", "generation_stopped"),
+    "succeeded": ("cancelled", "job_terminal"),
+    "failed": ("cancelled", "job_terminal"),
+    "retryable": ("rejected", "target_attempt_ended"),
 }
 
 
@@ -217,11 +272,117 @@ def _plain_json(value: Any) -> Any:
     return value
 
 
+@dataclass(frozen=True, slots=True)
+class _Hop:
+    """One Direction taken in at an iteration boundary: what a later request adds to its context.
+
+    A durable hop is read from a continuation row and its applied Direction. The hop about
+    to be written is planned from the pending Direction and the identities derived for it.
+    One builder composes the request and the manifest from either, so the request a
+    continuation is first invoked with and the one a replay rebuilds are the same.
+    """
+
+    continuation_id: str
+    prior_attempt_id: str
+    next_attempt_id: str
+    direction_id: str
+    direction_digest: str
+    direction_texts: tuple[str, ...]
+    provider_finish_id: str
+    prior_output_digest: str
+    prior_text: str
+
+
+class _DirectionRefusedError(Exception):
+    """A pending Direction that cannot be taken in here, with the closed pair saying why.
+
+    A signal inside this module, never raised past it: the boundary that sees it closes the
+    Direction with that pair and settles the Generation without it.
+    """
+
+    def __init__(self, state: str, code: str) -> None:
+        super().__init__(code)
+        self.state = state
+        self.code = code
+
+
+def _direction_texts(direction: chat.Direction) -> tuple[str, ...] | None:
+    """A Direction's authored text parts if its stored content is exactly the contract's.
+
+    `{"editableParts": [...]}` and nothing else, one to sixteen closed text parts of one to
+    4000 characters, and the canonical object within its byte bound. Anything else is
+    `None`: a Direction this build cannot read as the contract defines it is not text to
+    put in front of a model.
+    """
+    content = direction.content
+    parts = content.get("editableParts")
+    if (
+        set(content) != {"editableParts"}
+        or not isinstance(parts, list)
+        or not 1 <= len(parts) <= _DIRECTION_MAX_PARTS
+    ):
+        return None
+    texts: list[str] = []
+    for part in parts:
+        payload = part.get("payload") if isinstance(part, Mapping) else None
+        text = payload.get("text") if isinstance(payload, Mapping) else None
+        if (
+            not isinstance(part, Mapping)
+            or not isinstance(payload, Mapping)
+            or set(part) != {"payload", "type"}
+            or part["type"] != "text"
+            or set(payload) != {"text"}
+            or not isinstance(text, str)
+            or not 1 <= len(text) <= _DIRECTION_TEXT_MAX_CHARS
+        ):
+            return None
+        texts.append(text)
+    if codec.direction_content_byte_size(parts) > DIRECTION_CONTENT_MAX_UTF8_BYTES:
+        return None
+    return tuple(texts)
+
+
+def _hop_messages(hops: tuple[_Hop, ...]) -> tuple[Mapping[str, Any], ...]:
+    """What each hop adds to the model-visible context: the output so far, then the Direction.
+
+    The output is the model's own earlier turn and the Direction is the actor speaking
+    again, so they go in as an `assistant` and a `user` message. Neither is a Message in
+    the conversation graph, and neither is ever written back to it.
+    """
+    messages: list[Mapping[str, Any]] = []
+    for hop in hops:
+        messages.append({"role": "assistant", "parts": [{"kind": "text", "text": hop.prior_text}]})
+        messages.append(
+            {"role": "user", "parts": [{"kind": "text", "text": text} for text in hop.direction_texts]}
+        )
+    return tuple(messages)
+
+
+def _hops_manifest(hops: tuple[_Hop, ...]) -> Mapping[str, Any]:
+    """The continuation lineage as identifiers and digests, never as text."""
+    return {
+        "iteration": len(hops),
+        "hops": [
+            {
+                "continuationId": hop.continuation_id,
+                "priorAttemptId": hop.prior_attempt_id,
+                "nextAttemptId": hop.next_attempt_id,
+                "directionId": hop.direction_id,
+                "directionContentDigest": hop.direction_digest,
+                "providerFinishId": hop.provider_finish_id,
+                "priorOutputDigest": hop.prior_output_digest,
+            }
+            for hop in hops
+        ],
+    }
+
+
 def _request_manifest_body(
     *,
     request: ProviderInvocationRequest,
     job: chat.GenerationJob,
     manifest_message_refs: tuple[Mapping[str, Any], ...],
+    hops: tuple[_Hop, ...] = (),
 ) -> Mapping[str, Any]:
     response_format_digest = _digest_json(request.response_format)
     generation_options_digest = (
@@ -232,7 +393,8 @@ def _request_manifest_body(
         if request.provider_options_by_namespace is None
         else _digest_json(request.provider_options_by_namespace)
     )
-    prompt_bundle_digest = _digest_json(_PROMPT_BUNDLE)
+    prompt_bundle = _CONTINUATION_PROMPT_BUNDLE if hops else _PROMPT_BUNDLE
+    prompt_bundle_digest = _digest_json(prompt_bundle)
     body: dict[str, Any] = {
         "schemaVersion": 1,
         "requestManifestId": _stable_id(
@@ -252,7 +414,7 @@ def _request_manifest_body(
             "contentPolicy": "identifiers_and_hashes_only",
         },
         "promptBundle": {
-            **_PROMPT_BUNDLE,
+            **prompt_bundle,
             "digest": prompt_bundle_digest,
         },
         "toolDefinitions": [],
@@ -285,6 +447,15 @@ def _request_manifest_body(
             "export": "metadata_and_hashes",
         },
     }
+    if hops:
+        # 0069's exact binding: three keys, and `directionVersion` is the pending version
+        # this manifest was built from -- always 1, whatever the Direction becomes by it.
+        body["direction"] = {
+            "contentDigest": hops[-1].direction_digest,
+            "directionId": hops[-1].direction_id,
+            "directionVersion": 1,
+        }
+        body["continuation"] = _hops_manifest(hops)
     return body
 
 
@@ -399,8 +570,18 @@ class ChatGenerationExecutor:
             "failed",
             "cancelled",
         }:
+            self._close_unapplied_direction(generation_job_id)
             return
         attempt_id = _stable_id("genatt", generation_job_id)
+        resumed = self._continued_attempt(existing_job, attempt_id)
+        if existing_job is not None and resumed is not None:
+            self._execute_attempt(
+                job=existing_job,
+                attempt_id=resumed,
+                trigger_message_id=trigger_message_id,
+                renew_lease=True,
+            )
+            return
         claimed = claim_queued_generation(
             self.connection,
             self.identity,
@@ -424,7 +605,12 @@ class ChatGenerationExecutor:
     def execute_generation_attempt(
         self, *, generation_job_id: str, generation_attempt_id: str
     ) -> None:
-        """Invoke the provider for an already-opened retry attempt."""
+        """Invoke the provider for an already-opened retry or continuation attempt.
+
+        A continuation attempt is rebuilt from the durable rows that opened it, so
+        calling this for one whose provider was never invoked (or was interrupted) sends
+        the very request it would have sent the first time.
+        """
         job = chat.read_generation_job(
             self.connection,
             workspace_id=self.workspace_id,
@@ -441,6 +627,7 @@ class ChatGenerationExecutor:
             or status.state != "running"
             or status.current_attempt_id != generation_attempt_id
         ):
+            self._close_unapplied_direction(generation_job_id)
             return
         self._execute_attempt(
             job=job,
@@ -457,10 +644,90 @@ class ChatGenerationExecutor:
         trigger_message_id: str,
         renew_lease: bool,
     ) -> None:
-        lease_expires_at_us = _now_us(self.clock) + self._lease_duration_us()
-        invocation_id = _stable_id(
-            "provider-inv", f"{job.generation_job_id}:{attempt_id}"
+        """Run an attempt, and then each continuation attempt a Direction opens after it.
+
+        Each pass is one attempt's provider invocation. It returns the successor attempt
+        when its iteration ended at a boundary where a Direction was taken in, and `None`
+        when the Generation ended there. A loop rather than a recursion, because a
+        Generation may be steered as often as it has attempts left.
+        """
+        next_attempt_id: str | None = attempt_id
+        while next_attempt_id is not None:
+            next_attempt_id = self._run_attempt(
+                job=job,
+                attempt_id=next_attempt_id,
+                trigger_message_id=trigger_message_id,
+                renew_lease=renew_lease,
+            )
+
+    def _compose_request(
+        self,
+        *,
+        job: chat.GenerationJob,
+        attempt_id: str,
+        trigger_message_id: str,
+        hops: tuple[_Hop, ...],
+        requested_at_text: str,
+        deadline_at_text: str,
+    ) -> tuple[ProviderInvocationRequest, Mapping[str, Any]]:
+        """The provider request for one attempt and the manifest that accounts for it.
+
+        With no hops this is an ordinary attempt's, as it always was. With hops it
+        extends the same model-visible context by each hop's output and Direction, under
+        a derived idempotency key (the provider must not mistake it for the request it
+        continues) and caused by the Direction rather than by the trigger Message.
+        """
+        request_context = _provider_context(
+            self.connection,
+            workspace_id=self.workspace_id,
+            conversation_id=job.conversation_id,
+            branch_id=job.branch_id,
+            trigger_message_id=trigger_message_id,
         )
+        messages = (*request_context.messages, *_hop_messages(hops))
+        if len(messages) > _MAX_REQUEST_MESSAGES:
+            raise _DirectionRefusedError("rejected", "boundary_unavailable")
+        request = ProviderInvocationRequest(
+            invocation_id=_stable_id("provider-inv", f"{job.generation_job_id}:{attempt_id}"),
+            workspace_id=self.workspace_id,
+            conversation_id=job.conversation_id,
+            job_id=job.generation_job_id,
+            attempt_id=attempt_id,
+            connection_id=self.config.connection_id,
+            model_id=self.config.model_id,
+            operation="language.stream",
+            messages=messages,
+            response_format={"kind": "text"},
+            policy_ref=self.config.policy_ref,
+            classification_ref=self.config.classification_ref,
+            residency_ref=self.config.residency_ref,
+            idempotency_key=(
+                _stable_id("continuation-idem", f"{job.idempotency_key}:{attempt_id}")
+                if hops
+                else job.idempotency_key
+            ),
+            correlation_id=_stable_id("correlation", job.generation_job_id),
+            deadline_at=deadline_at_text,
+            requested_at=requested_at_text,
+            causation_id=hops[-1].direction_id if hops else trigger_message_id,
+        )
+        manifest_body = _request_manifest_body(
+            request=request,
+            job=job,
+            manifest_message_refs=request_context.manifest_message_refs,
+            hops=hops,
+        )
+        return request, manifest_body
+
+    def _run_attempt(
+        self,
+        *,
+        job: chat.GenerationJob,
+        attempt_id: str,
+        trigger_message_id: str,
+        renew_lease: bool,
+    ) -> str | None:
+        lease_expires_at_us = _now_us(self.clock) + self._lease_duration_us()
         requested_at = self.clock.wall_time()
         try:
             self._resolve_route()
@@ -469,13 +736,7 @@ class ChatGenerationExecutor:
                 workspace_id=self.workspace_id,
                 generation_attempt_id=attempt_id,
             )
-            request_context = _provider_context(
-                self.connection,
-                workspace_id=self.workspace_id,
-                conversation_id=job.conversation_id,
-                branch_id=job.branch_id,
-                trigger_message_id=trigger_message_id,
-            )
+            hops = self._read_hops(job=job, attempt_id=attempt_id)
             if manifest_timestamps is None:
                 requested_at_text = _timestamp(requested_at)
                 deadline_at_text = _timestamp(
@@ -483,30 +744,13 @@ class ChatGenerationExecutor:
                 )
             else:
                 requested_at_text, deadline_at_text = manifest_timestamps
-            request = ProviderInvocationRequest(
-                invocation_id=invocation_id,
-                workspace_id=self.workspace_id,
-                conversation_id=job.conversation_id,
-                job_id=job.generation_job_id,
-                attempt_id=attempt_id,
-                connection_id=self.config.connection_id,
-                model_id=self.config.model_id,
-                operation="language.stream",
-                messages=request_context.messages,
-                response_format={"kind": "text"},
-                policy_ref=self.config.policy_ref,
-                classification_ref=self.config.classification_ref,
-                residency_ref=self.config.residency_ref,
-                idempotency_key=job.idempotency_key,
-                correlation_id=_stable_id("correlation", job.generation_job_id),
-                deadline_at=deadline_at_text,
-                requested_at=requested_at_text,
-                causation_id=trigger_message_id,
-            )
-            manifest_body = _request_manifest_body(
-                request=request,
+            request, manifest_body = self._compose_request(
                 job=job,
-                manifest_message_refs=request_context.manifest_message_refs,
+                attempt_id=attempt_id,
+                trigger_message_id=trigger_message_id,
+                hops=hops,
+                requested_at_text=requested_at_text,
+                deadline_at_text=deadline_at_text,
             )
         except ProviderRouteUnavailable:
             # Never reached a provider at all. The lifecycle is still real -- claimed,
@@ -515,13 +759,14 @@ class ChatGenerationExecutor:
             self._fail_generation(
                 job.generation_job_id, attempt_id, error_code="provider-unavailable"
             )
-            return
+            return None
         except Exception:  # noqa: BLE001 - boundary failures are terminalized, never exposed
             self._fail_generation(
                 job.generation_job_id, attempt_id, error_code="malformed-response"
             )
-            return
+            return None
 
+        invocation_id = request.invocation_id
         try:
             chat.append_request_manifest_once(
                 self.connection,
@@ -535,15 +780,20 @@ class ChatGenerationExecutor:
                 trigger_message_id=trigger_message_id,
                 provider_invocation_id=invocation_id,
                 request_manifest_id=str(manifest_body["requestManifestId"]),
-                idempotency_key=job.idempotency_key,
+                idempotency_key=request.idempotency_key,
                 manifest_body=manifest_body,
                 created_at_us=_now_us(self.clock),
             )
         except chat.RequestManifestConflict as error:
             raise GenerationExecutorError("the provider request manifest conflicts") from error
 
+        # What the earlier attempts of this Generation already wrote of its response: the
+        # response bound is the Generation's, not each attempt's.
+        prior_bytes = sum(len(hop.prior_text.encode("utf-8")) for hop in hops)
+        continued_as: str | None = None
         text_chunks: list[str] = []
         expected_ordinal = 0
+        transport_attempt_id: str | None = None
         saw_start = False
         saw_terminal = False
         heartbeat = self.heartbeat_factory(
@@ -576,10 +826,11 @@ class ChatGenerationExecutor:
                 # otherwise fail on the very write that proves it is still alive.
                 if renew_lease:
                     lease_expires_at_us = heartbeat.tick() or lease_expires_at_us
-                event_type, expected_ordinal = self._validate_event(
+                event_type, expected_ordinal, transport_attempt_id = self._validate_event(
                     event,
                     invocation_id=invocation_id,
                     attempt_id=attempt_id,
+                    transport_attempt_id=transport_attempt_id,
                     expected_ordinal=expected_ordinal,
                 )
                 if event_type == "stream-start":
@@ -596,7 +847,7 @@ class ChatGenerationExecutor:
                     # terminalized `malformed-response` rather than a lifecycle refusal
                     # that would leave this job durably running.
                     candidate = "".join([*text_chunks, delta])
-                    if len(candidate.encode("utf-8")) > MAX_RESPONSE_TEXT_BYTES:
+                    if prior_bytes + len(candidate.encode("utf-8")) > MAX_RESPONSE_TEXT_BYTES:
                         raise GenerationExecutorError("the provider response exceeds message bounds")
                     # The chunk, its ordering event and the job's sequence commit
                     # together: a crash mid-delta leaves none of them rather than a
@@ -611,6 +862,7 @@ class ChatGenerationExecutor:
                         provider_event=event,
                         chunk_ordinal=len(text_chunks),
                         now_us=_now_us(self.clock),
+                        prior_response_bytes=prior_bytes,
                     )
                     text_chunks.append(delta)
                 elif event_type == "finish" and event.get("finishReason") not in {
@@ -625,22 +877,37 @@ class ChatGenerationExecutor:
                     )
                     if not saw_start or not durable_chunks:
                         raise GenerationExecutorError("a successful provider stream is incomplete")
-                    result_message_id = self._materialize_assistant(
+                    # The one earliest-safe boundary: a provider iteration that completed,
+                    # never a delta inside one. A Direction pending here is taken in and
+                    # this Generation goes on as its successor attempt; otherwise the
+                    # Generation settles, as it always did.
+                    continued_as = self._continue_with_direction(
                         job=job,
-                        text="".join(chunk.text_content for chunk in durable_chunks),
+                        attempt_id=attempt_id,
+                        hops=hops,
+                        finish_event=event,
+                        durable_chunks=durable_chunks,
                     )
-                    append_provider_generation_event(
-                        self.connection,
-                        self.identity,
-                        workspace_id=self.workspace_id,
-                        fencing_generation=self.fencing_generation,
-                        generation_job_id=job.generation_job_id,
-                        generation_attempt_id=attempt_id,
-                        provider_event=event,
-                        result_message_id=result_message_id,
-                        now_us=_now_us(self.clock),
-                        lease_owner=self.identity.service_instance_id,
-                    )
+                    if continued_as is None:
+                        result_message_id = self._materialize_assistant(
+                            job=job,
+                            text="".join(hop.prior_text for hop in hops)
+                            + "".join(chunk.text_content for chunk in durable_chunks),
+                        )
+                        append_provider_generation_event(
+                            self.connection,
+                            self.identity,
+                            workspace_id=self.workspace_id,
+                            fencing_generation=self.fencing_generation,
+                            generation_job_id=job.generation_job_id,
+                            generation_attempt_id=attempt_id,
+                            provider_event=self._settling_finish(
+                                job=job, attempt_id=attempt_id, finish_event=event
+                            ),
+                            result_message_id=result_message_id,
+                            now_us=_now_us(self.clock),
+                            lease_owner=self.identity.service_instance_id,
+                        )
                 elif event_type != "stream-start" or not durable_started:
                     append_provider_generation_event(
                         self.connection,
@@ -658,6 +925,12 @@ class ChatGenerationExecutor:
                     break
             if not saw_terminal:
                 raise GenerationExecutorError("the provider stream ended without a terminal event")
+        except GenerationTerminal:
+            # The Generation ended under this stream (a stop, or another terminal write):
+            # a Direction still aimed at it can never be applied, so it is closed before
+            # the refusal goes on to the caller.
+            self._close_unapplied_direction(job.generation_job_id)
+            raise
         except GenerationLifecycleError:
             # Includes losing the lease to another instance. Terminalizing here would
             # write over a job this executor no longer owns.
@@ -666,7 +939,7 @@ class ChatGenerationExecutor:
             self._fail_generation(
                 job.generation_job_id, attempt_id, error_code="provider-unavailable"
             )
-            return
+            return None
         except Exception:  # noqa: BLE001 - provider/iterator failures cross this boundary
             # A stream that started and then failed, or ended without a terminal event,
             # is a bad RESPONSE -- the provider was reached. `malformed-response`, never
@@ -674,9 +947,14 @@ class ChatGenerationExecutor:
             self._fail_generation(
                 job.generation_job_id, attempt_id, error_code="malformed-response"
             )
-            return
+            return None
         finally:
             heartbeat.stop()
+        if continued_as is None:
+            # This Generation ended here, so a Direction that arrived after the boundary
+            # was last read was never going to be applied.
+            self._close_unapplied_direction(job.generation_job_id)
+        return continued_as
 
     @staticmethod
     def _validate_event(
@@ -684,23 +962,39 @@ class ChatGenerationExecutor:
         *,
         invocation_id: str,
         attempt_id: str,
+        transport_attempt_id: str | None,
         expected_ordinal: int,
-    ) -> tuple[str, int]:
+    ) -> tuple[str, int, str]:
+        """The event's type, the next ordinal, and the transport Attempt of this stream.
+
+        An event's `attemptId` is the provider's transport Attempt (`ProviderAttemptId`),
+        not the Chat Generation Attempt (`attempt_id`) the request named. It is an id of its
+        own, never that one, and the same on every event of one stream: the first event
+        fixes it (`transport_attempt_id` is `None` until then). Another stream, such as a
+        same-route retry, may carry another.
+        """
         if not isinstance(event, Mapping):
             raise GenerationExecutorError("a provider event is not a JSON object")
         event_type = event.get("eventType")
         if event_type not in F2A_PROVIDER_EVENT_TYPES:
             raise GenerationExecutorError("a provider event type is unsupported")
+        transport = event.get("attemptId")
+        if (
+            not isinstance(transport, str)
+            or not _TRANSPORT_ATTEMPT_ID.fullmatch(transport)
+            or transport == attempt_id
+            or (transport_attempt_id is not None and transport != transport_attempt_id)
+        ):
+            raise GenerationExecutorError("the provider event transport attempt is not this stream's")
         ordinal = event.get("ordinal")
         if (
             event.get("invocationId") != invocation_id
-            or event.get("attemptId") != attempt_id
             or not isinstance(ordinal, int)
             or isinstance(ordinal, bool)
             or ordinal != expected_ordinal
         ):
             raise GenerationExecutorError("the provider event stream is not contiguous")
-        return str(event_type), expected_ordinal + 1
+        return str(event_type), expected_ordinal + 1, transport
 
     def _lease_duration_us(self) -> int:
         """A lease that outlives the invocation it is protecting."""
@@ -759,6 +1053,406 @@ class ChatGenerationExecutor:
             now_us=_now_us(self.clock),
             lease_owner=self.identity.service_instance_id,
         )
+        self._close_unapplied_direction(generation_job_id)
+
+    # --- C6: a Direction taken in at an iteration boundary --------------------------
+
+    def _attempt_text(self, *, job: chat.GenerationJob, attempt_id: str) -> str:
+        return "".join(
+            chunk.text_content
+            for chunk in chat.read_generation_text_chunks(
+                self.connection,
+                workspace_id=self.workspace_id,
+                generation_job_id=job.generation_job_id,
+                generation_attempt_id=attempt_id,
+            )
+        )
+
+    def _read_hops(self, *, job: chat.GenerationJob, attempt_id: str) -> tuple[_Hop, ...]:
+        """The Directions already taken in on the way to `attempt_id`, oldest first.
+
+        Empty for an attempt no Direction opened. Read from the durable rows alone, so a
+        continuation attempt rebuilt after a crash is the one that was opened. Each hop is
+        held to what was recorded about it: the continuation names this attempt and the
+        Direction's target, and the prior output still hashes to the digest it recorded.
+        """
+        directions = chat.read_directions_for_generation_job(
+            self.connection, workspace_id=self.workspace_id, generation_job_id=job.generation_job_id
+        )
+        opened_by = {
+            direction.applied_attempt_id: direction
+            for direction in directions
+            if direction.state == "applied" and direction.applied_attempt_id is not None
+        }
+        chain: list[_Hop] = []
+        current = attempt_id
+        while current in opened_by:
+            direction = opened_by[current]
+            continuation = chat.read_generation_continuation_for_direction(
+                self.connection, workspace_id=self.workspace_id, direction_id=direction.direction_id
+            )
+            texts = _direction_texts(direction)
+            if (
+                continuation is None
+                or texts is None
+                or continuation.next_attempt_id != current
+                or continuation.prior_attempt_id != direction.target_attempt_id
+                or len(chain) >= MAX_GENERATION_ATTEMPTS
+            ):
+                raise GenerationExecutorError("the continuation of this attempt cannot be read")
+            prior_text = self._attempt_text(job=job, attempt_id=continuation.prior_attempt_id)
+            if generated_text_digest(prior_text) != continuation.prior_output_digest:
+                raise GenerationExecutorError("the output a continuation followed has changed")
+            chain.append(
+                _Hop(
+                    continuation_id=continuation.continuation_id,
+                    prior_attempt_id=continuation.prior_attempt_id,
+                    next_attempt_id=current,
+                    direction_id=direction.direction_id,
+                    direction_digest=direction.content_digest,
+                    direction_texts=texts,
+                    provider_finish_id=continuation.provider_finish_id,
+                    prior_output_digest=continuation.prior_output_digest,
+                    prior_text=prior_text,
+                )
+            )
+            current = direction.target_attempt_id
+        chain.reverse()
+        return tuple(chain)
+
+    def _continued_attempt(
+        self, job: chat.GenerationJob | None, first_attempt_id: str
+    ) -> str | None:
+        """The attempt a Generation has since continued on to, if its first one was continued.
+
+        The claim of a queue row already submitted is a replay that insists on the first
+        attempt, but a Generation steered since then is running on a successor. Only a
+        running job whose current attempt is reached from the first one through applied
+        Directions counts; anything else is the ordinary replay.
+        """
+        if job is None or job.state != "running":
+            return None
+        status = chat.read_generation_job_status_projection(
+            self.connection, workspace_id=self.workspace_id, generation_job_id=job.generation_job_id
+        )
+        if (
+            status is None
+            or status.state != "running"
+            or status.current_attempt_id in (None, first_attempt_id)
+        ):
+            return None
+        hops = self._read_hops(job=job, attempt_id=str(status.current_attempt_id))
+        if hops and hops[0].prior_attempt_id == first_attempt_id:
+            return status.current_attempt_id
+        return None
+
+    def _trigger_actor(self, job: chat.GenerationJob) -> str | None:
+        """The human who sent the Message this Generation answers: the only actor who steers it."""
+        for message in chat.read_messages_by_conversation_sequence(
+            self.connection, workspace_id=self.workspace_id, conversation_id=job.conversation_id
+        ):
+            if message.message_id == job.trigger_message_id:
+                return message.author_id if message.author_type == "human" else None
+        return None
+
+    def _close_direction(
+        self, *, job: chat.GenerationJob, direction: chat.Direction, state: str, code: str
+    ) -> None:
+        """End a pending Direction as never applied. A Direction that moved first stays as it moved."""
+        with contextlib.suppress(DirectionNotPending):
+            close_unapplied_direction(
+                self.connection,
+                self.identity,
+                workspace_id=self.workspace_id,
+                fencing_generation=self.fencing_generation,
+                generation_job_id=job.generation_job_id,
+                direction_id=direction.direction_id,
+                state=state,
+                code=code,
+                now_us=_now_us(self.clock),
+                lease_owner=self.identity.service_instance_id,
+                lease_duration_us=self._lease_duration_us(),
+            )
+
+    def _close_unapplied_direction(self, generation_job_id: str) -> None:
+        """Close a Direction still pending on a Generation that is no longer running.
+
+        The Generation can only have ended or paused for a retry, and either way the
+        Direction can never be applied. It is closed with the pair that says which.
+        Nothing happens while the Generation runs. A Direction that cannot be read safely
+        is left exactly as it is: it is never guessed at, and it is not this path's place
+        to turn a finished Generation into an error.
+        """
+        status = chat.read_generation_job_status_projection(
+            self.connection, workspace_id=self.workspace_id, generation_job_id=generation_job_id
+        )
+        closing = None if status is None else _UNAPPLIED_OF_JOB_STATE.get(status.state)
+        if closing is None:
+            return
+        with contextlib.suppress(StorageError, DirectionNotPending):
+            pending = chat.read_pending_direction(
+                self.connection, workspace_id=self.workspace_id, generation_job_id=generation_job_id
+            )
+            if pending is not None:
+                close_unapplied_direction(
+                    self.connection,
+                    self.identity,
+                    workspace_id=self.workspace_id,
+                    fencing_generation=self.fencing_generation,
+                    generation_job_id=generation_job_id,
+                    direction_id=pending.direction_id,
+                    state=closing[0],
+                    code=closing[1],
+                    now_us=_now_us(self.clock),
+                    lease_owner=self.identity.service_instance_id,
+                    lease_duration_us=self._lease_duration_us(),
+                )
+
+    def _boundary_direction(
+        self, *, job: chat.GenerationJob, attempt_id: str
+    ) -> chat.Direction | None:
+        """The Direction to take in at this attempt's iteration boundary, re-proved, or `None`.
+
+        A Direction already applied at this boundary is returned first, so a replay resumes
+        the continuation it wrote rather than looking for a new one. Otherwise the job's one
+        pending Direction, and only if everything about it still holds: this attempt is the
+        one running, it is aimed at this attempt, its actor is the one the Generation
+        answers, and its stored content is the contract's. One that is not applicable is
+        closed with the reason it is not and not applied; the Generation settles without it.
+        """
+        directions = chat.read_directions_for_generation_job(
+            self.connection, workspace_id=self.workspace_id, generation_job_id=job.generation_job_id
+        )
+        for direction in directions:
+            if direction.state == "applied" and direction.target_attempt_id == attempt_id:
+                return direction
+        pending = next((d for d in directions if d.state == "pending"), None)
+        if pending is None:
+            return None
+        status = chat.read_generation_job_status_projection(
+            self.connection, workspace_id=self.workspace_id, generation_job_id=job.generation_job_id
+        )
+        if status is not None and status.state in {"succeeded", "failed", "cancelled"}:
+            # Stopped (or ended) under a Direction waiting for this boundary: there is
+            # nothing to settle, so no Message is written for a Generation that is over.
+            raise GenerationTerminal(f"generation job {job.generation_job_id!r} already ended")
+        if status is None or status.state != "running" or status.current_attempt_id != attempt_id:
+            # This attempt no longer owns the Generation. Settling it is refused on its own
+            # terms; whatever the Direction becomes is decided by whoever does own it.
+            return None
+        if (
+            pending.generation_job_id != job.generation_job_id
+            or pending.conversation_id != job.conversation_id
+            or pending.branch_id != job.branch_id
+            or pending.requested_boundary != "earliest_safe"
+        ):
+            raise GenerationConflict(
+                f"direction {pending.direction_id!r} does not belong to this generation"
+            )
+        refusal: tuple[str, str] | None = None
+        if pending.target_attempt_id != attempt_id:
+            refusal = ("rejected", "target_attempt_ended")
+        elif pending.actor_id != self._trigger_actor(job) or _direction_texts(pending) is None:
+            refusal = ("rejected", "policy_refused")
+        if refusal is not None:
+            self._close_direction(job=job, direction=pending, state=refusal[0], code=refusal[1])
+            return None
+        return pending
+
+    def _plan_continuation(
+        self,
+        *,
+        job: chat.GenerationJob,
+        attempt_id: str,
+        hops: tuple[_Hop, ...],
+        direction: chat.Direction,
+        prior_text: str,
+        prior_digest: str,
+        finish_id: str,
+    ) -> tuple[ContinuationIdentities, Mapping[str, Any]]:
+        """The identities and request manifest of the continuation that takes `direction` in.
+
+        Pure of writes. Raises :class:`_DirectionRefusedError` for a boundary that cannot be
+        continued from: no room left in the response the Generation may produce, or a
+        request the provider contract would refuse. Whether an Attempt or event position is
+        left to open the successor in is the service's to decide, with the rows it reads.
+        """
+        written = sum(len(hop.prior_text.encode("utf-8")) for hop in hops)
+        written += len(prior_text.encode("utf-8"))
+        if written >= MAX_RESPONSE_TEXT_BYTES:
+            raise _DirectionRefusedError("rejected", "boundary_unavailable")
+        texts = _direction_texts(direction)
+        if texts is None:  # re-proved by the caller; this guards against a row that changed
+            raise _DirectionRefusedError("rejected", "policy_refused")
+        # This attempt completed the iteration at its depth in the chain; the Direction
+        # takes effect at the next one.
+        identities = continuation_identities(
+            generation_job_id=job.generation_job_id,
+            direction_id=direction.direction_id,
+            iteration=len(hops) + 1,
+        )
+        if direction.state == "applied" and direction.applied_iteration != len(hops) + 1:
+            raise GenerationConflict(
+                f"direction {direction.direction_id!r} was applied at another iteration"
+            )
+        hop = _Hop(
+            continuation_id=identities.continuation_id,
+            prior_attempt_id=attempt_id,
+            next_attempt_id=identities.generation_attempt_id,
+            direction_id=direction.direction_id,
+            direction_digest=direction.content_digest,
+            direction_texts=texts,
+            provider_finish_id=finish_id,
+            prior_output_digest=prior_digest,
+            prior_text=prior_text,
+        )
+        timestamps = _existing_manifest_timestamps(
+            self.connection,
+            workspace_id=self.workspace_id,
+            generation_attempt_id=identities.generation_attempt_id,
+        )
+        if timestamps is None:
+            requested_at = self.clock.wall_time()
+            timestamps = (
+                _timestamp(requested_at),
+                _timestamp(requested_at + timedelta(seconds=self.config.deadline_seconds)),
+            )
+        _, manifest_body = self._compose_request(
+            job=job,
+            attempt_id=identities.generation_attempt_id,
+            trigger_message_id=job.trigger_message_id,
+            hops=(*hops, hop),
+            requested_at_text=timestamps[0],
+            deadline_at_text=timestamps[1],
+        )
+        return identities, manifest_body
+
+    def _continue_with_direction(
+        self,
+        *,
+        job: chat.GenerationJob,
+        attempt_id: str,
+        hops: tuple[_Hop, ...],
+        finish_event: Mapping[str, Any],
+        durable_chunks: tuple[chat.GenerationTextChunk, ...],
+    ) -> str | None:
+        """Take the Direction pending at this completed iteration in, or return `None`.
+
+        Two commits, in order, and the provider is invoked for the successor only after the
+        second. Phase A closes the iteration and stages the successor
+        (:func:`stage_direction_continuation`); phase B applies the Direction to it and moves
+        the Generation onto it (:func:`apply_direction_continuation`). The successor
+        attempt's id is returned for the caller to run. `None` means no Direction applies
+        here and the Generation settles: none pending, or the one pending was closed
+        unapplied. Both phases are idempotent on the durable rows, so a replay of this
+        boundary (after a crash between them, or by a second worker) writes nothing twice and
+        returns the successor already opened. A Direction that changed under either phase
+        (replaced between the read and the commit) is read again, a bounded number of times,
+        each fully re-proved.
+        """
+        for _ in range(_MAX_DIRECTION_TRIES):
+            direction = self._boundary_direction(job=job, attempt_id=attempt_id)
+            if direction is None:
+                return None
+            prior_text = "".join(chunk.text_content for chunk in durable_chunks)
+            prior_digest = generated_text_digest(prior_text)
+            finish_id = provider_finish_id(finish_event)
+            refused: tuple[str, str] | None = None
+            try:
+                identities, manifest_body = self._plan_continuation(
+                    job=job,
+                    attempt_id=attempt_id,
+                    hops=hops,
+                    direction=direction,
+                    prior_text=prior_text,
+                    prior_digest=prior_digest,
+                    finish_id=finish_id,
+                )
+                stage_direction_continuation(
+                    self.connection,
+                    self.identity,
+                    workspace_id=self.workspace_id,
+                    fencing_generation=self.fencing_generation,
+                    generation_job_id=job.generation_job_id,
+                    prior_attempt_id=attempt_id,
+                    direction_id=direction.direction_id,
+                    actor_id=direction.actor_id,
+                    identities=identities,
+                    manifest_body=manifest_body,
+                    provider_event=finish_event,
+                    prior_output_digest=prior_digest,
+                    lease_owner=self.identity.service_instance_id,
+                    now_us=_now_us(self.clock),
+                    lease_duration_us=self._lease_duration_us(),
+                )
+                status = chat.read_generation_job_status_projection(
+                    self.connection,
+                    workspace_id=self.workspace_id,
+                    generation_job_id=job.generation_job_id,
+                )
+                if status is None:
+                    raise GenerationNotFound(
+                        f"generation job {job.generation_job_id!r} is not in this workspace"
+                    )
+                applied = apply_direction_continuation(
+                    self.connection,
+                    self.identity,
+                    workspace_id=self.workspace_id,
+                    fencing_generation=self.fencing_generation,
+                    generation_job_id=job.generation_job_id,
+                    prior_attempt_id=attempt_id,
+                    direction_id=direction.direction_id,
+                    actor_id=direction.actor_id,
+                    identities=identities,
+                    manifest_body=manifest_body,
+                    expected_status_version=status.version,
+                    lease_owner=self.identity.service_instance_id,
+                    now_us=_now_us(self.clock),
+                    lease_duration_us=self._lease_duration_us(),
+                )
+            except _DirectionRefusedError as error:
+                refused = (error.state, error.code)
+            except BoundaryUnavailable:
+                refused = ("rejected", "boundary_unavailable")
+            except (DirectionNotPending, StaleGenerationVersion):
+                continue
+            if refused is not None:
+                self._close_direction(
+                    job=job, direction=direction, state=refused[0], code=refused[1]
+                )
+                return None
+            return applied.attempt.generation_attempt_id
+        raise GenerationConflict(
+            f"the direction pending on generation job {job.generation_job_id!r} kept changing"
+        )
+
+    def _settling_finish(
+        self, *, job: chat.GenerationJob, attempt_id: str, finish_event: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """The finish event as the Generation settles on it.
+
+        An iteration closed on this very finish and then not continued (the Direction it
+        was closed for ended before it could be applied) already holds the finish's
+        provider event id, and a durable provider event id belongs to one event. The
+        settling event is then the same finish without it, so the Generation ends rather
+        than waiting on an id it can no longer use.
+        """
+        closings = [
+            event
+            for event in chat.read_generation_events(
+                self.connection,
+                workspace_id=self.workspace_id,
+                generation_job_id=job.generation_job_id,
+            )
+            if event.generation_attempt_id == attempt_id
+            and event.event_type == "chat.generation.iteration_completed"
+        ]
+        if not closings:
+            return finish_event
+        finish_id = provider_finish_id(finish_event)
+        if all(event.provider_event_id != finish_id for event in closings):
+            return finish_event
+        return {key: value for key, value in finish_event.items() if key != "providerEventId"}
 
     def _materialize_assistant(self, *, job: chat.GenerationJob, text: str) -> str:
         message_id = _stable_id("assistant", job.generation_job_id)

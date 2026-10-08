@@ -1963,3 +1963,201 @@ def test_a_noncanonical_stored_terminal_reason_fails_closed(owned: m1.Owned) -> 
             chat.read_direction(connection, workspace_id=WORKSPACE_ID, direction_id="direction-1")
     finally:
         connection.close()
+
+
+# --- 14. Provider-invocation identity (0028), reached for a continuation Attempt -----
+
+INVOCATION_ID = "provider-inv-repo-1"
+INVOCATION_FIELDS: dict[str, object] = {
+    "invocation_id": INVOCATION_ID,
+    "conversation_id": CONVERSATION_ID,
+    "job_id": JOB_ID,
+    "generation_attempt_id": ATTEMPT_ID,
+    "configured_connection_id": "connection-repo-1",
+    "configured_model_id": "vendor/model-repo:1@2",
+    "created_at_us": BASE_US + 500,
+}
+
+
+def invocation_fields(**overrides: object) -> dict[str, object]:
+    return {**INVOCATION_FIELDS, **overrides}
+
+
+def invocation_rows(holder: m1.Owned) -> list[tuple[object, ...]]:
+    return [
+        tuple(row)
+        for row in holder.connection.execute("SELECT * FROM omnivia_provider_invocations")
+    ]
+
+
+def test_a_provider_invocation_identity_is_written_once_under_the_fence_and_reads_back(
+    owned: m1.Owned,
+) -> None:
+    with writer(owned) as w:
+        written = w.append_provider_invocation(**invocation_fields())  # type: ignore[arg-type]
+
+    expected = chat.ProviderInvocation(
+        workspace_id=WORKSPACE_ID,
+        invocation_id=INVOCATION_ID,
+        conversation_id=CONVERSATION_ID,
+        job_id=JOB_ID,
+        generation_attempt_id=ATTEMPT_ID,
+        operation="language.stream",
+        configured_connection_id="connection-repo-1",
+        configured_model_id="vendor/model-repo:1@2",
+        created_at_us=BASE_US + 500,
+    )
+    assert written == expected
+    assert (
+        chat.read_provider_invocation(
+            owned.connection, workspace_id=WORKSPACE_ID, invocation_id=INVOCATION_ID
+        )
+        == expected
+    )
+    assert (
+        chat.read_provider_invocation(
+            owned.connection, workspace_id=OTHER_WORKSPACE_ID, invocation_id=INVOCATION_ID
+        )
+        is None
+    )
+    assert len(invocation_rows(owned)) == 1
+    assert owned.connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert owned.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+    # The typed writer is the only way in: the same row written without the fence is refused.
+    with pytest.raises(sqlite3.DatabaseError, match="not authorized|unguarded INSERT"):
+        owned.connection.execute(
+            "INSERT INTO omnivia_provider_invocations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                WORKSPACE_ID,
+                "provider-inv-unguarded",
+                CONVERSATION_ID,
+                JOB_ID,
+                ATTEMPT_ID,
+                "language.stream",
+                "connection-repo-1",
+                "model-repo-1",
+                BASE_US,
+            ),
+        )
+
+
+def test_an_identical_provider_invocation_replay_returns_the_durable_row_and_writes_nothing(
+    owned: m1.Owned,
+) -> None:
+    with writer(owned) as w:
+        first = w.append_provider_invocation(**invocation_fields())  # type: ignore[arg-type]
+    before = owned.connection.total_changes
+
+    with writer(owned) as w:
+        replayed = w.append_provider_invocation(
+            **invocation_fields(created_at_us=BASE_US + 9_000)  # type: ignore[arg-type]
+        )
+    again = chat.append_provider_invocation_once(
+        owned.connection,
+        owned.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=owned.generation,
+        **invocation_fields(created_at_us=BASE_US + 9_001),  # type: ignore[arg-type]
+    )
+
+    # The durable row, not the replay's clock: the identity was written at its own instant.
+    assert replayed == first == again
+    assert replayed.created_at_us == BASE_US + 500
+    assert owned.connection.total_changes == before
+    assert len(invocation_rows(owned)) == 1
+
+
+@pytest.mark.parametrize(
+    "different",
+    [
+        {"conversation_id": "conv-repo-other"},
+        {"job_id": "generation-job-repo-other"},
+        {"generation_attempt_id": "generation-attempt-repo-other"},
+        {"configured_connection_id": "connection-repo-other"},
+        {"configured_model_id": "vendor/model-repo-other"},
+    ],
+)
+def test_a_provider_invocation_replay_naming_another_identity_is_a_conflict(
+    owned: m1.Owned, different: dict[str, object]
+) -> None:
+    with writer(owned) as w:
+        w.append_provider_invocation(**invocation_fields())  # type: ignore[arg-type]
+    stored = invocation_rows(owned)
+
+    with pytest.raises(chat.ProviderInvocationConflict, match=INVOCATION_ID), writer(owned) as w:
+        w.append_provider_invocation(**invocation_fields(**different))  # type: ignore[arg-type]
+    with pytest.raises(chat.ProviderInvocationConflict):
+        chat.append_provider_invocation_once(
+            owned.connection,
+            owned.identity,
+            workspace_id=WORKSPACE_ID,
+            fencing_generation=owned.generation,
+            **invocation_fields(**different),  # type: ignore[arg-type]
+        )
+
+    # Append-only: the first identity stands, byte for byte.
+    assert invocation_rows(owned) == stored
+    assert owned.connection.in_transaction is False
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"invocation_id": ""},
+        {"invocation_id": "a" * 129},
+        {"invocation_id": ".leading-dot"},
+        {"invocation_id": "has space"},
+        {"invocation_id": "nul\x00byte"},
+        {"invocation_id": 7},
+        {"conversation_id": "slash/not-allowed-here"},
+        {"job_id": "x" * 129},
+        {"generation_attempt_id": None},
+        {"configured_connection_id": "https://endpoint.invalid"},
+        {"configured_model_id": ""},
+        {"configured_model_id": "m" * 257},
+        {"configured_model_id": "vendor://model"},
+        {"configured_model_id": "-leading-dash"},
+        {"created_at_us": 0},
+        {"created_at_us": True},
+        {"created_at_us": "1"},
+    ],
+)
+def test_an_out_of_bounds_provider_invocation_is_refused_before_anything_is_written(
+    owned: m1.Owned, bad: dict[str, object]
+) -> None:
+    with pytest.raises(StorageError, match="provider invocation") as refused, writer(owned) as w:
+        w.append_provider_invocation(**invocation_fields(**bad))  # type: ignore[arg-type]
+
+    # A refusal that names the field, never the value that failed it.
+    assert not isinstance(refused.value, sqlite3.Error)
+    assert "https://endpoint.invalid" not in str(refused.value)
+    assert invocation_rows(owned) == []
+
+
+def test_a_provider_invocation_follows_the_transaction_it_is_written_in(owned: m1.Owned) -> None:
+    class Abandoned(Exception):
+        pass
+
+    with pytest.raises(Abandoned), writer(owned) as w:
+        w.append_provider_invocation(**invocation_fields())  # type: ignore[arg-type]
+        raise Abandoned
+    assert invocation_rows(owned) == []
+
+    # And the same write retried lands once, which is what a crashed caller relies on.
+    with writer(owned) as w:
+        w.append_provider_invocation(**invocation_fields())  # type: ignore[arg-type]
+    assert len(invocation_rows(owned)) == 1
+
+
+def test_a_provider_invocation_is_not_written_without_current_authority(owned: m1.Owned) -> None:
+    with pytest.raises(StorageError, match="authority"):
+        chat.append_provider_invocation_once(
+            owned.connection,
+            owned.identity,
+            workspace_id=WORKSPACE_ID,
+            fencing_generation=owned.generation + 1,
+            **invocation_fields(),  # type: ignore[arg-type]
+        )
+    assert invocation_rows(owned) == []
+    assert owned.connection.in_transaction is False

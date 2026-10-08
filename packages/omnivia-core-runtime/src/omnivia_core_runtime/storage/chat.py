@@ -49,6 +49,11 @@ status projection version. A generation continuation is append-only. Direction
 content is stored as exact canonical JSON with `content_digest` = `sha256:` plus the
 SHA-256 of those exact UTF-8 bytes; SQLite cannot compute that, so this module
 computes it on append and every Direction reader recomputes it and fails closed.
+
+A continuation Attempt's provider identity (migration 0028's
+`omnivia_provider_invocations`) is written through :meth:`ChatWriter.append_provider_invocation`
+and :func:`append_provider_invocation_once`, never by a service issuing SQL of its own: the
+Attempt and an applied Direction both foreign-key that row, so it has to exist first.
 """
 
 from __future__ import annotations
@@ -57,7 +62,7 @@ import json
 import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from types import MappingProxyType
 from typing import Any, Final
@@ -91,6 +96,8 @@ __all__ = [
     "MessageDerivation",
     "MessagePart",
     "OutboxEntry",
+    "ProviderInvocation",
+    "ProviderInvocationConflict",
     "QueueOrderProjection",
     "QueuedSubmission",
     "RequestManifest",
@@ -115,6 +122,7 @@ __all__ = [
     "append_message_derivation",
     "append_message_part",
     "append_outbox_entry",
+    "append_provider_invocation_once",
     "append_queued_submission",
     "append_request_manifest_once",
     "chat_writer",
@@ -157,6 +165,7 @@ __all__ = [
     "read_outbox_event",
     "read_outbox_events_since",
     "read_pending_direction",
+    "read_provider_invocation",
     "read_queue_order_for_conversation",
     "read_queue_order_projection",
     "read_queued_submission",
@@ -198,6 +207,39 @@ class RequestManifestConflict(StorageError):
     same manifest bytes, but a different manifest for that attempt must fail
     closed before any provider invocation is attempted.
     """
+
+
+class ProviderInvocationConflict(StorageError):
+    """A provider invocation id already names a different identity.
+
+    The existing row is left untouched: `omnivia_provider_invocations` is append-only,
+    so a replay may find the identity it wrote but never a changed one.
+    """
+
+
+#: The grammar 0028 holds every provider-invocation identifier to: `[A-Za-z0-9]` first,
+#: then `[A-Za-z0-9._:-]`, up to 128 characters. The model id also admits `/` and `@`,
+#: up to 256 characters, and never a `://`. Restated here so an out-of-bounds value is
+#: a refusal naming the field, decided before the INSERT rather than by a CHECK.
+_IDENTIFIER_INITIAL: Final = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+)
+_IDENTIFIER_BODY: Final = _IDENTIFIER_INITIAL | frozenset("._:-")
+_MODEL_IDENTIFIER_BODY: Final = _IDENTIFIER_INITIAL | frozenset("/._:@-")
+
+
+def _require_provider_identifier(
+    label: str, value: object, *, limit: int = 128, body: frozenset[str] = _IDENTIFIER_BODY
+) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= limit
+        or value[0] not in _IDENTIFIER_INITIAL
+        or any(character not in body for character in value)
+        or "://" in value
+    ):
+        raise StorageError(f"a provider invocation {label} is outside the identifier bounds")
+    return value
 
 
 def _reject_json_constant(token: str) -> Any:
@@ -552,6 +594,26 @@ class RequestManifest:
     schema_version: int
     manifest_digest: str
     manifest_body: Mapping[str, Any]
+    created_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderInvocation:
+    """One `omnivia_provider_invocations` row (0028): the identity of a provider call.
+
+    Identity only. It names the Chat Generation Attempt it drives (`generation_attempt_id`)
+    and the route it was configured with; a provider's transport Attempts and lifecycle
+    live in 0028's other tables and are not read here.
+    """
+
+    workspace_id: str
+    invocation_id: str
+    conversation_id: str
+    job_id: str
+    generation_attempt_id: str
+    operation: str
+    configured_connection_id: str
+    configured_model_id: str
     created_at_us: int
 
 
@@ -1415,6 +1477,80 @@ class ChatWriter:
                 created_at_us,
             ),
         )
+
+    def append_provider_invocation(
+        self,
+        *,
+        invocation_id: str,
+        conversation_id: str,
+        job_id: str,
+        generation_attempt_id: str,
+        configured_connection_id: str,
+        configured_model_id: str,
+        created_at_us: int,
+    ) -> ProviderInvocation:
+        """Write one provider-invocation identity (0028), or return the identical one.
+
+        `operation` is fixed at `language.stream`, the only value 0028 admits, so it is
+        no parameter. The row is append-only: an identity already durable under
+        `invocation_id` is this write's replay, and is returned with nothing written when
+        everything but `created_at_us` is the same. Any other difference is
+        :class:`ProviderInvocationConflict`. The identifiers and the time are held to
+        0028's bounds first, so an out-of-bounds value writes nothing and names the field.
+        """
+        if (
+            isinstance(created_at_us, bool)
+            or not isinstance(created_at_us, int)
+            or created_at_us <= 0
+        ):
+            raise StorageError("a provider invocation creation time is not a positive integer")
+        candidate = ProviderInvocation(
+            workspace_id=self.workspace_id,
+            invocation_id=_require_provider_identifier("invocation id", invocation_id),
+            conversation_id=_require_provider_identifier("conversation id", conversation_id),
+            job_id=_require_provider_identifier("job id", job_id),
+            generation_attempt_id=_require_provider_identifier(
+                "generation attempt id", generation_attempt_id
+            ),
+            operation="language.stream",
+            configured_connection_id=_require_provider_identifier(
+                "configured connection id", configured_connection_id
+            ),
+            configured_model_id=_require_provider_identifier(
+                "configured model id",
+                configured_model_id,
+                limit=256,
+                body=_MODEL_IDENTIFIER_BODY,
+            ),
+            created_at_us=created_at_us,
+        )
+        existing = read_provider_invocation(
+            self.connection, workspace_id=self.workspace_id, invocation_id=invocation_id
+        )
+        if existing is not None:
+            if replace(existing, created_at_us=created_at_us) != candidate:
+                raise ProviderInvocationConflict(
+                    f"provider invocation {invocation_id!r} already names a different identity"
+                )
+            return existing
+        self.connection.execute(
+            "INSERT INTO omnivia_provider_invocations "
+            "(workspace_id, invocation_id, conversation_id, job_id, "
+            "generation_attempt_id, operation, configured_connection_id, "
+            "configured_model_id, created_at_us) "
+            "VALUES (?, ?, ?, ?, ?, 'language.stream', ?, ?, ?)",
+            (
+                self.workspace_id,
+                invocation_id,
+                conversation_id,
+                job_id,
+                generation_attempt_id,
+                configured_connection_id,
+                configured_model_id,
+                created_at_us,
+            ),
+        )
+        return candidate
 
     def append_direction(
         self,
@@ -2612,6 +2748,42 @@ def append_request_manifest_once(
             f"chat request manifest {request_manifest_id!r} did not settle"
         )
     return appended
+
+
+def append_provider_invocation_once(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    invocation_id: str,
+    conversation_id: str,
+    job_id: str,
+    generation_attempt_id: str,
+    configured_connection_id: str,
+    configured_model_id: str,
+    created_at_us: int,
+) -> ProviderInvocation:
+    """One provider-invocation identity in its own fenced transaction, or its identical replay.
+
+    The idempotency boundary is the invocation id, as the manifest's is the Attempt: a
+    repeat of the same identity returns the durable row and writes nothing, and a repeat
+    that names another conversation, job, Attempt or route is
+    :class:`ProviderInvocationConflict`. Use :meth:`ChatWriter.append_provider_invocation`
+    to write it inside a transaction already held.
+    """
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        return writer.append_provider_invocation(
+            invocation_id=invocation_id,
+            conversation_id=conversation_id,
+            job_id=job_id,
+            generation_attempt_id=generation_attempt_id,
+            configured_connection_id=configured_connection_id,
+            configured_model_id=configured_model_id,
+            created_at_us=created_at_us,
+        )
 
 
 def append_direction(
@@ -3923,6 +4095,31 @@ def read_request_manifest(
         (workspace_id, generation_attempt_id),
     ).fetchone()
     return None if row is None else _request_manifest_from_row(row)
+
+
+def read_provider_invocation(
+    connection: sqlite3.Connection, *, workspace_id: str, invocation_id: str
+) -> ProviderInvocation | None:
+    row = connection.execute(
+        "SELECT workspace_id, invocation_id, conversation_id, job_id, "
+        "generation_attempt_id, operation, configured_connection_id, "
+        "configured_model_id, created_at_us FROM omnivia_provider_invocations "
+        "WHERE workspace_id = ? AND invocation_id = ?",
+        (workspace_id, invocation_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return ProviderInvocation(
+        workspace_id=row[0],
+        invocation_id=row[1],
+        conversation_id=row[2],
+        job_id=row[3],
+        generation_attempt_id=row[4],
+        operation=row[5],
+        configured_connection_id=row[6],
+        configured_model_id=row[7],
+        created_at_us=row[8],
+    )
 
 
 _CHAT_TURN_COLUMNS = (

@@ -46,7 +46,7 @@ def _request() -> ProviderInvocationRequest:
 def _event(request: ProviderInvocationRequest, ordinal: int, event_type: str, **extra: Any) -> bytes:
     payload = {
         "invocationId": request.invocation_id,
-        "attemptId": request.attempt_id,
+        "attemptId": f"{request.attempt_id}.transport-1",
         "ordinal": ordinal,
         "schemaVersion": 1,
         "occurredAt": "2052-05-23T00:00:01Z",

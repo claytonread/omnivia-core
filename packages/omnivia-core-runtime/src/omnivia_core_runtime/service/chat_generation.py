@@ -39,16 +39,36 @@ contiguous from one per job and is 0029's own rule; the generation job's
 job's existing compare-and-set token. A caller that believes the stream is at some
 other position states its `expected_sequence` and is refused
 (:class:`GenerationSequenceGap`) rather than silently writing over the gap.
+
+**Directions (C6).** A Direction is taken in only where a provider iteration has
+completed, never mid-stream, and that is two commits, never one. 0069 can see that the
+successor's rows exist when it applies a Direction but not that they were committed
+before, so the sequencing is this module's. Phase A (:func:`stage_direction_continuation`)
+commits the iteration's identity-only `chat.generation.iteration_completed` event, the
+successor's provider invocation identity, its Attempt and its request manifest, which binds
+the Direction. Phase B (:func:`apply_direction_continuation`) is a separate transaction: the
+Direction's `pending` -> `applied` move, the continuation record, the Direction's state
+event, and the one step that moves both the Job row and the status projection to the
+successor. Until Phase B commits the Generation is still on the prior Attempt and no
+provider has been invoked for the successor. Every identity is derived
+(:func:`continuation_identities`), so a crash after either commit, and a duplicate worker,
+find the rows that were written rather than writing others, and any row that disagrees
+with what a replay would write is a refusal, never a repair. A Direction that can no longer
+be applied is closed honestly and without prose in the event stream
+(:func:`close_unapplied_direction`).
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Final
 
+from omnivia_core.chat_contract.v1 import to_canonical_json
 from omnivia_core.chat_contract.v1.generated import (
     F2A_FINISH_REASONS,
     F2A_PROVIDER_ERROR_CODES,
@@ -59,8 +79,13 @@ from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdenti
 from omnivia_core_runtime.storage import chat
 
 __all__ = [
+    "MAX_GENERATION_ATTEMPTS",
     "MAX_RESPONSE_TEXT_BYTES",
+    "BoundaryUnavailable",
     "ClaimedGeneration",
+    "ContinuationIdentities",
+    "DirectionContinuation",
+    "DirectionNotPending",
     "DuplicateProviderEvent",
     "GenerationConflict",
     "GenerationHeartbeat",
@@ -69,13 +94,22 @@ __all__ = [
     "GenerationReplay",
     "GenerationSequenceGap",
     "GenerationTerminal",
+    "StagedContinuation",
+    "StaleGenerationVersion",
     "UnsupportedProviderEvent",
     "append_provider_generation_event",
     "append_provider_text_delta",
+    "apply_direction_continuation",
     "claim_queued_generation",
+    "close_unapplied_direction",
+    "completed_iteration",
+    "continuation_identities",
+    "generated_text_digest",
+    "provider_finish_id",
     "recover_generation_attempt_lease",
     "renew_generation_lease",
     "replay_generation_events",
+    "stage_direction_continuation",
 ]
 
 #: How long a claim's lease runs from the moment it is taken or extended. 0029
@@ -95,6 +129,41 @@ _TEXT_APPENDED: Final = "chat.generation.text_appended"
 _SUCCEEDED: Final = "chat.generation.succeeded"
 _FAILED: Final = "chat.generation.failed"
 _CANCELLED: Final = "chat.generation.cancelled"
+_ITERATION_COMPLETED: Final = "chat.generation.iteration_completed"
+_DIRECTION_STATE_CHANGED: Final = "chat.direction.state_changed"
+
+#: 0029 bounds `attempt_number` to 1..1000, so a job that has opened its thousandth
+#: Attempt has no successor to open.
+MAX_GENERATION_ATTEMPTS: Final = 1000
+
+#: 0029 and 0069 bound `generation_event_sequence` to 1..1000000.
+_MAX_EVENT_SEQUENCE: Final = 1_000_000
+
+_SHA256_DIGEST: Final = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+#: Why a Direction ended without being applied: the closed `(state, code)` pairs of
+#: `common.schema.json#/$defs/DirectionTerminalReasonCode`, each with the one constant
+#: sentence it reads as. A reason is chosen, never composed, so nothing a provider, an
+#: exception or the Direction itself said can reach a stored reason.
+_DIRECTION_REASONS: Final = {
+    ("rejected", "stale_generation_version"): (
+        "The generation changed after this direction was written, so it was not applied."
+    ),
+    ("rejected", "target_attempt_ended"): (
+        "The generation attempt this direction targeted ended before it could be applied."
+    ),
+    ("rejected", "boundary_unavailable"): (
+        "The generation reached no safe point at which this direction could be applied."
+    ),
+    ("rejected", "job_not_running"): (
+        "The generation was not running when this direction could have been applied."
+    ),
+    ("rejected", "policy_refused"): "This direction could not be applied to this generation.",
+    ("cancelled", "generation_stopped"): (
+        "The generation was stopped before this direction was applied."
+    ),
+    ("cancelled", "job_terminal"): "The generation ended before this direction was applied.",
+}
 
 #: The durable event types after which no further event may be appended.
 _TERMINAL_EVENT_TYPES: Final = frozenset({_SUCCEEDED, _FAILED, _CANCELLED})
@@ -163,6 +232,29 @@ class GenerationTerminal(GenerationLifecycleError):
 
 class DuplicateProviderEvent(GenerationLifecycleError):
     """A provider event id already durable here, carrying a different durable event."""
+
+
+class StaleGenerationVersion(GenerationConflict):
+    """The job's public CAS token is not the one the caller decided on."""
+
+
+class BoundaryUnavailable(GenerationConflict):
+    """A Direction cannot be taken in at this boundary, however valid it is.
+
+    No Attempt or event position is left to open a successor in, or another Attempt
+    already follows the one the Direction targets (a successor staged for a Direction
+    that has since been replaced). Raised before anything is written, so the caller can
+    close the Direction as unapplied and settle the Generation without it.
+    """
+
+
+class DirectionNotPending(GenerationConflict):
+    """The Direction is no longer pending at the version the caller decided on.
+
+    Superseded, rejected, cancelled, or applied by something other than the exact
+    transition the caller is replaying. Never retried by this module: the caller re-reads
+    which Direction, if any, is pending.
+    """
 
 
 class UnsupportedProviderEvent(GenerationLifecycleError):
@@ -328,15 +420,20 @@ def _optional_wire_str(wire: Mapping[str, Any], name: str) -> str | None:
     return None if name not in wire else _wire_str(wire, name)
 
 
+def _is_durable_identifier(value: str) -> bool:
+    """Whether a non-empty `value` is inside the grammar and length the tables hold ids to."""
+    return (
+        len(value) <= _DURABLE_PROVIDER_EVENT_ID_MAX
+        and value[0] in _DURABLE_IDENTIFIER_INITIAL
+        and all(character in _DURABLE_IDENTIFIER_CHARS for character in value)
+    )
+
+
 def _optional_provider_event_id(wire: Mapping[str, Any]) -> str | None:
     value = _optional_wire_str(wire, "providerEventId")
     if value is None:
         return None
-    if (
-        len(value) > _DURABLE_PROVIDER_EVENT_ID_MAX
-        or value[0] not in _DURABLE_IDENTIFIER_INITIAL
-        or any(character not in _DURABLE_IDENTIFIER_CHARS for character in value)
-    ):
+    if not _is_durable_identifier(value):
         raise UnsupportedProviderEvent(
             "provider event field 'providerEventId' is outside durable identifier bounds"
         )
@@ -946,6 +1043,7 @@ def append_provider_text_delta(
     now_us: int,
     expected_sequence: int | None = None,
     lease_duration_us: int = DEFAULT_LEASE_US,
+    prior_response_bytes: int = 0,
 ) -> chat.GenerationEvent:
     """Make one streamed text delta a single durable fact, or write nothing at all.
 
@@ -980,7 +1078,10 @@ def append_provider_text_delta(
        `expected_sequence` that is not the position the durable job is at --
        :class:`GenerationSequenceGap`;
     5. a response whose cumulative UTF-8 size would pass
-       :data:`MAX_RESPONSE_TEXT_BYTES` -- :class:`GenerationConflict`.
+       :data:`MAX_RESPONSE_TEXT_BYTES` -- :class:`GenerationConflict`. A continuation
+       Attempt's response is the end of the one the earlier Attempts began, so the
+       caller states what they already wrote in `prior_response_bytes` and the bound
+       holds for the Generation, not for each Attempt alone.
 
     A redelivery is decided on both tables, never one: an event without its chunk, or
     a chunk without its event, is a torn write rather than a replay, and is refused.
@@ -1103,7 +1204,11 @@ def append_provider_text_delta(
             f"{sequence}, not {expected_sequence}"
         )
 
-    cumulative = sum(len(chunk.text_content.encode("utf-8")) for chunk in chunks) + len(delta_bytes)
+    cumulative = (
+        prior_response_bytes
+        + sum(len(chunk.text_content.encode("utf-8")) for chunk in chunks)
+        + len(delta_bytes)
+    )
     if cumulative > MAX_RESPONSE_TEXT_BYTES:
         raise GenerationConflict(
             f"generation attempt {generation_attempt_id!r} would exceed the bounded "
@@ -1162,6 +1267,1177 @@ def append_provider_text_delta(
         connection, workspace_id=workspace_id, generation_job_id=generation_job_id
     )
     return appended[sequence - 1]
+
+
+# --- C6: a Direction taken in at an iteration boundary -------------------------------
+
+
+def _stable_id(kind: str, source: str) -> str:
+    return f"{kind}-{hashlib.sha256(source.encode('utf-8')).hexdigest()[:40]}"
+
+
+def _timestamp(moment_us: int) -> str:
+    """RFC 3339 UTC for a microsecond instant, by integer arithmetic so nothing rounds."""
+    moment = datetime.fromtimestamp(moment_us // 1_000_000, tz=UTC)
+    return moment.replace(microsecond=moment_us % 1_000_000).isoformat().replace("+00:00", "Z")
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuationIdentities:
+    """Every identity one continuation writes, derived and never allocated.
+
+    Nothing in them is random or time-dependent, so a replay and a crash recovery derive
+    the identities the first run wrote. They are scoped to the job, the Direction and the
+    iteration the Direction takes effect at, and are disjoint from the Attempt a job
+    starts with, whose identity is derived from the job alone.
+    """
+
+    continuation_id: str
+    generation_attempt_id: str
+    provider_invocation_id: str
+    request_manifest_id: str
+
+
+def continuation_identities(
+    *, generation_job_id: str, direction_id: str, iteration: int
+) -> ContinuationIdentities:
+    """The identities of the continuation that applies `direction_id` at `iteration`.
+
+    `iteration` is the zero-based iteration the Direction takes effect at, the completed
+    iteration plus one. The provider invocation and manifest follow the recipe every other
+    Attempt's use (`provider-inv-` and `request-manifest-` over `job:attempt`), so a
+    continuation Attempt reads as any other Attempt to everything that reads them.
+    """
+    scope = f"{generation_job_id}:{direction_id}:{iteration}"
+    attempt_id = _stable_id("genatt", scope)
+    return ContinuationIdentities(
+        continuation_id=_stable_id("continuation", scope),
+        generation_attempt_id=attempt_id,
+        provider_invocation_id=_stable_id("provider-inv", f"{generation_job_id}:{attempt_id}"),
+        request_manifest_id=_stable_id("request-manifest", f"{generation_job_id}:{attempt_id}"),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class StagedContinuation:
+    """What phase A left durable, as the rows now read.
+
+    `replayed` is true when every one of them was already durable and this call only
+    verified it, so nothing was written and no version moved.
+    """
+
+    iteration_event: chat.GenerationEvent
+    invocation: chat.ProviderInvocation
+    attempt: chat.GenerationAttempt
+    manifest: chat.RequestManifest
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DirectionContinuation:
+    """What phase B left behind, as the rows now read.
+
+    `replayed` is true when the transition had already been written and this call only
+    verified it.
+    """
+
+    direction: chat.Direction
+    continuation: chat.GenerationContinuation
+    attempt: chat.GenerationAttempt
+    manifest: chat.RequestManifest
+    replayed: bool
+
+
+def completed_iteration(directions: Sequence[chat.Direction], generation_attempt_id: str) -> int:
+    """The zero-based iteration `generation_attempt_id` runs, and so the one it completes.
+
+    A Job's iterations are counted along its continuation chain. An Attempt that no
+    Direction opened runs iteration 0; one a Direction opened runs the iteration that
+    Direction took effect at, which is how `applied_iteration` is defined in 0069.
+    """
+    for direction in directions:
+        if (
+            direction.state == "applied"
+            and direction.applied_attempt_id == generation_attempt_id
+            and direction.applied_iteration is not None
+        ):
+            return direction.applied_iteration
+    return 0
+
+
+def generated_text_digest(text: str) -> str:
+    """`sha256:` and the lower-case hex SHA-256 of the exact UTF-8 bytes of `text`.
+
+    Of the text alone: an Attempt's ordered durable chunks concatenated, with no JSON
+    wrapper, separator or length around them.
+    """
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def provider_finish_id(provider_event: Mapping[str, Any]) -> str:
+    """The identity a provider `finish` carries into the durable iteration record.
+
+    The provider's own `providerEventId` when it sent one this database can hold: inside
+    the durable identifier grammar and length. It is optional on the wire, and a provider
+    may send one too long or too odd to store, so otherwise the identity is derived from
+    the transport Attempt the event belongs to (`ProviderEvent.attemptId`, a
+    `ProviderAttemptId`, which is not the Chat Generation Attempt a request's `attemptId`
+    names) and the event's ordinal. A replay of the same stream derives it again.
+
+    An id of the wrong type is refused as it is everywhere else
+    (:class:`UnsupportedProviderEvent`); one that merely cannot be stored is not a reason
+    to refuse an otherwise valid finish.
+    """
+    if not isinstance(provider_event, Mapping):
+        raise UnsupportedProviderEvent("a provider event wire must be a JSON object")
+    given = _optional_wire_str(provider_event, "providerEventId")
+    if given is not None and _is_durable_identifier(given):
+        return given
+    transport_attempt = _wire_str(provider_event, "attemptId")
+    ordinal = provider_event.get("ordinal")
+    if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
+        raise UnsupportedProviderEvent("provider event field 'ordinal' is not a non-negative integer")
+    return _stable_id("finish", f"{transport_attempt}:{ordinal}")
+
+
+def _record_event_on_job(
+    writer: chat.ChatWriter,
+    job: chat.GenerationJob,
+    status: chat.GenerationJobStatusProjection,
+    *,
+    sequence: int,
+    now_us: int,
+    lease_duration_us: int,
+    current_attempt_id: str | None = None,
+) -> None:
+    """What an appended event leaves on a job that is still alive.
+
+    A running job row keeps the event's sequence under a re-stated lease; a row that has
+    already ended keeps nothing. The public token advances once, and only while the
+    projection is `running`: a finished Job did not change because one of its Directions
+    was closed. `current_attempt_id` moves both to the successor Attempt in the same
+    write that records the event.
+    """
+    if job.state not in _TERMINAL_JOB_STATES:
+        writer.update_generation_job(
+            generation_job_id=job.generation_job_id,
+            expected_state=job.state,
+            expected_lease_epoch=job.lease_epoch,
+            state=job.state,
+            lease_epoch=job.lease_epoch,
+            current_attempt_id=current_attempt_id or job.current_attempt_id,
+            lease_owner=job.lease_owner,
+            lease_expires_at_us=now_us + lease_duration_us,
+            heartbeat_at_us=now_us,
+            last_event_sequence=sequence,
+            updated_at_us=now_us,
+            started_at_us=job.started_at_us,
+        )
+    if status.state == "running":
+        changes: dict[str, Any] = {}
+        if current_attempt_id is not None:
+            changes["current_attempt_id"] = current_attempt_id
+        _restate_status(writer, status, updated_at_us=now_us, **changes)
+
+
+def _manifest_route(manifest_body: Mapping[str, Any]) -> tuple[str, str]:
+    route = manifest_body.get("route")
+    if not isinstance(route, Mapping):
+        raise GenerationConflict("the request manifest names no provider route")
+    connection_id = route.get("connectionId")
+    model_id = route.get("modelId")
+    if (
+        not isinstance(connection_id, str)
+        or not isinstance(model_id, str)
+        or route.get("operation") != "language.stream"
+    ):
+        raise GenerationConflict("the request manifest names no provider route")
+    return connection_id, model_id
+
+
+def _require_manifest_binding(
+    manifest_body: Mapping[str, Any],
+    *,
+    workspace_id: str,
+    job: chat.GenerationJob,
+    direction: chat.Direction,
+    identities: ContinuationIdentities,
+) -> None:
+    """The manifest is the successor's and binds exactly this Direction, or nothing is written.
+
+    0069 refuses an application whose manifest does not carry `direction` with exactly
+    three keys; this is the same rule stated before the first write, so the refusal names
+    the disagreement rather than a trigger. `directionVersion` is the pending version the
+    manifest was built from, always 1.
+    """
+    expected: dict[str, Any] = {
+        "workspaceId": workspace_id,
+        "conversationId": job.conversation_id,
+        "branchId": job.branch_id,
+        "generationJobId": job.generation_job_id,
+        "generationAttemptId": identities.generation_attempt_id,
+        "triggerMessageId": job.trigger_message_id,
+        "providerInvocationId": identities.provider_invocation_id,
+        "requestManifestId": identities.request_manifest_id,
+    }
+    binding = {
+        "contentDigest": direction.content_digest,
+        "directionId": direction.direction_id,
+        "directionVersion": 1,
+    }
+    if (
+        any(manifest_body.get(key) != value for key, value in expected.items())
+        or not isinstance(manifest_body.get("idempotencyKey"), str)
+        or manifest_body.get("direction") != binding
+    ):
+        raise GenerationConflict(
+            "the request manifest does not belong to this continuation of "
+            f"direction {direction.direction_id!r}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _Boundary:
+    """One iteration boundary as the rows read it, the Direction proved to belong to it."""
+
+    job: chat.GenerationJob
+    direction: chat.Direction
+    prior: chat.GenerationAttempt
+    attempts: tuple[chat.GenerationAttempt, ...]
+    events: tuple[chat.GenerationEvent, ...]
+    closing: tuple[chat.GenerationEvent, ...]
+    iteration: int
+    route: tuple[str, str]
+
+
+def _read_boundary(
+    writer: chat.ChatWriter,
+    *,
+    generation_job_id: str,
+    prior_attempt_id: str,
+    direction_id: str,
+    actor_id: str,
+    identities: ContinuationIdentities,
+    manifest_body: Mapping[str, Any],
+) -> _Boundary:
+    """Read, inside the open transaction, everything either phase proves before it writes.
+
+    The Direction is this job's, aimed at `prior_attempt_id` and the caller's `actor_id`
+    (its reader recomputes the content digest, so a tampered one fails here); the
+    manifest names the successor's own identities and binds the Direction, under a
+    provider idempotency key that is neither the Job's nor the prior Attempt's; and the
+    identities are those derived for the iteration after the one `prior_attempt_id` runs.
+    """
+    connection = writer.connection
+    workspace_id = writer.workspace_id
+    job = chat.read_generation_job(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    if job is None:
+        raise GenerationNotFound(f"generation job {generation_job_id!r} is not in this workspace")
+    direction = chat.read_direction(connection, workspace_id=workspace_id, direction_id=direction_id)
+    if direction is None:
+        raise GenerationNotFound(f"direction {direction_id!r} is not in this workspace")
+    if (
+        direction.generation_job_id != job.generation_job_id
+        or direction.conversation_id != job.conversation_id
+        or direction.branch_id != job.branch_id
+        or direction.target_attempt_id != prior_attempt_id
+        or direction.actor_id != actor_id
+        or direction.requested_boundary != "earliest_safe"
+    ):
+        raise GenerationConflict(
+            f"direction {direction_id!r} does not belong to this generation, attempt and actor"
+        )
+    _require_manifest_binding(
+        manifest_body,
+        workspace_id=workspace_id,
+        job=job,
+        direction=direction,
+        identities=identities,
+    )
+    directions = chat.read_directions_for_generation_job(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    iteration = completed_iteration(directions, prior_attempt_id)
+    if identities != continuation_identities(
+        generation_job_id=generation_job_id, direction_id=direction_id, iteration=iteration + 1
+    ):
+        raise GenerationConflict(
+            f"the identities given are not those of the continuation of direction {direction_id!r}"
+        )
+    prior = chat.read_generation_attempt(
+        connection, workspace_id=workspace_id, generation_attempt_id=prior_attempt_id
+    )
+    if prior is None or prior.generation_job_id != generation_job_id:
+        raise GenerationConflict(
+            f"generation attempt {prior_attempt_id!r} is not an attempt of this generation"
+        )
+    # A provider deduplicates on this key, so a successor that carried the Job's or the
+    # prior Attempt's would be answered with the prior response.
+    prior_manifest = chat.read_request_manifest(
+        connection, workspace_id=workspace_id, generation_attempt_id=prior_attempt_id
+    )
+    reused = {job.idempotency_key}
+    if prior_manifest is not None:
+        reused.add(prior_manifest.idempotency_key)
+    if manifest_body["idempotencyKey"] in reused:
+        raise GenerationConflict(
+            f"the continuation of direction {direction_id!r} does not have a provider "
+            "idempotency key of its own"
+        )
+    events = chat.read_generation_events(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    return _Boundary(
+        job=job,
+        direction=direction,
+        prior=prior,
+        attempts=chat.read_generation_attempts(
+            connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+        ),
+        events=events,
+        closing=tuple(
+            event
+            for event in events
+            if event.generation_attempt_id == prior_attempt_id
+            and event.event_type == _ITERATION_COMPLETED
+        ),
+        iteration=iteration,
+        route=_manifest_route(manifest_body),
+    )
+
+
+def _require_running_on(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    job: chat.GenerationJob,
+    attempt_id: str,
+    lease_owner: str,
+) -> chat.GenerationJobStatusProjection:
+    """Both authorities say the caller's lease is running `attempt_id`, or nothing proceeds.
+
+    The foundation Job row and the public status projection are two records of one
+    fact, and a continuation moves both, so it starts only from a state where they agree.
+    """
+    status = _require_status(connection, workspace_id=workspace_id, job=job)
+    if status.state in _TERMINAL_JOB_STATES or job.state in _TERMINAL_JOB_STATES:
+        raise GenerationTerminal(f"generation job {job.generation_job_id!r} already ended")
+    if (
+        status.state != "running"
+        or status.current_attempt_id != attempt_id
+        or job.state != "running"
+        or job.current_attempt_id != attempt_id
+    ):
+        raise GenerationConflict(
+            f"generation job {job.generation_job_id!r} is not running this attempt"
+        )
+    if job.lease_owner != lease_owner:
+        raise GenerationConflict(
+            f"generation job {job.generation_job_id!r} is leased by another instance"
+        )
+    return status
+
+
+def _durable_output_digest(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    generation_job_id: str,
+    generation_attempt_id: str,
+) -> str:
+    return generated_text_digest(
+        "".join(
+            chunk.text_content
+            for chunk in chat.read_generation_text_chunks(
+                connection,
+                workspace_id=workspace_id,
+                generation_job_id=generation_job_id,
+                generation_attempt_id=generation_attempt_id,
+            )
+        )
+    )
+
+
+def _read_staged(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    boundary: _Boundary,
+    identities: ContinuationIdentities,
+) -> tuple[chat.ProviderInvocation | None, chat.GenerationAttempt | None, chat.RequestManifest | None]:
+    """The successor's invocation identity, Attempt and manifest, whichever exist."""
+    return (
+        chat.read_provider_invocation(
+            connection, workspace_id=workspace_id, invocation_id=identities.provider_invocation_id
+        ),
+        next(
+            (
+                attempt
+                for attempt in boundary.attempts
+                if attempt.generation_attempt_id == identities.generation_attempt_id
+            ),
+            None,
+        ),
+        chat.read_request_manifest(
+            connection,
+            workspace_id=workspace_id,
+            generation_attempt_id=identities.generation_attempt_id,
+        ),
+    )
+
+
+def _staged_mismatch(
+    boundary: _Boundary,
+    identities: ContinuationIdentities,
+    manifest_body: Mapping[str, Any],
+    invocation: chat.ProviderInvocation | None,
+    attempt: chat.GenerationAttempt | None,
+    manifest: chat.RequestManifest | None,
+) -> bool:
+    """True when a staged row that exists is not the one a replay would write.
+
+    Compared on every identity and, for the manifest, on its canonical bytes. A row that
+    is absent is not a mismatch here; whether it must exist is for the caller.
+    """
+    job = boundary.job
+    connection_id, model_id = boundary.route
+    if invocation is not None and (
+        invocation.conversation_id,
+        invocation.job_id,
+        invocation.generation_attempt_id,
+        invocation.operation,
+        invocation.configured_connection_id,
+        invocation.configured_model_id,
+    ) != (
+        job.conversation_id,
+        job.generation_job_id,
+        identities.generation_attempt_id,
+        "language.stream",
+        connection_id,
+        model_id,
+    ):
+        return True
+    if attempt is not None and (
+        attempt.conversation_id,
+        attempt.generation_job_id,
+        attempt.attempt_number,
+        attempt.retry_of_attempt_id,
+        attempt.state,
+        attempt.provider_invocation_id,
+        attempt.ended_at_us,
+    ) != (
+        job.conversation_id,
+        job.generation_job_id,
+        boundary.prior.attempt_number + 1,
+        boundary.prior.generation_attempt_id,
+        "running",
+        identities.provider_invocation_id,
+        None,
+    ):
+        return True
+    return manifest is not None and (
+        (
+            manifest.conversation_id,
+            manifest.branch_id,
+            manifest.generation_job_id,
+            manifest.trigger_message_id,
+            manifest.provider_invocation_id,
+            manifest.request_manifest_id,
+            manifest.idempotency_key,
+        )
+        != (
+            job.conversation_id,
+            job.branch_id,
+            job.generation_job_id,
+            job.trigger_message_id,
+            identities.provider_invocation_id,
+            identities.request_manifest_id,
+            manifest_body["idempotencyKey"],
+        )
+        or to_canonical_json(dict(manifest.manifest_body)) != to_canonical_json(dict(manifest_body))
+    )
+
+
+def _require_applied(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    boundary: _Boundary,
+    identities: ContinuationIdentities,
+    manifest_body: Mapping[str, Any],
+    iteration_event: chat.GenerationEvent,
+) -> tuple[chat.ProviderInvocation, chat.GenerationAttempt, chat.RequestManifest]:
+    """The Direction was applied by exactly this continuation and every row says so."""
+    direction = boundary.direction
+    applied = (
+        direction.version == 2
+        and direction.effective_boundary == "next_iteration"
+        and direction.applied_attempt_id == identities.generation_attempt_id
+        and direction.applied_provider_invocation_id == identities.provider_invocation_id
+        and direction.applied_request_manifest_id == identities.request_manifest_id
+        and direction.applied_iteration == boundary.iteration + 1
+    )
+    if not applied:
+        raise DirectionNotPending(
+            f"direction {direction.direction_id!r} was applied by another continuation"
+        )
+    continuation = chat.read_generation_continuation(
+        connection, workspace_id=workspace_id, continuation_id=identities.continuation_id
+    )
+    invocation, attempt, manifest = _read_staged(
+        connection, workspace_id=workspace_id, boundary=boundary, identities=identities
+    )
+    if (
+        continuation is None
+        or continuation.prior_attempt_id != boundary.prior.generation_attempt_id
+        or continuation.next_attempt_id != identities.generation_attempt_id
+        or continuation.direction_id != direction.direction_id
+        or continuation.direction_version != 2
+        or continuation.provider_finish_id != iteration_event.provider_event_id
+        or continuation.prior_output_digest != iteration_event.payload.get("priorOutputDigest")
+        or invocation is None
+        or attempt is None
+        or manifest is None
+        or _staged_mismatch(boundary, identities, manifest_body, invocation, attempt, manifest)
+    ):
+        raise GenerationConflict(
+            f"direction {direction.direction_id!r} is applied, but its continuation rows "
+            "do not match the ones this replay would write"
+        )
+    return invocation, attempt, manifest
+
+
+def stage_direction_continuation(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    generation_job_id: str,
+    prior_attempt_id: str,
+    direction_id: str,
+    actor_id: str,
+    identities: ContinuationIdentities,
+    manifest_body: Mapping[str, Any],
+    provider_event: Mapping[str, Any],
+    prior_output_digest: str,
+    lease_owner: str,
+    now_us: int,
+    lease_duration_us: int = DEFAULT_LEASE_US,
+) -> StagedContinuation:
+    """Phase A: close the iteration and stage the successor, in one commit of their own.
+
+    One transaction writes what the Direction's application will need to find already
+    committed (0069 can only see it exist; this sequencing is what makes it committed):
+
+    1. the prior Attempt's `chat.generation.iteration_completed` event, carrying the
+       job's public CAS token as it stood at the insert (including any Direction
+       admission already committed at this boundary) and the digest of the output the
+       iteration produced, never the output. The projection then advances once, as it
+       does for every event;
+    2. the successor's provider invocation identity (0028), through the typed writer;
+    3. the successor Attempt: the next number, retrying the prior Attempt;
+    4. the successor's request manifest, binding this Direction as
+       `{"contentDigest", "directionId", "directionVersion": 1}`.
+
+    Nothing here moves the Direction, the current Attempt or the Job's lease owner: until
+    :func:`apply_direction_continuation` commits, the Generation is still on the prior
+    Attempt and these rows are only staged. Every identity is derived, so a crash after
+    this commit and a duplicate worker both find the rows rather than writing others: each
+    row that exists is held to what a replay would write (identities, route, and the
+    manifest's canonical bytes; the event's iteration and digest, never its recorded
+    version), and a call that finds them all writes nothing and moves no version
+    (`replayed`). One that finds a row that differs is :class:`GenerationConflict`, and
+    nothing is repaired.
+
+    Refused without a write, in the order decided: a job or attempt that already ended
+    (:class:`GenerationTerminal`), a lease another instance holds or an attempt that is
+    not the running one (:class:`GenerationConflict`), a Direction that is not pending
+    (:class:`DirectionNotPending`), and a boundary with no Attempt or event position left
+    to open a successor in, or one another Attempt already follows
+    (:class:`BoundaryUnavailable`).
+    """
+    finish_id = provider_finish_id(provider_event)
+    if not _SHA256_DIGEST.match(prior_output_digest):
+        raise GenerationConflict("an iteration's prior output digest must be sha256:<64 lower hex>")
+    with chat.chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        staged = _stage(
+            writer,
+            generation_job_id=generation_job_id,
+            prior_attempt_id=prior_attempt_id,
+            direction_id=direction_id,
+            actor_id=actor_id,
+            identities=identities,
+            manifest_body=manifest_body,
+            finish_id=finish_id,
+            prior_output_digest=prior_output_digest,
+            lease_owner=lease_owner,
+            now_us=now_us,
+            lease_duration_us=lease_duration_us,
+        )
+    return staged
+
+
+def _stage(
+    writer: chat.ChatWriter,
+    *,
+    generation_job_id: str,
+    prior_attempt_id: str,
+    direction_id: str,
+    actor_id: str,
+    identities: ContinuationIdentities,
+    manifest_body: Mapping[str, Any],
+    finish_id: str,
+    prior_output_digest: str,
+    lease_owner: str,
+    now_us: int,
+    lease_duration_us: int,
+) -> StagedContinuation:
+    connection = writer.connection
+    workspace_id = writer.workspace_id
+    boundary = _read_boundary(
+        writer,
+        generation_job_id=generation_job_id,
+        prior_attempt_id=prior_attempt_id,
+        direction_id=direction_id,
+        actor_id=actor_id,
+        identities=identities,
+        manifest_body=manifest_body,
+    )
+    job, direction, prior = boundary.job, boundary.direction, boundary.prior
+    if prior_output_digest != _durable_output_digest(
+        connection,
+        workspace_id=workspace_id,
+        generation_job_id=generation_job_id,
+        generation_attempt_id=prior_attempt_id,
+    ):
+        raise GenerationConflict(
+            f"the output digest given for attempt {prior_attempt_id!r} is not that of what it wrote"
+        )
+
+    iteration_event: chat.GenerationEvent | None = None
+    for event in boundary.closing:
+        if event.provider_event_id != finish_id:
+            raise GenerationConflict(
+                f"generation attempt {prior_attempt_id!r} already closed its iteration "
+                "on another provider event"
+            )
+        if (
+            event.payload.get("iteration") != boundary.iteration
+            or event.payload.get("priorOutputDigest") != prior_output_digest
+        ):
+            raise DuplicateProviderEvent(
+                f"provider event {finish_id!r} already closed an iteration of this attempt "
+                "with other facts"
+            )
+        iteration_event = event
+    invocation, attempt, manifest = _read_staged(
+        connection, workspace_id=workspace_id, boundary=boundary, identities=identities
+    )
+
+    if direction.state == "applied":
+        # Phase B has already committed: stage nothing, prove the whole of it.
+        if iteration_event is None:
+            raise GenerationConflict(
+                f"generation attempt {prior_attempt_id!r} has no committed iteration event"
+            )
+        invocation, attempt, manifest = _require_applied(
+            connection,
+            workspace_id=workspace_id,
+            boundary=boundary,
+            identities=identities,
+            manifest_body=manifest_body,
+            iteration_event=iteration_event,
+        )
+        return StagedContinuation(
+            iteration_event=iteration_event,
+            invocation=invocation,
+            attempt=attempt,
+            manifest=manifest,
+            replayed=True,
+        )
+    if direction.state != "pending" or direction.version != 1:
+        raise DirectionNotPending(f"direction {direction_id!r} is not pending")
+
+    status = _require_running_on(
+        connection,
+        workspace_id=workspace_id,
+        job=job,
+        attempt_id=prior_attempt_id,
+        lease_owner=lease_owner,
+    )
+    if _staged_mismatch(boundary, identities, manifest_body, invocation, attempt, manifest):
+        raise GenerationConflict(
+            f"rows of the continuation of direction {direction_id!r} already exist "
+            "and are not the ones this replay would write"
+        )
+    if attempt is None and (
+        prior.attempt_number != max(a.attempt_number for a in boundary.attempts)
+        or prior.attempt_number >= MAX_GENERATION_ATTEMPTS
+    ):
+        raise BoundaryUnavailable(f"generation attempt {prior_attempt_id!r} has no successor to open")
+    next_sequence = max(event.generation_event_sequence for event in boundary.events) + 1
+    # The seam writes two events, this iteration's and the Direction's state change.
+    if iteration_event is None and next_sequence + 1 > _MAX_EVENT_SEQUENCE:
+        raise BoundaryUnavailable(
+            f"generation job {generation_job_id!r} has no event position left for a continuation"
+        )
+
+    at_us = max(now_us, direction.updated_at_us, status.updated_at_us, job.updated_at_us)
+    connection_id, model_id = boundary.route
+    if iteration_event is None:
+        writer.append_generation_event(
+            event_id=_event_id(generation_job_id, next_sequence),
+            conversation_id=job.conversation_id,
+            branch_id=job.branch_id,
+            generation_job_id=generation_job_id,
+            generation_attempt_id=prior_attempt_id,
+            event_type=_ITERATION_COMPLETED,
+            generation_event_sequence=next_sequence,
+            trigger_message_id=job.trigger_message_id,
+            provider_event_id=finish_id,
+            cursor=_cursor(generation_job_id, next_sequence),
+            payload={
+                "generationJobVersion": status.version,
+                "iteration": boundary.iteration,
+                "priorOutputDigest": prior_output_digest,
+            },
+            occurred_at_us=now_us,
+            schema_version=1,
+        )
+        _record_event_on_job(
+            writer,
+            job,
+            status,
+            sequence=next_sequence,
+            now_us=now_us,
+            lease_duration_us=lease_duration_us,
+        )
+    if invocation is None:
+        writer.append_provider_invocation(
+            invocation_id=identities.provider_invocation_id,
+            conversation_id=job.conversation_id,
+            job_id=generation_job_id,
+            generation_attempt_id=identities.generation_attempt_id,
+            configured_connection_id=connection_id,
+            configured_model_id=model_id,
+            created_at_us=at_us,
+        )
+    if attempt is None:
+        writer.append_generation_attempt(
+            generation_attempt_id=identities.generation_attempt_id,
+            conversation_id=job.conversation_id,
+            generation_job_id=generation_job_id,
+            attempt_number=prior.attempt_number + 1,
+            retry_of_attempt_id=prior_attempt_id,
+            state="running",
+            schema_version=1,
+            provider_invocation_id=identities.provider_invocation_id,
+            started_at_us=at_us,
+        )
+    if manifest is None:
+        writer.append_request_manifest(
+            conversation_id=job.conversation_id,
+            branch_id=job.branch_id,
+            generation_job_id=generation_job_id,
+            generation_attempt_id=identities.generation_attempt_id,
+            trigger_message_id=job.trigger_message_id,
+            provider_invocation_id=identities.provider_invocation_id,
+            request_manifest_id=identities.request_manifest_id,
+            idempotency_key=str(manifest_body["idempotencyKey"]),
+            manifest_body=manifest_body,
+            created_at_us=at_us,
+        )
+
+    wrote = iteration_event is None or invocation is None or attempt is None or manifest is None
+    closed = next(
+        (
+            event
+            for event in chat.read_generation_events(
+                connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+            )
+            if event.generation_attempt_id == prior_attempt_id
+            and event.event_type == _ITERATION_COMPLETED
+        ),
+        None,
+    )
+    staged_attempt = chat.read_generation_attempt(
+        connection, workspace_id=workspace_id, generation_attempt_id=identities.generation_attempt_id
+    )
+    staged_invocation = chat.read_provider_invocation(
+        connection, workspace_id=workspace_id, invocation_id=identities.provider_invocation_id
+    )
+    staged_manifest = chat.read_request_manifest(
+        connection,
+        workspace_id=workspace_id,
+        generation_attempt_id=identities.generation_attempt_id,
+    )
+    if (
+        closed is None
+        or staged_attempt is None
+        or staged_invocation is None
+        or staged_manifest is None
+    ):  # pragma: no cover - the writes above just made all four
+        raise GenerationNotFound(f"continuation of direction {direction_id!r} did not stage")
+    return StagedContinuation(
+        iteration_event=closed,
+        invocation=staged_invocation,
+        attempt=staged_attempt,
+        manifest=staged_manifest,
+        replayed=not wrote,
+    )
+
+
+def apply_direction_continuation(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    generation_job_id: str,
+    prior_attempt_id: str,
+    direction_id: str,
+    actor_id: str,
+    identities: ContinuationIdentities,
+    manifest_body: Mapping[str, Any],
+    expected_status_version: int,
+    lease_owner: str,
+    now_us: int,
+    lease_duration_us: int = DEFAULT_LEASE_US,
+) -> DirectionContinuation:
+    """Phase B: apply the Direction to the successor phase A staged, in a commit of its own.
+
+    Only after :func:`stage_direction_continuation` has committed, never in the same
+    transaction (opening one inside another is refused by the fence). One transaction
+    moves the Direction `pending` v1 -> `applied` v2 at `next_iteration`, bound to the
+    staged invocation, Attempt and manifest; appends the continuation record, bound to the
+    prior Attempt's committed iteration event; appends the Direction's
+    `chat.direction.state_changed` event (the id, the new version and the state, nothing
+    of its content); and last moves both authorities to the successor: the Job row's
+    current Attempt, event sequence and re-stated lease, and the status projection's one
+    compare-and-set step. The Direction moves while the projection is still on the prior
+    Attempt because 0069 requires exactly that. A failure anywhere rolls back only this.
+
+    Everything is re-proved from the rows before the first write, and none of the staged
+    rows is written here: the iteration event is the single one of the prior Attempt and
+    still the digest of its durable output, the invocation, Attempt and manifest are the
+    successor's and the manifest's canonical bytes are `manifest_body`'s, the projection
+    is running on the prior Attempt at `expected_status_version`, and the Job row agrees
+    and is leased by `lease_owner`. Rows that are not staged, or differ, are
+    :class:`GenerationConflict`; a stale token is :class:`StaleGenerationVersion`; a
+    Direction that is no longer pending is :class:`DirectionNotPending`; a finished job is
+    :class:`GenerationTerminal`. Nothing is written for any of them.
+
+    The exception is the exact replay: a Direction already applied by these identities
+    with every row present and equal to what would be written is returned with nothing
+    written, so no version moves.
+    """
+    with chat.chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        replayed = _apply(
+            writer,
+            generation_job_id=generation_job_id,
+            prior_attempt_id=prior_attempt_id,
+            direction_id=direction_id,
+            actor_id=actor_id,
+            identities=identities,
+            manifest_body=manifest_body,
+            expected_status_version=expected_status_version,
+            lease_owner=lease_owner,
+            now_us=now_us,
+            lease_duration_us=lease_duration_us,
+        )
+    direction = chat.read_direction(connection, workspace_id=workspace_id, direction_id=direction_id)
+    continuation = chat.read_generation_continuation(
+        connection, workspace_id=workspace_id, continuation_id=identities.continuation_id
+    )
+    attempt = chat.read_generation_attempt(
+        connection, workspace_id=workspace_id, generation_attempt_id=identities.generation_attempt_id
+    )
+    manifest = chat.read_request_manifest(
+        connection, workspace_id=workspace_id, generation_attempt_id=identities.generation_attempt_id
+    )
+    # The transaction above just committed all four.
+    if direction is None or continuation is None or attempt is None or manifest is None:  # pragma: no cover
+        raise GenerationNotFound(f"direction {direction_id!r} did not settle")
+    return DirectionContinuation(
+        direction=direction,
+        continuation=continuation,
+        attempt=attempt,
+        manifest=manifest,
+        replayed=replayed,
+    )
+
+
+def _apply(
+    writer: chat.ChatWriter,
+    *,
+    generation_job_id: str,
+    prior_attempt_id: str,
+    direction_id: str,
+    actor_id: str,
+    identities: ContinuationIdentities,
+    manifest_body: Mapping[str, Any],
+    expected_status_version: int,
+    lease_owner: str,
+    now_us: int,
+    lease_duration_us: int,
+) -> bool:
+    connection = writer.connection
+    workspace_id = writer.workspace_id
+    boundary = _read_boundary(
+        writer,
+        generation_job_id=generation_job_id,
+        prior_attempt_id=prior_attempt_id,
+        direction_id=direction_id,
+        actor_id=actor_id,
+        identities=identities,
+        manifest_body=manifest_body,
+    )
+    job, direction = boundary.job, boundary.direction
+    iteration_event = boundary.closing[0] if len(boundary.closing) == 1 else None
+    finish_id = None if iteration_event is None else iteration_event.provider_event_id
+    prior_output_digest = None if iteration_event is None else iteration_event.payload.get("priorOutputDigest")
+    if (
+        iteration_event is None
+        or finish_id is None
+        or not isinstance(prior_output_digest, str)
+        or not _SHA256_DIGEST.match(prior_output_digest)
+        or iteration_event.payload.get("iteration") != boundary.iteration
+        or prior_output_digest
+        != _durable_output_digest(
+            connection,
+            workspace_id=workspace_id,
+            generation_job_id=generation_job_id,
+            generation_attempt_id=prior_attempt_id,
+        )
+    ):
+        raise GenerationConflict(
+            f"generation attempt {prior_attempt_id!r} has no single committed iteration "
+            "event for this continuation"
+        )
+
+    if direction.state == "applied":
+        _require_applied(
+            connection,
+            workspace_id=workspace_id,
+            boundary=boundary,
+            identities=identities,
+            manifest_body=manifest_body,
+            iteration_event=iteration_event,
+        )
+        return True
+    if direction.state != "pending" or direction.version != 1:
+        raise DirectionNotPending(f"direction {direction_id!r} is not pending")
+
+    status = _require_running_on(
+        connection,
+        workspace_id=workspace_id,
+        job=job,
+        attempt_id=prior_attempt_id,
+        lease_owner=lease_owner,
+    )
+    if status.version != expected_status_version:
+        raise StaleGenerationVersion(
+            f"generation job {generation_job_id!r} moved since its version was read"
+        )
+    invocation, attempt, manifest = _read_staged(
+        connection, workspace_id=workspace_id, boundary=boundary, identities=identities
+    )
+    if (
+        invocation is None
+        or attempt is None
+        or manifest is None
+        or _staged_mismatch(boundary, identities, manifest_body, invocation, attempt, manifest)
+    ):
+        raise GenerationConflict(
+            f"the successor of direction {direction_id!r} is not staged as this continuation "
+            "would write it"
+        )
+    if (
+        chat.read_generation_continuation(
+            connection, workspace_id=workspace_id, continuation_id=identities.continuation_id
+        )
+        is not None
+        or chat.read_generation_continuation_for_direction(
+            connection, workspace_id=workspace_id, direction_id=direction_id
+        )
+        is not None
+    ):
+        raise GenerationConflict(
+            f"a continuation of direction {direction_id!r} already exists"
+        )
+    sequence = max(event.generation_event_sequence for event in boundary.events) + 1
+    if sequence > _MAX_EVENT_SEQUENCE:
+        raise GenerationConflict(
+            f"generation job {generation_job_id!r} has no event position left for a continuation"
+        )
+
+    at_us = max(
+        now_us,
+        direction.updated_at_us,
+        iteration_event.occurred_at_us,
+        manifest.created_at_us,
+        attempt.started_at_us,
+        status.updated_at_us,
+        job.updated_at_us,
+    )
+    writer.update_direction(
+        direction_id=direction_id,
+        expected_version=direction.version,
+        state="applied",
+        terminal_at_us=at_us,
+        effective_boundary="next_iteration",
+        applied_attempt_id=identities.generation_attempt_id,
+        applied_provider_invocation_id=identities.provider_invocation_id,
+        applied_request_manifest_id=identities.request_manifest_id,
+        applied_iteration=boundary.iteration + 1,
+    )
+    writer.append_generation_continuation(
+        continuation_id=identities.continuation_id,
+        conversation_id=job.conversation_id,
+        generation_job_id=generation_job_id,
+        prior_attempt_id=prior_attempt_id,
+        next_attempt_id=identities.generation_attempt_id,
+        direction_id=direction_id,
+        direction_version=direction.version + 1,
+        provider_finish_id=finish_id,
+        prior_output_digest=prior_output_digest,
+        schema_version=1,
+        created_at_us=at_us,
+    )
+    writer.append_generation_event(
+        event_id=_event_id(generation_job_id, sequence),
+        conversation_id=job.conversation_id,
+        branch_id=job.branch_id,
+        generation_job_id=generation_job_id,
+        event_type=_DIRECTION_STATE_CHANGED,
+        generation_event_sequence=sequence,
+        trigger_message_id=job.trigger_message_id,
+        cursor=_cursor(generation_job_id, sequence),
+        payload={
+            "directionId": direction_id,
+            "directionVersion": direction.version + 1,
+            "state": "applied",
+        },
+        occurred_at_us=at_us,
+        schema_version=1,
+    )
+    _record_event_on_job(
+        writer,
+        job,
+        status,
+        sequence=sequence,
+        now_us=at_us,
+        lease_duration_us=lease_duration_us,
+        current_attempt_id=identities.generation_attempt_id,
+    )
+    return False
+
+
+def close_unapplied_direction(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    generation_job_id: str,
+    direction_id: str,
+    state: str,
+    code: str,
+    now_us: int,
+    lease_owner: str | None = None,
+    lease_duration_us: int = DEFAULT_LEASE_US,
+) -> chat.Direction:
+    """End a pending Direction that was never applied: `rejected` or `cancelled`.
+
+    `(state, code)` must be one of the contract's closed pairs, and the stored reason is
+    that code, the instant, and the one constant sentence for the pair; nothing of the
+    Direction, the provider or an exception. The move and its identity-only
+    `chat.direction.state_changed` event (the Direction's id, new version and state, no
+    content, hash or reason) are one transaction, and the job's token advances only if the
+    job is still running. Closing a Direction already closed this exact way returns it
+    unchanged and writes nothing; closing one that is anything else is
+    :class:`DirectionNotPending`.
+    """
+    message = _DIRECTION_REASONS.get((state, code))
+    if message is None:
+        raise GenerationConflict("a Direction is closed unapplied only as rejected or cancelled")
+    with chat.chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        job = chat.read_generation_job(
+            connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+        )
+        if job is None:
+            raise GenerationNotFound(
+                f"generation job {generation_job_id!r} is not in this workspace"
+            )
+        direction = chat.read_direction(
+            connection, workspace_id=workspace_id, direction_id=direction_id
+        )
+        if direction is None or direction.generation_job_id != generation_job_id:
+            raise GenerationNotFound(f"direction {direction_id!r} is not in this generation")
+        if direction.state != "pending":
+            reason = direction.terminal_reason
+            if direction.state == state and reason is not None and reason.get("code") == code:
+                return direction
+            raise DirectionNotPending(f"direction {direction_id!r} is not pending")
+        status = _require_status(connection, workspace_id=workspace_id, job=job)
+        if (
+            lease_owner is not None
+            and job.state == "running"
+            and job.lease_owner != lease_owner
+        ):
+            raise GenerationConflict(
+                f"generation job {generation_job_id!r} is leased by another instance"
+            )
+        events = chat.read_generation_events(
+            connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+        )
+        sequence = max((event.generation_event_sequence for event in events), default=0) + 1
+        at_us = max(now_us, direction.updated_at_us)
+        writer.update_direction(
+            direction_id=direction_id,
+            expected_version=direction.version,
+            state=state,
+            terminal_at_us=at_us,
+            terminal_reason={"code": code, "occurredAt": _timestamp(at_us), "safeMessage": message},
+        )
+        writer.append_generation_event(
+            event_id=_event_id(generation_job_id, sequence),
+            conversation_id=job.conversation_id,
+            branch_id=job.branch_id,
+            generation_job_id=generation_job_id,
+            event_type=_DIRECTION_STATE_CHANGED,
+            generation_event_sequence=sequence,
+            trigger_message_id=job.trigger_message_id,
+            cursor=_cursor(generation_job_id, sequence),
+            payload={
+                "directionId": direction_id,
+                "directionVersion": direction.version + 1,
+                "state": state,
+            },
+            occurred_at_us=at_us,
+            schema_version=1,
+        )
+        _record_event_on_job(
+            writer,
+            job,
+            status,
+            sequence=sequence,
+            now_us=at_us,
+            lease_duration_us=lease_duration_us,
+        )
+    closed = chat.read_direction(connection, workspace_id=workspace_id, direction_id=direction_id)
+    if closed is None:  # pragma: no cover - the transaction above just committed it
+        raise GenerationNotFound(f"direction {direction_id!r} did not settle")
+    return closed
 
 
 # --- replay --------------------------------------------------------------------------

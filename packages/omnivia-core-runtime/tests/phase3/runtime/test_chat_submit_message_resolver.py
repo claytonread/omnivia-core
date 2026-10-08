@@ -1466,7 +1466,7 @@ def test_submit_runs_provider_and_materialises_assistant_message(
         requests.append(request)
         common = {
             "invocationId": request.invocation_id,
-            "attemptId": request.attempt_id,
+            "attemptId": f"{request.invocation_id}.transport-1",
             "schemaVersion": 1,
             "occurredAt": "2052-05-23T00:00:01Z",
             "receivedAt": "2052-05-23T00:00:01Z",
@@ -1878,7 +1878,8 @@ def _run_executor(
 def _stream(request: Any, deltas: tuple[str, ...], *, finish: bool = True) -> Iterator[Any]:
     common = {
         "invocationId": request.invocation_id,
-        "attemptId": request.attempt_id,
+        # The provider's transport Attempt, never the Chat Generation Attempt the request names.
+        "attemptId": f"{request.invocation_id}.transport-1",
         "schemaVersion": 1,
         "occurredAt": "2052-05-23T00:00:01Z",
         "receivedAt": "2052-05-23T00:00:01Z",
@@ -1910,7 +1911,7 @@ def test_a_non_contiguous_provider_ordinal_fails_the_generation(
     def provider(request: Any) -> Iterator[Any]:
         common = {
             "invocationId": request.invocation_id,
-            "attemptId": request.attempt_id,
+            "attemptId": f"{request.invocation_id}.transport-1",
             "schemaVersion": 1,
             "occurredAt": "2052-05-23T00:00:01Z",
             "receivedAt": "2052-05-23T00:00:01Z",
@@ -2130,7 +2131,7 @@ def test_a_quiet_stream_renews_its_lease_rather_than_letting_it_lapse(
     def provider(request: Any) -> Iterator[Any]:
         common = {
             "invocationId": request.invocation_id,
-            "attemptId": request.attempt_id,
+            "attemptId": f"{request.invocation_id}.transport-1",
             "schemaVersion": 1,
             "occurredAt": "2052-05-23T00:00:01Z",
             "receivedAt": "2052-05-23T00:00:01Z",
@@ -2315,7 +2316,7 @@ def test_the_default_executor_uses_an_explicit_local_provider_route(
             request = json.loads(self.body.decode("utf-8"))
             common = {
                 "invocationId": request["invocationId"],
-                "attemptId": request["attemptId"],
+                "attemptId": f"{request['invocationId']}.transport-1",
                 "schemaVersion": 1,
                 "occurredAt": "2052-05-23T00:00:01Z",
                 "receivedAt": "2052-05-23T00:00:01Z",

@@ -251,7 +251,8 @@ def _executor(
 def _stream(request: Any) -> Iterator[Mapping[str, Any]]:
     common = {
         "invocationId": request.invocation_id,
-        "attemptId": request.attempt_id,
+        # The provider's transport Attempt, never the Chat Generation Attempt the request names.
+        "attemptId": f"{request.invocation_id}.transport-1",
         "schemaVersion": 1,
         "occurredAt": "2055-01-01T00:00:01Z",
         "receivedAt": "2055-01-01T00:00:01Z",
