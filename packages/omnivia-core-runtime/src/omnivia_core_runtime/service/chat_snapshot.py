@@ -61,7 +61,11 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
 )
-from omnivia_core.contracts.v1.generated import ChatSnapshotInput, ChatSnapshotResult
+from omnivia_core.contracts.v1.generated import (
+    ChatDraftReadInput,
+    ChatSnapshotInput,
+    ChatSnapshotResult,
+)
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
 from omnivia_core_runtime.storage.chat import (
     ActiveQueueEntry,
@@ -72,9 +76,10 @@ from omnivia_core_runtime.storage.chat import (
     MessagePart,
     ViewState,
     read_conversation_snapshot_inputs,
+    read_draft_by_id,
 )
 
-__all__ = ["resolve_chat_snapshot"]
+__all__ = ["resolve_chat_snapshot", "resolve_chat_draft"]
 
 #: `common.schema.json#/$defs/WorkspaceScopedId`, the grammar every identifier in this
 #: query is spelled in. The same pattern `service/chat_submit.py` holds a command's
@@ -427,3 +432,101 @@ def resolve_chat_snapshot(
         conversation_id=query.conversation_id,
         snapshot=snapshot,
     ).to_wire()
+
+
+# ---------------------------------------------------------------------------
+# C5A slice 2: the draft read-back (`chat.draft`)
+# ---------------------------------------------------------------------------
+
+_DRAFT_QUERY_FIELDS: Final = frozenset(
+    {"actorId", "conversationId", "draftId", "requestId", "workspaceId"}
+)
+
+
+def _decode_draft_query(
+    query: Mapping[str, Any], request: ChatDraftReadInput, context: OperationContext
+) -> tuple[str, str]:
+    """Decode one `ComposerDraftQuery`, or refuse it as an invalid request.
+
+    Strict in both directions, exactly like the snapshot query's decode: a field
+    the frozen query does not define is refused, and a required field that is
+    absent, wrongly typed or not an identifier is refused the same way. The four
+    the envelope already decided must then *agree* with it, and the envelope's
+    own `draft_id` must name the same draft the query does -- one identifier
+    stated twice, like the snapshot's requestId, is one agreement, not two.
+    """
+    unknown = sorted(set(query) - _DRAFT_QUERY_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this query")
+    for field in _DRAFT_QUERY_FIELDS:
+        if field not in query:
+            raise _invalid(field, "is required")
+        _identifier(query, field)
+    if query["workspaceId"] != context.workspace_id:
+        raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+    if query["draftId"] != request.draft_id:
+        raise _invalid("draftId", "is not the draft this request addresses")
+    if query["actorId"] != context.principal:
+        raise _invalid("actorId", "is not the principal this request was authenticated as")
+    if query["requestId"] != context.request.metadata.request_id:
+        raise _invalid("requestId", "is not the identifier of this request")
+    return context.principal, str(query["draftId"])
+
+
+def _composer_draft(draft: Draft) -> Mapping[str, Any]:
+    """One draft row, as the Chat Contract's own `ComposerDraft` document."""
+    return {
+        "workspaceId": draft.workspace_id,
+        "conversationId": draft.conversation_id,
+        "actorId": draft.actor_id,
+        "draftId": draft.draft_id,
+        "mode": draft.mode,
+        "schemaVersion": draft.schema_version,
+        "text": draft.text_content,
+        "attachmentReferences": [],
+        "contextReferences": [],
+        "version": draft.version,
+        "updatedAt": datetime.fromtimestamp(
+            draft.updated_at_us / 1_000_000, tz=UTC
+        ).isoformat(),
+    }
+
+
+def resolve_chat_draft(
+    connection: sqlite3.Connection,
+    request: ChatDraftReadInput,
+    context: OperationContext,
+    *,
+    now_us: int,
+) -> Mapping[str, Any]:
+    """One `chat.draft` request, as the `ChatDraftReadResult` wire mapping.
+
+    Reads the draft the query's own `draftId` names -- the row's primary key
+    within the workspace -- and answers `found` only when the row is THIS
+    actor's active draft of the conversation the query names: a row that names
+    another actor or conversation reads back as absent rather than disclosing
+    someone else's composition, and an expired one reads back as gone because
+    the expiry is the discard's mechanism (0029 forbids DELETE outright).
+
+    Raises `invalid_request` for a query document this contract does not admit
+    or that disagrees with the envelope it arrived in.
+    """
+    actor_id, draft_id = _decode_draft_query(request.draft_query, request, context)
+    draft = read_draft_by_id(
+        connection, workspace_id=context.workspace_id, draft_id=draft_id
+    )
+    if draft is not None:
+        if (
+            draft.actor_id != actor_id
+            or draft.conversation_id != request.draft_query["conversationId"]
+            or (draft.expires_at_us is not None and draft.expires_at_us <= now_us)
+        ):
+            # Absent, rather than disclosing: a row that names another actor or
+            # conversation reads back as not found, and an expired one reads
+            # back as gone because the expiry is the discard's mechanism.
+            draft = None
+    result: dict[str, Any] = {"found": draft is not None}
+    if draft is not None:
+        result["draft"] = _composer_draft(draft)
+    return {"conversation_id": request.draft_query["conversationId"], "draft_result": result}
+

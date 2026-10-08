@@ -249,6 +249,7 @@ def _dispatcher(
     *,
     resolve_command: object = _UNSET,
     execute_generation: object = _UNSET,
+    wall: int | None = None,
 ) -> Any:
     fields: dict[str, Any] = {
         "service": holder,
@@ -256,7 +257,9 @@ def _dispatcher(
         "installation_id": INSTALLATION_ID,
         "workspace_id": WORKSPACE_ID,
         "fallback": _fallback(),
-        "clock": FakeClock(wall=WALL),
+        "clock": FakeClock(
+            wall=WALL if wall is None else datetime.fromtimestamp(wall / 1_000_000, tz=UTC)
+        ),
         "execute_generation": (
             (lambda **_fields: None)
             if execute_generation is _UNSET
@@ -3169,3 +3172,515 @@ def test_the_widened_schema_still_refuses_what_it_always_refused() -> None:
         }
         assert _schema_errors(_SUBMIT_MESSAGE_REF, document) != [], dropped
     assert _schema_errors(_SUBMIT_MESSAGE_REF, _first_send_command(title="nope")) != []
+
+
+# ---------------------------------------------------------------------------
+# C5A: durable draft commands. The draft is unsent composition state
+# (REF-042 §7.8) -- never a node of the committed graph -- and 0029 forbids
+# DELETE on the drafts table outright, so a discard is the row's own expiry.
+# ---------------------------------------------------------------------------
+
+
+def _save_draft_command(
+    *,
+    command_id: str = "cmd-c5a-save",
+    conversation_id: str = CONVERSATION_ID,
+    actor_id: str = PRINCIPAL,
+    draft_id: str | None = None,
+    mode: str = "normal",
+    source_message_id: str | None = None,
+    text: str = "a draft the actor composed",
+    expected_version: int | None = None,
+    attachment_references: tuple[Mapping[str, Any], ...] = (),
+    context_references: tuple[Mapping[str, Any], ...] = (),
+    target_reference: Mapping[str, Any] | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    command: dict[str, Any] = {
+        "protocolVersion": "1.0",
+        "commandId": command_id,
+        "workspaceId": WORKSPACE_ID,
+        "conversationId": conversation_id,
+        "actorId": actor_id,
+        "mode": mode,
+        "text": text,
+        "attachmentReferences": list(attachment_references),
+        "contextReferences": list(context_references),
+    }
+    if draft_id is not None:
+        command["draftId"] = draft_id
+    if source_message_id is not None:
+        command["sourceMessageId"] = source_message_id
+    if expected_version is not None:
+        command["expectedVersion"] = expected_version
+    if target_reference is not None:
+        command["targetReference"] = target_reference
+    command.update(extra)
+    return command
+
+
+def _discard_draft_command(
+    *,
+    command_id: str = "cmd-c5a-discard",
+    conversation_id: str = CONVERSATION_ID,
+    actor_id: str = PRINCIPAL,
+    draft_id: str = "draft-c5a-1",
+    **extra: Any,
+) -> dict[str, Any]:
+    command: dict[str, Any] = {
+        "protocolVersion": "1.0",
+        "commandId": command_id,
+        "workspaceId": WORKSPACE_ID,
+        "conversationId": conversation_id,
+        "actorId": actor_id,
+        "draftId": draft_id,
+    }
+    command.update(extra)
+    return command
+
+
+def test_save_draft_inserts_and_returns_the_draft_reference(
+    seeded: m1.Owned,
+) -> None:
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-1"),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-save-1",
+            request_id="req-c5a-save-1",
+        )
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    assert response.result["command_name"] == "SaveDraft"
+    assert response.result["command_result"]["status"] == "completed"
+    assert (
+        response.result["command_result"]["resultRef"]
+        == "chat-draft:draft-c5a-1"
+    )
+
+    draft = chat.read_active_draft(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=PRINCIPAL,
+        now_us=BASE_US + 2_000_000,
+    )
+    assert draft is not None
+    assert draft.draft_id == "draft-c5a-1"
+    assert draft.text_content == "a draft the actor composed"
+    assert draft.mode == "normal"
+    assert draft.version == 1
+    assert draft.expires_at_us is None
+
+
+def test_save_draft_over_an_existing_row_cas_updates_and_a_stale_version_conflicts(
+    seeded: m1.Owned,
+) -> None:
+    _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-2", text="first"),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-save-2a",
+            request_id="req-c5a-save-2a",
+        )
+    )
+
+    # The CURRENT version CASes: the row advances, and the same request replayed
+    # under the same idempotency key answers from the stored outcome.
+    replay = _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-2", text="first"),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-save-2a",
+            request_id="req-c5a-save-2a-replay",
+        )
+    )
+    assert isinstance(replay, SuccessResponseEnvelope), replay
+    draft = chat.read_active_draft(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=PRINCIPAL,
+        now_us=BASE_US + 2_000_000,
+    )
+    assert draft is not None
+    assert draft.version == 1
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-2", text="second", expected_version=1),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-save-2b",
+            request_id="req-c5a-save-2b",
+        )
+    )
+    assert isinstance(response, SuccessResponseEnvelope), response
+    draft = chat.read_active_draft(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=PRINCIPAL,
+        now_us=BASE_US + 2_000_000,
+    )
+    assert draft is not None
+    assert draft.version == 2
+    assert draft.text_content == "second"
+
+    # The STALE version conflicts, and the newer draft survives untouched.
+    before = _counts(seeded)
+    stale = _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-2", text="stale", expected_version=1),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-save-2c",
+            request_id="req-c5a-save-2c",
+        )
+    )
+    assert isinstance(stale, ErrorResponseEnvelope), stale
+    assert stale.error.code == "conflict"
+    assert _counts(seeded) == before
+    draft = chat.read_active_draft(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=PRINCIPAL,
+        now_us=BASE_US + 2_000_000,
+    )
+    assert draft is not None
+    assert draft.text_content == "second"
+
+
+def test_save_draft_over_an_existing_row_without_the_version_conflicts(
+    seeded: m1.Owned,
+) -> None:
+    _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-3", text="first"),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-save-3a",
+            request_id="req-c5a-save-3a",
+        )
+    )
+    before = _counts(seeded)
+
+    # An overwrite that states no version at all is refused rather than
+    # silently clobbering whatever the actor last composed.
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-3", text="clobber"),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-save-3b",
+            request_id="req-c5a-save-3b",
+        )
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(seeded) == before
+    draft = chat.read_active_draft(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=PRINCIPAL,
+        now_us=BASE_US + 2_000_000,
+    )
+    assert draft is not None
+    assert draft.text_content == "first"
+
+
+def test_save_draft_with_non_empty_references_is_unimplemented_without_writes(
+    seeded: m1.Owned,
+) -> None:
+    before = _counts(seeded)
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(
+                draft_id="draft-c5a-4",
+                attachment_references=(
+                    {"referenceId": "ref-1", "sourceRevision": "1"},
+                ),
+            ),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-save-4",
+            request_id="req-c5a-save-4",
+        )
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "dependency_unavailable"
+    assert _counts(seeded) == before, "the unimplemented shape wrote nothing"
+
+
+def test_discard_draft_expires_the_row_and_replays_completed(
+    seeded: m1.Owned,
+) -> None:
+    _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-5"),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-save-5",
+            request_id="req-c5a-save-5",
+        )
+    )
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _discard_draft_command(command_id="cmd-c5a-discard-5", draft_id="draft-c5a-5"),
+            command_name="DiscardDraft",
+            idempotency_key="idem-c5a-discard-5",
+            request_id="req-c5a-discard-5",
+        )
+    )
+    assert isinstance(response, SuccessResponseEnvelope), response
+    assert response.result["command_result"]["status"] == "completed"
+
+    # The schema forbids DELETE: a discarded draft is the row's own expiry, and
+    # the active read reports it as gone from the settlement instant on.
+    assert (
+        chat.read_active_draft(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            conversation_id=CONVERSATION_ID,
+            actor_id=PRINCIPAL,
+            now_us=BASE_US + 2_000_000,
+        )
+        is None
+    )
+    # The row itself survives (no DELETE has ever run): the expiry is the state.
+    expired = chat.read_draft_by_id(
+        seeded.connection, workspace_id=WORKSPACE_ID, draft_id="draft-c5a-5"
+    )
+    assert expired is not None
+    assert expired.text_content == "a draft the actor composed"
+
+    # The replay of the SAME discard is the same completed answer.
+    replay = _dispatcher(seeded).dispatch(
+        _request(
+            _discard_draft_command(command_id="cmd-c5a-discard-5", draft_id="draft-c5a-5"),
+            command_name="DiscardDraft",
+            idempotency_key="idem-c5a-discard-5",
+            request_id="req-c5a-discard-5-replay",
+        )
+    )
+    assert isinstance(replay, SuccessResponseEnvelope), replay
+
+
+def test_discard_of_a_foreign_draft_id_is_the_completed_goal_state(
+    seeded: m1.Owned,
+) -> None:
+    _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-6"),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-save-6",
+            request_id="req-c5a-save-6",
+        )
+    )
+    before = _counts(seeded)
+    # A discard naming a draft id this actor does not hold: the GOAL STATE (no
+    # such active draft) already holds, so the command completes idempotently
+    # and touches nothing -- the actor's own draft survives untouched.
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _discard_draft_command(command_id="cmd-c5a-discard-6", draft_id="draft-someone-else"),
+            command_name="DiscardDraft",
+            idempotency_key="idem-c5a-discard-6",
+            request_id="req-c5a-discard-6",
+        )
+    )
+    assert isinstance(response, SuccessResponseEnvelope), response
+    assert response.result["command_result"]["status"] == "completed"
+    # The command's own audit rows are its only writes: no chat table moved.
+    after = _counts(seeded)
+    assert after["omnivia_chat_drafts"] == before["omnivia_chat_drafts"]
+    draft = chat.read_active_draft(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=PRINCIPAL,
+        now_us=BASE_US + 2_000_000,
+    )
+    assert draft is not None
+    assert draft.text_content == "a draft the actor composed"
+
+
+def test_save_draft_of_the_edit_mode_requires_an_existing_source_message(
+    seeded: m1.Owned,
+) -> None:
+    # An edit/reuse draft names the message it edits or reuses, and 0029's own
+    # foreign key refuses one that does not exist: the command reads and
+    # conflicts before any write, exactly like every other aggregate check.
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(
+                draft_id="draft-c5a-7",
+                mode="edit_message",
+                source_message_id="msg-does-not-exist",
+                text="editing nothing",
+            ),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-save-7",
+            request_id="req-c5a-save-7",
+        )
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+
+    exists = _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(
+                draft_id="draft-c5a-8",
+                mode="edit_message",
+                source_message_id=ROOT_MESSAGE_ID,
+                text="editing the root",
+            ),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-save-8",
+            request_id="req-c5a-save-8",
+        )
+    )
+    assert isinstance(exists, SuccessResponseEnvelope), exists
+    draft = chat.read_active_draft(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=PRINCIPAL,
+        now_us=BASE_US + 2_000_000,
+        mode="edit_message",
+    )
+    assert draft is not None
+    assert draft.source_message_id == ROOT_MESSAGE_ID
+
+
+DRAFT_OPERATION = "chat.draft"
+DRAFT_ENTRY = get_operation_metadata(DRAFT_OPERATION)
+
+
+def _draft_read_request(
+    *,
+    draft_id: str = "draft-c5a-read",
+    conversation_id: str = CONVERSATION_ID,
+    actor_id: str = PRINCIPAL,
+    request_id: str = "req-c5a-draft-read",
+    **query_extra: Any,
+) -> RequestEnvelope:
+    query = {
+        "requestId": request_id,
+        "workspaceId": WORKSPACE_ID,
+        "conversationId": conversation_id,
+        "actorId": actor_id,
+        "draftId": draft_id,
+    }
+    query.update(query_extra)
+    operation_input = {
+        "draft_id": draft_id,
+        "draft_query": query,
+    }
+    return s0.envelope_for(
+        DRAFT_ENTRY,
+        operation_input=operation_input,
+        request_id=request_id,
+        correlation_id=f"cor-{request_id}",
+        trace_id=f"trc-{request_id}",
+        purpose=CHAT_FAMILY_PURPOSES[DRAFT_OPERATION],
+        workspace_id=WORKSPACE_ID,
+    )
+
+
+def test_chat_draft_read_back_returns_the_saved_composer_draft(
+    seeded: m1.Owned,
+) -> None:
+    _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-read"),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-read-save",
+            request_id="req-c5a-read-save",
+        )
+    )
+
+    response = _dispatcher(seeded).dispatch(
+        _draft_read_request(draft_id="draft-c5a-read", request_id="req-c5a-draft-read")
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    assert response.result["conversation_id"] == CONVERSATION_ID
+    draft_result = response.result["draft_result"]
+    assert draft_result["found"] is True
+    assert draft_result["draft"]["draftId"] == "draft-c5a-read"
+    assert draft_result["draft"]["text"] == "a draft the actor composed"
+    assert draft_result["draft"]["attachmentReferences"] == []
+    assert draft_result["draft"]["contextReferences"] == []
+
+
+def test_chat_draft_read_back_after_the_discard_reads_not_found(
+    seeded: m1.Owned,
+) -> None:
+    _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-gone"),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-gone-save",
+            request_id="req-c5a-gone-save",
+        )
+    )
+    _dispatcher(seeded).dispatch(
+        _request(
+            _discard_draft_command(command_id="cmd-c5a-gone-discard", draft_id="draft-c5a-gone"),
+            command_name="DiscardDraft",
+            idempotency_key="idem-c5a-gone-discard",
+            request_id="req-c5a-gone-discard",
+        )
+    )
+
+    # The read's clock is the service's own, advanced past the discard's
+    # settlement: the expiry written by the discard has passed, and the read
+    # reports the draft gone.
+    response = _dispatcher(seeded, wall=BASE_US + 2_000_000).dispatch(
+        _draft_read_request(draft_id="draft-c5a-gone", request_id="req-c5a-gone-read")
+    )
+
+    draft_result = response.result["draft_result"]
+    assert draft_result["found"] is False
+    assert "draft" not in draft_result
+
+
+def test_chat_draft_read_back_of_another_actors_query_refuses(
+    seeded: m1.Owned,
+) -> None:
+    # The query names ANOTHER actor: the frozen query must name the principal
+    # the request was authenticated as, so this is refused (invalid_request),
+    # the same rule the snapshot query's decode applies -- the read-back never
+    # discloses anyone else's composition either way.
+    _dispatcher(seeded).dispatch(
+        _request(
+            _save_draft_command(draft_id="draft-c5a-mine"),
+            command_name="SaveDraft",
+            idempotency_key="idem-c5a-mine-save",
+            request_id="req-c5a-mine-save",
+        )
+    )
+
+    response = _dispatcher(seeded).dispatch(
+        _draft_read_request(
+            draft_id="draft-c5a-mine",
+            actor_id="actor-someone-else",
+            request_id="req-c5a-foreign-read",
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "invalid_request"
+
+
+def test_chat_draft_read_back_refuses_a_malformed_query(
+    seeded: m1.Owned,
+) -> None:
+    response = _dispatcher(seeded).dispatch(
+        _draft_read_request(
+            draft_id="draft-c5a-mine",
+            request_id="req-c5a-bad-read",
+            surprise="no",
+        )
+    )
+    # A field the frozen query does not define: refused, never guessed.
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "invalid_request"

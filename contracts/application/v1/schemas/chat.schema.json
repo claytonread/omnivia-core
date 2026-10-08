@@ -222,6 +222,46 @@
         "snapshot"
       ],
       "unevaluatedProperties": false
+    },
+    "ChatDraftReadInput": {
+      "title": "ChatDraftReadInput",
+      "description": "Input for `chat.draft`: reads back the saved ComposerDraft the request names, the answer a caller takes after a reconnect when its own composition state is gone. `draft_query` is the Chat Contract v1 `ComposerDraftQuery` document, carried verbatim and opaque to this envelope, for the same reason `chat.command` carries its command and `chat.snapshot` carries its query that way -- Chat's draft shape is already frozen in `contracts/chat/v1`, and restating it here would create a second, drifting copy. `draft_id` is the addressed draft stated natively, so authorization and audit read one identifier rather than parsing a document this boundary does not validate. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier.",
+      "type": "object",
+      "properties": {
+        "draft_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of the draft to read back. Must be the draft `draft_query` names."
+        },
+        "draft_query": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The Chat Contract v1 `ComposerDraftQuery` document, carried verbatim."
+        }
+      },
+      "required": [
+        "draft_id",
+        "draft_query"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ChatDraftReadResult": {
+      "title": "ChatDraftReadResult",
+      "description": "Result of `chat.draft`: the Chat Contract v1 `ComposerDraftResult` document the query produced -- `found` and, when found, the actor's saved ComposerDraft -- carried opaquely for the same reason the request is, and echoed with the conversation it answers. A read-back is a point-in-time observation of the draft store, not a continuation, so there is no cursor to honour.",
+      "type": "object",
+      "properties": {
+        "conversation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of the conversation this read-back answers. Echoes the request."
+        },
+        "draft_result": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The Chat Contract v1 `ComposerDraftResult` document, carried verbatim."
+        }
+      },
+      "required": [
+        "conversation_id",
+        "draft_result"
+      ],
+      "unevaluatedProperties": false
     }
   }
 }
