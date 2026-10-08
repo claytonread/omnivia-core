@@ -49,6 +49,7 @@ where the optimistic token a later `SubmitMessage` must state actually lives.
 
 from __future__ import annotations
 
+import copy
 import re
 import sqlite3
 from collections.abc import Mapping
@@ -56,7 +57,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
 
+from omnivia_core.chat_contract.v1 import ChatContractDecodeError
+from omnivia_core.chat_contract.v1.codec import validate_direction
 from omnivia_core.contracts.v1 import (
+    ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
@@ -73,13 +77,21 @@ from omnivia_core_runtime.storage.chat import (
     Branch,
     Conversation,
     ConversationSnapshotInputs,
+    Direction,
     Draft,
+    GenerationJob,
+    GenerationJobStatusProjection,
     Message,
     MessagePart,
     ViewState,
+    read_actor_directions_for_branch,
+    read_branch_generation_job_ids,
     read_conversation_snapshot_inputs,
     read_draft,
+    read_generation_job,
+    read_generation_job_status_projection,
 )
+from omnivia_core_runtime.storage.connection import StorageError
 
 __all__ = ["composer_draft", "resolve_chat_snapshot", "resolve_draft_readback"]
 
@@ -109,6 +121,32 @@ _MESSAGE_JOB_OVERFLOW: Final = (
     "the branch's generation jobs exceed the bounded snapshot maximum and cannot be "
     "answered completely"
 )
+_MESSAGE_DIRECTION_OVERFLOW: Final = (
+    "the actor's directions exceed the bounded snapshot maximum and cannot be "
+    "answered completely"
+)
+#: Every projection defect -- a missing or disagreeing job row, an orphan Direction,
+#: tampered stored content or a document the frozen contract rejects -- is this one
+#: sentence: it names no identifier, content, digest, SQL or exception.
+_MESSAGE_INTERNAL: Final = (
+    "the conversation snapshot could not be projected from consistent durable state"
+)
+
+#: `queries.schema.json#/$defs/ConversationSnapshotResult.generationJobs` and
+#: `.directions`' governed maximum. One row past it is read so a complete set can be
+#: told apart from one the bound cannot represent.
+_SNAPSHOT_LIMIT: Final = 200
+
+#: The stored job-status vocabulary is 0030's; the public one has no `retryable`,
+#: which is a job still failed from the caller's point of view.
+_PUBLIC_JOB_STATE: Final = {
+    "queued": "queued",
+    "running": "running",
+    "retryable": "failed",
+    "succeeded": "succeeded",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
 
 
 def _invalid(field: str, rule: str) -> OperationError:
@@ -263,7 +301,10 @@ def _conversation(conversation: Conversation) -> Mapping[str, Any]:
 
 
 def _path(
-    inputs: ConversationSnapshotInputs, branch: Branch, view_state: ViewState
+    inputs: ConversationSnapshotInputs,
+    branch: Branch,
+    view_state: ViewState,
+    job_ids: list[str],
 ) -> Mapping[str, Any]:
     """The branch path as `BranchPathResult`, at the conversation's own revision.
 
@@ -271,11 +312,14 @@ def _path(
     position is a graph fact this read does not load, and an empty map would state
     that no message on this path diverges.
 
-    `generationJobIds` is the branch's complete durable job projection, not merely
-    the ids the path's result Messages happen to name: a job opened by the
-    `SubmitMessage` that committed the head user Message is durable and answerable
-    before any assistant Message references it, and a caller proving a candidate job
-    against this list has to be able to see it there.
+    `generationJobIds` is the selected branch's complete durable job set -- exactly
+    the jobs `generationJobs` states, not merely the ids the path's result Messages
+    happen to name: a job opened by the `SubmitMessage` that committed the head user
+    Message is durable and answerable before any assistant Message references it,
+    and a caller proving a candidate job against this list has to be able to see it
+    there. It is deliberately not the aggregate reader's union with the path's own
+    references: an ancestor Message carried over from a forked-from branch names a
+    job the selected branch does not own.
     """
     return {
         "workspaceId": branch.workspace_id,
@@ -287,7 +331,7 @@ def _path(
             _message(message, inputs.parts_by_message_id.get(message.message_id, ()))
             for message in inputs.path
         ],
-        "generationJobIds": list(inputs.generation_job_ids),
+        "generationJobIds": job_ids,
         "viewStateVersion": view_state.version,
     }
 
@@ -413,18 +457,227 @@ def composer_draft(draft: Draft) -> Mapping[str, Any]:
     return document
 
 
-def resolve_chat_snapshot(
-    connection: sqlite3.Connection,
-    request: ChatSnapshotInput,
-    context: OperationContext,
-) -> Mapping[str, Any]:
-    """One `chat.snapshot` request, as the `ChatSnapshotResult` wire mapping.
+def _internal() -> OperationError:
+    return OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_INTERNAL)
 
-    Raises `invalid_request` for a query document this contract does not admit or
-    that disagrees with the envelope it arrived in, and `not_found` where the
-    workspace holds no complete snapshot to answer with.
+
+def _succeeded_consistently(job: GenerationJob, status: GenerationJobStatusProjection) -> bool:
+    """Whether a `succeeded` projection is one the foundation row can stand behind.
+
+    Two legitimate histories exist. A first-attempt success leaves the 0029 row
+    `succeeded` naming the same result Message. A success after `RetryGeneration`
+    leaves it frozen `failed` from the earlier attempt with no result -- 0029 never
+    reopens a terminal job -- while the 0030 projection advanced through running to
+    succeeded. Attempt identity must back the history: a first-attempt success names
+    one attempt on both rows, a retry success names a later attempt than the frozen
+    failed one. Any other combination is a defect.
     """
-    query = _decode(request.snapshot_query, request, context)
+    if status.current_attempt_id is None or job.current_attempt_id is None:
+        return False
+    if job.state == "succeeded":
+        return (
+            status.result_message_id is not None
+            and job.result_message_id == status.result_message_id
+            and job.current_attempt_id == status.current_attempt_id
+        )
+    return (
+        job.state == "failed"
+        and job.result_message_id is None
+        and status.result_message_id is not None
+        and job.current_attempt_id != status.current_attempt_id
+    )
+
+
+def _generation_job(
+    job: GenerationJob | None,
+    status: GenerationJobStatusProjection | None,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    branch_id: str,
+    job_id: str,
+) -> Mapping[str, Any]:
+    """One `GenerationJob`: the foundation row joined to its 0030 status projection.
+
+    `version` is the status projection's real control token, never inferred. Both
+    rows must exist and describe this one job on the selected branch; anything else is
+    an authority defect, not something to paper over. The projection's internal
+    `retryable` is a failed job to a caller. The projection is the live authority for
+    state, result, attempt and version; the foundation row is only frozen history
+    (see `_succeeded_consistently`).
+    """
+    if job is None or status is None:
+        raise _internal()
+    if (
+        (job.workspace_id, job.conversation_id, job.branch_id, job.generation_job_id)
+        != (workspace_id, conversation_id, branch_id, job_id)
+        or (status.workspace_id, status.conversation_id, status.generation_job_id)
+        != (workspace_id, conversation_id, job_id)
+        or status.state not in _PUBLIC_JOB_STATE
+        or (status.state == "succeeded" and not _succeeded_consistently(job, status))
+    ):
+        raise _internal()
+    document: dict[str, Any] = {
+        "workspaceId": job.workspace_id,
+        "conversationId": job.conversation_id,
+        "branchId": job.branch_id,
+        "triggerMessageId": job.trigger_message_id,
+        "jobId": job.generation_job_id,
+        "state": _PUBLIC_JOB_STATE[status.state],
+        "graphRevisionObserved": job.graph_revision_observed,
+        "version": status.version,
+        "schemaVersion": job.schema_version,
+        "createdAt": _timestamp(job.created_at_us),
+        "updatedAt": _timestamp(status.updated_at_us),
+    }
+    _optional(document, "currentAttemptId", status.current_attempt_id)
+    if status.state == "succeeded":
+        _optional(document, "resultMessageId", status.result_message_id)
+    return document
+
+
+def _direction(direction: Direction) -> Mapping[str, Any]:
+    """One `Direction`, shaped by its state from the durable evidence it holds.
+
+    A terminal row's single `terminal_at_us` is the one instant every state-specific
+    member is stamped with (`appliedAt`, `supersededAt`, `terminalReason.occurredAt`):
+    0069 stores no second one. The stored digest is `sha256:<hex>` and the public
+    `contentHash` is the same bare hex; `validate_direction` then re-proves it against
+    the canonical content, along with the frozen shape of the document.
+    """
+    parts = direction.content.get("editableParts")
+    if not isinstance(parts, list) or not direction.content_digest.startswith(
+        _STORED_DIGEST_PREFIX
+    ):
+        raise _internal()
+    document: dict[str, Any] = {
+        "workspaceId": direction.workspace_id,
+        "conversationId": direction.conversation_id,
+        "branchId": direction.branch_id,
+        "actorId": direction.actor_id,
+        "directionId": direction.direction_id,
+        "jobId": direction.generation_job_id,
+        "targetAttemptId": direction.target_attempt_id,
+        "jobSequence": direction.direction_sequence,
+        "state": direction.state,
+        "version": direction.version,
+        "editableParts": copy.deepcopy(parts),
+        "contentHash": _digest(direction.content_digest),
+        "requestedBoundary": direction.requested_boundary,
+        "schemaVersion": direction.schema_version,
+        "createdAt": _timestamp(direction.created_at_us),
+        "updatedAt": _timestamp(direction.updated_at_us),
+    }
+    _optional(document, "supersedesDirectionId", direction.supersedes_direction_id)
+    if direction.state == "applied":
+        if None in (
+            direction.terminal_at_us,
+            direction.applied_attempt_id,
+            direction.applied_provider_invocation_id,
+            direction.applied_request_manifest_id,
+            direction.applied_iteration,
+        ):
+            raise _internal()
+        document["effectiveBoundary"] = direction.effective_boundary
+        document["application"] = {
+            "attemptId": direction.applied_attempt_id,
+            "providerInvocationId": direction.applied_provider_invocation_id,
+            "requestManifestId": direction.applied_request_manifest_id,
+            "iteration": direction.applied_iteration,
+            "appliedAt": _timestamp(direction.terminal_at_us),  # type: ignore[arg-type]
+        }
+    elif direction.state in ("superseded", "rejected", "cancelled"):
+        stored = direction.terminal_reason
+        if stored is None or direction.terminal_at_us is None or not set(stored) <= {
+            "code",
+            "safeMessage",
+        }:
+            raise _internal()
+        occurred_at = _timestamp(direction.terminal_at_us)
+        reason: dict[str, Any] = {"code": stored.get("code"), "occurredAt": occurred_at}
+        _optional(reason, "safeMessage", stored.get("safeMessage"))
+        document["terminalReason"] = reason
+        if direction.state == "superseded":
+            document["supersession"] = {
+                "supersededByDirectionId": direction.superseded_by_direction_id,
+                "supersededAt": occurred_at,
+            }
+    elif direction.state != "pending":
+        raise _internal()
+    validate_direction(document)
+    return document
+
+
+def _generation_jobs(
+    connection: sqlite3.Connection, query: _SnapshotQuery, branch: Branch
+) -> list[tuple[int, Mapping[str, Any]]]:
+    """Every job the selected branch owns, or the whole snapshot refused.
+
+    Read in the caller's transaction. Returned as `(createdAt-millisecond, document)`
+    in the contract's order -- public `createdAt`, then `jobId` -- so the caller can
+    state the same set, in the same order, as `path.generationJobIds`.
+    """
+    job_ids = read_branch_generation_job_ids(
+        connection,
+        workspace_id=query.workspace_id,
+        conversation_id=query.conversation_id,
+        branch_id=branch.branch_id,
+        limit=_SNAPSHOT_LIMIT + 1,
+    )
+    if len(job_ids) > _SNAPSHOT_LIMIT:
+        raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_JOB_OVERFLOW)
+    jobs: list[tuple[int, Mapping[str, Any]]] = []
+    for job_id in job_ids:
+        job = read_generation_job(
+            connection, workspace_id=query.workspace_id, generation_job_id=job_id
+        )
+        status = read_generation_job_status_projection(
+            connection, workspace_id=query.workspace_id, generation_job_id=job_id
+        )
+        document = _generation_job(
+            job,
+            status,
+            workspace_id=query.workspace_id,
+            conversation_id=query.conversation_id,
+            branch_id=branch.branch_id,
+            job_id=job_id,
+        )
+        jobs.append((job.created_at_us // 1000, document))  # type: ignore[union-attr]
+    jobs.sort(key=lambda entry: (entry[0], entry[1]["jobId"]))
+    return jobs
+
+
+def _directions(
+    connection: sqlite3.Connection,
+    query: _SnapshotQuery,
+    branch: Branch,
+    job_ids: frozenset[str],
+) -> list[Mapping[str, Any]]:
+    """The authenticated actor's own Directions on the selected branch, in every state."""
+    rows = read_actor_directions_for_branch(
+        connection,
+        workspace_id=query.workspace_id,
+        conversation_id=query.conversation_id,
+        branch_id=branch.branch_id,
+        actor_id=query.actor_id,
+    )
+    if len(rows) > _SNAPSHOT_LIMIT:
+        raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_DIRECTION_OVERFLOW)
+    for row in rows:
+        if (
+            (row.workspace_id, row.conversation_id, row.branch_id, row.actor_id)
+            != (query.workspace_id, query.conversation_id, branch.branch_id, query.actor_id)
+            or row.generation_job_id not in job_ids
+        ):
+            raise _internal()
+    ordered = sorted(
+        rows, key=lambda row: (row.generation_job_id, row.direction_sequence, row.direction_id)
+    )
+    return [_direction(row) for row in ordered]
+
+
+def _read_snapshot(connection: sqlite3.Connection, query: _SnapshotQuery) -> dict[str, Any]:
+    """Every read one snapshot is composed from, inside the caller's transaction."""
     inputs = read_conversation_snapshot_inputs(
         connection,
         workspace_id=query.workspace_id,
@@ -450,11 +703,22 @@ def resolve_chat_snapshot(
         # relying on it for durable order; fail closed rather than silently
         # answering fewer rows than the actor actually has queued.
         raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_QUEUE_OVERFLOW)
+    try:
+        jobs = _generation_jobs(connection, query, inputs.branch)
+        job_ids = [str(document["jobId"]) for _, document in jobs]
+        directions = _directions(connection, query, inputs.branch, frozenset(job_ids))
+    except (StorageError, ChatContractDecodeError, ValueError, KeyError, TypeError):
+        # Tampered or non-canonical stored content, an unreadable row or a document
+        # the frozen contract rejects: one constant refusal, never a partial snapshot
+        # and never the stored text, digest or exception that caused it.
+        raise _internal() from None
     snapshot: dict[str, Any] = {
         "conversation": _conversation(inputs.conversation),
-        "path": _path(inputs, inputs.branch, inputs.view_state),
+        "path": _path(inputs, inputs.branch, inputs.view_state, job_ids),
         "branch": _branch(inputs.branch),
         "viewState": _view_state(inputs.view_state),
+        "generationJobs": [document for _, document in jobs],
+        "directions": directions,
     }
     if inputs.queued_submissions:
         snapshot["queuedSubmissions"] = [
@@ -467,6 +731,40 @@ def resolve_chat_snapshot(
         snapshot["composerDrafts"] = [
             composer_draft(draft) for draft in inputs.drafts
         ]
+    return snapshot
+
+
+def resolve_chat_snapshot(
+    connection: sqlite3.Connection,
+    request: ChatSnapshotInput,
+    context: OperationContext,
+) -> Mapping[str, Any]:
+    """One `chat.snapshot` request, as the `ChatSnapshotResult` wire mapping.
+
+    Raises `invalid_request` for a query document this contract does not admit or
+    that disagrees with the envelope it arrived in, `not_found` where the workspace
+    holds no complete snapshot to answer with, `size_limit_exceeded` where a set the
+    snapshot must state completely exceeds its bound, and `internal_non_recoverable`
+    where durable state cannot be projected consistently.
+
+    Every read -- the aggregate, each branch job's rows and the actor's Directions --
+    happens in one read transaction, so a concurrent write can never leave a snapshot
+    whose jobs, Directions and path disagree about the moment they were read at. A
+    transaction the caller already holds is theirs and is never ended here; only one
+    opened here is committed, or rolled back on any failure.
+    """
+    query = _decode(request.snapshot_query, request, context)
+    owns_transaction = not connection.in_transaction
+    if owns_transaction:
+        connection.execute("BEGIN")
+    try:
+        snapshot = _read_snapshot(connection, query)
+    except BaseException:
+        if owns_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    if owns_transaction:
+        connection.execute("COMMIT")
     return ChatSnapshotResult(
         conversation_id=query.conversation_id,
         snapshot=snapshot,
