@@ -176,6 +176,10 @@ SUBMIT_STEERING_INPUT_COMMAND: Final = "SubmitSteeringInput"
 UPDATE_QUEUED_SUBMISSION_COMMAND: Final = "UpdateQueuedSubmission"
 SAVE_DRAFT_COMMAND: Final = "SaveDraft"
 DISCARD_DRAFT_COMMAND: Final = "DiscardDraft"
+#: C10. Already frozen in `CHAT_COMMAND_NAMES` and shaped in
+#: `commands.schema.json`; what was missing was a resolver, so every
+#: `RenameConversation` answered `dependency_unavailable`.
+RENAME_CONVERSATION_COMMAND: Final = "RenameConversation"
 STAGE_ATTACHMENT_COMMAND: Final = "StageAttachment"
 REMOVE_STAGED_ATTACHMENT_COMMAND: Final = "RemoveStagedAttachment"
 
@@ -241,6 +245,16 @@ _FIELDS: Final = frozenset(
 #: group. Present in full is the continuation this command has always been; absent in
 #: full is the first send into a conversation REF-042 §9.1 leaves branchless.
 _HEAD_GROUP: Final = ("branchId", "expectedHeadMessageId", "expectedHeadVersion")
+_RENAME_CONVERSATION_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "actorId",
+        "title",
+    }
+)
 _CREATE_CONVERSATION_FIELDS: Final = frozenset(
     {
         "protocolVersion",
@@ -437,6 +451,17 @@ class _CreateConversation:
     workspace_id: str
     actor_id: str
     title: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _RenameConversation:
+    """One decoded `RenameConversationRequest` (C10)."""
+
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
+    title: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -871,6 +896,46 @@ def _decode_create_conversation(command: Mapping[str, Any]) -> _CreateConversati
         workspace_id=_identifier(command, "workspaceId"),
         actor_id=_identifier(command, "actorId"),
         title=None if "title" not in command else str(title),
+    )
+
+
+def _decode_rename_conversation(command: Mapping[str, Any]) -> _RenameConversation:
+    """Decode one `RenameConversationRequest`, or refuse it as an invalid request.
+
+    Held to `commands.schema.json#/$defs/RenameConversationRequest`'s exact closed
+    field set, where `title` is REQUIRED -- unlike the create, whose title is
+    optional. The same two bounds the create states apply: at most
+    `_MAX_TITLE_LENGTH`, and no NUL, because 0029 refuses that outright and a
+    `CHECK` tripped inside the mutation would be an integrity failure where this
+    is a malformed request. An empty title is admitted, for the create's reason:
+    `graph.schema.json` sets the conversation title's `minLength` to 0, so it is
+    a title the domain record can hold.
+    """
+    unknown = sorted(set(command) - _RENAME_CONVERSATION_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+    title = command.get("title")
+    if (
+        not isinstance(title, str)
+        or len(title) > _MAX_TITLE_LENGTH
+        or "\x00" in title
+    ):
+        raise _invalid(
+            "title", f"is not a string of at most {_MAX_TITLE_LENGTH} characters"
+        )
+    return _RenameConversation(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        actor_id=_identifier(command, "actorId"),
+        title=title,
     )
 
 
@@ -1434,6 +1499,58 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
             generation_job_id=generation_job_id,
         )
         return _ack(SUBMIT_MESSAGE_COMMAND, request.command_id, request.conversation_id)
+
+    return command
+
+
+def _rename_conversation(request: _RenameConversation) -> ChatCommand:
+    """One decoded `RenameConversationRequest`, as the command the seam runs.
+
+    The title and its source, and NOTHING else. `update_conversation` replaces
+    every mutable column at once, so each one this command does not own is read
+    from the row and written back unchanged -- state, default branch, the
+    archived and tombstoned instants. Passing a default for any of them would
+    silently un-archive a conversation or drop its branch selection, which is
+    why they are read first rather than omitted.
+
+    `graph_revision` is carried, not bumped. It is the optimistic guard
+    `update_conversation` matches on, and a rename changes no graph fact: no
+    message, no branch, no sequence. Bumping it would invalidate every
+    concurrently held expectation to record that a label changed. The sequence
+    is carried for the same reason.
+
+    `title_source` becomes `user`, because a person typed this one. The create
+    sets it only when a title was supplied, and generation sets its own.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        conversation = read_conversation(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
+        if conversation is None:
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
+        writer.update_conversation(
+            conversation_id=request.conversation_id,
+            expected_graph_revision=conversation.graph_revision,
+            graph_revision=conversation.graph_revision,
+            latest_conversation_sequence=conversation.latest_conversation_sequence,
+            state=conversation.state,
+            title=request.title,
+            title_source="user",
+            default_branch_id=conversation.default_branch_id,
+            archived_at_us=conversation.archived_at_us,
+            tombstoned_at_us=conversation.tombstoned_at_us,
+            updated_at_us=settlement.settled_at_us,
+        )
+        return _ack(
+            RENAME_CONVERSATION_COMMAND,
+            request.command_id,
+            request.conversation_id,
+        )
 
     return command
 
@@ -3026,6 +3143,15 @@ def resolve_chat_command(
     The other commands here name an actor that is matched against a row this workspace
     already holds, so the check that matters there is the one against the row.
     """
+    if request.command_name == RENAME_CONVERSATION_COMMAND:
+        rename = _decode_rename_conversation(request.command)
+        if rename.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if rename.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        return _rename_conversation(rename)
     if request.command_name == CREATE_CONVERSATION_COMMAND:
         create = _decode_create_conversation(request.command)
         if create.workspace_id != context.workspace_id:
