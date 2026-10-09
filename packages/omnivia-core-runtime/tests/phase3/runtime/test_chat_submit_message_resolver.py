@@ -1407,13 +1407,22 @@ def test_gb01_submit_replay_returns_stored_result_without_duplicate_rows(
 def test_gb01_unsupported_chat_commands_keep_dependency_refusal(
     seeded: m1.Owned,
 ) -> None:
+    """A name in the frozen registry with no resolver still refuses, and writes nothing.
+
+    `RenameConversation` was this test's example until C10 gave it a resolver.
+    Each C10 command that lands takes one more name off the unresolved list;
+    when the last one does, this scenario stops existing and the test should
+    go with it rather than be kept alive by a name picked to stay broken.
+    `InvokeTool` is used here because it is excluded from the hosted bridge BY
+    DESIGN, so it is the honest long-lived example.
+    """
     before = _counts(seeded)
     response = _dispatcher(seeded).dispatch(
         _request(
-            {"protocolVersion": PROTOCOL_VERSION, "commandId": "cmd-gb01-rename"},
-            command_name="RenameConversation",
-            idempotency_key="idem-gb01-rename",
-            request_id="req-gb01-rename",
+            {"protocolVersion": PROTOCOL_VERSION, "commandId": "cmd-gb01-invoke-tool"},
+            command_name="InvokeTool",
+            idempotency_key="idem-gb01-invoke-tool",
+            request_id="req-gb01-invoke-tool",
         )
     )
 
