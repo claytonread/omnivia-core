@@ -181,6 +181,7 @@ EXPECTED_ALLOCATION = (
     (67, "0067_knowledge_shares.sql", "Agent Runtime", "candidate"),
     (68, "0068_task_context_outcomes.sql", "Agent Runtime", "candidate"),
     (69, "0069_chat_generation_directions.sql", "Chat", "candidate"),
+    (70, "0070_chat_staged_attachments.sql", "Chat", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -271,6 +272,9 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0069 is the C6 Chat Directions/continuations candidate, pinned to the commit that
     # introduced its SQL.
     69: "c9e839d9b0b9c2bb1de051072fe2807d5cfa3a0c",
+    # 0070 is the C7A Chat staged-attachment candidate, pinned to the commit that
+    # introduced its SQL.
+    70: "331a8661004638d3dc81a873d1696078b1c198a2",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
