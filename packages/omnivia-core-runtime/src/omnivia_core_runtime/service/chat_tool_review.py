@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Mapping, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -122,7 +122,22 @@ def _fenced(
     identity: ServiceInstanceIdentity,
     workspace_id: str,
     fencing_generation: int,
+    writer: chat.ChatWriter | None = None,
 ) -> AbstractContextManager[chat.ChatWriter]:
+    """The fenced writer these commands write through.
+
+    `writer` lets a CALLER THAT ALREADY HOLDS ONE lend it, which is what the
+    `chat.command` seam does: its resolver runs inside a transaction it opened,
+    and a second `chat_writer` on the same connection would nest a transaction
+    inside that one. Lending keeps the Review decision in the same unit of work
+    as the rest of the command, which is also what makes it atomic with the
+    seam's own idempotency record.
+
+    Called without one -- every in-process caller and all 32 of this module's
+    own tests -- it opens and owns a writer exactly as before.
+    """
+    if writer is not None:
+        return nullcontext(writer)
     return chat.chat_writer(
         connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
     )
@@ -937,6 +952,7 @@ def decide_tool_review(
     now_us: int,
     current_resource_revision: int | None = None,
     audit_ref: str | None = None,
+    writer: chat.ChatWriter | None = None,
 ) -> chat.ChatWaitDecision:
     """The Review decision command: `approved` or `denied`, once, for the action the actor saw.
 
@@ -962,6 +978,7 @@ def decide_tool_review(
         answer=None,
         audit_ref=audit_ref,
         now_us=now_us,
+        writer=writer,
     )
 
 
@@ -978,6 +995,7 @@ def submit_human_input(
     answer: Mapping[str, Any],
     now_us: int,
     audit_ref: str | None = None,
+    writer: chat.ChatWriter | None = None,
 ) -> chat.ChatWaitDecision:
     """The human-input command. Only a digest and byte length of the answer are stored."""
     return _decide(
@@ -997,6 +1015,7 @@ def submit_human_input(
         answer=answer,
         audit_ref=audit_ref,
         now_us=now_us,
+        writer=writer,
     )
 
 
@@ -1018,6 +1037,7 @@ def _decide(
     answer: Mapping[str, Any] | None,
     audit_ref: str | None,
     now_us: int,
+    writer: chat.ChatWriter | None = None,
 ) -> chat.ChatWaitDecision:
     if not command_id or not actor_id:
         raise ChatWaitConflict("a decision command names its command id and actor")
@@ -1100,7 +1120,7 @@ def _decide(
             raise ChatToolReviewStale("the tool call is no longer awaiting this Review")
         if call.post_policy_arguments_digest != wait.target_action_digest:
             raise ChatToolReviewStale("the tool call's action changed since the Review opened")
-    with _fenced(connection, identity, workspace_id, fencing_generation) as writer:
+    with _fenced(connection, identity, workspace_id, fencing_generation, writer) as writer:
         cursor = writer.connection.execute(
             "UPDATE omnivia_chat_wait_interactions "
             "SET state = 'decided', decision = ?, decided_by_actor_id = ?, "
