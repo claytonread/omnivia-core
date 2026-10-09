@@ -58,6 +58,9 @@ class ChatWaitInteraction:
     updated_at_us: int
     expires_at_us: int | None
     decided_at_us: int | None
+    target_action_digest: str | None = None
+    target_resource_ref: str | None = None
+    target_resource_revision: int | None = None
 
 
 def _canonical_json(value: Any) -> str:
@@ -117,6 +120,17 @@ def _row_to_wait(workspace_id: str, row: sqlite3.Row) -> ChatWaitInteraction:
         updated_at_us=int(row["updated_at_us"]),
         expires_at_us=None if row["expires_at_us"] is None else int(row["expires_at_us"]),
         decided_at_us=None if row["decided_at_us"] is None else int(row["decided_at_us"]),
+        target_action_digest=(
+            None if row["target_action_digest"] is None else str(row["target_action_digest"])
+        ),
+        target_resource_ref=(
+            None if row["target_resource_ref"] is None else str(row["target_resource_ref"])
+        ),
+        target_resource_revision=(
+            None
+            if row["target_resource_revision"] is None
+            else int(row["target_resource_revision"])
+        ),
     )
 
 
@@ -150,6 +164,9 @@ def _same_open_wait(
     tool_call_id: str | None,
     agent_run_id: str | None,
     expires_at_us: int | None,
+    target_action_digest: str | None,
+    target_resource_ref: str | None,
+    target_resource_revision: int | None,
 ) -> bool:
     return (
         existing.conversation_id == conversation_id
@@ -163,6 +180,9 @@ def _same_open_wait(
         and existing.tool_call_id == tool_call_id
         and existing.agent_run_id == agent_run_id
         and existing.expires_at_us == expires_at_us
+        and existing.target_action_digest == target_action_digest
+        and existing.target_resource_ref == target_resource_ref
+        and existing.target_resource_revision == target_resource_revision
     )
 
 
@@ -185,8 +205,16 @@ def open_chat_wait(
     tool_call_id: str | None = None,
     agent_run_id: str | None = None,
     expires_at_us: int | None = None,
+    target_action_digest: str | None = None,
+    target_resource_ref: str | None = None,
+    target_resource_revision: int | None = None,
 ) -> ChatWaitInteraction:
-    """Open or replay one durable wait without foreground-route side effects."""
+    """Open or replay one durable wait without foreground-route side effects.
+
+    A wait that gates an action names it: `target_action_digest` is the digest of the exact
+    action and `target_resource_ref` / `target_resource_revision` the resource revision the
+    responder is shown. Both are fixed at open and checked again when the wait is answered.
+    """
     if kind not in {"approval", "human_input", "policy_pause"}:
         raise ChatWaitConflict("unsupported chat wait kind")
     if not wait_id or not requester_actor_id or not resume_token:
@@ -196,6 +224,8 @@ def open_chat_wait(
     )
     if conversation is None:
         raise ChatWaitConflict("chat wait must belong to an existing conversation")
+    if (target_resource_ref is None) != (target_resource_revision is None):
+        raise ChatWaitConflict("a wait target names a resource and its revision together")
     policy = _safe_object(authorised_responder_policy, "chat wait responder policy")
     safe_prompt = _safe_object(prompt, "chat wait prompt")
     resume_digest = _digest({"resumeToken": resume_token})
@@ -214,6 +244,9 @@ def open_chat_wait(
             tool_call_id=tool_call_id,
             agent_run_id=agent_run_id,
             expires_at_us=expires_at_us,
+            target_action_digest=target_action_digest,
+            target_resource_ref=target_resource_ref,
+            target_resource_revision=target_resource_revision,
         ):
             return existing
         raise ChatWaitConflict("chat wait id already names another wait")
@@ -226,8 +259,9 @@ def open_chat_wait(
             "(workspace_id, conversation_id, wait_id, kind, state, requester_actor_id, "
             "authorised_responder_policy_json, prompt_json, resume_token_digest, "
             "generation_job_id, turn_id, tool_call_id, agent_run_id, version, schema_version, "
-            "created_at_us, updated_at_us, expires_at_us) "
-            "VALUES (?, ?, ?, ?, 'asked', ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)",
+            "created_at_us, updated_at_us, expires_at_us, target_action_digest, "
+            "target_resource_ref, target_resource_revision) "
+            "VALUES (?, ?, ?, ?, 'asked', ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?)",
             (
                 workspace_id,
                 conversation_id,
@@ -244,6 +278,9 @@ def open_chat_wait(
                 now_us,
                 now_us,
                 expires_at_us,
+                target_action_digest,
+                target_resource_ref,
+                target_resource_revision,
             ),
         )
     opened = read_chat_wait(connection, workspace_id=workspace_id, wait_id=wait_id)

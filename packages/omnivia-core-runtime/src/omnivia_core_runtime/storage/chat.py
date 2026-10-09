@@ -77,9 +77,11 @@ __all__ = [
     "Branch",
     "BranchHeadEvent",
     "ChatToolCall",
+    "ChatToolLifecycleEvent",
     "ChatToolResult",
     "ChatTurn",
     "ChatTurnStep",
+    "ChatWaitDecision",
     "ChatWriter",
     "Conversation",
     "ConversationSnapshotInputs",
@@ -678,6 +680,46 @@ class ChatToolCall:
     created_at_us: int
     updated_at_us: int
     finished_at_us: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ChatToolLifecycleEvent:
+    """One `omnivia_chat_tool_lifecycle_events` row (0071): a C8 state of one tool call."""
+
+    workspace_id: str
+    tool_call_id: str
+    lifecycle_sequence: int
+    state: str
+    wait_id: str | None
+    agent_run_id: str | None
+    reason_code: str | None
+    result_id: str | None
+    evidence_refs: tuple[str, ...]
+    artifact_refs: tuple[str, ...]
+    occurred_at_us: int
+    schema_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class ChatWaitDecision:
+    """One `omnivia_chat_wait_decisions` row (0071): the single command that decided a wait."""
+
+    workspace_id: str
+    wait_id: str
+    command_id: str
+    command_kind: str
+    actor_id: str
+    outcome: str
+    request_version: int
+    target_action_digest: str | None
+    target_resource_revision: int | None
+    authorization_basis: str
+    request_digest: str
+    answer_digest: str | None
+    answer_bytes: int | None
+    audit_ref: str | None
+    decided_at_us: int
+    schema_version: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -1839,6 +1881,88 @@ class ChatWriter:
                 digest,
                 schema_version,
                 created_at_us,
+            ),
+        )
+
+    def append_chat_tool_lifecycle_event(
+        self,
+        *,
+        tool_call_id: str,
+        lifecycle_sequence: int,
+        state: str,
+        occurred_at_us: int,
+        wait_id: str | None = None,
+        agent_run_id: str | None = None,
+        reason_code: str | None = None,
+        result_id: str | None = None,
+        evidence_refs: Sequence[str] = (),
+        artifact_refs: Sequence[str] = (),
+        schema_version: int = 1,
+    ) -> None:
+        """Append the next state of a tool call. The 0071 guard owns the transition rules."""
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_tool_lifecycle_events "
+            "(workspace_id, tool_call_id, lifecycle_sequence, state, wait_id, agent_run_id, "
+            "reason_code, result_id, evidence_refs_json, artifact_refs_json, occurred_at_us, "
+            "schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                tool_call_id,
+                lifecycle_sequence,
+                state,
+                wait_id,
+                agent_run_id,
+                reason_code,
+                result_id,
+                json.dumps(list(evidence_refs), separators=(",", ":")),
+                json.dumps(list(artifact_refs), separators=(",", ":")),
+                occurred_at_us,
+                schema_version,
+            ),
+        )
+
+    def append_chat_wait_decision(
+        self,
+        *,
+        wait_id: str,
+        command_id: str,
+        command_kind: str,
+        actor_id: str,
+        outcome: str,
+        request_version: int,
+        authorization_basis: str,
+        request_digest: str,
+        decided_at_us: int,
+        target_action_digest: str | None = None,
+        target_resource_revision: int | None = None,
+        answer_digest: str | None = None,
+        answer_bytes: int | None = None,
+        audit_ref: str | None = None,
+        schema_version: int = 1,
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_wait_decisions "
+            "(workspace_id, wait_id, command_id, command_kind, actor_id, outcome, "
+            "request_version, target_action_digest, target_resource_revision, "
+            "authorization_basis, request_digest, answer_digest, answer_bytes, audit_ref, "
+            "decided_at_us, schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                wait_id,
+                command_id,
+                command_kind,
+                actor_id,
+                outcome,
+                request_version,
+                target_action_digest,
+                target_resource_revision,
+                authorization_basis,
+                request_digest,
+                answer_digest,
+                answer_bytes,
+                audit_ref,
+                decided_at_us,
+                schema_version,
             ),
         )
 
@@ -4324,6 +4448,93 @@ def read_chat_tool_result(
         (workspace_id, tool_call_id),
     ).fetchone()
     return None if row is None else _chat_tool_result_from_row(row)
+
+
+_CHAT_TOOL_LIFECYCLE_COLUMNS = (
+    "workspace_id, tool_call_id, lifecycle_sequence, state, wait_id, agent_run_id, "
+    "reason_code, result_id, evidence_refs_json, artifact_refs_json, occurred_at_us, "
+    "schema_version"
+)
+
+
+def _chat_tool_lifecycle_event_from_row(row: tuple[Any, ...]) -> ChatToolLifecycleEvent:
+    return ChatToolLifecycleEvent(
+        workspace_id=row[0],
+        tool_call_id=row[1],
+        lifecycle_sequence=row[2],
+        state=row[3],
+        wait_id=row[4],
+        agent_run_id=row[5],
+        reason_code=row[6],
+        result_id=row[7],
+        evidence_refs=tuple(json.loads(row[8])),
+        artifact_refs=tuple(json.loads(row[9])),
+        occurred_at_us=row[10],
+        schema_version=row[11],
+    )
+
+
+def read_chat_tool_lifecycle(
+    connection: sqlite3.Connection, *, workspace_id: str, tool_call_id: str
+) -> tuple[ChatToolLifecycleEvent, ...]:
+    """Every state of one tool call, in the order it happened."""
+    rows = connection.execute(
+        f"SELECT {_CHAT_TOOL_LIFECYCLE_COLUMNS} FROM omnivia_chat_tool_lifecycle_events "
+        "WHERE workspace_id = ? AND tool_call_id = ? ORDER BY lifecycle_sequence",
+        (workspace_id, tool_call_id),
+    ).fetchall()
+    return tuple(_chat_tool_lifecycle_event_from_row(row) for row in rows)
+
+
+def read_open_chat_tool_lifecycle_heads(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> tuple[ChatToolLifecycleEvent, ...]:
+    """The latest event of every tool call that has not reached a terminal state."""
+    rows = connection.execute(
+        f"SELECT {_CHAT_TOOL_LIFECYCLE_COLUMNS} FROM omnivia_chat_tool_lifecycle_events e "
+        "WHERE e.workspace_id = ? AND e.state IN "
+        "('prepared', 'policy_checking', 'awaiting_review', 'running', 'interrupted') "
+        "AND e.lifecycle_sequence = (SELECT MAX(x.lifecycle_sequence) "
+        "FROM omnivia_chat_tool_lifecycle_events x "
+        "WHERE x.workspace_id = e.workspace_id AND x.tool_call_id = e.tool_call_id) "
+        "ORDER BY e.occurred_at_us, e.tool_call_id",
+        (workspace_id,),
+    ).fetchall()
+    return tuple(_chat_tool_lifecycle_event_from_row(row) for row in rows)
+
+
+_CHAT_WAIT_DECISION_COLUMNS = (
+    "workspace_id, wait_id, command_id, command_kind, actor_id, outcome, request_version, "
+    "target_action_digest, target_resource_revision, authorization_basis, request_digest, "
+    "answer_digest, answer_bytes, audit_ref, decided_at_us, schema_version"
+)
+
+
+def _read_chat_wait_decision(
+    connection: sqlite3.Connection, *, workspace_id: str, column: str, value: str
+) -> ChatWaitDecision | None:
+    row = connection.execute(
+        f"SELECT {_CHAT_WAIT_DECISION_COLUMNS} FROM omnivia_chat_wait_decisions "
+        f"WHERE workspace_id = ? AND {column} = ?",
+        (workspace_id, value),
+    ).fetchone()
+    return None if row is None else ChatWaitDecision(*row)
+
+
+def read_chat_wait_decision_by_command(
+    connection: sqlite3.Connection, *, workspace_id: str, command_id: str
+) -> ChatWaitDecision | None:
+    return _read_chat_wait_decision(
+        connection, workspace_id=workspace_id, column="command_id", value=command_id
+    )
+
+
+def read_chat_wait_decision_by_wait(
+    connection: sqlite3.Connection, *, workspace_id: str, wait_id: str
+) -> ChatWaitDecision | None:
+    return _read_chat_wait_decision(
+        connection, workspace_id=workspace_id, column="wait_id", value=wait_id
+    )
 
 
 _QUEUE_ORDER_PROJECTION_COLUMNS = (
