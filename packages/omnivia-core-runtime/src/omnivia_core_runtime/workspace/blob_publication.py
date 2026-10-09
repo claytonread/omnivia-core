@@ -293,9 +293,38 @@ def publish_blob(blobs_root: Path, digest: str, content: bytes) -> Path:
     return target
 
 
+def blob_is_intact(blobs_root: Path, digest: str, length: int, *, rehash: bool) -> bool:
+    """Whether the object at `digest` is one regular file of exactly `length` bytes.
+
+    Opened the way verification opens it (no link followed, one regular single-linked
+    file), so a symlink, a directory or a missing object is `False` rather than an
+    error. `rehash` also reads the bytes and compares their SHA-256 with the address,
+    which costs a full read; without it only the size is proved, and a same-length
+    substitution is the blob integrity pass's to find, not this check's.
+    """
+    try:
+        descriptor = _opened_blob(blob_path(blobs_root, digest))
+    except (BlobPublicationRefused, OSError):
+        return False
+    try:
+        if os.fstat(descriptor).st_size != length:
+            return False
+        if not rehash:
+            return True
+        hasher = hashlib.sha256()
+        while chunk := os.read(descriptor, _CHUNK):
+            hasher.update(chunk)
+        return f"sha256:{hasher.hexdigest()}" == digest
+    except OSError:
+        return False
+    finally:
+        os.close(descriptor)
+
+
 __all__ = [
     "DIGEST_PATTERN",
     "BlobPublicationRefused",
+    "blob_is_intact",
     "blob_path",
     "publish_blob",
 ]

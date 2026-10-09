@@ -91,6 +91,7 @@ from omnivia_core_runtime.storage.chat import (
     read_generation_job,
     read_generation_job_status_projection,
 )
+from omnivia_core_runtime.storage.chat_attachments import draft_attachment_references
 from omnivia_core_runtime.storage.connection import StorageError
 
 __all__ = ["composer_draft", "resolve_chat_snapshot", "resolve_draft_readback"]
@@ -428,16 +429,22 @@ def _queued_submission(entry: ActiveQueueEntry) -> Mapping[str, Any]:
 
 
 def composer_draft(draft: Draft) -> Mapping[str, Any]:
-    """One `ComposerDraft`: the actor's own unsent composition state (C5A).
+    """One `ComposerDraft`: the actor's own unsent composition state (C5A, C7A).
 
     Deliberately narrower than nothing: the draft row IS the projection, held to
     `viewstate.schema.json#/$defs/ComposerDraft`'s closed field set. The stored
-    `references_json` is always empty in this build -- a draft that stated any
-    reference is a `dependency_unavailable` refusal (`service/chat_submit.py`) --
-    so both wire reference arrays are stated empty rather than projected from a
-    combined store that could not honestly tell the two kinds apart. A discarded
-    draft reads back exactly as it was emptied: text `""`, references `[]`.
+    `references_json` is one combined array, so every entry is tagged with its kind
+    (`storage.chat_attachments`): the attachment references are decoded back exactly as
+    they were validated and saved, and `contextReferences` stays empty because this
+    build refuses to store any. An entry that is not a tagged attachment reference is
+    stored content this build did not write, and is refused as an internal error
+    rather than projected as either kind. A discarded draft reads back exactly as it
+    was emptied: text `""`, references `[]`.
     """
+    try:
+        attachments = draft_attachment_references(draft.references)
+    except StorageError:
+        raise _internal() from None
     document: dict[str, Any] = {
         "workspaceId": draft.workspace_id,
         "conversationId": draft.conversation_id,
@@ -445,7 +452,7 @@ def composer_draft(draft: Draft) -> Mapping[str, Any]:
         "draftId": draft.draft_id,
         "mode": draft.mode,
         "text": draft.text_content,
-        "attachmentReferences": [],
+        "attachmentReferences": [dict(reference) for reference in attachments],
         "contextReferences": [],
         "schemaVersion": draft.schema_version,
         "updatedAt": _timestamp(draft.updated_at_us),

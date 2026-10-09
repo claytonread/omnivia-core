@@ -162,8 +162,16 @@ def owned(migrated: Path) -> Iterator[m1.Owned]:
 
 
 def maintenance_apply(path: Path) -> list[Migration]:
-    """Advance an already-bootstrapped workspace through the real migrator."""
-    return t34.apply_remaining_migrations(path)
+    """Advance an already-bootstrapped workspace through the real migrator.
+
+    Returns what landed up to 0069: a later migration is applied too, but it is not this
+    file's subject.
+    """
+    return [
+        migration
+        for migration in t34.apply_remaining_migrations(path)
+        if migration.version <= MIGRATION_VERSION
+    ]
 
 
 def object_names(connection: sqlite3.Connection) -> set[str]:

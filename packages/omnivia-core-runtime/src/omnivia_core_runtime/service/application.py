@@ -50,6 +50,7 @@ from __future__ import annotations
 import datetime as _dt
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from functools import partial
 from types import MappingProxyType
 from typing import Any, Final, Protocol, TypeAlias, cast, runtime_checkable
 
@@ -2661,6 +2662,14 @@ def build_chat_application_dispatcher(
     Core-owned execution seam. A build without one refuses ``SubmitMessage`` before
     the mutation runs, so it cannot leave a queued job that no worker can consume.
     """
+    if resolve_command is resolve_chat_command:
+        # The default resolver proves attachment files against this service's blob root.
+        # A service without a layout leaves it unbound, and the attachment commands then
+        # refuse as `dependency_unavailable` rather than staging an unchecked file.
+        resolve_command = partial(
+            resolve_chat_command,
+            blobs_root=getattr(getattr(service, "layout", None), "blobs_path", None),
+        )
     session = chat_family_session(
         principal_id=principal_id,
         installation_id=installation_id,

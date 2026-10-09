@@ -34,6 +34,14 @@ carrying one is refused as `dependency_unavailable` rather than served with the 
 silently dropped. A structurally invalid document is a different refusal
 (`invalid_request`) and is decided before any grant is issued.
 
+**Attachments (C7A) are staged and drafted, not yet submitted.** `StageAttachment` and
+`RemoveStagedAttachment` keep a durable authority row per reference (migration 0070),
+and `SaveDraft` stores attachment references only when each resolves to an active one.
+`SubmitMessage` and `EnqueueMessage` still refuse any non-empty reference as
+`dependency_unavailable`: admitting one has to revalidate and consume the staged row in
+the same transaction that writes the Message, which is the next slice's, so nothing here
+can write a Message that names an attachment.
+
 **Identifiers are derived from the caller's own `commandId`**, not allocated randomly,
 so the rows one command wrote are addressable by the caller that wrote them without a
 second read-back operation this contract does not have. That is also what makes a
@@ -64,6 +72,7 @@ import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Final
 
 from omnivia_core.chat_contract.v1 import (
@@ -88,6 +97,7 @@ from omnivia_core_runtime.storage.chat import (
     QueuedSubmission,
     StaleVersion,
     read_active_draft,
+    read_active_drafts,
     read_active_queue_for_actor,
     read_branch,
     read_conversation,
@@ -103,15 +113,27 @@ from omnivia_core_runtime.storage.chat import (
     read_queue_order_projection,
     read_queued_submission,
 )
+from omnivia_core_runtime.storage.chat_attachments import (
+    AttachmentEvidence,
+    attachment_draft_entry,
+    count_active_staged_attachments,
+    insert_staged_attachment,
+    read_attachment_evidence,
+    read_staged_attachment,
+    transition_staged_attachment,
+)
+from omnivia_core_runtime.workspace.blob_publication import blob_is_intact
 
 __all__ = [
     "CANCEL_QUEUED_SUBMISSION_COMMAND",
     "CREATE_CONVERSATION_COMMAND",
     "DISCARD_DRAFT_COMMAND",
     "ENQUEUE_MESSAGE_COMMAND",
+    "REMOVE_STAGED_ATTACHMENT_COMMAND",
     "REORDER_QUEUED_SUBMISSION_COMMAND",
     "RETRY_GENERATION_COMMAND",
     "SAVE_DRAFT_COMMAND",
+    "STAGE_ATTACHMENT_COMMAND",
     "STOP_GENERATION_COMMAND",
     "SUBMIT_MESSAGE_COMMAND",
     "SUBMIT_STEERING_INPUT_COMMAND",
@@ -131,6 +153,8 @@ SUBMIT_STEERING_INPUT_COMMAND: Final = "SubmitSteeringInput"
 UPDATE_QUEUED_SUBMISSION_COMMAND: Final = "UpdateQueuedSubmission"
 SAVE_DRAFT_COMMAND: Final = "SaveDraft"
 DISCARD_DRAFT_COMMAND: Final = "DiscardDraft"
+STAGE_ATTACHMENT_COMMAND: Final = "StageAttachment"
+REMOVE_STAGED_ATTACHMENT_COMMAND: Final = "RemoveStagedAttachment"
 
 #: `queued-submission:<id>` is the one opaque `resultRef` shape this build mints
 #: (D07 `CommandResultEnvelope.resultRef`), naming the row `EnqueueMessage` just
@@ -2000,6 +2024,8 @@ def _decode_save_draft(command: Mapping[str, Any]) -> _SaveDraft:
     contexts = _array(command, "contextReferences", max_items=_MAX_REFERENCE_COUNT)
     for index, item in enumerate(attachments):
         _reference(item, f"attachmentReferences[{index}]")
+    if len({item["referenceId"] for item in attachments}) != len(attachments):
+        raise _invalid("attachmentReferences", "names the same reference more than once")
     for index, item in enumerate(contexts):
         _reference(item, f"contextReferences[{index}]")
 
@@ -2057,7 +2083,7 @@ def _decode_discard_draft(command: Mapping[str, Any]) -> _DiscardDraft:
     )
 
 
-def _save_draft(request: _SaveDraft) -> ChatCommand:
+def _save_draft(request: _SaveDraft, blobs_root: Path | None) -> ChatCommand:
     """One decoded `SaveDraftRequest`, as the command the mutation seam runs.
 
     Writes or advances exactly one `omnivia_chat_drafts` row and nothing else: no
@@ -2083,6 +2109,13 @@ def _save_draft(request: _SaveDraft) -> ChatCommand:
 
     A stashed-from link and an expiry, where the row carries one, are preserved:
     this command owns the composition content, never the row's provenance.
+
+    **Attachment references (C7A)** are stored only when every one resolves, in this
+    same transaction, to an *active* staged attachment of this conversation and actor
+    (bound to no draft or to this one) whose file is still available and whose pinned
+    revision is the evidence's current one. Any other reference refuses the whole save
+    and the draft row is untouched. Each is stored tagged as an attachment so a reader
+    never confuses it with a context reference, which this build still refuses.
     """
 
     def command(
@@ -2143,8 +2176,8 @@ def _save_draft(request: _SaveDraft) -> ChatCommand:
                 f"{request.command_id}.draft"
             )
 
-        references = tuple(request.attachment_references) + tuple(
-            request.context_references
+        references = _draft_attachment_entries(
+            writer, request, draft_id=draft_id, blobs_root=blobs_root
         )
         now = settlement.settled_at_us
         if existing is not None and existing.draft_id == draft_id:
@@ -2230,6 +2263,370 @@ def _discard_draft(request: _DiscardDraft) -> ChatCommand:
         )
 
     return command
+
+# --- C7A: staged attachments -----------------------------------------------------------
+
+_ATTACHMENT_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "actorId",
+        "attachmentReferenceId",
+        "draftId",
+    }
+)
+#: `attachment:<referenceId>@<sourceRevision>` is the opaque `resultRef` a `StageAttachment`
+#: returns: the closed `CommandResultEnvelope` has nowhere to carry the typed
+#: `AttachmentStagedResult`, whose `attachmentReference` is exactly these two values.
+#: `@` is outside both alphabets (a reference id is `[A-Za-z0-9._:-]`, a revision is
+#: `[A-Za-z0-9+/=_:-]`), so the first `@` splits it unambiguously. `resultRef` is bounded
+#: at 256 characters and `sourceRevision` at 128, so a revision that cannot be stated
+#: whole is refused rather than truncated.
+_ATTACHMENT_RESULT_REF_PREFIX: Final = "attachment:"
+_MAX_RESULT_REF: Final = 256
+_MAX_SOURCE_REVISION: Final = 128
+#: The active staged attachments one actor holds in one conversation, which is
+#: `SaveDraftRequest.attachmentReferences.maxItems` so a full stage can always be saved.
+_MAX_ACTIVE_STAGED_ATTACHMENTS: Final = _MAX_REFERENCE_COUNT
+#: This slice's own bound, not a contract one: the largest file it stages, in bytes. A
+#: later slice that knows the provider's limits may move it.
+_MAX_ATTACHMENT_BYTES: Final = 25 * 1024 * 1024
+#: Exact media types (the evidence column admits no parameters) a file may have to be
+#: staged. A deny-by-default list: an unlisted type is refused, not guessed at.
+_ATTACHMENT_MEDIA_TYPES: Final = frozenset(
+    {
+        "text/plain",
+        "text/markdown",
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+    }
+)
+
+_ATTACHMENT_UNKNOWN: Final = "the attachment reference does not name a file this workspace holds"
+_ATTACHMENT_UNAVAILABLE: Final = "the file this attachment names is not currently available"
+_ATTACHMENT_TOO_LARGE: Final = "the file this attachment names is larger than an attachment may be"
+_ATTACHMENT_MEDIA: Final = (
+    "the media type of the file this attachment names is not an accepted attachment type"
+)
+_ATTACHMENT_REVISION: Final = (
+    "the file's source revision is not the revision this attachment was staged at"
+)
+_ATTACHMENT_REVISION_UNSTATABLE: Final = (
+    "the file's source revision cannot be stated as an attachment reference"
+)
+_ATTACHMENT_DUPLICATE: Final = "the attachment is already staged in this conversation"
+_ATTACHMENT_LIMIT: Final = (
+    "the actor already holds the most staged attachments a conversation allows"
+)
+_ATTACHMENT_NOT_STAGED: Final = (
+    "the attachment reference is not an active staged attachment of this conversation and actor"
+)
+_ATTACHMENT_DRAFT: Final = (
+    "the draft this command names is not the draft this attachment is staged for"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _AttachmentCommand:
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
+    attachment_reference_id: str
+    draft_id: str | None
+
+
+def _decode_attachment_command(command: Mapping[str, Any]) -> _AttachmentCommand:
+    """Decode one `StageAttachmentRequest` or `RemoveStagedAttachmentRequest`.
+
+    The two share one closed field set, so one decode. Raw bytes, a path or a URL have
+    no field to arrive in: an unknown member is refused by name before any grant.
+    """
+    unknown = sorted(set(command) - _ATTACHMENT_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+    return _AttachmentCommand(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        actor_id=_identifier(command, "actorId"),
+        attachment_reference_id=_identifier(command, "attachmentReferenceId"),
+        draft_id=None if "draftId" not in command else _identifier(command, "draftId"),
+    )
+
+
+def _attachment_unavailable(
+    evidence: AttachmentEvidence, blobs_root: Path, *, rehash: bool
+) -> bool:
+    """Whether a file can no longer be offered: a tombstone, a failed ancestry or
+    integrity record, or bytes that are not physically there."""
+    return (
+        evidence.tombstoned
+        or not evidence.ancestry_verified
+        or evidence.integrity_failed
+        or not blob_is_intact(
+            blobs_root,
+            evidence.blob_content_digest,
+            evidence.content_length_bytes,
+            rehash=rehash,
+        )
+    )
+
+
+def _stage_attachment(request: _AttachmentCommand, blobs_root: Path) -> ChatCommand:
+    """One decoded `StageAttachmentRequest`, as the command the mutation seam runs.
+
+    The attachment reference is the evidence identity of a file this workspace already
+    holds, and its `sourceRevision` is that artifact's `content_checksum`; both are
+    immutable (0008 is append-only), so the revision pinned here is the revision of the
+    bytes. No bytes, path or URL ever reach this command. Writes or re-activates exactly
+    one `omnivia_chat_staged_attachments` row: no Message, no draft, no outbox row.
+
+    A reference already active for this actor and conversation is a conflict, not a
+    silent success, so a caller that lost track learns that. A removed reference stages
+    again as the same row (version advances) and only at the revision it was first
+    staged at. The full blob is re-hashed here, once, at admission; later reads only
+    prove the object is still there at its length.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        conversation = read_conversation(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
+        if conversation is None or conversation.state != "active":
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
+        if request.draft_id is not None:
+            draft = read_draft(
+                writer.connection,
+                workspace_id=writer.workspace_id,
+                draft_id=request.draft_id,
+            )
+            if (
+                draft is None
+                or draft.conversation_id != request.conversation_id
+                or draft.actor_id != request.actor_id
+            ):
+                raise ChatAggregateConflict(_ATTACHMENT_DRAFT)
+        evidence = read_attachment_evidence(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            evidence_id=request.attachment_reference_id,
+        )
+        if evidence is None:
+            raise ChatAggregateConflict(_ATTACHMENT_UNKNOWN)
+        existing = read_staged_attachment(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+            actor_id=request.actor_id,
+            attachment_reference_id=request.attachment_reference_id,
+        )
+        if existing is not None and existing.state == "active":
+            raise ChatAggregateConflict(_ATTACHMENT_DUPLICATE)
+        revision = evidence.content_checksum
+        result_ref = (
+            f"{_ATTACHMENT_RESULT_REF_PREFIX}{request.attachment_reference_id}@{revision}"
+        )
+        if len(revision) > _MAX_SOURCE_REVISION or len(result_ref) > _MAX_RESULT_REF:
+            raise ChatAggregateConflict(_ATTACHMENT_REVISION_UNSTATABLE)
+        if evidence.content_length_bytes > _MAX_ATTACHMENT_BYTES:
+            raise ChatAggregateConflict(_ATTACHMENT_TOO_LARGE)
+        if evidence.media_type not in _ATTACHMENT_MEDIA_TYPES:
+            raise ChatAggregateConflict(_ATTACHMENT_MEDIA)
+        if _attachment_unavailable(evidence, blobs_root, rehash=True):
+            raise ChatAggregateConflict(_ATTACHMENT_UNAVAILABLE)
+        if (
+            count_active_staged_attachments(
+                writer.connection,
+                workspace_id=writer.workspace_id,
+                conversation_id=request.conversation_id,
+                actor_id=request.actor_id,
+            )
+            >= _MAX_ACTIVE_STAGED_ATTACHMENTS
+        ):
+            raise ChatAggregateConflict(_ATTACHMENT_LIMIT)
+        if existing is None:
+            insert_staged_attachment(
+                writer.connection,
+                workspace_id=writer.workspace_id,
+                conversation_id=request.conversation_id,
+                actor_id=request.actor_id,
+                attachment_reference_id=request.attachment_reference_id,
+                draft_id=request.draft_id,
+                source_revision=revision,
+                blob_content_digest=evidence.blob_content_digest,
+                staged_at_us=settlement.settled_at_us,
+            )
+        else:
+            if (
+                existing.source_revision != revision
+                or existing.blob_content_digest != evidence.blob_content_digest
+            ):
+                raise ChatAggregateConflict(_ATTACHMENT_REVISION)
+            if not transition_staged_attachment(
+                writer.connection,
+                workspace_id=writer.workspace_id,
+                conversation_id=request.conversation_id,
+                actor_id=request.actor_id,
+                attachment_reference_id=request.attachment_reference_id,
+                expected_version=existing.version,
+                state="active",
+                draft_id=request.draft_id,
+                updated_at_us=settlement.settled_at_us,
+            ):
+                raise ChatAggregateConflict(_ATTACHMENT_NOT_STAGED)
+        return _ack(
+            STAGE_ATTACHMENT_COMMAND,
+            request.command_id,
+            request.conversation_id,
+            result_ref=result_ref,
+        )
+
+    return command
+
+
+def _remove_staged_attachment(request: _AttachmentCommand) -> ChatCommand:
+    """One decoded `RemoveStagedAttachmentRequest`, as the command the mutation seam runs.
+
+    Moves one active staged attachment to `removed` (the row stays, 0070 forbids DELETE)
+    and, in the same transaction, drops the reference from every draft this actor holds
+    in the conversation, advancing each such draft's version, so a draft recovered after
+    restart never lists a file the actor removed. A `draftId`, when stated, must be the
+    draft the attachment was staged for.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        conversation = read_conversation(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
+        if conversation is None or conversation.state != "active":
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
+        row = read_staged_attachment(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+            actor_id=request.actor_id,
+            attachment_reference_id=request.attachment_reference_id,
+        )
+        if row is None or row.state != "active":
+            raise ChatAggregateConflict(_ATTACHMENT_NOT_STAGED)
+        if request.draft_id is not None and request.draft_id != row.draft_id:
+            raise ChatAggregateConflict(_ATTACHMENT_DRAFT)
+        if not transition_staged_attachment(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+            actor_id=request.actor_id,
+            attachment_reference_id=request.attachment_reference_id,
+            expected_version=row.version,
+            state="removed",
+            draft_id=row.draft_id,
+            updated_at_us=settlement.settled_at_us,
+        ):
+            raise ChatAggregateConflict(_ATTACHMENT_NOT_STAGED)
+        for draft in read_active_drafts(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+            actor_id=request.actor_id,
+        ):
+            kept = tuple(
+                entry
+                for entry in draft.references
+                if not (
+                    isinstance(entry, Mapping)
+                    and entry.get("kind") == "attachment"
+                    and entry.get("referenceId") == request.attachment_reference_id
+                )
+            )
+            if len(kept) != len(draft.references):
+                writer.update_draft(
+                    draft_id=draft.draft_id,
+                    expected_version=draft.version,
+                    text_content=draft.text_content,
+                    references=kept,
+                    target=draft.target,
+                    stashed_from_draft_id=draft.stashed_from_draft_id,
+                    expires_at_us=draft.expires_at_us,
+                    updated_at_us=settlement.settled_at_us,
+                )
+        return _ack(
+            REMOVE_STAGED_ATTACHMENT_COMMAND, request.command_id, request.conversation_id
+        )
+
+    return command
+
+
+def _draft_attachment_entries(
+    writer: ChatWriter,
+    request: _SaveDraft,
+    *,
+    draft_id: str,
+    blobs_root: Path | None,
+) -> tuple[Mapping[str, Any], ...]:
+    """The tagged entries a `SaveDraft` stores, or a refusal that stores nothing.
+
+    Every reference must be an active staged attachment of this conversation and actor
+    that is bound to no draft or to `draft_id`, whose evidence is still available and
+    still at the pinned revision (a stated `sourceRevision` must equal it too). One
+    refusal message covers a missing, removed, other-scope and other-draft reference, so
+    a caller learns nothing about files it did not stage.
+    """
+    entries: list[Mapping[str, Any]] = []
+    for reference in request.attachment_references:
+        row = read_staged_attachment(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+            actor_id=request.actor_id,
+            attachment_reference_id=reference["referenceId"],
+        )
+        if (
+            row is None
+            or row.state != "active"
+            or (row.draft_id is not None and row.draft_id != draft_id)
+        ):
+            raise ChatAggregateConflict(_ATTACHMENT_NOT_STAGED)
+        evidence = read_attachment_evidence(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            evidence_id=row.attachment_reference_id,
+        )
+        if (
+            evidence is None
+            or blobs_root is None
+            or _attachment_unavailable(evidence, blobs_root, rehash=False)
+        ):
+            raise ChatAggregateConflict(_ATTACHMENT_UNAVAILABLE)
+        stated = reference.get("sourceRevision")
+        if (stated is not None and stated != row.source_revision) or (
+            evidence.content_checksum != row.source_revision
+            or evidence.blob_content_digest != row.blob_content_digest
+        ):
+            raise ChatAggregateConflict(_ATTACHMENT_REVISION)
+        entries.append(attachment_draft_entry(_plain_json(reference)))
+    return tuple(entries)
+
 
 # --- C6: private Direction admission ---------------------------------------------------
 
@@ -2473,9 +2870,17 @@ def _submit_steering_input(request: _SubmitSteeringInput) -> ChatCommand:
 
 
 def resolve_chat_command(
-    request: ChatCommandInput, context: OperationContext
+    request: ChatCommandInput,
+    context: OperationContext,
+    *,
+    blobs_root: Path | None = None,
 ) -> ChatCommand | None:
     """The production resolver for the Core-owned Chat W5 command subset.
+
+    `blobs_root` is the workspace blob root the attachment commands prove a file's
+    physical presence against. Without one (a build that does not serve blobs) the
+    commands that need it are `None`, the same `dependency_unavailable` refusal every
+    unimplemented command gets, rather than staging a file nobody checked.
 
     `None` is a refusal the handler renders as `dependency_unavailable`, and it is
     still the honest answer for commands this build has no implementation of. A
@@ -2558,12 +2963,23 @@ def resolve_chat_command(
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
             )
-        if save.attachment_references or save.context_references:
-            # The same Gate-B posture every other command here holds: this build
-            # carries no reference facts, so a draft that states any is a
-            # dependency_unavailable refusal, not a silent drop.
+        if save.context_references or (save.attachment_references and blobs_root is None):
+            # Context references have no authority in this build, and attachment
+            # references cannot be proved without a blob root: a draft that states
+            # either is a dependency_unavailable refusal, not a silent drop.
             return None
-        return _save_draft(save)
+        return _save_draft(save, blobs_root)
+    if request.command_name in (STAGE_ATTACHMENT_COMMAND, REMOVE_STAGED_ATTACHMENT_COMMAND):
+        attachment = _decode_attachment_command(request.command)
+        if attachment.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if attachment.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        if request.command_name == REMOVE_STAGED_ATTACHMENT_COMMAND:
+            return _remove_staged_attachment(attachment)
+        return None if blobs_root is None else _stage_attachment(attachment, blobs_root)
     if request.command_name == SUBMIT_STEERING_INPUT_COMMAND:
         steer = _decode_steering_input(request.command)
         if steer.workspace_id != context.workspace_id:

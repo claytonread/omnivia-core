@@ -129,6 +129,7 @@ CHAT_TABLES = (
     "omnivia_chat_generation_text_chunks",
     "omnivia_chat_queue_order_projection",
     "omnivia_chat_transactional_outbox",
+    "omnivia_chat_staged_attachments",
 )
 COUNTED_TABLES = s0.DURABLE_TABLES + CHAT_TABLES
 
