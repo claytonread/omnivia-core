@@ -212,6 +212,44 @@ def test_a_cursor_returns_the_matching_suffix_in_both_arrays(seeded: lc.m1.Owned
     assert result["transport_events"][0]["textDelta"] == "lo"
 
 
+def test_iteration_completed_projects_its_required_fields_after_a_cursor(
+    seeded: lc.m1.Owned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lc.claim(seeded)
+    started = lc.append(seeded, lc.STREAM_START, now_us=lc.BASE_US + 30)
+    assert started is not None
+    after_cursor = f"{lc.JOB_ID}:000004"
+    iteration = _replace(
+        started,
+        event_id=f"{lc.JOB_ID}.event.5",
+        event_type="chat.generation.iteration_completed",
+        generation_event_sequence=5,
+        cursor=f"{lc.JOB_ID}:000005",
+        payload={
+            "generationJobVersion": 7,
+            "iteration": 0,
+            "priorOutputDigest": "sha256:" + "0" * 64,
+        },
+    )
+
+    def _suffix(*args: Any, after_cursor: str | None = None, **kwargs: Any) -> Any:
+        assert after_cursor == f"{lc.JOB_ID}:000004"
+        return _replay((iteration,))
+
+    monkeypatch.setattr(chat_handler_module, "replay_generation_events", _suffix)
+
+    result = _events(seeded, after_cursor)
+    item = result["transport_events"][0]
+
+    assert ChatEvent.from_wire(item, strict=True).event_type == (
+        "chat.generation.iteration_completed"
+    )
+    assert item["generationEventSequence"] == 5
+    assert item["generationAttemptId"] == lc.ATTEMPT_ID
+    assert item["generationJobVersion"] == 7
+    assert item["iteration"] == 0
+
+
 def test_the_cursor_of_the_last_event_returns_both_arrays_empty(
     seeded: lc.m1.Owned,
 ) -> None:

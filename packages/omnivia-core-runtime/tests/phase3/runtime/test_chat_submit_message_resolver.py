@@ -2283,7 +2283,7 @@ def test_the_default_executor_uses_an_explicit_local_provider_route(
         def __init__(self, chunks: list[bytes]) -> None:
             self.chunks = chunks
 
-        def read(self, _size: int = -1) -> bytes:
+        def read1(self, _size: int = -1) -> bytes:
             return self.chunks.pop(0) if self.chunks else b""
 
     class Connection:

@@ -172,8 +172,10 @@ def _open_response(
 
 
 def _read_chunk(response: Any) -> tuple[bytes, bool]:
+    # read1, not read: read(n) blocks until n bytes or EOF, so a held-open stream
+    # would surface no event until the bridge closed it.
     try:
-        return response.read(_CHUNK_BYTES), False
+        return response.read1(_CHUNK_BYTES), False
     except OSError:
         return b"", True
 

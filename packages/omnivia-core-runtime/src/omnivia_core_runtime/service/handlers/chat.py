@@ -108,6 +108,7 @@ _MESSAGE_NO_COMMAND: Final = (
     "this build serves no implementation of the chat command this request names"
 )
 _TEXT_APPENDED: Final = "chat.generation.text_appended"
+_ITERATION_COMPLETED: Final = "chat.generation.iteration_completed"
 _DIRECTION_STATE_CHANGED: Final = "chat.direction.state_changed"
 #: `ChatEventsResult.events` and `.transport_events` are both `maxItems: 1000`, so
 #: one page is the first 1000 of the replayed suffix and the last cursor it returns
@@ -243,6 +244,9 @@ def _transport_event(
             raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
         fields["chunkOrdinal"] = ordinal
         fields["textDelta"] = chunk.text_content
+    if event.event_type == _ITERATION_COMPLETED:
+        fields["generationJobVersion"] = event.payload.get("generationJobVersion")
+        fields["iteration"] = event.payload.get("iteration")
     try:
         return ChatEvent(
             event_id=event.event_id,

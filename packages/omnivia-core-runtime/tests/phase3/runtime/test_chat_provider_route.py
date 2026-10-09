@@ -9,6 +9,8 @@ provider is treated as reached.
 from __future__ import annotations
 
 import json
+import socket
+import threading
 from typing import Any, ClassVar
 
 import omnivia_core_runtime.service.chat_provider_route as route
@@ -62,7 +64,7 @@ class _FakeResponse:
         self._chunks = chunks
         self.status = status
 
-    def read(self, _size: int = -1) -> bytes:
+    def read1(self, _size: int = -1) -> bytes:
         return self._chunks.pop(0) if self._chunks else b""
 
 
@@ -254,3 +256,69 @@ def test_malformed_ndjson_is_a_response_error_after_route_is_reached(
     with pytest.raises(GenerationExecutorError) as raised:
         list(invoke(_request()))
     assert "not-json" not in str(raised.value)
+
+
+def _http_chunk(data: bytes) -> bytes:
+    return b"%x\r\n" % len(data) + data + b"\r\n"
+
+
+def test_held_open_stream_yields_first_event_before_the_bridge_closes() -> None:
+    """A bridge that holds the response open must not hide events already sent.
+
+    The bridge sends stream-start and text-delta, then waits for this test to release
+    it -- which the test does only after both events have been yielded. A reader that
+    buffers until close never gets there and times out instead of hanging the suite.
+    """
+    request = _request()
+    release = threading.Event()
+    server = socket.create_server(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+
+    def bridge() -> None:
+        connection, _ = server.accept()
+        with connection:
+            connection.recv(65_536)
+            connection.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+                + _http_chunk(_event(request, 0, "stream-start"))
+                + _http_chunk(
+                    _event(
+                        request,
+                        1,
+                        "text-delta",
+                        partId="part-route-1",
+                        stepId="step-route-1",
+                        delta="hello",
+                    )
+                )
+            )
+            if release.wait(10):
+                connection.sendall(
+                    _http_chunk(_event(request, 2, "finish", finishReason="stop")) + b"0\r\n\r\n"
+                )
+
+    thread = threading.Thread(target=bridge, daemon=True)
+    thread.start()
+    try:
+        resolved = route.provider_route_from_env(
+            _configured_env(
+                **{
+                    route.ENDPOINT_ENV: f"http://127.0.0.1:{port}/f2a/provider-stream",
+                    route.DEADLINE_SECONDS_ENV: "2",
+                }
+            )
+        )
+        assert resolved is not None
+        invoke, _config = resolved
+        events = invoke(request)
+
+        assert next(events)["eventType"] == "stream-start"
+        assert next(events)["eventType"] == "text-delta"
+        assert not release.is_set()
+        release.set()
+        assert [event["eventType"] for event in events] == ["finish"]
+    finally:
+        release.set()
+        thread.join(5)
+        server.close()

@@ -68,6 +68,7 @@ from omnivia_core_runtime.service.chat_generation_executor import (
     GenerationExecutorConfig,
     ProviderRouteUnavailable,
 )
+from omnivia_core_runtime.service.chat_generation_worker import ChatGenerationWorker
 from omnivia_core_runtime.service.chat_provider_route import provider_route_from_env
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.engineering_conflict_execution import (
@@ -239,6 +240,12 @@ def _no_provider_adapter(_request: object) -> Iterable[Mapping[str, Any]]:
 
 
 def _default_chat_generation(started: ServiceRunner) -> ChatGenerationExecution | None:
+    """The default executor run inline, for a surface composed without a serving worker."""
+    executor = _default_chat_executor(started)
+    return None if executor is None else executor.execute
+
+
+def _default_chat_executor(started: ServiceRunner) -> ChatGenerationExecutor | None:
     """Install the Core-owned executor, even with no provider adapter to call.
 
     WHY INSTALL ONE THAT CANNOT SUCCEED. Without an executor `SubmitMessage` refuses
@@ -283,7 +290,7 @@ def _default_chat_generation(started: ServiceRunner) -> ChatGenerationExecution 
         clock=started.clock,
         invoke=invoke,
         config=config,
-    ).execute
+    )
 
 
 def _build_production_application_surface(
@@ -1070,10 +1077,24 @@ def main(
         started.lifecycle.resources.push(
             "installation_authority", installation_authority.close
         )
+        # Generation runs on its own worker once `chat.command` has committed, so a held
+        # provider stream never holds the serialized transports. Started before they bind
+        # (it first picks up what an earlier process committed and never ran) and pushed
+        # here so it stops after both transports and before the connection closes.
+        chat_executor = _default_chat_executor(started)
+        chat_worker = (
+            None
+            if chat_executor is None
+            else ChatGenerationWorker(executor=chat_executor, gate=started.sqlite_gate)
+        )
+        if chat_worker is not None:
+            chat_worker.start()
+            started.lifecycle.resources.push("chat_generation_worker", chat_worker.stop)
         application = _build_production_application_surface(
             started=started,
             probe=dispatcher,
             installation=installation,
+            execute_chat_generation=None if chat_worker is None else chat_worker.submit,
             resolve_workflow_release=resolve_workflow_release,
             workflow_wait_policy=workflow_wait_policy,
             project_authority=project_authorities.get(
