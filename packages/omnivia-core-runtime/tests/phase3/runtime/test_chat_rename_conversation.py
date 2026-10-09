@@ -355,3 +355,148 @@ def test_another_actor_cannot_archive(seeded: m1.Owned) -> None:
         key=ARCHIVE_COMMAND_ID,
     )
     assert isinstance(response, ErrorResponseEnvelope), response
+
+
+# --- C10: SelectConversationPath and SetDefaultConversationPath --------------
+#
+# Two rows on purpose. The select is the ACTOR's own view state, per actor and
+# per device; the default is a CONVERSATION fact every actor sees. Collapsing
+# them would make one person's navigation everyone's default.
+
+from omnivia_core_runtime.storage.chat import read_actor_view_state  # noqa: E402
+from test_chat_submit_message_resolver import BRANCH_ID  # noqa: E402
+
+
+def _path(
+    holder: m1.Owned,
+    command_name: str,
+    *,
+    command_id: str,
+    branch_id: str = BRANCH_ID,
+    actor_id: str = PRINCIPAL,
+    **extra: Any,
+) -> Any:
+    command: dict[str, Any] = {
+        "protocolVersion": PROTOCOL_VERSION,
+        "commandId": command_id,
+        "workspaceId": WORKSPACE_ID,
+        "conversationId": CONVERSATION_ID,
+        "actorId": actor_id,
+        "branchId": branch_id,
+    }
+    command.update(extra)
+    return _dispatcher(holder).dispatch(
+        _request(
+            command,
+            command_name=command_name,
+            idempotency_key=f"idem-{command_id}",
+            request_id=f"req-{command_id}",
+        )
+    )
+
+
+def _view_state(holder: m1.Owned) -> Any:
+    return read_actor_view_state(
+        holder.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=PRINCIPAL,
+    )
+
+
+def test_select_path_writes_the_actors_own_view_state(seeded: m1.Owned) -> None:
+    conversation_before = _conversation(seeded)
+    assert conversation_before is not None
+
+    response = _path(seeded, "SelectConversationPath", command_id="cmd-c10-select")
+    assert isinstance(response, SuccessResponseEnvelope), response
+
+    view = _view_state(seeded)
+    assert view is not None
+    assert view.active_branch_id == BRANCH_ID
+
+    # The conversation is untouched: one actor navigating is not everyone's
+    # default, and it is not a graph fact either.
+    after = _conversation(seeded)
+    assert after is not None
+    assert after.default_branch_id == conversation_before.default_branch_id
+    assert after.graph_revision == conversation_before.graph_revision
+
+
+def test_select_path_is_repeatable_and_advances_the_row_version(
+    seeded: m1.Owned,
+) -> None:
+    _path(seeded, "SelectConversationPath", command_id="cmd-c10-select")
+    first = _view_state(seeded)
+    assert first is not None
+
+    response = _path(seeded, "SelectConversationPath", command_id="cmd-c10-select-2")
+    assert isinstance(response, SuccessResponseEnvelope), response
+    second = _view_state(seeded)
+    assert second is not None
+    assert second.version == first.version + 1
+
+
+def test_set_default_path_writes_the_conversation_fact(seeded: m1.Owned) -> None:
+    before = _conversation(seeded)
+    assert before is not None
+
+    response = _path(seeded, "SetDefaultConversationPath", command_id="cmd-c10-default")
+    assert isinstance(response, SuccessResponseEnvelope), response
+
+    after = _conversation(seeded)
+    assert after is not None
+    assert after.default_branch_id == BRANCH_ID
+    # Still not a graph fact, and no view state was invented for the actor.
+    assert after.graph_revision == before.graph_revision
+    assert _view_state(seeded) is None
+
+
+def test_a_path_command_naming_an_unknown_branch_conflicts(seeded: m1.Owned) -> None:
+    # Writing an active branch that names nothing would point the actor at a
+    # path that cannot be read back.
+    response = _path(
+        seeded,
+        "SelectConversationPath",
+        command_id="cmd-c10-select-bad",
+        branch_id="branch-does-not-exist",
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert _view_state(seeded) is None
+
+
+def test_set_default_naming_an_unknown_branch_conflicts_without_writing(
+    seeded: m1.Owned,
+) -> None:
+    before = _conversation(seeded)
+    assert before is not None
+    response = _path(
+        seeded,
+        "SetDefaultConversationPath",
+        command_id="cmd-c10-default-bad",
+        branch_id="branch-does-not-exist",
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+    after = _conversation(seeded)
+    assert after is not None
+    assert after.default_branch_id == before.default_branch_id
+
+
+def test_a_path_command_refuses_an_undeclared_field(seeded: m1.Owned) -> None:
+    response = _path(
+        seeded,
+        "SelectConversationPath",
+        command_id="cmd-c10-select",
+        title="not mine to set",
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+
+
+def test_another_actor_cannot_select_a_path(seeded: m1.Owned) -> None:
+    response = _path(
+        seeded,
+        "SelectConversationPath",
+        command_id="cmd-c10-select",
+        actor_id="actor-someone-else",
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response

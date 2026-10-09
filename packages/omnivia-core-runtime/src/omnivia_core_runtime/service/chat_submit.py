@@ -122,6 +122,7 @@ from omnivia_core_runtime.storage.chat import (
     read_active_draft,
     read_active_drafts,
     read_active_queue_for_actor,
+    read_actor_view_state,
     read_branch,
     read_conversation,
     read_directions_for_generation_job,
@@ -183,6 +184,11 @@ RENAME_CONVERSATION_COMMAND: Final = "RenameConversation"
 ARCHIVE_CONVERSATION_COMMAND: Final = "ArchiveConversation"
 #: A tombstone, not a row removal: 0029 forbids DELETE on the table outright.
 DELETE_CONVERSATION_COMMAND: Final = "DeleteConversation"
+#: C10. The actor's OWN selected path, which is view state -- not the
+#: conversation's default, which is a conversation fact. They are two
+#: different rows on purpose and the two commands must not be collapsed.
+SELECT_CONVERSATION_PATH_COMMAND: Final = "SelectConversationPath"
+SET_DEFAULT_CONVERSATION_PATH_COMMAND: Final = "SetDefaultConversationPath"
 STAGE_ATTACHMENT_COMMAND: Final = "StageAttachment"
 REMOVE_STAGED_ATTACHMENT_COMMAND: Final = "RemoveStagedAttachment"
 
@@ -256,6 +262,18 @@ _RENAME_CONVERSATION_FIELDS: Final = frozenset(
         "conversationId",
         "actorId",
         "title",
+    }
+)
+#: `SelectConversationPathRequest` and `SetDefaultConversationPathRequest`
+#: share one closed shape: the identity plus the branch being selected.
+_CONVERSATION_PATH_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "actorId",
+        "branchId",
     }
 )
 #: `ArchiveConversationRequest` and `DeleteConversationRequest` are the same
@@ -476,6 +494,17 @@ class _RenameConversation:
     conversation_id: str
     actor_id: str
     title: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ConversationPath:
+    """One decoded `SelectConversationPath` or `SetDefaultConversationPath`."""
+
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
+    branch_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -960,6 +989,27 @@ def _decode_rename_conversation(command: Mapping[str, Any]) -> _RenameConversati
         conversation_id=_identifier(command, "conversationId"),
         actor_id=_identifier(command, "actorId"),
         title=title,
+    )
+
+
+def _decode_conversation_path(command: Mapping[str, Any]) -> _ConversationPath:
+    """Decode one `SelectConversationPath` or `SetDefaultConversationPath`."""
+    unknown = sorted(set(command) - _CONVERSATION_PATH_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+    return _ConversationPath(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        actor_id=_identifier(command, "actorId"),
+        branch_id=_identifier(command, "branchId"),
     )
 
 
@@ -1665,6 +1715,124 @@ def _conversation_lifecycle(
             updated_at_us=now,
         )
         return _ack(command_name, request.command_id, request.conversation_id)
+
+    return command
+
+
+def _select_conversation_path(request: _ConversationPath) -> ChatCommand:
+    """`SelectConversationPath`: the ACTOR's own active branch.
+
+    View state, not a conversation fact. It is per actor and per device, so it
+    touches no column any other actor reads and bumps no graph revision --
+    which is exactly why this is a different command from
+    `SetDefaultConversationPath` and why the two must not be collapsed.
+
+    The branch is proved to belong to this conversation first. Writing an
+    `active_branch_id` that names nothing, or names another conversation's
+    branch, would leave the actor pointed at a path that cannot be read back.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        now = settlement.settled_at_us
+        conversation = read_conversation(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
+        if conversation is None:
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
+        # Branches are addressed by id alone within a workspace, so belonging
+        # to THIS conversation is a separate check -- and the one that stops a
+        # caller selecting another conversation's branch.
+        branch = read_branch(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            branch_id=request.branch_id,
+        )
+        if branch is None or branch.conversation_id != request.conversation_id:
+            raise ChatAggregateConflict(_MESSAGE_BRANCH)
+        existing = read_actor_view_state(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+            actor_id=request.actor_id,
+        )
+        if existing is None:
+            writer.insert_view_state(
+                conversation_id=request.conversation_id,
+                actor_id=request.actor_id,
+                active_branch_id=request.branch_id,
+                last_seen_graph_revision=conversation.graph_revision,
+                schema_version=1,
+                updated_at_us=now,
+            )
+        else:
+            writer.update_view_state(
+                conversation_id=request.conversation_id,
+                actor_id=request.actor_id,
+                expected_version=existing.version,
+                active_branch_id=request.branch_id,
+                last_seen_graph_revision=conversation.graph_revision,
+                updated_at_us=now,
+                focused_message_id=existing.focused_message_id,
+            )
+        return _ack(
+            SELECT_CONVERSATION_PATH_COMMAND,
+            request.command_id,
+            request.conversation_id,
+        )
+
+    return command
+
+
+def _set_default_conversation_path(request: _ConversationPath) -> ChatCommand:
+    """`SetDefaultConversationPath`: the CONVERSATION's default branch.
+
+    A conversation fact every actor sees, where the select above is one
+    actor's own view. Same read-and-write-back discipline as the rename, and
+    the same carried `graph_revision`: choosing a default changes no graph.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        conversation = read_conversation(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
+        if conversation is None:
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
+        # Branches are addressed by id alone within a workspace, so belonging
+        # to THIS conversation is a separate check -- and the one that stops a
+        # caller selecting another conversation's branch.
+        branch = read_branch(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            branch_id=request.branch_id,
+        )
+        if branch is None or branch.conversation_id != request.conversation_id:
+            raise ChatAggregateConflict(_MESSAGE_BRANCH)
+        writer.update_conversation(
+            conversation_id=request.conversation_id,
+            expected_graph_revision=conversation.graph_revision,
+            graph_revision=conversation.graph_revision,
+            latest_conversation_sequence=conversation.latest_conversation_sequence,
+            state=conversation.state,
+            title=conversation.title,
+            title_source=conversation.title_source,
+            default_branch_id=request.branch_id,
+            archived_at_us=conversation.archived_at_us,
+            tombstoned_at_us=conversation.tombstoned_at_us,
+            updated_at_us=settlement.settled_at_us,
+        )
+        return _ack(
+            SET_DEFAULT_CONVERSATION_PATH_COMMAND,
+            request.command_id,
+            request.conversation_id,
+        )
 
     return command
 
@@ -3266,6 +3434,22 @@ def resolve_chat_command(
                 "actorId", "is not the principal this request was authenticated as"
             )
         return _rename_conversation(rename)
+    if request.command_name in (
+        SELECT_CONVERSATION_PATH_COMMAND,
+        SET_DEFAULT_CONVERSATION_PATH_COMMAND,
+    ):
+        path = _decode_conversation_path(request.command)
+        if path.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if path.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        return (
+            _select_conversation_path(path)
+            if request.command_name == SELECT_CONVERSATION_PATH_COMMAND
+            else _set_default_conversation_path(path)
+        )
     if request.command_name in (
         ARCHIVE_CONVERSATION_COMMAND,
         DELETE_CONVERSATION_COMMAND,
