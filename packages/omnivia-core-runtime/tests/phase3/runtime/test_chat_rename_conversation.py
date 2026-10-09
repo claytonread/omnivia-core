@@ -689,3 +689,163 @@ def test_another_actor_cannot_regenerate(seeded: m1.Owned) -> None:
     _seed_assistant_reply(seeded)
     response = _regenerate(seeded, actor_id="actor-someone-else")
     assert isinstance(response, ErrorResponseEnvelope), response
+
+
+# --- C10: CommitMessageAmendment --------------------------------------------
+#
+# A SIBLING user message under the same parent, on its own branch, with an
+# `amendment` derivation. The original stays, as it does for a regeneration.
+
+AMEND_COMMAND_ID = "cmd-c10-amend"
+
+
+def _amend(
+    holder: m1.Owned,
+    *,
+    command_id: str = AMEND_COMMAND_ID,
+    source_message_id: str = ROOT_MESSAGE_ID,
+    new_message_id: str = "msg-c10-amended",
+    new_branch_id: str = "branch-c10-amend",
+    actor_id: str = PRINCIPAL,
+    text: str = "what I meant to ask",
+    expected_sequence: int = 1,
+    **extra: Any,
+) -> Any:
+    command: dict[str, Any] = {
+        "protocolVersion": PROTOCOL_VERSION,
+        "commandId": command_id,
+        "workspaceId": WORKSPACE_ID,
+        "conversationId": CONVERSATION_ID,
+        "actorId": actor_id,
+        "sourceMessageId": source_message_id,
+        "newMessageId": new_message_id,
+        "newBranchId": new_branch_id,
+        "editableParts": [{"type": "text", "payload": {"text": text}}],
+        "attachmentReferences": [],
+        "contextReferences": [],
+        "requestedAt": "2026-10-10T00:00:00Z",
+    }
+    command.update(extra)
+    return _dispatcher(holder).dispatch(
+        _request(
+            command,
+            command_name="CommitMessageAmendment",
+            idempotency_key=f"idem-{command_id}",
+            request_id=f"req-{command_id}",
+            expected_sequence=expected_sequence,
+        )
+    )
+
+
+def test_an_amendment_forks_a_sibling_and_records_the_derivation(
+    seeded: m1.Owned,
+) -> None:
+    response = _amend(seeded)
+    assert isinstance(response, SuccessResponseEnvelope), response
+
+    amended = read_message(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        message_id="msg-c10-amended",
+    )
+    assert amended is not None
+    assert amended.role == "user"
+    # A SIBLING: same parent as the message it amends.
+    source = read_message(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        message_id=ROOT_MESSAGE_ID,
+    )
+    assert source is not None
+    assert amended.parent_message_id == source.parent_message_id
+    assert amended.created_on_branch_id == "branch-c10-amend"
+
+    branch = read_branch(
+        seeded.connection, workspace_id=WORKSPACE_ID, branch_id="branch-c10-amend"
+    )
+    assert branch is not None
+    assert branch.origin_kind == "message_amendment"
+    assert branch.fork_source_message_id == ROOT_MESSAGE_ID
+    # The branch starts AT the amendment, which is what makes the root case
+    # work without a special path.
+    assert branch.initial_head_message_id == "msg-c10-amended"
+
+    # The derivation is writable here, unlike the regeneration's.
+    # Queried directly: storage has no derivations reader, and adding one for
+    # a single assertion would be API nobody else needs.
+    derivations = seeded.connection.execute(
+        "SELECT derived_message_id, derivation_kind FROM "
+        "omnivia_chat_message_derivations WHERE workspace_id = ? "
+        "AND source_message_id = ?",
+        (WORKSPACE_ID, ROOT_MESSAGE_ID),
+    ).fetchall()
+    assert ("msg-c10-amended", "amendment") in [tuple(row) for row in derivations]
+
+    # The original survives: an amendment is a new turn, not an edit.
+    assert source.tombstoned_at_us is None
+
+
+def test_an_amendment_replays_idempotently(seeded: m1.Owned) -> None:
+    first = _amend(seeded)
+    assert isinstance(first, SuccessResponseEnvelope), first
+    replay = _amend(seeded)
+    assert isinstance(replay, SuccessResponseEnvelope), replay
+    assert replay.result == first.result
+
+
+def test_an_amendment_refuses_an_assistant_message(seeded: m1.Owned) -> None:
+    _seed_assistant_reply(seeded)
+    response = _amend(
+        seeded, source_message_id=ASSISTANT_MESSAGE_ID, expected_sequence=2
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+
+
+def test_a_mismatched_source_hash_refuses_without_writing(seeded: m1.Owned) -> None:
+    response = _amend(
+        seeded, expectedSourceContentHash=f"sha256:{'f' * 64}"
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert (
+        read_message(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            conversation_id=CONVERSATION_ID,
+            message_id="msg-c10-amended",
+        )
+        is None
+    )
+
+
+def test_a_matching_source_hash_is_accepted(seeded: m1.Owned) -> None:
+    source = read_message(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        message_id=ROOT_MESSAGE_ID,
+    )
+    assert source is not None
+    response = _amend(seeded, expectedSourceContentHash=source.content_hash)
+    assert isinstance(response, SuccessResponseEnvelope), response
+
+
+def test_an_amendment_refuses_non_empty_references(seeded: m1.Owned) -> None:
+    # Accepting these silently would claim a resolution this build does not
+    # perform.
+    response = _amend(
+        seeded,
+        attachmentReferences=[{"referenceId": "ref-1", "sourceRevision": 1}],
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+
+
+def test_an_amendment_refuses_an_undeclared_field(seeded: m1.Owned) -> None:
+    response = _amend(seeded, title="not mine to set")
+    assert isinstance(response, ErrorResponseEnvelope), response
+
+
+def test_another_actor_cannot_amend(seeded: m1.Owned) -> None:
+    response = _amend(seeded, actor_id="actor-someone-else")
+    assert isinstance(response, ErrorResponseEnvelope), response

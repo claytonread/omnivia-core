@@ -191,6 +191,10 @@ DELETE_CONVERSATION_COMMAND: Final = "DeleteConversation"
 #: C10. A SIBLING assistant message under the same user parent, on its own
 #: branch. The original assistant message and its descendants remain --
 #: regeneration never replaces, it forks.
+#: C10. A SIBLING user message under the same parent, on its own branch,
+#: with an `amendment` derivation. Unlike the regeneration the derived id
+#: is the caller's, so the derivation is writable here.
+COMMIT_MESSAGE_AMENDMENT_COMMAND: Final = "CommitMessageAmendment"
 REGENERATE_RESPONSE_COMMAND: Final = "RegenerateResponse"
 SELECT_CONVERSATION_PATH_COMMAND: Final = "SelectConversationPath"
 SET_DEFAULT_CONVERSATION_PATH_COMMAND: Final = "SetDefaultConversationPath"
@@ -267,6 +271,26 @@ _RENAME_CONVERSATION_FIELDS: Final = frozenset(
         "conversationId",
         "actorId",
         "title",
+    }
+)
+_AMENDMENT_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "actorId",
+        "sourceMessageId",
+        "newMessageId",
+        "newBranchId",
+        "editableParts",
+        "attachmentReferences",
+        "contextReferences",
+        "requestedAt",
+        "expectedSourceContentHash",
+        "clientObservedGraphRevision",
+        "clientCorrelationHint",
+        "targetReference",
     }
 )
 _REGENERATE_RESPONSE_FIELDS: Final = frozenset(
@@ -510,6 +534,22 @@ class _RenameConversation:
     conversation_id: str
     actor_id: str
     title: str
+
+
+@dataclass(frozen=True, slots=True)
+class _MessageAmendment:
+    """One decoded `CommitMessageAmendmentRequest`."""
+
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
+    source_message_id: str
+    new_message_id: str
+    new_branch_id: str
+    parts: tuple[Any, ...]
+    content_hash: str
+    expected_source_content_hash: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1017,6 +1057,70 @@ def _decode_rename_conversation(command: Mapping[str, Any]) -> _RenameConversati
         conversation_id=_identifier(command, "conversationId"),
         actor_id=_identifier(command, "actorId"),
         title=title,
+    )
+
+
+def _decode_amendment(command: Mapping[str, Any]) -> _MessageAmendment:
+    """Decode one `CommitMessageAmendmentRequest`.
+
+    The parts are decoded by the same `_part` the ordinary submit uses, and
+    hashed the same way, so an amended message is byte-identical in shape to
+    one that had been sent that way first.
+
+    `attachmentReferences` and `contextReferences` are REQUIRED by the contract
+    and required to be EMPTY here. Resolving staged references through an
+    amendment is C7 work that nothing has exercised, and silently accepting a
+    non-empty array would claim a resolution this command does not perform.
+    Refusing is the honest answer until that lane is built.
+
+    `targetReference`, `clientObservedGraphRevision` and
+    `clientCorrelationHint` are validated where cheap and then dropped: the
+    frozen result envelope has nowhere to echo them, and the graph revision is
+    explicitly "never itself an authority grant".
+    """
+    unknown = sorted(set(command) - _AMENDMENT_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+    _utc_timestamp(command, "requestedAt")
+    for field in ("attachmentReferences", "contextReferences"):
+        value = command.get(field)
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes, Mapping)):
+            raise _invalid(field, "is not an array")
+        if len(value) != 0:
+            raise _invalid(field, "is not empty, which this build cannot yet resolve")
+    parts = command.get("editableParts")
+    if (
+        not isinstance(parts, Sequence)
+        or isinstance(parts, (str, bytes, Mapping))
+        or not 1 <= len(parts) <= _MAX_PARTS
+    ):
+        raise _invalid("editableParts", "is not an array of one to 4096 parts")
+    decoded = tuple(_part(item, index) for index, item in enumerate(parts))
+    expected_hash = command.get("expectedSourceContentHash")
+    if "expectedSourceContentHash" in command and not isinstance(expected_hash, str):
+        raise _invalid("expectedSourceContentHash", "is not a content hash")
+    if "clientCorrelationHint" in command:
+        _identifier(command, "clientCorrelationHint")
+    return _MessageAmendment(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        actor_id=_identifier(command, "actorId"),
+        source_message_id=_identifier(command, "sourceMessageId"),
+        new_message_id=_derivable_identifier(command, "newMessageId"),
+        new_branch_id=_identifier(command, "newBranchId"),
+        parts=tuple(part for part, _ in decoded),
+        content_hash=_digest(f"[{','.join(canonical for _, canonical in decoded)}]"),
+        expected_source_content_hash=(
+            None if "expectedSourceContentHash" not in command else str(expected_hash)
+        ),
     )
 
 
@@ -1778,6 +1882,161 @@ _MESSAGE_NO_PARENT: Final = (
 _MESSAGE_BRANCH_EXISTS: Final = (
     "the branch this command would create already exists"
 )
+
+
+_MESSAGE_NOT_USER: Final = (
+    "the message this command names is not a user message of that conversation"
+)
+_MESSAGE_SOURCE_HASH: Final = (
+    "the message this command amends is not at the content this request expects"
+)
+
+
+def _commit_message_amendment(request: _MessageAmendment) -> ChatCommand:
+    """`CommitMessageAmendment`: a SIBLING user message under the same parent.
+
+    The same shape as a regeneration and for the same reason -- the original
+    message and everything under it stays, and the amended version lives on
+    its own branch -- but the derived id is the caller's, so the `amendment`
+    derivation is written here rather than deferred to the executor.
+
+    The new branch starts AT the amended message, with `fork_parent_message_id`
+    naming the shared parent. That handles the root case without a special
+    path: a conversation's first message has no parent, and the branch simply
+    starts at the amendment.
+
+    A generation job is opened on the new branch, because an amended question
+    is a question: leaving it unanswered would make the amendment a silent
+    edit rather than a new turn.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        now = settlement.settled_at_us
+        conversation = read_conversation(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
+        if conversation is None:
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
+        source = read_message(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+            message_id=request.source_message_id,
+        )
+        if source is None or source.role != "user":
+            raise ChatAggregateConflict(_MESSAGE_NOT_USER)
+        if (
+            request.expected_source_content_hash is not None
+            and source.content_hash != request.expected_source_content_hash
+        ):
+            raise ChatAggregateConflict(_MESSAGE_SOURCE_HASH)
+        if (
+            read_branch(
+                writer.connection,
+                workspace_id=writer.workspace_id,
+                branch_id=request.new_branch_id,
+            )
+            is not None
+        ):
+            raise ChatAggregateConflict(_MESSAGE_BRANCH_EXISTS)
+
+        sequence = conversation.latest_conversation_sequence + 1
+        writer.update_conversation(
+            conversation_id=request.conversation_id,
+            expected_graph_revision=conversation.graph_revision,
+            graph_revision=conversation.graph_revision,
+            latest_conversation_sequence=sequence,
+            state=conversation.state,
+            title=conversation.title,
+            title_source=conversation.title_source,
+            default_branch_id=conversation.default_branch_id,
+            archived_at_us=conversation.archived_at_us,
+            tombstoned_at_us=conversation.tombstoned_at_us,
+            updated_at_us=now,
+        )
+        writer.append_message(
+            message_id=request.new_message_id,
+            conversation_id=request.conversation_id,
+            parent_message_id=source.parent_message_id,
+            role="user",
+            author_type="human",
+            author_id=request.actor_id,
+            conversation_sequence=sequence,
+            schema_version=1,
+            content_hash=request.content_hash,
+            completion_status="complete",
+            visibility="standard",
+            created_on_branch_id=request.new_branch_id,
+            created_at_us=now,
+            committed_at_us=now,
+        )
+        for index, part in enumerate(request.parts):
+            writer.append_message_part(
+                part_id=f"{request.new_message_id}.p{index}",
+                message_id=request.new_message_id,
+                conversation_id=request.conversation_id,
+                part_index=index,
+                part_type=part.part_type,
+                schema_version=1,
+                visibility="standard",
+                payload=part.payload,
+                content_hash=part.content_hash,
+                created_at_us=now,
+                provenance="human",
+            )
+        # Appended AFTER the message, because 0029 keys a branch's initial head
+        # to a real message row.
+        writer.append_branch(
+            branch_id=request.new_branch_id,
+            conversation_id=request.conversation_id,
+            origin_kind="message_amendment",
+            initial_head_message_id=request.new_message_id,
+            created_by_actor_id=request.actor_id,
+            created_at_us=now,
+            created_conversation_sequence=sequence,
+            schema_version=1,
+            created_from_branch_id=source.created_on_branch_id,
+            fork_parent_message_id=source.parent_message_id,
+            fork_source_message_id=request.source_message_id,
+        )
+        writer.append_message_derivation(
+            conversation_id=request.conversation_id,
+            source_message_id=request.source_message_id,
+            derived_message_id=request.new_message_id,
+            derivation_kind="amendment",
+            created_by_actor_id=request.actor_id,
+            created_at_us=now,
+        )
+        generation_job_id = f"{request.command_id}.gen"
+        writer.append_generation_job(
+            generation_job_id=generation_job_id,
+            conversation_id=request.conversation_id,
+            branch_id=request.new_branch_id,
+            trigger_message_id=request.new_message_id,
+            graph_revision_observed=conversation.graph_revision,
+            idempotency_key=request.command_id,
+            schema_version=1,
+            created_at_us=now,
+            updated_at_us=now,
+        )
+        writer.insert_generation_job_status_projection(
+            generation_job_id=generation_job_id,
+            conversation_id=request.conversation_id,
+            state="queued",
+            updated_at_us=now,
+        )
+        return _ack(
+            COMMIT_MESSAGE_AMENDMENT_COMMAND,
+            request.command_id,
+            request.conversation_id,
+            result_ref=f"message:{request.new_message_id}",
+        )
+
+    return command
 
 
 def _regenerate_response(request: _RegenerateResponse) -> ChatCommand:
@@ -3591,6 +3850,15 @@ def resolve_chat_command(
                 "actorId", "is not the principal this request was authenticated as"
             )
         return _rename_conversation(rename)
+    if request.command_name == COMMIT_MESSAGE_AMENDMENT_COMMAND:
+        amendment = _decode_amendment(request.command)
+        if amendment.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if amendment.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        return _commit_message_amendment(amendment)
     if request.command_name == REGENERATE_RESPONSE_COMMAND:
         regenerate = _decode_regenerate_response(request.command)
         if regenerate.workspace_id != context.workspace_id:
