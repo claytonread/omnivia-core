@@ -294,11 +294,10 @@ def _save_with(service: Any, references: list[Any], *, command_id: str = "cmd-c5
 
 
 def test_0070_is_the_next_forward_only_migration_and_its_objects_exist(svc: Any) -> None:
-    catalogue = load_migrations()
-    assert catalogue[-1].version == 70
-    assert catalogue[-1].name == "0070_chat_staged_attachments.sql"
-    assert catalogue[-2].version == 69
-    assert applied_migrations(svc.connection)[70] == catalogue[-1].checksum
+    catalogue = {migration.version: migration for migration in load_migrations()}
+    assert catalogue[70].name == "0070_chat_staged_attachments.sql"
+    assert catalogue[69].name == "0069_chat_generation_directions.sql"
+    assert applied_migrations(svc.connection)[70] == catalogue[70].checksum
     names = {
         row[0]
         for row in svc.connection.execute(

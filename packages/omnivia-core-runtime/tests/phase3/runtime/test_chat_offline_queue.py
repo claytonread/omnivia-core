@@ -1267,6 +1267,13 @@ def test_a_foreign_or_underivable_job_never_becomes_a_correlation(seeded: m1.Own
             created_at_us=BASE_US + 13,
             updated_at_us=BASE_US + 13,
         )
+        # A selected-branch job is only consistent durable state with its status pair.
+        writer.insert_generation_job_status_projection(
+            generation_job_id="queue-gb05-underivable.gen",
+            conversation_id=CONVERSATION_ID,
+            state="queued",
+            updated_at_us=BASE_US + 13,
+        )
 
     entries = chat.read_active_queue_for_actor(
         seeded.connection,
