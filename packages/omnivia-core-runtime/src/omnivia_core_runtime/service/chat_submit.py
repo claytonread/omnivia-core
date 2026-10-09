@@ -180,6 +180,9 @@ DISCARD_DRAFT_COMMAND: Final = "DiscardDraft"
 #: `commands.schema.json`; what was missing was a resolver, so every
 #: `RenameConversation` answered `dependency_unavailable`.
 RENAME_CONVERSATION_COMMAND: Final = "RenameConversation"
+ARCHIVE_CONVERSATION_COMMAND: Final = "ArchiveConversation"
+#: A tombstone, not a row removal: 0029 forbids DELETE on the table outright.
+DELETE_CONVERSATION_COMMAND: Final = "DeleteConversation"
 STAGE_ATTACHMENT_COMMAND: Final = "StageAttachment"
 REMOVE_STAGED_ATTACHMENT_COMMAND: Final = "RemoveStagedAttachment"
 
@@ -253,6 +256,17 @@ _RENAME_CONVERSATION_FIELDS: Final = frozenset(
         "conversationId",
         "actorId",
         "title",
+    }
+)
+#: `ArchiveConversationRequest` and `DeleteConversationRequest` are the same
+#: closed identity-only shape; neither carries a field the other does not.
+_CONVERSATION_LIFECYCLE_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "actorId",
     }
 )
 _CREATE_CONVERSATION_FIELDS: Final = frozenset(
@@ -462,6 +476,16 @@ class _RenameConversation:
     conversation_id: str
     actor_id: str
     title: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ConversationLifecycle:
+    """One decoded `ArchiveConversationRequest` or `DeleteConversationRequest`."""
+
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -936,6 +960,33 @@ def _decode_rename_conversation(command: Mapping[str, Any]) -> _RenameConversati
         conversation_id=_identifier(command, "conversationId"),
         actor_id=_identifier(command, "actorId"),
         title=title,
+    )
+
+
+def _decode_conversation_lifecycle(
+    command: Mapping[str, Any],
+) -> _ConversationLifecycle:
+    """Decode one `ArchiveConversationRequest` or `DeleteConversationRequest`.
+
+    One decoder for both: `commands.schema.json` gives them the same closed
+    identity-only field set, and two decoders would be two places for that to
+    drift.
+    """
+    unknown = sorted(set(command) - _CONVERSATION_LIFECYCLE_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+    return _ConversationLifecycle(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        actor_id=_identifier(command, "actorId"),
     )
 
 
@@ -1551,6 +1602,69 @@ def _rename_conversation(request: _RenameConversation) -> ChatCommand:
             request.command_id,
             request.conversation_id,
         )
+
+    return command
+
+
+#: 0029 makes `archived` and `tombstoned` BOTH terminal: its update trigger
+#: aborts any state change out of either. So a conversation is archived or
+#: tombstoned from `active` and from nowhere else -- an archived conversation
+#: cannot later be tombstoned, which is a domain fact these commands state as
+#: a clean conflict rather than discovering as an integrity abort mid-mutation.
+_MESSAGE_CONVERSATION_TERMINAL: Final = (
+    "the conversation has already been archived or deleted"
+)
+
+
+def _conversation_lifecycle(
+    request: _ConversationLifecycle, *, command_name: str, state: str
+) -> ChatCommand:
+    """`ArchiveConversation` and `DeleteConversation`, which differ only in the
+    terminal state they write and the instant column they stamp.
+
+    Neither removes a row. 0029 forbids DELETE on the conversations table
+    outright, so `DeleteConversation` is a tombstone -- the record stays and
+    stops being addressable as a live conversation.
+
+    As with the rename, every mutable column this command does not own is read
+    and written back unchanged, and `graph_revision` is carried rather than
+    bumped: archiving changes no graph fact.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        now = settlement.settled_at_us
+        conversation = read_conversation(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
+        if conversation is None:
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
+        if conversation.state == state:
+            # Already there. Idempotent by replay through the seam's stored
+            # outcome; a DIFFERENT command id asking again is a conflict, not a
+            # silent success, because the caller believes it changed something.
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION_TERMINAL)
+        if conversation.state != "active":
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION_TERMINAL)
+        writer.update_conversation(
+            conversation_id=request.conversation_id,
+            expected_graph_revision=conversation.graph_revision,
+            graph_revision=conversation.graph_revision,
+            latest_conversation_sequence=conversation.latest_conversation_sequence,
+            state=state,
+            title=conversation.title,
+            title_source=conversation.title_source,
+            default_branch_id=conversation.default_branch_id,
+            archived_at_us=now if state == "archived" else conversation.archived_at_us,
+            tombstoned_at_us=(
+                now if state == "tombstoned" else conversation.tombstoned_at_us
+            ),
+            updated_at_us=now,
+        )
+        return _ack(command_name, request.command_id, request.conversation_id)
 
     return command
 
@@ -3152,6 +3266,26 @@ def resolve_chat_command(
                 "actorId", "is not the principal this request was authenticated as"
             )
         return _rename_conversation(rename)
+    if request.command_name in (
+        ARCHIVE_CONVERSATION_COMMAND,
+        DELETE_CONVERSATION_COMMAND,
+    ):
+        lifecycle = _decode_conversation_lifecycle(request.command)
+        if lifecycle.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if lifecycle.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        return _conversation_lifecycle(
+            lifecycle,
+            command_name=request.command_name,
+            state=(
+                "archived"
+                if request.command_name == ARCHIVE_CONVERSATION_COMMAND
+                else "tombstoned"
+            ),
+        )
     if request.command_name == CREATE_CONVERSATION_COMMAND:
         create = _decode_create_conversation(request.command)
         if create.workspace_id != context.workspace_id:

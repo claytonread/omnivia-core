@@ -193,3 +193,165 @@ def test_an_unknown_conversation_conflicts_without_writing(seeded: m1.Owned) -> 
     assert isinstance(response, ErrorResponseEnvelope), response
     after = _counts(seeded)
     assert {t: after[t] - before[t] for t in CHAT_TABLES if after[t] != before[t]} == {}
+
+
+# --- C10: ArchiveConversation and DeleteConversation -------------------------
+#
+# Same closed identity-only shape, and both terminal: 0029's update trigger
+# aborts any state change out of `archived` or `tombstoned`, so an archived
+# conversation can never later be tombstoned. These pin that as a clean
+# conflict rather than an integrity abort raised mid-mutation.
+
+ARCHIVE_COMMAND_ID = "cmd-c10-archive"
+DELETE_COMMAND_ID = "cmd-c10-delete"
+
+
+def _lifecycle_command(
+    *,
+    command_id: str,
+    actor_id: str = PRINCIPAL,
+    conversation_id: str = CONVERSATION_ID,
+    **extra: Any,
+) -> dict[str, Any]:
+    command: dict[str, Any] = {
+        "protocolVersion": PROTOCOL_VERSION,
+        "commandId": command_id,
+        "workspaceId": WORKSPACE_ID,
+        "conversationId": conversation_id,
+        "actorId": actor_id,
+    }
+    command.update(extra)
+    return command
+
+
+def _lifecycle(
+    holder: m1.Owned,
+    command_name: str,
+    command: Mapping[str, Any],
+    *,
+    key: str,
+) -> Any:
+    return _dispatcher(holder).dispatch(
+        _request(
+            command,
+            command_name=command_name,
+            idempotency_key=f"idem-{key}",
+            request_id=f"req-{key}",
+        )
+    )
+
+
+def test_archive_marks_the_conversation_and_stamps_the_instant(seeded: m1.Owned) -> None:
+    before = _conversation(seeded)
+    assert before is not None
+    assert before.state == "active"
+
+    response = _lifecycle(
+        seeded,
+        "ArchiveConversation",
+        _lifecycle_command(command_id=ARCHIVE_COMMAND_ID),
+        key=ARCHIVE_COMMAND_ID,
+    )
+    assert isinstance(response, SuccessResponseEnvelope), response
+
+    after = _conversation(seeded)
+    assert after is not None
+    assert after.state == "archived"
+    assert after.archived_at_us is not None
+    assert after.tombstoned_at_us is None
+    # Not a graph fact, and the title is not this command's to touch.
+    assert after.graph_revision == before.graph_revision
+    assert after.title == before.title
+
+
+def test_delete_tombstones_rather_than_removing_the_row(seeded: m1.Owned) -> None:
+    # 0029 forbids DELETE on the conversations table outright.
+    response = _lifecycle(
+        seeded,
+        "DeleteConversation",
+        _lifecycle_command(command_id=DELETE_COMMAND_ID),
+        key=DELETE_COMMAND_ID,
+    )
+    assert isinstance(response, SuccessResponseEnvelope), response
+
+    after = _conversation(seeded)
+    assert after is not None, "the row survives; only its state is terminal"
+    assert after.state == "tombstoned"
+    assert after.tombstoned_at_us is not None
+
+
+def test_an_archived_conversation_cannot_then_be_deleted(seeded: m1.Owned) -> None:
+    # The domain fact worth pinning: both states are terminal, so this is a
+    # conflict and NOT a path the trigger has to abort.
+    _lifecycle(
+        seeded,
+        "ArchiveConversation",
+        _lifecycle_command(command_id=ARCHIVE_COMMAND_ID),
+        key=ARCHIVE_COMMAND_ID,
+    )
+    response = _lifecycle(
+        seeded,
+        "DeleteConversation",
+        _lifecycle_command(command_id=DELETE_COMMAND_ID),
+        key=DELETE_COMMAND_ID,
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+    after = _conversation(seeded)
+    assert after is not None
+    assert after.state == "archived", "the refusal wrote nothing"
+
+
+def test_archiving_twice_under_different_ids_conflicts(seeded: m1.Owned) -> None:
+    _lifecycle(
+        seeded,
+        "ArchiveConversation",
+        _lifecycle_command(command_id=ARCHIVE_COMMAND_ID),
+        key=ARCHIVE_COMMAND_ID,
+    )
+    response = _lifecycle(
+        seeded,
+        "ArchiveConversation",
+        _lifecycle_command(command_id="cmd-c10-archive-2"),
+        key="cmd-c10-archive-2",
+    )
+    # A different command id asking again is a conflict, not a silent success:
+    # the caller believes it changed something.
+    assert isinstance(response, ErrorResponseEnvelope), response
+
+
+def test_archive_replays_idempotently(seeded: m1.Owned) -> None:
+    first = _lifecycle(
+        seeded,
+        "ArchiveConversation",
+        _lifecycle_command(command_id=ARCHIVE_COMMAND_ID),
+        key=ARCHIVE_COMMAND_ID,
+    )
+    assert isinstance(first, SuccessResponseEnvelope), first
+    replay = _lifecycle(
+        seeded,
+        "ArchiveConversation",
+        _lifecycle_command(command_id=ARCHIVE_COMMAND_ID),
+        key=ARCHIVE_COMMAND_ID,
+    )
+    assert isinstance(replay, SuccessResponseEnvelope), replay
+    assert replay.result == first.result
+
+
+def test_a_lifecycle_command_refuses_an_undeclared_field(seeded: m1.Owned) -> None:
+    response = _lifecycle(
+        seeded,
+        "ArchiveConversation",
+        _lifecycle_command(command_id=ARCHIVE_COMMAND_ID, title="not mine to set"),
+        key=ARCHIVE_COMMAND_ID,
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+
+
+def test_another_actor_cannot_archive(seeded: m1.Owned) -> None:
+    response = _lifecycle(
+        seeded,
+        "ArchiveConversation",
+        _lifecycle_command(command_id=ARCHIVE_COMMAND_ID, actor_id="actor-someone-else"),
+        key=ARCHIVE_COMMAND_ID,
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
