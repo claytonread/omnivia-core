@@ -138,6 +138,7 @@ __all__ = [
     "read_actor_directions_for_branch",
     "read_actor_view_state",
     "read_branch",
+    "read_message",
     "read_branch_head_events",
     "read_chat_tool_call",
     "read_chat_tool_calls",
@@ -3294,6 +3295,27 @@ def _message_from_row(row: tuple[Any, ...]) -> Message:
         committed_at_us=row[15],
         tombstoned_at_us=row[16],
     )
+
+
+def read_message(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    message_id: str,
+) -> Message | None:
+    """One message row, or `None`.
+
+    Scoped by conversation as well as id: a message id is unique in the
+    workspace, so without the conversation a caller could address a message
+    belonging to a conversation it is not operating on.
+    """
+    row = connection.execute(
+        f"SELECT {_MESSAGE_COLUMNS} FROM omnivia_chat_messages "
+        "WHERE workspace_id = ? AND conversation_id = ? AND message_id = ?",
+        (workspace_id, conversation_id, message_id),
+    ).fetchone()
+    return None if row is None else _message_from_row(row)
 
 
 def read_messages_by_conversation_sequence(

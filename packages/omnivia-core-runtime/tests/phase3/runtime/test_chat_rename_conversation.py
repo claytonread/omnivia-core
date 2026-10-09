@@ -500,3 +500,192 @@ def test_another_actor_cannot_select_a_path(seeded: m1.Owned) -> None:
         actor_id="actor-someone-else",
     )
     assert isinstance(response, ErrorResponseEnvelope), response
+
+
+# --- C10: RegenerateResponse ------------------------------------------------
+#
+# A SIBLING assistant message under the same user parent. The contract is
+# explicit that the original and its descendants remain, so this forks and
+# never replaces.
+
+from omnivia_core_runtime.storage import chat as chat_storage  # noqa: E402
+from omnivia_core_runtime.storage.chat import read_branch, read_message  # noqa: E402
+from test_chat_submit_message_resolver import (  # noqa: E402
+    BASE_US,
+    GRAPH_REVISION,
+    ROOT_MESSAGE_ID,
+)
+
+REGENERATE_COMMAND_ID = "cmd-c10-regen"
+#: The seeded fixture stops at the root USER message, so a regeneration test
+#: has to put an assistant reply under it first -- that reply is what this
+#: command regenerates.
+ASSISTANT_MESSAGE_ID = "msg-c10-assistant"
+SEEDED_JOB_ID = "job-c10-seeded"
+
+
+def _seed_assistant_reply(holder: m1.Owned) -> None:
+    with chat_storage.chat_writer(
+        holder.connection,
+        holder.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=holder.generation,
+    ) as writer:
+        # 0029 refuses a message whose sequence points behind the
+        # conversation's own, so the conversation has to keep up.
+        writer.update_conversation(
+            conversation_id=CONVERSATION_ID,
+            expected_graph_revision=GRAPH_REVISION,
+            graph_revision=GRAPH_REVISION,
+            latest_conversation_sequence=2,
+            state="active",
+            default_branch_id=BRANCH_ID,
+            updated_at_us=BASE_US + 11,
+        )
+        # And 0029 requires an assistant message to name the job that produced
+        # it, so the reply needs a job to have come from.
+        writer.append_generation_job(
+            generation_job_id=SEEDED_JOB_ID,
+            conversation_id=CONVERSATION_ID,
+            branch_id=BRANCH_ID,
+            trigger_message_id=ROOT_MESSAGE_ID,
+            graph_revision_observed=GRAPH_REVISION,
+            idempotency_key=SEEDED_JOB_ID,
+            schema_version=1,
+            created_at_us=BASE_US + 9,
+            updated_at_us=BASE_US + 9,
+        )
+        writer.append_message(
+            message_id=ASSISTANT_MESSAGE_ID,
+            conversation_id=CONVERSATION_ID,
+            parent_message_id=ROOT_MESSAGE_ID,
+            role="assistant",
+            author_type="provider",
+            author_id="core.chat.generation",
+            conversation_sequence=2,
+            schema_version=1,
+            content_hash=f"sha256:{'c' * 64}",
+            completion_status="complete",
+            visibility="standard",
+            created_on_branch_id=BRANCH_ID,
+            generation_job_id=SEEDED_JOB_ID,
+            created_at_us=BASE_US + 10,
+            committed_at_us=BASE_US + 10,
+        )
+
+
+def _regenerate(
+    holder: m1.Owned,
+    *,
+    command_id: str = REGENERATE_COMMAND_ID,
+    source_message_id: str = ASSISTANT_MESSAGE_ID,
+    new_branch_id: str = "branch-c10-regen",
+    actor_id: str = PRINCIPAL,
+    **extra: Any,
+) -> Any:
+    command: dict[str, Any] = {
+        "protocolVersion": PROTOCOL_VERSION,
+        "commandId": command_id,
+        "workspaceId": WORKSPACE_ID,
+        "conversationId": CONVERSATION_ID,
+        "actorId": actor_id,
+        "sourceMessageId": source_message_id,
+        "newBranchId": new_branch_id,
+    }
+    command.update(extra)
+    return _dispatcher(holder).dispatch(
+        _request(
+            command,
+            command_name="RegenerateResponse",
+            idempotency_key=f"idem-{command_id}",
+            request_id=f"req-{command_id}",
+            # `_seed_assistant_reply` advanced the conversation to 2 to make
+            # room for the reply, so the envelope's expectation has to match.
+            expected_sequence=2,
+        )
+    )
+
+
+def test_regenerate_forks_a_branch_at_the_user_parent_and_queues_a_job(
+    seeded: m1.Owned,
+) -> None:
+    _seed_assistant_reply(seeded)
+    source = read_message(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        message_id=ASSISTANT_MESSAGE_ID,
+    )
+    assert source is not None, "the fixture must seed an assistant message"
+    assert source.parent_message_id is not None
+
+    response = _regenerate(seeded)
+    assert isinstance(response, SuccessResponseEnvelope), response
+
+    branch = read_branch(
+        seeded.connection, workspace_id=WORKSPACE_ID, branch_id="branch-c10-regen"
+    )
+    assert branch is not None
+    assert branch.origin_kind == "assistant_regeneration"
+    # The head is the USER parent, so the reply is a sibling of the original.
+    assert branch.initial_head_message_id == source.parent_message_id
+    assert branch.fork_parent_message_id == source.parent_message_id
+    # The provenance the executor reads back to write the derivation.
+    assert branch.fork_source_message_id == ASSISTANT_MESSAGE_ID
+
+    # The original is untouched: regeneration never replaces.
+    still_there = read_message(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        message_id=ASSISTANT_MESSAGE_ID,
+    )
+    assert still_there is not None
+    assert still_there.tombstoned_at_us is None
+
+
+def test_regenerate_replays_idempotently(seeded: m1.Owned) -> None:
+    _seed_assistant_reply(seeded)
+    first = _regenerate(seeded)
+    assert isinstance(first, SuccessResponseEnvelope), first
+    replay = _regenerate(seeded)
+    assert isinstance(replay, SuccessResponseEnvelope), replay
+    assert replay.result == first.result
+
+
+def test_regenerate_refuses_a_user_message(seeded: m1.Owned) -> None:
+    # Only an assistant message has a response to regenerate.
+    response = _regenerate(seeded, source_message_id=ROOT_MESSAGE_ID)
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert (
+        read_branch(
+            seeded.connection, workspace_id=WORKSPACE_ID, branch_id="branch-c10-regen"
+        )
+        is None
+    )
+
+
+def test_regenerate_refuses_an_unknown_message(seeded: m1.Owned) -> None:
+    response = _regenerate(seeded, source_message_id="msg-does-not-exist")
+    assert isinstance(response, ErrorResponseEnvelope), response
+
+
+def test_regenerate_refuses_a_branch_id_already_in_use(seeded: m1.Owned) -> None:
+    _seed_assistant_reply(seeded)
+    _regenerate(seeded)
+    response = _regenerate(
+        seeded, command_id="cmd-c10-regen-2", new_branch_id="branch-c10-regen"
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+
+
+def test_regenerate_refuses_an_undeclared_field(seeded: m1.Owned) -> None:
+    _seed_assistant_reply(seeded)
+    response = _regenerate(seeded, title="not mine to set")
+    assert isinstance(response, ErrorResponseEnvelope), response
+
+
+def test_another_actor_cannot_regenerate(seeded: m1.Owned) -> None:
+    _seed_assistant_reply(seeded)
+    response = _regenerate(seeded, actor_id="actor-someone-else")
+    assert isinstance(response, ErrorResponseEnvelope), response

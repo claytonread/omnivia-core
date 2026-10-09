@@ -124,6 +124,7 @@ from omnivia_core_runtime.storage.chat import (
     read_active_queue_for_actor,
     read_actor_view_state,
     read_branch,
+    read_message,
     read_conversation,
     read_directions_for_generation_job,
     read_draft,
@@ -187,6 +188,10 @@ DELETE_CONVERSATION_COMMAND: Final = "DeleteConversation"
 #: C10. The actor's OWN selected path, which is view state -- not the
 #: conversation's default, which is a conversation fact. They are two
 #: different rows on purpose and the two commands must not be collapsed.
+#: C10. A SIBLING assistant message under the same user parent, on its own
+#: branch. The original assistant message and its descendants remain --
+#: regeneration never replaces, it forks.
+REGENERATE_RESPONSE_COMMAND: Final = "RegenerateResponse"
 SELECT_CONVERSATION_PATH_COMMAND: Final = "SelectConversationPath"
 SET_DEFAULT_CONVERSATION_PATH_COMMAND: Final = "SetDefaultConversationPath"
 STAGE_ATTACHMENT_COMMAND: Final = "StageAttachment"
@@ -262,6 +267,17 @@ _RENAME_CONVERSATION_FIELDS: Final = frozenset(
         "conversationId",
         "actorId",
         "title",
+    }
+)
+_REGENERATE_RESPONSE_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "actorId",
+        "sourceMessageId",
+        "newBranchId",
     }
 )
 #: `SelectConversationPathRequest` and `SetDefaultConversationPathRequest`
@@ -494,6 +510,18 @@ class _RenameConversation:
     conversation_id: str
     actor_id: str
     title: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RegenerateResponse:
+    """One decoded `RegenerateResponseRequest`."""
+
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
+    source_message_id: str
+    new_branch_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -989,6 +1017,28 @@ def _decode_rename_conversation(command: Mapping[str, Any]) -> _RenameConversati
         conversation_id=_identifier(command, "conversationId"),
         actor_id=_identifier(command, "actorId"),
         title=title,
+    )
+
+
+def _decode_regenerate_response(command: Mapping[str, Any]) -> _RegenerateResponse:
+    """Decode one `RegenerateResponseRequest`."""
+    unknown = sorted(set(command) - _REGENERATE_RESPONSE_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+    return _RegenerateResponse(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        actor_id=_identifier(command, "actorId"),
+        source_message_id=_identifier(command, "sourceMessageId"),
+        new_branch_id=_identifier(command, "newBranchId"),
     )
 
 
@@ -1715,6 +1765,113 @@ def _conversation_lifecycle(
             updated_at_us=now,
         )
         return _ack(command_name, request.command_id, request.conversation_id)
+
+    return command
+
+
+_MESSAGE_NOT_ASSISTANT: Final = (
+    "the message this command names is not an assistant message of that conversation"
+)
+_MESSAGE_NO_PARENT: Final = (
+    "the assistant message this command names has no user parent to regenerate under"
+)
+_MESSAGE_BRANCH_EXISTS: Final = (
+    "the branch this command would create already exists"
+)
+
+
+def _regenerate_response(request: _RegenerateResponse) -> ChatCommand:
+    """`RegenerateResponse`: a SIBLING assistant message under the same user parent.
+
+    The contract is explicit that the original assistant Message and its
+    descendants REMAIN, so this forks rather than replaces. It opens a new
+    branch whose head is the user parent and a generation job triggered by
+    that parent; the assistant message itself is the executor's to write, as
+    it is for an ordinary send.
+
+    The `regeneration` derivation cannot be written here -- the derived
+    message does not exist yet -- so the branch carries the provenance
+    instead: `origin_kind='assistant_regeneration'` with
+    `fork_source_message_id` naming the message being regenerated. The
+    executor reads those back when it materialises the reply and writes the
+    derivation then, which is the only point at which both ends of the
+    relation exist.
+
+    No conversation counter moves. The branch is new, the parent is already
+    committed, and nothing is appended to the conversation here.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        now = settlement.settled_at_us
+        conversation = read_conversation(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
+        if conversation is None:
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
+        source = read_message(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+            message_id=request.source_message_id,
+        )
+        if source is None or source.role != "assistant":
+            raise ChatAggregateConflict(_MESSAGE_NOT_ASSISTANT)
+        parent_message_id = source.parent_message_id
+        if parent_message_id is None:
+            raise ChatAggregateConflict(_MESSAGE_NO_PARENT)
+        if (
+            read_branch(
+                writer.connection,
+                workspace_id=writer.workspace_id,
+                branch_id=request.new_branch_id,
+            )
+            is not None
+        ):
+            raise ChatAggregateConflict(_MESSAGE_BRANCH_EXISTS)
+
+        writer.append_branch(
+            branch_id=request.new_branch_id,
+            conversation_id=request.conversation_id,
+            origin_kind="assistant_regeneration",
+            initial_head_message_id=parent_message_id,
+            created_by_actor_id=request.actor_id,
+            created_at_us=now,
+            created_conversation_sequence=conversation.latest_conversation_sequence,
+            schema_version=1,
+            created_from_branch_id=source.created_on_branch_id,
+            fork_parent_message_id=parent_message_id,
+            # Read back by the executor to write the `regeneration` derivation
+            # once the new assistant message exists.
+            fork_source_message_id=request.source_message_id,
+        )
+        generation_job_id = f"{request.command_id}.gen"
+        writer.append_generation_job(
+            generation_job_id=generation_job_id,
+            conversation_id=request.conversation_id,
+            branch_id=request.new_branch_id,
+            trigger_message_id=parent_message_id,
+            graph_revision_observed=conversation.graph_revision,
+            idempotency_key=request.command_id,
+            schema_version=1,
+            created_at_us=now,
+            updated_at_us=now,
+        )
+        writer.insert_generation_job_status_projection(
+            generation_job_id=generation_job_id,
+            conversation_id=request.conversation_id,
+            state="queued",
+            updated_at_us=now,
+        )
+        return _ack(
+            REGENERATE_RESPONSE_COMMAND,
+            request.command_id,
+            request.conversation_id,
+            result_ref=f"generation:{generation_job_id}",
+        )
 
     return command
 
@@ -3434,6 +3591,15 @@ def resolve_chat_command(
                 "actorId", "is not the principal this request was authenticated as"
             )
         return _rename_conversation(rename)
+    if request.command_name == REGENERATE_RESPONSE_COMMAND:
+        regenerate = _decode_regenerate_response(request.command)
+        if regenerate.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if regenerate.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        return _regenerate_response(regenerate)
     if request.command_name in (
         SELECT_CONVERSATION_PATH_COMMAND,
         SET_DEFAULT_CONVERSATION_PATH_COMMAND,

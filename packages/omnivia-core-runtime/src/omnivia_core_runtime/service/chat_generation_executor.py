@@ -1621,6 +1621,25 @@ class ChatGenerationExecutor:
                 content_hash=part_hash,
                 created_at_us=now_us,
             )
+            # C10 RegenerateResponse: the `regeneration` relation, written
+            # here because this is the first moment both of its ends exist.
+            # The command that opened this job could not write it -- the
+            # derived message did not exist yet -- so it recorded the
+            # provenance on the branch and this reads it back. An ordinary
+            # send's branch carries neither marker and writes no derivation.
+            if (
+                branch is not None
+                and branch.origin_kind == "assistant_regeneration"
+                and branch.fork_source_message_id is not None
+            ):
+                writer.append_message_derivation(
+                    conversation_id=job.conversation_id,
+                    source_message_id=branch.fork_source_message_id,
+                    derived_message_id=message_id,
+                    derivation_kind="regeneration",
+                    created_by_actor_id=self.config.service_actor_id,
+                    created_at_us=now_us,
+                )
             writer.append_branch_head_event(
                 event_id=_stable_id("assistant-head", job.generation_job_id),
                 conversation_id=job.conversation_id,
