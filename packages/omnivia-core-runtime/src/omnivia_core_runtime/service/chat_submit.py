@@ -27,20 +27,36 @@ record of a call that has not happened. It also opens no network connection, add
 SDK, and registers no operation of its own.
 
 **The bounded variant this build serves.** `SubmitMessageRequest` admits attachment
-and context references, a `targetReference` and a `fromQueuedSubmissionId`; none of
-those has an implementation in this repository -- reference revalidation, another
-authority's target, and the queued-submission claim walk respectively -- so a request
-carrying one is refused as `dependency_unavailable` rather than served with the field
-silently dropped. A structurally invalid document is a different refusal
-(`invalid_request`) and is decided before any grant is issued.
+and context references, a `targetReference` and a `fromQueuedSubmissionId`. Context
+references, another authority's target and the queued-submission claim walk have no
+implementation in this repository, so a request carrying a non-empty
+`contextReferences` or a `targetReference` is refused as `dependency_unavailable` rather
+than served with the field silently dropped. A structurally invalid document is a
+different refusal (`invalid_request`) and is decided before any grant is issued.
 
-**Attachments (C7A) are staged and drafted, not yet submitted.** `StageAttachment` and
-`RemoveStagedAttachment` keep a durable authority row per reference (migration 0070),
-and `SaveDraft` stores attachment references only when each resolves to an active one.
-`SubmitMessage` and `EnqueueMessage` still refuse any non-empty reference as
-`dependency_unavailable`: admitting one has to revalidate and consume the staged row in
-the same transaction that writes the Message, which is the next slice's, so nothing here
-can write a Message that names an attachment.
+**Attachments (C7A).** `StageAttachment` and `RemoveStagedAttachment` keep a durable
+authority row per reference (migration 0070), and `SaveDraft` stores attachment
+references only when each resolves to an active one. `SubmitMessage` and
+`EnqueueMessage` accept a non-empty `attachmentReferences` and, before any Message,
+queue, branch, job or outbox write, prove every one inside the same fenced transaction
+(`service/chat_attachment_authority.revalidate_attachments`): an active staged row of
+this conversation and the authenticated actor, the stated revision, the evidence still
+at that revision and blob, no tombstone or integrity failure, and the bytes physically
+present. One refusal writes nothing. The staged row is *not* consumed -- 0070 has only
+`active` and `removed`, and `removed` means the actor withdrew the file -- so a sent
+attachment stays staged until the actor removes it, and removing it before the
+generation runs refuses that generation.
+
+Each accepted reference is stored pinned (its revision always stated) in the queued
+row's combined `references_json` as a tagged entry (`storage.chat_attachments`), and as
+one standard `attachment` Message part after the authored parts, so the transcript, the
+provider projection and a restart all read the same governed state and nothing else:
+no path, URL or byte exists in either. The Message's `content_hash` covers those parts
+too. A drain (`fromQueuedSubmissionId`) takes its references from the queue row, which
+is authoritative: the request must restate exactly that list -- same length, same order,
+same ids, and a `sourceRevision`, where stated, equal to the pinned one -- or it is the
+queue-content conflict, and the references are revalidated again before the Message
+is written.
 
 **Identifiers are derived from the caller's own `commandId`**, not allocated randomly,
 so the rows one command wrote are addressable by the caller that wrote them without a
@@ -89,6 +105,13 @@ from omnivia_core.contracts.v1.generated import (
     ChatCommandResult,
     ChatConversationExpectation,
 )
+from omnivia_core_runtime.service.chat_attachment_authority import (
+    ATTACHMENT_PART_TYPE,
+    AttachmentRefused,
+    attachment_part_payload,
+    attachment_unavailable,
+    revalidate_attachments,
+)
 from omnivia_core_runtime.service.chat_command import ChatAggregateConflict, ChatCommand
 from omnivia_core_runtime.service.mutation import MutationSettlementContext
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
@@ -114,15 +137,15 @@ from omnivia_core_runtime.storage.chat import (
     read_queued_submission,
 )
 from omnivia_core_runtime.storage.chat_attachments import (
-    AttachmentEvidence,
     attachment_draft_entry,
     count_active_staged_attachments,
+    draft_attachment_references,
     insert_staged_attachment,
     read_attachment_evidence,
     read_staged_attachment,
     transition_staged_attachment,
 )
-from omnivia_core_runtime.workspace.blob_publication import blob_is_intact
+from omnivia_core_runtime.storage.connection import StorageError
 
 __all__ = [
     "CANCEL_QUEUED_SUBMISSION_COMMAND",
@@ -291,7 +314,7 @@ _UPDATE_QUEUE_FIELDS: Final = frozenset(
 #: from the unknown-field check: these are contract members, and a request carrying one
 #: is unimplemented rather than malformed.
 _UNSUPPORTED_FIELDS: Final = ("targetReference",)
-_UNSUPPORTED_REFERENCES: Final = ("attachmentReferences", "contextReferences")
+_UNSUPPORTED_REFERENCES: Final = ("contextReferences",)
 #: `EnqueueMessageRequest` carries the same unsupported `targetReference` member as
 #: `SubmitMessageRequest`; its non-empty references are refused by the same rule.
 _ENQUEUE_UNSUPPORTED_FIELDS: Final = ("targetReference",)
@@ -373,6 +396,7 @@ class _SubmitMessage:
     parts: tuple[_Part, ...]
     content_hash: str
     from_queued_submission_id: str | None
+    attachment_references: tuple[Mapping[str, Any], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,6 +415,7 @@ class _EnqueueMessage:
     branch_id: str
     actor_id: str
     parts: tuple[_Part, ...]
+    attachment_references: tuple[Mapping[str, Any], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -599,6 +624,15 @@ def _reference(item: object, field: str) -> None:
     )
 
 
+def _attachment_references(attachments: Sequence[Any]) -> tuple[Mapping[str, Any], ...]:
+    """The decoded `attachmentReferences`, each a plain `{referenceId[, sourceRevision]}`."""
+    for index, item in enumerate(attachments):
+        _reference(item, f"attachmentReferences[{index}]")
+    if len({item["referenceId"] for item in attachments}) != len(attachments):
+        raise _invalid("attachmentReferences", "names the same reference more than once")
+    return tuple(_plain_json(item) for item in attachments)
+
+
 def _target_reference(value: object) -> None:
     field = "targetReference"
     if not isinstance(value, Mapping):
@@ -643,8 +677,7 @@ def _decode(command: Mapping[str, Any]) -> _SubmitMessage:
         command, "attachmentReferences", max_items=_MAX_REFERENCE_COUNT
     )
     contexts = _array(command, "contextReferences", max_items=_MAX_REFERENCE_COUNT)
-    for index, item in enumerate(attachments):
-        _reference(item, f"attachmentReferences[{index}]")
+    attachment_references = _attachment_references(attachments)
     for index, item in enumerate(contexts):
         _reference(item, f"contextReferences[{index}]")
     if "targetReference" in command:
@@ -712,6 +745,7 @@ def _decode(command: Mapping[str, Any]) -> _SubmitMessage:
         parts=tuple(part for part, _ in decoded),
         content_hash=_digest(f"[{','.join(canonical for _, canonical in decoded)}]"),
         from_queued_submission_id=from_queued_submission_id,
+        attachment_references=attachment_references,
     )
 
 
@@ -739,8 +773,7 @@ def _decode_enqueue(command: Mapping[str, Any]) -> _EnqueueMessage:
         command, "attachmentReferences", max_items=_MAX_REFERENCE_COUNT
     )
     contexts = _array(command, "contextReferences", max_items=_MAX_REFERENCE_COUNT)
-    for index, item in enumerate(attachments):
-        _reference(item, f"attachmentReferences[{index}]")
+    attachment_references = _attachment_references(attachments)
     for index, item in enumerate(contexts):
         _reference(item, f"contextReferences[{index}]")
     if "targetReference" in command:
@@ -762,6 +795,7 @@ def _decode_enqueue(command: Mapping[str, Any]) -> _EnqueueMessage:
         branch_id=_identifier(command, "branchId"),
         actor_id=_identifier(command, "actorId"),
         parts=tuple(part for part, _ in decoded),
+        attachment_references=attachment_references,
     )
 
 
@@ -1064,7 +1098,44 @@ def _ack(
     ).to_wire()
 
 
-def _submit(request: _SubmitMessage) -> ChatCommand:
+def _same_references(
+    stored: Sequence[Mapping[str, Any]], stated: Sequence[Mapping[str, Any]]
+) -> bool:
+    """Whether a request restates a queue row's attachment references exactly.
+
+    Same length, same order, same ids; a stated `sourceRevision` must equal the pinned one,
+    and an unstated one is the pinned one (the same meaning it has at admission).
+    """
+    return len(stored) == len(stated) and all(
+        held["referenceId"] == given["referenceId"]
+        and given.get("sourceRevision", held.get("sourceRevision"))
+        == held.get("sourceRevision")
+        for held, given in zip(stored, stated, strict=True)
+    )
+
+
+def _attachment_parts(pinned: Sequence[Mapping[str, str]]) -> tuple[_Part, ...]:
+    """One standard `attachment` Message part per pinned reference, in order."""
+    parts: list[_Part] = []
+    for reference in pinned:
+        payload = attachment_part_payload(reference)
+        parts.append(
+            _Part(
+                part_type=ATTACHMENT_PART_TYPE,
+                visibility="standard",
+                payload=payload,
+                content_hash=_digest(to_canonical_json(dict(payload))),
+            )
+        )
+    return tuple(parts)
+
+
+def _attachment_entries(pinned: Sequence[Mapping[str, str]]) -> tuple[Mapping[str, Any], ...]:
+    """The tagged entries a queued row stores for its pinned attachment references."""
+    return tuple(attachment_draft_entry(reference) for reference in pinned)
+
+
+def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatCommand:
     """One decoded submission, as the command the mutation seam runs.
 
     Two variants, one transaction and one write order. The continuation advances an
@@ -1087,6 +1158,7 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
             raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
 
         queued_row: QueuedSubmission | None = None
+        submitted_references = request.attachment_references
         if request.from_queued_submission_id is not None:
             queued_row = read_queued_submission(
                 writer.connection,
@@ -1105,13 +1177,21 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
             # names a different branch cannot be this row's drain.
             if request.branch_id is None or request.branch_id != queued_row.branch_id:
                 raise ChatAggregateConflict(_MESSAGE_QUEUE_ROW)
-            if queued_row.references or _queued_content_hash(
-                queued_row.editable_parts
-            ) != request.content_hash:
-                # A stale renderer's view of this row's content, identity or head is a
-                # governed conflict requiring resnapshot, never a silent commit of
-                # whichever content happened to arrive.
+            try:
+                queued_references = draft_attachment_references(queued_row.references)
+            except StorageError:
+                raise ChatAggregateConflict(_MESSAGE_QUEUE_CONTENT) from None
+            if (
+                not _same_references(queued_references, request.attachment_references)
+                or _queued_content_hash(queued_row.editable_parts) != request.content_hash
+            ):
+                # A stale renderer's view of this row's content, identity, head or
+                # attachments is a governed conflict requiring resnapshot, never a
+                # silent commit of whichever content happened to arrive. The row's
+                # references are authoritative: a request may restate them exactly,
+                # never substitute, drop, add, reorder or re-pin one.
                 raise ChatAggregateConflict(_MESSAGE_QUEUE_CONTENT)
+            submitted_references = queued_references
             if _generation_job_exists_for_idempotency_key(
                 writer.connection,
                 workspace_id=writer.workspace_id,
@@ -1155,6 +1235,18 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
             parent_message_id = request.expected_head_message_id
             head_version = branch.head_version + 1
 
+        # Every attachment is proved here, before the first write below, so a refusal
+        # leaves no Message, queue row, branch, job or outbox row behind.
+        pinned = _admit_attachments(
+            writer,
+            conversation_id=request.conversation_id,
+            actor_id=request.actor_id,
+            references=submitted_references,
+            blobs_root=blobs_root,
+        )
+        attachment_parts = _attachment_parts(pinned)
+        message_parts = (*request.parts, *attachment_parts)
+
         sequence = conversation.latest_conversation_sequence + 1
         if queued_row is None:
             queued_submission_id = f"{request.command_id}.sub"
@@ -1194,14 +1286,18 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
             parent_message_id=parent_message_id,
             conversation_sequence=sequence,
             schema_version=1,
-            content_hash=request.content_hash,
+            content_hash=(
+                _queued_content_hash([_editable_part_wire(part) for part in message_parts])
+                if attachment_parts
+                else request.content_hash
+            ),
             completion_status="complete",
             visibility="standard",
             created_on_branch_id=branch_id,
             created_at_us=now,
             committed_at_us=now,
         )
-        for index, part in enumerate(request.parts):
+        for index, part in enumerate(message_parts):
             writer.append_message_part(
                 part_id=f"{request.message_id}.p{index}",
                 message_id=request.message_id,
@@ -1279,7 +1375,7 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
                 queue_sequence=queue_sequence,
                 branch_id=branch_id,
                 editable_parts=tuple(_editable_part_wire(part) for part in request.parts),
-                references=(),
+                references=_attachment_entries(pinned),
                 idempotency_key=request.command_id,
                 created_at_us=now,
                 updated_at_us=now,
@@ -1404,7 +1500,9 @@ def _create_conversation(request: _CreateConversation) -> ChatCommand:
     return command
 
 
-def _enqueue_message(request: _EnqueueMessage) -> ChatCommand:
+def _enqueue_message(
+    request: _EnqueueMessage, blobs_root: Path | None = None
+) -> ChatCommand:
     """One decoded `EnqueueMessageRequest`, as the command the seam runs.
 
     Writes exactly one queued-submission row and its queue-order projection, and
@@ -1444,6 +1542,13 @@ def _enqueue_message(request: _EnqueueMessage) -> ChatCommand:
             or branch.state != "open"
         ):
             raise ChatAggregateConflict(_MESSAGE_BRANCH)
+        pinned = _admit_attachments(
+            writer,
+            conversation_id=request.conversation_id,
+            actor_id=request.actor_id,
+            references=request.attachment_references,
+            blobs_root=blobs_root,
+        )
 
         queued_submission_id = f"{request.command_id}.sub"
         queue_sequence = _next_queue_sequence(
@@ -1458,7 +1563,7 @@ def _enqueue_message(request: _EnqueueMessage) -> ChatCommand:
             queue_sequence=queue_sequence,
             branch_id=request.branch_id,
             editable_parts=tuple(_editable_part_wire(part) for part in request.parts),
-            references=(),
+            references=_attachment_entries(pinned),
             idempotency_key=request.command_id,
             created_at_us=now,
             updated_at_us=now,
@@ -2367,24 +2472,6 @@ def _decode_attachment_command(command: Mapping[str, Any]) -> _AttachmentCommand
     )
 
 
-def _attachment_unavailable(
-    evidence: AttachmentEvidence, blobs_root: Path, *, rehash: bool
-) -> bool:
-    """Whether a file can no longer be offered: a tombstone, a failed ancestry or
-    integrity record, or bytes that are not physically there."""
-    return (
-        evidence.tombstoned
-        or not evidence.ancestry_verified
-        or evidence.integrity_failed
-        or not blob_is_intact(
-            blobs_root,
-            evidence.blob_content_digest,
-            evidence.content_length_bytes,
-            rehash=rehash,
-        )
-    )
-
-
 def _stage_attachment(request: _AttachmentCommand, blobs_root: Path) -> ChatCommand:
     """One decoded `StageAttachmentRequest`, as the command the mutation seam runs.
 
@@ -2449,7 +2536,7 @@ def _stage_attachment(request: _AttachmentCommand, blobs_root: Path) -> ChatComm
             raise ChatAggregateConflict(_ATTACHMENT_TOO_LARGE)
         if evidence.media_type not in _ATTACHMENT_MEDIA_TYPES:
             raise ChatAggregateConflict(_ATTACHMENT_MEDIA)
-        if _attachment_unavailable(evidence, blobs_root, rehash=True):
+        if attachment_unavailable(evidence, blobs_root, rehash=True):
             raise ChatAggregateConflict(_ATTACHMENT_UNAVAILABLE)
         if (
             count_active_staged_attachments(
@@ -2577,6 +2664,46 @@ def _remove_staged_attachment(request: _AttachmentCommand) -> ChatCommand:
     return command
 
 
+_ATTACHMENT_REPEATED: Final = "the request names the same attachment reference more than once"
+_ATTACHMENT_REFUSALS: Final = {
+    "duplicate": _ATTACHMENT_REPEATED,
+    "not_staged": _ATTACHMENT_NOT_STAGED,
+    "unavailable": _ATTACHMENT_UNAVAILABLE,
+    "revision": _ATTACHMENT_REVISION,
+}
+
+
+def _admit_attachments(
+    writer: ChatWriter,
+    *,
+    conversation_id: str,
+    actor_id: str,
+    references: Sequence[Mapping[str, Any]],
+    blobs_root: Path | None,
+) -> tuple[Mapping[str, str], ...]:
+    """Every reference a `SubmitMessage` or `EnqueueMessage` names, proved or refused whole.
+
+    Runs inside the command's fenced transaction and before its first write, so the
+    authority it reads is the authority the Message is committed under. The full blob is
+    re-hashed here, once: admission is the last point an actor's file is vouched for by
+    this build before a model sees it. The refusal is the coarse governed conflict and
+    never says which of the files was the cause.
+    """
+    try:
+        return revalidate_attachments(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=conversation_id,
+            actor_id=actor_id,
+            references=references,
+            blobs_root=blobs_root,
+            require_staged=True,
+            rehash=True,
+        )
+    except AttachmentRefused as refused:
+        raise ChatAggregateConflict(_ATTACHMENT_REFUSALS[refused.reason]) from None
+
+
 def _draft_attachment_entries(
     writer: ChatWriter,
     request: _SaveDraft,
@@ -2615,7 +2742,7 @@ def _draft_attachment_entries(
         if (
             evidence is None
             or blobs_root is None
-            or _attachment_unavailable(evidence, blobs_root, rehash=False)
+            or attachment_unavailable(evidence, blobs_root, rehash=False)
         ):
             raise ChatAggregateConflict(_ATTACHMENT_UNAVAILABLE)
         stated = reference.get("sourceRevision")
@@ -2912,11 +3039,21 @@ def resolve_chat_command(
         submit = _decode(request.command)
         if submit.workspace_id != context.workspace_id:
             raise _invalid("workspaceId", "is not the workspace this request was authorized for")
-        if any(field in request.command for field in _UNSUPPORTED_FIELDS) or any(
-            request.command.get(field) for field in _UNSUPPORTED_REFERENCES
+        if submit.attachment_references and submit.actor_id != context.principal:
+            # The staged rows an attachment resolves against are the authenticated
+            # actor's own; naming another actor would read someone else's staging.
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        if (
+            any(field in request.command for field in _UNSUPPORTED_FIELDS)
+            or any(request.command.get(field) for field in _UNSUPPORTED_REFERENCES)
+            or (submit.attachment_references and blobs_root is None)
         ):
+            # Attachments cannot be proved without a blob root: dependency_unavailable,
+            # never an unchecked file.
             return None
-        return _submit(submit)
+        return _submit(submit, blobs_root)
     if request.command_name == ENQUEUE_MESSAGE_COMMAND:
         enqueue = _decode_enqueue(request.command)
         if enqueue.workspace_id != context.workspace_id:
@@ -2925,11 +3062,13 @@ def resolve_chat_command(
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
             )
-        if any(field in request.command for field in _ENQUEUE_UNSUPPORTED_FIELDS) or any(
-            request.command.get(field) for field in _UNSUPPORTED_REFERENCES
+        if (
+            any(field in request.command for field in _ENQUEUE_UNSUPPORTED_FIELDS)
+            or any(request.command.get(field) for field in _UNSUPPORTED_REFERENCES)
+            or (enqueue.attachment_references and blobs_root is None)
         ):
             return None
-        return _enqueue_message(enqueue)
+        return _enqueue_message(enqueue, blobs_root)
     if request.command_name == UPDATE_QUEUED_SUBMISSION_COMMAND:
         update_queue = _decode_update_queue(request.command)
         if update_queue.workspace_id != context.workspace_id:

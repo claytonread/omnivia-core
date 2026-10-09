@@ -396,9 +396,10 @@ def _queued_submission(entry: ActiveQueueEntry) -> Mapping[str, Any]:
     Deliberately narrower than the durable row it is taken from: `claimedBy`,
     `sanitizedErrorCode`/`sanitizedErrorDetail` and `idempotencyKey` are claim and
     execution internals, never actor-facing queue state, and are never read here.
-    `attachmentReferences`/`contextReferences` are always empty -- the Gate B slice
-    this build serves writes no other reference facts to a queued row -- which is
-    the honest answer this projection states rather than omits.
+    `attachmentReferences` are the row's tagged attachment entries decoded back, pinned
+    and in stored order (C7A); `contextReferences` stay empty because this build refuses
+    to store any. An entry that is not a tagged attachment reference is content this
+    build did not write and is an internal error, never projected as either kind.
 
     `generationJobId` is the one exception to that narrowing, and it is identity
     only: a drained row stays `state: queued` until the generation claimant advances
@@ -408,6 +409,10 @@ def _queued_submission(entry: ActiveQueueEntry) -> Mapping[str, Any]:
     row (`read_active_queue_for_actor`) -- never a derived id nothing backs.
     """
     submission, order = entry.submission, entry.order
+    try:
+        attachments = draft_attachment_references(submission.references)
+    except StorageError:
+        raise _internal() from None
     document: dict[str, Any] = {
         "workspaceId": submission.workspace_id,
         "conversationId": submission.conversation_id,
@@ -415,7 +420,7 @@ def _queued_submission(entry: ActiveQueueEntry) -> Mapping[str, Any]:
         "queuedSubmissionId": submission.queued_submission_id,
         "branchId": submission.branch_id,
         "editableParts": [dict(part) for part in submission.editable_parts],
-        "attachmentReferences": [],
+        "attachmentReferences": [dict(reference) for reference in attachments],
         "contextReferences": [],
         "state": "queued",
         "version": submission.version,

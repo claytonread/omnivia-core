@@ -15,6 +15,7 @@ import sqlite3
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Final
 
 from omnivia_core.chat_contract.v1 import (
@@ -27,6 +28,12 @@ from omnivia_core.chat_contract.v1.generated import (
     F2A_PROVIDER_EVENT_TYPES,
 )
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
+from omnivia_core_runtime.service.chat_attachment_authority import (
+    ATTACHMENT_PART_TYPE,
+    AttachmentRefused,
+    attachment_reference_of_part,
+    revalidate_attachments,
+)
 from omnivia_core_runtime.service.chat_compaction import derive_model_visible_context
 from omnivia_core_runtime.service.chat_generation import (
     DEFAULT_LEASE_US,
@@ -55,6 +62,7 @@ from omnivia_core_runtime.storage import chat
 from omnivia_core_runtime.storage.connection import StorageError
 
 __all__ = [
+    "AttachmentUnavailable",
     "ChatGenerationExecutor",
     "GenerationExecutorConfig",
     "GenerationExecutorError",
@@ -71,6 +79,9 @@ _LEASE_MARGIN_SECONDS: Final = 30
 _SAFE_MESSAGES: Final = {
     "provider-unavailable": "no provider route was reachable for this generation",
     "malformed-response": "the provider stream could not be completed safely",
+    # The closed F2a vocabulary has no attachment code; `invalid-request` is the one that
+    # says the request was refused before it was sent, for a reason on the caller's side.
+    "invalid-request": "an attached file is no longer available, so no request was sent",
 }
 _TERMINAL_PROVIDER_EVENTS: Final = frozenset({"finish", "error"})
 #: `common.schema.json#/$defs/ProviderAttemptId` is a WorkspaceScopedId used for one
@@ -113,6 +124,15 @@ _UNAPPLIED_OF_JOB_STATE: Final = {
 
 class GenerationExecutorError(Exception):
     """A sanitized executor refusal; provider content is never included."""
+
+
+class AttachmentUnavailable(GenerationExecutorError):
+    """An accepted attachment that may no longer be sent; nothing was sent for it.
+
+    Revoked, removed, changed or physically gone between admission and this attempt. It
+    ends the Generation before any provider call, as a non-retryable `invalid-request`:
+    retrying cannot bring the file back, and the actor sends again without it.
+    """
 
 
 class ProviderRouteUnavailable(GenerationExecutorError):
@@ -167,6 +187,8 @@ def _next_outbox_cursor(connection: sqlite3.Connection, workspace_id: str) -> in
 class _ProviderContext:
     messages: tuple[Mapping[str, Any], ...]
     manifest_message_refs: tuple[Mapping[str, Any], ...]
+    #: The attachment references the request sends, pinned, in the order it sends them.
+    attachments: tuple[Mapping[str, str], ...] = ()
 
 
 def _provider_context(
@@ -176,6 +198,7 @@ def _provider_context(
     conversation_id: str,
     branch_id: str,
     trigger_message_id: str,
+    blobs_root: Path | None,
 ) -> _ProviderContext:
     """Build the request projection and the matching hash/reference manifest.
 
@@ -215,6 +238,7 @@ def _provider_context(
 
     provider_messages: list[Mapping[str, Any]] = []
     manifest_refs: list[Mapping[str, Any]] = []
+    attachments: list[Mapping[str, str]] = []
     for message in reversed(lineage):
         if message.visibility != "standard" or message.completion_status != "complete":
             continue
@@ -225,12 +249,23 @@ def _provider_context(
         ):
             if part.visibility != "standard":
                 continue
-            text = part.payload.get("text") if part.part_type == "text" else None
-            if not isinstance(text, str):
-                raise GenerationExecutorError(
-                    "the conversation contains a message part this executor cannot project to F2a"
+            if part.part_type == ATTACHMENT_PART_TYPE:
+                provider_part = _attachment_file_part(
+                    connection,
+                    message=message,
+                    payload=part.payload,
+                    current=message.message_id == trigger_message_id,
+                    blobs_root=blobs_root,
                 )
-            provider_parts.append({"kind": "text", "text": text})
+                attachments.append(provider_part["attachmentReference"])
+                provider_parts.append(provider_part)
+            else:
+                text = part.payload.get("text") if part.part_type == "text" else None
+                if not isinstance(text, str):
+                    raise GenerationExecutorError(
+                        "the conversation contains a message part this executor cannot project to F2a"
+                    )
+                provider_parts.append({"kind": "text", "text": text})
             part_refs.append(
                 {
                     "partId": part.part_id,
@@ -254,7 +289,45 @@ def _provider_context(
             )
     if not provider_messages:
         raise GenerationExecutorError("the conversation contains no provider-visible messages")
-    return _ProviderContext(tuple(provider_messages), tuple(manifest_refs))
+    return _ProviderContext(tuple(provider_messages), tuple(manifest_refs), tuple(attachments))
+
+
+def _attachment_file_part(
+    connection: sqlite3.Connection,
+    *,
+    message: chat.Message,
+    payload: Mapping[str, Any],
+    current: bool,
+    blobs_root: Path | None,
+) -> dict[str, Any]:
+    """One accepted `attachment` part as the provider contract's `file` part, revalidated.
+
+    The part carries the opaque `AttachmentReference` and nothing else: no path, URL or
+    byte. The trigger Message's attachment (`current`) is re-proved as admission proved it,
+    staged row and a full re-hash included; an earlier turn's is re-proved against the
+    evidence alone, so the composer removing a long-sent file does not break every later
+    turn of the branch.
+    """
+    reference = attachment_reference_of_part(payload)
+    if reference is None:
+        raise GenerationExecutorError("the conversation contains a malformed attachment part")
+    if message.author_id is None:
+        # No author means no staged authority to prove the file against.
+        raise AttachmentUnavailable("an accepted attachment has no author to prove it against")
+    try:
+        (pinned,) = revalidate_attachments(
+            connection,
+            workspace_id=message.workspace_id,
+            conversation_id=message.conversation_id,
+            actor_id=message.author_id,
+            references=(reference,),
+            blobs_root=blobs_root,
+            require_staged=current,
+            rehash=current,
+        )
+    except AttachmentRefused:
+        raise AttachmentUnavailable("an accepted attachment is no longer available") from None
+    return {"kind": "file", "attachmentReference": dict(pinned)}
 
 
 def _digest_json(value: Mapping[str, Any] | tuple[Mapping[str, Any], ...]) -> str:
@@ -382,6 +455,7 @@ def _request_manifest_body(
     request: ProviderInvocationRequest,
     job: chat.GenerationJob,
     manifest_message_refs: tuple[Mapping[str, Any], ...],
+    attachments: tuple[Mapping[str, str], ...] = (),
     hops: tuple[_Hop, ...] = (),
 ) -> Mapping[str, Any]:
     response_format_digest = _digest_json(request.response_format)
@@ -439,7 +513,7 @@ def _request_manifest_body(
         },
         "authorizedReferences": {
             "context": [],
-            "attachments": [],
+            "attachments": [dict(reference) for reference in attachments],
             "evidence": [],
         },
         "retention": {
@@ -501,6 +575,9 @@ class ChatGenerationExecutor:
     invoke: ProviderStream
     config: GenerationExecutorConfig
     heartbeat_factory: Callable[..., GenerationHeartbeat] = GenerationHeartbeat
+    #: The workspace blob root attachments are proved present under. Without one, any
+    #: attachment fails closed as unavailable rather than being sent unchecked.
+    blobs_root: Path | None = None
 
     def execute(self, **fields: Any) -> None:
         """Run either a fresh queued submission or an already-opened retry attempt."""
@@ -683,6 +760,7 @@ class ChatGenerationExecutor:
             conversation_id=job.conversation_id,
             branch_id=job.branch_id,
             trigger_message_id=trigger_message_id,
+            blobs_root=self.blobs_root,
         )
         messages = (*request_context.messages, *_hop_messages(hops))
         if len(messages) > _MAX_REQUEST_MESSAGES:
@@ -715,6 +793,7 @@ class ChatGenerationExecutor:
             request=request,
             job=job,
             manifest_message_refs=request_context.manifest_message_refs,
+            attachments=request_context.attachments,
             hops=hops,
         )
         return request, manifest_body
@@ -752,6 +831,11 @@ class ChatGenerationExecutor:
                 requested_at_text=requested_at_text,
                 deadline_at_text=deadline_at_text,
             )
+        except AttachmentUnavailable:
+            # Refused before any request existed: nothing was sent, and the lifecycle is
+            # still a real terminal outcome rather than a submission that vanished.
+            self._fail_generation(job.generation_job_id, attempt_id, error_code="invalid-request")
+            return None
         except ProviderRouteUnavailable:
             # Never reached a provider at all. The lifecycle is still real -- claimed,
             # attempted, terminal -- which is what makes this a durable outcome rather
@@ -935,6 +1019,11 @@ class ChatGenerationExecutor:
             # Includes losing the lease to another instance. Terminalizing here would
             # write over a job this executor no longer owns.
             raise
+        except AttachmentUnavailable:
+            # A file withdrawn while the Generation was running, found when a Direction
+            # continuation re-proved the request: no further request is sent for it.
+            self._fail_generation(job.generation_job_id, attempt_id, error_code="invalid-request")
+            return None
         except ProviderRouteUnavailable:
             self._fail_generation(
                 job.generation_job_id, attempt_id, error_code="provider-unavailable"
@@ -1047,7 +1136,7 @@ class ChatGenerationExecutor:
                 # An unreachable route is worth retrying; a response this build cannot
                 # read is not, because retrying reproduces it.
                 "retryable": error_code == "provider-unavailable",
-                "statusClass": "unknown",
+                "statusClass": "client_error" if error_code == "invalid-request" else "unknown",
                 "safeMessage": _SAFE_MESSAGES[error_code],
             },
             now_us=_now_us(self.clock),

@@ -8,9 +8,9 @@ atomic attachment-reference resolution, and the tagged read-back through
 blob, a blob row, an evidence artifact and its provenance event, written under the
 fence.
 
-Not here, on purpose: attachment-bearing `SubmitMessage`/`EnqueueMessage` (still
-`dependency_unavailable`; one test proves nothing partial is written) and context
-references (still refused).
+Not here, on purpose: attachment-bearing `SubmitMessage`/`EnqueueMessage`
+(`test_chat_attachment_submission.py`). Context references are still refused; one test
+here proves nothing partial is written.
 """
 
 # ruff: noqa: F811
@@ -938,21 +938,26 @@ def test_a_stored_entry_that_is_not_a_tagged_attachment_is_never_projected(svc: 
         assert refusal.value.code == "internal_non_recoverable"
 
 
-# --- 8. submission stays fail-closed ---------------------------------------------------------
+# --- 8. context references stay fail-closed -------------------------------------------------
+#
+# Attachment-bearing submission itself is `test_chat_attachment_submission.py`.
 
 
-def test_submit_and_enqueue_with_an_attachment_reference_write_no_partial_message(
-    svc: Any,
+def test_context_references_and_an_unproved_blob_root_still_refuse_submission(
+    svc: Any, seeded: m1.Owned
 ) -> None:
     revision = _seed_file(svc, "file-a")
     _stage(svc, "file-a")
     staged = _row(svc, "file-a")
     before = _counts(svc)
+    context = {"referenceId": "ctx-1"}
 
     submit = _submit_command(
         command_id="cmd-c7a-submit",
         message_id="msg-c7a-submitted",
+        actorId=PRINCIPAL,
         attachment_references=(_ref("file-a", revision),),
+        context_references=(context,),
     )
     response = _dispatcher(svc).dispatch(
         _request(submit, idempotency_key="idem-c7a-submit", request_id="req-c7a-submit")
@@ -960,10 +965,23 @@ def test_submit_and_enqueue_with_an_attachment_reference_write_no_partial_messag
     _refused(response, "dependency_unavailable")
 
     enqueue = gb05._enqueue_command(
-        command_id="cmd-c7a-enqueue", attachmentReferences=[_ref("file-a", revision)]
+        command_id="cmd-c7a-enqueue",
+        attachmentReferences=[_ref("file-a", revision)],
+        contextReferences=[context],
     )
-    response = _run(svc, "EnqueueMessage", enqueue)
-    _refused(response, "dependency_unavailable")
+    _refused(_run(svc, "EnqueueMessage", enqueue), "dependency_unavailable")
+
+    # An attachment cannot be proved without a blob root, so a service that has none
+    # refuses it rather than admitting an unchecked file.
+    for name, command in (
+        ("SubmitMessage", submit | {"contextReferences": []}),
+        ("EnqueueMessage", enqueue | {"contextReferences": []}),
+    ):
+        response = _dispatcher(seeded).dispatch(
+            _request(command, command_name=name, idempotency_key="idem-c7a-nobase",
+                     request_id="req-c7a-nobase")
+        )
+        _refused(response, "dependency_unavailable")
 
     assert _counts(svc) == before  # no Message, part, branch event, job, queue row or outbox
     assert _row(svc, "file-a") == staged

@@ -290,6 +290,7 @@ def _default_chat_executor(started: ServiceRunner) -> ChatGenerationExecutor | N
         clock=started.clock,
         invoke=invoke,
         config=config,
+        blobs_root=getattr(getattr(started, "layout", None), "blobs_path", None),
     )
 
 
