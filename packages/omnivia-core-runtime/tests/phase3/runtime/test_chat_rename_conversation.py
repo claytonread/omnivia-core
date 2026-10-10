@@ -62,7 +62,7 @@ def _rename(
     holder: m1.Owned,
     command: Mapping[str, Any],
     *,
-    idempotency_key: str = f"idem-{RENAME_COMMAND_ID}",
+    idempotency_key: str = RENAME_COMMAND_ID,
     request_id: str = f"req-{RENAME_COMMAND_ID}",
 ) -> Any:
     return _dispatcher(holder).dispatch(
@@ -134,7 +134,7 @@ def test_a_second_rename_replaces_the_title(seeded: m1.Owned) -> None:
     response = _rename(
         seeded,
         _rename_command(command_id="cmd-c10-rename-2", title="Renamed again"),
-        idempotency_key="idem-cmd-c10-rename-2",
+        idempotency_key="cmd-c10-rename-2",
         request_id="req-cmd-c10-rename-2",
     )
     assert isinstance(response, SuccessResponseEnvelope), response
@@ -236,7 +236,7 @@ def _lifecycle(
         _request(
             command,
             command_name=command_name,
-            idempotency_key=f"idem-{key}",
+            idempotency_key=key,
             request_id=f"req-{key}",
             expected_sequence=expected_sequence,
         )
@@ -391,7 +391,7 @@ def _path(
         _request(
             command,
             command_name=command_name,
-            idempotency_key=f"idem-{command_id}",
+            idempotency_key=command_id,
             request_id=f"req-{command_id}",
         )
     )
@@ -599,7 +599,7 @@ def _regenerate(
         _request(
             command,
             command_name="RegenerateResponse",
-            idempotency_key=f"idem-{command_id}",
+            idempotency_key=command_id,
             request_id=f"req-{command_id}",
             # `_seed_assistant_reply` advanced the conversation to 2 to make
             # room for the reply, so the envelope's expectation has to match.
@@ -765,7 +765,7 @@ def _amend(
         _request(
             command,
             command_name="CommitMessageAmendment",
-            idempotency_key=f"idem-{command_id}",
+            idempotency_key=command_id,
             request_id=f"req-{command_id}",
             expected_sequence=expected_sequence,
         )
@@ -966,3 +966,52 @@ def test_an_archived_conversation_refuses_them_too(seeded: m1.Owned) -> None:
         SuccessResponseEnvelope,
     )
     assert isinstance(_rename(seeded, _rename_command()), ErrorResponseEnvelope)
+
+
+# --- C10: the idempotency key must BE the command id ------------------------
+
+
+def test_a_decoupled_idempotency_key_is_refused(seeded: m1.Owned) -> None:
+    """The replay guarantee these commands document depends on this coupling.
+
+    The seam keys replay on the request's idempotency key, not on `commandId`.
+    Decoupled, a legitimate retry under a fresh key re-RUNS the command rather
+    than replaying it -- and a second Archive then refuses "already archived",
+    a second amendment collides on its message id, a second regeneration on
+    its branch. `SubmitSteeringInput` has refused the mismatch since C6; these
+    commands shipped without it.
+
+    Refusing the mismatch up front is what makes "same command id, same
+    answer" true rather than aspirational.
+    """
+    response = _rename(
+        seeded,
+        _rename_command(),
+        idempotency_key="some-other-key",
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+    after = _conversation(seeded)
+    assert after is not None
+    assert after.title != "A conversation worth finding again", "it wrote anyway"
+
+
+def test_archive_retried_under_the_same_key_replays_rather_than_conflicting(
+    seeded: m1.Owned,
+) -> None:
+    # The scenario the coupling protects: a host retrying after a reconnect
+    # must get the first outcome back, not "already archived".
+    first = _lifecycle(
+        seeded,
+        "ArchiveConversation",
+        _lifecycle_command(command_id=ARCHIVE_COMMAND_ID),
+        key=ARCHIVE_COMMAND_ID,
+    )
+    assert isinstance(first, SuccessResponseEnvelope), first
+    retry = _lifecycle(
+        seeded,
+        "ArchiveConversation",
+        _lifecycle_command(command_id=ARCHIVE_COMMAND_ID),
+        key=ARCHIVE_COMMAND_ID,
+    )
+    assert isinstance(retry, SuccessResponseEnvelope), retry
+    assert retry.result == first.result

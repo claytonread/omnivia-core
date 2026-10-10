@@ -3889,6 +3889,15 @@ def resolve_chat_command(
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
             )
+        # THE COUPLING THE REPLAY GUARANTEE DEPENDS ON. These commands are
+        # documented as replaying idempotently "by command id", but the seam
+        # keys replay on the request's IDEMPOTENCY KEY, not on `commandId`.
+        # Decoupled, a legitimate retry under a fresh key re-runs the command:
+        # a second Archive then refuses "already archived", and a second
+        # amendment or regeneration collides on its branch, message or job.
+        # `SubmitSteeringInput` has held this line since C6; these did not.
+        if context.request.metadata.idempotency_key != rename.command_id:
+            raise _invalid("commandId", "is not the idempotency key of this request")
         return _rename_conversation(rename)
     if request.command_name == COMMIT_MESSAGE_AMENDMENT_COMMAND:
         amendment = _decode_amendment(request.command)
@@ -3898,6 +3907,8 @@ def resolve_chat_command(
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
             )
+        if context.request.metadata.idempotency_key != amendment.command_id:
+            raise _invalid("commandId", "is not the idempotency key of this request")
         return _commit_message_amendment(amendment)
     if request.command_name == REGENERATE_RESPONSE_COMMAND:
         regenerate = _decode_regenerate_response(request.command)
@@ -3907,6 +3918,8 @@ def resolve_chat_command(
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
             )
+        if context.request.metadata.idempotency_key != regenerate.command_id:
+            raise _invalid("commandId", "is not the idempotency key of this request")
         return _regenerate_response(regenerate)
     if request.command_name in (
         SELECT_CONVERSATION_PATH_COMMAND,
@@ -3919,6 +3932,8 @@ def resolve_chat_command(
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
             )
+        if context.request.metadata.idempotency_key != path.command_id:
+            raise _invalid("commandId", "is not the idempotency key of this request")
         return (
             _select_conversation_path(path)
             if request.command_name == SELECT_CONVERSATION_PATH_COMMAND
@@ -3935,6 +3950,8 @@ def resolve_chat_command(
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
             )
+        if context.request.metadata.idempotency_key != lifecycle.command_id:
+            raise _invalid("commandId", "is not the idempotency key of this request")
         return _conversation_lifecycle(
             lifecycle,
             command_name=request.command_name,
