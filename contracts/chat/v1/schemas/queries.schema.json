@@ -221,6 +221,45 @@
         "deviceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DeviceId" }
       }
     },
+    "ToolCallProjection": {
+      "title": "ToolCallProjection",
+      "description": "One governed tool call of a conversation, as a snapshot publishes it (C8). Identity, lifecycle state and timing are conversation state and go to any reader who may read the conversation -- a turn blocked on a tool call is a fact about the conversation, and hiding it would leave a reader unable to explain why nothing is happening. Everything a REVIEWER needs is in `review`, which is projected only to an actor the wait's authorised-responder policy admits.\n\nDeliberately absent: the tool's arguments, in any form. The decision command requires a reviewer to echo `targetActionDigest` and `targetResourceRevision`, and `review.prompt` carries the human-readable action the wait was opened with, so a reviewer can decide without them. Publishing arguments would be this bundle's first outbound disclosure of tool inputs; adding them later is additive, and removing them would not be. Also absent, permanently: `resumeTokenDigest`, `answerDigest` and `sensitiveAnswerCiphertextDigest`. Each is a digest of a secret, and a digest of a short secret is a guessing oracle rather than a protection.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["createdAt", "policyState", "registryRef", "schemaVersion", "state", "stepId", "toolCallId", "toolName", "toolVersion", "turnId"],
+      "properties": {
+        "toolCallId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId" },
+        "turnId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId" },
+        "stepId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId" },
+        "generationJobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId", "description": "The generation job this call was proposed within, where the call names one." },
+        "toolName": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "toolVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "registryRef": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The governed tool registry entry this call was admitted against." },
+        "state": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpenCode", "description": "The call's lifecycle state. An open code, because the lifecycle is Core's and a consumer that meets an unfamiliar state must display it inertly rather than refuse the snapshot." },
+        "policyState": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpenCode" },
+        "failureCode": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpenCode", "description": "Present only on a call that failed." },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "createdAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "finishedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp", "description": "Present only once the call reached a terminal state." },
+        "review": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The open wait on this call, projected ONLY to an actor its authorised-responder policy admits. Absent means either that there is no wait or that this reader may not answer it, and the two are deliberately indistinguishable: a reader who could tell them apart would learn who may review, which is not theirs to know.",
+          "required": ["expiresAt", "kind", "requestVersion", "state", "waitId"],
+          "properties": {
+            "waitId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId" },
+            "kind": { "enum": ["approval", "human_input", "policy_pause"], "description": "The wait kind, exactly migration 0033's own CHECK vocabulary. A tool Review opens an `approval`; `tool_review` is the COMMAND name, not the wait kind, and stating it here would refuse a genuine document." },
+            "state": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpenCode" },
+            "requestVersion": { "type": "integer", "minimum": 1, "description": "The wait version a decision must state as `expectedRequestVersion`. A decision against a superseded version is refused." },
+            "expiresAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+            "prompt": { "type": "object", "additionalProperties": true, "maxProperties": 32, "description": "The human-readable question this wait was opened with, as the asking authority wrote it. This is what a reviewer reads." },
+            "targetActionDigest": { "type": "string", "minLength": 71, "maxLength": 71, "pattern": "^sha256:[0-9a-f]{64}$", "description": "The action digest a decision must echo, where the wait carries one." },
+            "targetResourceRef": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "targetResourceRevision": { "type": "integer", "minimum": 0, "description": "The resource revision a decision must echo, where the wait carries one." }
+          }
+        }
+      }
+    },
     "QueuedSubmissionProjection": {
       "title": "QueuedSubmissionProjection",
       "description": "The authenticated actor's own active (`queued`) offline-queue submission, joined to its `omnivia_chat_queue_order_projection` row (W5 GB-05). Carries two distinct optimistic tokens on purpose: `version` is the submission's own content token (`UpdateQueuedSubmission.expectedVersion`), `orderVersion` is the order projection's (`ReorderQueuedSubmission.expectedVersion`); they advance independently and neither substitutes for the other. `attachmentReferences`/`contextReferences` are honestly empty and `targetReference` honestly absent for the reference/target subset this build serves. `generationJobId` is the row's own correlated job where one already exists, identity only. Never exposes claim owner, sanitized internal detail or idempotency key -- those are execution-claim internals, not actor-facing queue state.",
@@ -273,6 +312,17 @@
           "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ComposerDraft" },
           "maxItems": 3,
           "description": "The authenticated actor's own active ComposerDrafts for this conversation at the queried device, one per `ComposerDraftMode`, ordered by `mode` then `draftId` (C5A). Optional and compatible: an existing snapshot consumer that has never seen this field stays valid, and its absence here means the actor holds no active draft, not that it was skipped. A draft is composition state, never a committed Message fact (REF-042 \u00a77.8); its `version` is the optimistic token a later SaveDraft's `expectedVersion` states. The mode vocabulary is closed at three, so no snapshot can be partial: the answering authority either states every active draft or fails the whole snapshot closed."
+        },
+        "toolCalls": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ToolCallProjection" },
+          "maxItems": 64,
+          "description": "This conversation's governed tool calls, oldest first by creation instant then `toolCallId` (C8). Optional and compatible: an existing snapshot consumer that has never seen this field stays valid, and its absence means the conversation has run no tool call, not that it was skipped. A call's `review` member is present ONLY for an actor the wait's own authorised-responder policy admits -- the same actor-scoped shape `composerDrafts` and `directions` already use -- so a reader who may not answer a wait learns that the turn is waiting and nothing about what it is waiting on. `toolCallsTruncated` says whether this array is the complete set.",
+          "x-omnivia-bound": "CONVERSATION_SNAPSHOT_TOOL_CALL_MAXIMUM"
+        },
+        "toolCallsTruncated": {
+          "type": "boolean",
+          "description": "Whether `toolCalls` was bounded by its own `maxItems` (C8). Stated rather than inferred: a consumer cannot tell a conversation with exactly 64 calls from one with more, and a snapshot that quietly shortened is the defect this names."
         },
         "generationJobs": {
           "type": "array",

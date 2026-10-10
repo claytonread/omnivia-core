@@ -64,6 +64,7 @@ __all__ = [
     "ToolCallReplay",
     "ToolNotExecuted",
     "allow_tool_call",
+    "authorised_responder_basis",
     "begin_policy_check",
     "cancel_tool_call",
     "decide_tool_review",
@@ -963,6 +964,18 @@ def open_human_input_request(
         agent_run_id=agent_run_id,
         expires_at_us=expires_at_us,
     )
+
+
+def authorised_responder_basis(policy: Mapping[str, Any], actor_id: str) -> str | None:
+    """Why `actor_id` may answer a wait under `policy`, or `None` if it may not.
+
+    Exported because the SNAPSHOT needs the same answer the decision command
+    enforces. A projection carrying its own copy of "who may answer this wait"
+    is how a snapshot comes to show a review to an actor the command would then
+    refuse -- or hide one from an actor who may in fact answer it. One
+    predicate, two callers.
+    """
+    return _authorisation_basis(policy, actor_id)
 
 
 def _authorisation_basis(policy: Mapping[str, Any], actor_id: str) -> str | None:

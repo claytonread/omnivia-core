@@ -254,6 +254,34 @@
 #     pinned to 2.0 refuses a 3.0 message whole, by the strict-decoder rule
 #     `SupportedBridgeProtocolVersion` already states. That is a separate,
 #     deliberate change and is recorded as such before it ships.
+#   queries.schema.json -- C8's tool-call projection (owner authorization,
+#     Clayton Read, 10 October 2026). `ConversationSnapshotResult` gains two
+#     OPTIONAL members, `toolCalls` (maxItems 64) and `toolCallsTruncated`, and
+#     one new `$def`, `ToolCallProjection`, states their shape. 50 inserted
+#     lines, nothing deleted; the required set is unchanged, so every document
+#     that validated before still validates.
+#     THE DISCLOSURE DECISION, because this is the member that carries one.
+#     Identity, lifecycle state and timing go to any reader of the
+#     conversation: a turn blocked on a tool call is a fact ABOUT the
+#     conversation, and hiding it leaves a reader unable to explain why nothing
+#     is happening. The `review` member -- the open wait -- is projected ONLY to
+#     an actor the wait's own authorised-responder policy admits, which is the
+#     actor-scoped shape `composerDrafts` and `directions` already use, and it
+#     uses the SAME predicate the decision command enforces
+#     (`authorised_responder_basis`) rather than a second copy of the rule.
+#     NO ARGUMENTS, in any form. A reviewer decides from `review.prompt` -- the
+#     human-readable question the wait was opened with -- plus the digest and
+#     revision the decision command already requires them to echo. Publishing
+#     tool inputs would be this bundle's FIRST outbound disclosure of them:
+#     verified across all thirteen schemas, the only place a prompt, arguments,
+#     an answer or a resume token appears is an inbound request. Adding them
+#     later is additive; removing them would not be, so they are not added now.
+#     PERMANENTLY absent: `resumeTokenDigest`, `answerDigest` and
+#     `sensitiveAnswerCiphertextDigest`. Each is a digest of a secret, and a
+#     digest of a short secret is a guessing oracle, not a protection.
+#     An absent `review` means EITHER no wait or a reader who may not answer
+#     one, and the two are deliberately indistinguishable: a reader able to
+#     tell them apart would learn who may review, which is not theirs to know.
 # The first five are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
 # COMPATIBILITY-AND-MIGRATION.md §3, as is the sixth above; the F2b carrier
 # rename is not, and says so in its own entry. All must be carried back to the
@@ -357,7 +385,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES = 16384
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "f404f0ac487c20fe4ad34626f119c1907f70bc0766822eaaadc6d5a01c3d0931"
+    "0911c0975b7ec89787b072ca43391400c424b58bbf0add323f9a5ba3a75d12c0"
 )
 
 

@@ -71,6 +71,10 @@ from omnivia_core.contracts.v1.generated import (
     ChatSnapshotInput,
     ChatSnapshotResult,
 )
+from omnivia_core_runtime.service.chat_tool_review import (
+    authorised_responder_basis,
+    replay_tool_call,
+)
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
 from omnivia_core_runtime.storage.chat import (
     ActiveQueueEntry,
@@ -659,6 +663,73 @@ def _generation_jobs(
     return jobs
 
 
+def _tool_call(
+    call: Any, wait: Any | None, actor_id: str
+) -> Mapping[str, Any]:
+    """One tool call, with its wait projected ONLY to an admitted responder.
+
+    The split is deliberate and is the disclosure decision this projection
+    carries. Identity, lifecycle state and timing are CONVERSATION state: a
+    turn blocked on a tool call is a fact about the conversation, and hiding it
+    leaves a reader unable to explain why nothing is happening. Everything a
+    reviewer needs sits under `review`, and `review` is absent unless this
+    actor may answer the wait.
+
+    `authorised_responder_basis` is the SAME predicate the decision command
+    enforces, imported rather than restated. A projection with its own copy of
+    "who may answer this wait" is how a snapshot comes to show a review the
+    command would refuse, or hide one the actor could in fact answer.
+
+    No arguments, in any form. A reviewer decides from `review.prompt` -- the
+    human-readable question the wait was opened with -- plus the digest and
+    revision the decision command already requires them to echo. Publishing
+    tool inputs would be this bundle's first outbound disclosure of them;
+    adding that later is additive, removing it would not be.
+    """
+    document: dict[str, Any] = {
+        "toolCallId": call.tool_call_id,
+        "turnId": call.turn_id,
+        "stepId": call.step_id,
+        "toolName": call.tool_name,
+        "toolVersion": call.tool_version,
+        "registryRef": call.registry_ref,
+        "state": call.state,
+        "policyState": call.policy_state,
+        "schemaVersion": call.schema_version,
+        "createdAt": _timestamp(call.created_at_us),
+    }
+    if call.generation_job_id:
+        document["generationJobId"] = call.generation_job_id
+    if call.failure_code is not None:
+        document["failureCode"] = call.failure_code
+    if call.finished_at_us is not None:
+        document["finishedAt"] = _timestamp(call.finished_at_us)
+    if wait is None or wait.expires_at_us is None:
+        return document
+    if authorised_responder_basis(wait.authorised_responder_policy, actor_id) is None:
+        # Not this actor's wait to answer. Absent is also what a call with no
+        # wait at all looks like, and the two are deliberately indistinguishable
+        # -- a reader who could tell them apart would learn who may review.
+        return document
+    review: dict[str, Any] = {
+        "waitId": wait.wait_id,
+        "kind": wait.kind,
+        "state": wait.state,
+        "requestVersion": wait.version,
+        "expiresAt": _timestamp(wait.expires_at_us),
+    }
+    if wait.prompt:
+        review["prompt"] = dict(wait.prompt)
+    if wait.target_action_digest is not None:
+        review["targetActionDigest"] = wait.target_action_digest
+    if wait.target_resource_ref is not None:
+        review["targetResourceRef"] = wait.target_resource_ref
+    if wait.target_resource_revision is not None:
+        review["targetResourceRevision"] = wait.target_resource_revision
+    document["review"] = review
+    return document
+
+
 def _directions(
     connection: sqlite3.Connection,
     query: _SnapshotQuery,
@@ -743,6 +814,27 @@ def _read_snapshot(connection: sqlite3.Connection, query: _SnapshotQuery) -> dic
         snapshot["composerDrafts"] = [
             composer_draft(draft) for draft in inputs.drafts
         ]
+    # C8. The calls come from the one authoritative read; each call's WAIT is
+    # resolved by `replay_tool_call`, which is the authoritative assembly --
+    # a wait is not keyed by the call id, it is found by scanning the call's
+    # lifecycle events for the latest one that names a wait. Reusing the
+    # library's own resolution is the point: a second copy of that rule here
+    # would be a projection that disagrees with the lifecycle about which wait
+    # a call is on.
+    if inputs.tool_calls:
+        snapshot["toolCalls"] = [
+            _tool_call(
+                call,
+                replay_tool_call(
+                    connection,
+                    workspace_id=query.workspace_id,
+                    tool_call_id=call.tool_call_id,
+                ).wait,
+                query.actor_id,
+            )
+            for call in inputs.tool_calls
+        ]
+        snapshot["toolCallsTruncated"] = inputs.tool_calls_truncated
     return snapshot
 
 
