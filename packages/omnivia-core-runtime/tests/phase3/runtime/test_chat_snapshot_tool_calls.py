@@ -24,6 +24,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
+from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
 from typing import Any
 
 import pytest
@@ -36,7 +40,10 @@ from omnivia_core_runtime.service.chat_tool_review import (
     begin_policy_check,
     request_tool_review,
 )
-from omnivia_core_runtime.storage.chat import read_conversation_snapshot_inputs
+from omnivia_core_runtime.storage.chat import (
+    read_conversation_snapshot_inputs,
+    read_generation_events,
+)
 from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
 
 WS = manifest.WORKSPACE_ID
@@ -249,3 +256,136 @@ def test_a_call_with_no_wait_and_a_call_not_yours_look_the_same(owned: Any) -> N
     assert set(not_mine) - {"review"} == set(not_mine)
     assert "review" not in waitless
     assert "review" not in not_mine
+
+
+# --- C8 step 4: the transport event ----------------------------------------
+
+
+def _tool_call_events(owned: Any) -> list[Any]:
+    return [
+        event
+        for event in read_generation_events(
+            owned.connection, workspace_id=WS, generation_job_id=manifest.JOB_ID
+        )
+        if event.event_type == "chat.tool_call.state_changed"
+    ]
+
+
+def test_every_lifecycle_state_is_published_on_the_job_stream(owned: Any) -> None:
+    _call_awaiting_review(owned, policy={"actorId": REVIEWER})
+    published = _tool_call_events(owned)
+    # proposed, policy check, awaiting review: one event per recorded state, so
+    # a projection-driven UI never has to poll to notice a turn start waiting.
+    assert len(published) >= 3
+    assert [event.payload["toolCallId"] for event in published] == [CALL_ID] * len(published)
+    assert [event.payload["lifecycleSequence"] for event in published] == list(
+        range(1, len(published) + 1)
+    ), "the call's own sequence, contiguous from one"
+
+
+def test_the_job_event_sequence_and_the_job_counter_move_together(owned: Any) -> None:
+    # The steering path REFUSES when these disagree, so publishing without
+    # advancing the counter would break every later steer on this job.
+    from omnivia_core_runtime.storage.chat import read_generation_job
+
+    _call_awaiting_review(owned, policy={"actorId": REVIEWER})
+    events = read_generation_events(
+        owned.connection, workspace_id=WS, generation_job_id=manifest.JOB_ID
+    )
+    job = read_generation_job(
+        owned.connection, workspace_id=WS, generation_job_id=manifest.JOB_ID
+    )
+    assert job is not None
+    assert events[-1].generation_event_sequence == job.last_event_sequence
+    sequences = [event.generation_event_sequence for event in events]
+    assert sequences == sorted(set(sequences)), "contiguous and unique"
+
+
+def test_the_transport_event_carries_no_prompt_argument_or_secret(owned: Any) -> None:
+    # It reaches EVERY reader of the conversation, unlike the projection, so
+    # this is the stricter of the two boundaries.
+    _call_awaiting_review(owned, policy={"actorId": REVIEWER})
+    payloads = [dict(event.payload) for event in _tool_call_events(owned)]
+    document = json.dumps(payloads)
+    assert SECRET_PATH not in document
+    assert SECRET_TEXT not in document
+    # `policy` is deliberately NOT in this list: the lifecycle has a
+    # `policy_check` STATE, so a crude substring scan flags it as a leak. That
+    # is a bad test rather than a finding, which is why the exact key set below
+    # is the real assertion and this one only hunts the obvious words.
+    for forbidden in ("prompt", "rguments", "resumeToken", "answer", "ciphertext"):
+        assert forbidden not in document, forbidden
+
+
+def test_the_payload_is_exactly_the_six_declared_keys(owned: Any) -> None:
+    """The precise form of the assertion above.
+
+    A seventh key is what a prompt, an argument or an answer would arrive as, so
+    pinning the set is stronger than scanning for words I thought of. Migration
+    0072's own payload CHECK enforces the same thing in the database -- it
+    refuses a seventh key outright. It cannot be exercised by UPDATE (the table
+    is append-only, its guard refuses one and the governed connection is not
+    authorized to issue it) but it IS exercised: mutating the producer to add a
+    `prompt` key makes every test in this file fail, because the database
+    rejects the insert rather than storing it. Defence in depth, and live.
+    """
+    _call_awaiting_review(owned, policy={"actorId": REVIEWER})
+    declared = {"toolCallId", "turnId", "state", "lifecycleSequence", "waitId", "reasonCode"}
+    for event in _tool_call_events(owned):
+        keys = set(event.payload)
+        assert keys <= declared, keys - declared
+        # The four required ones are always there.
+        assert {"toolCallId", "turnId", "state", "lifecycleSequence"} <= keys
+
+
+# --- the projected event, against the frozen schema -------------------------
+
+_SCHEMAS_DIR = Path(__file__).resolve().parents[5] / "contracts" / "chat" / "v1" / "schemas"
+_SCHEMA_REGISTRY = Registry().with_resources(
+    (schema["$id"], Resource.from_contents(schema, default_specification=DRAFT202012))
+    for schema in (
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(_SCHEMAS_DIR.glob("*.schema.json"))
+    )
+)
+_EVENT_REF = (
+    "https://contracts.omnivia.dev/chat/v1/events.schema.json"
+    "#/$defs/ToolCallStateChangedEvent"
+)
+
+
+def _schema_errors(ref: str, document: Any) -> list[str]:
+    validator = Draft202012Validator({"$ref": ref}, registry=_SCHEMA_REGISTRY)
+    return [error.message for error in validator.iter_errors(document)]
+
+
+def test_the_projected_event_validates_against_the_frozen_schema(owned: Any) -> None:
+    """The assertion that makes step 4 real rather than believed.
+
+    Everything else here checks the DURABLE row. This builds the wire document
+    the transport serves -- through the same `_tool_call_event_fields` the
+    handler dispatches to -- and validates it against
+    `events.schema.json#/$defs/ToolCallStateChangedEvent`. A field named wrongly,
+    a missing required one, or `state` nested under a payload instead of
+    top-level all fail here and nowhere else.
+    """
+    from omnivia_core_runtime.service.handlers import chat as handler
+
+    _call_awaiting_review(owned, policy={"actorId": REVIEWER})
+    for event in _tool_call_events(owned):
+        fields = handler._tool_call_event_fields(event)
+        document = {
+            "eventId": event.event_id,
+            "eventType": event.event_type,
+            "schemaVersion": event.schema_version,
+            "workspaceId": WS,
+            "conversationId": event.conversation_id,
+            "occurredAt": handler._timestamp(event.occurred_at_us),
+            "cursor": event.cursor,
+            **fields,
+        }
+        assert _schema_errors(_EVENT_REF, document) == [], document
+        # `state` top-level, never nested -- the convention C6 set and the one
+        # Platform's own decoder reads.
+        assert "payload" not in document
+        assert isinstance(document["state"], str)

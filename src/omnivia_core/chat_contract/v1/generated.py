@@ -130,7 +130,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES: Final[int] = 16384
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = '0911c0975b7ec89787b072ca43391400c424b58bbf0add323f9a5ba3a75d12c0'
+RESOURCE_INVENTORY_DIGEST: Final[str] = '7e2fca4ccb18335293d35045243207b5f9628889ea9fdfc0e1158fff9eeb88d2'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (
@@ -234,6 +234,7 @@ CHAT_EVENT_TYPES: Final[tuple[str, ...]] = (
     'chat.generation.text_appended',
     'chat.generation.iteration_completed',
     'chat.direction.state_changed',
+    'chat.tool_call.state_changed',
     'chat.share.created',
     'chat.export.created',
 )
@@ -627,6 +628,24 @@ CHAT_EVENT_FIELDS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             'shareId',
             'workspaceId',
         ),
+        'chat.tool_call.state_changed': (
+            'branchId',
+            'conversationId',
+            'cursor',
+            'eventId',
+            'eventType',
+            'generationEventSequence',
+            'generationJobId',
+            'lifecycleSequence',
+            'occurredAt',
+            'reasonCode',
+            'schemaVersion',
+            'state',
+            'toolCallId',
+            'turnId',
+            'waitId',
+            'workspaceId',
+        ),
     }
 )
 
@@ -873,6 +892,22 @@ CHAT_EVENT_REQUIRED_FIELDS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyT
             'shareId',
             'workspaceId',
         ),
+        'chat.tool_call.state_changed': (
+            'branchId',
+            'conversationId',
+            'cursor',
+            'eventId',
+            'eventType',
+            'generationEventSequence',
+            'generationJobId',
+            'lifecycleSequence',
+            'occurredAt',
+            'schemaVersion',
+            'state',
+            'toolCallId',
+            'turnId',
+            'workspaceId',
+        ),
     }
 )
 
@@ -897,6 +932,7 @@ CHAT_EVENT_SCHEMA_REFS: Final[Mapping[str, str]] = MappingProxyType(
         'chat.message.derivation_recorded': 'events.schema.json#/$defs/MessageDerivationRecordedEvent',
         'chat.message.tombstoned': 'events.schema.json#/$defs/MessageTombstonedEvent',
         'chat.share.created': 'events.schema.json#/$defs/ShareCreatedEvent',
+        'chat.tool_call.state_changed': 'events.schema.json#/$defs/ToolCallStateChangedEvent',
     }
 )
 
@@ -1399,6 +1435,12 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
             'minLength': 1,
             'type': 'string',
         },
+        'common.schema.json#/$defs/OpenCode': {
+            'maxLength': 128,
+            'minLength': 1,
+            'pattern': '^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])',
+            'type': 'string',
+        },
         'common.schema.json#/$defs/ProtocolVersion': {
             'allOf': [
                 {
@@ -1716,6 +1758,9 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
                 },
                 {
                     '$ref': 'events.schema.json#/$defs/DirectionStateChangedEvent',
+                },
+                {
+                    '$ref': 'events.schema.json#/$defs/ToolCallStateChangedEvent',
                 },
                 {
                     '$ref': 'events.schema.json#/$defs/ShareCreatedEvent',
@@ -2329,6 +2374,78 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
                 'occurredAt',
                 'schemaVersion',
                 'shareId',
+                'workspaceId',
+            ],
+            'type': 'object',
+        },
+        'events.schema.json#/$defs/ToolCallStateChangedEvent': {
+            'additionalProperties': False,
+            'properties': {
+                'branchId': {
+                    '$ref': 'common.schema.json#/$defs/BranchId',
+                },
+                'conversationId': {
+                    '$ref': 'common.schema.json#/$defs/ConversationId',
+                },
+                'cursor': {
+                    '$ref': 'common.schema.json#/$defs/OpaqueCursor',
+                },
+                'eventId': {
+                    '$ref': 'common.schema.json#/$defs/TransportEventId',
+                },
+                'eventType': {
+                    'const': 'chat.tool_call.state_changed',
+                },
+                'generationEventSequence': {
+                    '$ref': 'common.schema.json#/$defs/GenerationEventSequence',
+                },
+                'generationJobId': {
+                    '$ref': 'common.schema.json#/$defs/GenerationJobId',
+                },
+                'lifecycleSequence': {
+                    'maximum': 1000000,
+                    'minimum': 1,
+                    'type': 'integer',
+                },
+                'occurredAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'reasonCode': {
+                    '$ref': 'common.schema.json#/$defs/OpenCode',
+                },
+                'schemaVersion': {
+                    '$ref': 'common.schema.json#/$defs/SchemaVersion',
+                },
+                'state': {
+                    '$ref': 'common.schema.json#/$defs/OpenCode',
+                },
+                'toolCallId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
+                },
+                'turnId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
+                },
+                'waitId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
+                },
+                'workspaceId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceId',
+                },
+            },
+            'required': [
+                'branchId',
+                'conversationId',
+                'cursor',
+                'eventId',
+                'eventType',
+                'generationEventSequence',
+                'generationJobId',
+                'lifecycleSequence',
+                'occurredAt',
+                'schemaVersion',
+                'state',
+                'toolCallId',
+                'turnId',
                 'workspaceId',
             ],
             'type': 'object',

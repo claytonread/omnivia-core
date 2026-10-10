@@ -210,20 +210,32 @@ def test_0034_is_the_unique_consecutive_successor_to_0033() -> None:
 #: migration FILES. A widening that appears in neither 0034's declared pair nor
 #: 0069's own CREATE TABLE fails, and so does a migration that widens the table
 #: without this test being told -- which is the property that was lost.
-_EVENTS_0069 = "CREATE TABLE omnivia_chat_generation_events_0069 ("
+#: Each rebuild builds the successor under its own working name and renames it,
+#: so the live schema carries the quoted canonical name while the migration
+#: carries `..._00NN`. Discovered rather than named, so the next rebuild does
+#: not silently leave this test pinned to an older one -- which is exactly how
+#: it went stale after 0069.
+_EVENTS_REBUILD = "CREATE TABLE omnivia_chat_generation_events_"
 
 
 def _latest_declared_events_table() -> str:
-    """The events table as the LAST migration to rebuild it declares it.
-
-    0069 builds it under a working name and renames it, so the stored schema
-    carries the quoted canonical name; everything else is byte-identical.
-    """
-    migration = next(m for m in load_migrations() if m.version == 69)
-    declared = statement(migration.sql, _EVENTS_0069, ") WITHOUT ROWID")
+    """The events table as the LAST migration to rebuild it declares it."""
+    rebuilds = [
+        migration
+        for migration in sorted(load_migrations(), key=lambda m: m.version)
+        if _EVENTS_REBUILD in migration.sql
+    ]
+    assert rebuilds, "no migration rebuilds the events table"
+    migration = rebuilds[-1]
+    opening = migration.sql[
+        migration.sql.index(_EVENTS_REBUILD) : migration.sql.index(
+            "(", migration.sql.index(_EVENTS_REBUILD)
+        )
+        + 1
+    ]
+    declared = statement(migration.sql, opening, ") WITHOUT ROWID")
     return declared.replace(
-        "CREATE TABLE omnivia_chat_generation_events_0069",
-        'CREATE TABLE "omnivia_chat_generation_events"',
+        opening[: -len(" (")].strip(), 'CREATE TABLE "omnivia_chat_generation_events"'
     )
 
 
@@ -301,8 +313,13 @@ def test_the_rebuilt_table_is_0029s_table_plus_only_declared_widenings(
         "chat.generation.cancelled",
     }
     assert admitted(declared) - admitted(after_0034) == {
+        # 0069
         "chat.generation.iteration_completed",
         "chat.direction.state_changed",
+        # 0072 (C8 step 4). Listed here BECAUSE a migration declares it: before
+        # 0072 existed this assertion refused the type, which is the gate that
+        # stopped step 4 from emitting an event the database would not store.
+        "chat.tool_call.state_changed",
     }
     assert admitted(after_0034) - admitted(declared) == set()
 

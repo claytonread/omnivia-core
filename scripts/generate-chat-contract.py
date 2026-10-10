@@ -282,6 +282,28 @@
 #     An absent `review` means EITHER no wait or a reader who may not answer
 #     one, and the two are deliberately indistinguishable: a reader able to
 #     tell them apart would learn who may review, which is not theirs to know.
+#   common.schema.json + events.schema.json -- C8's tool-call lifecycle event
+#     (owner authorization, Clayton Read, 10 October 2026). `ChatEventType`
+#     gains `chat.tool_call.state_changed`, taking the closed vocabulary from 18
+#     to 19, and `ToolCallStateChangedEvent` states its shape and joins the
+#     `ChatEvent` union.
+#     Additive by the contract's own rule: `ChatEventType` already says an
+#     unrecognised type SHALL be treated as an unknown-additive event requiring
+#     a resnapshot, "never a guessed interpretation", so an older consumer
+#     resnapshots rather than breaking.
+#     IT HAS A PRODUCER AND A MIGRATION, which is the whole reason it is here.
+#     This entry was written once before, on 10 October, and REVERTED within the
+#     hour: the events table's `event_type` CHECK refused the new value, so the
+#     type would have been declared with nothing able to emit it -- a 19th event
+#     type beside the 13 that already have no producer, which is the defect this
+#     programme keeps finding. Migration 0072 rebuilds the table to admit it and
+#     bounds its payload, so the declaration and the emission land together.
+#     IDENTITY ONLY, modelled on `DirectionStateChangedEvent` and for a sharper
+#     reason: a transport event reaches every reader of the conversation, while
+#     the wait behind the state is projected only to an admitted responder
+#     (`ToolCallProjection.review`). So no prompt, no arguments, no answer, no
+#     digest of any of them -- enforced twice, by the closed field set here and
+#     by 0072's payload CHECK refusing a seventh key.
 # The first five are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
 # COMPATIBILITY-AND-MIGRATION.md §3, as is the sixth above; the F2b carrier
 # rename is not, and says so in its own entry. All must be carried back to the
@@ -385,7 +407,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES = 16384
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "0911c0975b7ec89787b072ca43391400c424b58bbf0add323f9a5ba3a75d12c0"
+    "7e2fca4ccb18335293d35045243207b5f9628889ea9fdfc0e1158fff9eeb88d2"
 )
 
 

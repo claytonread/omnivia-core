@@ -182,6 +182,117 @@ def _state(events: Sequence[chat.ChatToolLifecycleEvent]) -> str | None:
     return events[-1].state if events else None
 
 
+#: The generation event types that CLOSE a job's stream. Appending after one of
+#: these would contradict the invariant the steering path checks, so a tool call
+#: whose state changes after its generation ended publishes no transport event.
+_TERMINAL_GENERATION_EVENTS: Final = frozenset(
+    {"chat.generation.succeeded", "chat.generation.failed", "chat.generation.cancelled"}
+)
+
+#: C8's transport event type. Admitted by migration 0072, which rebuilt the
+#: events table to store it -- without that, every append here raises on the
+#: table's own `event_type` CHECK.
+_TOOL_CALL_STATE_CHANGED: Final = "chat.tool_call.state_changed"
+
+
+def _publish_state_changed(
+    writer: chat.ChatWriter,
+    *,
+    tool_call_id: str,
+    state: str,
+    lifecycle_sequence: int,
+    now_us: int,
+    wait_id: str | None,
+    reason_code: str | None,
+) -> None:
+    """Publish one `chat.tool_call.state_changed` on the job's event stream.
+
+    A tool call belongs to a generation attempt, so its transport event rides
+    the SAME job-scoped stream as `chat.direction.state_changed` rather than a
+    second one of its own. That is the convention C6 set and the only stream
+    `chat events` serves.
+
+    THE SEQUENCE AND THE COUNTER MOVE TOGETHER, in this transaction. A job's
+    `last_event_sequence` is advanced by whoever appends, never by the append
+    itself, and the steering path REFUSES when the two disagree
+    (`sequence != job.last_event_sequence`). Advancing one without the other
+    would make every later steer conflict.
+
+    Silent in three cases, each real rather than convenient: no job row; a
+    stream already CLOSED by a terminal event, which is the state a late
+    expiry or cancellation runs in and where appending would contradict the
+    invariant above; and a call row that is gone.
+
+    Identity only, per the event's own contract. The wait's detail reaches an
+    admitted responder through `ToolCallProjection.review`; this reaches
+    everyone, so it carries none of it.
+    """
+    call = chat.read_chat_tool_call(
+        writer.connection, workspace_id=writer.workspace_id, tool_call_id=tool_call_id
+    )
+    if call is None:
+        return
+    job = chat.read_generation_job(
+        writer.connection,
+        workspace_id=writer.workspace_id,
+        generation_job_id=call.generation_job_id,
+    )
+    if job is None:
+        return
+    existing = chat.read_generation_events(
+        writer.connection,
+        workspace_id=writer.workspace_id,
+        generation_job_id=call.generation_job_id,
+    )
+    if any(event.event_type in _TERMINAL_GENERATION_EVENTS for event in existing):
+        return
+    sequence = job.last_event_sequence + 1
+    payload: dict[str, Any] = {
+        "toolCallId": tool_call_id,
+        "turnId": call.turn_id,
+        "state": state,
+        "lifecycleSequence": lifecycle_sequence,
+    }
+    if wait_id is not None:
+        payload["waitId"] = wait_id
+    if reason_code is not None:
+        payload["reasonCode"] = reason_code
+    writer.append_generation_event(
+        event_id=f"{call.generation_job_id}.{sequence}",
+        conversation_id=call.conversation_id,
+        branch_id=job.branch_id,
+        generation_job_id=call.generation_job_id,
+        event_type=_TOOL_CALL_STATE_CHANGED,
+        generation_event_sequence=sequence,
+        trigger_message_id=job.trigger_message_id,
+        cursor=f"{call.generation_job_id}:{sequence}",
+        payload=payload,
+        occurred_at_us=now_us,
+        schema_version=1,
+    )
+    # Every column this update does not own is read from the row and written
+    # back unchanged -- the writer replaces them all at once, so a default
+    # passed for any would silently drop a lease, an attempt or a result.
+    writer.update_generation_job(
+        generation_job_id=call.generation_job_id,
+        expected_state=job.state,
+        expected_lease_epoch=job.lease_epoch,
+        state=job.state,
+        lease_epoch=job.lease_epoch,
+        updated_at_us=job.updated_at_us,
+        current_attempt_id=job.current_attempt_id,
+        result_message_id=job.result_message_id,
+        lease_owner=job.lease_owner,
+        lease_expires_at_us=job.lease_expires_at_us,
+        heartbeat_at_us=job.heartbeat_at_us,
+        last_event_sequence=sequence,
+        sanitized_error_code=job.sanitized_error_code,
+        sanitized_error_detail=job.sanitized_error_detail,
+        started_at_us=job.started_at_us,
+        finished_at_us=job.finished_at_us,
+    )
+
+
 def _append(
     writer: chat.ChatWriter,
     events: Sequence[chat.ChatToolLifecycleEvent],
@@ -190,12 +301,25 @@ def _append(
     now_us: int,
     **fields: Any,
 ) -> None:
+    lifecycle_sequence = len(events) + 1
     writer.append_chat_tool_lifecycle_event(
         tool_call_id=tool_call_id,
-        lifecycle_sequence=len(events) + 1,
+        lifecycle_sequence=lifecycle_sequence,
         state=state,
         occurred_at_us=now_us,
         **fields,
+    )
+    # One choke point for the durable ledger IS the one choke point for the
+    # transport event: a state that is recorded is a state that is published, or
+    # neither is, in the same transaction.
+    _publish_state_changed(
+        writer,
+        tool_call_id=tool_call_id,
+        state=state,
+        lifecycle_sequence=lifecycle_sequence,
+        now_us=now_us,
+        wait_id=fields.get("wait_id"),
+        reason_code=fields.get("reason_code"),
     )
 
 

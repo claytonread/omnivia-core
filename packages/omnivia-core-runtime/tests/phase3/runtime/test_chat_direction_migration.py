@@ -729,9 +729,20 @@ PAYLOAD_SHAPE_CHECK = """    CHECK (event_type NOT IN ('chat.generation.iteratio
 """
 
 
-def test_the_events_table_is_0034s_table_plus_exactly_the_two_new_kinds(
-    migrated: Path,
-) -> None:
+def test_the_events_table_is_0034s_table_plus_exactly_the_two_new_kinds() -> None:
+    """0069's DECLARATION is 0034's table plus its two kinds. Not the live table.
+
+    This compared against the migrated database until 10 October 2026, which
+    made it a claim about the schema at HEAD rather than about this migration --
+    so it broke the moment 0072 widened the same table again, exactly as 0034's
+    own two tests had broken when 0069 widened it. Three tests, each pinned to
+    "my widening is the last one", each going stale on the next rebuild.
+
+    What 0069 can permanently claim is what 0069 declares. The live schema is
+    checked once, by
+    `test_chat_text_transport_migration.test_the_stored_table_is_exactly_what_the_last_rebuild_declared`,
+    which follows whichever migration rebuilt it last instead of naming one.
+    """
     original = t34.statement(
         M0034.sql,
         "CREATE TABLE omnivia_chat_generation_events_0034 (",
@@ -772,11 +783,15 @@ def test_the_events_table_is_0034s_table_plus_exactly_the_two_new_kinds(
         .replace(old_shape, new_shape)
         .replace(old_payload, old_payload + PAYLOAD_SHAPE_CHECK)
     )
-    connection = open_database(migrated, OpenMode.EPHEMERAL)
-    try:
-        assert t34.stored_sql(connection, EVENTS) == expected
-    finally:
-        connection.close()
+    declared = t34.statement(
+        MIGRATION.sql,
+        "CREATE TABLE omnivia_chat_generation_events_0069 (",
+        ") WITHOUT ROWID",
+    ).replace(
+        "CREATE TABLE omnivia_chat_generation_events_0069",
+        'CREATE TABLE "omnivia_chat_generation_events"',
+    )
+    assert declared == expected
 
 
 ITERATION_VERSION_GUARD = """

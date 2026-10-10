@@ -214,6 +214,7 @@
         "chat.generation.text_appended",
         "chat.generation.iteration_completed",
         "chat.direction.state_changed",
+        "chat.tool_call.state_changed",
         "chat.share.created",
         "chat.export.created"
       ]

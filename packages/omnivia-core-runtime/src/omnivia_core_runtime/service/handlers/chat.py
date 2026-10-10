@@ -110,6 +110,7 @@ _MESSAGE_NO_COMMAND: Final = (
 _TEXT_APPENDED: Final = "chat.generation.text_appended"
 _ITERATION_COMPLETED: Final = "chat.generation.iteration_completed"
 _DIRECTION_STATE_CHANGED: Final = "chat.direction.state_changed"
+_TOOL_CALL_STATE_CHANGED: Final = "chat.tool_call.state_changed"
 #: `ChatEventsResult.events` and `.transport_events` are both `maxItems: 1000`, so
 #: one page is the first 1000 of the replayed suffix and the last cursor it returns
 #: is what the caller continues from. Not a new pagination field: the cursor the
@@ -182,6 +183,34 @@ def _direction_event_fields(
     }
 
 
+def _tool_call_event_fields(event: GenerationEvent) -> dict[str, Any]:
+    """The exact `ToolCallStateChangedEvent` fields, identity only.
+
+    Every one comes from the durable payload or the event row. Unlike
+    `_direction_event_fields` this needs no second read: a Direction's actor and
+    job sequence live on the Direction row, while everything a tool-call event
+    states was written into its own payload, bounded by migration 0072's CHECK.
+
+    Carries no attempt and no result message. The event's `state` is top-level,
+    not nested under a payload, which is the convention `DirectionStateChanged`
+    set and what Platform's own decoder reads.
+    """
+    payload = event.payload
+    fields: dict[str, Any] = {
+        "branchId": event.branch_id,
+        "generationJobId": event.generation_job_id,
+        "generationEventSequence": event.generation_event_sequence,
+        "toolCallId": payload.get("toolCallId"),
+        "turnId": payload.get("turnId"),
+        "state": payload.get("state"),
+        "lifecycleSequence": payload.get("lifecycleSequence"),
+    }
+    for optional in ("waitId", "reasonCode"):
+        if optional in payload:
+            fields[optional] = payload[optional]
+    return fields
+
+
 def _transport_event(
     event: GenerationEvent,
     chunks: Mapping[tuple[str, int], GenerationTextChunk],
@@ -206,6 +235,8 @@ def _transport_event(
     fields: dict[str, Any]
     if event.event_type == _DIRECTION_STATE_CHANGED:
         fields = _direction_event_fields(event, directions)
+    elif event.event_type == _TOOL_CALL_STATE_CHANGED:
+        fields = _tool_call_event_fields(event)
     else:
         fields = {
             "branchId": event.branch_id,

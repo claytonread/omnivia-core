@@ -202,11 +202,23 @@ def _wait_state(holder: manifest.m1.Owned) -> str:
 
 
 def test_0071_is_the_next_forward_only_migration(owned: manifest.m1.Owned) -> None:
+    """0071 is applied, exactly once, consecutively after 0070.
+
+    It used to assert `catalogue[-1].version == 71` -- that 0071 is the LAST
+    migration. That is true only until the next one lands, and it broke the day
+    0072 did. A test pinned to being last goes stale by construction, which is
+    the same defect `test_chat_text_transport_migration.py` carried from 0069
+    onward. What this migration can honestly claim is its own number and its
+    own checksum.
+    """
     catalogue = load_migrations()
-    assert catalogue[-1].version == 71
-    assert catalogue[-1].name == "0071_chat_tool_review_lifecycle.sql"
-    assert catalogue[-2].name == "0070_chat_staged_attachments.sql"
-    assert applied_migrations(owned.connection)[71] == catalogue[-1].checksum
+    versions = [migration.version for migration in catalogue]
+    assert versions == sorted(versions)
+    assert versions.count(71) == 1
+    assert 70 in versions
+    mine = next(migration for migration in catalogue if migration.version == 71)
+    assert mine.name == "0071_chat_tool_review_lifecycle.sql"
+    assert applied_migrations(owned.connection)[71] == mine.checksum
 
 
 def _append_event(holder: manifest.m1.Owned, sequence: int, state: str, **fields: Any) -> None:

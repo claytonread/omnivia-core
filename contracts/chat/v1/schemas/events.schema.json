@@ -281,6 +281,31 @@
         "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
       }
     },
+    "ToolCallStateChangedEvent": {
+      "title": "ToolCallStateChangedEvent",
+      "description": "A governed tool call entered a new lifecycle state (`chat.tool_call.state_changed`, C8). IDENTITY ONLY, for the reason `DirectionStateChangedEvent` is: it names the call, its turn, the new state and the sequences a consumer needs to decide whether to re-read, and it carries NO prompt, NO tool arguments, NO answer and no digest of any of them. The closed field set admits no arbitrary metadata, and migration 0072's payload CHECK refuses a seventh key, so none of that can ride in. That matters more here than elsewhere: a transport event reaches every reader of the conversation, while the wait behind this state is projected only to an actor its authorised-responder policy admits. A consumer that may answer the wait reads it through `queries.schema.json#/$defs/ToolCallProjection`; one that may not learns the turn is waiting and nothing further. Job-scoped like `GenerationEvent` and `DirectionStateChangedEvent`: it carries `generationEventSequence`, never a graph revision. `reasonCode` is a code, never a sentence -- the line `DirectionStateChangedEvent` draws when it refuses a terminal-reason sentence.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchId", "conversationId", "cursor", "eventId", "eventType", "generationEventSequence", "generationJobId", "lifecycleSequence", "occurredAt", "schemaVersion", "state", "toolCallId", "turnId", "workspaceId"],
+      "properties": {
+        "eventId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TransportEventId" },
+        "eventType": { "const": "chat.tool_call.state_changed" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "generationJobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "toolCallId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId" },
+        "turnId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId" },
+        "state": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpenCode", "description": "The call's new lifecycle state. An open code because the lifecycle is Core's: a consumer meeting an unfamiliar state displays it inertly rather than refusing the event, and 0072 stores it as bounded text for the same reason -- a CHECK listing today's nine would need rebuilding for a tenth." },
+        "waitId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId", "description": "The wait this state involves, where one exists. An opaque identifier only: naming it discloses nothing the `state` does not already say, and nothing about who may answer it." },
+        "reasonCode": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpenCode", "description": "Why the call reached this state, as a code. Present only where the lifecycle recorded one." },
+        "lifecycleSequence": { "type": "integer", "minimum": 1, "maximum": 1000000, "description": "The call's own append-only lifecycle sequence, so states within one call order independently of the job's event sequence. Bounded as 0072's CHECK bounds it." },
+        "generationEventSequence": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationEventSequence" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
     "ShareCreatedEvent": {
       "title": "ShareCreatedEvent",
       "type": "object",
@@ -334,6 +359,7 @@
         { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationIterationCompletedEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/DirectionStateChangedEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/ToolCallStateChangedEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/ShareCreatedEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/ExportCreatedEvent" }
       ]
