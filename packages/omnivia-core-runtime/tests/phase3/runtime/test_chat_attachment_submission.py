@@ -29,6 +29,7 @@ from omnivia_core_runtime.ownership.identity import FakeClock
 from omnivia_core_runtime.service.chat_attachment_authority import (
     ATTACHMENT_PART_TYPE,
     AttachmentRefused,
+    PinnedAttachment,
     attachment_part_payload,
     attachment_reference_of_part,
     attachment_unavailable,
@@ -311,9 +312,20 @@ def test_direct_submit_persists_pinned_references_in_the_message_and_the_queue_r
     parts = _parts(svc, "cmd-c7a-submit.msg")
     assert [part.part_type for part in parts] == ["text", ATTACHMENT_PART_TYPE, ATTACHMENT_PART_TYPE]
     assert [part.part_index for part in parts] == [0, 1, 2]
+    # The opaque reference, plus the media type and byte size the admission check
+    # already read to decide the file could be sent at all. Both are what the
+    # evidence artifact and its blob row state, never anything the caller supplied.
     assert [dict(part.payload) for part in parts[1:]] == [
-        {"attachmentReference": {"referenceId": "file-b", "sourceRevision": revision_b}},
-        {"attachmentReference": {"referenceId": "file-a", "sourceRevision": revision_a}},
+        {
+            "attachmentReference": {"referenceId": "file-b", "sourceRevision": revision_b},
+            "mediaType": "text/plain",
+            "sizeBytes": len(OTHER),
+        },
+        {
+            "attachmentReference": {"referenceId": "file-a", "sourceRevision": revision_a},
+            "mediaType": "text/plain",
+            "sizeBytes": len(CONTENT),
+        },
     ]
     assert {part.visibility for part in parts} == {"standard"}
     assert {part.provenance for part in parts} == {"human"}
@@ -504,15 +516,43 @@ def test_ancestry_failure_is_unavailable_without_a_database() -> None:
     assert attachment_unavailable(AttachmentEvidence(ancestry_verified=True, **base), root, rehash=False)
 
 
-def test_the_part_payload_is_exactly_one_opaque_reference() -> None:
+def test_the_part_payload_is_one_opaque_reference_plus_the_two_display_facts() -> None:
     reference = {"referenceId": "file-a", "sourceRevision": "sha256:" + "a" * 64}
-    payload = attachment_part_payload(reference)
+    pinned = PinnedAttachment(
+        reference_id=reference["referenceId"],
+        source_revision=reference["sourceRevision"],
+        media_type="application/pdf",
+        size_bytes=2048,
+    )
+    payload = attachment_part_payload(pinned)
+    # The reference, the media type and the byte size -- and NOTHING else. No name:
+    # Core stores none. No path, URL, handle or byte, and no room for one.
+    assert payload == {
+        "attachmentReference": reference,
+        "mediaType": "application/pdf",
+        "sizeBytes": 2048,
+    }
     assert attachment_reference_of_part(payload) == reference
+    # `.reference` is the ONLY route to the wire shape, and it is exactly the two
+    # contract fields -- the queued row's stored entry and the provider `file` part
+    # are both built from it, and both refuse anything wider.
+    assert dict(pinned.reference) == reference
+    # A part committed before the facts were carried still decodes: they are optional.
+    assert attachment_reference_of_part({"attachmentReference": reference}) == reference
+    # One fact without the other is still a payload this build can read.
+    assert (
+        attachment_reference_of_part({"attachmentReference": reference, "sizeBytes": 1})
+        == reference
+    )
     for bad in (
         {},
         {"attachmentReference": {"referenceId": "file-a"}},
         {"attachmentReference": {**reference, "path": "/tmp/x"}},
         {"attachmentReference": reference, "url": "https://example.test/x"},
+        # The display facts are tolerated BY NAME. Anything else beside them is not,
+        # so widening the payload stays a deliberate act and never an accident.
+        {"attachmentReference": reference, "name": "secrets.pdf"},
+        {"attachmentReference": reference, "mediaType": "application/pdf", "path": "/tmp/x"},
         {"attachmentReference": {"referenceId": 1, "sourceRevision": "x"}},
     ):
         assert attachment_reference_of_part(bad) is None
@@ -914,7 +954,14 @@ def test_revalidate_attachments_is_all_or_nothing_and_writes_nothing(svc: Any) -
             require_staged=kwargs.get("require_staged", True), rehash=True,
         )
 
-    assert check([_ref("file-a")]) == ({"referenceId": "file-a", "sourceRevision": revision},)
+    assert check([_ref("file-a")]) == (
+        PinnedAttachment(
+            reference_id="file-a",
+            source_revision=revision,
+            media_type="text/plain",
+            size_bytes=len(CONTENT),
+        ),
+    )
     with pytest.raises(AttachmentRefused) as refused:
         check([_ref("file-a"), _ref("file-b")])
     assert refused.value.reason == "not_staged"
@@ -925,5 +972,5 @@ def test_revalidate_attachments_is_all_or_nothing_and_writes_nothing(svc: Any) -
     with pytest.raises(AttachmentRefused) as refused:
         check([_ref("file-a")], require_staged=False)
     assert refused.value.reason == "revision"
-    assert check([_ref("file-b", _digest(OTHER))], require_staged=False)[0]["referenceId"] == "file-b"
+    assert check([_ref("file-b", _digest(OTHER))], require_staged=False)[0].reference_id == "file-b"
     assert _counts(svc) == before

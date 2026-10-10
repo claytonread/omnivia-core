@@ -327,7 +327,10 @@ def _attachment_file_part(
         )
     except AttachmentRefused:
         raise AttachmentUnavailable("an accepted attachment is no longer available") from None
-    return {"kind": "file", "attachmentReference": dict(pinned)}
+    # `.reference` and never the PinnedAttachment itself: the provider contract's
+    # `file` part carries the opaque reference, and the display facts the part payload
+    # also holds are for a renderer, not for a model.
+    return {"kind": "file", "attachmentReference": dict(pinned.reference)}
 
 
 def _digest_json(value: Mapping[str, Any] | tuple[Mapping[str, Any], ...]) -> str:

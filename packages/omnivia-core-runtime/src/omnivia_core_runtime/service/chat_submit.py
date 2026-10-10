@@ -108,6 +108,7 @@ from omnivia_core.contracts.v1.generated import (
 from omnivia_core_runtime.service.chat_attachment_authority import (
     ATTACHMENT_PART_TYPE,
     AttachmentRefused,
+    PinnedAttachment,
     attachment_part_payload,
     attachment_unavailable,
     revalidate_attachments,
@@ -1434,7 +1435,7 @@ def _same_references(
     )
 
 
-def _attachment_parts(pinned: Sequence[Mapping[str, str]]) -> tuple[_Part, ...]:
+def _attachment_parts(pinned: Sequence[PinnedAttachment]) -> tuple[_Part, ...]:
     """One standard `attachment` Message part per pinned reference, in order."""
     parts: list[_Part] = []
     for reference in pinned:
@@ -1450,9 +1451,14 @@ def _attachment_parts(pinned: Sequence[Mapping[str, str]]) -> tuple[_Part, ...]:
     return tuple(parts)
 
 
-def _attachment_entries(pinned: Sequence[Mapping[str, str]]) -> tuple[Mapping[str, Any], ...]:
-    """The tagged entries a queued row stores for its pinned attachment references."""
-    return tuple(attachment_draft_entry(reference) for reference in pinned)
+def _attachment_entries(pinned: Sequence[PinnedAttachment]) -> tuple[Mapping[str, Any], ...]:
+    """The tagged entries a queued row stores for its pinned attachment references.
+
+    `.reference` and never the :class:`PinnedAttachment` itself: a stored entry is read
+    back by `draft_attachment_references`, which refuses anything that is not EXACTLY a
+    tagged attachment reference, so the part payload's display facts must not reach it.
+    """
+    return tuple(attachment_draft_entry(reference.reference) for reference in pinned)
 
 
 def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatCommand:
@@ -3571,7 +3577,7 @@ def _admit_attachments(
     actor_id: str,
     references: Sequence[Mapping[str, Any]],
     blobs_root: Path | None,
-) -> tuple[Mapping[str, str], ...]:
+) -> tuple[PinnedAttachment, ...]:
     """Every reference a `SubmitMessage` or `EnqueueMessage` names, proved or refused whole.
 
     Runs inside the command's fenced transaction and before its first write, so the
