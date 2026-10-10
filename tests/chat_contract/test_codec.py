@@ -1206,7 +1206,7 @@ def test_the_package_axes_are_independent_of_the_d07_wire_version() -> None:
     from omnivia_core.chat_contract.v1 import generated
 
     assert (generated.CONTRACT_VERSION, generated.PROTOCOL_VERSION) == ("1.0.0-rc.1", "2.0")
-    assert (generated.BRIDGE_PROTOCOL_VERSION, generated.PLATFORM_CARRIER_CONTRACT_VERSION) == ("2.0", "1.0")
+    assert (generated.BRIDGE_PROTOCOL_VERSION, generated.PLATFORM_CARRIER_CONTRACT_VERSION) == ("3.0", "1.0")
     assert generated.SCHEMA_IDS["common"].endswith("/chat/v1/common.schema.json")
 
 

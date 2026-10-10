@@ -4,7 +4,7 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (270 files: FIXTURE-MANIFEST.json
+#   contracts/chat/v1/fixtures/**           (271 files: FIXTURE-MANIFEST.json
 #                                             plus 269 governed fixtures)
 # Approved BASELINE provenance (the governance decision this tree started from;
 # NOT a claim that this tree's bytes are that approved copy -- they are a
@@ -23,7 +23,7 @@
 # Regenerate: python scripts/generate-chat-contract.py
 # Verify:     python scripts/generate-chat-contract.py --check
 #
-# This never reads the Masterdocs checkout: the 13 schemas and 270 fixture
+# This never reads the Masterdocs checkout: the 13 schemas and 271 fixture
 # files under contracts/chat/v1 are this repository's own checked-in review
 # candidate (the approved baseline bytes plus the authorized widenings below),
 # and are the only source this script reads.
@@ -304,6 +304,33 @@
 #     (`ToolCallProjection.review`). So no prompt, no arguments, no answer, no
 #     digest of any of them -- enforced twice, by the closed field set here and
 #     by 0072's payload CHECK refusing a seventh key.
+#   bridge.schema.json -- F2b BRIDGE PROTOCOL 3.0 for C8 (owner authorization,
+#     Clayton Read, 11 October 2026). `SupportedBridgeProtocolVersion` moves its
+#     const from "2.0" to "3.0"; `HostedCommandKind` gains `ReviewDecision` and
+#     `SubmitHumanInput` (21 -> 23), each bound to its own closed request so the
+#     binding stays total at 23 for 23; `BridgeSnapshotItem.itemKind` gains
+#     `tool_call` (8 -> 9) bound to `queries.schema.json#/$defs/
+#     ToolCallProjection`, and the chain's former `direction` fallback becomes
+#     an explicit branch so it stays total over the closed enum.
+#     NOT ADDITIVE, and deliberately so. A host pinned to 2.0 refuses a 3.0
+#     message whole and a 3.0 host refuses 2.0 -- the strict-decoder rule this
+#     very $def states. There is no interoperable intermediate, which is the
+#     price a closed vocabulary charges and the reason §1.3a of the resolution
+#     handoff recorded the decision before any of it was built.
+#     THE FIXTURE CORPUS MOVED WITH IT, and this is the part that needed care
+#     rather than a substitution. Four negatives encode a RELATIONSHIP to the
+#     supported version, not a literal:
+#       unsupported-minor   2.1 -> 3.1   (a minor of the supported major)
+#       unsupported-major   3.0 -> 4.0   (one major above; left alone it would
+#                                         have become SUPPORTED and inverted)
+#       superseded-1-0/1-1  unchanged    (still majors below)
+#       malformed           unchanged    ("1" is not a version at all)
+#     Those were edited by name BEFORE the blanket 2.0 -> 3.0 pass over 93
+#     files, so a rename could not silently turn a negative into a positive.
+#     A new `f2b-context-bound-superseded-2-0-rejected.json` joins them, because
+#     the corpus gives every superseded major its own negative and 2.0 is now
+#     one -- which is what makes "refuses it whole" tested rather than asserted.
+#     Counts move 269 -> 270 cases (invalid 164 -> 165) and the tree 270 -> 271.
 # The first five are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
 # COMPATIBILITY-AND-MIGRATION.md §3, as is the sixth above; the F2b carrier
 # rename is not, and says so in its own entry. All must be carried back to the
@@ -315,7 +342,7 @@ Chat Runtime Contract v1 schemas and fixtures.
 
 Verifies, deterministically:
 
-- the exact packaged resource *count* (13 schemas, 270 fixture-tree files);
+- the exact packaged resource *count* (13 schemas, 271 fixture-tree files);
 - a single pinned SHA-256 digest over every relative resource path and its
   exact byte payload, so a changed, missing or extra resource under
   ``contracts/chat/v1`` fails closed rather than silently regenerating a
@@ -388,10 +415,10 @@ PROTOCOL_VERSION = "2.0"
 PROTOCOL_MAJOR = "2"
 
 EXPECTED_SCHEMA_COUNT = 13
-EXPECTED_FIXTURE_TREE_COUNT = 270  # FIXTURE-MANIFEST.json + 269 governed fixtures
-EXPECTED_FIXTURE_CASE_COUNT = 269
+EXPECTED_FIXTURE_TREE_COUNT = 271  # FIXTURE-MANIFEST.json + 270 governed fixtures
+EXPECTED_FIXTURE_CASE_COUNT = 270
 EXPECTED_FIXTURE_VALID_COUNT = 105
-EXPECTED_FIXTURE_INVALID_COUNT = 164
+EXPECTED_FIXTURE_INVALID_COUNT = 165
 
 #: A Direction's durable content row is capped at 16384 bytes (migration 0069
 #: `content_json`). The cap applies to the canonical JSON object
@@ -407,7 +434,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES = 16384
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "7e2fca4ccb18335293d35045243207b5f9628889ea9fdfc0e1158fff9eeb88d2"
+    "5ae48dc98b46d8105b7d28e3cbcd161c8f8968e5199bd7a73d9079fa9cb2965c"
 )
 
 
@@ -1011,22 +1038,31 @@ RESOURCE_INVENTORY_DIGEST: Final[str] = {digest!r}
     )
 
     vocab_docs = {
-        "BRIDGE_SNAPSHOT_ITEM_KINDS": "The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem), 8 members as of bridge protocol 2.0.",
-        "CHAT_COMMAND_NAMES": "The closed v1 initial Chat command registry (commands.schema.json ChatCommandName), 30 members.",
-        "ERROR_CODES": "The closed v1 shared error-code registry (common.schema.json ErrorCode), 24 members.",
-        "CHAT_EVENT_TYPES": "The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType), 18 members. Additive-decode point.",
-        "RESNAPSHOT_REASONS": "The closed reason vocabulary for events.schema.json ResnapshotResponse.reason, 4 members.",
-        "COMMAND_RESULT_STATUSES": "The closed status vocabulary for commands.schema.json CommandResultEnvelope.status, 4 members.",
-        "F2A_FINISH_REASONS": "The closed v1 F2a normalised finish-reason vocabulary (provider.schema.json FinishReason), 7 members.",
-        "F2A_PROVIDER_ERROR_CODES": "The closed v1 F2a provider error-code vocabulary (provider.schema.json ProviderErrorCode), 16 members.",
-        "F2A_PROVIDER_EVENT_TYPES": "The closed v1 F2a provider event-discriminator vocabulary (provider.schema.json ProviderEventType), 20 members. Additive-decode point.",
-        "F2A_INVOCATION_LIFECYCLE_STATES": "The closed v1 ProviderInvocationRecord lifecycle vocabulary, 6 members.",
-        "F2A_RECONCILIATION_STATES": "The closed v1 reconciliation-state vocabulary, 3 members.",
-        "F2A_ROUTE_DECISIONS": "The closed RouteEvidence.routeDecision vocabulary, 3 members.",
-        "F2A_ESTIMATED_COST_PRICING_SOURCES": "The closed EstimatedCost.pricingSource vocabulary, 3 members.",
+        "BRIDGE_SNAPSHOT_ITEM_KINDS": "The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem) as of bridge protocol 3.0.",
+        "CHAT_COMMAND_NAMES": "The closed v1 initial Chat command registry (commands.schema.json ChatCommandName).",
+        "ERROR_CODES": "The closed v1 shared error-code registry (common.schema.json ErrorCode).",
+        "CHAT_EVENT_TYPES": "The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType). Additive-decode point.",
+        "RESNAPSHOT_REASONS": "The closed reason vocabulary for events.schema.json ResnapshotResponse.reason.",
+        "COMMAND_RESULT_STATUSES": "The closed status vocabulary for commands.schema.json CommandResultEnvelope.status.",
+        "F2A_FINISH_REASONS": "The closed v1 F2a normalised finish-reason vocabulary (provider.schema.json FinishReason).",
+        "F2A_PROVIDER_ERROR_CODES": "The closed v1 F2a provider error-code vocabulary (provider.schema.json ProviderErrorCode).",
+        "F2A_PROVIDER_EVENT_TYPES": "The closed v1 F2a provider event-discriminator vocabulary (provider.schema.json ProviderEventType). Additive-decode point.",
+        "F2A_INVOCATION_LIFECYCLE_STATES": "The closed v1 ProviderInvocationRecord lifecycle vocabulary.",
+        "F2A_RECONCILIATION_STATES": "The closed v1 reconciliation-state vocabulary.",
+        "F2A_ROUTE_DECISIONS": "The closed RouteEvidence.routeDecision vocabulary.",
+        "F2A_ESTIMATED_COST_PRICING_SOURCES": "The closed EstimatedCost.pricingSource vocabulary.",
     }
+    # The member COUNT is appended from the vocabulary itself, never typed into
+    # the doc string. Three of these had drifted -- item kinds said 8 with 9,
+    # the command registry said 30 with 32, the event types said 18 with 19 --
+    # because a number in prose does not move when the vocabulary does.
     vocab_blocks = [
-        _render_str_tuple(name, vocab[name], vocab_docs[name]) for name in sorted(vocab_docs)
+        _render_str_tuple(
+            name,
+            vocab[name],
+            f"{vocab_docs[name].rstrip('.')}, {len(vocab[name])} members.",
+        )
+        for name in sorted(vocab_docs)
     ]
 
     additive_block = (

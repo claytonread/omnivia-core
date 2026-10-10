@@ -1,7 +1,7 @@
 {
   "boundContext": {
     "messageType": "bridge.context-bound",
-    "bridgeProtocolVersion": "2.0",
+    "bridgeProtocolVersion": "3.0",
     "schemaVersion": 1,
     "contextId": "bctx-0001",
     "workspaceId": "ws-acme",
@@ -14,7 +14,7 @@
   },
   "command": {
     "messageType": "bridge.command",
-    "bridgeProtocolVersion": "2.0",
+    "bridgeProtocolVersion": "3.0",
     "schemaVersion": 1,
     "contextId": "bctx-0001",
     "commandId": "cmd-hosted-0011",

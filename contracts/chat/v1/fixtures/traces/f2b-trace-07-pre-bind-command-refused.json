@@ -2,7 +2,7 @@
   "messages": [
     {
       "messageType": "bridge.command",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-07",
       "commandId": "cmd-t07-early",
@@ -31,14 +31,14 @@
     },
     {
       "messageType": "bridge.refusal",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "reason": "context_mismatch",
       "refusedCommandId": "cmd-t07-early"
     },
     {
       "messageType": "bridge.context-bound",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-07",
       "workspaceId": "ws-acme",

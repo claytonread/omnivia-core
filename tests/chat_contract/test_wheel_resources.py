@@ -6,7 +6,7 @@ locally built artifacts:
 
 1. build the ``omnivia-core`` wheel from this checkout with build isolation
    disabled (no index, no environment provisioning);
-2. read the wheel's own file list and require *exactly* the 277 approved Chat
+2. read the wheel's own file list and require *exactly* the 278 approved Chat
    Runtime Contract resources (13 schemas plus 270 fixture-tree files) under
    ``omnivia_core/chat_contract/v1/resources/`` -- none missing, none extra;
 3. install that wheel alone into a throwaway virtual environment with
@@ -204,7 +204,9 @@ def test_the_installed_package_reports_the_governed_contract_identity(
     assert installed_report["protocol_version"] == "2.0"
     assert installed_report["contract_version"] == "1.0.0-rc.1"
     assert installed_report["approval_id"] == "GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001"
-    assert installed_report["command_count"] == 30
+    # 30 -> 32: C8's ReviewDecision and SubmitHumanInput, proved out of the
+    # INSTALLED artifact rather than the source tree.
+    assert installed_report["command_count"] == 32
 
 
 def test_the_packaged_schemas_import_from_the_installed_artifact(
@@ -219,7 +221,7 @@ def test_every_packaged_fixture_survives_packaging_byte_for_byte(
 ) -> None:
     digests = installed_report["digests"]
     assert isinstance(digests, dict)
-    assert installed_report["fixture_count"] == 269
+    assert installed_report["fixture_count"] == 270
     for relative, digest in digests.items():
         source = CANONICAL_ROOT / "fixtures" / relative
         assert digest == hashlib.sha256(source.read_bytes()).hexdigest(), relative
@@ -228,7 +230,7 @@ def test_every_packaged_fixture_survives_packaging_byte_for_byte(
 def test_the_packaged_manifest_declares_the_governed_counts(
     installed_report: dict[str, object]
 ) -> None:
-    assert installed_report["manifest_counts"] == {"total": 269, "valid": 105, "invalid": 164}
+    assert installed_report["manifest_counts"] == {"total": 270, "valid": 105, "invalid": 165}
 
 
 def test_the_installed_bounded_codec_still_works(installed_report: dict[str, object]) -> None:

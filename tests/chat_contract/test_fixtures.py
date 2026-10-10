@@ -1087,8 +1087,8 @@ def test_each_schema_is_a_valid_draft_2020_12_schema(name: str) -> None:
 
 
 def test_the_manifest_declares_the_governed_counts() -> None:
-    assert MANIFEST["counts"] == {"total": 269, "valid": 105, "invalid": 164}
-    assert len(MANIFEST["fixtures"]) == 269
+    assert MANIFEST["counts"] == {"total": 270, "valid": 105, "invalid": 165}
+    assert len(MANIFEST["fixtures"]) == 270
 
 
 def test_every_check_the_manifest_names_is_implemented() -> None:
@@ -1186,14 +1186,18 @@ def test_the_governed_relational_pair_fixtures_are_all_present() -> None:
         assert entry["checks"], entry["path"]
 
 
-def test_the_bridge_protocol_is_2_0_while_the_outer_carrier_stays_1_0() -> None:
-    """C6: the explicit F2b protocol change (1.1 -> 2.0) leaves the independent
-    outer Platform carrier version untouched, and `direction` is the one added
-    `itemKind`, bound to Direction."""
+def test_the_bridge_protocol_is_3_0_while_the_outer_carrier_stays_1_0() -> None:
+    """Each explicit F2b protocol change leaves the outer carrier untouched.
+
+    C6 moved 1.1 -> 2.0 for the Direction surface; C8 moved 2.0 -> 3.0 for two
+    hosted commands and the `tool_call` item. The outer Platform carrier version
+    has not moved for either, which is the independence both axes claim: a
+    bridge major and a carrier major move on their own.
+    """
     defs = SCHEMAS["bridge.schema.json"]["$defs"]
-    assert defs["SupportedBridgeProtocolVersion"]["allOf"][1] == {"const": "2.0"}
+    assert defs["SupportedBridgeProtocolVersion"]["allOf"][1] == {"const": "3.0"}
     assert defs["PlatformCarrierContractVersion"]["const"] == "1.0"
-    assert defs["BridgeSnapshotItem"]["properties"]["itemKind"]["enum"][-2:] == ["composer_draft", "direction"]
+    assert defs["BridgeSnapshotItem"]["properties"]["itemKind"]["enum"][-2:] == ["direction", "tool_call"]
 
 
 # --------------------------------------------------------------------------
@@ -1292,11 +1296,18 @@ def test_capability_absent_false_and_true_are_each_valid_and_a_malformed_value_i
         assert _errors(ref, {**base, "supportsDirection": value}) != [], value
 
 
-def test_only_bridge_protocol_2_0_is_accepted() -> None:
+def test_only_bridge_protocol_3_0_is_accepted() -> None:
+    """Every neighbouring version is refused, including the one just superseded.
+
+    `2.0` is in this list BECAUSE it used to be the supported one: a major move
+    that kept silently admitting its predecessor would be a downgrade rather
+    than a version change, which is exactly what
+    `SupportedBridgeProtocolVersion` says a strict decoder must never do.
+    """
     ref = "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage"
     base = load("fixtures/valid/f2b-context-bound.json")
     assert _errors(ref, base) == []
-    for version in ("1.0", "1.1", "2.1", "3.0", "2", "2.0.0"):
+    for version in ("1.0", "1.1", "2.0", "2.1", "3.1", "4.0", "3", "3.0.0"):
         assert _errors(ref, {**base, "bridgeProtocolVersion": version}) != [], version
 
 
@@ -1502,7 +1513,12 @@ def test_the_d07_wire_protocol_is_2_0_because_job_version_became_required() -> N
     from omnivia_core.chat_contract.v1 import generated
 
     assert (generated.PROTOCOL_VERSION, generated.PROTOCOL_MAJOR) == ("2.0", "2")
-    assert generated.BRIDGE_PROTOCOL_VERSION == "2.0"
+    # THREE AXES, and this is where their independence stops being a claim in a
+    # description and becomes a fact: D07's wire version is 2.0, the F2b bridge
+    # is 3.0 (C8 moved it), and the outer Platform carrier is 1.0. They were all
+    # "2.0" and "1.0" before C8, so the assertion could not tell independence
+    # from coincidence; now it can.
+    assert generated.BRIDGE_PROTOCOL_VERSION == "3.0", "the bridge moved for C8; D07 did not"
     assert generated.PLATFORM_CARRIER_CONTRACT_VERSION == "1.0", "the outer carrier is an independent axis"
     assert "version" in _def("generation", "GenerationJob")["required"]
     assert all(

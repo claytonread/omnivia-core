@@ -1,6 +1,6 @@
 {
   "messageType": "bridge.context-bound",
-  "bridgeProtocolVersion": "2.1",
+  "bridgeProtocolVersion": "3.1",
   "schemaVersion": 1,
   "contextId": "bctx-version-02",
   "workspaceId": "ws-acme",

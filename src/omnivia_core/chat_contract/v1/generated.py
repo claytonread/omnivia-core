@@ -12,7 +12,7 @@
 #   baseline fixture manifest SHA-256 7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54;
 #   effective Architecture release tag architecture-v1.4.0;
 #   effective payload commit eb14159d73c8d9339cfeb347f8de61bd67497974;
-#   current fixture manifest SHA-256 ae28745373c5209f77ca4d9362383e1e36591b4e67676446c89f1d1802dea6e7.
+#   current fixture manifest SHA-256 4a67e5c696272cda5e896490b19f10ab6e78f23a2bb0a2dd7841fcd6573bcad9.
 # Generator:
 #   scripts/generate-chat-contract.py
 #
@@ -96,7 +96,7 @@ FIXTURE_MANIFEST_SHA256: Final[str] = '7936bf32da76a66c7d479217588f56c4af20b0ed0
 #: SHA-256 of the CURRENT ``fixtures/FIXTURE-MANIFEST.json`` bytes, computed by the
 #: generator from the checked-in file. It identifies this review candidate's
 #: manifest and claims nothing about approval.
-CURRENT_FIXTURE_MANIFEST_SHA256: Final[str] = 'ae28745373c5209f77ca4d9362383e1e36591b4e67676446c89f1d1802dea6e7'
+CURRENT_FIXTURE_MANIFEST_SHA256: Final[str] = '4a67e5c696272cda5e896490b19f10ab6e78f23a2bb0a2dd7841fcd6573bcad9'
 #: The Masterdocs Git tag the approved BASELINE was read through.
 EFFECTIVE_ARCHITECTURE_TAG: Final[str] = 'architecture-v1.4.0'
 #: The exact Masterdocs payload commit ``EFFECTIVE_ARCHITECTURE_TAG`` resolves to (baseline).
@@ -113,7 +113,7 @@ PROTOCOL_MAJOR: Final[str] = '2'
 #: (bridge.schema.json SupportedBridgeProtocolVersion). An independent axis from
 #: :data:`PROTOCOL_VERSION` (the D07 wire protocol): a strict F2b decoder
 #: rejects every other version, including the superseded "1.0" and "1.1".
-BRIDGE_PROTOCOL_VERSION: Final[str] = '2.0'
+BRIDGE_PROTOCOL_VERSION: Final[str] = '3.0'
 #: The outer Platform Module Host Contract envelope version
 #: (bridge.schema.json PlatformCarrierContractVersion). Independent of
 #: :data:`BRIDGE_PROTOCOL_VERSION`; a bridge protocol change never moves it.
@@ -122,7 +122,7 @@ PLATFORM_CARRIER_CONTRACT_VERSION: Final[str] = '1.0'
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = 13
 #: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 269 governed fixtures).
-RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 270
+RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 271
 #: A Direction's durable content row cap: the canonical JSON object
 #: ``{"editableParts": [...]}`` (``to_canonical_json``) is at most this many UTF-8
 #: bytes. Not expressible in JSON Schema, so the codec enforces it.
@@ -130,7 +130,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES: Final[int] = 16384
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = '7e2fca4ccb18335293d35045243207b5f9628889ea9fdfc0e1158fff9eeb88d2'
+RESOURCE_INVENTORY_DIGEST: Final[str] = '5ae48dc98b46d8105b7d28e3cbcd161c8f8968e5199bd7a73d9079fa9cb2965c'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (
@@ -168,7 +168,7 @@ SCHEMA_IDS: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 
-#: The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem), 8 members as of bridge protocol 2.0.
+#: The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem) as of bridge protocol 3.0, 9 members.
 BRIDGE_SNAPSHOT_ITEM_KINDS: Final[tuple[str, ...]] = (
     'conversation',
     'message',
@@ -178,9 +178,10 @@ BRIDGE_SNAPSHOT_ITEM_KINDS: Final[tuple[str, ...]] = (
     'queued_submission',
     'composer_draft',
     'direction',
+    'tool_call',
 )
 
-#: The closed v1 initial Chat command registry (commands.schema.json ChatCommandName), 30 members.
+#: The closed v1 initial Chat command registry (commands.schema.json ChatCommandName), 32 members.
 CHAT_COMMAND_NAMES: Final[tuple[str, ...]] = (
     'CreateConversation',
     'CreateScopedConversation',
@@ -216,7 +217,7 @@ CHAT_COMMAND_NAMES: Final[tuple[str, ...]] = (
     'ExportConversation',
 )
 
-#: The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType), 18 members. Additive-decode point.
+#: The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType). Additive-decode point, 19 members.
 CHAT_EVENT_TYPES: Final[tuple[str, ...]] = (
     'chat.conversation.created',
     'chat.message.committed',
@@ -323,7 +324,7 @@ F2A_PROVIDER_ERROR_CODES: Final[tuple[str, ...]] = (
     'unknown',
 )
 
-#: The closed v1 F2a provider event-discriminator vocabulary (provider.schema.json ProviderEventType), 20 members. Additive-decode point.
+#: The closed v1 F2a provider event-discriminator vocabulary (provider.schema.json ProviderEventType). Additive-decode point, 20 members.
 F2A_PROVIDER_EVENT_TYPES: Final[tuple[str, ...]] = (
     'stream-start',
     'text-start',

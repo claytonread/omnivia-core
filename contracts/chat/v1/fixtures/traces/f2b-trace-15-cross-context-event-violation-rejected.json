@@ -2,7 +2,7 @@
   "messages": [
     {
       "messageType": "bridge.context-bound",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-15",
       "workspaceId": "ws-acme",
@@ -15,14 +15,14 @@
     },
     {
       "messageType": "bridge.snapshot-request",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-15",
       "requestedAt": "2026-08-20T10:00:00Z"
     },
     {
       "messageType": "bridge.snapshot-page",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-15",
       "snapshotId": "bsnap-t15",
@@ -34,7 +34,7 @@
     },
     {
       "messageType": "bridge.event-batch",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-15",
       "events": [

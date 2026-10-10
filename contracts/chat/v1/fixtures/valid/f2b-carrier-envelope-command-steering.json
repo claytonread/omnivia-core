@@ -4,7 +4,7 @@
   "kind": "bridge.command",
   "payload": {
     "messageType": "bridge.command",
-    "bridgeProtocolVersion": "2.0",
+    "bridgeProtocolVersion": "3.0",
     "schemaVersion": 1,
     "contextId": "bctx-dir-01",
     "commandId": "cmd-steer-0001",

@@ -2,7 +2,7 @@
   "messages": [
     {
       "messageType": "bridge.context-bound",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-13",
       "workspaceId": "ws-acme",
@@ -15,14 +15,14 @@
     },
     {
       "messageType": "bridge.snapshot-request",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-13",
       "requestedAt": "2026-08-20T10:00:00Z"
     },
     {
       "messageType": "bridge.snapshot-page",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-13",
       "snapshotId": "bsnap-t13",
@@ -34,7 +34,7 @@
     },
     {
       "messageType": "bridge.event-batch",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-13",
       "events": [
@@ -58,7 +58,7 @@
     },
     {
       "messageType": "bridge.backpressure",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-13",
       "action": "pause",
@@ -67,7 +67,7 @@
     },
     {
       "messageType": "bridge.resnapshot",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-13",
       "reason": "backpressure_overflow",
@@ -75,7 +75,7 @@
     },
     {
       "messageType": "bridge.snapshot-request",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-13",
       "requestedAt": "2026-08-20T10:07:00Z",

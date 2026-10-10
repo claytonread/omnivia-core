@@ -2,7 +2,7 @@
   "messages": [
     {
       "messageType": "bridge.context-bound",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-10",
       "workspaceId": "ws-acme",
@@ -15,14 +15,14 @@
     },
     {
       "messageType": "bridge.snapshot-request",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-10",
       "requestedAt": "2026-08-20T10:00:00Z"
     },
     {
       "messageType": "bridge.snapshot-page",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-10",
       "snapshotId": "bsnap-t10",
@@ -48,7 +48,7 @@
     },
     {
       "messageType": "bridge.event-batch",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-10",
       "events": [
@@ -72,7 +72,7 @@
     },
     {
       "messageType": "bridge.event-batch",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-10",
       "events": [
@@ -97,7 +97,7 @@
     },
     {
       "messageType": "bridge.resnapshot",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-10",
       "reason": "cursor_unknown_or_expired",
@@ -105,7 +105,7 @@
     },
     {
       "messageType": "bridge.snapshot-request",
-      "bridgeProtocolVersion": "2.0",
+      "bridgeProtocolVersion": "3.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-10",
       "requestedAt": "2026-08-20T10:07:00Z",

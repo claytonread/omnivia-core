@@ -4,7 +4,7 @@
   "kind": "bridge.command",
   "payload": {
     "messageType": "bridge.command",
-    "bridgeProtocolVersion": "2.0",
+    "bridgeProtocolVersion": "3.0",
     "schemaVersion": 1,
     "contextId": "bctx-carrier-05",
     "commandId": "cmd-carrier-05",

@@ -1,6 +1,6 @@
 {
   "messageType": "bridge.refusal",
-  "bridgeProtocolVersion": "2.0",
+  "bridgeProtocolVersion": "3.0",
   "schemaVersion": 1,
   "reason": "not_ready",
   "safeMessage": "Your session is not ready yet.",

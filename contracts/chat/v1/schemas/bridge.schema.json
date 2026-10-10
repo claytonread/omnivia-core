@@ -13,10 +13,10 @@
     },
     "SupportedBridgeProtocolVersion": {
       "title": "SupportedBridgeProtocolVersion",
-      "description": "The exact, frozen F2b bridge protocol version this bundle supports: **\"2.0\"**, and nothing else. A strict decoder rejects an unsupported major (\"1.0\", \"1.1\", \"3.0\") and never silently downgrades, and rejects an unsupported minor of the supported major (\"2.1\") rather than guessing which additive fields it may ignore. 2.0 is an explicit protocol version change from 1.1 (itself an explicit change from 1.0), not a silent widening of the 1.1 grammar: it adds the Direction surface (C6) -- one `BridgeSnapshotItem.itemKind`, `direction`; one `HostedCommandKind`, `SubmitSteeringInput`, bound to its own dedicated payload; one `BridgeRefusalReason`, `capability_unavailable`; and the optional `ContextBoundMessage.supportsDirection` capability flag -- and moves the major because the closed `itemKind`, command and refusal vocabularies of 1.x could not carry it. This bundle therefore refuses 1.0 and 1.1 whole. This is what makes \"supported version\" executable rather than a syntax-only claim: a syntactically well-formed but unsupported version fails the `const`, not merely the pattern (freeze §12.0.3; catalogue `f2b.bridgeProtocolVersion`). Widening this constant is itself a bridge-version change under `BridgeProtocolVersion`, never a silent admission. Deliberately NOT the same axis as `PlatformCarrierContractVersion` (the outer Platform Module Host Contract envelope's own `v`): the two are versioned, and validated, independently.",
+      "description": "The exact, frozen F2b bridge protocol version this bundle supports: **\"3.0\"**, and nothing else. A strict decoder rejects an unsupported major (\"1.0\", \"1.1\", \"2.0\", \"4.0\") and never silently downgrades, and rejects an unsupported minor of the supported major (\"3.1\") rather than guessing which additive fields it may ignore. 2.0 is an explicit protocol version change from 1.1 (itself an explicit change from 1.0), not a silent widening of the 1.1 grammar: it adds the Direction surface (C6) -- one `BridgeSnapshotItem.itemKind`, `direction`; one `HostedCommandKind`, `SubmitSteeringInput`, bound to its own dedicated payload; one `BridgeRefusalReason`, `capability_unavailable`; and the optional `ContextBoundMessage.supportsDirection` capability flag -- and moves the major because the closed `itemKind`, command and refusal vocabularies of 1.x could not carry it. 3.0 is the same kind of change again, for C8: two `HostedCommandKind` members, `ReviewDecision` and `SubmitHumanInput`, each bound to its own dedicated closed request, and one `BridgeSnapshotItem.itemKind`, `tool_call`. The 2.x vocabularies are closed, so they could not carry those either. This bundle therefore refuses 1.0, 1.1 and 2.0 whole, and a host pinned to 2.0 refuses a 3.0 message the same way -- there is no interoperable intermediate, which is the cost a closed vocabulary buys and the reason this move is deliberate rather than incidental. This is what makes \"supported version\" executable rather than a syntax-only claim: a syntactically well-formed but unsupported version fails the `const`, not merely the pattern (freeze §12.0.3; catalogue `f2b.bridgeProtocolVersion`). Widening this constant is itself a bridge-version change under `BridgeProtocolVersion`, never a silent admission. Deliberately NOT the same axis as `PlatformCarrierContractVersion` (the outer Platform Module Host Contract envelope's own `v`): the two are versioned, and validated, independently.",
       "allOf": [
         { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeProtocolVersion" },
-        { "const": "2.0" }
+        { "const": "3.0" }
       ]
     },
     "BridgeSnapshotId": {
@@ -123,7 +123,7 @@
     },
     "HostedCommandKind": {
       "title": "HostedCommandKind",
-      "description": "The closed, deliberately narrower v1 first-horizon hosted command allowlist -- a strict subset of `commands.schema.json#/$defs/ChatCommandName` (validator `validate_f2b_command_binding`). Admits `SubmitSteeringInput` (bridge protocol 2.0, C6) bound to its own dedicated `SubmitSteeringInputRequest` payload and never to the generic referenced-work shape. Excludes, by design, the seven `ReferencedWorkCommandRequest`-shaped owner-execution commands (`RespondToWorkRequest`, `InvokeTool`, `InvokeApp`, `StartWorkflow`, `StartAgentRun`, `ReviseArtifact`, `PlaceArtifactVersion`), since W4-H3's exit evidence names only send/cancel/retry/composer/thread interaction and D08 §4.3 keeps the renderer from ever calling Core, a provider or another authority directly; and excludes `CreateConversationShare` and `ExportConversation`, deferred until Gate F `CHAT-029` accepts Share (W4 launch packet §4 W4-H3 exit evidence: \"Share remains disabled with an owner-issued reason until Gate F CHAT-029 is accepted\"). A future accepted horizon MAY widen this allowlist; widening is itself a bridge-major change under `BridgeProtocolVersion`, never a silent addition.",
+      "description": "The closed, deliberately narrower v1 first-horizon hosted command allowlist -- a strict subset of `commands.schema.json#/$defs/ChatCommandName` (validator `validate_f2b_command_binding`). Admits `SubmitSteeringInput` (bridge protocol 2.0, C6) bound to its own dedicated `SubmitSteeringInputRequest` payload and never to the generic referenced-work shape, and `ReviewDecision` and `SubmitHumanInput` (bridge protocol 3.0, C8) likewise bound to their own closed requests -- a Review decision is answered by the actor the wait admits, and admitting it here is what lets that actor answer from the hosted surface at all. Excludes, by design, the seven `ReferencedWorkCommandRequest`-shaped owner-execution commands (`RespondToWorkRequest`, `InvokeTool`, `InvokeApp`, `StartWorkflow`, `StartAgentRun`, `ReviseArtifact`, `PlaceArtifactVersion`), since W4-H3's exit evidence names only send/cancel/retry/composer/thread interaction and D08 §4.3 keeps the renderer from ever calling Core, a provider or another authority directly; and excludes `CreateConversationShare` and `ExportConversation`, deferred until Gate F `CHAT-029` accepts Share (W4 launch packet §4 W4-H3 exit evidence: \"Share remains disabled with an owner-issued reason until Gate F CHAT-029 is accepted\"). A future accepted horizon MAY widen this allowlist; widening is itself a bridge-major change under `BridgeProtocolVersion`, never a silent addition.",
       "enum": [
         "CreateConversation", "CreateScopedConversation", "RenameConversation", "ArchiveConversation", "DeleteConversation",
         "SaveDraft", "DiscardDraft",
@@ -131,7 +131,8 @@
         "SubmitMessage", "StopGeneration", "RetryGeneration", "RegenerateResponse", "CommitMessageAmendment",
         "SelectConversationPath", "SetDefaultConversationPath",
         "StageAttachment", "RemoveStagedAttachment",
-        "SubmitSteeringInput"
+        "SubmitSteeringInput",
+        "ReviewDecision", "SubmitHumanInput"
       ]
     },
     "ContextBoundMessage": {
@@ -184,12 +185,12 @@
     },
     "BridgeSnapshotItem": {
       "title": "BridgeSnapshotItem",
-      "description": "One Chat record projected to the hosted renderer, identified by which Chat Runtime Contract record kind it carries. The bridge adds no domain meaning of its own: `payload` is required to validate against the exact already-defined Chat schema `itemKind` names, never an arbitrary or mismatched shape — `conversation` -> `graph.schema.json#/$defs/Conversation`; `message` -> `graph.schema.json#/$defs/Message`; `message_branch` -> `branch.schema.json#/$defs/MessageBranch`; `view_state` -> `viewstate.schema.json#/$defs/ConversationViewState`; `generation_job` -> `generation.schema.json#/$defs/GenerationJob`; `queued_submission` -> `queries.schema.json#/$defs/QueuedSubmissionProjection` (W5 GB-05); `composer_draft` -> `viewstate.schema.json#/$defs/ComposerDraft` (C5A, added with bridge protocol 1.1: the actor's own active draft, whose `workspaceId`/`conversationId`/`actorId` are all cross-checked against the bound context); `direction` -> `generation.schema.json#/$defs/Direction` (C6, added with bridge protocol 2.0: the actor's own Direction, projected only to its author, whose `workspaceId`/`conversationId`/`actorId` are all cross-checked against the bound context). Every record naming `workspaceId`/`conversationId` is cross-checked against the bound context (freeze §12.9; validator `f2b_event_and_snapshot_context_consistent`). The `itemKind`/`payload` binding is total over the closed `itemKind` enum: each member names its own payload schema explicitly, so an added `itemKind` can never fall through an existing `else` and be validated against the wrong record kind.",
+      "description": "One Chat record projected to the hosted renderer, identified by which Chat Runtime Contract record kind it carries. The bridge adds no domain meaning of its own: `payload` is required to validate against the exact already-defined Chat schema `itemKind` names, never an arbitrary or mismatched shape — `conversation` -> `graph.schema.json#/$defs/Conversation`; `message` -> `graph.schema.json#/$defs/Message`; `message_branch` -> `branch.schema.json#/$defs/MessageBranch`; `view_state` -> `viewstate.schema.json#/$defs/ConversationViewState`; `generation_job` -> `generation.schema.json#/$defs/GenerationJob`; `queued_submission` -> `queries.schema.json#/$defs/QueuedSubmissionProjection` (W5 GB-05); `composer_draft` -> `viewstate.schema.json#/$defs/ComposerDraft` (C5A, added with bridge protocol 1.1: the actor's own active draft, whose `workspaceId`/`conversationId`/`actorId` are all cross-checked against the bound context); `direction` -> `generation.schema.json#/$defs/Direction` (C6, added with bridge protocol 2.0: the actor's own Direction, projected only to its author, whose `workspaceId`/`conversationId`/`actorId` are all cross-checked against the bound context); `tool_call` -> `queries.schema.json#/$defs/ToolCallProjection` (C8, added with bridge protocol 3.0: one governed tool call, whose `review` member the answering authority includes only for an actor the wait's authorised-responder policy admits -- so this item carries no prompt, no tool arguments and no answer for a reader who may not decide it, and never any of them for anyone). Every record naming `workspaceId`/`conversationId` is cross-checked against the bound context (freeze §12.9; validator `f2b_event_and_snapshot_context_consistent`). The `itemKind`/`payload` binding is total over the closed `itemKind` enum: each member names its own payload schema explicitly, so an added `itemKind` can never fall through an existing `else` and be validated against the wrong record kind.",
       "type": "object",
       "additionalProperties": false,
       "required": ["itemKind", "payload"],
       "properties": {
-        "itemKind": { "enum": ["conversation", "message", "message_branch", "view_state", "generation_job", "queued_submission", "composer_draft", "direction"] },
+        "itemKind": { "enum": ["conversation", "message", "message_branch", "view_state", "generation_job", "queued_submission", "composer_draft", "direction", "tool_call"] },
         "payload": { "type": "object", "additionalProperties": true, "maxProperties": 128 }
       },
       "if": { "properties": { "itemKind": { "const": "conversation" } }, "required": ["itemKind"] },
@@ -213,7 +214,11 @@
                   "if": { "properties": { "itemKind": { "const": "composer_draft" } }, "required": ["itemKind"] },
                   "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ComposerDraft" } } },
                   "else": {
-                    "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction" } }
+                    "if": { "properties": { "itemKind": { "const": "direction" } }, "required": ["itemKind"] },
+                    "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/Direction" } } },
+                    "else": {
+                      "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ToolCallProjection" } }
+                    }
                   }
                 }
               }
@@ -386,6 +391,14 @@
         {
           "if": { "properties": { "commandKind": { "const": "SubmitSteeringInput" } }, "required": ["commandKind"] },
           "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "ReviewDecision" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/ReviewDecisionRequest" } } }
+        },
+        {
+          "if": { "properties": { "commandKind": { "const": "SubmitHumanInput" } }, "required": ["commandKind"] },
+          "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitHumanInputRequest" } } }
         }
       ]
     },

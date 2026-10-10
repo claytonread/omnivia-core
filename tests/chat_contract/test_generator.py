@@ -62,7 +62,7 @@ def test_the_pinned_digest_matches_the_currently_computed_one() -> None:
     digest, schema_count, fixture_count = generator.compute_resource_inventory_digest()
     assert digest == generator.EXPECTED_RESOURCE_INVENTORY_DIGEST
     assert schema_count == generator.EXPECTED_SCHEMA_COUNT == 13
-    assert fixture_count == generator.EXPECTED_FIXTURE_TREE_COUNT == 270
+    assert fixture_count == generator.EXPECTED_FIXTURE_TREE_COUNT == 271
 
 
 # --------------------------------------------------------------------------
@@ -126,9 +126,11 @@ def test_schema_names_and_ids_are_exact() -> None:
 
 def test_extract_vocabularies_returns_the_governed_counts() -> None:
     vocab = generator.extract_vocabularies()
-    assert len(vocab["CHAT_COMMAND_NAMES"]) == 30
+    # 30 -> 32: C8's ReviewDecision and SubmitHumanInput.
+    assert len(vocab["CHAT_COMMAND_NAMES"]) == 32
     assert len(vocab["ERROR_CODES"]) == 24
-    assert len(vocab["CHAT_EVENT_TYPES"]) == 18
+    # 18 -> 19: C8's chat.tool_call.state_changed.
+    assert len(vocab["CHAT_EVENT_TYPES"]) == 19
     assert len(vocab["F2A_PROVIDER_EVENT_TYPES"]) == 20
     assert len(vocab["F2A_FINISH_REASONS"]) == 7
     assert len(vocab["F2A_PROVIDER_ERROR_CODES"]) == 16

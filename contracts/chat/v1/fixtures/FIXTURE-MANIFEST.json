@@ -5,9 +5,9 @@
   "authority": "This manifest is proposal-stage Evidence only. It is not Approved, not Published, not Effective. It lists every normative valid, invalid and canonical-trace fixture in this change set.",
   "schema_host": "https://contracts.omnivia.dev/chat/v1/",
   "counts": {
-    "total": 269,
+    "total": 270,
     "valid": 105,
-    "invalid": 164
+    "invalid": 165
   },
   "fixtures": [
     {
@@ -994,14 +994,14 @@
       "expect": "invalid",
       "focus": "The supported bridge protocol version is the exact constant 2.0, not merely a major.minor syntax: an unsupported major (3.0) is rejected structurally, never silently downgraded.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
-      "expected_error_contains": "const '2.0'"
+      "expected_error_contains": "const '3.0'"
     },
     {
       "path": "fixtures/invalid/f2b-context-bound-unsupported-minor-rejected.json",
       "expect": "invalid",
       "focus": "A version mismatch within the supported major (2.1) is rejected too: the bundle supports exactly 2.0 and never guesses which additive fields an unknown minor added.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
-      "expected_error_contains": "const '2.0'"
+      "expected_error_contains": "const '3.0'"
     },
     {
       "path": "fixtures/invalid/f2b-refusal-safe-message-reason-mismatch-rejected.json",
@@ -1742,9 +1742,9 @@
     {
       "path": "fixtures/invalid/f2b-context-bound-superseded-1-0-rejected.json",
       "expect": "invalid",
-      "focus": "Bridge protocol 1.0 is rejected by this 2.0 bundle: the superseded 1.x grammar cannot carry the Direction surface, so the version change is explicit and 1.0 is never silently admitted (C5A, C6).",
+      "focus": "Bridge protocol 1.0 is rejected by this 3.0 bundle: the superseded 1.x grammar cannot carry the Direction surface, so the version change is explicit and 1.0 is never silently admitted (C5A, C6).",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
-      "expected_error_contains": "const '2.0'"
+      "expected_error_contains": "const '3.0'"
     },
     {
       "path": "fixtures/invalid/f2b-carrier-envelope-outer-version-bumped-rejected.json",
@@ -1812,11 +1812,18 @@
       "expected_error_contains": "boolean"
     },
     {
+      "path": "fixtures/invalid/f2b-context-bound-superseded-2-0-rejected.json",
+      "expect": "invalid",
+      "focus": "Bridge protocol 2.0 is rejected by this 3.0 bundle: the closed 2.x itemKind and command vocabularies cannot carry C8's two hosted commands or its tool_call snapshot item, so the move to 3.0 is explicit and 2.0 is never silently admitted (C8). The corpus gives every superseded major its own negative, which is what makes \"refuses it whole\" a tested claim rather than a sentence in a description.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
+      "expected_error_contains": "const '3.0'"
+    },
+    {
       "path": "fixtures/invalid/f2b-context-bound-superseded-1-1-rejected.json",
       "expect": "invalid",
-      "focus": "Bridge protocol 1.1 is rejected by this 2.0 bundle: the closed 1.1 itemKind, command and refusal vocabularies cannot carry the Direction surface, so the move to 2.0 is explicit and 1.1 is never silently admitted (C6).",
+      "focus": "Bridge protocol 1.1 is rejected by this 3.0 bundle: the closed 1.1 itemKind, command and refusal vocabularies cannot carry the Direction surface, so the move to 2.0 is explicit and 1.1 is never silently admitted (C6).",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
-      "expected_error_contains": "const '2.0'"
+      "expected_error_contains": "const '3.0'"
     },
     {
       "path": "fixtures/valid/submit-steering-input-request.json",
