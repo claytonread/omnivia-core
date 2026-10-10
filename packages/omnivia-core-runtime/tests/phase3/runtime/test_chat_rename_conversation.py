@@ -646,6 +646,39 @@ def test_regenerate_forks_a_branch_at_the_user_parent_and_queues_a_job(
     assert still_there.tombstoned_at_us is None
 
 
+def test_the_regeneration_job_is_identifiable_by_its_trigger(seeded: m1.Owned) -> None:
+    """The discriminator the executor uses to write the `regeneration` edge.
+
+    The executor cannot test the branch's provenance alone: `origin_kind` and
+    `fork_source_message_id` are immutable, so every later generation on that
+    branch would claim to be a regeneration of the original and append another
+    false derivation -- silently, because the derived id differs each time and
+    the table forbids UPDATE and DELETE.
+
+    What distinguishes the regeneration's OWN job is that it triggers off the
+    branch's initial head, the shared user parent. Any later send on the same
+    branch triggers off its own new user message. This pins the half of that
+    invariant the command owns; the executor owns the other half.
+    """
+    _seed_assistant_reply(seeded)
+    assert isinstance(_regenerate(seeded), SuccessResponseEnvelope)
+
+    branch = read_branch(
+        seeded.connection, workspace_id=WORKSPACE_ID, branch_id="branch-c10-regen"
+    )
+    assert branch is not None
+    job = seeded.connection.execute(
+        "SELECT trigger_message_id FROM omnivia_chat_generation_jobs "
+        "WHERE workspace_id = ? AND branch_id = ?",
+        (WORKSPACE_ID, "branch-c10-regen"),
+    ).fetchone()
+    assert job is not None
+    assert job[0] == branch.initial_head_message_id, (
+        "the regeneration's job must trigger off the branch head it forked at, "
+        "or the executor cannot tell it from a later turn on the same branch"
+    )
+
+
 def test_regenerate_replays_idempotently(seeded: m1.Owned) -> None:
     _seed_assistant_reply(seeded)
     first = _regenerate(seeded)

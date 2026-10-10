@@ -1625,12 +1625,30 @@ class ChatGenerationExecutor:
             # here because this is the first moment both of its ends exist.
             # The command that opened this job could not write it -- the
             # derived message did not exist yet -- so it recorded the
-            # provenance on the branch and this reads it back. An ordinary
-            # send's branch carries neither marker and writes no derivation.
+            # provenance on the branch and this reads it back.
+            #
+            # KEYED TO THIS JOB, NOT THE BRANCH'S LIFETIME. `origin_kind` and
+            # `fork_source_message_id` are immutable and stay true forever, so
+            # testing them alone made EVERY generation the branch ever ran
+            # write another `(original -> message, regeneration)` row. Continue
+            # the conversation normally on a regenerated branch -- the expected
+            # thing to do with it -- and turn two, three and four each append a
+            # false edge claiming to be a regeneration of the original. The
+            # derivations primary key does not catch it because the derived id
+            # differs every time, and the table forbids UPDATE and DELETE, so
+            # the corruption is silent and permanent.
+            #
+            # The regeneration's own job is the one whose trigger is the branch
+            # head the fork started from: `_regenerate_response` opens it with
+            # `trigger_message_id` and `initial_head_message_id` both set to the
+            # shared user parent. A later send on the same branch triggers off
+            # its own new user message, so it fails this test. A RETRY of the
+            # regeneration reuses the job id and never reaches here at all.
             if (
                 branch is not None
                 and branch.origin_kind == "assistant_regeneration"
                 and branch.fork_source_message_id is not None
+                and job.trigger_message_id == branch.initial_head_message_id
             ):
                 writer.append_message_derivation(
                     conversation_id=job.conversation_id,
