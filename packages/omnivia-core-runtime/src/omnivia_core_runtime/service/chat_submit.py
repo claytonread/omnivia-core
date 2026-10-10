@@ -1786,7 +1786,15 @@ def _rename_conversation(request: _RenameConversation) -> ChatCommand:
             workspace_id=writer.workspace_id,
             conversation_id=request.conversation_id,
         )
-        if conversation is None:
+        # ACTIVE ONLY. Every other command in this module has held this line
+        # since the foundation -- `_submit`, enqueue, SaveDraft, the
+        # attachment pair -- and these five shipped without it. 0029 does not
+        # close the gap: its update trigger refuses only a state CHANGE out of
+        # a terminal state, and these commands write `state` back unchanged,
+        # so a tombstoned conversation could be renamed, re-pathed, amended or
+        # REGENERATED -- the last two forking a branch and opening a paid
+        # generation job against a conversation the user deleted.
+        if conversation is None or conversation.state != "active":
             raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
         writer.update_conversation(
             conversation_id=request.conversation_id,
@@ -1919,7 +1927,15 @@ def _commit_message_amendment(request: _MessageAmendment) -> ChatCommand:
             workspace_id=writer.workspace_id,
             conversation_id=request.conversation_id,
         )
-        if conversation is None:
+        # ACTIVE ONLY. Every other command in this module has held this line
+        # since the foundation -- `_submit`, enqueue, SaveDraft, the
+        # attachment pair -- and these five shipped without it. 0029 does not
+        # close the gap: its update trigger refuses only a state CHANGE out of
+        # a terminal state, and these commands write `state` back unchanged,
+        # so a tombstoned conversation could be renamed, re-pathed, amended or
+        # REGENERATED -- the last two forking a branch and opening a paid
+        # generation job against a conversation the user deleted.
+        if conversation is None or conversation.state != "active":
             raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
         source = read_message(
             writer.connection,
@@ -2069,7 +2085,15 @@ def _regenerate_response(request: _RegenerateResponse) -> ChatCommand:
             workspace_id=writer.workspace_id,
             conversation_id=request.conversation_id,
         )
-        if conversation is None:
+        # ACTIVE ONLY. Every other command in this module has held this line
+        # since the foundation -- `_submit`, enqueue, SaveDraft, the
+        # attachment pair -- and these five shipped without it. 0029 does not
+        # close the gap: its update trigger refuses only a state CHANGE out of
+        # a terminal state, and these commands write `state` back unchanged,
+        # so a tombstoned conversation could be renamed, re-pathed, amended or
+        # REGENERATED -- the last two forking a branch and opening a paid
+        # generation job against a conversation the user deleted.
+        if conversation is None or conversation.state != "active":
             raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
         source = read_message(
             writer.connection,
@@ -2157,7 +2181,15 @@ def _select_conversation_path(request: _ConversationPath) -> ChatCommand:
             workspace_id=writer.workspace_id,
             conversation_id=request.conversation_id,
         )
-        if conversation is None:
+        # ACTIVE ONLY. Every other command in this module has held this line
+        # since the foundation -- `_submit`, enqueue, SaveDraft, the
+        # attachment pair -- and these five shipped without it. 0029 does not
+        # close the gap: its update trigger refuses only a state CHANGE out of
+        # a terminal state, and these commands write `state` back unchanged,
+        # so a tombstoned conversation could be renamed, re-pathed, amended or
+        # REGENERATED -- the last two forking a branch and opening a paid
+        # generation job against a conversation the user deleted.
+        if conversation is None or conversation.state != "active":
             raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
         # Branches are addressed by id alone within a workspace, so belonging
         # to THIS conversation is a separate check -- and the one that stops a
@@ -2219,7 +2251,15 @@ def _set_default_conversation_path(request: _ConversationPath) -> ChatCommand:
             workspace_id=writer.workspace_id,
             conversation_id=request.conversation_id,
         )
-        if conversation is None:
+        # ACTIVE ONLY. Every other command in this module has held this line
+        # since the foundation -- `_submit`, enqueue, SaveDraft, the
+        # attachment pair -- and these five shipped without it. 0029 does not
+        # close the gap: its update trigger refuses only a state CHANGE out of
+        # a terminal state, and these commands write `state` back unchanged,
+        # so a tombstoned conversation could be renamed, re-pathed, amended or
+        # REGENERATED -- the last two forking a branch and opening a paid
+        # generation job against a conversation the user deleted.
+        if conversation is None or conversation.state != "active":
             raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
         # Branches are addressed by id alone within a workspace, so belonging
         # to THIS conversation is a separate check -- and the one that stops a

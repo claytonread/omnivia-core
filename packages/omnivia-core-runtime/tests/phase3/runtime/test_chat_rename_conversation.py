@@ -230,6 +230,7 @@ def _lifecycle(
     command: Mapping[str, Any],
     *,
     key: str,
+    expected_sequence: int = 1,
 ) -> Any:
     return _dispatcher(holder).dispatch(
         _request(
@@ -237,6 +238,7 @@ def _lifecycle(
             command_name=command_name,
             idempotency_key=f"idem-{key}",
             request_id=f"req-{key}",
+            expected_sequence=expected_sequence,
         )
     )
 
@@ -849,3 +851,85 @@ def test_an_amendment_refuses_an_undeclared_field(seeded: m1.Owned) -> None:
 def test_another_actor_cannot_amend(seeded: m1.Owned) -> None:
     response = _amend(seeded, actor_id="actor-someone-else")
     assert isinstance(response, ErrorResponseEnvelope), response
+
+
+# --- C10: a terminal conversation accepts none of these commands ------------
+#
+# THE REGRESSION. All five shipped without the `state != "active"` guard that
+# every other command in chat_submit has held since the foundation. 0029 does
+# not close the gap -- its update trigger refuses only a state CHANGE out of a
+# terminal state, and these commands write `state` back unchanged. So a
+# tombstoned conversation could be renamed or re-pathed, and amend/regenerate
+# would fork a branch and open a PAID generation job against a conversation
+# the user had deleted.
+
+
+def _delete_conversation(holder: m1.Owned, *, expected_sequence: int = 1) -> None:
+    response = _lifecycle(
+        holder,
+        "DeleteConversation",
+        _lifecycle_command(command_id=DELETE_COMMAND_ID),
+        key=DELETE_COMMAND_ID,
+        expected_sequence=expected_sequence,
+    )
+    assert isinstance(response, SuccessResponseEnvelope), response
+
+
+def test_a_deleted_conversation_refuses_rename(seeded: m1.Owned) -> None:
+    _delete_conversation(seeded)
+    assert isinstance(_rename(seeded, _rename_command()), ErrorResponseEnvelope)
+
+
+def test_a_deleted_conversation_refuses_both_path_commands(seeded: m1.Owned) -> None:
+    _delete_conversation(seeded)
+    for name in ("SelectConversationPath", "SetDefaultConversationPath"):
+        response = _path(seeded, name, command_id=f"cmd-c10-{name}-dead")
+        assert isinstance(response, ErrorResponseEnvelope), (name, response)
+
+
+def test_a_deleted_conversation_refuses_an_amendment_and_opens_no_job(
+    seeded: m1.Owned,
+) -> None:
+    _delete_conversation(seeded)
+    before = _counts(seeded)
+    response = _amend(seeded)
+    assert isinstance(response, ErrorResponseEnvelope), response
+    after = _counts(seeded)
+    assert {t: after[t] - before[t] for t in CHAT_TABLES if after[t] != before[t]} == {}
+
+
+def test_a_deleted_conversation_refuses_a_regeneration_and_opens_no_job(
+    seeded: m1.Owned,
+) -> None:
+    # The sharpest case: an accepted regeneration leases a job, calls the
+    # provider and BILLS for it, against a conversation the user deleted.
+    _seed_assistant_reply(seeded)
+    # The seeder advanced the conversation to 2 to make room for the reply.
+    _delete_conversation(seeded, expected_sequence=2)
+    jobs_before = seeded.connection.execute(
+        "SELECT count(*) FROM omnivia_chat_generation_jobs WHERE workspace_id = ?",
+        (WORKSPACE_ID,),
+    ).fetchone()[0]
+
+    response = _regenerate(seeded)
+    assert isinstance(response, ErrorResponseEnvelope), response
+
+    jobs_after = seeded.connection.execute(
+        "SELECT count(*) FROM omnivia_chat_generation_jobs WHERE workspace_id = ?",
+        (WORKSPACE_ID,),
+    ).fetchone()[0]
+    assert jobs_after == jobs_before, "a deleted conversation opened a generation job"
+
+
+def test_an_archived_conversation_refuses_them_too(seeded: m1.Owned) -> None:
+    # Archive is terminal for the same reason delete is.
+    assert isinstance(
+        _lifecycle(
+            seeded,
+            "ArchiveConversation",
+            _lifecycle_command(command_id=ARCHIVE_COMMAND_ID),
+            key=ARCHIVE_COMMAND_ID,
+        ),
+        SuccessResponseEnvelope,
+    )
+    assert isinstance(_rename(seeded, _rename_command()), ErrorResponseEnvelope)
