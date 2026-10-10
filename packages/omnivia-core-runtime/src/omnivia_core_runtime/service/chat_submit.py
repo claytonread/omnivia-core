@@ -2199,7 +2199,25 @@ def _select_conversation_path(request: _ConversationPath) -> ChatCommand:
             workspace_id=writer.workspace_id,
             branch_id=request.branch_id,
         )
-        if branch is None or branch.conversation_id != request.conversation_id:
+        # OPEN, not merely existing, matching `_submit`'s continuation path.
+        #
+        # DEFENCE IN DEPTH, not a live fix: nothing can close a branch today.
+        # No command does it and `ChatWriter` has no branch-state mutator at
+        # all -- only `append_branch` and `update_branch_head` -- so `state`
+        # is `open` for every branch this build can produce. The guard is here
+        # because the consequence if that changes is severe and silent: a
+        # conversation whose default names a closed branch refuses every later
+        # send that follows it, cannot fall back to the branchless first-send
+        # path because `default_branch_id` is set, and cannot be repaired,
+        # since `SetDefaultConversationPath` requires a branchId and nothing
+        # clears it to NULL. Cheap now, unfixable later. Deliberately
+        # untested: a test would have to forge a state the system cannot
+        # reach.
+        if (
+            branch is None
+            or branch.conversation_id != request.conversation_id
+            or branch.state != "open"
+        ):
             raise ChatAggregateConflict(_MESSAGE_BRANCH)
         existing = read_actor_view_state(
             writer.connection,
@@ -2269,7 +2287,25 @@ def _set_default_conversation_path(request: _ConversationPath) -> ChatCommand:
             workspace_id=writer.workspace_id,
             branch_id=request.branch_id,
         )
-        if branch is None or branch.conversation_id != request.conversation_id:
+        # OPEN, not merely existing, matching `_submit`'s continuation path.
+        #
+        # DEFENCE IN DEPTH, not a live fix: nothing can close a branch today.
+        # No command does it and `ChatWriter` has no branch-state mutator at
+        # all -- only `append_branch` and `update_branch_head` -- so `state`
+        # is `open` for every branch this build can produce. The guard is here
+        # because the consequence if that changes is severe and silent: a
+        # conversation whose default names a closed branch refuses every later
+        # send that follows it, cannot fall back to the branchless first-send
+        # path because `default_branch_id` is set, and cannot be repaired,
+        # since `SetDefaultConversationPath` requires a branchId and nothing
+        # clears it to NULL. Cheap now, unfixable later. Deliberately
+        # untested: a test would have to forge a state the system cannot
+        # reach.
+        if (
+            branch is None
+            or branch.conversation_id != request.conversation_id
+            or branch.state != "open"
+        ):
             raise ChatAggregateConflict(_MESSAGE_BRANCH)
         writer.update_conversation(
             conversation_id=request.conversation_id,

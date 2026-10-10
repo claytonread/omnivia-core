@@ -1015,3 +1015,4 @@ def test_archive_retried_under_the_same_key_replays_rather_than_conflicting(
     )
     assert isinstance(retry, SuccessResponseEnvelope), retry
     assert retry.result == first.result
+
