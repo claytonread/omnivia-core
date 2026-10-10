@@ -114,6 +114,10 @@ from omnivia_core_runtime.service.chat_attachment_authority import (
     revalidate_attachments,
 )
 from omnivia_core_runtime.service.chat_command import ChatAggregateConflict, ChatCommand
+from omnivia_core_runtime.service.chat_part_registry import (
+    PartPayloadInvalid,
+    validate_registered_payload,
+)
 from omnivia_core_runtime.service.mutation import MutationSettlementContext
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
 from omnivia_core_runtime.storage.chat import (
@@ -688,6 +692,15 @@ def _part(item: object, index: int) -> tuple[_Part, str]:
     if "payload" not in item:
         raise _invalid(f"{field}.payload", "is required")
     payload, document = _canonical(item["payload"], f"{field}.payload")
+    # A REGISTERED family must match its registered shape. An unregistered type
+    # is passed through exactly as before: `MessagePart.type` is an open code by
+    # contract and an unrecognised one decodes to the inert fallback, so
+    # refusing it here would narrow the contract. This closes the gap only
+    # where a shape is actually stated -- see `service/chat_part_registry.py`.
+    try:
+        validate_registered_payload(part_type, payload)
+    except PartPayloadInvalid as refused:
+        raise _invalid(f"{field}.payload.{refused.field}", refused.rule) from None
     canonical = to_canonical_json(
         {"type": part_type, "visibility": visibility, "payload": dict(payload)}
     )
