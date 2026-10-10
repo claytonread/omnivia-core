@@ -16,6 +16,7 @@
         "SelectConversationPath", "SetDefaultConversationPath",
         "StageAttachment", "RemoveStagedAttachment",
         "RespondToWorkRequest", "SubmitSteeringInput",
+        "ReviewDecision", "SubmitHumanInput",
         "InvokeTool", "InvokeApp", "StartWorkflow", "StartAgentRun",
         "ReviseArtifact", "PlaceArtifactVersion",
         "CreateConversationShare", "ExportConversation"
@@ -483,6 +484,43 @@
         "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
         "attachmentReferenceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReferenceId" },
         "draftId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DraftId" }
+      }
+    },
+    "ReviewDecisionRequest": {
+      "title": "ReviewDecisionRequest",
+      "description": "C8. Decides one open Review wait -- `approved` or `denied`, once, for the action the reviewer was shown. Mirrors `service/chat_tool_review.decide_tool_review` argument for argument; a field invented here is a field that library rejects at runtime. `targetActionDigest` and `targetResourceRevision` echo what the reviewer saw and are stated even when null, because a decision that cannot say what it was shown is not a reviewable one. `currentResourceRevision`, where the caller knows it, refuses a Review of a resource that has moved since. Deliberately NO `conversationId`: the wait row names its own conversation, and a second statement of it would admit a disagreement nobody could resolve.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "decision", "expectedRequestVersion", "protocolVersion", "targetActionDigest", "targetResourceRevision", "waitId", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "waitId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId", "description": "The open wait this decision answers." },
+        "decision": { "enum": ["approved", "denied"] },
+        "expectedRequestVersion": { "type": "integer", "minimum": 1, "description": "The wait request version the reviewer acted on. A decision against a superseded version is refused, never applied." },
+        "targetActionDigest": { "type": ["string", "null"], "minLength": 71, "maxLength": 71, "pattern": "^sha256:[0-9a-f]{64}$", "description": "The action digest the reviewer was shown, or null where the wait carries none. Bounds are migration 0071's own CHECK: `sha256:` plus 64 lowercase hex, length exactly 71." },
+        "targetResourceRevision": { "type": ["integer", "null"], "minimum": 0, "description": "The resource revision the reviewer was shown, or null. Non-negative, per 0071's CHECK." },
+        "currentResourceRevision": { "type": "integer", "minimum": 0, "description": "Optional. The caller's current revision, which refuses a Review of a resource that has moved since it was shown." },
+        "auditRef": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Optional caller-supplied audit reference, stored verbatim." }
+      }
+    },
+    "SubmitHumanInputRequest": {
+      "title": "SubmitHumanInputRequest",
+      "description": "C8. Answers one open human-input wait. Mirrors `service/chat_tool_review.submit_human_input` argument for argument. Only a digest and the byte length of `answer` become durable -- the answer itself is never persisted -- so this command is the one place its content exists at all. `answer` is a non-empty object, which `_decide` enforces, bounded here by `MAX_ANSWER_BYTES` (16384 bytes); the wait's own `prompt.maxAnswerBytes` may bound it further and defaults to 4096, so a document valid here can still be refused by the wait that receives it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "answer", "commandId", "expectedRequestVersion", "protocolVersion", "waitId", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "waitId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId", "description": "The open wait this answer closes." },
+        "expectedRequestVersion": { "type": "integer", "minimum": 1 },
+        "answer": { "type": "object", "minProperties": 1, "maxProperties": 128, "additionalProperties": true, "description": "The person's bounded answer, as a non-empty JSON object. Its shape is the asking tool's business and not this contract's; only its digest and byte length become durable." },
+        "auditRef": { "type": "string", "minLength": 1, "maxLength": 512 }
       }
     },
     "CreateConversationShareRequest": {

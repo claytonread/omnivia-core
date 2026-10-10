@@ -231,8 +231,32 @@
 #     Platform now asserts the two vocabularies are equal
 #     (`scripts/check-f2b-carrier-parity.mjs`), so this cannot silently
 #     diverge again.
+#   commands.schema.json -- C8's two command names and their closed request
+#     shapes (owner authorization, Clayton Read, 10 October 2026).
+#     `ChatCommandName` gains `ReviewDecision` and `SubmitHumanInput`, taking
+#     the registry from 30 to 32, and two new `$defs` state their closed
+#     request shapes: `ReviewDecisionRequest` and `SubmitHumanInputRequest`.
+#     Purely additive to the file -- 38 inserted lines, nothing deleted or
+#     rewritten -- so every document that validated before still validates.
+#     The shapes MIRROR the library that already implements C8
+#     (`service/chat_tool_review.decide_tool_review` and `submit_human_input`)
+#     argument for argument, because a field invented in the contract is a
+#     field that library rejects at runtime. Their bounds are migration 0071's
+#     own CHECKs, not invented ones: `targetActionDigest` is `sha256:` plus 64
+#     lowercase hex at length exactly 71, `targetResourceRevision` is
+#     non-negative, and `answer` is bounded by `MAX_ANSWER_BYTES` (16384).
+#     Neither request carries a `conversationId`: the wait row names its own
+#     conversation, and a second statement of it would admit a disagreement
+#     nobody could resolve.
+#     What this entry does NOT do: the F2b bridge surface. Admitting these two
+#     names into the hosted allowlist and adding the C8 snapshot item kinds
+#     moves the bridge protocol major to 3.0, which is NOT additive -- a host
+#     pinned to 2.0 refuses a 3.0 message whole, by the strict-decoder rule
+#     `SupportedBridgeProtocolVersion` already states. That is a separate,
+#     deliberate change and is recorded as such before it ships.
 # The first five are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
-# COMPATIBILITY-AND-MIGRATION.md §3, and all must be carried back to the
+# COMPATIBILITY-AND-MIGRATION.md §3, as is the sixth above; the F2b carrier
+# rename is not, and says so in its own entry. All must be carried back to the
 # Masterdocs authority before the next tag: until then this tree is
 # deliberately not byte-identical to architecture-v1.4.0, and the digest is
 # what says so.
@@ -333,7 +357,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES = 16384
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "75e6028f6b93bedc19e8cb83fdd6f209a9f47c5722f2fd1f16b1a2aee9a24d6a"
+    "f404f0ac487c20fe4ad34626f119c1907f70bc0766822eaaadc6d5a01c3d0931"
 )
 
 
