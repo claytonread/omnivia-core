@@ -135,8 +135,23 @@ def _fenced(
 
     Called without one -- every in-process caller and all 32 of this module's
     own tests -- it opens and owns a writer exactly as before.
+
+    THE LENT WRITER'S WORKSPACE IS CHECKED, because lending otherwise drops
+    it silently. A `ChatWriter` binds its workspace at construction, so a
+    lent writer and the `workspace_id` argument are two independent claims
+    about where to write -- and `_decide` uses BOTH: its raw `UPDATE` binds
+    the argument while `append_chat_wait_decision` binds the writer's. A
+    mismatch would update the wait in one workspace and record its decision
+    in another, inside one committed transaction, with no error. The fencing
+    guarantee itself survives either way (0029's triggers enforce it at write
+    time whatever object issues the statement); the workspace binding is what
+    lending weakens, so it is asserted here rather than trusted.
     """
     if writer is not None:
+        if writer.workspace_id != workspace_id:
+            raise ChatWaitConflict(
+                "a lent writer is bound to a different workspace than this command"
+            )
         return nullcontext(writer)
     return chat.chat_writer(
         connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
@@ -860,15 +875,29 @@ def _expire_review(
     fencing_generation: int,
     wait: ChatWaitInteraction,
     now_us: int,
+    writer: chat.ChatWriter | None = None,
 ) -> None:
-    """Durably expire a wait and, if a tool call is awaiting it, cancel that call."""
+    """Durably expire a wait and, if a tool call is awaiting it, cancel that call.
+
+    Takes a lendable `writer` for the same reason `_decide` does, and this is
+    the path that needed it most: `_decide` calls this BEFORE it reaches its
+    own `_fenced`, so on the lending path -- the whole point of the lend --
+    an expired wait opened a nested `BEGIN IMMEDIATE` inside the caller's
+    transaction. SQLite answers that with `cannot start a transaction within
+    a transaction`, so an actor approving a Review one second late would have
+    got an unhandled OperationalError instead of a clean `ChatWaitExpired`,
+    rolling back whatever else the command had written.
+
+    No in-process caller lends today, which is why the 32 tests could not
+    have caught it.
+    """
     events = (
         _events(connection, workspace_id, wait.tool_call_id) if wait.tool_call_id else ()
     )
     if wait.tool_call_id and _state(events) == "awaiting_review":
         call = _require_tool_call(connection, workspace_id=workspace_id, tool_call_id=wait.tool_call_id)
         step = _require_step(connection, workspace_id=workspace_id, step_id=call.step_id)
-        with _fenced(connection, identity, workspace_id, fencing_generation) as writer:
+        with _fenced(connection, identity, workspace_id, fencing_generation, writer) as writer:
             _close_wait(writer, workspace_id, wait.wait_id, to_state="expired", now_us=now_us)
             _append(
                 writer, events, call.tool_call_id, "cancelled", now_us,
@@ -877,7 +906,7 @@ def _expire_review(
             _mirror_terminal(writer, call, step, state="cancelled", reason_code="review_expired", now_us=now_us)
             _sync_turn(connection, writer, call, waiting=False, now_us=now_us)
         return
-    with _fenced(connection, identity, workspace_id, fencing_generation) as writer:
+    with _fenced(connection, identity, workspace_id, fencing_generation, writer) as writer:
         _close_wait(writer, workspace_id, wait.wait_id, to_state="expired", now_us=now_us)
 
 
@@ -1090,6 +1119,7 @@ def _decide(
             identity,
             workspace_id=workspace_id,
             fencing_generation=fencing_generation,
+            writer=writer,
             wait=wait,
             now_us=now_us,
         )
