@@ -119,9 +119,9 @@ class ToolCallReplay:
 
 def _fenced(
     connection: sqlite3.Connection,
-    identity: ServiceInstanceIdentity,
+    identity: ServiceInstanceIdentity | None,
     workspace_id: str,
-    fencing_generation: int,
+    fencing_generation: int | None,
     writer: chat.ChatWriter | None = None,
 ) -> AbstractContextManager[chat.ChatWriter]:
     """The fenced writer these commands write through.
@@ -153,6 +153,17 @@ def _fenced(
                 "a lent writer is bound to a different workspace than this command"
             )
         return nullcontext(writer)
+    # `identity` and `fencing_generation` OPEN a fence, so they are required
+    # exactly when this module opens one -- and are unused above, where the
+    # caller's fence is already open. Optional rather than mandatory so the
+    # `chat.command` resolver can lend its writer without inventing a service
+    # identity it does not hold: a ChatCommand closure receives only
+    # `(writer, settlement)`, and a fabricated identity passed to be ignored is
+    # exactly the kind of value that stops being ignored after a refactor.
+    if identity is None or fencing_generation is None:
+        raise ChatWaitConflict(
+            "a service identity and fencing generation are required without a lent writer"
+        )
     return chat.chat_writer(
         connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
     )
@@ -869,10 +880,10 @@ def recover_tool_calls(
 
 def _expire_review(
     connection: sqlite3.Connection,
-    identity: ServiceInstanceIdentity,
+    identity: ServiceInstanceIdentity | None,
     *,
     workspace_id: str,
-    fencing_generation: int,
+    fencing_generation: int | None,
     wait: ChatWaitInteraction,
     now_us: int,
     writer: chat.ChatWriter | None = None,
@@ -967,10 +978,10 @@ def _authorisation_basis(policy: Mapping[str, Any], actor_id: str) -> str | None
 
 def decide_tool_review(
     connection: sqlite3.Connection,
-    identity: ServiceInstanceIdentity,
+    identity: ServiceInstanceIdentity | None,
     *,
     workspace_id: str,
-    fencing_generation: int,
+    fencing_generation: int | None,
     command_id: str,
     wait_id: str,
     actor_id: str,
@@ -1013,10 +1024,10 @@ def decide_tool_review(
 
 def submit_human_input(
     connection: sqlite3.Connection,
-    identity: ServiceInstanceIdentity,
+    identity: ServiceInstanceIdentity | None,
     *,
     workspace_id: str,
-    fencing_generation: int,
+    fencing_generation: int | None,
     command_id: str,
     wait_id: str,
     actor_id: str,
@@ -1050,10 +1061,10 @@ def submit_human_input(
 
 def _decide(
     connection: sqlite3.Connection,
-    identity: ServiceInstanceIdentity,
+    identity: ServiceInstanceIdentity | None,
     *,
     workspace_id: str,
-    fencing_generation: int,
+    fencing_generation: int | None,
     command_kind: str,
     command_id: str,
     wait_id: str,

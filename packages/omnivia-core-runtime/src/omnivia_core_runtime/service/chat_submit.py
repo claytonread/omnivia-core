@@ -114,9 +114,15 @@ from omnivia_core_runtime.service.chat_attachment_authority import (
     revalidate_attachments,
 )
 from omnivia_core_runtime.service.chat_command import ChatAggregateConflict, ChatCommand
+from omnivia_core_runtime.service.chat_interactions import read_chat_wait
 from omnivia_core_runtime.service.chat_part_registry import (
     PartPayloadInvalid,
     validate_registered_payload,
+)
+from omnivia_core_runtime.service.chat_tool_review import (
+    ChatWaitConflict,
+    decide_tool_review,
+    submit_human_input,
 )
 from omnivia_core_runtime.service.mutation import MutationSettlementContext
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
@@ -129,7 +135,6 @@ from omnivia_core_runtime.storage.chat import (
     read_active_queue_for_actor,
     read_actor_view_state,
     read_branch,
-    read_message,
     read_conversation,
     read_directions_for_generation_job,
     read_draft,
@@ -138,6 +143,7 @@ from omnivia_core_runtime.storage.chat import (
     read_generation_events,
     read_generation_job,
     read_generation_job_status_projection,
+    read_message,
     read_messages_by_conversation_sequence,
     read_queue_order_for_conversation,
     read_queue_order_projection,
@@ -187,6 +193,9 @@ DISCARD_DRAFT_COMMAND: Final = "DiscardDraft"
 #: `commands.schema.json`; what was missing was a resolver, so every
 #: `RenameConversation` answered `dependency_unavailable`.
 RENAME_CONVERSATION_COMMAND: Final = "RenameConversation"
+#: C8. The two names admitted into `ChatCommandName` on 10 October 2026.
+REVIEW_DECISION_COMMAND: Final = "ReviewDecision"
+SUBMIT_HUMAN_INPUT_COMMAND: Final = "SubmitHumanInput"
 ARCHIVE_CONVERSATION_COMMAND: Final = "ArchiveConversation"
 #: A tombstone, not a row removal: 0029 forbids DELETE on the table outright.
 DELETE_CONVERSATION_COMMAND: Final = "DeleteConversation"
@@ -539,6 +548,41 @@ class _RenameConversation:
     conversation_id: str
     actor_id: str
     title: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ReviewDecision:
+    """One decoded `ReviewDecisionRequest` (C8).
+
+    No `conversation_id`: the wait row names its own conversation. Every other
+    command here carries one because it addresses a conversation directly; this
+    one addresses a wait, and taking a second statement of the conversation
+    would admit a disagreement nobody could resolve.
+    """
+
+    command_id: str
+    workspace_id: str
+    actor_id: str
+    wait_id: str
+    decision: str
+    expected_request_version: int
+    target_action_digest: str | None
+    target_resource_revision: int | None
+    current_resource_revision: int | None
+    audit_ref: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _SubmitHumanInput:
+    """One decoded `SubmitHumanInputRequest` (C8)."""
+
+    command_id: str
+    workspace_id: str
+    actor_id: str
+    wait_id: str
+    expected_request_version: int
+    answer: Mapping[str, Any]
+    audit_ref: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1071,6 +1115,158 @@ def _decode_rename_conversation(command: Mapping[str, Any]) -> _RenameConversati
         conversation_id=_identifier(command, "conversationId"),
         actor_id=_identifier(command, "actorId"),
         title=title,
+    )
+
+
+#: `ReviewDecisionRequest`'s closed field set, and `SubmitHumanInputRequest`'s.
+_REVIEW_DECISION_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "actorId",
+        "waitId",
+        "decision",
+        "expectedRequestVersion",
+        "targetActionDigest",
+        "targetResourceRevision",
+        "currentResourceRevision",
+        "auditRef",
+    }
+)
+_SUBMIT_HUMAN_INPUT_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "actorId",
+        "waitId",
+        "expectedRequestVersion",
+        "answer",
+        "auditRef",
+    }
+)
+
+#: 0071's own CHECK on `target_action_digest`: `sha256:` plus 64 lowercase hex,
+#: length exactly 71. Stated here so a malformed digest is an invalid request
+#: rather than a CHECK tripped inside the mutation, which would be an integrity
+#: failure where this is a bad document.
+_ACTION_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+#: `MAX_ANSWER_BYTES` in `service/chat_tool_review.py`. The wait's own
+#: `prompt.maxAnswerBytes` may bound an answer further and defaults to 4096, so
+#: a document admitted here can still be refused by the wait that receives it.
+_MAX_ANSWER_BYTES: Final = 16_384
+
+#: `auditRef` has no CHECK in 0071, so the bound is this wire's own.
+_MAX_AUDIT_REF: Final = 512
+
+
+def _protocol(command: Mapping[str, Any]) -> None:
+    """The protocol-version check every decoder here repeats."""
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+
+
+def _request_version(command: Mapping[str, Any]) -> int:
+    value = command.get("expectedRequestVersion")
+    # `bool` is an `int` in Python, and `True` is not a version.
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise _invalid("expectedRequestVersion", "is not a wait request version")
+    return value
+
+
+def _optional_revision(command: Mapping[str, Any], field: str) -> int | None:
+    if field not in command or command[field] is None:
+        return None
+    value = command[field]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise _invalid(field, "is not a non-negative resource revision")
+    return value
+
+
+def _optional_audit_ref(command: Mapping[str, Any]) -> str | None:
+    if "auditRef" not in command:
+        return None
+    value = command["auditRef"]
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= _MAX_AUDIT_REF
+        or "\x00" in value
+    ):
+        raise _invalid("auditRef", f"is not a string of 1 to {_MAX_AUDIT_REF} characters")
+    return value
+
+
+def _decode_review_decision(command: Mapping[str, Any]) -> _ReviewDecision:
+    """Decode one `ReviewDecisionRequest`, or refuse it as an invalid request.
+
+    `targetActionDigest` and `targetResourceRevision` are REQUIRED and may be
+    null: a decision that cannot say what the reviewer was shown is not a
+    reviewable decision, so their absence is a malformed document while their
+    nullity is a legitimate wait that carries neither. `_decode` would accept
+    the same values either way; stating them keeps the distinction on the wire.
+    """
+    unknown = sorted(set(command) - _REVIEW_DECISION_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    _protocol(command)
+    decision = command.get("decision")
+    if decision not in {"approved", "denied"}:
+        raise _invalid("decision", "is not a Review decision")
+    for field in ("targetActionDigest", "targetResourceRevision"):
+        if field not in command:
+            raise _invalid(field, "is required, and is null where the wait carries none")
+    digest = command["targetActionDigest"]
+    if digest is not None and (
+        not isinstance(digest, str) or _ACTION_DIGEST.fullmatch(digest) is None
+    ):
+        raise _invalid("targetActionDigest", "is not a sha256 content digest")
+    return _ReviewDecision(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        actor_id=_identifier(command, "actorId"),
+        wait_id=_identifier(command, "waitId"),
+        decision=str(decision),
+        expected_request_version=_request_version(command),
+        target_action_digest=digest,
+        target_resource_revision=_optional_revision(command, "targetResourceRevision"),
+        current_resource_revision=_optional_revision(command, "currentResourceRevision"),
+        audit_ref=_optional_audit_ref(command),
+    )
+
+
+def _decode_submit_human_input(command: Mapping[str, Any]) -> _SubmitHumanInput:
+    """Decode one `SubmitHumanInputRequest`, or refuse it as an invalid request.
+
+    The answer is bounded HERE as well as by the library, because this is the
+    one place its content exists at all -- only a digest and a byte length
+    become durable -- so an oversize answer must be refused before a
+    transaction opens rather than after the library has hashed it.
+    """
+    unknown = sorted(set(command) - _SUBMIT_HUMAN_INPUT_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    _protocol(command)
+    answer = command.get("answer")
+    if not isinstance(answer, Mapping) or not answer:
+        raise _invalid("answer", "is not a non-empty JSON object")
+    decoded, document = _canonical(answer, "answer")
+    if len(document.encode("utf-8")) > _MAX_ANSWER_BYTES:
+        raise _invalid("answer", f"is longer than {_MAX_ANSWER_BYTES} UTF-8 bytes")
+    return _SubmitHumanInput(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        actor_id=_identifier(command, "actorId"),
+        wait_id=_identifier(command, "waitId"),
+        expected_request_version=_request_version(command),
+        answer=decoded,
+        audit_ref=_optional_audit_ref(command),
     )
 
 
@@ -1773,6 +1969,117 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
             generation_job_id=generation_job_id,
         )
         return _ack(SUBMIT_MESSAGE_COMMAND, request.command_id, request.conversation_id)
+
+    return command
+
+
+def _review_decision(request: _ReviewDecision) -> ChatCommand:
+    """One decoded `ReviewDecisionRequest`, as the command the seam runs.
+
+    The domain logic is `service/chat_tool_review.decide_tool_review` and is
+    NOT reimplemented here: it owns the nine-state machine, the append-only
+    ledgers and the DB triggers behind them. This function's whole job is to
+    hand it the seam's own writer.
+
+    LENDING THE WRITER is the point. That library opens its own fenced
+    transaction when called without one, and a second fence on this connection
+    would nest inside the one the seam already opened -- the exact defect
+    repaired in `_fenced` earlier on 10 October. Lending also keeps the Review
+    decision in the same unit of work as the seam's idempotency record, so a
+    decision cannot be durable while its replay guard is not.
+
+    `identity` and `fencing_generation` are None because the fence is already
+    open and the library ignores them on this path. They are passed as None
+    rather than as a fabricated identity: a ChatCommand closure receives only
+    `(writer, settlement)` and holds no service identity, and a placeholder
+    passed because it is currently ignored is exactly the value that stops
+    being ignored after a refactor.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        # `ChatWaitDecision` carries no conversation, and `_ack` needs one. The
+        # wait row is where it lives, so it is read first -- which also refuses
+        # a wait this workspace does not hold before the library is entered,
+        # rather than discovering it mid-mutation.
+        wait = read_chat_wait(
+            writer.connection, workspace_id=writer.workspace_id, wait_id=request.wait_id
+        )
+        if wait is None:
+            raise ChatAggregateConflict("the wait is not open in this workspace")
+        # The library's domain refusals are `ChatWaitConflict` -- a wait already
+        # decided, a superseded request version, an unauthorised responder, a
+        # resource that moved. Mapped onto the seam's own conflict type so each
+        # is a clean `conflict` rather than an unexpected error, which is what
+        # an unmapped exception escaping a DomainMutation becomes.
+        try:
+            decide_tool_review(
+                writer.connection,
+                None,
+                workspace_id=writer.workspace_id,
+                fencing_generation=None,
+                command_id=request.command_id,
+                wait_id=request.wait_id,
+                actor_id=request.actor_id,
+                decision=request.decision,
+                expected_request_version=request.expected_request_version,
+                target_action_digest=request.target_action_digest,
+                target_resource_revision=request.target_resource_revision,
+                now_us=settlement.settled_at_us,
+                current_resource_revision=request.current_resource_revision,
+                audit_ref=request.audit_ref,
+                writer=writer,
+            )
+        except ChatWaitConflict as refused:
+            raise ChatAggregateConflict(str(refused)) from None
+        return _ack(
+            REVIEW_DECISION_COMMAND,
+            request.command_id,
+            wait.conversation_id,
+        )
+
+    return command
+
+
+def _submit_human_input(request: _SubmitHumanInput) -> ChatCommand:
+    """One decoded `SubmitHumanInputRequest`, as the command the seam runs.
+
+    Same lending discipline as the Review decision above. Only a digest and the
+    byte length of the answer become durable, which the library does; this
+    command never writes the answer itself anywhere.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        wait = read_chat_wait(
+            writer.connection, workspace_id=writer.workspace_id, wait_id=request.wait_id
+        )
+        if wait is None:
+            raise ChatAggregateConflict("the wait is not open in this workspace")
+        try:
+            submit_human_input(
+                writer.connection,
+                None,
+                workspace_id=writer.workspace_id,
+                fencing_generation=None,
+                command_id=request.command_id,
+                wait_id=request.wait_id,
+                actor_id=request.actor_id,
+                expected_request_version=request.expected_request_version,
+                answer=request.answer,
+                now_us=settlement.settled_at_us,
+                audit_ref=request.audit_ref,
+                writer=writer,
+            )
+        except ChatWaitConflict as refused:
+            raise ChatAggregateConflict(str(refused)) from None
+        return _ack(
+            SUBMIT_HUMAN_INPUT_COMMAND,
+            request.command_id,
+            wait.conversation_id,
+        )
 
     return command
 
@@ -3936,6 +4243,33 @@ def resolve_chat_command(
     The other commands here name an actor that is matched against a row this workspace
     already holds, so the check that matters there is the one against the row.
     """
+    if request.command_name == REVIEW_DECISION_COMMAND:
+        review = _decode_review_decision(request.command)
+        if review.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if review.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        # The same coupling every C10 command holds: the seam keys replay on the
+        # request's IDEMPOTENCY KEY, and a decision that replayed under a fresh
+        # key would be a SECOND decision on a wait the library allows to be
+        # decided once -- which it would then refuse, turning a legitimate retry
+        # into a conflict.
+        if context.request.metadata.idempotency_key != review.command_id:
+            raise _invalid("commandId", "is not the idempotency key of this request")
+        return _review_decision(review)
+    if request.command_name == SUBMIT_HUMAN_INPUT_COMMAND:
+        human = _decode_submit_human_input(request.command)
+        if human.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if human.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        if context.request.metadata.idempotency_key != human.command_id:
+            raise _invalid("commandId", "is not the idempotency key of this request")
+        return _submit_human_input(human)
     if request.command_name == RENAME_CONVERSATION_COMMAND:
         rename = _decode_rename_conversation(request.command)
         if rename.workspace_id != context.workspace_id:
