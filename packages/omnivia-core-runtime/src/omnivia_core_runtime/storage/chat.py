@@ -138,7 +138,6 @@ __all__ = [
     "read_actor_directions_for_branch",
     "read_actor_view_state",
     "read_branch",
-    "read_message",
     "read_branch_head_events",
     "read_chat_tool_call",
     "read_chat_tool_calls",
@@ -161,6 +160,7 @@ __all__ = [
     "read_generation_job",
     "read_generation_job_status_projection",
     "read_generation_text_chunks",
+    "read_message",
     "read_message_parts",
     "read_messages_by_conversation_sequence",
     "read_next_executable_queued_submission",
@@ -863,6 +863,13 @@ class ConversationSnapshotInputs:
     queued_submissions: tuple[ActiveQueueEntry, ...]
     queued_submissions_truncated: bool
     drafts: tuple[Draft, ...] = ()
+    #: C8. This conversation's tool calls, bounded, inside the SAME revision
+    #: window as everything else here -- read within the one authoritative read
+    #: rather than fetched afterwards, which is what keeps a snapshot exactly
+    #: one observation of one revision. Defaulted so no existing construction
+    #: site changes.
+    tool_calls: tuple[ChatToolCall, ...] = ()
+    tool_calls_truncated: bool = False
 
 
 # --- writer -----------------------------------------------------------------------
@@ -4432,6 +4439,42 @@ def read_chat_tool_calls(
     return tuple(_chat_tool_call_from_row(row) for row in rows)
 
 
+#: The governed ceiling on tool calls one snapshot carries. Chosen to match
+#: `.directions`' own bound rather than invented: a snapshot is one bounded
+#: observation, and a conversation that has run more tool calls than this needs
+#: a paged read rather than a silently shortened snapshot.
+CONVERSATION_SNAPSHOT_TOOL_CALL_MAXIMUM: Final = 64
+
+
+def read_chat_tool_calls_for_conversation(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    maximum: int = CONVERSATION_SNAPSHOT_TOOL_CALL_MAXIMUM,
+) -> tuple[tuple[ChatToolCall, ...], bool]:
+    """Every tool call of one conversation, bounded, with whether it truncated.
+
+    `read_chat_tool_calls` is scoped by TURN, which is what the lifecycle itself
+    needs; a snapshot is scoped by conversation. Same table, same ordering rule,
+    one row past the bound read so truncation is a fact rather than a guess --
+    exactly how the generation-job and queue reads in this module already report
+    theirs.
+
+    Ordered by `created_at_us` then `tool_call_id`, matching
+    `read_chat_tool_calls`, so a call's position in a snapshot is the position it
+    has everywhere else.
+    """
+    rows = connection.execute(
+        f"SELECT {_CHAT_TOOL_CALL_COLUMNS} FROM omnivia_chat_tool_calls "
+        "WHERE workspace_id = ? AND conversation_id = ? "
+        "ORDER BY created_at_us, tool_call_id LIMIT ?",
+        (workspace_id, conversation_id, maximum + 1),
+    ).fetchall()
+    calls = tuple(_chat_tool_call_from_row(row) for row in rows[:maximum])
+    return calls, len(rows) > maximum
+
+
 _CHAT_TOOL_RESULT_COLUMNS = (
     "workspace_id, conversation_id, turn_id, step_id, generation_job_id, "
     "generation_attempt_id, tool_call_id, result_id, status, result_payload_json, "
@@ -4833,6 +4876,10 @@ def read_conversation_snapshot_inputs(
                 limit=_QUEUE_SNAPSHOT_LIMIT + 1,
             )
 
+            # C8's tool calls, read INSIDE this window like every other member.
+            tool_calls, tool_calls_truncated = read_chat_tool_calls_for_conversation(
+                connection, workspace_id=workspace_id, conversation_id=conversation_id
+            )
             result = ConversationSnapshotInputs(
                 conversation=conversation,
                 branch=branch,
@@ -4850,6 +4897,8 @@ def read_conversation_snapshot_inputs(
                     actor_id=actor_id,
                     device_id=device_id,
                 ),
+                tool_calls=tool_calls,
+                tool_calls_truncated=tool_calls_truncated,
             )
     except BaseException:
         if owns_transaction:
