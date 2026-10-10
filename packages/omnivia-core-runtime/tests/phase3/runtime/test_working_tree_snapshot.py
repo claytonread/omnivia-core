@@ -2407,8 +2407,13 @@ def test_0059_upgrade_seeds_a_preexisting_0058_capture(
             fencing_generation=old.holder.generation,
             workspace_id=captured_schema.WORKSPACE_ID,
         )
+        # EVERY migration from the captured 0058 schema to head, in order. This
+        # list grows with each one, which is the point: a 0058 capture must
+        # upgrade the whole way, and a list that stopped short would pass while
+        # the newest migration went unexercised on the upgrade path. 72 is C8's
+        # tool-call transport event.
         assert [item.version for item in applied] == [
-            59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71
+            59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72
         ]
         assert old.holder.connection.execute(
             "SELECT COUNT(*) FROM omnivia_engineering_source_producer_queue"

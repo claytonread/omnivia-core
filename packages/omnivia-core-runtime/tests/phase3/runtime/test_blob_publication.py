@@ -417,6 +417,7 @@ def test_the_primitive_writes_no_database_and_captures_no_source() -> None:
     assert blob_publication.__all__ == [
         "DIGEST_PATTERN",
         "BlobPublicationRefused",
+        "blob_is_intact",
         "blob_path",
         "publish_blob",
     ]
@@ -432,6 +433,17 @@ def test_the_primitive_writes_no_database_and_captures_no_source() -> None:
     assert list(inspect.signature(blob_publication.blob_path).parameters) == [
         "blobs_root",
         "digest",
+    ]
+    # `blob_is_intact` (C7B, for the staged-attachment revalidation path) is held
+    # to the same boundary and is why this list grew: a root, a digest, a length
+    # and whether to rehash. It reads bytes it was given the address of and
+    # answers a question about them -- still no connection, no source path, no
+    # media type and no SQL, which is what this test is actually guarding.
+    assert list(inspect.signature(blob_publication.blob_is_intact).parameters) == [
+        "blobs_root",
+        "digest",
+        "length",
+        "rehash",
     ]
 
     # The only things it imports are the standard library's hashing and filesystem

@@ -51,6 +51,7 @@ __all__ = [
     "PART_REGISTRY_VERSION",
     "REGISTERED_PART_TYPES",
     "TEXT_PART_TYPE",
+    "TOOL_CALL_PART_TYPE",
     "PartPayloadInvalid",
     "is_registered_part_type",
     "validate_registered_payload",
@@ -67,6 +68,12 @@ PART_REGISTRY_VERSION: Final = 1
 #: The assistant's and the composer's text. The one family that predates this
 #: registry on both sides.
 TEXT_PART_TYPE: Final = "text"
+
+#: C9: one governed tool call the provider proposed during this generation.
+#:
+#: The family is named for what it states -- a CALL that happened -- not for the
+#: card a consumer draws it as.
+TOOL_CALL_PART_TYPE: Final = "tool.call"
 
 class PartPayloadInvalid(Exception):
     """A payload that does not match the registered shape of its own family.
@@ -164,11 +171,44 @@ def _validate_attachment(payload: Mapping[str, Any]) -> None:
             raise PartPayloadInvalid("sizeBytes", "must be a non-negative integer")
 
 
+def _validate_tool_call(payload: Mapping[str, Any]) -> None:
+    """The shape :func:`tool_call_part_payload` writes.
+
+    THE TOOL'S ARGUMENTS ARE NOT A FIELD OF THIS FAMILY, and closing the shape
+    is how that is enforced. A Message part is read by anyone who may read the
+    conversation, and C8 already settled that this bundle publishes no tool
+    arguments in any form -- `ToolCallProjection` refuses to project them even
+    to the reviewer who has to decide on the call. A part carrying them would be
+    the first outbound disclosure of tool input, reached through the transcript
+    rather than through a query. The contract's `MessagePart.payload` is
+    `additionalProperties: true`, so nothing but this registry would stop it.
+    A producer that wants to show arguments needs a new decision, not a spare
+    field.
+
+    `state` is Core's own tool-call state, stated verbatim and NOT translated
+    into any consumer's display vocabulary. The contract makes an unrecognised
+    state draw inertly, which is the right outcome and keeps Core from having to
+    know which chips a renderer owns.
+    """
+    _require_exact_keys(
+        payload,
+        required=frozenset({"name"}),
+        optional=frozenset({"id", "state", "detail"}),
+    )
+    _require_text(payload, "name", maximum=128)
+    for field in ("id", "state", "detail"):
+        if field in payload:
+            _require_text(payload, field, maximum=512)
+            if payload[field] == "":
+                raise PartPayloadInvalid(field, "must not be empty when present")
+
+
 #: Every registered family, and the validator for its payload. Closed over the
 #: families Core produces -- see the module docstring on producer-first.
 _VALIDATORS: Final[Mapping[str, Any]] = {
     TEXT_PART_TYPE: _validate_text,
     ATTACHMENT_PART_TYPE: _validate_attachment,
+    TOOL_CALL_PART_TYPE: _validate_tool_call,
 }
 
 #: The registered family names, for a caller that wants to report the registry

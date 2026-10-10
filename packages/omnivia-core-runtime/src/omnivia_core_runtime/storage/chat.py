@@ -4446,6 +4446,31 @@ def read_chat_tool_calls(
 CONVERSATION_SNAPSHOT_TOOL_CALL_MAXIMUM: Final = 64
 
 
+def read_chat_tool_calls_for_generation_job(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_job_id: str
+) -> tuple[ChatToolCall, ...]:
+    """Every tool call of one generation JOB, across all of its attempts.
+
+    By job rather than by attempt because the committed assistant Message is
+    the job's, not one attempt's: a Direction continuation assembles its text
+    from the durable chunks of every attempt, so the parts beside that text
+    have to span the same set or the Message would state the tool calls of only
+    its last hop.
+
+    Ordered by `created_at_us` then `tool_call_id`, matching the other two tool
+    call reads, so the parts a commit emits are in a deterministic order -- the
+    Message's own `content_hash` is computed over them, and a read that could
+    reorder would make the same durable rows hash two ways.
+    """
+    rows = connection.execute(
+        f"SELECT {_CHAT_TOOL_CALL_COLUMNS} FROM omnivia_chat_tool_calls "
+        "WHERE workspace_id = ? AND generation_job_id = ? "
+        "ORDER BY created_at_us, tool_call_id",
+        (workspace_id, generation_job_id),
+    ).fetchall()
+    return tuple(_chat_tool_call_from_row(row) for row in rows)
+
+
 def read_chat_tool_calls_for_conversation(
     connection: sqlite3.Connection,
     *,

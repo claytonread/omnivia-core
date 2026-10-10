@@ -1033,17 +1033,17 @@ def _expire_review(
     if wait.tool_call_id and _state(events) == "awaiting_review":
         call = _require_tool_call(connection, workspace_id=workspace_id, tool_call_id=wait.tool_call_id)
         step = _require_step(connection, workspace_id=workspace_id, step_id=call.step_id)
-        with _fenced(connection, identity, workspace_id, fencing_generation, writer) as writer:
-            _close_wait(writer, workspace_id, wait.wait_id, to_state="expired", now_us=now_us)
+        with _fenced(connection, identity, workspace_id, fencing_generation, writer) as fenced:
+            _close_wait(fenced, workspace_id, wait.wait_id, to_state="expired", now_us=now_us)
             _append(
-                writer, events, call.tool_call_id, "cancelled", now_us,
+                fenced, events, call.tool_call_id, "cancelled", now_us,
                 reason_code="review_expired", wait_id=wait.wait_id,
             )
-            _mirror_terminal(writer, call, step, state="cancelled", reason_code="review_expired", now_us=now_us)
-            _sync_turn(connection, writer, call, waiting=False, now_us=now_us)
+            _mirror_terminal(fenced, call, step, state="cancelled", reason_code="review_expired", now_us=now_us)
+            _sync_turn(connection, fenced, call, waiting=False, now_us=now_us)
         return
-    with _fenced(connection, identity, workspace_id, fencing_generation, writer) as writer:
-        _close_wait(writer, workspace_id, wait.wait_id, to_state="expired", now_us=now_us)
+    with _fenced(connection, identity, workspace_id, fencing_generation, writer) as fenced:
+        _close_wait(fenced, workspace_id, wait.wait_id, to_state="expired", now_us=now_us)
 
 
 def open_human_input_request(
@@ -1298,8 +1298,8 @@ def _decide(
             raise ChatToolReviewStale("the tool call is no longer awaiting this Review")
         if call.post_policy_arguments_digest != wait.target_action_digest:
             raise ChatToolReviewStale("the tool call's action changed since the Review opened")
-    with _fenced(connection, identity, workspace_id, fencing_generation, writer) as writer:
-        cursor = writer.connection.execute(
+    with _fenced(connection, identity, workspace_id, fencing_generation, writer) as fenced:
+        cursor = fenced.connection.execute(
             "UPDATE omnivia_chat_wait_interactions "
             "SET state = 'decided', decision = ?, decided_by_actor_id = ?, "
             "sensitive_answer_ciphertext_digest = ?, audit_ref = ?, version = version + 1, "
@@ -1312,7 +1312,7 @@ def _decide(
         )
         if cursor.rowcount != 1:
             raise ChatWaitConflict("chat wait decision lost the compare-and-set race")
-        writer.append_chat_wait_decision(
+        fenced.append_chat_wait_decision(
             wait_id=wait_id,
             command_id=command_id,
             command_kind=command_kind,
@@ -1331,11 +1331,11 @@ def _decide(
         if call is not None and outcome == "denied":
             step = _require_step(connection, workspace_id=workspace_id, step_id=call.step_id)
             _append(
-                writer, events, call.tool_call_id, "cancelled", now_us,
+                fenced, events, call.tool_call_id, "cancelled", now_us,
                 reason_code="review_denied", wait_id=wait_id,
             )
-            _mirror_terminal(writer, call, step, state="cancelled", reason_code="review_denied", now_us=now_us)
-            _sync_turn(connection, writer, call, waiting=False, now_us=now_us)
+            _mirror_terminal(fenced, call, step, state="cancelled", reason_code="review_denied", now_us=now_us)
+            _sync_turn(connection, fenced, call, waiting=False, now_us=now_us)
     stored = chat.read_chat_wait_decision_by_command(
         connection, workspace_id=workspace_id, command_id=command_id
     )

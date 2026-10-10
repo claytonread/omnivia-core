@@ -17,7 +17,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from omnivia_core_runtime.service.chat_attachment_authority import (
     ATTACHMENT_PART_TYPE,
     PinnedAttachment,
@@ -27,6 +26,7 @@ from omnivia_core_runtime.service.chat_part_registry import (
     PART_REGISTRY_VERSION,
     REGISTERED_PART_TYPES,
     TEXT_PART_TYPE,
+    TOOL_CALL_PART_TYPE,
     PartPayloadInvalid,
     is_registered_part_type,
     validate_registered_payload,
@@ -45,9 +45,20 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     # provider event layer declares twenty event types of which seven are ever
     # emitted. Registering a shape for a family with no producer would be that
     # same defect a third time.
-    assert REGISTERED_PART_TYPES == (ATTACHMENT_PART_TYPE, TEXT_PART_TYPE)
+    #
+    # Each family here has one, named so this list cannot grow quietly:
+    #   attachment  `chat_submit`'s staged-attachment commit
+    #   text        `chat_generation_executor._materialize_assistant` and `chat_submit`
+    #   tool.call   `chat_generation_executor._record_tool_proposal` (C9), which
+    #               records a provider `tool-call` event into C8's ledger, and
+    #               `_materialize_assistant`, which emits one part per row
+    assert REGISTERED_PART_TYPES == (ATTACHMENT_PART_TYPE, TEXT_PART_TYPE, TOOL_CALL_PART_TYPE)
     assert is_registered_part_type(TEXT_PART_TYPE)
     assert is_registered_part_type(ATTACHMENT_PART_TYPE)
+    assert is_registered_part_type(TOOL_CALL_PART_TYPE)
+    # Adding a family does NOT bump the version: a consumer that has never seen
+    # it decodes it to the contract's inert fallback, which is the defined
+    # behaviour for an unrecognised type and needs no negotiation.
     assert PART_REGISTRY_VERSION == 1
 
 

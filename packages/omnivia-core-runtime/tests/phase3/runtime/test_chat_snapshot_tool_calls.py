@@ -24,14 +24,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-
-from jsonschema import Draft202012Validator
-from referencing import Registry, Resource
-from referencing.jsonschema import DRAFT202012
 from typing import Any
 
 import pytest
 import test_chat_request_manifest as manifest
+from jsonschema import Draft202012Validator
 from omnivia_core_runtime.service.chat_tool_lifecycle import (
     open_chat_turn,
     record_tool_proposal,
@@ -45,6 +42,8 @@ from omnivia_core_runtime.storage.chat import (
     read_generation_events,
 )
 from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
 
 WS = manifest.WORKSPACE_ID
 T = manifest.BASE_US

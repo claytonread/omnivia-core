@@ -23,7 +23,6 @@ dispatcher. Both resolve `WORKSPACE_ID` to `m1.WORKSPACE_ID`, so there is one
 workspace and no fixture drift between them.
 """
 
-# ruff: noqa: F811
 
 from __future__ import annotations
 
@@ -34,8 +33,9 @@ from typing import Any
 
 import pytest
 import test_chat_request_manifest as manifest
+from omnivia_core_runtime.ownership.identity import FakeClock
+from omnivia_core_runtime.service.application import build_chat_application_dispatcher
 from omnivia_core_runtime.service.chat_interactions import read_chat_wait
-from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
 from omnivia_core_runtime.service.chat_tool_lifecycle import (
     open_chat_turn,
     record_tool_proposal,
@@ -45,6 +45,7 @@ from omnivia_core_runtime.service.chat_tool_review import (
     open_human_input_request,
     request_tool_review,
 )
+from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
 from test_chat_submit_message_resolver import (
     INSTALLATION_ID,
     PRINCIPAL,
@@ -52,9 +53,6 @@ from test_chat_submit_message_resolver import (
     _fallback,
     _request,
 )
-
-from omnivia_core_runtime.ownership.identity import FakeClock
-from omnivia_core_runtime.service.application import build_chat_application_dispatcher
 
 from omnivia_core.chat_contract.v1 import PROTOCOL_VERSION
 from omnivia_core.contracts.v1 import ErrorResponseEnvelope, SuccessResponseEnvelope

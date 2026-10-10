@@ -58,6 +58,15 @@ from omnivia_core_runtime.service.chat_generation import (
     provider_finish_id,
     stage_direction_continuation,
 )
+from omnivia_core_runtime.service.chat_part_registry import (
+    TOOL_CALL_PART_TYPE,
+    validate_registered_payload,
+)
+from omnivia_core_runtime.service.chat_tool_lifecycle import (
+    deny_tool_call,
+    open_chat_turn,
+    record_tool_proposal,
+)
 from omnivia_core_runtime.storage import chat
 from omnivia_core_runtime.storage.connection import StorageError
 
@@ -554,18 +563,83 @@ def _existing_manifest_timestamps(
     return requested_at, deadline_at
 
 
-def _message_hash(text: str) -> tuple[str, str]:
-    payload_document = to_canonical_json({"text": text})
-    part_hash = "sha256:" + hashlib.sha256(payload_document.encode("utf-8")).hexdigest()
+#: The registry reference recorded for a provider-proposed tool call.
+#:
+#: SELF-DESCRIBING ON PURPOSE. `registry_ref` means "the governed tool registry
+#: entry this call was admitted against", and this build admits none: there is
+#: no governed tool registry anywhere in Core -- `GovernedTool` is a dataclass
+#: a caller supplies, and nothing calls `run_governed_tool` at all. Recording a
+#: plausible-looking reference would put an admission that never happened into
+#: the one ledger an auditor reads to find out what was admitted. This value
+#: says what is true, and `UNADMITTED_TOOL_VERSION` says it again for the
+#: version Core was never told.
+UNADMITTED_REGISTRY_REF: Final = "unadmitted:provider-proposal"
+UNADMITTED_TOOL_VERSION: Final = "unadmitted"
+
+#: Why a provider-proposed tool call is denied the moment it is recorded.
+NO_EXECUTION_PATH: Final = "no_governed_execution_path"
+
+
+def tool_call_part_payload(call: chat.ChatToolCall) -> dict[str, Any]:
+    """The `tool.call` part payload for one ledger row.
+
+    NO ARGUMENTS, IN ANY FORM -- not the values, not the digest. The ledger
+    records them; a Message part publishes to every reader of the conversation,
+    and C8 settled that this bundle discloses no tool input outbound, refusing
+    to project it even to the reviewer deciding on the call.
+    `chat_part_registry` closes this shape so the absence is enforced rather
+    than remembered.
+
+    `state` is the row's own state, verbatim, not translated into a consumer's
+    display vocabulary. `detail` says why in words, because `unadmitted` and
+    `denied` are accurate and tell a reader nothing on their own.
+    """
+    payload: dict[str, Any] = {"name": call.tool_name, "id": call.tool_call_id, "state": call.state}
+    if call.registry_ref == UNADMITTED_REGISTRY_REF:
+        payload["detail"] = "Proposed by the model. Not run: no governed tool is admitted here."
+    return payload
+
+
+def _part_document(part_type: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {"payload": dict(payload), "type": part_type, "visibility": "standard"}
+
+
+def _message_hash(
+    text: str, tool_calls: tuple[chat.ChatToolCall, ...] = ()
+) -> tuple[str, tuple[str, ...]]:
+    """The Message `content_hash` and one part hash per part, in part order.
+
+    The message hash is computed over the WHOLE part list, which is what makes
+    it the message's content hash rather than its text's. C9 adds parts after
+    the text, so they have to be in it: a hash over the text alone would call
+    two different messages identical, and the idempotency check in
+    :meth:`_materialize_assistant` compares exactly this value against the
+    durable one to decide whether a replay is the same commit.
+
+    That check is also why the order has to be deterministic.
+    `read_chat_tool_calls_for_generation_job` orders by `(created_at_us,
+    tool_call_id)` for this reason, and the tool calls are durable before the
+    commit, so a replay of the same generation hashes the same way.
+    """
+    documents = [_part_document("text", {"text": text})]
+    part_hashes = [
+        "sha256:" + hashlib.sha256(to_canonical_json({"text": text}).encode("utf-8")).hexdigest()
+    ]
+    for call in tool_calls:
+        payload = tool_call_part_payload(call)
+        documents.append(_part_document(TOOL_CALL_PART_TYPE, payload))
+        part_hashes.append(
+            "sha256:" + hashlib.sha256(to_canonical_json(payload).encode("utf-8")).hexdigest()
+        )
     message_document = json.dumps(
-        [{"payload": {"text": text}, "type": "text", "visibility": "standard"}],
+        documents,
         sort_keys=True,
         ensure_ascii=False,
         allow_nan=False,
         separators=(",", ":"),
     )
     message_hash = "sha256:" + hashlib.sha256(message_document.encode("utf-8")).hexdigest()
-    return message_hash, part_hash
+    return message_hash, tuple(part_hashes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -879,6 +953,10 @@ class ChatGenerationExecutor:
         prior_bytes = sum(len(hop.prior_text.encode("utf-8")) for hop in hops)
         continued_as: str | None = None
         text_chunks: list[str] = []
+        # C9: the step ordinal of the next tool call in THIS attempt. Per
+        # attempt, not per job: `open_chat_turn` opens one turn per attempt, and
+        # a step ordinal is a position within its own turn.
+        tool_call_ordinal = 1
         expected_ordinal = 0
         transport_attempt_id: str | None = None
         saw_start = False
@@ -952,6 +1030,23 @@ class ChatGenerationExecutor:
                         prior_response_bytes=prior_bytes,
                     )
                     text_chunks.append(delta)
+                elif event_type == "tool-call":
+                    # C9: the one non-text family with a durable home and a
+                    # built consumer. Recorded BEFORE the stream goes on, so a
+                    # crash mid-stream keeps what the provider already asked
+                    # for -- the same guarantee `append_provider_text_delta`
+                    # gives text, and the reason this is not assembled from
+                    # memory at commit. A Direction continuation commits text
+                    # read back from durable chunks across attempts, so an
+                    # in-memory tool call would be lost while its own text
+                    # survived.
+                    self._record_tool_proposal(
+                        job=job,
+                        attempt_id=attempt_id,
+                        event=event,
+                        step_ordinal=tool_call_ordinal,
+                    )
+                    tool_call_ordinal += 1
                 elif event_type == "finish" and event.get("finishReason") not in {
                     "error",
                     "cancelled",
@@ -1546,9 +1641,103 @@ class ChatGenerationExecutor:
             return finish_event
         return {key: value for key, value in finish_event.items() if key != "providerEventId"}
 
+    def _record_tool_proposal(
+        self,
+        *,
+        job: chat.GenerationJob,
+        attempt_id: str,
+        event: Mapping[str, Any],
+        step_ordinal: int,
+    ) -> None:
+        """Make one provider `tool-call` event durable, then deny it.
+
+        WHY IT IS DENIED IMMEDIATELY. Nothing in this build executes a provider
+        tool: `run_governed_tool` has no caller and there is no governed tool
+        registry to admit one against. A call left at `proposed` would be
+        permanently unfinished -- the row's own CHECK ties `finished_at_us` to
+        the four terminal states -- so it would ride every snapshot page
+        forever and tell a reader the turn is blocked on a tool call when the
+        generation has already committed. `deny_tool_call` records the truth
+        instead: policy denied it, because there is no execution path.
+
+        `deny_tool_call` writes no row in the lifecycle-events table, which is
+        the table `recover_tool_calls` reads, so a restart never tries to settle
+        one of these. That is also why the C8 review lifecycle is untouched
+        here: these calls never enter it, and they never open a wait.
+
+        THE ARGUMENTS ARE RECORDED, NOT PUBLISHED. `proposed_arguments` is what
+        the ledger is for and it is digested there; the `tool.call` message part
+        carries no arguments at all (see `chat_part_registry`), so nothing
+        outbound discloses them.
+
+        Idempotent through stable ids: a redelivered provider stream recomputes
+        the same turn, step and tool-call ids, `record_tool_proposal` returns the
+        existing row for an identical proposal, and `deny_tool_call` returns the
+        existing denial. A replay therefore converges instead of conflicting.
+        """
+        provider_call_id = event.get("toolCallId")
+        tool_name = event.get("toolName")
+        arguments = event.get("input")
+        if (
+            not isinstance(provider_call_id, str)
+            or not provider_call_id
+            or not isinstance(tool_name, str)
+            or not tool_name
+            or not isinstance(arguments, Mapping)
+        ):
+            raise GenerationExecutorError("a provider tool call is malformed")
+        now_us = _now_us(self.clock)
+        # One turn per generation ATTEMPT, which is what `open_chat_turn` itself
+        # states and keys on; one step per CALL, because the turn-step table is
+        # keyed by step and two calls sharing a provider step would collide.
+        turn = open_chat_turn(
+            self.connection,
+            self.identity,
+            workspace_id=self.workspace_id,
+            fencing_generation=self.fencing_generation,
+            generation_job_id=job.generation_job_id,
+            generation_attempt_id=attempt_id,
+            turn_id=_stable_id("turn", attempt_id),
+            now_us=now_us,
+        )
+        tool_call_id = _stable_id("toolcall", f"{attempt_id}:{provider_call_id}")
+        record_tool_proposal(
+            self.connection,
+            self.identity,
+            workspace_id=self.workspace_id,
+            fencing_generation=self.fencing_generation,
+            turn_id=turn.turn_id,
+            step_id=_stable_id("step", tool_call_id),
+            step_ordinal=step_ordinal,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            tool_version=UNADMITTED_TOOL_VERSION,
+            registry_ref=UNADMITTED_REGISTRY_REF,
+            proposed_arguments=dict(arguments),
+            now_us=now_us,
+        )
+        deny_tool_call(
+            self.connection,
+            self.identity,
+            workspace_id=self.workspace_id,
+            fencing_generation=self.fencing_generation,
+            tool_call_id=tool_call_id,
+            failure_code=NO_EXECUTION_PATH,
+            now_us=now_us,
+        )
+
     def _materialize_assistant(self, *, job: chat.GenerationJob, text: str) -> str:
         message_id = _stable_id("assistant", job.generation_job_id)
-        message_hash, part_hash = _message_hash(text)
+        # C9: read BEFORE the hash, because the hash is over the whole part
+        # list. Read by job, not attempt: `text` above is assembled across
+        # every hop of this Generation, so the parts beside it must span the
+        # same attempts or the Message would state only its last hop's calls.
+        tool_calls = chat.read_chat_tool_calls_for_generation_job(
+            self.connection,
+            workspace_id=self.workspace_id,
+            generation_job_id=job.generation_job_id,
+        )
+        message_hash, part_hashes = _message_hash(text, tool_calls)
         existing = self.connection.execute(
             "SELECT content_hash FROM omnivia_chat_messages "
             "WHERE workspace_id = ? AND message_id = ?",
@@ -1621,9 +1810,30 @@ class ChatGenerationExecutor:
                 visibility="standard",
                 payload={"text": text},
                 provenance="ai",
-                content_hash=part_hash,
+                content_hash=part_hashes[0],
                 created_at_us=now_us,
             )
+            # C9: one `tool.call` part per durable ledger row, after the text
+            # and in the ledger's own order. The payload is validated against
+            # the registry before it is written, so a shape this family does
+            # not state -- the tool's arguments above all -- cannot reach a
+            # committed Message even by mistake.
+            for index, call in enumerate(tool_calls, start=1):
+                payload = tool_call_part_payload(call)
+                validate_registered_payload(TOOL_CALL_PART_TYPE, payload)
+                writer.append_message_part(
+                    part_id=_stable_id("assistant-tool-part", call.tool_call_id),
+                    message_id=message_id,
+                    conversation_id=job.conversation_id,
+                    part_index=index,
+                    part_type=TOOL_CALL_PART_TYPE,
+                    schema_version=1,
+                    visibility="standard",
+                    payload=payload,
+                    provenance="ai",
+                    content_hash=part_hashes[index],
+                    created_at_us=now_us,
+                )
             # C10 RegenerateResponse: the `regeneration` relation, written
             # here because this is the first moment both of its ends exist.
             # The command that opened this job could not write it -- the
