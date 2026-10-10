@@ -17,6 +17,7 @@ claim checkable rather than asserted.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -200,38 +201,157 @@ def test_0034_is_the_unique_consecutive_successor_to_0033() -> None:
     assert MIGRATION.name == MIGRATION_NAME
 
 
-def test_the_rebuilt_table_is_0029s_table_plus_exactly_two_widenings(
+#: 0069 (C6) REBUILT this table again, after 0034 had. So the live table is no
+#: longer what 0034 left, and this test was red from the day C6 landed until
+#: 10 October 2026 -- which meant it stopped guarding the table at all, because
+#: a red test detects nothing further.
+#:
+#: Rather than retype 0069's SQL here, both assertions below derive from the
+#: migration FILES. A widening that appears in neither 0034's declared pair nor
+#: 0069's own CREATE TABLE fails, and so does a migration that widens the table
+#: without this test being told -- which is the property that was lost.
+_EVENTS_0069 = "CREATE TABLE omnivia_chat_generation_events_0069 ("
+
+
+def _latest_declared_events_table() -> str:
+    """The events table as the LAST migration to rebuild it declares it.
+
+    0069 builds it under a working name and renames it, so the stored schema
+    carries the quoted canonical name; everything else is byte-identical.
+    """
+    migration = next(m for m in load_migrations() if m.version == 69)
+    declared = statement(migration.sql, _EVENTS_0069, ") WITHOUT ROWID")
+    return declared.replace(
+        "CREATE TABLE omnivia_chat_generation_events_0069",
+        'CREATE TABLE "omnivia_chat_generation_events"',
+    )
+
+
+def test_the_stored_table_is_exactly_what_the_last_rebuild_declared(
     owned: m1.Owned,
 ) -> None:
+    """No drift between the live table and the migration that last built it."""
+    assert stored_sql(owned.connection, EVENTS) == _latest_declared_events_table()
+
+
+def test_the_rebuilt_table_is_0029s_table_plus_only_declared_widenings(
+    owned: m1.Owned,
+) -> None:
+    """0029's table, plus 0034's two widenings, plus 0069's three. Nothing else.
+
+    Named for what it now checks. 0034's own two are the pair constants above;
+    0069's three are read from its file, so this states that the only
+    differences between 0029's table and the live one are ones a migration
+    declared -- which is the guarantee, not the specific count.
+    """
     original = statement(
         foundation.MIGRATION.sql,
         "CREATE TABLE IF NOT EXISTS omnivia_chat_generation_events (",
         ") WITHOUT ROWID",
     )
-    expected = original.replace(
+    after_0034 = original.replace(
         "CREATE TABLE IF NOT EXISTS omnivia_chat_generation_events",
         'CREATE TABLE "omnivia_chat_generation_events"',
     ).replace(*WIDENED_EVENT_TYPES).replace(*WIDENED_EVENT_SHAPE)
+    assert after_0034 != original
 
-    assert expected != original
-    assert stored_sql(owned.connection, EVENTS) == expected
+    declared = _latest_declared_events_table()
+
+    # NOT a line-wise superset, and it never could be: widening a SQL `IN` list
+    # moves the last element's terminator, so `'chat.generation.cancelled'))`
+    # becomes `'chat.generation.cancelled',`. A textual widening of a constraint
+    # is not textual containment, which is why this checks meaning instead.
+
+    # 1. Every COLUMN 0034 declared is still declared, unchanged. This is what
+    #    makes 0069 a constraint widening rather than a table rewrite.
+    def columns(sql: str) -> list[str]:
+        """The column declarations only.
+
+        EXACTLY four leading spaces and a non-space fifth character: a column
+        sits at that indent, while a multi-line CHECK's continuation lines are
+        indented further. Filtering on "does not start with CHECK" instead
+        caught those continuations, which is how the first version of this
+        compared `'chat.generation.cancelled'))` against a column name.
+        """
+        return [
+            line.rstrip(",").strip()
+            for line in sql.splitlines()
+            if line.startswith("    ")
+            and not line.startswith("     ")
+            and not line.strip().startswith(("CHECK", "PRIMARY KEY", "FOREIGN KEY", "("))
+            and line.strip()
+        ]
+
+    assert columns(after_0034) == columns(declared)
+
+    # 2. The admitted event types are 0034's six plus exactly the two 0069
+    #    declared. A ninth type -- or step 4's `chat.tool_call.state_changed`,
+    #    which needs its own migration -- fails here, by design.
+    def admitted(sql: str) -> set[str]:
+        start_at = sql.index("CHECK (event_type IN (")
+        clause = sql[start_at : sql.index("))", start_at)]
+        return {token for token in clause.split("'") if token.startswith("chat.")}
+
+    assert admitted(after_0034) == {
+        "chat.generation.queued",
+        "chat.generation.started",
+        "chat.generation.text_appended",
+        "chat.generation.succeeded",
+        "chat.generation.failed",
+        "chat.generation.cancelled",
+    }
+    assert admitted(declared) - admitted(after_0034) == {
+        "chat.generation.iteration_completed",
+        "chat.direction.state_changed",
+    }
+    assert admitted(after_0034) - admitted(declared) == set()
+
+    assert stored_sql(owned.connection, EVENTS) == declared
 
 
-def test_the_index_and_the_three_guards_are_recreated_verbatim_from_0029(
+def _last_declaring(opening: str, closing: str) -> str:
+    """The statement as the LAST migration to declare it wrote it.
+
+    The index and the guards were 0029's, recreated verbatim by 0034 -- which is
+    what this file originally asserted. 0069 then rebuilt the table again and
+    EXTENDED the guards with clauses for the event types it admitted, so
+    "verbatim from 0029" stopped being true the day C6 landed and this test
+    went red and stayed red, guarding nothing.
+
+    Comparing against the last declaration keeps the guarantee that matters --
+    the live schema is exactly what some migration declared, with no drift --
+    without pinning it to a migration that has since been superseded.
+    """
+    for migration in sorted(load_migrations(), key=lambda m: m.version, reverse=True):
+        if opening in migration.sql:
+            return statement(migration.sql, opening, closing)
+    raise AssertionError(f"no migration declares {opening!r}")
+
+
+def test_the_index_and_the_three_guards_match_the_migration_that_last_declared_them(
     owned: m1.Owned,
 ) -> None:
-    index = statement(
-        foundation.MIGRATION.sql,
+    index = _last_declaring(
         f"CREATE INDEX IF NOT EXISTS {EVENTS_INDEX}",
         "(workspace_id, generation_job_id, generation_event_sequence)",
     )
     assert stored_sql(owned.connection, EVENTS_INDEX) == without_if_not_exists(index)
 
     for trigger in EVENTS_TRIGGERS:
-        expected = statement(
+        expected = _last_declaring(f"CREATE TRIGGER IF NOT EXISTS {trigger}", "\nEND")
+        assert stored_sql(owned.connection, trigger) == without_if_not_exists(expected)
+
+    # And 0029's own guards were not WEAKENED on the way: every RAISE the
+    # foundation declared is still raised. 0069 added clauses; it removed none,
+    # and a migration that dropped one would pass the equality above while
+    # quietly unguarding the table.
+    for trigger in EVENTS_TRIGGERS:
+        original = statement(
             foundation.MIGRATION.sql, f"CREATE TRIGGER IF NOT EXISTS {trigger}", "\nEND"
         )
-        assert stored_sql(owned.connection, trigger) == without_if_not_exists(expected)
+        live = stored_sql(owned.connection, trigger)
+        for raise_message in re.findall(r"RAISE\(ABORT, '([^']+)'\)", original):
+            assert raise_message in live, (trigger, raise_message)
 
 
 def test_upgrading_a_0033_workspace_preserves_every_existing_event(
