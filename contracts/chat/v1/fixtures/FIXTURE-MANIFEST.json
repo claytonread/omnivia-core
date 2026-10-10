@@ -929,7 +929,7 @@
     {
       "path": "fixtures/invalid/f2b-carrier-envelope-wrong-direction-rejected.json",
       "expect": "invalid",
-      "focus": "A module-only kind (module/chat.command) sent as host->module is rejected: each carrier kind is bound to its exact direction, mirroring Platform's contract-unknown-direction refusal.",
+      "focus": "A module-only kind (bridge.command) sent as host->module is rejected: each carrier kind is bound to its exact direction, mirroring Platform's contract-unknown-direction refusal.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
       "expected_error_contains": "const 'module->host'"
     },
@@ -1587,7 +1587,7 @@
     {
       "path": "fixtures/valid/f2b-carrier-envelope-command.json",
       "expect": "valid",
-      "focus": "A module->host Platform carrier envelope: exactly v/dir/kind/payload, kind module/chat.command bound to its exact direction and to BridgeCommandMessage, within the 65536-byte encoded carrier bound.",
+      "focus": "A module->host Platform carrier envelope: exactly v/dir/kind/payload, kind bridge.command bound to its exact direction and to BridgeCommandMessage, within the 65536-byte encoded carrier bound.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
       "checks": [
         "f2b_encoded_envelope_within_carrier_bound"
@@ -1596,7 +1596,7 @@
     {
       "path": "fixtures/valid/f2b-carrier-envelope-snapshot-page.json",
       "expect": "valid",
-      "focus": "A host->module Platform carrier envelope: kind host/chat.snapshot-page bound to its exact direction and to SnapshotPageMessage, within the 65536-byte encoded carrier bound.",
+      "focus": "A host->module Platform carrier envelope: kind bridge.snapshot-page bound to its exact direction and to SnapshotPageMessage, within the 65536-byte encoded carrier bound.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
       "checks": [
         "f2b_encoded_envelope_within_carrier_bound"

@@ -532,21 +532,21 @@
       "title": "F2bCarrierKind",
       "description": "The closed, exact set of ten future Platform outer-envelope `kind` values this projection freezes -- one per F2b message type, one-to-one and onto (validator `validate_f2b_carrier_envelope_projection`). `host/*` kinds are host->module, `module/*` kinds are module->host, matching `HostToModuleMessageType`/`ModuleToHostMessageType` exactly. IMPORTANT, and deliberately not overclaimed: the Platform carrier evidenced today (`live-contract.ts`) implements exactly four kinds -- `host/hello`, `host/dispose`, `module/ready`, `module/log` -- none of them Chat-shaped, and NONE of the ten kinds below exists in Platform yet. Publishing them under `MODULE_HOST_KINDS` is required future Platform work owned by W4-H1; this Review Candidate freezes the vocabulary W4-H1 must add and edits no Platform file (freeze §12.0.4, §17).",
       "enum": [
-        "host/chat.context-bound",
-        "host/chat.context-disposed",
-        "host/chat.snapshot-page",
-        "host/chat.event-batch",
-        "host/chat.command-result",
-        "host/chat.resnapshot",
-        "host/chat.refusal",
-        "module/chat.snapshot-request",
-        "module/chat.command",
-        "module/chat.backpressure"
+        "bridge.context-bound",
+        "bridge.context-disposed",
+        "bridge.snapshot-page",
+        "bridge.event-batch",
+        "bridge.command-result",
+        "bridge.resnapshot",
+        "bridge.refusal",
+        "bridge.snapshot-request",
+        "bridge.command",
+        "bridge.backpressure"
       ]
     },
     "F2bCarrierEnvelope": {
       "title": "F2bCarrierEnvelope",
-      "description": "The closed F2b projection over the evidenced Platform Module Host Contract outer envelope: exactly the four top-level fields `v`, `dir`, `kind`, `payload` and nothing else (`additionalProperties: false`), with `v` pinned to the Platform carrier version, `dir` closed to Platform's own two directions, `kind` closed to the ten frozen F2b kinds, and each `kind` bound by `allOf` to BOTH its exact direction and its exact F2b payload schema. A wrong-direction pairing (`module/chat.command` sent as `host->module`), an unknown `kind` and an unsupported outer `v` are each rejected structurally, mirroring what `decodeModuleHostMessage` already refuses as `contract-unknown-kind`/`contract-unknown-direction`. The entire encoded envelope is additionally bounded to 65536 UTF-8 bytes -- an actual encoded-size measurement, not a declared field (validator check `f2b_encoded_envelope_within_carrier_bound`; freeze §12.0.2).",
+      "description": "The closed F2b projection over the evidenced Platform Module Host Contract outer envelope: exactly the four top-level fields `v`, `dir`, `kind`, `payload` and nothing else (`additionalProperties: false`), with `v` pinned to the Platform carrier version, `dir` closed to Platform's own two directions, `kind` closed to the ten frozen F2b kinds, and each `kind` bound by `allOf` to BOTH its exact direction and its exact F2b payload schema. A wrong-direction pairing (`bridge.command` sent as `host->module`), an unknown `kind` and an unsupported outer `v` are each rejected structurally, mirroring what `decodeModuleHostMessage` already refuses as `contract-unknown-kind`/`contract-unknown-direction`. The entire encoded envelope is additionally bounded to 65536 UTF-8 bytes -- an actual encoded-size measurement, not a declared field (validator check `f2b_encoded_envelope_within_carrier_bound`; freeze §12.0.2).",
       "type": "object",
       "additionalProperties": false,
       "required": ["dir", "kind", "payload", "v"],
@@ -558,43 +558,43 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "kind": { "const": "host/chat.context-bound" } }, "required": ["kind"] },
+          "if": { "properties": { "kind": { "const": "bridge.context-bound" } }, "required": ["kind"] },
           "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage" } } }
         },
         {
-          "if": { "properties": { "kind": { "const": "host/chat.context-disposed" } }, "required": ["kind"] },
+          "if": { "properties": { "kind": { "const": "bridge.context-disposed" } }, "required": ["kind"] },
           "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextDisposedMessage" } } }
         },
         {
-          "if": { "properties": { "kind": { "const": "host/chat.snapshot-page" } }, "required": ["kind"] },
+          "if": { "properties": { "kind": { "const": "bridge.snapshot-page" } }, "required": ["kind"] },
           "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SnapshotPageMessage" } } }
         },
         {
-          "if": { "properties": { "kind": { "const": "host/chat.event-batch" } }, "required": ["kind"] },
+          "if": { "properties": { "kind": { "const": "bridge.event-batch" } }, "required": ["kind"] },
           "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/EventBatchMessage" } } }
         },
         {
-          "if": { "properties": { "kind": { "const": "host/chat.command-result" } }, "required": ["kind"] },
+          "if": { "properties": { "kind": { "const": "bridge.command-result" } }, "required": ["kind"] },
           "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandResultMessage" } } }
         },
         {
-          "if": { "properties": { "kind": { "const": "host/chat.resnapshot" } }, "required": ["kind"] },
+          "if": { "properties": { "kind": { "const": "bridge.resnapshot" } }, "required": ["kind"] },
           "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ResnapshotMessage" } } }
         },
         {
-          "if": { "properties": { "kind": { "const": "host/chat.refusal" } }, "required": ["kind"] },
+          "if": { "properties": { "kind": { "const": "bridge.refusal" } }, "required": ["kind"] },
           "then": { "properties": { "dir": { "const": "host->module" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/RefusalMessage" } } }
         },
         {
-          "if": { "properties": { "kind": { "const": "module/chat.snapshot-request" } }, "required": ["kind"] },
+          "if": { "properties": { "kind": { "const": "bridge.snapshot-request" } }, "required": ["kind"] },
           "then": { "properties": { "dir": { "const": "module->host" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SnapshotRequestMessage" } } }
         },
         {
-          "if": { "properties": { "kind": { "const": "module/chat.command" } }, "required": ["kind"] },
+          "if": { "properties": { "kind": { "const": "bridge.command" } }, "required": ["kind"] },
           "then": { "properties": { "dir": { "const": "module->host" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeCommandMessage" } } }
         },
         {
-          "if": { "properties": { "kind": { "const": "module/chat.backpressure" } }, "required": ["kind"] },
+          "if": { "properties": { "kind": { "const": "bridge.backpressure" } }, "required": ["kind"] },
           "then": { "properties": { "dir": { "const": "module->host" }, "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BackpressureMessage" } } }
         }
       ]

@@ -1,7 +1,7 @@
 {
   "v": "2.0",
   "dir": "module->host",
-  "kind": "module/chat.snapshot-request",
+  "kind": "bridge.snapshot-request",
   "payload": {
     "messageType": "bridge.snapshot-request",
     "bridgeProtocolVersion": "2.0",

@@ -12,7 +12,7 @@
 #   baseline fixture manifest SHA-256 7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54;
 #   effective Architecture release tag architecture-v1.4.0;
 #   effective payload commit eb14159d73c8d9339cfeb347f8de61bd67497974;
-#   current fixture manifest SHA-256 2f8168f77bb587359ae836ee8700bac8541d0605523ff6cdaa94e42d8f37d9f6.
+#   current fixture manifest SHA-256 ae28745373c5209f77ca4d9362383e1e36591b4e67676446c89f1d1802dea6e7.
 # Generator:
 #   scripts/generate-chat-contract.py
 #
@@ -96,7 +96,7 @@ FIXTURE_MANIFEST_SHA256: Final[str] = '7936bf32da76a66c7d479217588f56c4af20b0ed0
 #: SHA-256 of the CURRENT ``fixtures/FIXTURE-MANIFEST.json`` bytes, computed by the
 #: generator from the checked-in file. It identifies this review candidate's
 #: manifest and claims nothing about approval.
-CURRENT_FIXTURE_MANIFEST_SHA256: Final[str] = '2f8168f77bb587359ae836ee8700bac8541d0605523ff6cdaa94e42d8f37d9f6'
+CURRENT_FIXTURE_MANIFEST_SHA256: Final[str] = 'ae28745373c5209f77ca4d9362383e1e36591b4e67676446c89f1d1802dea6e7'
 #: The Masterdocs Git tag the approved BASELINE was read through.
 EFFECTIVE_ARCHITECTURE_TAG: Final[str] = 'architecture-v1.4.0'
 #: The exact Masterdocs payload commit ``EFFECTIVE_ARCHITECTURE_TAG`` resolves to (baseline).
@@ -130,7 +130,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES: Final[int] = 16384
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = 'b3dbefdbbf9206418e92086bfdd46836dde6d6cbac98628acd0c85ff9de8e8e0'
+RESOURCE_INVENTORY_DIGEST: Final[str] = '75e6028f6b93bedc19e8cb83fdd6f209a9f47c5722f2fd1f16b1a2aee9a24d6a'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (

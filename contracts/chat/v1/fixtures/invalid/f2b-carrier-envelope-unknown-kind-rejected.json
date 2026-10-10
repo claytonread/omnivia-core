@@ -1,7 +1,7 @@
 {
   "v": "1.0",
   "dir": "host->module",
-  "kind": "host/chat.telemetry",
+  "kind": "bridge.telemetry",
   "payload": {
     "messageType": "bridge.snapshot-page",
     "bridgeProtocolVersion": "2.0",

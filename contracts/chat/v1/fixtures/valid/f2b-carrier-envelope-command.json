@@ -1,7 +1,7 @@
 {
   "v": "1.0",
   "dir": "module->host",
-  "kind": "module/chat.command",
+  "kind": "bridge.command",
   "payload": {
     "messageType": "bridge.command",
     "bridgeProtocolVersion": "2.0",

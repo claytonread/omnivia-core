@@ -68,7 +68,7 @@
 #     their payload bindings are unchanged. Four governed fixtures (two valid,
 #     two invalid) are added with it: a valid and a mismatched-payload
 #     BridgeSnapshotItem, and a valid and an oversize-rejected
-#     host/chat.snapshot-page F2bCarrierEnvelope each carrying one
+#     bridge.snapshot-page F2bCarrierEnvelope each carrying one
 #     queued_submission item.
 #   queries.schema.json#/$defs/ConversationSnapshotResult -- one new optional
 #     `composerDrafts` member (owner authorization, Clayton Read, 7 October
@@ -202,6 +202,35 @@
 #       `CURRENT_FIXTURE_MANIFEST_SHA256` is computed from the actual current
 #       FIXTURE-MANIFEST.json; the baseline digest is never repinned and the
 #       manifest status stays `review-candidate`.
+#   F2b carrier kinds renamed to the `bridge.*` namespace (owner
+#     authorization, Clayton Read, 10 October 2026) -- a BREAKING rename of the
+#     ten `F2bCarrierKind` members, taken to end a live divergence rather than
+#     to add anything.
+#     Platform has always spelled these `bridge.context-bound` …
+#     `bridge.backpressure`, in `F2B_CARRIER_KINDS`, and its `decodeF2bCarrier`
+#     additionally requires `payload.messageType === kind`. This bundle spelled
+#     the OUTER carrier `host/chat.*` / `module/chat.*` while its own fixtures
+#     already carried the inner `messageType: "bridge.*"`. So every governed
+#     carrier fixture here failed Platform's decoder twice over -- once as
+#     `bridge-unknown-kind`, once as `bridge-kind-message-type-mismatch` -- and
+#     neither CI noticed, because neither side reads the other's statement of
+#     the contract.
+#     The suffixes already matched one-for-one, so the rename is exactly
+#     `host/chat.` → `bridge.` and `module/chat.` → `bridge.`, across
+#     bridge.schema.json and twelve fixtures. After it, `kind` equals
+#     `payload.messageType` in every fixture, which is Platform's invariant
+#     stated in this bundle for the first time.
+#     Core's own description admitted the gap -- "NONE of the ten kinds below
+#     exists in Platform yet… required future Platform work owned by W4-H1".
+#     That work is 750 `bridge.*` call sites in Platform against 21 here, so
+#     the cheaper and more honest direction is for this bundle to adopt the
+#     spelling that shipped.
+#     NOT additive: a consumer pinned to the old spelling breaks. Nothing is
+#     pinned to it -- Platform never implemented it and no Core code outside
+#     these schemas and fixtures referenced it.
+#     Platform now asserts the two vocabularies are equal
+#     (`scripts/check-f2b-carrier-parity.mjs`), so this cannot silently
+#     diverge again.
 # The first five are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
 # COMPATIBILITY-AND-MIGRATION.md §3, and all must be carried back to the
 # Masterdocs authority before the next tag: until then this tree is
@@ -304,7 +333,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES = 16384
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "b3dbefdbbf9206418e92086bfdd46836dde6d6cbac98628acd0c85ff9de8e8e0"
+    "75e6028f6b93bedc19e8cb83fdd6f209a9f47c5722f2fd1f16b1a2aee9a24d6a"
 )
 
 
