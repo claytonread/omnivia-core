@@ -1,4 +1,4 @@
-"""C8 acceptance: tool-call lifecycle ledger, Review decisions and bounded human input (0071)."""
+"""C8 acceptance: tool-call lifecycle, Review, and bounded human input (0071/0073)."""
 
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ from omnivia_core_runtime.service.chat_tool_review import (
     recover_tool_calls,
     replay_tool_call,
     replay_turn_tool_calls,
+    request_tool_human_input,
     request_tool_review,
     run_governed_tool,
     start_tool_run,
@@ -235,6 +236,28 @@ def test_0071_is_the_next_forward_only_migration(owned: manifest.m1.Owned) -> No
     mine = next(migration for migration in catalogue if migration.version == 71)
     assert mine.name == "0071_chat_tool_review_lifecycle.sql"
     assert applied_migrations(owned.connection)[71] == mine.checksum
+
+
+def test_0073_widens_only_the_tool_interaction_wait_guard(
+    owned: manifest.m1.Owned,
+) -> None:
+    catalogue = load_migrations()
+    versions = [migration.version for migration in catalogue]
+    assert versions.count(73) == 1
+    assert 72 in versions
+    mine = next(migration for migration in catalogue if migration.version == 73)
+    assert mine.name == "0073_chat_tool_human_input_waits.sql"
+    assert applied_migrations(owned.connection)[73] == mine.checksum
+
+    row = owned.connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+        ("omnivia_guard_chat_tool_lifecycle_events_insert",),
+    ).fetchone()
+    assert row is not None
+    trigger_sql = str(row[0])
+    assert "w.kind = 'human_input' AND w.target_action_digest IS NULL" in trigger_sql
+    assert "w.kind IN ('approval', 'policy_pause')" in trigger_sql
+    assert "w.target_action_digest IS NOT NULL" in trigger_sql
 
 
 def _append_event(holder: manifest.m1.Owned, sequence: int, state: str, **fields: Any) -> None:
@@ -786,6 +809,74 @@ def test_human_input_is_bounded_idempotent_and_stored_as_a_digest(owned: manifes
         _answer(owned, wait, command_id="cmd-h2", answer={"file": "other.md"})
     stored = repr(owned.connection.execute("SELECT * FROM omnivia_chat_wait_decisions").fetchall())
     assert "plan.md" not in stored
+
+
+def test_tool_human_input_is_projectable_and_settles_the_linked_wait(
+    owned: manifest.m1.Owned,
+) -> None:
+    _propose(owned)
+    _check(owned)
+    wait = request_tool_human_input(
+        owned.connection,
+        owned.identity,
+        tool_call_id=CALL_ID,
+        wait_id="wait-tool-human-1",
+        requester_actor_id="actor-core-chat",
+        authorised_responder_policy={"actorId": REVIEWER},
+        prompt={
+            "promptId": "tool-details",
+            "title": "Provide the missing tool details",
+            "fields": [
+                {"fieldId": "path", "label": "Path", "type": "text", "maxLength": 64},
+                {
+                    "fieldId": "mode",
+                    "label": "Mode",
+                    "type": "choice",
+                    "options": [
+                        {"value": "read", "label": "Read"},
+                        {"value": "append", "label": "Append"},
+                    ],
+                },
+                {"fieldId": "confirmed", "label": "Confirmed", "type": "boolean"},
+            ],
+            "maxAnswerBytes": 256,
+        },
+        resume_token="resume-tool-human",
+        expires_at_us=T + 1_000,
+        now_us=T + 60,
+        **_kw(owned),
+    )
+    replay = replay_tool_call(owned.connection, workspace_id=WS, tool_call_id=CALL_ID)
+    assert replay.wait == wait
+    assert (wait.kind, wait.tool_call_id, wait.target_action_digest) == (
+        "human_input", CALL_ID, None,
+    )
+
+    decision = submit_human_input(
+        owned.connection,
+        owned.identity,
+        command_id="cmd-tool-human-1",
+        wait_id=wait.wait_id,
+        actor_id=REVIEWER,
+        expected_request_version=wait.version,
+        answer={"path": "notes.md", "mode": "append", "confirmed": True},
+        now_us=T + 100,
+        **_kw(owned),
+    )
+    assert (decision.command_kind, decision.outcome) == ("human_input", "answered")
+    assert decision.answer_digest and decision.answer_bytes is not None
+    settled = read_chat_wait(owned.connection, workspace_id=WS, wait_id=wait.wait_id)
+    assert settled is not None and settled.state == "decided" and settled.version == 2
+    stored = repr(owned.connection.execute("SELECT * FROM omnivia_chat_wait_decisions").fetchall())
+    assert "notes.md" not in stored and "append" not in stored
+    with pytest.raises(ChatToolLifecycleConflict):
+        start_tool_run(
+            owned.connection,
+            owned.identity,
+            tool_call_id=CALL_ID,
+            now_us=T + 101,
+            **_kw(owned),
+        )
 
 
 def test_human_input_refuses_strangers_stale_versions_and_expiry(owned: manifest.m1.Owned) -> None:

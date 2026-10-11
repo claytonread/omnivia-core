@@ -84,6 +84,7 @@ __all__ = [
     "recover_tool_calls",
     "replay_tool_call",
     "replay_turn_tool_calls",
+    "request_tool_human_input",
     "request_tool_review",
     "run_governed_tool",
     "settle_running_tool_call",
@@ -639,6 +640,74 @@ def request_tool_review(
             post_policy_arguments=post_policy_arguments,
             updated_at_us=now_us,
         )
+        _append(writer, events, tool_call_id, "awaiting_review", now_us, wait_id=wait_id)
+        _sync_turn(connection, writer, call, waiting=True, now_us=now_us)
+    return wait
+
+
+def request_tool_human_input(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    tool_call_id: str,
+    wait_id: str,
+    requester_actor_id: str,
+    authorised_responder_policy: Mapping[str, Any],
+    prompt: Mapping[str, Any],
+    resume_token: str,
+    expires_at_us: int,
+    now_us: int,
+) -> ChatWaitInteraction:
+    """Bind a closed human-input prompt to one tool call awaiting its answer.
+
+    A standalone :func:`open_human_input_request` remains valid for agent-run
+    orchestration. This operation is the tool-call counterpart required by the
+    Chat snapshot: it records the wait on the tool's lifecycle so
+    ``ToolCallProjection.review.prompt`` can actually reach an authorised
+    renderer. The lifecycle event binds the prompt to this exact call and wait.
+    Unlike an approval, a human answer does not authorise the call's
+    post-policy action, so it deliberately carries no action digest for the
+    renderer to echo.
+    """
+    prompt = validate_human_input_prompt(prompt)
+    if expires_at_us <= now_us:
+        raise ChatWaitConflict("a human-input request must expire after it opens")
+    call = _require_tool_call(connection, workspace_id=workspace_id, tool_call_id=tool_call_id)
+    events = _events(connection, workspace_id, tool_call_id)
+    if _state(events) == "awaiting_review":
+        wait = read_chat_wait(connection, workspace_id=workspace_id, wait_id=wait_id)
+        if (
+            wait is not None
+            and wait.kind == "human_input"
+            and wait.tool_call_id == tool_call_id
+        ):
+            return wait
+        raise ChatToolLifecycleConflict("tool call is already awaiting another interaction")
+    if _state(events) != "policy_checking":
+        raise ChatToolLifecycleConflict(
+            "tool human input can only be requested during the policy check"
+        )
+    wait = open_chat_wait(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+        conversation_id=call.conversation_id,
+        wait_id=wait_id,
+        kind="human_input",
+        requester_actor_id=requester_actor_id,
+        authorised_responder_policy=authorised_responder_policy,
+        prompt=prompt,
+        resume_token=resume_token,
+        now_us=now_us,
+        generation_job_id=call.generation_job_id,
+        turn_id=call.turn_id,
+        tool_call_id=tool_call_id,
+        expires_at_us=expires_at_us,
+    )
+    with _fenced(connection, identity, workspace_id, fencing_generation) as writer:
         _append(writer, events, tool_call_id, "awaiting_review", now_us, wait_id=wait_id)
         _sync_turn(connection, writer, call, waiting=True, now_us=now_us)
     return wait
@@ -1487,7 +1556,10 @@ def _decide(
         events = _events(connection, workspace_id, call.tool_call_id)
         if _state(events) != "awaiting_review" or events[-1].wait_id != wait_id:
             raise ChatToolReviewStale("the tool call is no longer awaiting this Review")
-        if call.post_policy_arguments_digest != wait.target_action_digest:
+        if (
+            command_kind == "review_decision"
+            and call.post_policy_arguments_digest != wait.target_action_digest
+        ):
             raise ChatToolReviewStale("the tool call's action changed since the Review opened")
     with _fenced(connection, identity, workspace_id, fencing_generation, writer) as fenced:
         cursor = fenced.connection.execute(
