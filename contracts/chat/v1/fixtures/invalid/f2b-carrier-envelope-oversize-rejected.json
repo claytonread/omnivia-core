@@ -4,13 +4,13 @@
   "kind": "bridge.command",
   "payload": {
     "messageType": "bridge.command",
-    "bridgeProtocolVersion": "3.0",
+    "bridgeProtocolVersion": "4.0",
     "schemaVersion": 1,
     "contextId": "bctx-carrier-05",
     "commandId": "cmd-carrier-05",
     "commandKind": "SubmitMessage",
     "payload": {
-      "protocolVersion": "2.0",
+      "protocolVersion": "3.0",
       "commandId": "cmd-carrier-05",
       "workspaceId": "ws-acme",
       "conversationId": "conv-0001",

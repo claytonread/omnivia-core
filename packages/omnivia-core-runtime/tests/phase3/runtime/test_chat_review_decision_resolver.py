@@ -37,6 +37,8 @@ from omnivia_core_runtime.ownership.identity import FakeClock
 from omnivia_core_runtime.service.application import build_chat_application_dispatcher
 from omnivia_core_runtime.service.chat_interactions import read_chat_wait
 from omnivia_core_runtime.service.chat_tool_lifecycle import (
+    GovernedTool,
+    ToolActionSummary,
     open_chat_turn,
     record_tool_proposal,
 )
@@ -65,6 +67,13 @@ ARGS = {"path": "notes.md", "text": "a line"}
 RESOURCE = "resource-c8-resolver"
 REVIEW_COMMAND_ID = "cmd-c8-review"
 HUMAN_COMMAND_ID = "cmd-c8-human"
+REVIEW_TOOL = GovernedTool(
+    "notes.append",
+    "1",
+    "registry-c8-v1",
+    lambda _arguments: {},
+    ToolActionSummary("Append", "path"),
+)
 
 
 @pytest.fixture
@@ -144,13 +153,13 @@ def _open_review(owned: Any, *, wait_id: str = WAIT_ID, revision: int = 7) -> An
         owned.identity,
         tool_call_id=CALL_ID,
         post_policy_arguments=ARGS,
+        tool=REVIEW_TOOL,
         wait_id=wait_id,
         requester_actor_id="actor-core-chat",
         # The AUTHENTICATED principal, because the resolver holds `actorId` to
         # it and the library holds the decision to this policy. A test that
         # named a different reviewer would fail for the wrong reason.
         authorised_responder_policy={"actorId": PRINCIPAL},
-        prompt={"title": "Append to notes.md?"},
         resume_token=f"resume-{wait_id}",
         target_resource_ref=RESOURCE,
         target_resource_revision=revision,
@@ -247,7 +256,11 @@ def test_a_human_input_answer_reaches_the_library_the_same_way(holder: Any) -> N
         wait_id="wait-c8-human",
         requester_actor_id="actor-core-chat",
         authorised_responder_policy={"actorId": PRINCIPAL},
-        prompt={"title": "Which branch?"},
+        prompt={
+            "promptId": "choose-branch",
+            "title": "Which branch?",
+            "fields": [{"fieldId": "branch", "label": "Branch", "type": "text"}],
+        },
         resume_token="resume-human",
         expires_at_us=_EXPIRES_AT,
         now_us=T + 60,

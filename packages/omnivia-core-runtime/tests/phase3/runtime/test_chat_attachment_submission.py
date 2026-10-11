@@ -73,6 +73,7 @@ from test_chat_submit_message_resolver import (
     _submit_command,
 )
 
+from omnivia_core.chat_contract.v1 import PROTOCOL_VERSION
 from omnivia_core.contracts.v1 import SuccessResponseEnvelope
 
 OTHER = b"another already-uploaded file"
@@ -583,7 +584,7 @@ def test_enqueue_stores_the_pinned_references_and_the_drain_must_restate_them_ex
         svc,
         "UpdateQueuedSubmission",
         {
-            "protocolVersion": "2.0",
+            "protocolVersion": PROTOCOL_VERSION,
             "commandId": "cmd-c7a-update",
             "workspaceId": WORKSPACE_ID,
             "conversationId": CONVERSATION_ID,

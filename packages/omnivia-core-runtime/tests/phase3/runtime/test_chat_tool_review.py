@@ -19,6 +19,9 @@ from omnivia_core_runtime.service.chat_interactions import (
 from omnivia_core_runtime.service.chat_tool_lifecycle import (
     ChatToolLifecycleConflict,
     GovernedTool,
+    MalformedToolProposal,
+    ToolActionSummary,
+    derive_action_summary,
     open_chat_turn,
     record_tool_proposal,
     replay_chat_turn,
@@ -40,6 +43,7 @@ from omnivia_core_runtime.service.chat_tool_review import (
     run_governed_tool,
     start_tool_run,
     submit_human_input,
+    validate_human_input_answer,
 )
 from omnivia_core_runtime.storage import chat
 from omnivia_core_runtime.storage.migrations import (
@@ -58,6 +62,18 @@ OUTSIDER = "actor-outsider"
 ARGS = {"path": "notes.md", "mode": "append"}
 RESOURCE = "resource:notes.md"
 T = manifest.BASE_US
+
+
+def _registered_tool(
+    handler: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+) -> GovernedTool:
+    return GovernedTool(
+        "notes.append",
+        "1",
+        "registry-c8-v1",
+        handler,
+        ToolActionSummary("Append", "path", ("mode",)),
+    )
 
 
 class Crash(BaseException):
@@ -133,10 +149,10 @@ def _review(
         holder.identity,
         tool_call_id=call_id,
         post_policy_arguments=ARGS,
+        tool=_registered_tool(lambda _arguments: {}),
         wait_id=wait_id,
         requester_actor_id="actor-core-chat",
         authorised_responder_policy={"actorId": REVIEWER},
-        prompt={"title": "Append to notes.md?"},
         resume_token=f"resume-{wait_id}",
         expires_at_us=expires,
         target_resource_ref=RESOURCE,
@@ -177,7 +193,7 @@ def _states(holder: manifest.m1.Owned, call_id: str = CALL_ID) -> list[str]:
 
 
 def _tool(handler: Callable[[Mapping[str, Any]], Mapping[str, Any]]) -> dict[str, GovernedTool]:
-    return {"notes.append": GovernedTool("notes.append", "1", "registry-c8-v1", handler)}
+    return {"notes.append": _registered_tool(handler)}
 
 
 def _run(holder: manifest.m1.Owned, tools: Mapping[str, GovernedTool], **extra: Any) -> Any:
@@ -433,7 +449,12 @@ def test_the_two_commands_do_not_answer_each_others_waits(owned: manifest.m1.Own
     human = open_human_input_request(
         owned.connection, owned.identity, conversation_id=manifest.CONVERSATION_ID,
         wait_id="wait-human-1", requester_actor_id="actor-core-chat",
-        authorised_responder_policy={"actorId": REVIEWER}, prompt={"title": "Which file?"},
+        authorised_responder_policy={"actorId": REVIEWER},
+        prompt={
+            "promptId": "choose-file",
+            "title": "Which file?",
+            "fields": [{"fieldId": "file", "label": "File", "type": "text"}],
+        },
         resume_token="resume-h", expires_at_us=T + 1_000, now_us=T + 61,
         generation_job_id=manifest.JOB_ID, **_kw(owned),
     )
@@ -696,12 +717,42 @@ def test_an_unknown_tool_cancels_a_call_that_has_not_started(owned: manifest.m1.
 # --- bounded human input -----------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf"), 9_007_199_254_740_992],
+)
+def test_an_action_summary_refuses_unrepresentable_numbers(value: float) -> None:
+    with pytest.raises(MalformedToolProposal, match="bounded string, number or boolean"):
+        derive_action_summary(
+            _registered_tool(lambda _arguments: {}),
+            {"path": "notes.md", "mode": value},
+        )
+
+
+def test_an_unknown_answer_key_is_not_copied_into_an_exception() -> None:
+    secret_key = "private-answer-key-do-not-log"
+    prompt = {
+        "promptId": "choose-file",
+        "title": "Which file?",
+        "fields": [{"fieldId": "file", "label": "File", "type": "text"}],
+    }
+    with pytest.raises(ChatWaitConflict) as refused:
+        validate_human_input_answer(prompt, {secret_key: "also-private"})
+    assert secret_key not in str(refused.value)
+    assert "also-private" not in str(refused.value)
+
+
 def _human(holder: manifest.m1.Owned, **prompt: Any) -> Any:
     return open_human_input_request(
         holder.connection, holder.identity, conversation_id=manifest.CONVERSATION_ID,
         wait_id="wait-human-1", requester_actor_id="actor-core-chat",
         authorised_responder_policy={"actorIds": [REVIEWER, "actor-second"]},
-        prompt={"title": "Which file?", **prompt}, resume_token="resume-h",
+        prompt={
+            "promptId": "choose-file",
+            "title": "Which file?",
+            "fields": [{"fieldId": "file", "label": "File", "type": "text"}],
+            **prompt,
+        }, resume_token="resume-h",
         expires_at_us=T + 1_000, now_us=T + 61, generation_job_id=manifest.JOB_ID,
         **_kw(holder),
     )
@@ -756,7 +807,11 @@ def test_human_input_bounds_are_validated_when_it_is_requested(owned: manifest.m
         open_human_input_request(
             owned.connection, owned.identity, conversation_id=manifest.CONVERSATION_ID,
             wait_id="wait-human-2", requester_actor_id="actor-core-chat",
-            authorised_responder_policy={"actorId": REVIEWER}, prompt={"title": "t"},
+            authorised_responder_policy={"actorId": REVIEWER}, prompt={
+                "promptId": "p",
+                "title": "t",
+                "fields": [{"fieldId": "value", "label": "Value", "type": "text"}],
+            },
             resume_token="r", expires_at_us=T + 10, now_us=T + 10, **_kw(owned),
         )
 

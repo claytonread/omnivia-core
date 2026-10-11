@@ -62,7 +62,7 @@ def test_the_pinned_digest_matches_the_currently_computed_one() -> None:
     digest, schema_count, fixture_count = generator.compute_resource_inventory_digest()
     assert digest == generator.EXPECTED_RESOURCE_INVENTORY_DIGEST
     assert schema_count == generator.EXPECTED_SCHEMA_COUNT == 13
-    assert fixture_count == generator.EXPECTED_FIXTURE_TREE_COUNT == 271
+    assert fixture_count == generator.EXPECTED_FIXTURE_TREE_COUNT == 280
 
 
 # --------------------------------------------------------------------------
@@ -237,5 +237,5 @@ def test_the_candidate_is_labelled_a_review_candidate_not_approved() -> None:
 
 
 def test_the_d07_wire_version_constant_is_read_from_the_exact_schema_const() -> None:
-    assert generator.extract_protocol_version() == generator.PROTOCOL_VERSION == "2.0"
+    assert generator.extract_protocol_version() == generator.PROTOCOL_VERSION == "3.0"
     assert generator.DIRECTION_CONTENT_MAX_UTF8_BYTES == 16384

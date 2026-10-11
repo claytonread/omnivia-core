@@ -30,6 +30,8 @@ import pytest
 import test_chat_request_manifest as manifest
 from jsonschema import Draft202012Validator
 from omnivia_core_runtime.service.chat_tool_lifecycle import (
+    GovernedTool,
+    ToolActionSummary,
     open_chat_turn,
     record_tool_proposal,
 )
@@ -57,7 +59,14 @@ RESOURCE = "resource:notes.md"
 #: Distinctive, so a leak is unmistakable wherever it surfaces.
 SECRET_PATH = "a-path-that-must-never-be-projected.md"
 SECRET_TEXT = "a-body-that-must-never-be-projected"
-ARGS = {"path": SECRET_PATH, "text": SECRET_TEXT}
+ARGS = {"resource": "notes.md", "path": SECRET_PATH, "text": SECRET_TEXT}
+REVIEW_TOOL = GovernedTool(
+    "notes.append",
+    "1",
+    "registry-c8-v1",
+    lambda _arguments: {},
+    ToolActionSummary("Append", "resource"),
+)
 
 
 @pytest.fixture
@@ -107,10 +116,10 @@ def _call_awaiting_review(holder: Any, *, policy: dict[str, Any]) -> None:
         holder.identity,
         tool_call_id=CALL_ID,
         post_policy_arguments=ARGS,
+        tool=REVIEW_TOOL,
         wait_id=WAIT_ID,
         requester_actor_id="actor-core-chat",
         authorised_responder_policy=policy,
-        prompt={"title": "Append to notes.md?"},
         resume_token=f"resume-{WAIT_ID}",
         target_resource_ref=RESOURCE,
         target_resource_revision=7,
@@ -182,8 +191,14 @@ def test_the_review_reaches_the_admitted_responder(owned: Any) -> None:
     assert review["targetResourceRevision"] == 7
     assert review["targetResourceRef"] == RESOURCE
     assert review["requestVersion"] >= 1
-    # The human-readable action, which is what a reviewer actually reads.
-    assert review["prompt"] == {"title": "Append to notes.md?"}
+    # The action is derived from the exact post-policy arguments through the
+    # registered descriptor; the two secret arguments remain withheld.
+    assert review["actionSummary"] == {
+        "operation": "Append",
+        "resource": "notes.md",
+        "parameters": [],
+        "withheldParameters": 2,
+    }
 
 
 def test_every_policy_form_is_honoured_by_the_shared_predicate(owned: Any) -> None:

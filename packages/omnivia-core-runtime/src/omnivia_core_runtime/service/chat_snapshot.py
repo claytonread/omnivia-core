@@ -71,9 +71,15 @@ from omnivia_core.contracts.v1.generated import (
     ChatSnapshotInput,
     ChatSnapshotResult,
 )
+from omnivia_core_runtime.service.chat_interactions import ChatWaitConflict
+from omnivia_core_runtime.service.chat_tool_lifecycle import (
+    MalformedToolProposal,
+    validate_action_summary,
+)
 from omnivia_core_runtime.service.chat_tool_review import (
     authorised_responder_basis,
     replay_tool_call,
+    validate_human_input_prompt,
 )
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
 from omnivia_core_runtime.storage.chat import (
@@ -680,11 +686,19 @@ def _tool_call(
     "who may answer this wait" is how a snapshot comes to show a review the
     command would refuse, or hide one the actor could in fact answer.
 
-    No arguments, in any form. A reviewer decides from `review.prompt` -- the
-    human-readable question the wait was opened with -- plus the digest and
-    revision the decision command already requires them to echo. Publishing
-    tool inputs would be this bundle's first outbound disclosure of them;
-    adding that later is additive, removing it would not be.
+    No arguments, in any form. A reviewer decides from `review.actionSummary` --
+    the closed, bounded, registry-derived description of the action -- plus the
+    digest and revision the decision command already requires them to echo.
+    Publishing tool inputs would be this bundle's first outbound disclosure of
+    them; adding that later is additive, removing it would not be.
+
+    THE SUMMARY IS VALIDATED HERE TOO, not trusted. It was derived and checked
+    when the wait opened, and waits are immutable once open, so this is about
+    the rows that predate the shape: a `prompt_json` holding free prose would
+    otherwise be published under `actionSummary` and read as the derived fact.
+    An invalid document omits the member rather than failing the snapshot --
+    a reviewer with nothing to read cannot approve, and one unanswerable wait
+    is not a reason to refuse a whole conversation.
     """
     document: dict[str, Any] = {
         "toolCallId": call.tool_call_id,
@@ -718,8 +732,12 @@ def _tool_call(
         "requestVersion": wait.version,
         "expiresAt": _timestamp(wait.expires_at_us),
     }
-    if wait.prompt:
-        review["prompt"] = dict(wait.prompt)
+    member = "prompt" if wait.kind == "human_input" else "actionSummary"
+    check = validate_human_input_prompt if member == "prompt" else validate_action_summary
+    try:
+        review[member] = check(wait.prompt)
+    except (ChatWaitConflict, MalformedToolProposal):
+        pass
     if wait.target_action_digest is not None:
         review["targetActionDigest"] = wait.target_action_digest
     if wait.target_resource_ref is not None:

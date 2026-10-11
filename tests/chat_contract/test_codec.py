@@ -115,26 +115,27 @@ def test_encoding_a_value_twice_produces_identical_bytes() -> None:
 
 
 def test_negotiate_accepts_the_exact_supported_version() -> None:
-    assert PROTOCOL_VERSION == "2.0"
-    assert codec.negotiate_protocol_version("2.0") == PROTOCOL_VERSION
+    assert PROTOCOL_VERSION == "3.0"
+    assert codec.negotiate_protocol_version("3.0") == PROTOCOL_VERSION
 
 
 def test_negotiate_rejects_an_unsupported_major() -> None:
     with pytest.raises(codec.UnsupportedProtocolVersionError):
-        codec.negotiate_protocol_version("3.0")
+        codec.negotiate_protocol_version("4.0")
 
 
-def test_negotiate_refuses_the_legacy_1_0_whole() -> None:
-    # GenerationJob.version is required from 2.0: a 1.0 peer's documents do not
-    # carry it, so 1.0 is a different, refused version and never downgraded to.
-    for legacy in ("1.0", "1.1"):
+def test_negotiate_refuses_every_superseded_major_whole() -> None:
+    # GenerationJob.version is required from 2.0 and ToolCallProjection.review
+    # reshaped at 3.0: a superseded peer's documents do not carry what this one
+    # requires, so each is a different, refused version and never downgraded to.
+    for legacy in ("1.0", "1.1", "2.0"):
         with pytest.raises(codec.UnsupportedProtocolVersionError):
             codec.negotiate_protocol_version(legacy)
 
 
 def test_negotiate_rejects_an_unsupported_minor_of_the_supported_major() -> None:
     with pytest.raises(codec.UnsupportedProtocolVersionError):
-        codec.negotiate_protocol_version("2.1")
+        codec.negotiate_protocol_version("3.1")
 
 
 def test_negotiate_rejects_a_malformed_version_string() -> None:
@@ -1192,7 +1193,7 @@ _CMD_REQUEST_REF = f"{SCHEMA_IDS['commands']}#/$defs/SubmitSteeringInputRequest"
 _DIRECTION_REF = f"{SCHEMA_IDS['generation']}#/$defs/Direction"
 
 
-@pytest.mark.parametrize("version", ["1.0", "1.1", "2.1"])
+@pytest.mark.parametrize("version", ["1.0", "1.1", "2.0", "3.1"])
 def test_a_steering_request_with_a_wrong_wire_version_is_rejected_by_schema_and_codec(version: str) -> None:
     document = {**_STEERING_REQUEST, "protocolVersion": version}
     assert not _oracle_ok(_CMD_REQUEST_REF, document)
@@ -1205,8 +1206,8 @@ def test_a_steering_request_with_a_wrong_wire_version_is_rejected_by_schema_and_
 def test_the_package_axes_are_independent_of_the_d07_wire_version() -> None:
     from omnivia_core.chat_contract.v1 import generated
 
-    assert (generated.CONTRACT_VERSION, generated.PROTOCOL_VERSION) == ("1.0.0-rc.1", "2.0")
-    assert (generated.BRIDGE_PROTOCOL_VERSION, generated.PLATFORM_CARRIER_CONTRACT_VERSION) == ("3.0", "1.0")
+    assert (generated.CONTRACT_VERSION, generated.PROTOCOL_VERSION) == ("1.0.0-rc.1", "3.0")
+    assert (generated.BRIDGE_PROTOCOL_VERSION, generated.PLATFORM_CARRIER_CONTRACT_VERSION) == ("4.0", "1.0")
     assert generated.SCHEMA_IDS["common"].endswith("/chat/v1/common.schema.json")
 
 

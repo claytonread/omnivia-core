@@ -1,0 +1,32 @@
+{
+  "toolCallId": "toolcall-0002",
+  "turnId": "turn-0001",
+  "stepId": "step-0002",
+  "generationJobId": "job-0002",
+  "toolName": "notes.append",
+  "toolVersion": "1",
+  "registryRef": "registry-notes-v1",
+  "state": "awaiting_review",
+  "policyState": "pending",
+  "schemaVersion": 1,
+  "createdAt": "2026-08-20T10:00:20Z",
+  "review": {
+    "waitId": "wait-0002",
+    "kind": "human_input",
+    "state": "asked",
+    "requestVersion": 1,
+    "expiresAt": "2026-08-20T10:05:20Z",
+    "prompt": {
+      "promptId": "prompt-notes-target",
+      "title": "Which write mode?",
+      "fields": [
+        {
+          "fieldId": "mode",
+          "label": "Write mode",
+          "type": "choice",
+          "required": true
+        }
+      ]
+    }
+  }
+}

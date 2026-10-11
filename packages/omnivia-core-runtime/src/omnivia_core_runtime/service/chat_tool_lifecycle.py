@@ -10,6 +10,7 @@ calling the tool and stores the result before marking the call terminal.
 from __future__ import annotations
 
 import hashlib
+import math
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -21,18 +22,22 @@ from omnivia_core_runtime.storage import chat
 from omnivia_core_runtime.storage.connection import StorageError
 
 __all__ = [
+    "MAX_SUMMARY_PARAMETERS",
     "ChatToolLifecycleConflict",
     "ChatToolLifecycleError",
     "ChatToolNotFound",
     "ChatTurnReplay",
     "GovernedTool",
     "MalformedToolProposal",
+    "ToolActionSummary",
     "approve_tool_call",
     "deny_tool_call",
+    "derive_action_summary",
     "execute_governed_tool_once",
     "open_chat_turn",
     "record_tool_proposal",
     "replay_chat_turn",
+    "validate_action_summary",
 ]
 
 _TERMINAL_TOOL_STATES: Final = frozenset({"succeeded", "failed", "denied", "cancelled"})
@@ -65,12 +70,51 @@ class MalformedToolProposal(ChatToolLifecycleError):
     """A tool proposal or result is not a safe canonical JSON object."""
 
 
+#: How many post-policy arguments one action summary may name, and how long a
+#: shown value may be. A summary is something a person reads before approving an
+#: action, not a dump of the call.
+MAX_SUMMARY_PARAMETERS: Final = 8
+_MAX_SUMMARY_VALUE: Final = 256
+_MAX_SUMMARY_NAME: Final = 64
+#: Largest magnitude every JSON consumer can represent as an exact integer.
+#: Action summaries cross into JavaScript, so accepting a larger Python int
+#: could show a reviewer a rounded value that is not the argument being run.
+_MAX_SUMMARY_NUMBER: Final = 9_007_199_254_740_991
+
+
+@dataclass(frozen=True, slots=True)
+class ToolActionSummary:
+    """What the registry permits a Review to say about one call of this tool.
+
+    DECLARATIVE, not a callable. A projector the tool supplied could return any
+    prose it liked, and the reviewer would then be approving the tool's claim
+    about itself. This names argument KEYS instead, and
+    :func:`derive_action_summary` reads their values out of the exact
+    post-policy arguments, so the only thing the registry can influence is
+    WHICH of the call's own arguments are visible -- never what the summary says
+    they are.
+
+    `operation` is the action in the registry's own words. `resource_argument`
+    names the argument carrying the resource the action affects;
+    `parameter_arguments` names the further arguments that are material and safe
+    to show. Everything else the call carries is counted and withheld.
+    """
+
+    operation: str
+    resource_argument: str
+    parameter_arguments: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True, slots=True)
 class GovernedTool:
     name: str
     version: str
     registry_ref: str
     handler: ToolHandler
+    #: Required of a tool that can ever reach a Review. `None` is a tool that is
+    #: never reviewable: `request_tool_review` refuses it rather than opening a
+    #: wait whose reviewer would have nothing to read.
+    summary: ToolActionSummary | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +164,130 @@ def _assert_no_sensitive_values(value: Any, *, label: str) -> None:
         marker in value.lower() for marker in _SENSITIVE_MARKERS
     ):
         raise MalformedToolProposal(f"{label} contains protected credential text")
+
+
+#: The closed action-summary field set. Exactly these four, always.
+_SUMMARY_FIELDS: Final = frozenset({"operation", "parameters", "resource", "withheldParameters"})
+_PARAMETER_FIELDS: Final = frozenset({"name", "value"})
+
+
+def _summary_name(value: Any, *, label: str) -> str:
+    if not isinstance(value, str) or not 0 < len(value) <= _MAX_SUMMARY_NAME:
+        raise MalformedToolProposal(f"{label} must be a string of 1 to {_MAX_SUMMARY_NAME} characters")
+    return value
+
+
+def _summary_value(value: Any, *, label: str) -> Any:
+    """One material parameter value: a bounded scalar, never nested JSON.
+
+    A dict or a list here would be the whole argument object arriving under a
+    name that says it is safe, which is the leak this shape exists to refuse.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and abs(value) <= _MAX_SUMMARY_NUMBER:
+        return value
+    if (
+        isinstance(value, float)
+        and math.isfinite(value)
+        and abs(value) <= _MAX_SUMMARY_NUMBER
+    ):
+        return value
+    if isinstance(value, str) and 0 < len(value) <= _MAX_SUMMARY_VALUE:
+        return value
+    raise MalformedToolProposal(f"{label} must be a bounded string, number or boolean")
+
+
+def validate_action_summary(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Refuse anything that is not exactly one closed action summary.
+
+    Run on the DERIVED document, so :func:`derive_action_summary` cannot drift
+    from the shape the contract publishes, and again on the STORED one before a
+    snapshot projects it. The second call is the one that matters: a wait row
+    written before this shape existed carries whatever prose its asking
+    authority wrote, and publishing that under `actionSummary` would present
+    someone's words as the derived fact a reviewer is told to trust.
+    """
+    if not isinstance(document, Mapping) or set(document) != _SUMMARY_FIELDS:
+        raise MalformedToolProposal(
+            "a chat tool action summary is exactly " + ", ".join(sorted(_SUMMARY_FIELDS))
+        )
+    _summary_name(document["operation"], label="an action summary operation")
+    resource = document["resource"]
+    if not isinstance(resource, str) or not 0 < len(resource) <= _MAX_SUMMARY_VALUE:
+        raise MalformedToolProposal(
+            f"an action summary resource must be a string of 1 to {_MAX_SUMMARY_VALUE} characters"
+        )
+    parameters = document["parameters"]
+    if not isinstance(parameters, list) or len(parameters) > MAX_SUMMARY_PARAMETERS:
+        raise MalformedToolProposal(
+            f"an action summary names at most {MAX_SUMMARY_PARAMETERS} parameters"
+        )
+    names: list[str] = []
+    for parameter in parameters:
+        if not isinstance(parameter, Mapping) or set(parameter) != _PARAMETER_FIELDS:
+            raise MalformedToolProposal("an action summary parameter is exactly a name and a value")
+        names.append(_summary_name(parameter["name"], label="an action summary parameter name"))
+        _summary_value(parameter["value"], label="an action summary parameter value")
+    if len(set(names)) != len(names):
+        raise MalformedToolProposal("an action summary names each parameter once")
+    withheld = document["withheldParameters"]
+    if not isinstance(withheld, int) or isinstance(withheld, bool) or withheld < 0:
+        raise MalformedToolProposal("an action summary withholds a non-negative count of arguments")
+    _assert_no_sensitive_values(document, label="chat tool action summary")
+    return dict(document)
+
+
+def derive_action_summary(
+    tool: GovernedTool, arguments: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The closed summary of one action, from the registry and the EXACT arguments.
+
+    The registry declares which argument keys are safe to show
+    (:class:`ToolActionSummary`); every value comes out of `arguments`, which is
+    the post-policy argument record the call will actually execute. So the
+    summary cannot say the action is one thing while the call does another, and
+    no caller can hand in a sentence and have it published as the action.
+
+    Fails closed, every time: a tool with no descriptor, a descriptor naming an
+    argument this call does not carry, a value that is nested JSON rather than a
+    scalar, or anything the credential check flags all raise rather than
+    producing a summary a reviewer would read as complete.
+    """
+    descriptor = tool.summary
+    if descriptor is None:
+        raise MalformedToolProposal(
+            f"chat tool {tool.name!r} registers no action summary and cannot be reviewed"
+        )
+    if not isinstance(arguments, Mapping):
+        raise MalformedToolProposal("chat tool post-policy arguments must be a JSON object")
+    named = (descriptor.resource_argument, *descriptor.parameter_arguments)
+    if len(set(named)) != len(named):
+        raise MalformedToolProposal("an action summary descriptor names each argument once")
+    resource = arguments.get(descriptor.resource_argument)
+    if not isinstance(resource, str) or not 0 < len(resource) <= _MAX_SUMMARY_VALUE:
+        raise MalformedToolProposal(
+            f"the action's resource argument {descriptor.resource_argument!r} is missing or unshowable"
+        )
+    return validate_action_summary(
+        {
+            "operation": descriptor.operation,
+            "resource": resource,
+            "parameters": [
+                {
+                    "name": _summary_name(name, label="an action summary parameter name"),
+                    "value": _summary_value(
+                        arguments.get(name), label=f"the action's {name!r} argument"
+                    ),
+                }
+                for name in descriptor.parameter_arguments
+            ],
+            # The redaction fact. A reviewer who can see three of seven
+            # arguments is told so, rather than left to assume they saw the
+            # call -- which is the misreading an incomplete summary invites.
+            "withheldParameters": sum(1 for key in arguments if key not in set(named)),
+        }
+    )
 
 
 def open_chat_turn(

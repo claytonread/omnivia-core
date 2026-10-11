@@ -1,12 +1,12 @@
 {
   "messageType": "bridge.command",
-  "bridgeProtocolVersion": "3.0",
+  "bridgeProtocolVersion": "4.0",
   "schemaVersion": 1,
   "contextId": "bctx-dir-01",
   "commandId": "cmd-steer-generic",
   "commandKind": "SubmitSteeringInput",
   "payload": {
-    "protocolVersion": "2.0",
+    "protocolVersion": "3.0",
     "commandId": "cmd-steer-generic",
     "commandName": "SubmitSteeringInput",
     "workspaceId": "ws-acme",

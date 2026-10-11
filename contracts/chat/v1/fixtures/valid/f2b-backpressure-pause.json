@@ -1,6 +1,6 @@
 {
   "messageType": "bridge.backpressure",
-  "bridgeProtocolVersion": "3.0",
+  "bridgeProtocolVersion": "4.0",
   "schemaVersion": 1,
   "contextId": "bctx-0001",
   "action": "pause",

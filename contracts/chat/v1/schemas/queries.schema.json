@@ -223,7 +223,7 @@
     },
     "ToolCallProjection": {
       "title": "ToolCallProjection",
-      "description": "One governed tool call of a conversation, as a snapshot publishes it (C8). Identity, lifecycle state and timing are conversation state and go to any reader who may read the conversation -- a turn blocked on a tool call is a fact about the conversation, and hiding it would leave a reader unable to explain why nothing is happening. Everything a REVIEWER needs is in `review`, which is projected only to an actor the wait's authorised-responder policy admits.\n\nDeliberately absent: the tool's arguments, in any form. The decision command requires a reviewer to echo `targetActionDigest` and `targetResourceRevision`, and `review.prompt` carries the human-readable action the wait was opened with, so a reviewer can decide without them. Publishing arguments would be this bundle's first outbound disclosure of tool inputs; adding them later is additive, and removing them would not be. Also absent, permanently: `resumeTokenDigest`, `answerDigest` and `sensitiveAnswerCiphertextDigest`. Each is a digest of a secret, and a digest of a short secret is a guessing oracle rather than a protection.",
+      "description": "One governed tool call of a conversation, as a snapshot publishes it (C8). Identity, lifecycle state and timing are conversation state and go to any reader who may read the conversation -- a turn blocked on a tool call is a fact about the conversation, and hiding it would leave a reader unable to explain why nothing is happening. Everything a REVIEWER needs is in `review`, which is projected only to an actor the wait's authorised-responder policy admits.\n\nDeliberately absent: the tool's arguments, in any form. The decision command requires a reviewer to echo `targetActionDigest` and `targetResourceRevision`, and `review.actionSummary` carries the closed, bounded, registry-DERIVED description of the action the wait is bound to, so a reviewer can decide without them. Publishing arguments would be this bundle's first outbound disclosure of tool inputs; adding them later is additive, and removing them would not be. Also absent, permanently: `resumeTokenDigest`, `answerDigest` and `sensitiveAnswerCiphertextDigest`. Each is a digest of a secret, and a digest of a short secret is a guessing oracle rather than a protection.",
       "type": "object",
       "additionalProperties": false,
       "required": ["createdAt", "policyState", "registryRef", "schemaVersion", "state", "stepId", "toolCallId", "toolName", "toolVersion", "turnId"],
@@ -244,7 +244,7 @@
         "review": {
           "type": "object",
           "additionalProperties": false,
-          "description": "The open wait on this call, projected ONLY to an actor its authorised-responder policy admits. Absent means either that there is no wait or that this reader may not answer it, and the two are deliberately indistinguishable: a reader who could tell them apart would learn who may review, which is not theirs to know.",
+          "description": "The open wait on this call, projected ONLY to an actor its authorised-responder policy admits. Absent means either that there is no wait or that this reader may not answer it, and the two are deliberately indistinguishable: a reader who could tell them apart would learn who may review, which is not theirs to know.\n\nWhat the responder READS is the closed document for the wait's own kind, and the two are mutually exclusive: an `approval` or `policy_pause` carries `actionSummary`, a `human_input` carries `prompt`, and the `allOf` below refuses the other one in each case. The binding is total over the closed `kind`, so neither member can arrive labelled as the other. Both are OPTIONAL rather than required: a wait whose stored document does not satisfy its closed shape projects NEITHER member, which is the fail-closed answer for a row written before these shapes existed -- a responder with nothing to read cannot approve, and that is correct, where publishing unvalidated prose as `actionSummary` would not be.",
           "required": ["expiresAt", "kind", "requestVersion", "state", "waitId"],
           "properties": {
             "waitId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId" },
@@ -252,12 +252,94 @@
             "state": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpenCode" },
             "requestVersion": { "type": "integer", "minimum": 1, "description": "The wait version a decision must state as `expectedRequestVersion`. A decision against a superseded version is refused." },
             "expiresAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
-            "prompt": { "type": "object", "additionalProperties": true, "maxProperties": 32, "description": "The human-readable question this wait was opened with, as the asking authority wrote it. This is what a reviewer reads." },
+            "actionSummary": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ToolActionSummary" },
+            "prompt": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/HumanInputPrompt" },
             "targetActionDigest": { "type": "string", "minLength": 71, "maxLength": 71, "pattern": "^sha256:[0-9a-f]{64}$", "description": "The action digest a decision must echo, where the wait carries one." },
             "targetResourceRef": { "type": "string", "minLength": 1, "maxLength": 512 },
             "targetResourceRevision": { "type": "integer", "minimum": 0, "description": "The resource revision a decision must echo, where the wait carries one." }
-          }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "kind": { "const": "human_input" } }, "required": ["kind"] },
+              "then": { "not": { "required": ["actionSummary"] } },
+              "else": { "not": { "required": ["prompt"] } }
+            }
+          ]
         }
+      }
+    },
+    "ToolActionSummary": {
+      "title": "ToolActionSummary",
+      "description": "What an authorised responder is shown about the action a Review would authorise (C8). DERIVED, never supplied: `service/chat_tool_lifecycle.derive_action_summary` builds it from the governed tool's own registered `ToolActionSummary` descriptor applied to the EXACT post-policy arguments the call would execute, and `request_tool_review` refuses to open a Review it cannot derive. This replaced an open `prompt` object the caller wrote, which meant the sentence shown to the person approving an action and the arguments that action would run were two independent values nobody compared -- a caller could ask \"Append to notes.md?\" while the arguments named another file entirely, and the Review would have been of the sentence.\n\nSTILL NOT THE ARGUMENTS. The descriptor names which argument KEYS are material and safe to show; every value here came out of the post-policy record, so the summary cannot describe an action other than the one bound to the wait's `targetActionDigest`, but it is a bounded projection of that record and never the record. `value` admits only a bounded scalar, so no nested object can arrive under a name that says it is safe, and the credential check that guards every other chat tool document guards this one too: a summary carrying credential-like text is refused rather than redacted, because post-policy arguments that contain any cannot be recorded in the first place.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "parameters", "resource", "withheldParameters"],
+      "properties": {
+        "operation": { "type": "string", "minLength": 1, "maxLength": 64, "description": "The action, in the governed registry's own words -- a registered code, not prose a caller chose for this one call." },
+        "resource": { "type": "string", "minLength": 1, "maxLength": 256, "description": "The resource the action affects, read from the post-policy argument the descriptor names. Distinct from `ToolCallProjection.review.targetResourceRef`, which is the wait's revision-checked target: this is what the action's own arguments say it will touch, and a responder comparing the two is comparing exactly what the Review is for." },
+        "parameters": { "type": "array", "maxItems": 8, "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ToolActionSummaryParameter" }, "description": "The further post-policy arguments the registry declared material and safe to show, in the descriptor's own order. Each `name` appears once; Core enforces that, since `uniqueItems` would only catch two identical pairs." },
+        "withheldParameters": { "type": "integer", "minimum": 0, "description": "How many of the call's post-policy arguments this summary does NOT show. The redaction fact, stated rather than inferred: a responder who sees three of seven arguments is told so, where silence invites them to read a partial summary as the whole action." }
+      }
+    },
+    "ToolActionSummaryParameter": {
+      "title": "ToolActionSummaryParameter",
+      "description": "One material, safe post-policy argument of a summarised action: a bounded name and a bounded SCALAR value. Never an object or an array -- that is how the whole argument record would arrive under a name claiming to be one safe field.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "The post-policy argument key, as the governed tool registered it." },
+        "value": { "type": ["string", "number", "boolean"], "maxLength": 256, "minimum": -9007199254740991, "maximum": 9007199254740991, "description": "The value that argument carries in the exact post-policy record. `maxLength` bounds the string case; numbers are finite and restricted to the exact-integer range shared by Python and JavaScript, so a host cannot display a rounded integer different from the argument being reviewed." }
+      }
+    },
+    "HumanInputPrompt": {
+      "title": "HumanInputPrompt",
+      "description": "The closed, renderable question one `human_input` wait was opened with (C8). CLOSED because two things depend on the shape: a renderer has to draw visible fields from it, and `SubmitHumanInput`'s answer has to be checked against it in Core before the wait settles. The open object this replaced could be drawn only as raw JSON, and an answer to it could be validated against nothing at all -- \"the shape is the asking tool's business\" meant no authority held the shape.\n\n`service/chat_tool_review.validate_human_input_prompt` enforces exactly this when the request opens AND again before it is answered or projected, and `validate_human_input_answer` checks the answer field by field: unknown, missing-required, wrong-typed, off-option and over-bound answers are each refused, by a refusal that names the FIELD and the RULE and never the value. The answer itself remains non-durable -- only its digest and canonical byte count are stored -- and `maxAnswerBytes` still bounds the whole of it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fields", "promptId", "title"],
+      "properties": {
+        "promptId": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The asking authority's stable identifier for this prompt, so a renderer and an answer can name the same question across a resnapshot." },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200, "description": "The visible question. Bounded, because it is drawn in a form and not a document." },
+        "fields": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/HumanInputPromptField" }, "description": "The visible fields, in display order. At least one -- a prompt with no field is a question nothing can answer. Each `fieldId` appears once; Core enforces that." },
+        "maxAnswerBytes": { "type": "integer", "minimum": 1, "maximum": 16384, "description": "This request's own ceiling on the whole answer, as canonical JSON counted in UTF-8 bytes. Defaults to 4096 when absent; the bundle ceiling `MAX_ANSWER_BYTES` (16384) applies whatever this says, so a document valid here can still be refused by the wait that receives it." }
+      }
+    },
+    "HumanInputPromptField": {
+      "title": "HumanInputPromptField",
+      "description": "One visible field of a `HumanInputPrompt`, and the whole rule its answer value is checked against. `text` carries `maxLength` (default 512), `choice` carries `options`, `boolean` carries neither, and the `allOf` below refuses the other type's constraint: a field stating a bound belonging to a type it is not would be drawn one way by a renderer that read the bound and another by one that read the type, which is two different forms on one prompt.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fieldId", "label", "type"],
+      "properties": {
+        "fieldId": { "type": "string", "minLength": 1, "maxLength": 64, "description": "The stable identifier this field's answer is keyed by. An answer is an object of `fieldId` to value, so these are the only keys it may carry." },
+        "label": { "type": "string", "minLength": 1, "maxLength": 200, "description": "The visible label for this field." },
+        "type": { "enum": ["boolean", "choice", "text"], "description": "The field's value type, closed at three. Each has exactly one answer rule: a boolean takes a JSON boolean, a choice takes one of its own `options` values, and text takes a string of 1 to `maxLength` characters." },
+        "required": { "type": "boolean", "description": "Whether an answer must carry this field. Absent means required: a prompt that forgot to say is asking for the field, and treating silence as optional would settle a wait on an answer that skipped the question." },
+        "maxLength": { "type": "integer", "minimum": 1, "maximum": 4096, "description": "A `text` field's character bound. Permitted only on `text`; defaults to 512." },
+        "options": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/HumanInputPromptOption" }, "description": "A `choice` field's offered values, in display order. Required on `choice` and permitted on nothing else; each `value` appears once, which Core enforces." }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "choice" } }, "required": ["type"] },
+          "then": { "required": ["options"] },
+          "else": { "not": { "required": ["options"] } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "text" } }, "required": ["type"] },
+          "else": { "not": { "required": ["maxLength"] } }
+        }
+      ]
+    },
+    "HumanInputPromptOption": {
+      "title": "HumanInputPromptOption",
+      "description": "One offered value of a `choice` field: the exact string an answer may carry, and the label shown for it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "value"],
+      "properties": {
+        "value": { "type": "string", "minLength": 1, "maxLength": 64, "description": "The exact value an answer must equal to select this option." },
+        "label": { "type": "string", "minLength": 1, "maxLength": 200, "description": "The visible label for this option." }
       }
     },
     "QueuedSubmissionProjection": {

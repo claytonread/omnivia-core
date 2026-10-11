@@ -4,8 +4,8 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (271 files: FIXTURE-MANIFEST.json
-#                                             plus 269 governed fixtures)
+#   contracts/chat/v1/fixtures/**           (280 files: FIXTURE-MANIFEST.json
+#                                             plus 279 governed fixtures)
 # Approved BASELINE provenance (the governance decision this tree started from;
 # NOT a claim that this tree's bytes are that approved copy -- they are a
 # `review-candidate` that has been widened since, and is neither Approved,
@@ -331,9 +331,106 @@
 #     the corpus gives every superseded major its own negative and 2.0 is now
 #     one -- which is what makes "refuses it whole" tested rather than asserted.
 #     Counts move 269 -> 270 cases (invalid 164 -> 165) and the tree 270 -> 271.
+#   C8 INFORMED REVIEW -- D07 WIRE PROTOCOL 3.0 and F2b BRIDGE PROTOCOL 4.0,
+#     executed under the user's instruction to complete the programme plan on
+#     11 October 2026. Two EXPLICIT version changes. NOT ADDITIVE, in either
+#     direction, and neither is called additive anywhere: a strict 2.0/3.0
+#     decoder refuses the new shape and a strict 3.0/4.0 decoder refuses the
+#     old one.
+#     WHAT CHANGED, and why it had to. `queries.schema.json#/$defs/
+#     ToolCallProjection.review` carried an OPEN `prompt` object -- "the
+#     human-readable question this wait was opened with, as the asking authority
+#     wrote it". Two separate defects followed from that one word, "wrote":
+#       * The sentence shown to the person approving an action and the arguments
+#         the action would execute were INDEPENDENT VALUES, and nothing compared
+#         them. `request_tool_review` took the prompt from its caller and the
+#         arguments from its caller, hashed only the arguments into
+#         `target_action_digest`, and stored the sentence verbatim. A caller
+#         could ask "Append to notes.md?" while `post_policy_arguments` named
+#         another file entirely, and the Review would have been of the sentence.
+#         A reviewer echoing `targetActionDigest` was echoing a digest of
+#         something they had never been shown.
+#       * The human-input prompt could not be RENDERED or ANSWERED. An open
+#         object can only be drawn as raw JSON, and `SubmitHumanInput.answer`
+#         said its "shape is the asking tool's business and not this
+#         contract's", so no authority held the shape and the answer was checked
+#         against nothing but a byte count.
+#     THE REPLACEMENT. `review` now carries two CLOSED documents, bound
+#     mutually exclusively to the wait's own `kind` by an `allOf` that is total
+#     over that closed enum:
+#       `actionSummary` -> the new `ToolActionSummary` (+ `ToolActionSummary-
+#         Parameter`), DERIVED by `service/chat_tool_lifecycle.derive_action_
+#         summary` from the governed tool's own registered `ToolActionSummary`
+#         descriptor applied to the EXACT post-policy arguments. The descriptor
+#         is declarative -- it names argument KEYS, never prose -- so a tool
+#         cannot describe itself, and `request_tool_review` checks the descriptor
+#         belongs to the registry entry THIS CALL was admitted against (name,
+#         version, registryRef) before deriving. It states the operation, the
+#         affected resource, the material safe parameters as bounded SCALARS,
+#         and `withheldParameters`: how many of the call's arguments the summary
+#         does not show. A tool that registers no descriptor, or arguments it
+#         cannot summarise, FAIL CLOSED -- no Review opens.
+#       `prompt` -> the new `HumanInputPrompt` (+ `HumanInputPromptField`,
+#         `HumanInputPromptOption`): a stable `promptId`, a bounded visible
+#         `title`, and 1 to 8 typed fields with stable `fieldId`s. `text` carries
+#         `maxLength`, `choice` carries `options`, `boolean` carries neither, and
+#         each refuses the other's constraint. `service/chat_tool_review.
+#         validate_human_input_answer` then checks an answer field by field --
+#         unknown, missing-required, wrong-typed, off-option and over-bound are
+#         each refused, by a refusal naming the FIELD and the RULE and never the
+#         value, because an exception message reaches logs the database never
+#         does. Answer privacy, the canonical byte bound, wait authority, expiry
+#         and digest-plus-byte-count-only durability are all unchanged.
+#     STILL NO ARGUMENTS, in any form. The summary is a bounded projection of
+#     the post-policy record through a registry-declared key list, never the
+#     record; `value` admits no object or array, so the record cannot arrive
+#     under a name claiming to be one safe field.
+#     WHY BOTH AXES MOVE. D07 moves 2.0 -> 3.0 because a 2.0 snapshot's
+#     free-form `review.prompt` does not validate under 3.0 and a 3.0 document's
+#     `review.actionSummary` does not validate under 2.0's closed `review` --
+#     the same kind of break as 1.0 -> 2.0, where `GenerationJob.version` became
+#     required. F2b moves 3.0 -> 4.0 although NO bridge vocabulary grew at all:
+#     `BridgeSnapshotItem`'s `tool_call` member binds
+#     `queries.schema.json#/$defs/ToolCallProjection`, so the name now binds a
+#     shape a 3.0 host refuses. A reshape behind an unchanged version is exactly
+#     the silent break the `SupportedBridgeProtocolVersion` rule exists to
+#     forbid. `PlatformCarrierContractVersion` is a third, independent axis and
+#     stays "1.0"; `CONTRACT_VERSION` and the `chat_contract.v1` package
+#     namespace are unchanged.
+#     THE FIXTURE CORPUS MOVED WITH BOTH, relationships before literals, as the
+#     3.0 bump established:
+#       D07   protocol-version-2-1 -> renamed ...-3-1 at 3.1  (minor of the
+#                                     supported major; these negatives name the
+#                                     literal, so editing by name is a rename)
+#             new ...-protocol-version-2-0-rejected          (2.0 is now a
+#                                     superseded major, and the corpus gives
+#                                     each one its own negative)
+#             1-0 / 1-1 unchanged     (still majors below)
+#       F2b   unsupported-minor  3.1 -> 4.1
+#             unsupported-major  4.0 -> 5.0  (left alone it would have become
+#                                     SUPPORTED and inverted, every test green)
+#             new f2b-context-bound-superseded-3-0-rejected
+#             superseded-1-0/1-1/2-0 and malformed unchanged
+#     Both were edited BY NAME, and the two new superseded negatives written,
+#     BEFORE the blanket passes ("protocolVersion": 2.0 -> 3.0 over 48 values,
+#     "bridgeProtocolVersion": 3.0 -> 4.0 over 256) and excluded from them, so
+#     no pass could turn a negative into a positive. Seven new `ToolCallProjection`
+#     fixtures state the new shapes -- the first of this $def in the corpus: two
+#     valid (an action summary, a three-field human-input prompt) and five
+#     invalid (the pre-3.0 free-prose `prompt`, a nested parameter value, a
+#     missing `withheldParameters`, a `choice` with no options, and a
+#     human-input prompt on an `approval`). The free-prose one is the fixture
+#     that makes "an old strict document is not silently accepted as the new
+#     version" tested rather than asserted.
+#     Counts move 270 -> 279 cases (valid 105 -> 107, invalid 165 -> 172) and
+#     the tree 271 -> 280.
+#     PLATFORM'S HALF IS NOT HERE. A 3.0-pinned host refuses these messages
+#     whole, by design; that half lands with the pin, the constants and the
+#     decoders together.
 # The first five are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
 # COMPATIBILITY-AND-MIGRATION.md §3, as is the sixth above; the F2b carrier
-# rename is not, and says so in its own entry. All must be carried back to the
+# rename, the three bridge protocol changes and the two D07 protocol changes are
+# not, and each says so in its own entry. All must be carried back to the
 # Masterdocs authority before the next tag: until then this tree is
 # deliberately not byte-identical to architecture-v1.4.0, and the digest is
 # what says so.
@@ -342,7 +439,7 @@ Chat Runtime Contract v1 schemas and fixtures.
 
 Verifies, deterministically:
 
-- the exact packaged resource *count* (13 schemas, 271 fixture-tree files);
+- the exact packaged resource *count* (13 schemas, 280 fixture-tree files);
 - a single pinned SHA-256 digest over every relative resource path and its
   exact byte payload, so a changed, missing or extra resource under
   ``contracts/chat/v1`` fails closed rather than silently regenerating a
@@ -411,14 +508,14 @@ FIXTURE_MANIFEST_SHA256 = "7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc
 EFFECTIVE_ARCHITECTURE_TAG = "architecture-v1.4.0"
 EFFECTIVE_PAYLOAD_COMMIT = "eb14159d73c8d9339cfeb347f8de61bd67497974"
 CONTRACT_VERSION = "1.0.0-rc.1"
-PROTOCOL_VERSION = "2.0"
-PROTOCOL_MAJOR = "2"
+PROTOCOL_VERSION = "3.0"
+PROTOCOL_MAJOR = "3"
 
 EXPECTED_SCHEMA_COUNT = 13
-EXPECTED_FIXTURE_TREE_COUNT = 271  # FIXTURE-MANIFEST.json + 270 governed fixtures
-EXPECTED_FIXTURE_CASE_COUNT = 270
-EXPECTED_FIXTURE_VALID_COUNT = 105
-EXPECTED_FIXTURE_INVALID_COUNT = 165
+EXPECTED_FIXTURE_TREE_COUNT = 280  # FIXTURE-MANIFEST.json + 279 governed fixtures
+EXPECTED_FIXTURE_CASE_COUNT = 279
+EXPECTED_FIXTURE_VALID_COUNT = 107
+EXPECTED_FIXTURE_INVALID_COUNT = 172
 
 #: A Direction's durable content row is capped at 16384 bytes (migration 0069
 #: `content_json`). The cap applies to the canonical JSON object
@@ -434,7 +531,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES = 16384
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "5ae48dc98b46d8105b7d28e3cbcd161c8f8968e5199bd7a73d9079fa9cb2965c"
+    "c44ad632febb9c8af174dde4e9859d9805074fb96f22f08f5fcf42c4ab434873"
 )
 
 
@@ -898,7 +995,7 @@ def render_generated_module(
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (270 files)
+#   contracts/chat/v1/fixtures/**           (280 files)
 # Approved BASELINE provenance (the governance decision this tree started from;
 # NOT a claim that these bytes are the approved copy -- they are a
 # `review-candidate`, neither Approved, Published nor Effective):
@@ -1017,7 +1114,7 @@ PLATFORM_CARRIER_CONTRACT_VERSION: Final[str] = {platform_carrier_contract_versi
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = {EXPECTED_SCHEMA_COUNT!r}
-#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 269 governed fixtures).
+#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 279 governed fixtures).
 RESOURCE_FIXTURE_TREE_COUNT: Final[int] = {EXPECTED_FIXTURE_TREE_COUNT!r}
 #: A Direction's durable content row cap: the canonical JSON object
 #: ``{{"editableParts": [...]}}`` (``to_canonical_json``) is at most this many UTF-8
@@ -1038,7 +1135,7 @@ RESOURCE_INVENTORY_DIGEST: Final[str] = {digest!r}
     )
 
     vocab_docs = {
-        "BRIDGE_SNAPSHOT_ITEM_KINDS": "The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem) as of bridge protocol 3.0.",
+        "BRIDGE_SNAPSHOT_ITEM_KINDS": "The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem) as of bridge protocol 4.0.",
         "CHAT_COMMAND_NAMES": "The closed v1 initial Chat command registry (commands.schema.json ChatCommandName).",
         "ERROR_CODES": "The closed v1 shared error-code registry (common.schema.json ErrorCode).",
         "CHAT_EVENT_TYPES": "The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType). Additive-decode point.",

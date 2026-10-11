@@ -21,6 +21,15 @@ recorded decision when repeated unchanged. Each is refused, with no state change
 unauthorised actor, a wrong-kind wait, a duplicate decision, an expired request, a
 stale request version or a stale target action or resource revision.
 
+**What a wait says.** A wait's `prompt_json` holds one CLOSED document, named by
+its `kind`. A Review (`approval`, `policy_pause`) holds the action summary
+`derive_action_summary` derives from the registered tool and the exact
+post-policy arguments -- never a caller's sentence about them. A `human_input`
+wait holds a `HumanInputPrompt`: a stable `promptId`, a visible `title` and up
+to eight typed fields with stable `fieldId`s, which is what lets a renderer draw
+it and `validate_human_input_answer` check an answer against it. Both are
+validated when the wait opens and again before it is read or settled.
+
 **Atomicity.** Opening a Review wait is its own transaction (`open_chat_wait`); the
 `awaiting_review` event follows in a second. A crash between them leaves an open wait
 and a `policy_checking` call, and repeating `request_tool_review` converges.
@@ -53,12 +62,14 @@ from omnivia_core_runtime.service.chat_tool_lifecycle import (
     _require_step,
     _require_tool_call,
     approve_tool_call,
+    derive_action_summary,
 )
 from omnivia_core_runtime.storage import chat
 from omnivia_core_runtime.storage.connection import StorageError
 
 __all__ = [
     "MAX_ANSWER_BYTES",
+    "MAX_PROMPT_FIELDS",
     "ChatToolReviewStale",
     "ChatWaitExpired",
     "ToolCallReplay",
@@ -78,13 +89,29 @@ __all__ = [
     "settle_running_tool_call",
     "start_tool_run",
     "submit_human_input",
+    "validate_human_input_answer",
+    "validate_human_input_prompt",
 ]
 
 #: The ceiling on a human answer, whatever the prompt asks for.
 MAX_ANSWER_BYTES: Final = 16_384
+#: How many visible fields one prompt may ask for.
+MAX_PROMPT_FIELDS: Final = 8
 _DEFAULT_ANSWER_BYTES: Final = 4_096
 _MAX_REFS: Final = 64
 _MAX_REF_LENGTH: Final = 256
+_MAX_FIELD_OPTIONS: Final = 16
+_MAX_PROMPT_ID: Final = 128
+_MAX_FIELD_ID: Final = 64
+_MAX_LABEL: Final = 200
+_DEFAULT_FIELD_MAX_LENGTH: Final = 512
+_MAX_FIELD_MAX_LENGTH: Final = 4_096
+_FIELD_TYPES: Final = frozenset({"boolean", "choice", "text"})
+_PROMPT_FIELDS: Final = frozenset({"fields", "maxAnswerBytes", "promptId", "title"})
+_FIELD_KEYS: Final = frozenset(
+    {"fieldId", "label", "maxLength", "options", "required", "type"}
+)
+_OPTION_KEYS: Final = frozenset({"label", "value"})
 _TERMINAL: Final = frozenset({"succeeded", "failed", "cancelled", "outcome_unknown"})
 _DENIAL_REASONS: Final = frozenset({"policy_denied", "review_denied"})
 _REVIEW_KINDS: Final = frozenset({"approval", "policy_pause"})
@@ -528,21 +555,46 @@ def request_tool_review(
     fencing_generation: int,
     tool_call_id: str,
     post_policy_arguments: Mapping[str, Any],
+    tool: GovernedTool,
     wait_id: str,
     requester_actor_id: str,
     authorised_responder_policy: Mapping[str, Any],
-    prompt: Mapping[str, Any],
     resume_token: str,
     expires_at_us: int,
     target_resource_ref: str,
     target_resource_revision: int,
     now_us: int,
 ) -> ChatWaitInteraction:
-    """`policy_checking` -> `awaiting_review`, binding the Review to the exact action."""
+    """`policy_checking` -> `awaiting_review`, binding the Review to the exact action.
+
+    WHAT THE REVIEWER IS SHOWN IS DERIVED, NOT SUPPLIED. This used to take a
+    `prompt` -- any object the caller wrote -- and store it as the thing a
+    reviewer reads. So the sentence shown to the person approving an action and
+    the arguments the action would execute were two independent values, and
+    nothing compared them: a caller could ask for "Append to notes.md?" and have
+    `/etc/passwd` in `post_policy_arguments`, and the Review would be of the
+    sentence.
+
+    Now the summary comes out of `tool`'s registered descriptor applied to these
+    exact `post_policy_arguments`, through `derive_action_summary`, and `tool`
+    must be the registry entry THIS CALL was admitted against -- name, version
+    and `registry_ref` all checked, because a descriptor belonging to some other
+    tool would describe some other action just as confidently.
+
+    Fails closed: a tool that registers no descriptor, or arguments the
+    descriptor cannot summarise, raise rather than open a Review.
+    """
     _assert_safe_json(post_policy_arguments, label="chat tool post-policy arguments")
     if expires_at_us <= now_us:
         raise ChatWaitConflict("a Review request must expire after it opens")
     call = _require_tool_call(connection, workspace_id=workspace_id, tool_call_id=tool_call_id)
+    if (tool.name, tool.version, tool.registry_ref) != (
+        call.tool_name,
+        call.tool_version,
+        call.registry_ref,
+    ):
+        raise ChatToolNotFound("the summarised tool is not the registry entry this call names")
+    action_summary = derive_action_summary(tool, post_policy_arguments)
     events = _events(connection, workspace_id, tool_call_id)
     action_digest = _digest(dict(post_policy_arguments))
     if _state(events) == "awaiting_review":
@@ -564,7 +616,10 @@ def request_tool_review(
         kind="approval",
         requester_actor_id=requester_actor_id,
         authorised_responder_policy=authorised_responder_policy,
-        prompt=prompt,
+        # The wait's `prompt_json` column holds the closed document for its kind:
+        # the derived action summary for a Review, a `HumanInputPrompt` for an
+        # answer. One column, two closed shapes, each named by `kind`.
+        prompt=action_summary,
         resume_token=resume_token,
         now_us=now_us,
         generation_job_id=call.generation_job_id,
@@ -1046,6 +1101,135 @@ def _expire_review(
         _close_wait(fenced, workspace_id, wait.wait_id, to_state="expired", now_us=now_us)
 
 
+def _bounded_text(value: Any, limit: int, *, label: str) -> str:
+    if not isinstance(value, str) or not 0 < len(value) <= limit:
+        raise ChatWaitConflict(f"{label} must be a string of 1 to {limit} characters")
+    return value
+
+
+def _prompt_field(field: Any, *, ordinal: int) -> str:
+    """Check one visible field and return its identifier, or refuse by position.
+
+    `text` carries `maxLength`, `choice` carries `options`, and each refuses the
+    other's constraint: a field that states a bound belonging to a type it is
+    not would be drawn by a renderer that read the bound and ignored by one that
+    read the type, which is two different forms on one prompt.
+    """
+    where = f"prompt field {ordinal}"
+    if not isinstance(field, Mapping) or not set(field) <= _FIELD_KEYS:
+        raise ChatWaitConflict(f"{where} carries a key this prompt schema does not define")
+    for key in ("fieldId", "label", "type"):
+        if key not in field:
+            raise ChatWaitConflict(f"{where} is missing {key}")
+    field_id = _bounded_text(field["fieldId"], _MAX_FIELD_ID, label=f"{where} fieldId")
+    _bounded_text(field["label"], _MAX_LABEL, label=f"{where} label")
+    kind = field["type"]
+    if kind not in _FIELD_TYPES:
+        raise ChatWaitConflict(f"{where} type is not one of " + ", ".join(sorted(_FIELD_TYPES)))
+    if "required" in field and not isinstance(field["required"], bool):
+        raise ChatWaitConflict(f"{where} required must be a boolean")
+    if kind == "text":
+        limit = field.get("maxLength", _DEFAULT_FIELD_MAX_LENGTH)
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or not 1 <= limit <= _MAX_FIELD_MAX_LENGTH
+        ):
+            raise ChatWaitConflict(
+                f"{where} maxLength must be an integer from 1 to {_MAX_FIELD_MAX_LENGTH}"
+            )
+    elif "maxLength" in field:
+        raise ChatWaitConflict(f"{where} maxLength belongs to a text field")
+    if kind == "choice":
+        options = field.get("options")
+        if not isinstance(options, list) or not 0 < len(options) <= _MAX_FIELD_OPTIONS:
+            raise ChatWaitConflict(f"{where} must offer 1 to {_MAX_FIELD_OPTIONS} options")
+        values: list[str] = []
+        for option in options:
+            if not isinstance(option, Mapping) or set(option) != _OPTION_KEYS:
+                raise ChatWaitConflict(f"{where} option is exactly a value and a label")
+            values.append(
+                _bounded_text(option["value"], _MAX_FIELD_ID, label=f"{where} option value")
+            )
+            _bounded_text(option["label"], _MAX_LABEL, label=f"{where} option label")
+        if len(set(values)) != len(values):
+            raise ChatWaitConflict(f"{where} repeats an option value")
+    elif "options" in field:
+        raise ChatWaitConflict(f"{where} options belong to a choice field")
+    return field_id
+
+
+def validate_human_input_prompt(prompt: Mapping[str, Any]) -> dict[str, Any]:
+    """Refuse anything that is not exactly one closed human-input prompt.
+
+    CLOSED because two things depend on the shape: a renderer has to draw it,
+    and an answer has to be checked against it. The open object this replaces
+    could only be drawn as raw JSON, and an answer to it could be checked
+    against nothing at all -- which is what "the shape is the asking tool's
+    business" amounted to in practice.
+
+    Called when the request is opened AND again before it is answered, so a row
+    written before this shape existed can be read but never settled: it has no
+    field list, so there is nothing an answer could be valid against, and
+    accepting one would settle a wait against a prompt nobody validated.
+    """
+    if not isinstance(prompt, Mapping) or not set(prompt) <= _PROMPT_FIELDS:
+        raise ChatWaitConflict("a human-input prompt carries a key this schema does not define")
+    for key in ("fields", "promptId", "title"):
+        if key not in prompt:
+            raise ChatWaitConflict(f"a human-input prompt is missing {key}")
+    _bounded_text(prompt["promptId"], _MAX_PROMPT_ID, label="promptId")
+    _bounded_text(prompt["title"], _MAX_LABEL, label="title")
+    fields = prompt["fields"]
+    if not isinstance(fields, list) or not 0 < len(fields) <= MAX_PROMPT_FIELDS:
+        raise ChatWaitConflict(f"a human-input prompt asks for 1 to {MAX_PROMPT_FIELDS} fields")
+    identifiers = [_prompt_field(field, ordinal=index) for index, field in enumerate(fields)]
+    if len(set(identifiers)) != len(identifiers):
+        raise ChatWaitConflict("a human-input prompt names each field once")
+    limit = prompt.get("maxAnswerBytes", _DEFAULT_ANSWER_BYTES)
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_ANSWER_BYTES:
+        raise ChatWaitConflict(f"maxAnswerBytes must be an integer from 1 to {MAX_ANSWER_BYTES}")
+    return dict(prompt)
+
+
+def validate_human_input_answer(
+    prompt: Mapping[str, Any], answer: Mapping[str, Any]
+) -> None:
+    """Check one answer against the EXACT prompt it answers.
+
+    EVERY REFUSAL NAMES THE FIELD AND THE RULE, NEVER THE VALUE. The answer is
+    the one part of this command deliberately not made durable -- only its
+    digest and byte length are -- so a message that quoted it would put it in a
+    log, and an exception message reaches logs the database never does.
+
+    `prompt` must already have passed :func:`validate_human_input_prompt`; this
+    reads its field list as given.
+    """
+    fields = {str(field["fieldId"]): field for field in prompt["fields"]}
+    if set(answer) - set(fields):
+        # The unknown key is supplied by the answer and may itself be private.
+        # Refuse by rule only; never copy answer-controlled text into an
+        # exception message that can reach logs.
+        raise ChatWaitConflict("the answer names a field this prompt does not ask for")
+    for field_id, field in fields.items():
+        if field_id not in answer:
+            if field.get("required", True):
+                raise ChatWaitConflict(f"the answer omits required field {field_id!r}")
+            continue
+        value = answer[field_id]
+        if field["type"] == "boolean":
+            if not isinstance(value, bool):
+                raise ChatWaitConflict(f"field {field_id!r} takes a boolean")
+        elif field["type"] == "choice":
+            allowed = {str(option["value"]) for option in field["options"]}
+            if not isinstance(value, str) or value not in allowed:
+                raise ChatWaitConflict(f"field {field_id!r} takes one of its offered options")
+        else:
+            limit = int(field.get("maxLength", _DEFAULT_FIELD_MAX_LENGTH))
+            if not isinstance(value, str) or not 0 < len(value) <= limit:
+                raise ChatWaitConflict(f"field {field_id!r} takes 1 to {limit} characters")
+
+
 def open_human_input_request(
     connection: sqlite3.Connection,
     identity: ServiceInstanceIdentity,
@@ -1064,10 +1248,13 @@ def open_human_input_request(
     turn_id: str | None = None,
     agent_run_id: str | None = None,
 ) -> ChatWaitInteraction:
-    """Ask a person for a bounded answer. `prompt.maxAnswerBytes` (default 4096) caps it."""
-    limit = prompt.get("maxAnswerBytes", _DEFAULT_ANSWER_BYTES)
-    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_ANSWER_BYTES:
-        raise ChatWaitConflict(f"maxAnswerBytes must be an integer from 1 to {MAX_ANSWER_BYTES}")
+    """Ask a person for a bounded answer against a closed, renderable prompt.
+
+    `prompt` is a `HumanInputPrompt`: a stable `promptId`, a visible `title` and
+    1 to 8 typed fields with stable `fieldId`s. `prompt.maxAnswerBytes` (default
+    4096, ceiling `MAX_ANSWER_BYTES`) still caps the whole answer.
+    """
+    prompt = validate_human_input_prompt(prompt)
     if expires_at_us <= now_us:
         raise ChatWaitConflict("a human-input request must expire after it opens")
     return open_chat_wait(
@@ -1283,11 +1470,15 @@ def _decide(
         )
     ):
         raise ChatToolReviewStale("the reviewed action or resource revision is stale")
-    if answer_bytes is not None:
-        limit = min(
-            int(wait.prompt.get("maxAnswerBytes", _DEFAULT_ANSWER_BYTES)), MAX_ANSWER_BYTES
-        )
-        if answer_bytes > limit:
+    if answer is not None:
+        # Against the EXACT prompt this wait was opened with, before anything is
+        # written. The wire decoder cannot do this -- it has no wait -- so an
+        # answer shaped for some other prompt reaches here looking perfectly
+        # well-formed, and only the prompt it claims to answer can refuse it.
+        schema = validate_human_input_prompt(wait.prompt)
+        validate_human_input_answer(schema, answer)
+        limit = min(int(schema.get("maxAnswerBytes", _DEFAULT_ANSWER_BYTES)), MAX_ANSWER_BYTES)
+        if answer_bytes is not None and answer_bytes > limit:
             raise ChatWaitConflict("the answer is larger than this request allows")
     call: chat.ChatToolCall | None = None
     events: tuple[chat.ChatToolLifecycleEvent, ...] = ()

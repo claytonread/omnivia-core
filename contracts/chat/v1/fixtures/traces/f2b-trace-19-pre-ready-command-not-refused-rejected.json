@@ -2,7 +2,7 @@
   "messages": [
     {
       "messageType": "bridge.context-bound",
-      "bridgeProtocolVersion": "3.0",
+      "bridgeProtocolVersion": "4.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-19",
       "workspaceId": "ws-acme",
@@ -15,13 +15,13 @@
     },
     {
       "messageType": "bridge.command",
-      "bridgeProtocolVersion": "3.0",
+      "bridgeProtocolVersion": "4.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-19",
       "commandId": "cmd-t19-early",
       "commandKind": "SubmitMessage",
       "payload": {
-        "protocolVersion": "2.0",
+        "protocolVersion": "3.0",
         "commandId": "cmd-t19-early",
         "workspaceId": "ws-acme",
         "conversationId": "conv-0001",
@@ -44,14 +44,14 @@
     },
     {
       "messageType": "bridge.snapshot-request",
-      "bridgeProtocolVersion": "3.0",
+      "bridgeProtocolVersion": "4.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-19",
       "requestedAt": "2026-08-20T10:00:02Z"
     },
     {
       "messageType": "bridge.snapshot-page",
-      "bridgeProtocolVersion": "3.0",
+      "bridgeProtocolVersion": "4.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-19",
       "snapshotId": "bsnap-t19",

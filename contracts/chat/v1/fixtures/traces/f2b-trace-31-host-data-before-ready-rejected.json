@@ -2,7 +2,7 @@
   "messages": [
     {
       "messageType": "bridge.context-bound",
-      "bridgeProtocolVersion": "3.0",
+      "bridgeProtocolVersion": "4.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-31",
       "workspaceId": "ws-acme",
@@ -15,7 +15,7 @@
     },
     {
       "messageType": "bridge.event-batch",
-      "bridgeProtocolVersion": "3.0",
+      "bridgeProtocolVersion": "4.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-31",
       "events": [

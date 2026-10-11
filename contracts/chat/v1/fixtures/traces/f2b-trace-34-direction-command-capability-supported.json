@@ -2,7 +2,7 @@
   "messages": [
     {
       "messageType": "bridge.context-bound",
-      "bridgeProtocolVersion": "3.0",
+      "bridgeProtocolVersion": "4.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-34",
       "workspaceId": "ws-acme",
@@ -16,14 +16,14 @@
     },
     {
       "messageType": "bridge.snapshot-request",
-      "bridgeProtocolVersion": "3.0",
+      "bridgeProtocolVersion": "4.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-34",
       "requestedAt": "2026-08-20T10:00:00Z"
     },
     {
       "messageType": "bridge.snapshot-page",
-      "bridgeProtocolVersion": "3.0",
+      "bridgeProtocolVersion": "4.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-34",
       "snapshotId": "bsnap-t34",
@@ -64,13 +64,13 @@
     },
     {
       "messageType": "bridge.command",
-      "bridgeProtocolVersion": "3.0",
+      "bridgeProtocolVersion": "4.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-34",
       "commandId": "cmd-steer-0001",
       "commandKind": "SubmitSteeringInput",
       "payload": {
-        "protocolVersion": "2.0",
+        "protocolVersion": "3.0",
         "commandId": "cmd-steer-0001",
         "workspaceId": "ws-acme",
         "conversationId": "conv-0001",
@@ -94,7 +94,7 @@
     },
     {
       "messageType": "bridge.command-result",
-      "bridgeProtocolVersion": "3.0",
+      "bridgeProtocolVersion": "4.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-34",
       "commandId": "cmd-steer-0001",
@@ -105,7 +105,7 @@
     },
     {
       "messageType": "bridge.event-batch",
-      "bridgeProtocolVersion": "3.0",
+      "bridgeProtocolVersion": "4.0",
       "schemaVersion": 1,
       "contextId": "bctx-trace-34",
       "events": [

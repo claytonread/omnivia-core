@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "2.0",
+  "protocolVersion": "3.0",
   "commandId": "cmd-steer-0001",
   "workspaceId": "ws-acme",
   "conversationId": "conv-0001",

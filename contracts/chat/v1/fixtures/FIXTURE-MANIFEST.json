@@ -5,9 +5,9 @@
   "authority": "This manifest is proposal-stage Evidence only. It is not Approved, not Published, not Effective. It lists every normative valid, invalid and canonical-trace fixture in this change set.",
   "schema_host": "https://contracts.omnivia.dev/chat/v1/",
   "counts": {
-    "total": 270,
-    "valid": 105,
-    "invalid": 165
+    "total": 279,
+    "valid": 107,
+    "invalid": 172
   },
   "fixtures": [
     {
@@ -992,16 +992,16 @@
     {
       "path": "fixtures/invalid/f2b-context-bound-unsupported-major-rejected.json",
       "expect": "invalid",
-      "focus": "The supported bridge protocol version is the exact constant 2.0, not merely a major.minor syntax: an unsupported major (3.0) is rejected structurally, never silently downgraded.",
+      "focus": "The supported bridge protocol version is the exact constant 4.0, not merely a major.minor syntax: an unsupported major (5.0) is rejected structurally, never silently downgraded.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
-      "expected_error_contains": "const '3.0'"
+      "expected_error_contains": "const '4.0'"
     },
     {
       "path": "fixtures/invalid/f2b-context-bound-unsupported-minor-rejected.json",
       "expect": "invalid",
-      "focus": "A version mismatch within the supported major (2.1) is rejected too: the bundle supports exactly 2.0 and never guesses which additive fields an unknown minor added.",
+      "focus": "A version mismatch within the supported major (4.1) is rejected too: the bundle supports exactly 4.0 and never guesses which additive fields an unknown minor added.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
-      "expected_error_contains": "const '3.0'"
+      "expected_error_contains": "const '4.0'"
     },
     {
       "path": "fixtures/invalid/f2b-refusal-safe-message-reason-mismatch-rejected.json",
@@ -1742,9 +1742,9 @@
     {
       "path": "fixtures/invalid/f2b-context-bound-superseded-1-0-rejected.json",
       "expect": "invalid",
-      "focus": "Bridge protocol 1.0 is rejected by this 3.0 bundle: the superseded 1.x grammar cannot carry the Direction surface, so the version change is explicit and 1.0 is never silently admitted (C5A, C6).",
+      "focus": "Bridge protocol 1.0 is rejected by this 4.0 bundle: the superseded 1.x grammar cannot carry the Direction surface, so the version change is explicit and 1.0 is never silently admitted (C5A, C6).",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
-      "expected_error_contains": "const '3.0'"
+      "expected_error_contains": "const '4.0'"
     },
     {
       "path": "fixtures/invalid/f2b-carrier-envelope-outer-version-bumped-rejected.json",
@@ -1814,16 +1814,16 @@
     {
       "path": "fixtures/invalid/f2b-context-bound-superseded-2-0-rejected.json",
       "expect": "invalid",
-      "focus": "Bridge protocol 2.0 is rejected by this 3.0 bundle: the closed 2.x itemKind and command vocabularies cannot carry C8's two hosted commands or its tool_call snapshot item, so the move to 3.0 is explicit and 2.0 is never silently admitted (C8). The corpus gives every superseded major its own negative, which is what makes \"refuses it whole\" a tested claim rather than a sentence in a description.",
+      "focus": "Bridge protocol 2.0 is rejected by this 4.0 bundle: the closed 2.x itemKind and command vocabularies cannot carry C8's two hosted commands or its tool_call snapshot item, so the move to 3.0 is explicit and 2.0 is never silently admitted (C8). The corpus gives every superseded major its own negative, which is what makes \"refuses it whole\" a tested claim rather than a sentence in a description.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
-      "expected_error_contains": "const '3.0'"
+      "expected_error_contains": "const '4.0'"
     },
     {
       "path": "fixtures/invalid/f2b-context-bound-superseded-1-1-rejected.json",
       "expect": "invalid",
-      "focus": "Bridge protocol 1.1 is rejected by this 3.0 bundle: the closed 1.1 itemKind, command and refusal vocabularies cannot carry the Direction surface, so the move to 2.0 is explicit and 1.1 is never silently admitted (C6).",
+      "focus": "Bridge protocol 1.1 is rejected by this 4.0 bundle: the closed 1.1 itemKind, command and refusal vocabularies cannot carry the Direction surface, so the move to 2.0 is explicit and 1.1 is never silently admitted (C6).",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
-      "expected_error_contains": "const '3.0'"
+      "expected_error_contains": "const '4.0'"
     },
     {
       "path": "fixtures/valid/submit-steering-input-request.json",
@@ -2531,28 +2531,21 @@
     {
       "path": "fixtures/invalid/submit-steering-input-request-protocol-version-1-0-rejected.json",
       "expect": "invalid",
-      "focus": "The SCHEMA, not only the codec negotiation helper, closes the D07 wire version: a SubmitSteeringInputRequest stating protocolVersion 1.0 (the legacy D07 wire protocol 1.0) is well-formed but unsupported, so it fails the exact `const` \"2.0\" (C6; GenerationJob.version became required, so a 1.0 document is never read as a C6 one).",
+      "focus": "The SCHEMA, not only the codec negotiation helper, closes the D07 wire version: a SubmitSteeringInputRequest stating protocolVersion 1.0 (the legacy D07 wire protocol 1.0) is well-formed but unsupported, so it fails the exact `const` \"3.0\" (C6; GenerationJob.version became required, so a 1.0 document is never read as a C6 one).",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
       "expected_error_contains": "const"
     },
     {
       "path": "fixtures/invalid/submit-steering-input-request-protocol-version-1-1-rejected.json",
       "expect": "invalid",
-      "focus": "The SCHEMA, not only the codec negotiation helper, closes the D07 wire version: a SubmitSteeringInputRequest stating protocolVersion 1.1 (the intermediate 1.1) is well-formed but unsupported, so it fails the exact `const` \"2.0\" (C6; GenerationJob.version became required, so a 1.0 document is never read as a C6 one).",
-      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
-      "expected_error_contains": "const"
-    },
-    {
-      "path": "fixtures/invalid/submit-steering-input-request-protocol-version-2-1-rejected.json",
-      "expect": "invalid",
-      "focus": "The SCHEMA, not only the codec negotiation helper, closes the D07 wire version: a SubmitSteeringInputRequest stating protocolVersion 2.1 (an unsupported minor of the supported major) is well-formed but unsupported, so it fails the exact `const` \"2.0\" (C6; GenerationJob.version became required, so a 1.0 document is never read as a C6 one).",
+      "focus": "The SCHEMA, not only the codec negotiation helper, closes the D07 wire version: a SubmitSteeringInputRequest stating protocolVersion 1.1 (the intermediate 1.1) is well-formed but unsupported, so it fails the exact `const` \"3.0\" (C6; GenerationJob.version became required, so a 1.0 document is never read as a C6 one).",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
       "expected_error_contains": "const"
     },
     {
       "path": "fixtures/invalid/direction-submitted-result-protocol-version-1-0-rejected.json",
       "expect": "invalid",
-      "focus": "Every D07 result is bound to the exact wire version too: a DirectionSubmittedResult stating the legacy protocolVersion 1.0 is rejected by const \"2.0\" in the schema (C6).",
+      "focus": "Every D07 result is bound to the exact wire version too: a DirectionSubmittedResult stating the legacy protocolVersion 1.0 is rejected by const \"3.0\" in the schema (C6).",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/DirectionSubmittedResult",
       "expected_error_contains": "const"
     },
@@ -2575,6 +2568,72 @@
         "direction_content_hash_matches_content"
       ],
       "expected_error_contains": "does not match"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-protocol-version-3-1-rejected.json",
+      "expect": "invalid",
+      "focus": "The SCHEMA, not only the codec negotiation helper, closes the D07 wire version: a SubmitSteeringInputRequest stating protocolVersion 3.1 (an unsupported minor of the supported major) is well-formed but unsupported, so it fails the exact `const` \"3.0\" (C8; ToolCallProjection.review replaced its open prompt object with two closed documents, so a 2.x document is never read as a C8 informed-review one).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/submit-steering-input-request-protocol-version-2-0-rejected.json",
+      "expect": "invalid",
+      "focus": "The D07 wire protocol 2.0 is rejected by this 3.0 bundle: ToolCallProjection.review replaced its open `prompt` object with the closed registry-derived ToolActionSummary and the closed renderable HumanInputPrompt, which neither validates under 2.0 nor admits a 2.0 document, so the move to 3.0 is explicit and 2.0 is never silently admitted (C8). The corpus gives every superseded major its own negative, which is what makes \"refuses it whole\" a tested claim rather than a sentence in a description.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitSteeringInputRequest",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/f2b-context-bound-superseded-3-0-rejected.json",
+      "expect": "invalid",
+      "focus": "Bridge protocol 3.0 is rejected by this 4.0 bundle: the `tool_call` item's payload schema ToolCallProjection changed incompatibly for C8's informed review, so the name binds a shape a 3.0 decoder refuses and the move to 4.0 is explicit rather than a silent reshape under an unchanged version (C8).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/ContextBoundMessage",
+      "expected_error_contains": "const '4.0'"
+    },
+    {
+      "path": "fixtures/valid/snapshot-tool-call-review-action-summary.json",
+      "expect": "valid",
+      "focus": "A governed tool call awaiting Review, as a snapshot publishes it to an authorised responder: the closed registry-DERIVED actionSummary names the operation, the affected resource, the material safe scalar parameters and how many arguments it withholds, and no post-policy argument record appears in any form (C8).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ToolCallProjection"
+    },
+    {
+      "path": "fixtures/valid/snapshot-tool-call-human-input-prompt.json",
+      "expect": "valid",
+      "focus": "A human_input wait, as a snapshot publishes it to an authorised responder: the closed HumanInputPrompt carries a stable promptId and three typed visible fields -- bounded text, a choice with its own options, and a boolean -- which is what lets a renderer draw it and Core check an answer against it (C8).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ToolCallProjection"
+    },
+    {
+      "path": "fixtures/invalid/snapshot-tool-call-review-legacy-prose-prompt-rejected.json",
+      "expect": "invalid",
+      "focus": "The pre-3.0 shape is NOT silently accepted as the new one: a review carrying the open `prompt` object its asking authority wrote ({\"title\": \"Append to notes.md?\"}) fails the closed HumanInputPrompt that replaced it, so a 2.0 snapshot cannot be read as a 3.0 one and free prose can never reach a reviewer as the derived action (C8).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ToolCallProjection",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/snapshot-tool-call-action-summary-nested-value-rejected.json",
+      "expect": "invalid",
+      "focus": "An action summary parameter value is a bounded SCALAR: a nested object is rejected, which is how the whole post-policy argument record would otherwise arrive under a name claiming to be one safe field (C8).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ToolCallProjection"
+    },
+    {
+      "path": "fixtures/invalid/snapshot-tool-call-action-summary-missing-withheld-count-rejected.json",
+      "expect": "invalid",
+      "focus": "withheldParameters is REQUIRED: a summary that shows some arguments without saying how many it hides invites a responder to read a partial summary as the whole action (C8).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ToolCallProjection",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/snapshot-tool-call-human-input-choice-without-options-rejected.json",
+      "expect": "invalid",
+      "focus": "A choice field must offer its own options: without them there is nothing to draw and nothing an answer could be validated against, which is exactly the hole the open prompt object left (C8).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ToolCallProjection",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/snapshot-tool-call-review-prompt-on-approval-rejected.json",
+      "expect": "invalid",
+      "focus": "The review member is bound to the wait's kind and the binding is total: an `approval` carrying a HumanInputPrompt instead of an actionSummary is rejected, so neither closed document can arrive labelled as the other (C8).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ToolCallProjection"
     }
   ]
 }

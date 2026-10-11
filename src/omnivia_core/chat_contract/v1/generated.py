@@ -2,7 +2,7 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (270 files)
+#   contracts/chat/v1/fixtures/**           (280 files)
 # Approved BASELINE provenance (the governance decision this tree started from;
 # NOT a claim that these bytes are the approved copy -- they are a
 # `review-candidate`, neither Approved, Published nor Effective):
@@ -12,7 +12,7 @@
 #   baseline fixture manifest SHA-256 7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54;
 #   effective Architecture release tag architecture-v1.4.0;
 #   effective payload commit eb14159d73c8d9339cfeb347f8de61bd67497974;
-#   current fixture manifest SHA-256 4a67e5c696272cda5e896490b19f10ab6e78f23a2bb0a2dd7841fcd6573bcad9.
+#   current fixture manifest SHA-256 14a203dcae11e3827ee4bc6062e766482018e78561342bfc1ca78454422acaa3.
 # Generator:
 #   scripts/generate-chat-contract.py
 #
@@ -96,7 +96,7 @@ FIXTURE_MANIFEST_SHA256: Final[str] = '7936bf32da76a66c7d479217588f56c4af20b0ed0
 #: SHA-256 of the CURRENT ``fixtures/FIXTURE-MANIFEST.json`` bytes, computed by the
 #: generator from the checked-in file. It identifies this review candidate's
 #: manifest and claims nothing about approval.
-CURRENT_FIXTURE_MANIFEST_SHA256: Final[str] = '4a67e5c696272cda5e896490b19f10ab6e78f23a2bb0a2dd7841fcd6573bcad9'
+CURRENT_FIXTURE_MANIFEST_SHA256: Final[str] = '14a203dcae11e3827ee4bc6062e766482018e78561342bfc1ca78454422acaa3'
 #: The Masterdocs Git tag the approved BASELINE was read through.
 EFFECTIVE_ARCHITECTURE_TAG: Final[str] = 'architecture-v1.4.0'
 #: The exact Masterdocs payload commit ``EFFECTIVE_ARCHITECTURE_TAG`` resolves to (baseline).
@@ -106,14 +106,14 @@ CONTRACT_VERSION: Final[str] = '1.0.0-rc.1'
 #: The one wire protocol version this bundle supports. A v1 decoder rejects an
 #: unsupported major and never silently downgrades
 #: (CHAT-RUNTIME-CONTRACT-V1-COMPATIBILITY-AND-MIGRATION.md §1, §3).
-PROTOCOL_VERSION: Final[str] = '2.0'
+PROTOCOL_VERSION: Final[str] = '3.0'
 #: The major component of :data:`PROTOCOL_VERSION`, the compatibility boundary.
-PROTOCOL_MAJOR: Final[str] = '2'
+PROTOCOL_MAJOR: Final[str] = '3'
 #: The one F2b hosted-bridge protocol version this bundle supports
 #: (bridge.schema.json SupportedBridgeProtocolVersion). An independent axis from
 #: :data:`PROTOCOL_VERSION` (the D07 wire protocol): a strict F2b decoder
 #: rejects every other version, including the superseded "1.0" and "1.1".
-BRIDGE_PROTOCOL_VERSION: Final[str] = '3.0'
+BRIDGE_PROTOCOL_VERSION: Final[str] = '4.0'
 #: The outer Platform Module Host Contract envelope version
 #: (bridge.schema.json PlatformCarrierContractVersion). Independent of
 #: :data:`BRIDGE_PROTOCOL_VERSION`; a bridge protocol change never moves it.
@@ -121,8 +121,8 @@ PLATFORM_CARRIER_CONTRACT_VERSION: Final[str] = '1.0'
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = 13
-#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 269 governed fixtures).
-RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 271
+#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 279 governed fixtures).
+RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 280
 #: A Direction's durable content row cap: the canonical JSON object
 #: ``{"editableParts": [...]}`` (``to_canonical_json``) is at most this many UTF-8
 #: bytes. Not expressible in JSON Schema, so the codec enforces it.
@@ -130,7 +130,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES: Final[int] = 16384
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = '5ae48dc98b46d8105b7d28e3cbcd161c8f8968e5199bd7a73d9079fa9cb2965c'
+RESOURCE_INVENTORY_DIGEST: Final[str] = 'c44ad632febb9c8af174dde4e9859d9805074fb96f22f08f5fcf42c4ab434873'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (
@@ -168,7 +168,7 @@ SCHEMA_IDS: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 
-#: The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem) as of bridge protocol 3.0, 9 members.
+#: The closed F2b BridgeSnapshotItem.itemKind vocabulary (bridge.schema.json BridgeSnapshotItem) as of bridge protocol 4.0, 9 members.
 BRIDGE_SNAPSHOT_ITEM_KINDS: Final[tuple[str, ...]] = (
     'conversation',
     'message',
@@ -1448,7 +1448,7 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
                     '$ref': 'common.schema.json#/$defs/ProtocolVersionSyntax',
                 },
                 {
-                    'const': '2.0',
+                    'const': '3.0',
                 },
             ],
         },

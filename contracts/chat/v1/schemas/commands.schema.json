@@ -508,7 +508,7 @@
     },
     "SubmitHumanInputRequest": {
       "title": "SubmitHumanInputRequest",
-      "description": "C8. Answers one open human-input wait. Mirrors `service/chat_tool_review.submit_human_input` argument for argument. Only a digest and the byte length of `answer` become durable -- the answer itself is never persisted -- so this command is the one place its content exists at all. `answer` is a non-empty object, which `_decide` enforces, bounded here by `MAX_ANSWER_BYTES` (16384 bytes); the wait's own `prompt.maxAnswerBytes` may bound it further and defaults to 4096, so a document valid here can still be refused by the wait that receives it.",
+      "description": "C8. Answers one open human-input wait. Mirrors `service/chat_tool_review.submit_human_input` argument for argument. Only a digest and the byte length of `answer` become durable -- the answer itself is never persisted -- so this command is the one place its content exists at all. The wire closes the answer's outer envelope to the same maximum eight stable field IDs and scalar value kinds a `HumanInputPrompt` can define; Core then validates the exact keys, required fields, types, options and text lengths against the authoritative prompt stored on the wait. `MAX_ANSWER_BYTES` still caps canonical UTF-8 at 16384 bytes, and the wait's own `prompt.maxAnswerBytes` may bound it further and defaults to 4096.",
       "type": "object",
       "additionalProperties": false,
       "required": ["actorId", "answer", "commandId", "expectedRequestVersion", "protocolVersion", "waitId", "workspaceId"],
@@ -519,7 +519,14 @@
         "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
         "waitId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId", "description": "The open wait this answer closes." },
         "expectedRequestVersion": { "type": "integer", "minimum": 1 },
-        "answer": { "type": "object", "minProperties": 1, "maxProperties": 128, "additionalProperties": true, "description": "The person's bounded answer, as a non-empty JSON object. Its shape is the asking tool's business and not this contract's; only its digest and byte length become durable." },
+        "answer": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 8,
+          "propertyNames": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "additionalProperties": { "type": ["string", "boolean"], "maxLength": 4096 },
+          "description": "The person's bounded answer, keyed by the authoritative prompt's stable field IDs. Values are only the scalar kinds its closed field types admit; Core validates the object against that exact prompt before settlement, and only its digest and byte length become durable."
+        },
         "auditRef": { "type": "string", "minLength": 1, "maxLength": 512 }
       }
     },

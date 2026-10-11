@@ -1,6 +1,6 @@
 {
   "messageType": "bridge.refusal",
-  "bridgeProtocolVersion": "3.0",
+  "bridgeProtocolVersion": "4.0",
   "schemaVersion": 1,
   "reason": "capability_unavailable",
   "safeMessage": "This feature is not available in your current session.",

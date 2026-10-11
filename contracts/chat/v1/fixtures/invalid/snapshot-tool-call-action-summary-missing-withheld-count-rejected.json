@@ -1,0 +1,30 @@
+{
+  "toolCallId": "toolcall-0001",
+  "turnId": "turn-0001",
+  "stepId": "step-0001",
+  "generationJobId": "job-0002",
+  "toolName": "notes.append",
+  "toolVersion": "1",
+  "registryRef": "registry-notes-v1",
+  "state": "awaiting_review",
+  "policyState": "pending",
+  "schemaVersion": 1,
+  "createdAt": "2026-08-20T10:00:10Z",
+  "review": {
+    "waitId": "wait-0001",
+    "kind": "approval",
+    "state": "asked",
+    "requestVersion": 1,
+    "expiresAt": "2026-08-20T10:05:10Z",
+    "actionSummary": {
+      "operation": "append",
+      "resource": "notes.md",
+      "parameters": [
+        { "name": "mode", "value": "append" }
+      ]
+    },
+    "targetActionDigest": "sha256:c7e53b28a18b384fa46e77dc03b2ea8b0d859c20088859e54d7822fca17f3c50",
+    "targetResourceRef": "resource:notes.md",
+    "targetResourceRevision": 7
+  }
+}
