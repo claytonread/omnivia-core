@@ -2345,6 +2345,24 @@ def _commit_message_amendment(request: _MessageAmendment) -> ChatCommand:
             fork_parent_message_id=source.parent_message_id,
             fork_source_message_id=request.source_message_id,
         )
+        # The branch's first head event, as `SubmitMessage` writes one for the branch it
+        # creates: without it the executor's assistant head event (version 2) is refused
+        # as non-contiguous and the fork's job can never settle.
+        writer.append_branch_head_event(
+            event_id=f"{request.command_id}.head",
+            conversation_id=request.conversation_id,
+            branch_id=request.new_branch_id,
+            head_version=1,
+            previous_head_message_id=None,
+            new_head_message_id=request.new_message_id,
+            cause="branch_created",
+            command_id=settlement.claim_id,
+            graph_revision=conversation.graph_revision,
+            conversation_sequence=sequence,
+            actor_id=request.actor_id,
+            occurred_at_us=now,
+            schema_version=1,
+        )
         writer.append_message_derivation(
             conversation_id=request.conversation_id,
             source_message_id=request.source_message_id,
@@ -2456,6 +2474,24 @@ def _regenerate_response(request: _RegenerateResponse) -> ChatCommand:
             # Read back by the executor to write the `regeneration` derivation
             # once the new assistant message exists.
             fork_source_message_id=request.source_message_id,
+        )
+        # The branch's first head event, as `SubmitMessage` writes one for the branch it
+        # creates: without it the executor's assistant head event (version 2) is refused
+        # as non-contiguous and the fork's job can never settle.
+        writer.append_branch_head_event(
+            event_id=f"{request.command_id}.head",
+            conversation_id=request.conversation_id,
+            branch_id=request.new_branch_id,
+            head_version=1,
+            previous_head_message_id=None,
+            new_head_message_id=parent_message_id,
+            cause="branch_created",
+            command_id=settlement.claim_id,
+            graph_revision=conversation.graph_revision,
+            conversation_sequence=conversation.latest_conversation_sequence,
+            actor_id=request.actor_id,
+            occurred_at_us=now,
+            schema_version=1,
         )
         generation_job_id = f"{request.command_id}.gen"
         writer.append_generation_job(

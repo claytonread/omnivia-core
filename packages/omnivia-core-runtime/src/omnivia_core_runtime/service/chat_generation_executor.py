@@ -51,6 +51,7 @@ from omnivia_core_runtime.service.chat_generation import (
     append_provider_generation_event,
     append_provider_text_delta,
     apply_direction_continuation,
+    claim_fork_generation,
     claim_queued_generation,
     close_unapplied_direction,
     continuation_identities,
@@ -687,10 +688,20 @@ class ChatGenerationExecutor:
                 generation_attempt_id=str(fields["generation_attempt_id"]),
             )
             return
+        if fields.get("generation_job_id") is not None and fields.get("trigger_message_id") is not None:
+            self.execute_fork_generation(
+                generation_job_id=str(fields["generation_job_id"]),
+                trigger_message_id=str(fields["trigger_message_id"]),
+            )
+            return
         raise GenerationExecutorError("no executable chat generation target was supplied")
 
     def execute_next(self) -> str | None:
         """Execute the next executable queued item, or return ``None`` when idle.
+
+        Queued submissions first, then fork-created jobs
+        (:func:`chat.read_next_executable_fork_generation_job`), which have no queue row
+        and would otherwise never be found after a restart.
 
         Reads only rows with a matching generation job already committed
         (:func:`chat.read_next_executable_queued_submission`): an `EnqueueMessage`
@@ -704,7 +715,16 @@ class ChatGenerationExecutor:
             self.connection, workspace_id=self.workspace_id
         )
         if submission is None:
-            return None
+            fork = chat.read_next_executable_fork_generation_job(
+                self.connection, workspace_id=self.workspace_id
+            )
+            if fork is None:
+                return None
+            self.execute_fork_generation(
+                generation_job_id=fork.generation_job_id,
+                trigger_message_id=fork.trigger_message_id,
+            )
+            return fork.generation_job_id
         # The join above already proved this job exists; SubmitMessage creates it
         # in the same transaction as the row itself (directly, or by drain).
         existing = self.connection.execute(
@@ -767,6 +787,44 @@ class ChatGenerationExecutor:
         )
         self._execute_attempt(
             job=claimed.job,
+            attempt_id=attempt_id,
+            trigger_message_id=trigger_message_id,
+            renew_lease=True,
+        )
+
+    def execute_fork_generation(
+        self, *, generation_job_id: str, trigger_message_id: str
+    ) -> None:
+        """Claim, invoke and durably settle a fork-created job (no queued submission row).
+
+        A job already running is left to its lease and never invoked again, and a
+        finished one only has its unapplied Direction closed, so a repeated or late wake
+        is harmless. Anything else that is not an unclaimed fork job raises before a write.
+        """
+        existing_job = chat.read_generation_job(
+            self.connection,
+            workspace_id=self.workspace_id,
+            generation_job_id=generation_job_id,
+        )
+        if existing_job is not None and existing_job.state != "queued":
+            if existing_job.state in {"succeeded", "failed", "cancelled"}:
+                self._close_unapplied_direction(generation_job_id)
+            return
+        attempt_id = _stable_id("genatt", generation_job_id)
+        claimed = claim_fork_generation(
+            self.connection,
+            self.identity,
+            workspace_id=self.workspace_id,
+            fencing_generation=self.fencing_generation,
+            generation_job_id=generation_job_id,
+            generation_attempt_id=attempt_id,
+            trigger_message_id=trigger_message_id,
+            lease_owner=self.identity.service_instance_id,
+            now_us=_now_us(self.clock),
+            lease_duration_us=self._lease_duration_us(),
+        )
+        self._execute_attempt(
+            job=claimed,
             attempt_id=attempt_id,
             trigger_message_id=trigger_message_id,
             renew_lease=True,

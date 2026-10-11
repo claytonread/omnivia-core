@@ -163,6 +163,7 @@ __all__ = [
     "read_message",
     "read_message_parts",
     "read_messages_by_conversation_sequence",
+    "read_next_executable_fork_generation_job",
     "read_next_executable_queued_submission",
     "read_next_queued_submission",
     "read_outbox_event",
@@ -3724,6 +3725,50 @@ def read_next_executable_queued_submission(
         (workspace_id,),
     ).fetchone()
     return None if row is None else _queued_submission_from_row(row)
+
+
+def read_next_executable_fork_generation_job(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    generation_job_id: str | None = None,
+) -> GenerationJob | None:
+    """The next fork-created generation job nothing has claimed yet, or ``None``.
+
+    `RegenerateResponse` and `CommitMessageAmendment` each commit a `queued` job of their
+    own on the branch they fork: no queued submission row, no attempt, no event -- the job
+    is the work. This is their counterpart to
+    :func:`read_next_executable_queued_submission`, and the two never overlap: a job any
+    queue row carries the idempotency key of belongs to that row's claim, whatever the
+    row's state, so it is absent here.
+
+    The job must still be exactly as the fork committed it (`queued`, no lease, no
+    attempt, no event) with its status projection at `queued`, version 1, on a branch a
+    fork opened. `generation_job_id` narrows the read to one job, so the claim and the
+    startup drain prove one and the same predicate. A running job, whose lease is
+    another instance's to expire, and a terminal one are never returned.
+    """
+    row = connection.execute(
+        "SELECT "
+        + ", ".join(f"g.{column}" for column in _GENERATION_JOB_COLUMNS.split(", "))
+        + " FROM omnivia_chat_generation_jobs g "
+        "JOIN omnivia_chat_generation_job_status_projection s "
+        "ON s.workspace_id = g.workspace_id AND s.generation_job_id = g.generation_job_id "
+        "AND s.conversation_id = g.conversation_id "
+        "AND s.state = 'queued' AND s.version = 1 AND s.current_attempt_id IS NULL "
+        "JOIN omnivia_chat_message_branches b "
+        "ON b.workspace_id = g.workspace_id AND b.conversation_id = g.conversation_id "
+        "AND b.branch_id = g.branch_id "
+        "AND b.origin_kind IN ('assistant_regeneration', 'message_amendment') "
+        "WHERE g.workspace_id = ? AND g.state = 'queued' AND g.lease_epoch = 0 "
+        "AND g.current_attempt_id IS NULL AND g.last_event_sequence = 0 "
+        "AND (? IS NULL OR g.generation_job_id = ?) "
+        "AND NOT EXISTS (SELECT 1 FROM omnivia_chat_queued_submissions q "
+        "WHERE q.workspace_id = g.workspace_id AND q.idempotency_key = g.idempotency_key) "
+        "ORDER BY g.created_at_us, g.generation_job_id LIMIT 1",
+        (workspace_id, generation_job_id, generation_job_id),
+    ).fetchone()
+    return None if row is None else _generation_job_from_row(row)
 
 
 def read_active_queue_for_actor(

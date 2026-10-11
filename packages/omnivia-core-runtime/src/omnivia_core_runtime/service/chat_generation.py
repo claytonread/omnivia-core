@@ -100,6 +100,7 @@ __all__ = [
     "append_provider_generation_event",
     "append_provider_text_delta",
     "apply_direction_continuation",
+    "claim_fork_generation",
     "claim_queued_generation",
     "close_unapplied_direction",
     "completed_iteration",
@@ -705,48 +706,17 @@ def claim_queued_generation(
                 state="queued",
                 updated_at_us=now_us,
             )
-        writer.append_generation_attempt(
-            generation_attempt_id=generation_attempt_id,
-            conversation_id=submission.conversation_id,
+        _open_first_attempt(
+            writer,
             generation_job_id=generation_job_id,
-            attempt_number=1,
-            state="running",
-            schema_version=1,
-            started_at_us=now_us,
-        )
-        writer.append_generation_event(
-            event_id=_event_id(generation_job_id, 1),
             conversation_id=submission.conversation_id,
             branch_id=submission.branch_id,
-            generation_job_id=generation_job_id,
-            event_type=_QUEUED,
-            generation_event_sequence=1,
             trigger_message_id=trigger_message_id,
-            cursor=_cursor(generation_job_id, 1),
-            payload={"queuedSubmissionId": queued_submission_id, "attemptNumber": 1},
-            occurred_at_us=now_us,
-            schema_version=1,
-        )
-        writer.update_generation_job(
-            generation_job_id=generation_job_id,
-            expected_state="queued",
-            expected_lease_epoch=0,
-            state="running",
-            lease_epoch=1,
-            current_attempt_id=generation_attempt_id,
+            generation_attempt_id=generation_attempt_id,
             lease_owner=lease_owner,
-            lease_expires_at_us=expires_at_us,
-            heartbeat_at_us=now_us,
-            last_event_sequence=1,
-            updated_at_us=now_us,
-            started_at_us=now_us,
-        )
-        writer.update_generation_job_status_projection(
-            generation_job_id=generation_job_id,
-            expected_version=1,
-            state="running",
-            current_attempt_id=generation_attempt_id,
-            updated_at_us=now_us,
+            now_us=now_us,
+            expires_at_us=expires_at_us,
+            payload={"queuedSubmissionId": queued_submission_id, "attemptNumber": 1},
         )
         writer.update_queued_submission(
             queued_submission_id=queued_submission_id,
@@ -763,6 +733,133 @@ def claim_queued_generation(
     if settled is None:  # pragma: no cover - the transaction above just committed it
         raise GenerationNotFound(f"queued submission {queued_submission_id!r} did not settle")
     return _claimed(connection, workspace_id=workspace_id, submission=settled)
+
+
+def _open_first_attempt(
+    writer: chat.ChatWriter,
+    *,
+    generation_job_id: str,
+    conversation_id: str,
+    branch_id: str,
+    trigger_message_id: str,
+    generation_attempt_id: str,
+    lease_owner: str,
+    now_us: int,
+    expires_at_us: int,
+    payload: Mapping[str, Any],
+) -> None:
+    """A fresh `queued` job's first attempt, its sequence-one event and its move to `running`.
+
+    The writes both claims share, so a submission's and a fork's first attempt cannot
+    drift: attempt number one, the `chat.generation.queued` event at sequence one, the job
+    under lease epoch one, and the status projection advanced from version one to two.
+    """
+    writer.append_generation_attempt(
+        generation_attempt_id=generation_attempt_id,
+        conversation_id=conversation_id,
+        generation_job_id=generation_job_id,
+        attempt_number=1,
+        state="running",
+        schema_version=1,
+        started_at_us=now_us,
+    )
+    writer.append_generation_event(
+        event_id=_event_id(generation_job_id, 1),
+        conversation_id=conversation_id,
+        branch_id=branch_id,
+        generation_job_id=generation_job_id,
+        event_type=_QUEUED,
+        generation_event_sequence=1,
+        trigger_message_id=trigger_message_id,
+        cursor=_cursor(generation_job_id, 1),
+        payload=payload,
+        occurred_at_us=now_us,
+        schema_version=1,
+    )
+    writer.update_generation_job(
+        generation_job_id=generation_job_id,
+        expected_state="queued",
+        expected_lease_epoch=0,
+        state="running",
+        lease_epoch=1,
+        current_attempt_id=generation_attempt_id,
+        lease_owner=lease_owner,
+        lease_expires_at_us=expires_at_us,
+        heartbeat_at_us=now_us,
+        last_event_sequence=1,
+        updated_at_us=now_us,
+        started_at_us=now_us,
+    )
+    writer.update_generation_job_status_projection(
+        generation_job_id=generation_job_id,
+        expected_version=1,
+        state="running",
+        current_attempt_id=generation_attempt_id,
+        updated_at_us=now_us,
+    )
+
+
+def claim_fork_generation(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    generation_job_id: str,
+    generation_attempt_id: str,
+    trigger_message_id: str,
+    lease_owner: str,
+    now_us: int,
+    lease_duration_us: int = DEFAULT_LEASE_US,
+) -> chat.GenerationJob:
+    """Claim a fork-created job (`RegenerateResponse`, `CommitMessageAmendment`) to run.
+
+    Such a job has no queue row to walk, so the job and its status projection are the
+    whole claim. It is claimable only while exactly as the fork committed it
+    (:func:`chat.read_next_executable_fork_generation_job`, the predicate the startup
+    drain reads with), and only for the trigger Message the job itself states: anything
+    else, including a job already running or finished, is a :class:`GenerationConflict`
+    before a byte is written. The first attempt, its event, and the job's and status
+    projection's move to `running` under the lease commit together in one fenced
+    transaction, with the identities :func:`claim_queued_generation` gives a submission's,
+    so a crash inside it leaves the job `queued` and this call repeatable.
+    """
+    job = chat.read_generation_job(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    if job is None:
+        raise GenerationNotFound(f"generation job {generation_job_id!r} is not in this workspace")
+    if (
+        job.trigger_message_id != trigger_message_id
+        or chat.read_next_executable_fork_generation_job(
+            connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+        )
+        is None
+    ):
+        raise GenerationConflict(
+            f"generation job {generation_job_id!r} is not an unclaimed fork job for this trigger"
+        )
+    with chat.chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        _open_first_attempt(
+            writer,
+            generation_job_id=generation_job_id,
+            conversation_id=job.conversation_id,
+            branch_id=job.branch_id,
+            trigger_message_id=trigger_message_id,
+            generation_attempt_id=generation_attempt_id,
+            lease_owner=lease_owner,
+            now_us=now_us,
+            expires_at_us=now_us + lease_duration_us,
+            payload={"attemptNumber": 1},
+        )
+    claimed = chat.read_generation_job(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    if claimed is None:  # pragma: no cover - the transaction above just committed it
+        raise GenerationNotFound(f"generation job {generation_job_id!r} did not settle")
+    return claimed
 
 
 def _claimed(

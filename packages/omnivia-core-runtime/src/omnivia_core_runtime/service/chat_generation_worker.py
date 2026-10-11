@@ -15,11 +15,13 @@ never inside a transaction.
 
 **Durable rows are the queue.** A hint carries nothing the rows do not. On every wake,
 and once at start, the worker drains `ChatGenerationExecutor.execute_next`, which selects
-only freshly queued jobs and claims each under its compare-and-set, so a submission
-committed before a crash is picked up by the next service and a claimed one is never
-claimed, or its provider invoked, a second time. A job that was mid-stream when its
-process died is left running for its lease to expire; nothing here re-invokes it.
-`RetryGeneration` opens its attempt in its own commit and is carried by the hint.
+only freshly queued jobs -- a queued submission's, then a fork's (`RegenerateResponse`,
+`CommitMessageAmendment`, which commit a job with no queue row) -- and claims each under
+its compare-and-set, so work committed before a crash is picked up by the next service
+and a claimed job is never claimed, or its provider invoked, a second time. A job that
+was mid-stream when its process died is left running for its lease to expire; nothing
+here re-invokes it. `RetryGeneration` opens its attempt in its own commit and is carried
+by the hint.
 
 **Stopping.** `stop` sets the flag and then takes the gate, so once it returns this
 thread cannot touch the connection again: every reacquisition checks the flag first and

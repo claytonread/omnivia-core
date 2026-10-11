@@ -57,10 +57,11 @@ _SERVE_UNTIL_STOPPED = service_main._serve_until_stopped
 
 
 class HeldProvider:
-    """A fake F2a stream that holds its first invocation open until released."""
+    """A fake F2a stream that holds one invocation (the first by default) open until released."""
 
-    def __init__(self, *, hold_first: bool) -> None:
+    def __init__(self, *, hold_first: bool, hold_number: int = 1) -> None:
         self.hold_first = hold_first
+        self.hold_number = hold_number
         self.held = threading.Event()
         self.release = threading.Event()
         self.requests: list[ProviderInvocationRequest] = []
@@ -76,7 +77,7 @@ class HeldProvider:
             "receivedAt": "2052-05-23T00:00:01Z",
         }
         yield {**common, "ordinal": 0, "eventType": "stream-start"}
-        if self.hold_first and number == 1:
+        if self.hold_first and number == self.hold_number:
             self.held.set()
             assert self.release.wait(_WAIT_SECONDS), "the test never released the stream"
         yield {
@@ -388,5 +389,151 @@ def test_a_restart_picks_up_committed_work_and_never_reinvokes_a_held_stream(
             connection, workspace_id=workspace.workspace_id, generation_job_id=jobs["waiting"]
         )
         assert waiting is not None and waiting.state == "succeeded"
+    finally:
+        connection.close()
+
+
+def _select_branch(workspace: Workspace, conversation_id: str, branch_id: str) -> None:
+    """Point the snapshot at a fork's branch, which is where its job is published."""
+    workspace.command(
+        "SelectConversationPath",
+        workspace._base(f"select-{branch_id}")
+        | {"conversationId": conversation_id, "branchId": branch_id},
+    )
+
+
+def _regenerate(workspace: Workspace, conversation_id: str, job_id: str, tag: str) -> str:
+    """Fork the reply `job_id` produced; returns the new generation job's id."""
+    source = workspace.job(conversation_id, job_id, f"{tag}-source")["resultMessageId"]
+    workspace.command(
+        "RegenerateResponse",
+        workspace._base(tag)
+        | {"conversationId": conversation_id, "sourceMessageId": source, "newBranchId": f"br-{tag}"},
+        conversation_id=conversation_id,
+        graph_revision=1,
+        latest_conversation_sequence=2,
+    )
+    return f"cmd-{tag}.gen"
+
+
+def _amend(workspace: Workspace, conversation_id: str, send_tag: str, tag: str) -> str:
+    """Amend the user message `send_tag` sent; returns the new generation job's id."""
+    workspace.command(
+        "CommitMessageAmendment",
+        workspace._base(tag)
+        | {
+            "conversationId": conversation_id,
+            "sourceMessageId": f"cmd-{send_tag}-send.msg",
+            "newMessageId": f"msg-{tag}",
+            "newBranchId": f"br-{tag}",
+            "editableParts": [{"type": "text", "payload": {"text": "hello again"}}],
+            "attachmentReferences": [],
+            "contextReferences": [],
+            "requestedAt": "2052-05-23T00:00:00Z",
+        },
+        conversation_id=conversation_id,
+        graph_revision=1,
+        latest_conversation_sequence=2,
+    )
+    return f"cmd-{tag}.gen"
+
+
+def test_a_regeneration_runs_live_on_the_worker_and_settles_on_its_own_branch(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = HeldProvider(hold_first=False)
+    outcome: dict[str, Any] = {}
+
+    def scenario() -> None:
+        conversation = workspace.create("fork")
+        original = workspace.send(conversation, "fork")
+        _until(lambda: workspace.job(conversation, original, "fork-poll-1")["state"] == "succeeded")
+        fork = _regenerate(workspace, conversation, original, "fork-regen")
+        _select_branch(workspace, conversation, "br-fork-regen")
+        _until(lambda: workspace.job(conversation, fork, "fork-poll-2")["state"] == "succeeded")
+        outcome.update(fork=fork)
+
+    _serve(workspace, monkeypatch, provider, scenario)
+
+    assert [request.job_id for request in provider.requests][1:] == [outcome["fork"]]
+    connection = workspace.read()
+    try:
+        job = chat.read_generation_job(
+            connection, workspace_id=workspace.workspace_id, generation_job_id=outcome["fork"]
+        )
+        assert job is not None and job.branch_id == "br-fork-regen"
+        assert job.result_message_id is not None
+        assert _event_types(connection, workspace.workspace_id, outcome["fork"])[:2] == [
+            "chat.generation.queued",
+            "chat.generation.started",
+        ]
+        reply = chat.read_message(
+            connection,
+            workspace_id=workspace.workspace_id,
+            conversation_id=job.conversation_id,
+            message_id=job.result_message_id,
+        )
+        assert reply is not None and reply.created_on_branch_id == "br-fork-regen"
+    finally:
+        connection.close()
+
+
+def test_a_restart_drains_a_committed_fork_and_never_steals_a_running_job(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The second invocation is held, so the fork below is committed while the worker is busy.
+    first = HeldProvider(hold_first=True, hold_number=2)
+    jobs: dict[str, str] = {}
+
+    def before_restart() -> None:
+        done = workspace.create("done")
+        busy = workspace.create("busy")
+        jobs["done"] = workspace.send(done, "done")
+        _until(lambda: workspace.job(done, jobs["done"], "done-poll")["state"] == "succeeded")
+        jobs["busy"] = workspace.send(busy, "busy")
+        assert first.held.wait(_WAIT_SECONDS)
+        jobs["fork"] = _amend(workspace, done, "done", "fork-amend")
+        _select_branch(workspace, done, "br-fork-amend")
+        assert workspace.job(done, jobs["fork"], "fork-snap")["state"] == "queued"
+
+    _serve(workspace, monkeypatch, first, before_restart)
+    first.release.set()
+    for thread in _worker_threads():
+        thread.join(_WAIT_SECONDS)
+    assert _worker_threads() == []
+
+    connection = workspace.read()
+    try:
+        # Committed and answered, never claimed: the claim is what writes a job's first event.
+        assert _event_types(connection, workspace.workspace_id, jobs["fork"]) == []
+        assert _event_types(connection, workspace.workspace_id, jobs["busy"]) == [
+            "chat.generation.queued",
+            "chat.generation.started",
+        ]
+    finally:
+        connection.close()
+
+    second = HeldProvider(hold_first=False)
+
+    def after_restart() -> None:
+        _until(
+            lambda: workspace.job("cmd-done-create.conv", jobs["fork"], "fork-poll")["state"]
+            == "succeeded"
+        )
+
+    _serve(workspace, monkeypatch, second, after_restart)
+
+    # Only the fork was picked up; the job left running mid-stream was not invoked again.
+    assert [request.job_id for request in second.requests] == [jobs["fork"]]
+    connection = workspace.read()
+    try:
+        busy = chat.read_generation_job(
+            connection, workspace_id=workspace.workspace_id, generation_job_id=jobs["busy"]
+        )
+        assert busy is not None and busy.state == "running"
+        assert _event_types(connection, workspace.workspace_id, jobs["busy"]) == [
+            "chat.generation.queued",
+            "chat.generation.started",
+        ]
     finally:
         connection.close()
