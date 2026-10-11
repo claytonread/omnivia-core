@@ -4457,15 +4457,21 @@ def read_chat_tool_calls_for_generation_job(
     have to span the same set or the Message would state the tool calls of only
     its last hop.
 
-    Ordered by `created_at_us` then `tool_call_id`, matching the other two tool
-    call reads, so the parts a commit emits are in a deterministic order -- the
-    Message's own `content_hash` is computed over them, and a read that could
-    reorder would make the same durable rows hash two ways.
+    Ordered by PROVIDER order: attempt number, then the call's step ordinal within
+    its turn. The step ordinal is assigned in stream order, whereas `created_at_us`
+    is a clock reading that ties for calls recorded in one tick, and a tie broken
+    by `tool_call_id` (a hash) would reorder them. The order is deterministic, which
+    the Message's own `content_hash` needs, because it is computed over the parts.
     """
+    columns = ", ".join(f"c.{name.strip()}" for name in _CHAT_TOOL_CALL_COLUMNS.split(","))
     rows = connection.execute(
-        f"SELECT {_CHAT_TOOL_CALL_COLUMNS} FROM omnivia_chat_tool_calls "
-        "WHERE workspace_id = ? AND generation_job_id = ? "
-        "ORDER BY created_at_us, tool_call_id",
+        f"SELECT {columns} FROM omnivia_chat_tool_calls c "
+        "JOIN omnivia_chat_turn_steps s "
+        "ON s.workspace_id = c.workspace_id AND s.step_id = c.step_id "
+        "JOIN omnivia_chat_generation_attempts a "
+        "ON a.workspace_id = c.workspace_id AND a.generation_attempt_id = c.generation_attempt_id "
+        "WHERE c.workspace_id = ? AND c.generation_job_id = ? "
+        "ORDER BY a.attempt_number, s.step_ordinal, c.tool_call_id",
         (workspace_id, generation_job_id),
     ).fetchall()
     return tuple(_chat_tool_call_from_row(row) for row in rows)

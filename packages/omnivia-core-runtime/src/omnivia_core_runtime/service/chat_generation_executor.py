@@ -96,6 +96,8 @@ _TERMINAL_PROVIDER_EVENTS: Final = frozenset({"finish", "error"})
 #: `common.schema.json#/$defs/ProviderAttemptId` is a WorkspaceScopedId used for one
 #: provider transport attempt.
 _TRANSPORT_ATTEMPT_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+#: `ProviderPartId` and `ProviderStepId` are both `WorkspaceScopedId` in the contract.
+_PROVIDER_ID: Final = _TRANSPORT_ATTEMPT_ID
 _PROMPT_BUNDLE: Final = {
     "id": "core.chat.default-model-visible-context",
     "version": 1,
@@ -604,6 +606,24 @@ def _part_document(part_type: str, payload: Mapping[str, Any]) -> dict[str, Any]
     return {"payload": dict(payload), "type": part_type, "visibility": "standard"}
 
 
+def _message_parts(
+    text: str, tool_calls: tuple[chat.ChatToolCall, ...] = ()
+) -> tuple[tuple[str, dict[str, Any]], ...]:
+    """The Message's ordered `(part_type, payload)` list: text if any, then tool calls.
+
+    No text WITH tool calls means no text part, never an empty one: a tool-call-only
+    response commits only its typed parts rather than inventing empty prose. Hash, part
+    index and the rows written all come from this one list.
+    """
+    parts: list[tuple[str, dict[str, Any]]] = []
+    if text or not tool_calls:
+        # A text-only commit keeps its text part whatever it holds, so no
+        # pre-C9 message changes meaning; only a tool-call response omits it.
+        parts.append(("text", {"text": text}))
+    parts.extend((TOOL_CALL_PART_TYPE, tool_call_part_payload(call)) for call in tool_calls)
+    return tuple(parts)
+
+
 def _message_hash(
     text: str, tool_calls: tuple[chat.ChatToolCall, ...] = ()
 ) -> tuple[str, tuple[str, ...]]:
@@ -617,20 +637,16 @@ def _message_hash(
     durable one to decide whether a replay is the same commit.
 
     That check is also why the order has to be deterministic.
-    `read_chat_tool_calls_for_generation_job` orders by `(created_at_us,
-    tool_call_id)` for this reason, and the tool calls are durable before the
-    commit, so a replay of the same generation hashes the same way.
+    `read_chat_tool_calls_for_generation_job` orders by provider position
+    (attempt, step ordinal) for this reason, and the tool calls are durable
+    before the commit, so a replay of the same generation hashes the same way.
     """
-    documents = [_part_document("text", {"text": text})]
-    part_hashes = [
-        "sha256:" + hashlib.sha256(to_canonical_json({"text": text}).encode("utf-8")).hexdigest()
-    ]
-    for call in tool_calls:
-        payload = tool_call_part_payload(call)
-        documents.append(_part_document(TOOL_CALL_PART_TYPE, payload))
-        part_hashes.append(
-            "sha256:" + hashlib.sha256(to_canonical_json(payload).encode("utf-8")).hexdigest()
-        )
+    parts = _message_parts(text, tool_calls)
+    documents = [_part_document(part_type, payload) for part_type, payload in parts]
+    part_hashes = tuple(
+        "sha256:" + hashlib.sha256(to_canonical_json(payload).encode("utf-8")).hexdigest()
+        for _, payload in parts
+    )
     message_document = json.dumps(
         documents,
         sort_keys=True,
@@ -639,7 +655,7 @@ def _message_hash(
         separators=(",", ":"),
     )
     message_hash = "sha256:" + hashlib.sha256(message_document.encode("utf-8")).hexdigest()
-    return message_hash, tuple(part_hashes)
+    return message_hash, part_hashes
 
 
 @dataclass(frozen=True, slots=True)
@@ -1057,7 +1073,12 @@ class ChatGenerationExecutor:
                         generation_job_id=job.generation_job_id,
                         generation_attempt_id=attempt_id,
                     )
-                    if not saw_start or not durable_chunks:
+                    # A successful stream must have produced SOMETHING this attempt:
+                    # text, or a durable tool call. Tool calls alone are a
+                    # complete response (`finish(tool-calls)`); neither is not.
+                    if not saw_start or not (
+                        durable_chunks or self._attempt_tool_calls(job.generation_job_id, attempt_id)
+                    ):
                         raise GenerationExecutorError("a successful provider stream is incomplete")
                     # The one earliest-safe boundary: a provider iteration that completed,
                     # never a delta inside one. A Direction pending here is taken in and
@@ -1641,6 +1662,20 @@ class ChatGenerationExecutor:
             return finish_event
         return {key: value for key, value in finish_event.items() if key != "providerEventId"}
 
+    def _attempt_tool_calls(
+        self, generation_job_id: str, attempt_id: str
+    ) -> tuple[chat.ChatToolCall, ...]:
+        """The durable tool calls THIS attempt recorded, not the whole job's."""
+        return tuple(
+            call
+            for call in chat.read_chat_tool_calls_for_generation_job(
+                self.connection,
+                workspace_id=self.workspace_id,
+                generation_job_id=generation_job_id,
+            )
+            if call.generation_attempt_id == attempt_id
+        )
+
     def _record_tool_proposal(
         self,
         *,
@@ -1673,14 +1708,19 @@ class ChatGenerationExecutor:
         Idempotent through stable ids: a redelivered provider stream recomputes
         the same turn, step and tool-call ids, `record_tool_proposal` returns the
         existing row for an identical proposal, and `deny_tool_call` returns the
-        existing denial. A replay therefore converges instead of conflicting.
+        existing denial. A replay therefore converges instead of conflicting. The
+        same `(attempt, stepId, toolCallId)` with other arguments is a conflict
+        and fails the generation; the durable row is never rewritten.
         """
         provider_call_id = event.get("toolCallId")
+        provider_step_id = event.get("stepId")
         tool_name = event.get("toolName")
         arguments = event.get("input")
         if (
             not isinstance(provider_call_id, str)
-            or not provider_call_id
+            or not _PROVIDER_ID.fullmatch(provider_call_id)
+            or not isinstance(provider_step_id, str)
+            or not _PROVIDER_ID.fullmatch(provider_step_id)
             or not isinstance(tool_name, str)
             or not tool_name
             or not isinstance(arguments, Mapping)
@@ -1700,7 +1740,13 @@ class ChatGenerationExecutor:
             turn_id=_stable_id("turn", attempt_id),
             now_us=now_us,
         )
-        tool_call_id = _stable_id("toolcall", f"{attempt_id}:{provider_call_id}")
+        # The F2a identity is the whole tuple: a provider may reuse one
+        # `toolCallId` on distinct steps, and keying on the call id alone would
+        # make the second a conflicting proposal. JSON, not a delimiter join,
+        # so no id can be crafted to collide with another tuple.
+        tool_call_id = _stable_id(
+            "toolcall", json.dumps([attempt_id, provider_step_id, provider_call_id])
+        )
         record_tool_proposal(
             self.connection,
             self.identity,
@@ -1800,33 +1846,25 @@ class ChatGenerationExecutor:
                 created_at_us=now_us,
                 committed_at_us=now_us,
             )
-            writer.append_message_part(
-                part_id=_stable_id("assistant-part", job.generation_job_id),
-                message_id=message_id,
-                conversation_id=job.conversation_id,
-                part_index=0,
-                part_type="text",
-                schema_version=1,
-                visibility="standard",
-                payload={"text": text},
-                provenance="ai",
-                content_hash=part_hashes[0],
-                created_at_us=now_us,
-            )
-            # C9: one `tool.call` part per durable ledger row, after the text
-            # and in the ledger's own order. The payload is validated against
-            # the registry before it is written, so a shape this family does
-            # not state -- the tool's arguments above all -- cannot reach a
-            # committed Message even by mistake.
-            for index, call in enumerate(tool_calls, start=1):
-                payload = tool_call_part_payload(call)
-                validate_registered_payload(TOOL_CALL_PART_TYPE, payload)
+            # One loop over the ordered part list the hash was computed from.
+            # Text (if any) is index 0 and keeps its pre-C9 part id; each
+            # `tool.call` part follows in the ledger's order. Every payload is
+            # validated against the registry before it is written, so a shape
+            # a family does not state -- the tool's arguments above all --
+            # cannot reach a committed Message even by mistake.
+            tool_calls_by_index = iter(tool_calls)
+            for index, (part_type, payload) in enumerate(_message_parts(text, tool_calls)):
+                if part_type == TOOL_CALL_PART_TYPE:
+                    validate_registered_payload(part_type, payload)
+                    part_id = _stable_id("assistant-tool-part", next(tool_calls_by_index).tool_call_id)
+                else:
+                    part_id = _stable_id("assistant-part", job.generation_job_id)
                 writer.append_message_part(
-                    part_id=_stable_id("assistant-tool-part", call.tool_call_id),
+                    part_id=part_id,
                     message_id=message_id,
                     conversation_id=job.conversation_id,
                     part_index=index,
-                    part_type=TOOL_CALL_PART_TYPE,
+                    part_type=part_type,
                     schema_version=1,
                     visibility="standard",
                     payload=payload,

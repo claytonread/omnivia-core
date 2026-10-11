@@ -29,12 +29,14 @@ the event's content was dropped. These tests hold the link that replaces that:
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import omnivia_core_runtime.service.chat_generation_executor as executor_module
 import pytest
 import test_chat_request_manifest as base
 from omnivia_core_runtime.service.chat_generation_executor import (
@@ -59,6 +61,7 @@ from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
 # then shadows is reported as a redefinition and reads as an accident.
 from test_chat_direction_continuation import (
     ACTOR_ID,
+    Crash,
     Scripted,
     assistant_messages,
     count,
@@ -414,3 +417,211 @@ def test_the_snapshot_projection_carries_the_new_family_with_no_per_type_list(
     assert re.fullmatch(r"[0-9a-f]{64}", str(tool_document["contentHash"]))
     # And still nothing of the arguments, through the projection too.
     assert "/etc/passwd" not in json.dumps(projected)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: the canonical F2a trace, run through the real executor
+# ---------------------------------------------------------------------------
+
+TRACES = Path(__file__).resolve().parents[5] / "contracts" / "chat" / "v1" / "fixtures" / "traces"
+
+
+def canonical(name: str, *, mutate: Any = None) -> Any:
+    """A canonical F2a trace as a provider script, exactly as the contract states it.
+
+    The ONLY thing rewritten is `invocationId`: the executor derives that id from
+    the job and attempt, so a fixed one in a fixture can never match. Every other
+    field -- ordinals, step ids, tool call ids, inputs, the finish -- is the
+    fixture's own, and `mutate` (tests only) edits an event before it is played.
+    """
+    recorded = json.loads((TRACES / f"{name}.json").read_text(encoding="utf-8"))["events"]
+
+    def script(request: Any) -> Iterator[dict[str, Any]]:
+        for event in recorded:
+            played = copy.deepcopy(event)
+            played["invocationId"] = request.invocation_id
+            if mutate is not None:
+                mutate(played)
+            yield played
+
+    return script
+
+
+TRACE_03 = "f2a-trace-03-repeated-tool-id-distinct-steps"
+
+
+def crash_between_ledger_and_message(holder: m1.Owned) -> None:
+    """Run trace 03 until the process dies after the ledger is written, before the Message."""
+
+    def dies(*args: Any, **kwargs: Any) -> Any:
+        raise Crash
+
+    with pytest.raises(Crash), pytest.MonkeyPatch.context() as patch:
+        patch.setattr(executor_module.ChatGenerationExecutor, "_materialize_assistant", dies)
+        run(holder, Scripted(canonical(TRACE_03)))
+
+
+def test_canonical_trace_03_commits_two_calls_on_distinct_steps_in_provider_order(
+    seeded: m1.Owned,
+) -> None:
+    run(seeded, Scripted(canonical(TRACE_03)))
+
+    # The trace is tool-call-only (no text event) and ends `finish(tool-calls)`:
+    # the generation succeeds rather than failing for want of text.
+    assert status(seeded).state == "succeeded"
+    calls = ledger(seeded)
+    # Same provider `toolCallId` on both, distinct steps: two rows, not one and
+    # not a conflict.
+    assert [call.tool_name for call in calls] == ["search_docs", "search_docs"]
+    assert len({call.tool_call_id for call in calls}) == 2
+    assert len({call.step_id for call in calls}) == 2
+    assert [dict(call.proposed_arguments) for call in calls] == [
+        {"query": "pricing"},
+        {"query": "delivery"},
+    ]
+    assert count(seeded, "omnivia_chat_tool_calls") == 2
+    assert count(seeded, "omnivia_chat_turn_steps") == 2
+    committed = parts(seeded)
+    # No invented empty prose: only the two typed parts, in provider order.
+    assert [part.part_type for part in committed] == [TOOL_CALL_PART_TYPE, TOOL_CALL_PART_TYPE]
+    assert [part.part_index for part in committed] == [0, 1]
+    assert [part.payload["id"] for part in committed] == [call.tool_call_id for call in calls]
+
+
+def test_canonical_trace_03_replay_converges_to_the_same_rows(seeded: m1.Owned) -> None:
+    # A real replay, not a second `run` over a settled job (which returns before
+    # invoking anything): the process dies after the ledger is written and before
+    # the Message is, then the same stream arrives again.
+    crash_between_ledger_and_message(seeded)
+    assert status(seeded).state == "running"
+    assert assistant_messages(seeded) == []
+    before = [
+        tuple(row)
+        for table in ("omnivia_chat_tool_calls", "omnivia_chat_turn_steps", "omnivia_chat_turns")
+        for row in seeded.connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2, 3")
+    ]
+    assert count(seeded, "omnivia_chat_tool_calls") == 2
+
+    run(seeded, Scripted(canonical(TRACE_03)))
+
+    assert status(seeded).state == "succeeded"
+    after = [
+        tuple(row)
+        for table in ("omnivia_chat_tool_calls", "omnivia_chat_turn_steps", "omnivia_chat_turns")
+        for row in seeded.connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2, 3")
+    ]
+    # The ledger the replay left is the one the crash left, byte for byte.
+    assert after == before
+    assert len(assistant_messages(seeded)) == 1
+    assert [part.part_type for part in parts(seeded)] == [TOOL_CALL_PART_TYPE] * 2
+
+
+def test_the_same_identity_with_other_arguments_conflicts_and_changes_nothing(
+    seeded: m1.Owned,
+) -> None:
+    crash_between_ledger_and_message(seeded)
+    durable = [
+        tuple(row) for row in seeded.connection.execute("SELECT * FROM omnivia_chat_tool_calls ORDER BY 1, 2")
+    ]
+
+    def other_arguments(event: dict[str, Any]) -> None:
+        if event["eventType"] == "tool-call" and event["stepId"] == "step-2":
+            event["input"] = {"query": "something else"}
+
+    run(seeded, Scripted(canonical(TRACE_03, mutate=other_arguments)))
+
+    # Refused: the generation fails, no Message commits, and the durable history
+    # is exactly what the first delivery wrote.
+    assert status(seeded).state == "failed"
+    assert assistant_messages(seeded) == []
+    assert [
+        tuple(row) for row in seeded.connection.execute("SELECT * FROM omnivia_chat_tool_calls ORDER BY 1, 2")
+    ] == durable
+    assert count(seeded, "omnivia_chat_tool_calls") == 2
+
+
+@pytest.mark.parametrize("step_id", [None, "", " ", "has space", "-leading", "x" * 129, 7])
+def test_a_tool_call_without_a_well_formed_step_id_fails_and_records_nothing(
+    seeded: m1.Owned, step_id: Any
+) -> None:
+    def break_step(event: dict[str, Any]) -> None:
+        if event["eventType"] == "tool-call":
+            if step_id is None:
+                event.pop("stepId")
+            else:
+                event["stepId"] = step_id
+
+    run(seeded, Scripted(canonical(TRACE_03, mutate=break_step)))
+
+    assert status(seeded).state == "failed"
+    assert count(seeded, "omnivia_chat_tool_calls") == 0
+    assert assistant_messages(seeded) == []
+
+
+def test_a_tool_call_and_text_commit_text_first_then_calls_in_provider_order(
+    seeded: m1.Owned,
+) -> None:
+    def script(request: Any) -> Iterator[dict[str, Any]]:
+        yield wire(request, 0, "stream-start")
+        yield wire(request, 1, "text-delta", delta="checking", partId="part-1", stepId="step-1")
+        for ordinal, (step, query) in enumerate((("step-1", "a"), ("step-2", "b")), start=2):
+            yield wire(
+                request, ordinal, "tool-call",
+                toolCallId="tool-XYZ", stepId=step, toolName="search_docs", input={"query": query},
+            )
+        yield wire(request, 4, "finish", finishReason="tool-calls")
+
+    run(seeded, Scripted(script))
+
+    committed = parts(seeded)
+    assert [part.part_type for part in committed] == ["text", TOOL_CALL_PART_TYPE, TOOL_CALL_PART_TYPE]
+    assert [part.part_index for part in committed] == [0, 1, 2]
+    assert [part.payload["id"] for part in committed[1:]] == [c.tool_call_id for c in ledger(seeded)]
+    assert [dict(c.proposed_arguments) for c in ledger(seeded)] == [{"query": "a"}, {"query": "b"}]
+
+
+def test_a_successful_stream_with_no_text_and_no_tool_call_still_fails(seeded: m1.Owned) -> None:
+    def script(request: Any) -> Iterator[dict[str, Any]]:
+        yield wire(request, 0, "stream-start")
+        yield wire(request, 1, "finish", finishReason="tool-calls")
+
+    run(seeded, Scripted(script))
+
+    assert status(seeded).state == "failed"
+    assert assistant_messages(seeded) == []
+    assert count(seeded, "omnivia_chat_tool_calls") == 0
+
+
+def test_a_tool_call_only_message_hash_is_over_the_typed_parts_alone() -> None:
+    class Row:
+        tool_name = "read_file"
+        tool_call_id = "toolcall-abc"
+        state = "denied"
+        registry_ref = UNADMITTED_REGISTRY_REF
+
+    only, hashes = _message_hash("", (Row(),))  # type: ignore[arg-type]
+    assert len(hashes) == 1, "no empty text part is invented"
+    assert only != _message_hash("", ())[0]
+    assert only != _message_hash("x", (Row(),))[0]  # type: ignore[arg-type]
+
+
+def test_many_calls_in_one_tick_keep_provider_order_not_hash_order(seeded: m1.Owned) -> None:
+    # The fake clock stamps every ledger row identically, so `created_at_us` cannot
+    # order them; the old tie-break on `tool_call_id` (a hash) ordered them
+    # arbitrarily. Eight calls make a match by luck a 1-in-40320 event.
+    names = [f"tool_{index}" for index in range(8)]
+
+    def script(request: Any) -> Iterator[dict[str, Any]]:
+        yield wire(request, 0, "stream-start")
+        for ordinal, name in enumerate(names, start=1):
+            yield wire(
+                request, ordinal, "tool-call",
+                toolCallId=f"call-{ordinal}", stepId="step-1", toolName=name, input={},
+            )
+        yield wire(request, 9, "finish", finishReason="tool-calls")
+
+    run(seeded, Scripted(script))
+
+    assert len({call.created_at_us for call in ledger(seeded)}) == 1, "the premise: one tick"
+    assert [call.tool_name for call in ledger(seeded)] == names
+    assert [part.payload["name"] for part in parts(seeded)] == names
