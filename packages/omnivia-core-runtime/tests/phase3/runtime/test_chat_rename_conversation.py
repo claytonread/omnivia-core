@@ -23,6 +23,7 @@ import test_v06_5_s0_mutation_foundation as s0
 from omnivia_core_runtime.storage.chat import read_conversation
 from test_chat_offline_queue import owned, seeded  # noqa: F401  (pytest fixtures)
 from test_chat_submit_message_resolver import (
+    _UNSET,
     CHAT_TABLES,
     CONVERSATION_ID,
     PRINCIPAL,
@@ -583,6 +584,7 @@ def _regenerate(
     source_message_id: str = ASSISTANT_MESSAGE_ID,
     new_branch_id: str = "branch-c10-regen",
     actor_id: str = PRINCIPAL,
+    execute_generation: object = _UNSET,
     **extra: Any,
 ) -> Any:
     command: dict[str, Any] = {
@@ -595,7 +597,7 @@ def _regenerate(
         "newBranchId": new_branch_id,
     }
     command.update(extra)
-    return _dispatcher(holder).dispatch(
+    return _dispatcher(holder, execute_generation=execute_generation).dispatch(
         _request(
             command,
             command_name="RegenerateResponse",
@@ -744,6 +746,7 @@ def _amend(
     actor_id: str = PRINCIPAL,
     text: str = "what I meant to ask",
     expected_sequence: int = 1,
+    execute_generation: object = _UNSET,
     **extra: Any,
 ) -> Any:
     command: dict[str, Any] = {
@@ -761,7 +764,7 @@ def _amend(
         "requestedAt": "2026-10-10T00:00:00Z",
     }
     command.update(extra)
-    return _dispatcher(holder).dispatch(
+    return _dispatcher(holder, execute_generation=execute_generation).dispatch(
         _request(
             command,
             command_name="CommitMessageAmendment",
@@ -1016,3 +1019,120 @@ def test_archive_retried_under_the_same_key_replays_rather_than_conflicting(
     assert isinstance(retry, SuccessResponseEnvelope), retry
     assert retry.result == first.result
 
+
+# --- C10: both forks wake the generation worker -----------------------------
+#
+# THE PLATFORM C10 LIVE PROOF. Each fork commits a `<commandId>.gen` job of its
+# own -- with no queued submission row and no attempt, the job IS the work --
+# and the handler woke the executor only for `SubmitMessage` and
+# `RetryGeneration`. So an accepted amendment or regeneration answered
+# `completed` and then nothing ran: the job sat `queued` with no wake to carry
+# it.
+
+
+def test_a_regeneration_wakes_the_executor_for_the_job_it_opened(
+    seeded: m1.Owned,
+) -> None:
+    _seed_assistant_reply(seeded)
+    calls: list[Mapping[str, Any]] = []
+
+    response = _regenerate(
+        seeded, execute_generation=lambda **fields: calls.append(fields)
+    )
+    assert isinstance(response, SuccessResponseEnvelope), response
+
+    # The trigger is the USER parent the fork started from, which is no field of
+    # the request: the committed job row is where it is stated.
+    assert calls == [
+        {
+            "generation_job_id": f"{REGENERATE_COMMAND_ID}.gen",
+            "trigger_message_id": ROOT_MESSAGE_ID,
+        }
+    ]
+
+
+def test_an_amendment_wakes_the_executor_for_the_job_it_opened(
+    seeded: m1.Owned,
+) -> None:
+    calls: list[Mapping[str, Any]] = []
+
+    response = _amend(seeded, execute_generation=lambda **fields: calls.append(fields))
+    assert isinstance(response, SuccessResponseEnvelope), response
+
+    # An amendment's trigger is the new user message it just committed.
+    assert calls == [
+        {
+            "generation_job_id": f"{AMEND_COMMAND_ID}.gen",
+            "trigger_message_id": "msg-c10-amended",
+        }
+    ]
+
+
+def test_a_regeneration_refuses_before_writing_when_the_executor_is_absent(
+    seeded: m1.Owned,
+) -> None:
+    _seed_assistant_reply(seeded)
+    before = _counts(seeded)
+
+    response = _regenerate(seeded, execute_generation=None)
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "dependency_unavailable"
+    assert _counts(seeded) == before
+    assert (
+        read_branch(
+            seeded.connection, workspace_id=WORKSPACE_ID, branch_id="branch-c10-regen"
+        )
+        is None
+    )
+
+
+def test_an_amendment_refuses_before_writing_when_the_executor_is_absent(
+    seeded: m1.Owned,
+) -> None:
+    before = _counts(seeded)
+
+    response = _amend(seeded, execute_generation=None)
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "dependency_unavailable"
+    assert _counts(seeded) == before
+    assert (
+        read_message(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            conversation_id=CONVERSATION_ID,
+            message_id="msg-c10-amended",
+        )
+        is None
+    )
+
+
+def test_a_replayed_fork_does_not_wake_the_executor_again(seeded: m1.Owned) -> None:
+    """One wake per committed job, never one per request.
+
+    A host retrying under the same key replays the first outcome without
+    writing, so a second wake would hand the executor a job another wake is
+    already carrying.
+    """
+    _seed_assistant_reply(seeded)
+    calls: list[Mapping[str, Any]] = []
+
+    def record(**fields: Any) -> None:
+        calls.append(fields)
+
+    assert isinstance(
+        _regenerate(seeded, execute_generation=record), SuccessResponseEnvelope
+    )
+    assert isinstance(
+        _amend(seeded, execute_generation=record, expected_sequence=2),
+        SuccessResponseEnvelope,
+    )
+    assert len(calls) == 2
+
+    assert isinstance(
+        _regenerate(seeded, execute_generation=record), SuccessResponseEnvelope
+    )
+    assert isinstance(
+        _amend(seeded, execute_generation=record, expected_sequence=2),
+        SuccessResponseEnvelope,
+    )
+    assert len(calls) == 2, "a replay woke the executor a second time"

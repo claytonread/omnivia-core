@@ -67,6 +67,8 @@ from omnivia_core_runtime.service.chat_snapshot import (
     resolve_draft_readback,
 )
 from omnivia_core_runtime.service.chat_submit import (
+    COMMIT_MESSAGE_AMENDMENT_COMMAND,
+    REGENERATE_RESPONSE_COMMAND,
     RETRY_GENERATION_COMMAND,
     SUBMIT_MESSAGE_COMMAND,
     retry_generation_attempt_id,
@@ -83,6 +85,7 @@ from omnivia_core_runtime.storage.chat import (
     GenerationEvent,
     GenerationTextChunk,
     read_directions_for_generation_job,
+    read_generation_job,
     read_generation_text_chunks,
 )
 from omnivia_core_runtime.storage.memory import IdentifierAllocator
@@ -116,8 +119,16 @@ _TOOL_CALL_STATE_CHANGED: Final = "chat.tool_call.state_changed"
 #: is what the caller continues from. Not a new pagination field: the cursor the
 #: envelope already carries is the continuation it has always been.
 _MAX_EVENTS: Final = 1000
+#: The two fork commands (C10). Each opens its own `<commandId>.gen` job in its own
+#: commit, with no queued submission row and no attempt: the job itself is the whole
+#: work. They are woken by the job they just opened, exactly as a submission is woken
+#: by the row it just queued -- without a wake the job sits queued and the fork never
+#: answers.
+_FORK_GENERATION_COMMANDS: Final = frozenset(
+    {REGENERATE_RESPONSE_COMMAND, COMMIT_MESSAGE_AMENDMENT_COMMAND}
+)
 _GENERATION_EXECUTOR_COMMANDS: Final = frozenset(
-    {SUBMIT_MESSAGE_COMMAND, RETRY_GENERATION_COMMAND}
+    {SUBMIT_MESSAGE_COMMAND, RETRY_GENERATION_COMMAND, *_FORK_GENERATION_COMMANDS}
 )
 
 #: How one decoded `chat.command` becomes the domain mutation the transaction seam
@@ -439,6 +450,34 @@ class ChatHandlers:
                 generation_attempt_id=retry_generation_attempt_id(
                     command_id, generation_job_id
                 ),
+            )
+        elif request.command_name in _FORK_GENERATION_COMMANDS and not outcome.replayed:
+            command_id = request.command.get("commandId")
+            if not isinstance(command_id, str):  # validated by the resolver
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+            generation_job_id = f"{command_id}.gen"
+            # The trigger is NOT a request field for either fork. An amendment's is the
+            # new user message it committed and a regeneration's is the user parent it
+            # read back from the source message, so the committed job row is the one
+            # place both are stated -- and reading it also proves the job this wake
+            # names is the job the command actually opened.
+            job = read_generation_job(
+                connection,
+                workspace_id=context.workspace_id,
+                generation_job_id=generation_job_id,
+            )
+            if job is None:
+                raise OperationError(
+                    ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE
+                )
+            executor = self.execute_generation
+            if executor is None:  # guarded before the mutation
+                raise OperationError(
+                    ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE
+                )
+            executor(
+                generation_job_id=generation_job_id,
+                trigger_message_id=job.trigger_message_id,
             )
         return AuditedOperationResult(outcome.result, outcome.audit_ref)
 
