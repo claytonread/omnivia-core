@@ -409,7 +409,7 @@
         "generationJobs": {
           "type": "array",
           "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob" },
-          "maxItems": 200,
+          "maxItems": 512,
           "description": "The complete durable Generation Job projection for this snapshot's selected branch (C6), ordered by `createdAt` then `jobId`, each carrying its real `version` control token. REQUIRED (C6, bridge/wire 2.0): always present, an empty array when the branch has no Generation Job, so a snapshot that omits it is invalid rather than silently incomplete; a snapshot without it is a pre-C6 document. The answering authority MUST either state every Job of the selected branch or fail the whole snapshot closed (`size_limit_exceeded`) rather than publish a partial list bounded by this array's own `maxItems`; it is the same set `path.generationJobIds` names."
         },
         "directions": {

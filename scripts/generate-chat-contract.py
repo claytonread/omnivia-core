@@ -531,7 +531,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES = 16384
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "c44ad632febb9c8af174dde4e9859d9805074fb96f22f08f5fcf42c4ab434873"
+    "933363c7e7ae5e43bcbd30a794598323c19ca51d48a27a8c0b018996aa562df1"
 )
 
 

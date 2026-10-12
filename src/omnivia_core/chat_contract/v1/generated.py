@@ -130,7 +130,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES: Final[int] = 16384
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = 'c44ad632febb9c8af174dde4e9859d9805074fb96f22f08f5fcf42c4ab434873'
+RESOURCE_INVENTORY_DIGEST: Final[str] = '933363c7e7ae5e43bcbd30a794598323c19ca51d48a27a8c0b018996aa562df1'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (

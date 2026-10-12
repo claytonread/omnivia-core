@@ -143,10 +143,10 @@ _MESSAGE_INTERNAL: Final = (
     "the conversation snapshot could not be projected from consistent durable state"
 )
 
-#: `queries.schema.json#/$defs/ConversationSnapshotResult.generationJobs` and
-#: `.directions`' governed maximum. One row past it is read so a complete set can be
-#: told apart from one the bound cannot represent.
-_SNAPSHOT_LIMIT: Final = 200
+#: The two independently governed snapshot maxima. One row past each is read so a
+#: complete set can be told apart from one the corresponding bound cannot represent.
+_SNAPSHOT_JOB_LIMIT: Final = 512
+_SNAPSHOT_DIRECTION_LIMIT: Final = 200
 
 #: The stored job-status vocabulary is 0030's; the public one has no `retryable`,
 #: which is a job still failed from the caller's point of view.
@@ -644,9 +644,9 @@ def _generation_jobs(
         workspace_id=query.workspace_id,
         conversation_id=query.conversation_id,
         branch_id=branch.branch_id,
-        limit=_SNAPSHOT_LIMIT + 1,
+        limit=_SNAPSHOT_JOB_LIMIT + 1,
     )
-    if len(job_ids) > _SNAPSHOT_LIMIT:
+    if len(job_ids) > _SNAPSHOT_JOB_LIMIT:
         raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_JOB_OVERFLOW)
     jobs: list[tuple[int, Mapping[str, Any]]] = []
     for job_id in job_ids:
@@ -762,7 +762,7 @@ def _directions(
         branch_id=branch.branch_id,
         actor_id=query.actor_id,
     )
-    if len(rows) > _SNAPSHOT_LIMIT:
+    if len(rows) > _SNAPSHOT_DIRECTION_LIMIT:
         raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_DIRECTION_OVERFLOW)
     for row in rows:
         if (

@@ -1126,7 +1126,7 @@ def test_missing_or_inconsistent_job_authority_fails_closed_with_one_constant(
 def test_a_branch_with_more_than_the_bounded_jobs_fails_completely(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ids = [f"gen-bulk-{index:03d}" for index in range(201)]
+    ids = [f"gen-bulk-{index:03d}" for index in range(513)]
     store = _Store(
         {
             job_id: (_job(job_id, created_us=BASE_US + index * 1000), _status(job_id))
@@ -1137,14 +1137,14 @@ def test_a_branch_with_more_than_the_bounded_jobs_fails_completely(
     _refusal(monkeypatch, store, "size_limit_exceeded", JOB_OVERFLOW)
 
     # Read one past the bound to know; never truncated, and no job row was projected.
-    assert [call["limit"] for call in store.id_calls] == [201]
+    assert [call["limit"] for call in store.id_calls] == [513]
     assert store.reads == []
 
 
 def test_exactly_the_bounded_number_of_jobs_is_a_complete_conforming_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ids = [f"gen-bulk-{index:03d}" for index in range(200)]
+    ids = [f"gen-bulk-{index:03d}" for index in range(512)]
     store = _Store(
         {
             job_id: (_job(job_id, created_us=BASE_US + index * 1000), _status(job_id))
