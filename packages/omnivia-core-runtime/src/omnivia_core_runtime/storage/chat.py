@@ -4819,7 +4819,7 @@ def read_conversation_snapshot_inputs(
     actor_id: str,
     device_id: str = "",
     branch_id: str | None = None,
-    max_path_messages: int = 200,
+    max_path_messages: int = 1024,
 ) -> ConversationSnapshotInputs | None:
     """Every row an authoritative Conversation snapshot is composed from.
 
@@ -4849,9 +4849,9 @@ def read_conversation_snapshot_inputs(
     transaction keeps it: only a transaction begun here is committed or rolled back
     here, matching `governed.py` and `graph.py`'s own ownership rule.
     """
-    if not 1 <= max_path_messages <= 200:
+    if not 1 <= max_path_messages <= 1024:
         raise StorageError(
-            f"max_path_messages must be between 1 and 200, got {max_path_messages}"
+            f"max_path_messages must be between 1 and 1024, got {max_path_messages}"
         )
 
     owns_transaction = not connection.in_transaction

@@ -1142,8 +1142,16 @@ def test_snapshot_inputs_bound_the_path_at_its_oldest_end(owned: m1.Owned) -> No
 
 def test_snapshot_inputs_reject_out_of_bounds_max_path_messages(owned: m1.Owned) -> None:
     seed_conversation(owned)
-    for bad_bound in (0, -1, 201):
-        with pytest.raises(StorageError, match="max_path_messages must be between 1 and 200"):
+    accepted = chat.read_conversation_snapshot_inputs(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=ACTOR_ID,
+        max_path_messages=1024,
+    )
+    assert accepted is not None
+    for bad_bound in (0, -1, 1025):
+        with pytest.raises(StorageError, match="max_path_messages must be between 1 and 1024"):
             chat.read_conversation_snapshot_inputs(
                 owned.connection,
                 workspace_id=WORKSPACE_ID,
