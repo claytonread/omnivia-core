@@ -7,6 +7,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     private var draft = CaptureDraft()
     private let workspaceName: String
     private let submitter: ManualCaptureSubmission
+    private let folderSubmitter: FolderCaptureSubmission?
     private let onQueued: (@MainActor () -> Void)?
     private let table = NSTableView()
     private let primaryButton = NSButton(title: "Add", target: nil, action: nil)
@@ -16,10 +17,12 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     public init(
         workspaceName: String,
         submitter: ManualCaptureSubmission,
+        folderSubmitter: FolderCaptureSubmission? = nil,
         onQueued: (@MainActor () -> Void)? = nil
     ) {
         self.workspaceName = workspaceName
         self.submitter = submitter
+        self.folderSubmitter = folderSubmitter
         self.onQueued = onQueued
         super.init()
     }
@@ -145,7 +148,76 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         panel.allowsMultipleSelection = true
         panel.treatsFilePackagesAsDirectories = false
         panel.resolvesAliases = false
-        if panel.runModal() == .OK { add(panel.urls) }
+        if panel.runModal() == .OK, let root = panel.url { reviewFolder(root) }
+    }
+
+    private func reviewFolder(_ root: URL) {
+        guard let folderSubmitter else {
+            statusLabel.stringValue = "Folder import isn’t available in this build."
+            return
+        }
+        let mode = NSPopUpButton()
+        mode.addItems(withTitles: ["Import once", "Keep updated"])
+        let recursive = NSButton(checkboxWithTitle: "Include subfolders", target: nil, action: nil)
+        recursive.state = .on
+        let hidden = NSButton(checkboxWithTitle: "Include hidden files", target: nil, action: nil)
+        hidden.state = .off
+        let options = NSStackView(views: [mode, recursive, hidden])
+        options.orientation = .vertical
+        options.alignment = .leading
+        options.spacing = 8
+        options.frame = NSRect(x: 0, y: 0, width: 300, height: 86)
+        let alert = NSAlert()
+        alert.messageText = "Choose folder scope"
+        alert.informativeText = "Core will read supported documents only. Symlinks and package contents are excluded."
+        alert.accessoryView = options
+        alert.addButton(withTitle: "Review files")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let policy = FolderCapturePolicy(
+            mode: mode.indexOfSelectedItem == 1 ? .keepUpdated : .importOnce,
+            recursive: recursive.state == .on,
+            includeHidden: hidden.state == .on
+        )
+        statusLabel.stringValue = "Reviewing folder scope…"
+        primaryButton.isEnabled = false
+        Task {
+            do {
+                let plan = try await Task.detached(priority: .userInitiated) {
+                    try folderSubmitter.plan(root: root, policy: policy)
+                }.value
+                let confirmation = NSAlert()
+                confirmation.messageText = policy.mode == .keepUpdated
+                    ? "Keep this folder updated?"
+                    : "Import this folder once?"
+                let size = ByteCountFormatter.string(
+                    fromByteCount: Int64(plan.totalBytes),
+                    countStyle: .file
+                )
+                confirmation.informativeText = "\(plan.members.count) supported file(s), \(size). \(plan.skippedUnsupported) unsupported and \(plan.skippedHidden) hidden file(s) will be skipped."
+                confirmation.addButton(withTitle: policy.mode == .keepUpdated ? "Keep updated" : "Import")
+                confirmation.addButton(withTitle: "Cancel")
+                guard confirmation.runModal() == .alertFirstButtonReturn else {
+                    statusLabel.stringValue = "Folder import cancelled."
+                    refresh()
+                    return
+                }
+                statusLabel.stringValue = "Preparing current folder versions…"
+                let entries = try await folderSubmitter.submit(plan)
+                statusLabel.stringValue = policy.mode == .keepUpdated
+                    ? "\(entries.count) baseline files queued; update setup awaits Core confirmation."
+                    : "\(entries.count) folder files queued on this Mac."
+                refresh()
+                onQueued?()
+            } catch FolderCaptureSubmissionError.emptyScope {
+                statusLabel.stringValue = "No supported documents were found in that scope."
+                refresh()
+            } catch {
+                statusLabel.stringValue = "Couldn’t queue this folder. Check access, scope, and size limits."
+                refresh()
+            }
+        }
     }
 
     @objc private func chooseFolderAction() {

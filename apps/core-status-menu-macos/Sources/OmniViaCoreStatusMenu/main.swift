@@ -48,10 +48,15 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         super.init()
         let intakeRoot = configuration.installationState.deletingLastPathComponent()
             .appendingPathComponent("native-intake", isDirectory: true)
-        if let submitter = try? ManualCaptureSubmission(
-            stateRoot: intakeRoot,
-            workspaceRef: configuration.workspaceID
-        ) {
+        if let environment = try? DocumentIntakeEnvironment(stateRoot: intakeRoot) {
+            let submitter = ManualCaptureSubmission(
+                environment: environment,
+                workspaceRef: configuration.workspaceID
+            )
+            let folderSubmitter = FolderCaptureSubmission(
+                environment: environment,
+                workspaceRef: configuration.workspaceID
+            )
             if let resolvedExecutable,
                let queue = try? CaptureIntentQueue(
                    root: intakeRoot.appendingPathComponent("capture-queue", isDirectory: true)
@@ -68,6 +73,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             capturePanelController = CapturePanelController(
                 workspaceName: configuration.workspaceID,
                 submitter: submitter,
+                folderSubmitter: folderSubmitter,
                 onQueued: { [weak self] in self?.deliverPendingCaptures() }
             )
         }

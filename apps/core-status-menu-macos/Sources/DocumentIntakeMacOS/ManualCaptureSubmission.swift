@@ -34,15 +34,24 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         bookmarkCodec: any SecurityScopedBookmarkCoding = SystemSecurityScopedBookmarkCodec(),
         reader: any CoordinatedOriginalReading = SystemCoordinatedOriginalReader()
     ) throws {
-        let accessStore = try NativeAccessStore(
-            stateDirectory: stateRoot.appendingPathComponent("native-access", isDirectory: true),
-            codec: bookmarkCodec
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: stateRoot,
+            bookmarkCodec: bookmarkCodec,
+            reader: reader
         )
-        let queue = try CaptureIntentQueue(
-            root: stateRoot.appendingPathComponent("capture-queue", isDirectory: true)
-        )
-        self.accessStore = accessStore
-        preparation = CapturePreparationCoordinator(accessStore: accessStore, queue: queue, reader: reader)
+        self.accessStore = environment.accessStore
+        preparation = environment.preparation
+        self.workspaceRef = workspaceRef
+        self.targetRef = targetRef
+    }
+
+    public init(
+        environment: DocumentIntakeEnvironment,
+        workspaceRef: String,
+        targetRef: String = "local"
+    ) {
+        accessStore = environment.accessStore
+        preparation = environment.preparation
         self.workspaceRef = workspaceRef
         self.targetRef = targetRef
     }
