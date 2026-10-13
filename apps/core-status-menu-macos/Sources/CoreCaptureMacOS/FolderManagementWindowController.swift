@@ -102,7 +102,10 @@ public final class FolderManagementWindowController: NSWindowController,
         case ("files", let .folder(folder)): text = String(folder.members.count)
         case ("files", let .bulkRun(run)): text = "\(run.admittedCount)/\(run.members.count)"
         case ("checked", let .file(file)): text = file.lastCheckedAt ?? "Not yet"
-        case ("checked", let .folder(folder)): text = folder.lastCompletedMetadataScanAt ?? "Not yet"
+        case ("checked", let .folder(folder)):
+            text = folder.reviewChangeCount.map { "\($0) changes require review" }
+                ?? folder.lastCompletedMetadataScanAt
+                ?? "Not yet"
         case ("checked", let .bulkRun(run)):
             text = run.attentionCount > 0
                 ? "\(run.attentionCount) need attention"
@@ -213,9 +216,11 @@ public final class FolderManagementWindowController: NSWindowController,
             checkButton.isEnabled = run.state == .adding
         case .file, .folder:
             let state = selected.subscriptionState
-            pauseResumeButton.title = state == .paused || state == .needsAccess ? "Resume" : "Pause"
+            pauseResumeButton.title = state == .reviewRequired
+                ? "Continue changes"
+                : state == .paused || state == .needsAccess ? "Resume" : "Pause"
             pauseResumeButton.isEnabled = state.map {
-                [.active, .paused, .needsAccess].contains($0)
+                [.active, .paused, .needsAccess, .reviewRequired].contains($0)
             } ?? false
             stopButton.title = "Stop updating"
             stopButton.isEnabled = state != .stopped
@@ -234,6 +239,7 @@ public final class FolderManagementWindowController: NSWindowController,
             switch selected {
             case let .folder(value):
                 let resume = value.state == .paused || value.state == .needsAccess
+                    || value.state == .reviewRequired
                 if resume {
                     _ = try? await folderMonitoring.resume(subscriptionID: value.subscriptionID)
                 } else {

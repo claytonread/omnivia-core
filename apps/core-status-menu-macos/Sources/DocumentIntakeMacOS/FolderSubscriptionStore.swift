@@ -51,6 +51,10 @@ public struct FolderSubscription: Codable, Equatable, Sendable {
     public var state: FolderSubscriptionState
     public var needsFullReconciliation: Bool
     public var lastCompletedMetadataScanAt: String?
+    public var pendingReviewSignature: String?
+    public var approvedReviewSignature: String?
+    public var reviewChangeCount: Int?
+    public var reviewExamples: [String]?
     public var members: [FolderSubscriptionMember]
 }
 
@@ -206,6 +210,10 @@ public final class FolderSubscriptionStore: @unchecked Sendable {
               !value.rootDisplayName.isEmpty,
               value.rootDisplayName.count <= 255,
               !value.rootDisplayName.contains("\0"),
+              (value.reviewChangeCount.map { $0 >= 0 } ?? true),
+              (value.reviewExamples?.count ?? 0) <= 10,
+              (value.pendingReviewSignature.map(validDigest) ?? true),
+              (value.approvedReviewSignature.map(validDigest) ?? true),
               Set(value.members.map(\.memberID)).count == value.members.count,
               Set(value.members.map(\.accessRef)).count == value.members.count,
               value.members.allSatisfy({ member in

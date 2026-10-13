@@ -340,6 +340,10 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                         ? .active : .waitingForCore,
                     needsFullReconciliation: true,
                     lastCompletedMetadataScanAt: nil,
+                    pendingReviewSignature: nil,
+                    approvedReviewSignature: nil,
+                    reviewChangeCount: nil,
+                    reviewExamples: nil,
                     members: subscriptionMembers
                 )
             )

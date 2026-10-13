@@ -253,6 +253,78 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         })
     }
 
+    func testUnusualFolderGrowthRequiresExplicitReviewBeforeAnyAutomaticReadPublication() async throws {
+        let root = try temporaryDirectory()
+        try Data("baseline".utf8).write(to: root.appendingPathComponent("baseline.txt"))
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec()
+        )
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(
+                mode: .keepUpdated,
+                recursive: true,
+                includeHidden: false,
+                watchInitialContent: .onlyNewAndChanged
+            )
+        )
+        _ = try await submission.submit(plan)
+        for index in 0..<100 {
+            try Data("new \(index)".utf8).write(
+                to: root.appendingPathComponent(String(format: "new-%03d.txt", index))
+            )
+        }
+
+        let review = await environment.folderMonitoring.reconcileAll()
+
+        XCTAssertEqual(review.map(\.state), [.reviewRequired])
+        XCTAssertTrue(environment.queue.allEntries().isEmpty)
+        let paused = try XCTUnwrap(environment.folderSubscriptions.all().first)
+        XCTAssertEqual(paused.reviewChangeCount, 100)
+        XCTAssertEqual(paused.reviewExamples?.count, 10)
+
+        _ = try await environment.folderMonitoring.resume(subscriptionID: paused.subscriptionID)
+        let approved = await environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(approved.map(\.queued), [100])
+        XCTAssertEqual(environment.queue.allEntries().count, 100)
+    }
+
+    func testUnusualDisappearanceRequiresReviewBeforeMarkingMembersAbsent() async throws {
+        let root = try temporaryDirectory()
+        var files: [URL] = []
+        for index in 0..<100 {
+            let file = root.appendingPathComponent(String(format: "existing-%03d.txt", index))
+            try Data("baseline \(index)".utf8).write(to: file)
+            files.append(file)
+        }
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec()
+        )
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(
+                mode: .keepUpdated,
+                recursive: true,
+                includeHidden: false,
+                watchInitialContent: .onlyNewAndChanged
+            )
+        )
+        _ = try await submission.submit(plan)
+        for file in files.prefix(20) { try FileManager.default.removeItem(at: file) }
+
+        let review = await environment.folderMonitoring.reconcileAll()
+
+        XCTAssertEqual(review.map(\.state), [.reviewRequired])
+        let subscription = try XCTUnwrap(environment.folderSubscriptions.all().first)
+        XCTAssertEqual(subscription.reviewChangeCount, 20)
+        XCTAssertEqual(subscription.members.filter { $0.state == .absent }.count, 0)
+        XCTAssertTrue(subscription.reviewExamples?.allSatisfy { $0.hasSuffix("(missing)") } == true)
+    }
+
     func testWatchDoesNotReadOrQueueChangesBeforeBaselineAdmission() async throws {
         let root = try temporaryDirectory()
         let watched = root.appendingPathComponent("watch.txt")
@@ -332,6 +404,51 @@ final class FolderCaptureSubmissionTests: XCTestCase {
             encoding: .utf8
         )
         XCTAssertFalse(ledger.contains(root.path))
+    }
+
+    func testRejectedFolderUpdateRequiresReviewAndCanBeRetried() async throws {
+        let root = try temporaryDirectory()
+        let watched = root.appendingPathComponent("watch.txt")
+        try Data("baseline".utf8).write(to: watched)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec()
+        )
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(mode: .keepUpdated, recursive: true, includeHidden: false)
+        )
+        let baseline = try await submission.submit(plan)
+        try admit(
+            baseline[0],
+            captureID: "dcap-" + String(repeating: "a", count: 64),
+            queue: environment.queue
+        )
+        _ = await environment.folderMonitoring.reconcileAll()
+        try Data("changed".utf8).write(to: watched)
+        _ = await environment.folderMonitoring.reconcileAll()
+        let automatic = try XCTUnwrap(environment.queue.allEntries().first {
+            $0.intent.surface == .automaticFolder && $0.intent.itemId != baseline[0].intent.itemId
+        })
+        _ = try environment.queue.markFailed(
+            itemID: automatic.intent.itemId,
+            failureCode: "policy_rejected"
+        )
+
+        _ = await environment.folderMonitoring.reconcileReceipts()
+        let review = try XCTUnwrap(environment.folderSubscriptions.all().first)
+        XCTAssertEqual(review.state, .reviewRequired)
+        XCTAssertNil(review.members.first?.lastObservedDigest)
+
+        _ = try await environment.folderMonitoring.resume(subscriptionID: review.subscriptionID)
+        _ = await environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(
+            environment.queue.allEntries().filter {
+                $0.intent.surface == .automaticFolder && $0.intent.itemId != baseline[0].intent.itemId
+            }.count,
+            2
+        )
     }
 
     private func admit(

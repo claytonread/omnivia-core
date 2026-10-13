@@ -21,6 +21,7 @@ private struct MonitoredCandidate: Sendable {
     let relativeComponents: [String]
     let displayName: String
     let contentKind: CaptureContentKind
+    let byteLength: UInt64
 }
 
 /// Reconciles the current authorised folder state into bounded immutable capture intents.
@@ -142,8 +143,12 @@ public actor FolderMonitoringCoordinator {
     @discardableResult
     public func resume(subscriptionID: String) throws -> FolderSubscription {
         try subscriptions.update(id: subscriptionID) { value in
-            guard value.state == .paused || value.state == .needsAccess else {
+            guard value.state == .paused || value.state == .needsAccess || value.state == .reviewRequired else {
                 throw FolderMonitoringError.subscriptionNotActive
+            }
+            if value.state == .reviewRequired {
+                value.approvedReviewSignature = value.pendingReviewSignature
+                value.pendingReviewSignature = nil
             }
             value.state = .active
             value.needsFullReconciliation = true
@@ -188,11 +193,19 @@ public actor FolderMonitoringCoordinator {
                     baselineResolved = false
                 }
                 if let queuedID = value.members[index].lastQueuedItemID,
-                   let queued = entries[queuedID],
-                   queued.state == .admitted,
-                   let captureID = queued.admittedCaptureID {
-                    value.members[index].currentSuccessfulCaptureID = captureID
-                    value.members[index].lastQueuedItemID = nil
+                   let queued = entries[queuedID]
+                {
+                    if queued.state == .admitted, let captureID = queued.admittedCaptureID {
+                        value.members[index].currentSuccessfulCaptureID = captureID
+                        value.members[index].lastQueuedItemID = nil
+                    } else if queued.state == .failed {
+                        value.members[index].lastQueuedItemID = nil
+                        value.members[index].lastObservedDigest = nil
+                        value.members[index].lastObservedByteLength = nil
+                        value.members[index].lastObservedAt = nil
+                        value.state = .reviewRequired
+                        value.needsFullReconciliation = true
+                    }
                 }
             }
             if value.state == .waitingForCore {
@@ -225,20 +238,61 @@ public actor FolderMonitoringCoordinator {
             uniqueKeysWithValues: subscription.members.map { (Self.pathKey($0.relativeComponents), $0) }
         )
         let candidateKeys = Set(candidates.map { Self.pathKey($0.relativeComponents) })
+        let queueEntries = queue.allEntries()
+        let unresolvedEntries = queueEntries.filter {
+            [.pending, .staging, .unknownOutcome].contains($0.state)
+        }
         let unresolved = Set(
-            queue.allEntries()
+            unresolvedEntries
                 .filter { entry in
                     entry.intent.consent?.subscriptionId == subscription.subscriptionID
-                        && [.pending, .staging, .unknownOutcome].contains(entry.state)
                 }
                 .compactMap { $0.intent.originalBinding?.memberId }
         )
+        let credibleChanges = candidates.filter { candidate in
+            guard let existing = existingByPath[Self.pathKey(candidate.relativeComponents)] else {
+                return true
+            }
+            return existing.lastObservedByteLength != candidate.byteLength
+        }
+        let credibleDisappearances = subscription.members.filter {
+            $0.state == .present && !candidateKeys.contains(Self.pathKey($0.relativeComponents))
+        }
+        let disappearanceThresholdCrossed = credibleDisappearances.count >= 20
+            && credibleDisappearances.count * 10 >= max(1, subscription.members.count)
+        let reviewSignature = Self.reviewSignature(
+            changes: credibleChanges,
+            disappearances: credibleDisappearances
+        )
+        if (credibleChanges.count >= 100 || disappearanceThresholdCrossed),
+           subscription.approvedReviewSignature == nil
+        {
+            let examples = credibleChanges.map(\.displayName)
+                + credibleDisappearances.map { $0.displayName + " (missing)" }
+            let reviewed = try subscriptions.update(id: subscription.subscriptionID) { value in
+                value.state = .reviewRequired
+                value.needsFullReconciliation = true
+                value.pendingReviewSignature = reviewSignature
+                value.reviewChangeCount = credibleChanges.count + credibleDisappearances.count
+                value.reviewExamples = Array(examples.prefix(10))
+            }
+            return FolderMonitoringReport(
+                subscriptionID: reviewed.subscriptionID,
+                state: .reviewRequired,
+                examined: candidates.count,
+                queued: 0,
+                unchanged: 0,
+                absent: 0
+            )
+        }
         let bulkRunID = Self.identifier(prefix: "bulk")
         let manifestRevision = Self.identifier(prefix: "manifest")
         let observedAt = ISO8601DateFormatter().string(from: Date())
         var updated = subscription
         var queued = 0
         var unchanged = 0
+        var unresolvedCount = unresolvedEntries.count
+        var capacityDeferred = false
 
         for candidate in candidates {
             let key = Self.pathKey(candidate.relativeComponents)
@@ -247,6 +301,10 @@ public actor FolderMonitoringCoordinator {
                 if unresolved.contains(member.memberID) {
                     Self.replace(member, in: &updated.members)
                     continue
+                }
+                if unresolvedCount >= CaptureIntentQueue.maximumUnresolvedItems {
+                    capacityDeferred = true
+                    break
                 }
                 let bytes = try accessStore.withReadAccess(
                     accessRef: member.accessRef,
@@ -275,22 +333,33 @@ public actor FolderMonitoringCoordinator {
                     manifestRevision: manifestRevision,
                     observedAt: observedAt
                 )
-                let entries = try await preparation.prepareAndPublish([
-                    CapturePreparationItem(
-                        access: NativeAccessExpectation(
-                            accessRef: member.accessRef,
-                            generation: member.membershipGeneration
+                let entries: [CaptureQueueEntry]
+                do {
+                    entries = try await preparation.prepareAndPublish([
+                        CapturePreparationItem(
+                            access: NativeAccessExpectation(
+                                accessRef: member.accessRef,
+                                generation: member.membershipGeneration
+                            ),
+                            seed: seed
                         ),
-                        seed: seed
-                    ),
-                ])
+                    ])
+                } catch CaptureQueueError.capacityExceeded {
+                    capacityDeferred = true
+                    break
+                }
                 guard let entry = entries.first else { continue }
                 member.lastObservedDigest = entry.intent.localIntegrityDigest
                 member.lastObservedByteLength = entry.intent.byteLength
                 member.lastQueuedItemID = entry.intent.itemId
                 Self.replace(member, in: &updated.members)
                 queued += 1
+                unresolvedCount += 1
             } else {
+                if unresolvedCount >= CaptureIntentQueue.maximumUnresolvedItems {
+                    capacityDeferred = true
+                    break
+                }
                 let memberID = Self.identifier(prefix: "member")
                 let accessRef = Self.identifier(prefix: "access")
                 let documentID = Self.identifier(prefix: "doc")
@@ -333,18 +402,28 @@ public actor FolderMonitoringCoordinator {
                     manifestRevision: manifestRevision,
                     observedAt: observedAt
                 )
-                let entries = try await preparation.prepareAndPublish([
-                    CapturePreparationItem(
-                        access: NativeAccessExpectation(accessRef: accessRef, generation: descriptor.generation),
-                        seed: seed
-                    ),
-                ])
+                let entries: [CaptureQueueEntry]
+                do {
+                    entries = try await preparation.prepareAndPublish([
+                        CapturePreparationItem(
+                            access: NativeAccessExpectation(
+                                accessRef: accessRef,
+                                generation: descriptor.generation
+                            ),
+                            seed: seed
+                        ),
+                    ])
+                } catch CaptureQueueError.capacityExceeded {
+                    capacityDeferred = true
+                    break
+                }
                 guard let entry = entries.first else { continue }
                 member.lastObservedDigest = entry.intent.localIntegrityDigest
                 member.lastObservedByteLength = entry.intent.byteLength
                 member.lastObservedAt = observedAt
                 updated.members.append(member)
                 queued += 1
+                unresolvedCount += 1
             }
         }
 
@@ -356,7 +435,13 @@ public actor FolderMonitoringCoordinator {
             }
         }
         updated.lastCompletedMetadataScanAt = observedAt
-        updated.needsFullReconciliation = false
+        updated.needsFullReconciliation = capacityDeferred
+        if !capacityDeferred {
+            updated.pendingReviewSignature = nil
+            updated.approvedReviewSignature = nil
+            updated.reviewChangeCount = nil
+            updated.reviewExamples = nil
+        }
         _ = try subscriptions.update(id: subscription.subscriptionID) { $0 = updated }
         return FolderMonitoringReport(
             subscriptionID: subscription.subscriptionID,
@@ -430,6 +515,7 @@ public actor FolderMonitoringCoordinator {
             .isSymbolicLinkKey,
             .isHiddenKey,
             .isPackageKey,
+            .fileSizeKey,
         ]
         guard let enumerator = FileManager.default.enumerator(
             at: root,
@@ -467,6 +553,8 @@ public actor FolderMonitoringCoordinator {
                 continue
             }
             guard values.isRegularFile == true,
+                  let byteLength = values.fileSize,
+                  byteLength > 0,
                   !Self.excludedFile(candidate.lastPathComponent),
                   let kind = ManualCaptureSubmission.contentKind(for: candidate)
             else { continue }
@@ -475,7 +563,8 @@ public actor FolderMonitoringCoordinator {
                     url: candidate,
                     relativeComponents: relative,
                     displayName: relative.joined(separator: "/"),
-                    contentKind: kind
+                    contentKind: kind,
+                    byteLength: UInt64(byteLength)
                 )
             )
         }
@@ -517,6 +606,20 @@ public actor FolderMonitoringCoordinator {
 
     private static func digest(_ data: Data) -> String {
         "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func reviewSignature(
+        changes: [MonitoredCandidate],
+        disappearances: [FolderSubscriptionMember]
+    ) -> String {
+        let material = (changes.map {
+            "changed\u{1f}\(pathKey($0.relativeComponents))\u{1f}\($0.byteLength)"
+        } + disappearances.map {
+            "missing\u{1f}\(pathKey($0.relativeComponents))"
+        })
+            .sorted()
+            .joined(separator: "\u{1e}")
+        return digest(Data(material.utf8))
     }
 
     private static func identifier(prefix: String) -> String {
