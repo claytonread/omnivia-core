@@ -55,8 +55,28 @@ enum Ov {
     // the blur, the sheen is the tint. An NSVisualEffectView gives the first;
     // the second has to be drawn over it, which is what `SheenView` does.
 
+    /// The materials as the design states them, and as this window actually
+    /// renders them.
+    ///
+    /// `backdrop-filter` in the prototype blurs what is behind the element
+    /// *inside the page*, and the page's window is opaque
+    /// (`#cs-win{background:var(--ov-bg-content)}`). Blurring a flat colour
+    /// returns that colour, so the chrome composites to a fixed value and the
+    /// translucency never reaches the desktop.
+    ///
+    /// An `NSVisualEffectView` samples the wallpaper instead. That is a
+    /// different picture: the bar and the source list each pick up a different
+    /// amount of whatever happens to be behind the window, so they stop
+    /// matching each other and both drift toward the desktop's hue. Compositing
+    /// against the window's own background is both faithful to the design and
+    /// deterministic.
     static let materialTitlebar = NSColor(srgbRed: 30 / 255.0, green: 30 / 255.0, blue: 36 / 255.0, alpha: 0.64)
     static let materialSidebar = NSColor(srgbRed: 22 / 255.0, green: 22 / 255.0, blue: 27 / 255.0, alpha: 0.40)
+
+    /// `rgba(30,30,36,.64)` over `#1E1E20`.
+    static let chromeTitlebar = materialTitlebar.composited(over: bgContent)
+    /// `rgba(22,22,27,.40)` over `#1E1E20`.
+    static let chromeSidebar = materialSidebar.composited(over: bgContent)
 
     private static func brick(_ alpha: CGFloat) -> NSColor {
         NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: alpha)
@@ -82,29 +102,47 @@ enum Ov {
     static let focusRing = NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: 0.60)
 }
 
-/// A translucent material with a sheen gradient drawn over it, which is what
-/// `background: var(--ov-…-sheen), var(--ov-material-…)` means: two layers, the
-/// tint above the blur. An `NSVisualEffectView` alone gives only the blur, and
-/// setting a background colour on one defeats the vibrancy entirely.
-class SheenView: NSVisualEffectView {
+extension NSColor {
+    /// This colour composited over an opaque one, in sRGB.
+    func composited(over background: NSColor) -> NSColor {
+        guard let top = usingColorSpace(.sRGB), let under = background.usingColorSpace(.sRGB)
+        else { return self }
+        let a = top.alphaComponent
+        return NSColor(
+            srgbRed: top.redComponent * a + under.redComponent * (1 - a),
+            green: top.greenComponent * a + under.greenComponent * (1 - a),
+            blue: top.blueComponent * a + under.blueComponent * (1 - a),
+            alpha: 1
+        )
+    }
+}
+
+/// Window chrome: a flat material with a sheen gradient over it, which is what
+/// `background: var(--ov-…-sheen), var(--ov-material-…)` means — two layers,
+/// the tint above the surface.
+///
+/// Deliberately not an `NSVisualEffectView`. See `Ov.chromeTitlebar`: the
+/// design's translucency is over the window's own opaque background, so it
+/// resolves to a fixed colour, whereas vibrancy would sample the desktop and
+/// leave the bar and the source list unable to match each other.
+class SheenView: NSView {
     private let sheen = CAGradientLayer()
 
     /// - Parameters:
+    ///   - surface: the composited material colour.
     ///   - stops: colour and location pairs, in CSS gradient order.
     ///   - horizontal: true for a `90deg` (left-to-right) gradient, false for
     ///     `180deg` (top-to-bottom).
     ///   - specular: draw the 1px lit top edge.
     init(
-        material: NSVisualEffectView.Material,
+        surface: NSColor,
         stops: [(NSColor, CGFloat)],
         horizontal: Bool,
         specular: Bool = false
     ) {
         super.init(frame: .zero)
-        self.material = material
-        blendingMode = .withinWindow
-        state = .active
         wantsLayer = true
+        layer?.backgroundColor = surface.cgColor
 
         sheen.colors = stops.map { $0.0.cgColor }
         sheen.locations = stops.map { NSNumber(value: Double($0.1)) }
@@ -502,7 +540,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// wordmark with "Core Settings" secondary (prototype .cs-brand).
     private func headerView() -> NSView {
         let header = DraggableSheenView(
-            material: .titlebar,
+            surface: Ov.chromeTitlebar,
             stops: Ov.titlebarSheen,
             horizontal: true,
             specular: true
@@ -578,7 +616,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// to the bottom edge (`.sw-side` / `.sw-nav` / `.cs-foot`).
     private func buildSidebar() -> NSView {
         let effect = SheenView(
-            material: .sidebar,
+            surface: Ov.chromeSidebar,
             stops: Ov.sidebarSheen,
             horizontal: false
         )
@@ -587,7 +625,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 1
+        stack.spacing = 0
         stack.edgeInsets = NSEdgeInsets(top: 10, left: 8, bottom: 12, right: 8)
         stack.translatesAutoresizingMaskIntoConstraints = false
         effect.addSubview(stack)
@@ -681,7 +719,13 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                 self.focusSidebarRow(at: target)
             }
             stack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            // Inside the nav's 8pt side padding, not across it. Pinned to the
+            // stack's full width, the 6pt-radius pill ran edge to edge of the
+            // sidebar and stopped reading as a rounded row at all.
+            row.widthAnchor.constraint(
+                equalTo: stack.widthAnchor,
+                constant: -(stack.edgeInsets.left + stack.edgeInsets.right)
+            ).isActive = true
         }
 
         // The footer is pinned to the sidebar's bottom edge by `buildSidebar`,
@@ -1786,7 +1830,8 @@ final class SidebarRowView: NSView {
         icon = NSImageView()
         // 16px glyphs (`#sw-nav .nav-row svg`), not the shared shell's 15.
         icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
-            .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))
+            .withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
+        icon.imageScaling = .scaleProportionallyDown
         icon.contentTintColor = Ov.textSecondary
         super.init(frame: .zero)
         wantsLayer = true
@@ -1808,6 +1853,14 @@ final class SidebarRowView: NSView {
         ])
         row.addArrangedSubview(icon)
         row.addArrangedSubview(label)
+        // A fixed glyph box. SF Symbols have per-glyph widths — a wrench is
+        // not as wide as a shield — so without one the label's left edge moved
+        // from row to row and the list read as ragged.
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 16),
+            icon.heightAnchor.constraint(equalToConstant: 16),
+        ])
 
         addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(clicked)))
 
