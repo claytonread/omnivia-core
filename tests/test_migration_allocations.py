@@ -268,9 +268,10 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0068 is the governed task-context outcomes candidate. It was introduced by c42e41d1 and
     # repinned to its current-content repair 9807ce91, which is where its current content lives.
     68: "9807ce91bcfe25db29d09757364105378fd58bda",
-    # 0069 was introduced by 986da0b4 and repinned to its canonical-admission
-    # hardening 8742d1fc, which is where its current content lives.
-    69: "8742d1fc02f1a868f2488b8d56169a9649eaaec8",
+    # 0069 was introduced by 986da0b4, repinned to its canonical-admission
+    # hardening 8742d1fc, then to its located-segment publication 484ef1c1,
+    # which is where its current content lives.
+    69: "484ef1c1ee76193a2d0d151673fd08032d7f9974",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
