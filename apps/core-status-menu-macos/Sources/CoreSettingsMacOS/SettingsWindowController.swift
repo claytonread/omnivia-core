@@ -34,12 +34,110 @@ enum Ov {
     static let textPrimary = NSColor.white.withAlphaComponent(0.92)
     static let textSecondary = NSColor.white.withAlphaComponent(0.58)
     static let textTertiary = NSColor.white.withAlphaComponent(0.40)
+    static let textQuaternary = NSColor.white.withAlphaComponent(0.26)
     static let separator = NSColor.white.withAlphaComponent(0.10)
     static let borderSubtle = NSColor.white.withAlphaComponent(0.08)
     static let borderControl = NSColor.white.withAlphaComponent(0.18)
-    static let hoverBg = NSColor.white.withAlphaComponent(0.09)
+    // The hover and active surfaces are a warm grey, not plain white — white
+    // reads cold against the brick-tinted chrome (ov-ui-palette.css).
+    static let hoverBg = NSColor(srgbRed: 185 / 255.0, green: 178 / 255.0, blue: 188 / 255.0, alpha: 0.09)
+    static let activeBg = NSColor(srgbRed: 185 / 255.0, green: 178 / 255.0, blue: 188 / 255.0, alpha: 0.18)
+    /// `--ov-accent-muted`: the selected source-list row in dark mode is the
+    /// accent at low opacity, not the solid accent fill light mode uses.
+    static let accentMuted = NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: 0.28)
     static let selectionTextBg = NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: 0.30)
     static let onAccent = NSColor.white
+
+    // MARK: Materials and sheens (ov-ui-palette.css, os/overlay.css)
+    //
+    // Chrome is a translucent material with a brick sheen layered over it:
+    // `background: var(--ov-…-sheen), var(--ov-material-…)`. The material is
+    // the blur, the sheen is the tint. An NSVisualEffectView gives the first;
+    // the second has to be drawn over it, which is what `SheenView` does.
+
+    static let materialTitlebar = NSColor(srgbRed: 30 / 255.0, green: 30 / 255.0, blue: 36 / 255.0, alpha: 0.64)
+    static let materialSidebar = NSColor(srgbRed: 22 / 255.0, green: 22 / 255.0, blue: 27 / 255.0, alpha: 0.40)
+
+    private static func brick(_ alpha: CGFloat) -> NSColor {
+        NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: alpha)
+    }
+
+    /// `--ov-titlebar-sheen`: a horizontal accent wash, gone by 52%.
+    static let titlebarSheen: [(NSColor, CGFloat)] = [
+        (brick(0.13), 0.0), (brick(0.06), 0.24), (brick(0.0), 0.52), (brick(0.0), 1.0),
+    ]
+
+    /// `--ov-sidebar-sheen`: accent at the head, fading out by 28%, with a
+    /// warmer earth tone returning at the foot.
+    static let sidebarSheen: [(NSColor, CGFloat)] = [
+        (brick(0.10), 0.0),
+        (brick(0.0), 0.28),
+        (NSColor(srgbRed: 150 / 255.0, green: 96 / 255.0, blue: 70 / 255.0, alpha: 0.07), 1.0),
+    ]
+
+    /// `--ov-specular-highlight`: the 1px lit top edge of a glass surface.
+    static let specularHighlight = NSColor.white.withAlphaComponent(0.10)
+
+    /// `--ov-focus-ring`: the keyboard ring is brick, not the system blue.
+    static let focusRing = NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: 0.60)
+}
+
+/// A translucent material with a sheen gradient drawn over it, which is what
+/// `background: var(--ov-…-sheen), var(--ov-material-…)` means: two layers, the
+/// tint above the blur. An `NSVisualEffectView` alone gives only the blur, and
+/// setting a background colour on one defeats the vibrancy entirely.
+final class SheenView: NSVisualEffectView {
+    private let sheen = CAGradientLayer()
+
+    /// - Parameters:
+    ///   - stops: colour and location pairs, in CSS gradient order.
+    ///   - horizontal: true for a `90deg` (left-to-right) gradient, false for
+    ///     `180deg` (top-to-bottom).
+    ///   - specular: draw the 1px lit top edge.
+    init(
+        material: NSVisualEffectView.Material,
+        stops: [(NSColor, CGFloat)],
+        horizontal: Bool,
+        specular: Bool = false
+    ) {
+        super.init(frame: .zero)
+        self.material = material
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+
+        sheen.colors = stops.map { $0.0.cgColor }
+        sheen.locations = stops.map { NSNumber(value: Double($0.1)) }
+        // Layer coordinates run bottom-up, so a CSS 180deg (top-to-bottom)
+        // gradient starts at y = 1.
+        sheen.startPoint = horizontal ? CGPoint(x: 0, y: 0.5) : CGPoint(x: 0.5, y: 1)
+        sheen.endPoint = horizontal ? CGPoint(x: 1, y: 0.5) : CGPoint(x: 0.5, y: 0)
+        layer?.addSublayer(sheen)
+
+        if specular {
+            let line = CALayer()
+            line.backgroundColor = Ov.specularHighlight.cgColor
+            line.name = "specular"
+            layer?.addSublayer(line)
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layout() {
+        super.layout()
+        // The sheen is a plain sublayer, so it does not follow the view's
+        // bounds on its own; implicit animation would also make it lag a
+        // live resize behind the material it tints.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        sheen.frame = bounds
+        layer?.sublayers?
+            .first { $0.name == "specular" }?
+            .frame = CGRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1)
+        CATransaction.commit()
+    }
 }
 
 // MARK: - OmniVia typography (styles/tokens.css §1)
@@ -220,9 +318,79 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         self.window = window
         window.delegate = self
         window.center()
+        positionWindowControls()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         coordinator.scheduleRefresh(.windowOpened)
+    }
+
+    // MARK: Window controls
+
+    private var titlebarAccessoryInstalled = false
+
+    /// Centre the traffic lights in the 60pt branded header.
+    ///
+    /// A titlebar accessory of that height is the supported way to make the
+    /// titlebar tall, but AppKit still top-anchors the buttons inside it, so
+    /// the lights sit level with the top edge rather than with the OmniVia
+    /// mark. Two things make the correction stick:
+    ///
+    /// * the container is grown *and* re-anchored to the window's top edge —
+    ///   growing it with `setFrameSize` alone keeps the old origin and pushes
+    ///   it off the top, which clips the lights;
+    /// * the target centre is converted from window coordinates into the bar's
+    ///   own space, because the bar's orientation would otherwise flip the
+    ///   offset and move the lights the wrong way.
+    ///
+    /// Titlebar layout re-anchors the buttons, so this is reasserted on every
+    /// window update rather than run once at build time.
+    private func positionWindowControls() {
+        guard let window,
+              let close = window.standardWindowButton(.closeButton),
+              let bar = close.superview else { return }
+
+        if !titlebarAccessoryInstalled {
+            let accessory = NSTitlebarAccessoryViewController()
+            accessory.view = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 60))
+            accessory.layoutAttribute = .right
+            window.addTitlebarAccessoryViewController(accessory)
+            titlebarAccessoryInstalled = true
+        }
+
+        if let container = bar.superview {
+            let target = NSRect(
+                x: 0, y: window.frame.height - 60, width: window.frame.width, height: 60
+            )
+            if abs(container.frame.minY - target.minY) > 0.5
+                || abs(container.frame.height - 60) > 0.5 {
+                container.setFrameSize(NSSize(width: target.width, height: 60))
+                container.setFrameOrigin(NSPoint(x: 0, y: target.minY))
+            }
+        }
+        if abs(bar.frame.height - 60) > 0.5 {
+            bar.setFrameSize(NSSize(width: bar.frame.width, height: 60))
+        }
+
+        let windowTop = window.frame.height
+        for button in [
+            close,
+            window.standardWindowButton(.miniaturizeButton),
+            window.standardWindowButton(.zoomButton),
+        ].compactMap({ $0 }) {
+            let centreInWindow = NSPoint(x: button.frame.midX, y: windowTop - 30)
+            let centreInBar = bar.convert(centreInWindow, from: nil)
+            var frame = button.frame
+            frame.origin.y = centreInBar.y - frame.height / 2
+            button.setFrameOrigin(frame.origin)
+        }
+    }
+
+    public func windowDidResize(_ notification: Notification) {
+        positionWindowControls()
+    }
+
+    public func windowDidUpdate(_ notification: Notification) {
+        positionWindowControls()
     }
 
     public func windowWillClose(_ notification: Notification) {
@@ -333,12 +501,27 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// 60px branded header: the concentric-circle mark in brick, "OmniVia"
     /// wordmark with "Core Settings" secondary (prototype .cs-brand).
     private func headerView() -> NSView {
-        let header = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 900, height: 60))
-        header.material = .titlebar
-        header.blendingMode = .withinWindow
-        header.state = .active
-        header.wantsLayer = true
+        let header = SheenView(
+            material: .titlebar,
+            stops: Ov.titlebarSheen,
+            horizontal: true,
+            specular: true
+        )
+        header.frame = NSRect(x: 0, y: 0, width: 900, height: 60)
         header.heightAnchor.constraint(equalToConstant: 60).isActive = true
+
+        // `.cs-head` carries a bottom hairline under the sheen.
+        let rule = NSView()
+        rule.wantsLayer = true
+        rule.layer?.backgroundColor = Ov.separator.cgColor
+        rule.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(rule)
+        NSLayoutConstraint.activate([
+            rule.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            rule.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            rule.bottomAnchor.constraint(equalTo: header.bottomAnchor),
+            rule.heightAnchor.constraint(equalToConstant: 1),
+        ])
 
         let row = NSStackView()
         row.orientation = .horizontal
@@ -399,11 +582,16 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     // MARK: Sidebar
 
+    /// The source list: a translucent sidebar material with the brick sheen
+    /// over it, the scrolling nav above, and the service-status footer pinned
+    /// to the bottom edge (`.sw-side` / `.sw-nav` / `.cs-foot`).
     private func buildSidebar() -> NSView {
-        let effect = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 200, height: 640))
-        effect.material = .sidebar
-        effect.blendingMode = .withinWindow
-        effect.state = .active
+        let effect = SheenView(
+            material: .sidebar,
+            stops: Ov.sidebarSheen,
+            horizontal: false
+        )
+        effect.frame = NSRect(x: 0, y: 0, width: 200, height: 640)
 
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -412,13 +600,72 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         stack.edgeInsets = NSEdgeInsets(top: 10, left: 8, bottom: 12, right: 8)
         stack.translatesAutoresizingMaskIntoConstraints = false
         effect.addSubview(stack)
+
+        let footer = buildSidebarFooter()
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(footer)
+
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: effect.topAnchor),
             stack.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
+            // The nav takes the space above the footer rather than the footer
+            // trailing the last pane; `.cs-foot` is pinned to the sidebar's
+            // bottom edge and `.sw-nav` is the flexible child.
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: footer.topAnchor),
+            footer.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
         ])
         sidebarStack = stack
         return effect
+    }
+
+    /// `.cs-foot`: a hairline rule, a status dot and one line of text.
+    ///
+    /// The design's footer reports the service state. This window never invokes
+    /// a lifecycle command (MR-005), so it does not know that state and says so
+    /// rather than showing a dot that implies one — an unknown rendered as a
+    /// green tick is exactly what the amendment's §A6 forbids.
+    private func buildSidebarFooter() -> NSView {
+        let container = NSView()
+
+        let rule = NSView()
+        rule.wantsLayer = true
+        rule.layer?.backgroundColor = Ov.separator.cgColor
+        rule.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(rule)
+
+        let dot = NSView()
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = 3.5
+        dot.layer?.backgroundColor = Ov.textQuaternary.cgColor
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(dot)
+
+        let label = NSTextField(wrappingLabelWithString: "Core status lives in the menu")
+        label.font = OvFont.sans(11.5)
+        label.textColor = Ov.textSecondary
+        label.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(label)
+
+        NSLayoutConstraint.activate([
+            rule.topAnchor.constraint(equalTo: container.topAnchor),
+            rule.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            rule.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            rule.heightAnchor.constraint(equalToConstant: 1),
+
+            dot.widthAnchor.constraint(equalToConstant: 7),
+            dot.heightAnchor.constraint(equalToConstant: 7),
+            dot.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            dot.topAnchor.constraint(equalTo: container.topAnchor, constant: 10 + 3),
+
+            label.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 7),
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
+            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
+        ])
+        return container
     }
 
     private func renderSidebar() {
@@ -446,14 +693,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
-        stack.addArrangedSubview(ovSpacer(20))
-
-        // Footer (prototype .cs-foot): service-status line, one place only.
-        let foot = NSTextField(wrappingLabelWithString: "Core service status lives in the menu. Closing this window never stops Core.")
-        foot.font = OvFont.sans(11.5)
-        foot.textColor = Ov.textSecondary
-        foot.preferredMaxLayoutWidth = 170
-        stack.addArrangedSubview(foot)
+        // The footer is pinned to the sidebar's bottom edge by `buildSidebar`,
+        // not appended after the last row.
     }
 
     /// Return the pane to its top. `contentHost` is a `FlippedView`, so the
@@ -921,6 +1162,10 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             notifyBody.addArrangedSubview(ovSpacer(5))
             notifyBody.addArrangedSubview(recoveryBlock(title: recoveryTitle(for: notifyCheck), actions: notifyActions, warn: notifyCheck?.observedState == .denied))
         }
+
+        // The design closes General with this, and it is the pane's note rather
+        // than the sidebar footer's line — the footer reports service state.
+        content.addArrangedSubview(note("Closing this window does not stop Core."))
     }
 
     private func recoveryTitle(for check: ReadinessCheck?) -> String {
@@ -1548,8 +1793,9 @@ final class SidebarRowView: NSView {
     init(title: String, symbol: String) {
         label = OvFont.label(title, size: 13, color: Ov.textPrimary)
         icon = NSImageView()
+        // 16px glyphs (`#sw-nav .nav-row svg`), not the shared shell's 15.
         icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
-            .withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
+            .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))
         icon.contentTintColor = Ov.textSecondary
         super.init(frame: .zero)
         wantsLayer = true
@@ -1558,7 +1804,7 @@ final class SidebarRowView: NSView {
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 9
+        row.spacing = 8
         row.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
@@ -1583,6 +1829,9 @@ final class SidebarRowView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel(title)
+        // The brick ring is drawn in `draw(_:)`; leaving the system ring on
+        // would stack a blue one over it.
+        focusRingType = .none
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -1597,8 +1846,31 @@ final class SidebarRowView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override var canBecomeKeyView: Bool { true }
 
-    override func drawFocusRingMask() { bounds.fill() }
-    override var focusRingMaskBounds: NSRect { bounds }
+    /// The system ring is blue; the design's is brick
+    /// (`--ov-focus-ring-shadow`). Drawn rather than tinted, because AppKit
+    /// gives no colour control over the system ring — so the system one is
+    /// turned off and an equivalent is painted in its place, same 3pt spread
+    /// and same row radius, rather than simply removed.
+    override func becomeFirstResponder() -> Bool {
+        needsDisplay = true
+        return super.becomeFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        needsDisplay = true
+        return super.resignFirstResponder()
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard window?.firstResponder === self else { return }
+        let ring = NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5), xRadius: 6, yRadius: 6
+        )
+        ring.lineWidth = 3
+        Ov.focusRing.setStroke()
+        ring.stroke()
+    }
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
@@ -1615,11 +1887,16 @@ final class SidebarRowView: NSView {
     /// or last pane for `.min` / `.max`.
     var moveSelection: ((Int) -> Void)?
 
+    /// Dark mode does not fill the selected row with the solid accent — that
+    /// is the light-mode treatment. It uses the accent at 28% with white text
+    /// and an accent-coloured icon, so the row reads as selected without
+    /// turning a 28px strip into a block of brick
+    /// (`[data-theme="dark"] #sw-nav .nav-row[aria-current="page"]`).
     private func applySelection() {
-        layer?.backgroundColor = isSelected ? Ov.accent.cgColor : NSColor.clear.cgColor
+        layer?.backgroundColor = isSelected ? Ov.accentMuted.cgColor : NSColor.clear.cgColor
         label.textColor = isSelected ? Ov.onAccent : Ov.textPrimary
         label.font = OvFont.sans(13, isSelected ? 500 : 400)
-        icon.contentTintColor = isSelected ? Ov.onAccent : Ov.textSecondary
+        icon.contentTintColor = isSelected ? Ov.accent : Ov.textSecondary
     }
 
     override func layout() {
@@ -1638,10 +1915,20 @@ final class SidebarRowView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         if !isSelected { layer?.backgroundColor = Ov.hoverBg.cgColor }
-        icon.contentTintColor = isSelected ? Ov.onAccent : Ov.textPrimary
+        icon.contentTintColor = isSelected ? Ov.accent : Ov.textPrimary
     }
 
     override func mouseExited(with event: NSEvent) { applySelection() }
+
+    override func mouseDown(with event: NSEvent) {
+        if !isSelected { layer?.backgroundColor = Ov.activeBg.cgColor }
+        super.mouseDown(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        applySelection()
+    }
 
     @objc private func clicked() { onSelect?() }
 }
