@@ -334,6 +334,13 @@ class StoredCapture:
     source_digest: str
     source_length_bytes: int
     media_type: str
+    requested_source_identity: str
+    target_binding_revision: str
+    processing_profile_ref: str
+    processing_profile_revision: str
+    consent_json: str | None
+    bulk_origin_json: str | None
+    display_name: str | None
     expected_base_capture_id: str | None
     intent_kind: str
     association_kind: str

@@ -840,7 +840,7 @@ def test_the_addendum_names_version_2_3_and_the_live_manifest_is_version_2_5() -
 # The name keeps its original figures because the dated traceability ledger cites it.
 def test_the_addendum_names_fifty_seven_and_the_live_catalogue_is_sixty_nine() -> None:
     assert f"{ADDENDUM_CATALOGUE_COUNT} operations" in ADDENDUM
-    assert len(CATALOGUE_ENTRIES) == CURRENT_CATALOGUE_COUNT == 79
+    assert len(CATALOGUE_ENTRIES) == CURRENT_CATALOGUE_COUNT == 80
     assert len(CATALOGUE) == len(CATALOGUE_ENTRIES), "a catalogue operation name repeats"
     assert "fifty-four" not in MANIFEST_SOURCE
 

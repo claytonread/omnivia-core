@@ -140,6 +140,13 @@ CREATE TABLE IF NOT EXISTS omnivia_document_captures (
     source_digest               TEXT    NOT NULL,
     source_length_bytes         INTEGER NOT NULL,
     media_type                  TEXT    NOT NULL,
+    requested_source_identity   TEXT    NOT NULL,
+    target_binding_revision     TEXT    NOT NULL,
+    processing_profile_ref      TEXT    NOT NULL,
+    processing_profile_revision TEXT    NOT NULL,
+    consent_json                TEXT,
+    bulk_origin_json            TEXT,
+    display_name                TEXT,
     expected_base_capture_id    TEXT,
     intent_kind                 TEXT    NOT NULL,
     association_kind            TEXT    NOT NULL,
@@ -178,6 +185,18 @@ CREATE TABLE IF NOT EXISTS omnivia_document_captures (
     CHECK (typeof(source_length_bytes) = 'integer' AND source_length_bytes BETWEEN 0 AND 16777216),
     CHECK (typeof(media_type) = 'text' AND length(media_type) BETWEEN 3 AND 255
            AND instr(media_type, '/') > 1 AND instr(media_type, char(0)) = 0),
+    CHECK (typeof(requested_source_identity) = 'text' AND length(requested_source_identity) BETWEEN 1 AND 128
+           AND requested_source_identity NOT GLOB '*[^A-Za-z0-9._:-]*' AND instr(requested_source_identity, char(0)) = 0),
+    CHECK (typeof(target_binding_revision) = 'text' AND length(target_binding_revision) BETWEEN 1 AND 128
+           AND target_binding_revision NOT GLOB '*[^A-Za-z0-9._:-]*' AND instr(target_binding_revision, char(0)) = 0),
+    CHECK (typeof(processing_profile_ref) = 'text' AND length(processing_profile_ref) BETWEEN 1 AND 128
+           AND processing_profile_ref NOT GLOB '*[^A-Za-z0-9._:-]*' AND instr(processing_profile_ref, char(0)) = 0),
+    CHECK (typeof(processing_profile_revision) = 'text' AND length(processing_profile_revision) BETWEEN 1 AND 128
+           AND processing_profile_revision NOT GLOB '*[^A-Za-z0-9._:-]*' AND instr(processing_profile_revision, char(0)) = 0),
+    CHECK (consent_json IS NULL OR (typeof(consent_json) = 'text' AND json_valid(consent_json))),
+    CHECK (bulk_origin_json IS NULL OR (typeof(bulk_origin_json) = 'text' AND json_valid(bulk_origin_json))),
+    CHECK (display_name IS NULL OR (typeof(display_name) = 'text' AND length(display_name) BETWEEN 1 AND 1024
+           AND instr(display_name, char(0)) = 0)),
     CHECK (expected_base_capture_id IS NULL
            OR (typeof(expected_base_capture_id) = 'text' AND length(expected_base_capture_id) = 69
                AND substr(expected_base_capture_id, 1, 5) = 'dcap-'

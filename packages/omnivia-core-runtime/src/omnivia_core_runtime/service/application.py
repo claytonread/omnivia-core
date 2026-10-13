@@ -96,6 +96,10 @@ from omnivia_core_runtime.service.handlers.decisions import (
     DECISION_EVALUATE_OPERATION,
     DecisionHandlers,
 )
+from omnivia_core_runtime.service.handlers.document_capture import (
+    DOCUMENT_CAPTURE_OPERATION,
+    DocumentCaptureHandlers,
+)
 from omnivia_core_runtime.service.handlers.engineering import EngineeringHandlers
 from omnivia_core_runtime.service.handlers.evidence import (
     EVIDENCE_CAPTURE_OPERATION,
@@ -356,12 +360,14 @@ MEMORY_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 #: constructor exists to prevent. The seven authority families are unchanged.
 JOB_OBSERVATION_PURPOSE: Final = "job_observation"
 INGESTION_FAMILY_OPERATIONS: Final[frozenset[str]] = JOB_FAMILY_OPERATIONS | {
-    EVIDENCE_CAPTURE_OPERATION
+    EVIDENCE_CAPTURE_OPERATION,
+    DOCUMENT_CAPTURE_OPERATION,
 }
 JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         IMPORT_START_OPERATION: MUTATION_PURPOSES[IMPORT_START_OPERATION],
         EVIDENCE_CAPTURE_OPERATION: MUTATION_PURPOSES[EVIDENCE_CAPTURE_OPERATION],
+        DOCUMENT_CAPTURE_OPERATION: MUTATION_PURPOSES[DOCUMENT_CAPTURE_OPERATION],
         JOB_GET_OPERATION: JOB_OBSERVATION_PURPOSE,
         JOB_CANCEL_OPERATION: MUTATION_PURPOSES[JOB_CANCEL_OPERATION],
         JOB_RETRY_OPERATION: MUTATION_PURPOSES[JOB_RETRY_OPERATION],
@@ -829,7 +835,9 @@ def job_family_session(
 
 
 def build_job_registry(
-    handlers: JobHandlers, evidence: EvidenceHandlers
+    handlers: JobHandlers,
+    evidence: EvidenceHandlers,
+    documents: DocumentCaptureHandlers,
 ) -> ApplicationOperationRegistry:
     """The content-ingestion family's six handlers, from their two owning modules.
 
@@ -845,6 +853,10 @@ def build_job_registry(
     )
     registry.register(
         EVIDENCE_CAPTURE_OPERATION, cast(OperationHandler, evidence.evidence_capture)
+    )
+    registry.register(
+        DOCUMENT_CAPTURE_OPERATION,
+        cast(OperationHandler, documents.document_capture),
     )
     registry.register(JOB_GET_OPERATION, cast(OperationHandler, handlers.job_get))
     registry.register(JOB_CANCEL_OPERATION, cast(OperationHandler, handlers.job_cancel))
@@ -2572,7 +2584,14 @@ def build_job_application_dispatcher(
         clock=resolved_clock,
         allocate_identifier=allocate_identifier,
     )
-    registry = build_job_registry(handlers, evidence)
+    documents = DocumentCaptureHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=resolved_clock,
+        allocate_identifier=allocate_identifier,
+    )
+    registry = build_job_registry(handlers, evidence, documents)
     return ApplicationDispatcher(
         registry=registry,
         session=session,

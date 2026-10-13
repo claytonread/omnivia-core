@@ -465,6 +465,13 @@ def capture_document_bytes(
             source_digest=digest,
             source_length_bytes=len(content),
             media_type=media_type,
+            requested_source_identity=operation_key,
+            target_binding_revision=operation_key,
+            processing_profile_ref="legacy-default",
+            processing_profile_revision="1",
+            consent_json=None,
+            bulk_origin_json=None,
+            display_name=None,
             expected_base_capture_id=expected_base_capture_id,
             intent_kind=intent_kind,
             association_kind=association,
@@ -514,6 +521,183 @@ def _captured_replay(
     return DocumentCaptureResult(
         CAPTURE_STATUS_REPLAYED, existing, head.current_capture_id == existing.capture_id
     )
+
+
+def admit_document_capture_in_transaction(
+    runner: ServiceRunner,
+    *,
+    content: bytes,
+    document_id: str,
+    expected_base_capture_id: str | None,
+    operation_key: str,
+    media_type: str,
+    intent_kind: str,
+    binding: BindingClaim | None,
+    requested_source_identity: str,
+    target_binding_revision: str,
+    processing_profile_ref: str,
+    processing_profile_revision: str,
+    consent: Mapping[str, Any] | None,
+    bulk_origin: Mapping[str, Any] | None,
+    display_name: str | None,
+) -> DocumentCaptureResult:
+    """Write one transferred snapshot while the application mutation owns the transaction.
+
+    The caller must have published ``content`` to the workspace blob store first. This
+    function opens no transaction and commits nothing; the application mutation seam owns
+    audit, idempotency outcome, these domain rows, and rollback as one unit.
+    """
+    assert runner.connection is not None and runner.workspace_id is not None
+    assert runner.generation is not None
+    digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
+    request: dict[str, Any] = {
+        "documentId": document_id,
+        "expectedBaseCaptureId": expected_base_capture_id,
+        "intentKind": intent_kind,
+        "lineage": None
+        if binding is None
+        else {
+            "generation": binding.generation,
+            "memberRef": binding.member_ref,
+            "ownerRef": binding.owner_ref,
+            "rootRef": binding.root_ref,
+            "routeKind": binding.route_kind,
+        },
+        "mediaType": media_type,
+        "requestedSourceIdentity": requested_source_identity,
+        "targetBindingRevision": target_binding_revision,
+        "processingProfile": {
+            "profileRef": processing_profile_ref,
+            "revision": processing_profile_revision,
+        },
+        "consent": consent,
+        "bulkOrigin": bulk_origin,
+        "displayName": display_name,
+        "sourceDigest": digest,
+        "sourceLengthBytes": len(content),
+    }
+    replay = _captured_replay(runner, operation_key, request)
+    if replay is not None:
+        return replay
+    workspace_id = runner.workspace_id
+    if intent_kind in store.AUTOMATIC_INTENTS and store.has_nonretained_identical(
+        runner.connection,
+        workspace_id=workspace_id,
+        document_id=document_id,
+        source_digest=digest,
+    ):
+        raise DocumentCaptureSuppressed(
+            "identical bytes were already captured and then expired or deleted"
+        )
+    now_us = _now_us()
+    head = store.ensure_document(
+        runner.connection,
+        workspace_id=workspace_id,
+        document_id=document_id,
+        fencing_generation=runner.generation,
+        now_us=now_us,
+    )
+    if expected_base_capture_id is not None:
+        base = store.read_capture(
+            runner.connection,
+            workspace_id=workspace_id,
+            capture_id=expected_base_capture_id,
+        )
+        if base is None or base.document_id != document_id:
+            raise DocumentIntakeRefused(
+                "the expected base is not a capture of this document"
+            )
+    stored_binding = None
+    if binding is not None:
+        stored_binding = _binding_for(
+            runner,
+            document_id=document_id,
+            owner_ref=binding.owner_ref,
+            route_kind=binding.route_kind,
+            root_ref=binding.root_ref,
+            member_ref=binding.member_ref,
+        )
+        if stored_binding is None:
+            if intent_kind != store.INTENT_NEW_CAPTURE or binding.generation != 1:
+                raise DocumentIntakeRefused("the original binding is unknown")
+            stored_binding = store.insert_binding(
+                runner.connection,
+                workspace_id=workspace_id,
+                owner_ref=binding.owner_ref,
+                document_id=document_id,
+                route_kind=binding.route_kind,
+                root_ref=binding.root_ref,
+                member_ref=binding.member_ref,
+                state=store.BINDING_CONNECTED,
+                fencing_generation=runner.generation,
+                now_us=now_us,
+            )
+        if binding.generation > stored_binding.binding_generation:
+            raise DocumentIntakeRefused("the binding generation is newer than the binding")
+    sequence = store.last_capture_sequence(
+        runner.connection, workspace_id=workspace_id, document_id=document_id
+    )
+    association, disposition, reason = store.decide_capture(
+        head,
+        stored_binding,
+        claimed_generation=None if binding is None else binding.generation,
+        intent_kind=intent_kind,
+        expected_base_capture_id=expected_base_capture_id,
+        has_captures=sequence > 0,
+    )
+    capture_id = store.capture_id_for(workspace_id, operation_key)
+    try:
+        written = _write_capture(
+            runner,
+            source_id=capture_id,
+            digest=digest,
+            length=len(content),
+            media_type=media_type,
+            capture=CAPTURE_METADATA_KIND,
+        )
+    except SourceCaptureRefused as error:
+        raise DocumentIntakeRefused(str(error)) from error
+    assert written.evidence_id is not None
+    eligible = disposition == store.DISPOSITION_HEAD_ELIGIBLE
+    capture = store.StoredCapture(
+        workspace_id=workspace_id,
+        capture_id=capture_id,
+        document_id=document_id,
+        capture_sequence=sequence + 1,
+        evidence_id=written.evidence_id,
+        source_digest=digest,
+        source_length_bytes=len(content),
+        media_type=media_type,
+        requested_source_identity=requested_source_identity,
+        target_binding_revision=target_binding_revision,
+        processing_profile_ref=processing_profile_ref,
+        processing_profile_revision=processing_profile_revision,
+        consent_json=None if consent is None else to_canonical_json(consent),
+        bulk_origin_json=None if bulk_origin is None else to_canonical_json(bulk_origin),
+        display_name=display_name,
+        expected_base_capture_id=expected_base_capture_id,
+        intent_kind=intent_kind,
+        association_kind=association,
+        binding_owner_ref=None if binding is None else binding.owner_ref,
+        binding_generation=None if binding is None else binding.generation,
+        binding_route_kind=None if binding is None else binding.route_kind,
+        binding_root_ref=None if binding is None else binding.root_ref,
+        binding_member_ref=None if binding is None else binding.member_ref,
+        disposition=disposition,
+        disposition_reason=reason,
+        source_removal_generation=head.source_removal_generation,
+        operation_key=operation_key,
+        request_digest=store.capture_request_digest(
+            request, association=association, disposition=disposition, reason=reason
+        ),
+        fencing_generation=runner.generation,
+        created_at_us=now_us,
+    )
+    store.insert_capture(runner.connection, capture, now_us=now_us)
+    store.insert_capture_outbox(runner.connection, capture, now_us=now_us)
+    if eligible:
+        store.advance_capture_head(runner.connection, capture, now_us=now_us)
+    return DocumentCaptureResult(CAPTURE_STATUS_CAPTURED, capture, eligible)
 
 
 def current_capture(runner: ServiceRunner, *, document_id: str) -> store.StoredCapture | None:

@@ -339,7 +339,7 @@ def test_the_two_lookups_are_declared_and_cover_seventy_nine_application_paths()
     """Seventy-nine application paths and three probe paths, and no path in both."""
     application = {command.path for command in APPLICATION_COMMANDS}
     probes = {command.path for command in PROBE_COMMANDS}
-    assert len(application) == 79
+    assert len(application) == 80
     assert len(probes) == 3
     assert not application & probes
 
