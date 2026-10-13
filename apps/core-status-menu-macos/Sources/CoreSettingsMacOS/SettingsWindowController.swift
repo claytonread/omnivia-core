@@ -339,6 +339,13 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             self.notificationCenter = nil
         }
         super.init()
+        // Pick up the stored preference rather than starting from false every
+        // launch. The companion's own preferences stay machine-local: they
+        // must work while Core is stopped, and they should not travel with a
+        // portable workspace to another Mac.
+        attentionNotificationsSelected = UserDefaults.standard.bool(
+            forKey: Self.attentionNotificationsKey
+        )
         coordinator.$snapshot.sink { [weak self] _ in self?.render() }.store(in: &cancellables)
         coordinator.$refreshInFlight.sink { [weak self] _ in self?.render() }.store(in: &cancellables)
     }
@@ -1055,6 +1062,19 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         row(into: card, title: title, detail: detail, trailing: chip(status, tone: .notBuilt))
     }
 
+    /// `.ov-toggle`. `NSSwitch` is the native control: correct hit target,
+    /// keyboard operable and announced properly by VoiceOver, none of which a
+    /// hand-drawn pill would get for free. Its "on" fill follows the user's
+    /// system accent rather than brick — that is macOS behaviour for a real
+    /// switch, and worth more than the colour match.
+    private func ovToggle(on: Bool, enabled: Bool, label: String) -> NSSwitch {
+        let toggle = NSSwitch()
+        toggle.state = on ? .on : .off
+        toggle.isEnabled = enabled
+        toggle.setAccessibilityLabel(label)
+        return toggle
+    }
+
     // MARK: OmniVia buttons (prototype .ov-btn / .ov-btn--bordered / --primary)
 
     private func button(
@@ -1077,8 +1097,53 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     // MARK: General
 
+    /// General (design `core-panes.js` → `general()`): four behaviour rows in
+    /// one unlabelled group, then the macOS access summary, then the note.
+    ///
+    /// The summary goes *below* the settings, not above them — it is a
+    /// lightweight roll-up of the rows, and leading with it makes the pane
+    /// read as a permissions checklist, which §A1 rules out.
     private func renderGeneral(_ content: NSStackView) {
         let preferences = currentPreferences()
+        let behaviour = card(content, header: nil)
+
+        // ---- Open menu bar at login ----
+        // A preference and an OS registration are separate facts (§A3). This
+        // build installs no login item, so there is no registration to report
+        // and nothing for the toggle to change.
+        let menuBody = row(
+            into: behaviour,
+            title: "Open menu bar at login",
+            detail: "Keep Core status and settings available when you sign in.",
+            trailing: ovToggle(on: false, enabled: false, label: "Open menu bar at login")
+        )
+        menuBody.addArrangedSubview(ovSpacer(2))
+        menuBody.addArrangedSubview(chip("No login item in this build", tone: .notBuilt))
+
+        renderStartupRow(into: behaviour)
+        renderNotificationsRow(into: behaviour)
+
+        // ---- Appearance ----
+        // System / Light / Dark, per the design. Only the dark token layer
+        // exists in this build, so the control is shown in its finished shape
+        // and marked rather than offering a switch that cannot take effect.
+        let appearance = NSSegmentedControl(
+            labels: ["System", "Light", "Dark"],
+            trackingMode: .selectOne,
+            target: nil,
+            action: nil
+        )
+        appearance.selectedSegment = 2
+        appearance.isEnabled = false
+        appearance.setAccessibilityLabel("Appearance")
+        let appearanceBody = row(
+            into: behaviour,
+            title: "Appearance",
+            detail: "Applies to this window and the menu bar item.",
+            trailing: appearance
+        )
+        appearanceBody.addArrangedSubview(ovSpacer(2))
+        appearanceBody.addArrangedSubview(chip("Dark only in this build", tone: .notBuilt))
 
         // ---- macOS access summary (one per window; §7.5 aggregation) ----
         let summary = ReadinessReducer.summarize(
@@ -1138,8 +1203,12 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             }
         }
 
-        // ---- Startup (companion login / Core background are distinct subjects, MT-008) ----
-        let startupCard = card(content, header: "Startup")
+        generalClosingNote(content)
+    }
+
+    /// Start Core at login (companion login / Core background are distinct
+    /// subjects, MT-008).
+    private func renderStartupRow(into behaviour: NSStackView) {
         let startupCheck = coordinator.snapshot.checks.first { $0.checkID == .coreBackground }
         let startupRow = ReadinessReducer.startupRow(check: startupCheck, serviceRunning: nil)
         let startupState: (String, ChipTone)
@@ -1150,11 +1219,13 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         default: startupState = (coordinator.refreshInFlight ? "Checking…" : "Not checked", .checking)
         }
         let startupBody = row(
-            into: startupCard,
+            into: behaviour,
             title: "Start Core at login",
-            detail: startupRow.detail ?? "Core's preference and the macOS registration are separate facts.",
-            trailing: chip(startupState.0, tone: startupState.1)
+            detail: startupRow.detail ?? "Starts the Core service itself, separately from the menu bar item.",
+            trailing: ovToggle(on: false, enabled: false, label: "Start Core at login")
         )
+        startupBody.addArrangedSubview(ovSpacer(2))
+        startupBody.addArrangedSubview(chip(startupState.0, tone: startupState.1))
         // Binding disposition (§19): no qualified registration mechanism exists,
         // so the row shows the honest state and the OS route — never a
         // registration this build cannot own.
@@ -1166,9 +1237,11 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                 actions: [button("Open Login Items", style: .bordered, action: #selector(openLoginItems), subject: "Core startup")]
             )
         )
+    }
 
-        // ---- Notifications ----
-        let notifyCard = card(content, header: "Notifications")
+    /// Notify me when Core needs attention. The preference is this window's
+    /// own and is live; whether macOS will deliver is a separate fact (§A3).
+    private func renderNotificationsRow(into behaviour: NSStackView) {
         let notifyCheck = coordinator.snapshot.checks.first { $0.checkID == .notificationsDelivery }
         let notifyState: (String, ChipTone)
         switch notifyCheck?.observedState {
@@ -1180,12 +1253,21 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         default:
             notifyState = coordinator.refreshInFlight ? ("Checking…", .checking) : ("Not checked", .neu)
         }
-        let notifyBody = row(
-            into: notifyCard,
-            title: "Notify me when Core needs attention",
-            detail: "Core's preference and macOS authorisation are separate facts.",
-            trailing: chip(notifyState.0, tone: notifyState.1)
+        let notifyToggle = ovToggle(
+            on: attentionNotificationsSelected,
+            enabled: true,
+            label: "Notify me when Core needs attention"
         )
+        notifyToggle.target = self
+        notifyToggle.action = #selector(toggleAttentionNotifications(_:))
+        let notifyBody = row(
+            into: behaviour,
+            title: "Notify me when Core needs attention",
+            detail: "Only for problems you can act on. Routine activity stays quiet.",
+            trailing: notifyToggle
+        )
+        notifyBody.addArrangedSubview(ovSpacer(2))
+        notifyBody.addArrangedSubview(chip(notifyState.0, tone: notifyState.1))
         var notifyActions: [NSButton] = []
         if notifyCheck?.observedState == .notDetermined {
             // Explicit, user-initiated request only; never on load (MT-013).
@@ -1197,7 +1279,9 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             notifyBody.addArrangedSubview(ovSpacer(5))
             notifyBody.addArrangedSubview(recoveryBlock(title: recoveryTitle(for: notifyCheck), actions: notifyActions, warn: notifyCheck?.observedState == .denied))
         }
+    }
 
+    private func generalClosingNote(_ content: NSStackView) {
         // The design closes General with this, and it is the pane's note rather
         // than the sidebar footer's line — the footer reports service state.
         content.addArrangedSubview(note("Closing this window does not stop Core."))
@@ -1719,6 +1803,20 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         render()
     }
 
+    /// The attention preference is this window's own, and is machine-local:
+    /// it belongs to the companion, not to a portable workspace, and must stay
+    /// settable while Core is stopped. Restores the key the deleted web host
+    /// persisted, so an existing preference is picked up rather than reset.
+    @objc private func toggleAttentionNotifications(_ sender: NSSwitch) {
+        attentionNotificationsSelected = sender.state == .on
+        UserDefaults.standard.set(
+            attentionNotificationsSelected, forKey: Self.attentionNotificationsKey
+        )
+        coordinator.scheduleRefresh(.explicitRefresh)
+    }
+
+    static let attentionNotificationsKey = "omnivia.core.settings.attentionNotifications"
+
     @objc private func refreshStatus() {
         coordinator.scheduleRefresh(.explicitRefresh)
     }
@@ -1890,33 +1988,35 @@ final class SidebarRowView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override var canBecomeKeyView: Bool { true }
 
+    /// Whether the most recent interaction anywhere in the source list came
+    /// from the keyboard. This is `:focus-visible`: the design rings a row
+    /// focused by Tab or an arrow key, and not one that merely holds first
+    /// responder — which, at window open, the first row always does. Ringing
+    /// on plain first responder put a permanent border around General.
+    private static var focusCameFromKeyboard = false
+
+    private var showsFocusRing = false {
+        didSet { if oldValue != showsFocusRing { applySelection() } }
+    }
+
     /// The system ring is blue; the design's is brick
     /// (`--ov-focus-ring-shadow`). Drawn rather than tinted, because AppKit
     /// gives no colour control over the system ring — so the system one is
     /// turned off and an equivalent is painted in its place, same 3pt spread
     /// and same row radius, rather than simply removed.
     override func becomeFirstResponder() -> Bool {
-        needsDisplay = true
+        showsFocusRing = Self.focusCameFromKeyboard
         return super.becomeFirstResponder()
     }
 
     override func resignFirstResponder() -> Bool {
-        needsDisplay = true
+        showsFocusRing = false
         return super.resignFirstResponder()
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        guard window?.firstResponder === self else { return }
-        let ring = NSBezierPath(
-            roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5), xRadius: 6, yRadius: 6
-        )
-        ring.lineWidth = 3
-        Ov.focusRing.setStroke()
-        ring.stroke()
-    }
-
     override func keyDown(with event: NSEvent) {
+        Self.focusCameFromKeyboard = true
+        showsFocusRing = true
         switch event.keyCode {
         case 36, 49: onSelect?()                       // Return, Space
         case 125: moveSelection?(1)                    // Down
@@ -1938,6 +2038,12 @@ final class SidebarRowView: NSView {
     /// (`[data-theme="dark"] #sw-nav .nav-row[aria-current="page"]`).
     private func applySelection() {
         layer?.backgroundColor = isSelected ? Ov.accentMuted.cgColor : NSColor.clear.cgColor
+        // The ring is the layer's border, not a stroke in `draw(_:)`. Drawn
+        // there it never reached the screen: this view is layer-backed with a
+        // background colour, and the layer's own fill is what gets composited.
+        // A border paints above that fill and cannot be lost the same way.
+        layer?.borderWidth = showsFocusRing ? 3 : 0
+        layer?.borderColor = showsFocusRing ? Ov.focusRing.cgColor : nil
         label.textColor = isSelected ? Ov.onAccent : Ov.textPrimary
         label.font = OvFont.sans(13, isSelected ? 500 : 400)
         icon.contentTintColor = isSelected ? Ov.accent : Ov.textSecondary
@@ -1965,6 +2071,8 @@ final class SidebarRowView: NSView {
     override func mouseExited(with event: NSEvent) { applySelection() }
 
     override func mouseDown(with event: NSEvent) {
+        Self.focusCameFromKeyboard = false
+        showsFocusRing = false
         if !isSelected { layer?.backgroundColor = Ov.activeBg.cgColor }
         super.mouseDown(with: event)
     }
