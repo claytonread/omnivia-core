@@ -18,7 +18,11 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         target: nil,
         action: nil
     )
-    private var waitingSelections: [(urls: [URL], surface: CaptureSurface)] = []
+    private var waitingSelections: [(
+        urls: [URL],
+        surface: CaptureSurface,
+        source: ManualCaptureCandidate.Source
+    )] = []
 
     public init(
         workspaceName: String,
@@ -48,13 +52,25 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     }
 
     public func addIncoming(_ urls: [URL], surface: CaptureSurface = .manual) {
+        addIncoming(urls, surface: surface, source: .original)
+    }
+
+    public func addIncomingSnapshots(_ urls: [URL], surface: CaptureSurface) {
+        addIncoming(urls, surface: surface, source: .capturedSnapshot)
+    }
+
+    private func addIncoming(
+        _ urls: [URL],
+        surface: CaptureSurface,
+        source: ManualCaptureCandidate.Source
+    ) {
         openOrFocus()
         if draft.items.isEmpty {
-            add(urls, surface: surface)
+            add(urls, surface: surface, source: source)
         } else if waitingSelections.count < 10,
                   waitingSelections.reduce(0, { $0 + $1.urls.count }) + urls.count <= 100
         {
-            waitingSelections.append((urls, surface))
+            waitingSelections.append((urls, surface, source))
             statusLabel.stringValue = "New selection waiting · \(urls.count) item(s). Finish the current selection first."
         } else {
             statusLabel.stringValue = "Incoming selection limit reached. Finish a selection and try again."
@@ -292,12 +308,21 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         if panel.runModal() == .OK, let root = panel.url { reviewFolder(root) }
     }
 
-    private func add(_ urls: [URL], surface: CaptureSurface) {
+    private func add(
+        _ urls: [URL],
+        surface: CaptureSurface,
+        source: ManualCaptureCandidate.Source = .original
+    ) {
         do {
-            try draft.add(urls, surface: surface)
-            statusLabel.stringValue = draft.containsFolders
-                ? "Double-click a folder to review its scope before adding it."
-                : "Ready to add."
+            try draft.add(urls, surface: surface, source: source)
+            if draft.containsSnapshots {
+                keepUpdated.state = .off
+                statusLabel.stringValue = "Captured copies are ready for review. They are not linked to temporary source files."
+            } else if draft.containsFolders {
+                statusLabel.stringValue = "Double-click a folder to review its scope before adding it."
+            } else {
+                statusLabel.stringValue = "Ready to add."
+            }
         } catch CaptureDraftError.tooManyItems {
             statusLabel.stringValue = "Choose no more than 10 files at a time."
         } catch CaptureDraftError.duplicateItem {
@@ -325,7 +350,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 keepUpdated.state = .off
                 if !waitingSelections.isEmpty {
                     let next = waitingSelections.removeFirst()
-                    try? draft.add(next.urls, surface: next.surface)
+                    try? draft.add(next.urls, surface: next.surface, source: next.source)
                     statusLabel.stringValue = "Review the next incoming selection."
                 }
                 refresh()
@@ -335,6 +360,10 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 primaryButton.isEnabled = true
             } catch ManualCaptureSubmissionError.automaticSourceLimitExceeded {
                 statusLabel.stringValue = "This Mac already has the maximum number of individually updated files."
+                primaryButton.isEnabled = true
+            } catch ManualCaptureSubmissionError.snapshotCannotBeMonitored {
+                keepUpdated.state = .off
+                statusLabel.stringValue = "Captured copies cannot be kept updated. Add them as snapshots instead."
                 primaryButton.isEnabled = true
             } catch {
                 statusLabel.stringValue = "Couldn’t queue this selection. Check access and try again."
@@ -356,6 +385,8 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
 
     private func refresh() {
         table.reloadData()
+        keepUpdated.isEnabled = !draft.containsSnapshots
+        if draft.containsSnapshots { keepUpdated.state = .off }
         primaryButton.isEnabled = draft.canSubmitFiles
         if draft.items.isEmpty && statusLabel.stringValue.isEmpty {
             statusLabel.stringValue = "Choose files to begin."

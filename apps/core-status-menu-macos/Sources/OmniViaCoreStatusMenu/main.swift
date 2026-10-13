@@ -61,7 +61,12 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         super.init()
         let intakeRoot = configuration.installationState.deletingLastPathComponent()
             .appendingPathComponent("native-intake", isDirectory: true)
-        if let environment = try? DocumentIntakeEnvironment(stateRoot: intakeRoot) {
+        if let environment = try? DocumentIntakeEnvironment(stateRoot: intakeRoot),
+           let snapshotStore = try? OwnedSnapshotStore(
+               root: intakeRoot.appendingPathComponent("owned-snapshots", isDirectory: true)
+           )
+        {
+            _ = snapshotStore.removeExpired()
             folderMonitoringCoordinator = environment.folderMonitoring
             folderBulkRunCoordinator = environment.folderBulkCoordinator
             fileMonitoringCoordinator = environment.fileMonitoring
@@ -75,7 +80,8 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             )
             let submitter = ManualCaptureSubmission(
                 environment: environment,
-                workspaceRef: configuration.workspaceID
+                workspaceRef: configuration.workspaceID,
+                snapshotStore: snapshotStore
             )
             let folderSubmitter = FolderCaptureSubmission(
                 environment: environment,
@@ -96,6 +102,13 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 submitter: submitter,
                 folderSubmitter: folderSubmitter,
                 onQueued: { [weak self] in self?.deliverPendingCaptures() }
+            )
+            ShortcutIntakeRuntime.configure(
+                snapshotStore: snapshotStore,
+                openHandler: { [weak self] in self?.capturePanelController?.openOrFocus() },
+                reviewHandler: { [weak self] urls in
+                    self?.capturePanelController?.addIncomingSnapshots(urls, surface: .shortcut)
+                }
             )
         }
     }

@@ -36,6 +36,18 @@ final class CaptureDraftTests: XCTestCase {
         XCTAssertEqual(draft.fileCandidates.map(\.surface), [.finderService])
     }
 
+    func testCapturedSnapshotProvenanceSurvivesDraftClassification() throws {
+        let root = try temporaryDirectory()
+        let file = root.appendingPathComponent("shared.pdf")
+        try Data("pdf".utf8).write(to: file)
+        var draft = CaptureDraft()
+
+        try draft.add([file], surface: .share, source: .capturedSnapshot)
+
+        XCTAssertTrue(draft.containsSnapshots)
+        XCTAssertEqual(draft.fileCandidates.map(\.source), [.capturedSnapshot])
+    }
+
     func testFolderRemainsVisibleAndRequiresSeparateReview() throws {
         let root = try temporaryDirectory()
         var draft = CaptureDraft()
@@ -88,6 +100,55 @@ final class CaptureDraftTests: XCTestCase {
             root: state.appendingPathComponent("capture-queue", isDirectory: true)
         )
         XCTAssertEqual(reloaded.allEntries(), entries)
+    }
+
+    func testSnapshotSubmissionDoesNotInventOriginalBinding() async throws {
+        let root = try temporaryDirectory()
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        let file = root.appendingPathComponent("shared.txt")
+        try Data("captured content".utf8).write(to: file)
+        let submission = try ManualCaptureSubmission(
+            stateRoot: state,
+            workspaceRef: "workspace-1",
+            bookmarkCodec: BookmarkCodec()
+        )
+
+        let entries = try await submission.submit([
+            ManualCaptureCandidate(
+                url: file,
+                surface: .share,
+                source: .capturedSnapshot
+            ),
+        ])
+
+        XCTAssertNil(entries.first?.intent.originalBinding)
+        XCTAssertEqual(entries.first?.intent.surface, .share)
+    }
+
+    func testSnapshotCannotBeKeptUpdated() async throws {
+        let root = try temporaryDirectory()
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        let file = root.appendingPathComponent("shared.txt")
+        try Data("captured content".utf8).write(to: file)
+        let submission = try ManualCaptureSubmission(
+            stateRoot: state,
+            workspaceRef: "workspace-1",
+            bookmarkCodec: BookmarkCodec()
+        )
+
+        do {
+            _ = try await submission.submit([
+                ManualCaptureCandidate(
+                    url: file,
+                    surface: .shortcut,
+                    keepUpdated: true,
+                    source: .capturedSnapshot
+                ),
+            ])
+            XCTFail("Expected snapshot monitoring to be rejected")
+        } catch {
+            XCTAssertEqual(error as? ManualCaptureSubmissionError, .snapshotCannotBeMonitored)
+        }
     }
 
     private func temporaryDirectory() throws -> URL {

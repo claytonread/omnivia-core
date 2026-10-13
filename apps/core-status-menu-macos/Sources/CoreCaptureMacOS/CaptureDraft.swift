@@ -17,6 +17,7 @@ public struct CaptureDraftItem: Equatable {
     public let url: URL
     public let kind: CaptureDraftItemKind
     public let surface: CaptureSurface
+    public let source: ManualCaptureCandidate.Source
     public var displayName: String { url.lastPathComponent }
 }
 
@@ -27,7 +28,11 @@ public struct CaptureDraft: Equatable {
 
     public init() {}
 
-    public mutating func add(_ urls: [URL], surface: CaptureSurface = .manual) throws {
+    public mutating func add(
+        _ urls: [URL],
+        surface: CaptureSurface = .manual,
+        source: ManualCaptureCandidate.Source = .original
+    ) throws {
         guard items.count + urls.count <= Self.maximumOrdinaryItems else {
             throw CaptureDraftError.tooManyItems
         }
@@ -38,10 +43,21 @@ public struct CaptureDraft: Equatable {
             else { throw CaptureDraftError.duplicateItem }
             let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
             if values?.isDirectory == true {
-                additions.append(CaptureDraftItem(url: url, kind: .folder, surface: surface))
+                guard source == .original else { throw CaptureDraftError.unsupportedItem }
+                additions.append(CaptureDraftItem(
+                    url: url,
+                    kind: .folder,
+                    surface: surface,
+                    source: source
+                ))
             } else if values?.isRegularFile == true,
                       let kind = ManualCaptureSubmission.contentKind(for: url) {
-                additions.append(CaptureDraftItem(url: url, kind: .file(kind), surface: surface))
+                additions.append(CaptureDraftItem(
+                    url: url,
+                    kind: .file(kind),
+                    surface: surface,
+                    source: source
+                ))
             } else {
                 throw CaptureDraftError.unsupportedItem
             }
@@ -65,11 +81,13 @@ public struct CaptureDraft: Equatable {
                 url: item.url,
                 displayName: item.displayName,
                 surface: item.surface,
-                keepUpdated: keepUpdated
+                keepUpdated: keepUpdated,
+                source: item.source
             )
         }
     }
 
     public var containsFolders: Bool { items.contains { $0.kind == .folder } }
+    public var containsSnapshots: Bool { items.contains { $0.source == .capturedSnapshot } }
     public var canSubmitFiles: Bool { !fileCandidates.isEmpty && !containsFolders }
 }

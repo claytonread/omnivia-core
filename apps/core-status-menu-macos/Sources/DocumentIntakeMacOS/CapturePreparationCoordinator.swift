@@ -26,7 +26,7 @@ public struct CaptureIntentSeed: Sendable {
     public let intentKind: CaptureIntentKind
     public let basePrecondition: CaptureBasePrecondition
     public let processingProfile: ProcessingProfileBinding
-    public let originalBinding: OriginalBindingIntent
+    public let originalBinding: OriginalBindingIntent?
     public let consent: ConsentBinding?
     public let bulkOrigin: BulkOriginBinding?
     public let createdAt: String
@@ -47,7 +47,7 @@ public struct CaptureIntentSeed: Sendable {
         intentKind: CaptureIntentKind,
         basePrecondition: CaptureBasePrecondition,
         processingProfile: ProcessingProfileBinding,
-        originalBinding: OriginalBindingIntent,
+        originalBinding: OriginalBindingIntent? = nil,
         consent: ConsentBinding? = nil,
         bulkOrigin: BulkOriginBinding? = nil,
         createdAt: String,
@@ -190,9 +190,11 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
               Set(items.map { $0.access.accessRef }).count == items.count
         else { throw CapturePreparationError.duplicateItem }
         for item in items {
-            guard item.seed.originalBinding.accessRecordId == item.access.accessRef,
-                  item.seed.originalBinding.bindingGeneration == item.access.generation
-            else { throw CapturePreparationError.invalidBinding }
+            if let binding = item.seed.originalBinding {
+                guard binding.accessRecordId == item.access.accessRef,
+                      binding.bindingGeneration == item.access.generation
+                else { throw CapturePreparationError.invalidBinding }
+            }
         }
 
         let accessStore = self.accessStore

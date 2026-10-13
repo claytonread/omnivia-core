@@ -1,21 +1,29 @@
 import Foundation
 
 public struct ManualCaptureCandidate: Sendable, Equatable {
+    public enum Source: Sendable, Equatable {
+        case original
+        case capturedSnapshot
+    }
+
     public let url: URL
     public let displayName: String
     public let surface: CaptureSurface
     public let keepUpdated: Bool
+    public let source: Source
 
     public init(
         url: URL,
         displayName: String? = nil,
         surface: CaptureSurface = .manual,
-        keepUpdated: Bool = false
+        keepUpdated: Bool = false,
+        source: Source = .original
     ) {
         self.url = url
         self.displayName = displayName ?? url.lastPathComponent
         self.surface = surface
         self.keepUpdated = keepUpdated
+        self.source = source
     }
 }
 
@@ -25,6 +33,7 @@ public enum ManualCaptureSubmissionError: Error, Equatable {
     case unsupportedType
     case duplicateAutomaticSource
     case automaticSourceLimitExceeded
+    case snapshotCannotBeMonitored
 }
 
 /// Converts one reviewed native file selection into the durable v3 queue.
@@ -37,6 +46,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
     private let accessStore: NativeAccessStore
     private let preparation: CapturePreparationCoordinator
     private let subscriptions: FileSubscriptionStore
+    private let snapshotStore: OwnedSnapshotStore?
     private let workspaceRef: String
     private let targetRef: String
 
@@ -55,6 +65,9 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         self.accessStore = environment.accessStore
         preparation = environment.preparation
         subscriptions = environment.fileSubscriptions
+        snapshotStore = try OwnedSnapshotStore(
+            root: stateRoot.appendingPathComponent("owned-snapshots", isDirectory: true)
+        )
         self.workspaceRef = workspaceRef
         self.targetRef = targetRef
     }
@@ -62,11 +75,13 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
     public init(
         environment: DocumentIntakeEnvironment,
         workspaceRef: String,
-        targetRef: String = "local"
+        targetRef: String = "local",
+        snapshotStore: OwnedSnapshotStore? = nil
     ) {
         accessStore = environment.accessStore
         preparation = environment.preparation
         subscriptions = environment.fileSubscriptions
+        self.snapshotStore = snapshotStore
         self.workspaceRef = workspaceRef
         self.targetRef = targetRef
     }
@@ -75,6 +90,9 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         guard !candidates.isEmpty else { throw ManualCaptureSubmissionError.emptySelection }
         guard candidates.count <= Self.maximumItems else { throw ManualCaptureSubmissionError.tooManyItems }
         let automaticCandidates = candidates.filter(\.keepUpdated)
+        guard !automaticCandidates.contains(where: { $0.source == .capturedSnapshot }) else {
+            throw ManualCaptureSubmissionError.snapshotCannotBeMonitored
+        }
         let existingAutomatic = subscriptions.all().filter { $0.state != .stopped }
         guard existingAutomatic.count + automaticCandidates.count <= Self.maximumAutomaticFiles else {
             throw ManualCaptureSubmissionError.automaticSourceLimitExceeded
@@ -98,6 +116,12 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         let createdAt = ISO8601DateFormatter().string(from: Date())
         var items: [CapturePreparationItem] = []
         var pendingSubscriptions: [FileSubscription] = []
+        var snapshotAccessRefs: [String] = []
+        defer {
+            for accessRef in snapshotAccessRefs {
+                _ = try? accessStore.disconnect(accessRef: accessRef)
+            }
+        }
         for candidate in candidates {
             guard let kind = Self.contentKind(for: candidate.url) else {
                 throw ManualCaptureSubmissionError.unsupportedType
@@ -111,6 +135,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                 selectedURL: candidate.url,
                 route: .directFile
             )
+            if candidate.source == .capturedSnapshot { snapshotAccessRefs.append(descriptor.accessRef) }
             let seed = CaptureIntentSeed(
                 submissionId: submissionID,
                 itemId: itemID,
@@ -133,11 +158,13 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                     profileRef: "document-default",
                     revision: "1"
                 ),
-                originalBinding: OriginalBindingIntent(
-                    accessRecordId: descriptor.accessRef,
-                    bindingGeneration: descriptor.generation,
-                    linkedDocumentId: documentID
-                ),
+                originalBinding: candidate.source == .original
+                    ? OriginalBindingIntent(
+                        accessRecordId: descriptor.accessRef,
+                        bindingGeneration: descriptor.generation,
+                        linkedDocumentId: documentID
+                    )
+                    : nil,
                 createdAt: createdAt,
                 displayName: candidate.displayName
             )
@@ -180,6 +207,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
             }
         }
         let entries = try await preparation.prepareAndPublish(items)
+        snapshotStore?.remove(candidates.filter { $0.source == .capturedSnapshot }.map(\.url))
         let byItem = Dictionary(uniqueKeysWithValues: entries.map { ($0.intent.itemId, $0) })
         for subscription in pendingSubscriptions {
             guard let entry = byItem[subscription.baselineItemID] else { continue }
