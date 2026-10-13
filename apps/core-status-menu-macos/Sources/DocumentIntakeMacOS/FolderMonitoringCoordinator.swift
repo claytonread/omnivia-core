@@ -51,8 +51,40 @@ public actor FolderMonitoringCoordinator {
     /// baseline member has an acknowledged Core admission.
     @discardableResult
     public func reconcileAll() async -> [FolderMonitoringReport] {
+        await reconcile(subscriptionIDs: nil)
+    }
+
+    @discardableResult
+    public func reconcile(subscriptionIDs: Set<String>) async -> [FolderMonitoringReport] {
+        await reconcile(subscriptionIDs: Optional(subscriptionIDs))
+    }
+
+    public func markDirty(subscriptionIDs: Set<String>) {
+        for id in subscriptionIDs {
+            _ = try? subscriptions.update(id: id) { value in
+                guard value.state == .active else { return }
+                value.needsFullReconciliation = true
+            }
+        }
+    }
+
+    public func activeObservationRoots() -> [FolderObservationRoot] {
+        subscriptions.all().compactMap { subscription in
+            guard subscription.state == .active else { return nil }
+            let expectedGeneration = subscription.members.map(\.membershipGeneration).min() ?? 1
+            return try? accessStore.withRootReadAccess(
+                rootRef: subscription.rootRef,
+                expectedGeneration: expectedGeneration
+            ) { root in
+                FolderObservationRoot(subscriptionID: subscription.subscriptionID, url: root)
+            }
+        }
+    }
+
+    private func reconcile(subscriptionIDs: Set<String>?) async -> [FolderMonitoringReport] {
         var reports: [FolderMonitoringReport] = []
         for persisted in subscriptions.all() {
+            if let subscriptionIDs, !subscriptionIDs.contains(persisted.subscriptionID) { continue }
             guard let subscription = try? reconcileAdmissions(persisted) else { continue }
             guard subscription.state == .active else {
                 reports.append(

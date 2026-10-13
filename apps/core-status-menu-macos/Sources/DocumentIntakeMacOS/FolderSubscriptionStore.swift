@@ -37,6 +37,7 @@ public struct FolderSubscriptionMember: Codable, Equatable, Sendable {
 public struct FolderSubscription: Codable, Equatable, Sendable {
     public let subscriptionID: String
     public let rootRef: String
+    public let rootDisplayName: String
     public let targetRef: String
     public let workspaceRef: String
     public let targetBindingRevision: String
@@ -202,6 +203,9 @@ public final class FolderSubscriptionStore: @unchecked Sendable {
               value.consentGeneration > 0,
               !value.members.isEmpty,
               value.members.count <= FolderCaptureSubmission.maximumMembers,
+              !value.rootDisplayName.isEmpty,
+              value.rootDisplayName.count <= 255,
+              !value.rootDisplayName.contains("\0"),
               Set(value.members.map(\.memberID)).count == value.members.count,
               Set(value.members.map(\.accessRef)).count == value.members.count,
               value.members.allSatisfy({ member in

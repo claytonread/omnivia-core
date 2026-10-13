@@ -275,6 +275,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                 FolderSubscription(
                     subscriptionID: subscriptionID,
                     rootRef: rootRef,
+                    rootDisplayName: plan.root.lastPathComponent,
                     targetRef: targetRef,
                     workspaceRef: workspaceRef,
                     targetBindingRevision: "1",
