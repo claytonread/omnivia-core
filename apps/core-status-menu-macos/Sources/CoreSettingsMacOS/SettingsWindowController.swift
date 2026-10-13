@@ -773,7 +773,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     private func notBuiltRow(
         into card: NSStackView,
         title: String,
-        detail: String,
+        detail: String?,
         status: String = "Not in this build"
     ) -> NSStackView {
         row(into: card, title: title, detail: detail, trailing: chip(status, tone: .notBuilt))
@@ -1141,29 +1141,243 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     // MARK: Processing
 
+    /// Processing (design `core-panes.js` → `processing()`, plus the Local
+    /// Decisions group from `core-decisions.js` → `section()`).
     private func renderProcessing(_ content: NSStackView) {
-        let sourcesCard = card(content, header: "Sources")
-        row(
-            into: sourcesCard,
-            title: "No configured sources",
-            detail: "Sources are added by their owning feature. Per-source access status and recovery appear beside each source once that feature exists."
+        let automatic = card(content, header: "Automatic processing")
+        notBuiltRow(
+            into: automatic,
+            title: "Process changes automatically",
+            detail: "Process updates from sources you have allowed.",
+            status: "Not in this build"
+        )
+        notBuiltRow(
+            into: automatic,
+            title: "Sources",
+            detail: "Sources are approved in OmniVia. Per-source access status and recovery appear beside each source once that feature exists.",
+            status: "None configured"
+        )
+        notBuiltRow(
+            into: automatic,
+            title: "Resource use",
+            detail: "How much of this Mac Core may use while processing.",
+            status: "Not in this build"
+        )
+        notBuiltRow(
+            into: automatic,
+            title: "Pause heavy processing on battery",
+            detail: "Light updates continue; extraction and indexing wait for power.",
+            status: "Not in this build"
+        )
+
+        let activity = card(content, header: "Activity")
+        notBuiltRow(
+            into: activity,
+            title: "Processing state unknown",
+            detail: "Core does not report processing activity to this window in this build.",
+            status: "Not reported"
+        )
+
+        // ---- Local Decisions (LD-01 overview) ----
+        // The honest state is "no decision engine in this build". The design's
+        // not-installed state offers "Install model…", which this deliberately
+        // does not: §A5 says to hide an unimplemented control rather than
+        // falsely offer installation, and there is no runtime to install into.
+        let decisionsLede = NSTextField(
+            wrappingLabelWithString: "Suggest categories and follow-ups using information you choose."
+        )
+        decisionsLede.font = OvFont.sans(11.5)
+        decisionsLede.textColor = Ov.textTertiary
+        decisionsLede.preferredMaxLayoutWidth = 560
+        content.addArrangedSubview(OvFont.groupHeader("Local Decisions"))
+        content.addArrangedSubview(ovSpacer(6))
+        content.addArrangedSubview(decisionsLede)
+        content.addArrangedSubview(ovSpacer(8))
+
+        let decisions = card(content, header: nil)
+        notBuiltRow(
+            into: decisions,
+            title: "Local Decisions",
+            detail: "Makes routine judgements locally using information Core is already allowed to access. The decision engine is not part of this build, so there is no model to install and nothing to turn on.",
+            status: "Not in this build"
+        )
+        content.addArrangedSubview(
+            note("Recommendations stay advisory. A prediction does not itself approve a change or authorise an action.")
+        )
+        content.addArrangedSubview(ovSpacer(18))
+
+        // ---- Processing details ----
+        let detailsBody = NSStackView()
+        detailsBody.orientation = .vertical
+        detailsBody.alignment = .leading
+        detailsBody.spacing = 0
+        for dependency in ["Search index", "Text extraction", "Semantic embeddings"] {
+            notBuiltRow(
+                into: detailsBody,
+                title: dependency,
+                detail: nil,
+                status: "Not reported"
+            )
+        }
+        let detailsCard = card(content, header: nil)
+        detailsCard.addArrangedSubview(
+            disclosure(id: "proc-details", label: "Processing details", body: detailsBody)
+        )
+        content.addArrangedSubview(
+            note(
+                "Everything runs on this Mac. No workspace content is sent to an external service.",
+                symbol: "checkmark.shield"
+            )
         )
     }
 
     // MARK: Access
 
+    /// Access (design `core-panes.js` → `access()`): which applications may use
+    /// this workspace, and how this Mac is reachable. The design puts "Add
+    /// application…" in the pane header; with no grant store behind it that
+    /// would be a disabled button floating beside the title, so it is stated
+    /// as a row instead.
     private func renderAccess(_ content: NSStackView) {
-        let connectionsCard = card(content, header: "Connections")
-        row(
-            into: connectionsCard,
-            title: "No configured connections",
-            detail: "Connection recovery appears beside each connection once the connection feature exists. macOS permissions and Core app-to-Core authority remain separate facts."
+        let apps = card(content, header: "Connected applications")
+        notBuiltRow(
+            into: apps,
+            title: "No configured applications",
+            detail: "Applications that may use this workspace are listed here with their access level. Per-application access is granted by a store this build does not have.",
+            status: "None configured"
+        )
+        notBuiltRow(
+            into: apps,
+            title: "Add application…",
+            detail: "New applications start as Read only and are raised to Read and contribute explicitly.",
+            status: "Not in this build"
+        )
+        content.addArrangedSubview(
+            note("Configured access is not a live connection. macOS permissions and Core’s own workspace authority stay separate facts.")
+        )
+        content.addArrangedSubview(ovSpacer(18))
+
+        let connectionBody = NSStackView()
+        connectionBody.orientation = .vertical
+        connectionBody.alignment = .leading
+        connectionBody.spacing = 0
+        notBuiltRow(
+            into: connectionBody,
+            title: "Transport",
+            detail: "How applications reach Core on this Mac.",
+            status: "Not reported"
+        )
+        notBuiltRow(
+            into: connectionBody,
+            title: "Reachable from",
+            detail: nil,
+            status: "Not reported"
+        )
+        notBuiltRow(
+            into: connectionBody,
+            title: "Socket",
+            detail: "Core does not report its socket path to this window in this build.",
+            status: "Not reported"
+        )
+        let connectionCard = card(content, header: nil)
+        connectionCard.addArrangedSubview(
+            disclosure(id: "conn-details", label: "Connection details", body: connectionBody)
+        )
+        content.addArrangedSubview(
+            note(
+                "Connections are local to this Mac. Core is not exposed to other devices or the internet.",
+                symbol: "checkmark.shield"
+            )
         )
     }
 
     // MARK: Maintenance
 
+    /// Maintenance (design `core-panes.js` → `maintenance()`): Core's health,
+    /// diagnostics, and the index rebuild. Lifecycle lives in the menu, which
+    /// owns it — this pane states that rather than offering a second set of
+    /// start/stop controls (MR-005: the settings window invokes no lifecycle
+    /// command).
     private func renderMaintenance(_ content: NSStackView) {
+        let core = card(content, header: "Core")
+        notBuiltRow(
+            into: core,
+            title: "Service",
+            detail: "Runs on this Mac. Closing this window does not stop it. Start, stop and restart live in the Core menu, which owns the lifecycle; this window never invokes it.",
+            status: "Shown in the menu"
+        )
+        notBuiltRow(
+            into: core,
+            title: "Core version",
+            detail: nil,
+            status: "Not reported"
+        )
+        row(
+            into: core,
+            title: "Companion version",
+            detail: "This settings window and the menu bar item.",
+            trailing: OvFont.label(
+                companionVersion, size: 11.5, color: Ov.textSecondary, mono: true
+            )
+        )
+        notBuiltRow(
+            into: core,
+            title: "Updates",
+            detail: "Installed with the OmniVia installer. No updater is available here.",
+            status: "Not in this build"
+        )
+
+        let diagnostics = card(content, header: "Diagnostics")
+        notBuiltRow(
+            into: diagnostics,
+            title: "Logs",
+            detail: "Recent Core and companion events on this Mac. Workspace content is never logged.",
+            status: "Not in this build"
+        )
+        notBuiltRow(
+            into: diagnostics,
+            title: "Diagnostics bundle",
+            detail: "Collect a bundle to share with support. You review what it includes first.",
+            status: "Not in this build"
+        )
+        notBuiltRow(
+            into: diagnostics,
+            title: "Share to Core extension",
+            detail: "Installed and verified in a supported Share menu are different states; neither is claimed here.",
+            status: "Not in this build"
+        )
+
+        let optionsBody = NSStackView()
+        optionsBody.orientation = .vertical
+        optionsBody.alignment = .leading
+        optionsBody.spacing = 0
+        notBuiltRow(
+            into: optionsBody,
+            title: "Search indexes",
+            detail: "Rebuilds the search and embedding indexes from workspace records. Records themselves are not changed or deleted.",
+            status: "Not in this build"
+        )
+        let options = card(content, header: nil)
+        options.addArrangedSubview(
+            disclosure(id: "maint-options", label: "Maintenance options", body: optionsBody)
+        )
+
+        renderMacCheckDetails(content)
+    }
+
+    /// The companion's own version, which is a fact this process actually has.
+    private var companionVersion: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String
+        let build = info?["CFBundleVersion"] as? String
+        switch (short, build) {
+        case let (version?, build?): return "\(version) (\(build))"
+        case let (version?, nil): return version
+        default: return "Not reported"
+        }
+    }
+
+    private func renderMacCheckDetails(_ content: NSStackView) {
         let detailsCard = card(content, header: "macOS check details")
         let snapshot = coordinator.snapshot
         let observed = snapshot.observedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "never"
