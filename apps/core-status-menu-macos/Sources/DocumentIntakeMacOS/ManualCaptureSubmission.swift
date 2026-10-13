@@ -4,11 +4,18 @@ public struct ManualCaptureCandidate: Sendable, Equatable {
     public let url: URL
     public let displayName: String
     public let surface: CaptureSurface
+    public let keepUpdated: Bool
 
-    public init(url: URL, displayName: String? = nil, surface: CaptureSurface = .manual) {
+    public init(
+        url: URL,
+        displayName: String? = nil,
+        surface: CaptureSurface = .manual,
+        keepUpdated: Bool = false
+    ) {
         self.url = url
         self.displayName = displayName ?? url.lastPathComponent
         self.surface = surface
+        self.keepUpdated = keepUpdated
     }
 }
 
@@ -26,6 +33,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
 
     private let accessStore: NativeAccessStore
     private let preparation: CapturePreparationCoordinator
+    private let subscriptions: FileSubscriptionStore
     private let workspaceRef: String
     private let targetRef: String
 
@@ -43,6 +51,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         )
         self.accessStore = environment.accessStore
         preparation = environment.preparation
+        subscriptions = environment.fileSubscriptions
         self.workspaceRef = workspaceRef
         self.targetRef = targetRef
     }
@@ -54,6 +63,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
     ) {
         accessStore = environment.accessStore
         preparation = environment.preparation
+        subscriptions = environment.fileSubscriptions
         self.workspaceRef = workspaceRef
         self.targetRef = targetRef
     }
@@ -64,6 +74,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         let submissionID = Self.identifier(prefix: "submission")
         let createdAt = ISO8601DateFormatter().string(from: Date())
         var items: [CapturePreparationItem] = []
+        var pendingSubscriptions: [FileSubscription] = []
         for candidate in candidates {
             guard let kind = Self.contentKind(for: candidate.url) else {
                 throw ManualCaptureSubmissionError.unsupportedType
@@ -114,8 +125,48 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                 ),
                 seed: seed
             ))
+            if candidate.keepUpdated {
+                let subscription = FileSubscription(
+                    subscriptionID: Self.identifier(prefix: "subscription"),
+                    accessRef: descriptor.accessRef,
+                    linkedDocumentID: documentID,
+                    requestedSourceIdentity: seed.requestedSourceIdentity,
+                    displayName: candidate.displayName,
+                    contentKind: kind,
+                    bindingGeneration: descriptor.generation,
+                    baselineItemID: itemID,
+                    targetRef: targetRef,
+                    workspaceRef: workspaceRef,
+                    targetBindingRevision: "1",
+                    callerContextBinding: seed.callerContextBinding,
+                    configGeneration: 1,
+                    consentGeneration: 1,
+                    consentRecordedAt: createdAt,
+                    state: .waitingForCore,
+                    currentSuccessfulCaptureID: nil,
+                    lastObservedDigest: nil,
+                    lastObservedByteLength: nil,
+                    lastObservedAt: nil,
+                    lastQueuedItemID: itemID,
+                    dirtyEpoch: 1,
+                    needsReconciliation: true,
+                    lastCheckedAt: nil
+                )
+                _ = try subscriptions.register(subscription)
+                pendingSubscriptions.append(subscription)
+            }
         }
-        return try await preparation.prepareAndPublish(items)
+        let entries = try await preparation.prepareAndPublish(items)
+        let byItem = Dictionary(uniqueKeysWithValues: entries.map { ($0.intent.itemId, $0) })
+        for subscription in pendingSubscriptions {
+            guard let entry = byItem[subscription.baselineItemID] else { continue }
+            _ = try subscriptions.update(id: subscription.subscriptionID) {
+                $0.lastObservedDigest = entry.intent.localIntegrityDigest
+                $0.lastObservedByteLength = entry.intent.byteLength
+                $0.lastObservedAt = entry.intent.createdAt
+            }
+        }
+        return entries
     }
 
     public static func contentKind(for url: URL) -> CaptureContentKind? {

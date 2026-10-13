@@ -5,18 +5,53 @@ import DocumentIntakeMacOS
 public final class FolderManagementWindowController: NSWindowController,
     NSTableViewDataSource, NSTableViewDelegate
 {
-    private let store: FolderSubscriptionStore
-    private let monitoring: FolderMonitoringCoordinator
+    private enum Row {
+        case file(FileSubscription)
+        case folder(FolderSubscription)
+
+        var id: String {
+            switch self {
+            case let .file(value): value.subscriptionID
+            case let .folder(value): value.subscriptionID
+            }
+        }
+
+        var displayName: String {
+            switch self {
+            case let .file(value): value.displayName
+            case let .folder(value): value.rootDisplayName
+            }
+        }
+
+        var state: FolderSubscriptionState {
+            switch self {
+            case let .file(value): value.state
+            case let .folder(value): value.state
+            }
+        }
+    }
+
+    private let folderStore: FolderSubscriptionStore
+    private let folderMonitoring: FolderMonitoringCoordinator
+    private let fileStore: FileSubscriptionStore
+    private let fileMonitoring: FileMonitoringCoordinator
     private let table = NSTableView()
     private let statusLabel = NSTextField(labelWithString: "")
     private let pauseResumeButton = NSButton(title: "Pause", target: nil, action: nil)
-    private let stopButton = NSButton(title: "Stop watching", target: nil, action: nil)
+    private let stopButton = NSButton(title: "Stop updating", target: nil, action: nil)
     private let checkButton = NSButton(title: "Check now", target: nil, action: nil)
-    private var subscriptions: [FolderSubscription] = []
+    private var rows: [Row] = []
 
-    public init(store: FolderSubscriptionStore, monitoring: FolderMonitoringCoordinator) {
-        self.store = store
-        self.monitoring = monitoring
+    public init(
+        folderStore: FolderSubscriptionStore,
+        folderMonitoring: FolderMonitoringCoordinator,
+        fileStore: FileSubscriptionStore,
+        fileMonitoring: FileMonitoringCoordinator
+    ) {
+        self.folderStore = folderStore
+        self.folderMonitoring = folderMonitoring
+        self.fileStore = fileStore
+        self.fileMonitoring = fileMonitoring
         super.init(window: nil)
     }
 
@@ -31,17 +66,21 @@ public final class FolderManagementWindowController: NSWindowController,
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    public func numberOfRows(in tableView: NSTableView) -> Int { subscriptions.count }
+    public func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
     public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard row < subscriptions.count, let identifier = tableColumn?.identifier else { return nil }
-        let subscription = subscriptions[row]
+        guard rows.indices.contains(row), let identifier = tableColumn?.identifier else { return nil }
+        let value = rows[row]
         let text: String
-        switch identifier.rawValue {
-        case "folder": text = subscription.rootDisplayName
-        case "status": text = Self.label(subscription.state)
-        case "files": text = String(subscription.members.count)
-        case "checked": text = subscription.lastCompletedMetadataScanAt ?? "Not yet"
+        switch (identifier.rawValue, value) {
+        case ("source", _): text = value.displayName
+        case ("kind", .file): text = "File"
+        case ("kind", .folder): text = "Folder"
+        case ("status", _): text = Self.label(value.state)
+        case ("files", .file): text = "1"
+        case ("files", let .folder(folder)): text = String(folder.members.count)
+        case ("checked", let .file(file)): text = file.lastCheckedAt ?? "Not yet"
+        case ("checked", let .folder(folder)): text = folder.lastCompletedMetadataScanAt ?? "Not yet"
         default: text = ""
         }
         let field = NSTextField(labelWithString: text)
@@ -54,7 +93,7 @@ public final class FolderManagementWindowController: NSWindowController,
 
     private func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 650, height: 380),
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 410),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -63,10 +102,11 @@ public final class FolderManagementWindowController: NSWindowController,
         window.center()
 
         for (id, title, width) in [
-            ("folder", "Folder", 220.0),
-            ("status", "Status", 130.0),
-            ("files", "Files", 70.0),
-            ("checked", "Last checked", 180.0),
+            ("source", "Source", 245.0),
+            ("kind", "Kind", 65.0),
+            ("status", "Status", 125.0),
+            ("files", "Files", 55.0),
+            ("checked", "Last checked", 185.0),
         ] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
             column.title = title
@@ -84,7 +124,7 @@ public final class FolderManagementWindowController: NSWindowController,
         pauseResumeButton.target = self
         pauseResumeButton.action = #selector(pauseResume)
         stopButton.target = self
-        stopButton.action = #selector(stopWatching)
+        stopButton.action = #selector(stopUpdating)
         checkButton.target = self
         checkButton.action = #selector(checkNow)
         let spacer = NSView()
@@ -104,71 +144,101 @@ public final class FolderManagementWindowController: NSWindowController,
             root.trailingAnchor.constraint(equalTo: host.trailingAnchor),
             root.topAnchor.constraint(equalTo: host.topAnchor),
             root.bottomAnchor.constraint(equalTo: host.bottomAnchor),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 270),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 290),
         ])
         window.contentView = host
         return window
     }
 
     private func reload() {
-        subscriptions = store.all()
+        let files = fileStore.all().map(Row.file)
+        let folders = folderStore.all().map(Row.folder)
+        rows = (files + folders).sorted {
+            if $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedSame {
+                return $0.id < $1.id
+            }
+            return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
         table.reloadData()
-        statusLabel.stringValue = subscriptions.isEmpty
-            ? "No folders are being watched."
-            : "\(subscriptions.count) folder watch(es)"
+        if rows.isEmpty {
+            statusLabel.stringValue = "No files or folders are kept updated."
+        } else {
+            let active = rows.filter { $0.state == .active }.count
+            statusLabel.stringValue = "\(active) active · \(rows.count) total"
+        }
         updateControls()
     }
 
     private func updateControls() {
-        guard table.selectedRow >= 0, table.selectedRow < subscriptions.count else {
+        guard let selected else {
             pauseResumeButton.isEnabled = false
             stopButton.isEnabled = false
             checkButton.isEnabled = false
             return
         }
-        let state = subscriptions[table.selectedRow].state
-        pauseResumeButton.title = state == .paused || state == .needsAccess ? "Resume" : "Pause"
-        pauseResumeButton.isEnabled = state == .active || state == .paused || state == .needsAccess
-        stopButton.isEnabled = state != .stopped
-        checkButton.isEnabled = state == .active
+        pauseResumeButton.title = selected.state == .paused || selected.state == .needsAccess
+            ? "Resume" : "Pause"
+        pauseResumeButton.isEnabled = [.active, .paused, .needsAccess].contains(selected.state)
+        stopButton.isEnabled = selected.state != .stopped
+        checkButton.isEnabled = selected.state == .active
     }
 
-    private var selected: FolderSubscription? {
-        guard table.selectedRow >= 0, table.selectedRow < subscriptions.count else { return nil }
-        return subscriptions[table.selectedRow]
+    private var selected: Row? {
+        guard rows.indices.contains(table.selectedRow) else { return nil }
+        return rows[table.selectedRow]
     }
 
     @objc private func pauseResume() {
         guard let selected else { return }
         Task {
-            if selected.state == .paused || selected.state == .needsAccess {
-                _ = try? await monitoring.resume(subscriptionID: selected.subscriptionID)
-            } else {
-                _ = try? await monitoring.pause(subscriptionID: selected.subscriptionID)
+            let resume = selected.state == .paused || selected.state == .needsAccess
+            switch selected {
+            case let .folder(value):
+                if resume {
+                    _ = try? await folderMonitoring.resume(subscriptionID: value.subscriptionID)
+                } else {
+                    _ = try? await folderMonitoring.pause(subscriptionID: value.subscriptionID)
+                }
+            case let .file(value):
+                if resume {
+                    _ = try? await fileMonitoring.resume(subscriptionID: value.subscriptionID)
+                } else {
+                    _ = try? await fileMonitoring.pause(subscriptionID: value.subscriptionID)
+                }
             }
             reload()
         }
     }
 
-    @objc private func stopWatching() {
+    @objc private func stopUpdating() {
         guard let selected else { return }
         let alert = NSAlert()
-        alert.messageText = "Stop watching \(selected.rootDisplayName)?"
-        alert.informativeText = "Captured files remain in Core. New folder changes will no longer be added automatically."
-        alert.addButton(withTitle: "Stop watching")
+        alert.messageText = "Stop updating \(selected.displayName)?"
+        alert.informativeText = "Captured content remains in Core. Future changes will no longer be added automatically."
+        alert.addButton(withTitle: "Stop updating")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task {
-            _ = try? await monitoring.stop(subscriptionID: selected.subscriptionID)
+            switch selected {
+            case let .folder(value):
+                _ = try? await folderMonitoring.stop(subscriptionID: value.subscriptionID)
+            case let .file(value):
+                _ = try? await fileMonitoring.stop(subscriptionID: value.subscriptionID)
+            }
             reload()
         }
     }
 
     @objc private func checkNow() {
         guard let selected else { return }
-        statusLabel.stringValue = "Checking \(selected.rootDisplayName)…"
+        statusLabel.stringValue = "Checking \(selected.displayName)…"
         Task {
-            _ = await monitoring.reconcile(subscriptionIDs: [selected.subscriptionID])
+            switch selected {
+            case let .folder(value):
+                _ = await folderMonitoring.reconcile(subscriptionIDs: [value.subscriptionID])
+            case let .file(value):
+                _ = await fileMonitoring.reconcile(subscriptionIDs: [value.subscriptionID])
+            }
             reload()
         }
     }
@@ -179,7 +249,7 @@ public final class FolderManagementWindowController: NSWindowController,
         case .active: "Watching"
         case .paused: "Paused"
         case .reviewRequired: "Review required"
-        case .needsAccess: "Needs folder access"
+        case .needsAccess: "Needs access"
         case .stopped: "Stopped"
         }
     }

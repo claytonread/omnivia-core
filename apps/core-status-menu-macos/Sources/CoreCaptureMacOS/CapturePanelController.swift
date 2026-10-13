@@ -13,6 +13,11 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     private let primaryButton = NSButton(title: "Add", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
     private let note = NSTextView()
+    private let keepUpdated = NSButton(
+        checkboxWithTitle: "Keep selected files updated",
+        target: nil,
+        action: nil
+    )
     private var waitingSelections: [(urls: [URL], surface: CaptureSurface)] = []
 
     public init(
@@ -96,10 +101,17 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         noteScroll.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
 
         let chooseFiles = NSButton(title: "Choose files…", target: self, action: #selector(chooseFilesAction))
+        chooseFiles.keyEquivalent = "o"
+        chooseFiles.keyEquivalentModifierMask = [.command]
         let chooseFolder = NSButton(title: "Choose folder…", target: self, action: #selector(chooseFolderAction))
+        chooseFolder.keyEquivalent = "o"
+        chooseFolder.keyEquivalentModifierMask = [.command, .shift]
         let chooser = NSStackView(views: [chooseFiles, chooseFolder])
         chooser.spacing = 8
         root.addArrangedSubview(chooser)
+        keepUpdated.state = .off
+        keepUpdated.toolTip = "Core will add new versions when these files change while OmniVia Core is running."
+        root.addArrangedSubview(keepUpdated)
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("selection"))
         column.title = "Selection"
@@ -130,9 +142,11 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(closeAction))
+        cancel.keyEquivalent = "\u{1b}"
         primaryButton.target = self
         primaryButton.action = #selector(submitAction)
         primaryButton.keyEquivalent = "\r"
+        primaryButton.keyEquivalentModifierMask = [.command]
         primaryButton.bezelStyle = .rounded
         primaryButton.contentTintColor = NSColor(srgbRed: 0.82, green: 0.46, blue: 0.42, alpha: 1)
         let actions = NSStackView(views: [spacer, cancel, primaryButton])
@@ -140,7 +154,9 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         root.addArrangedSubview(actions)
         actions.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
 
-        let host = NSView()
+        let host = CapturePanelDropView { [weak self] urls in
+            self?.add(urls, surface: .capturePanelDrop)
+        }
         host.addSubview(root)
         NSLayoutConstraint.activate([
             root.leadingAnchor.constraint(equalTo: host.leadingAnchor),
@@ -253,7 +269,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         do {
             try draft.add(urls, surface: surface)
             statusLabel.stringValue = draft.containsFolders
-                ? "Folders require scope review before files can be added."
+                ? "Double-click a folder to review its scope before adding it."
                 : "Ready to add."
         } catch CaptureDraftError.tooManyItems {
             statusLabel.stringValue = "Choose no more than 10 files at a time."
@@ -270,7 +286,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         draft.note = note.string
         primaryButton.isEnabled = false
         statusLabel.stringValue = "Preparing current file versions…"
-        let candidates = draft.fileCandidates
+        let candidates = draft.fileCandidates(keepUpdated: keepUpdated.state == .on)
         Task {
             do {
                 let entries = try await submitter.submit(candidates)
@@ -279,6 +295,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                     : "\(entries.count) items queued on this Mac."
                 draft = CaptureDraft()
                 note.string = ""
+                keepUpdated.state = .off
                 if !waitingSelections.isEmpty {
                     let next = waitingSelections.removeFirst()
                     try? draft.add(next.urls, surface: next.surface)

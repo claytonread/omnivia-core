@@ -23,6 +23,7 @@ public enum CaptureSurface: String, Codable, Sendable {
     case finderQuickAction = "finder_quick_action"
     case manual
     case menuDrop = "menu_drop"
+    case capturePanelDrop = "capture_panel_drop"
     case share
     case shortcut
     case folderImport = "folder_import"

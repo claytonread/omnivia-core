@@ -55,12 +55,17 @@ public struct CaptureDraft: Equatable {
     }
 
     public var fileCandidates: [ManualCaptureCandidate] {
+        fileCandidates(keepUpdated: false)
+    }
+
+    public func fileCandidates(keepUpdated: Bool) -> [ManualCaptureCandidate] {
         items.compactMap { item in
             guard case .file = item.kind else { return nil }
             return ManualCaptureCandidate(
                 url: item.url,
                 displayName: item.displayName,
-                surface: item.surface
+                surface: item.surface,
+                keepUpdated: keepUpdated
             )
         }
     }

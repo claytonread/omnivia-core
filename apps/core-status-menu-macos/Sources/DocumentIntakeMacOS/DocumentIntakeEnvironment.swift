@@ -9,6 +9,8 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     public let queue: CaptureIntentQueue
     public let folderSubscriptions: FolderSubscriptionStore
     public let folderMonitoring: FolderMonitoringCoordinator
+    public let fileSubscriptions: FileSubscriptionStore
+    public let fileMonitoring: FileMonitoringCoordinator
 
     public init(
         stateRoot: URL,
@@ -35,6 +37,16 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             preparation: preparation,
             queue: queue,
             subscriptions: folderSubscriptions,
+            reader: reader
+        )
+        fileSubscriptions = try FileSubscriptionStore(
+            stateDirectory: stateRoot.appendingPathComponent("file-subscriptions", isDirectory: true)
+        )
+        fileMonitoring = FileMonitoringCoordinator(
+            accessStore: accessStore,
+            preparation: preparation,
+            queue: queue,
+            subscriptions: fileSubscriptions,
             reader: reader
         )
     }

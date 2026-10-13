@@ -28,6 +28,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private var folderEventDebounceTimer: Timer?
     private var firstFolderEventAt: Date?
     private var dirtyFolderSubscriptions = Set<String>()
+    private var dirtyFileSubscriptions = Set<String>()
     /// One owned Settings window (MR-001). Created on first open; closing it
     /// never touches Core lifecycle.
     private var settingsWindowController: SettingsWindowController?
@@ -35,6 +36,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private var folderManagementWindowController: FolderManagementWindowController?
     private var captureDeliveryCoordinator: CaptureDeliveryCoordinator?
     private var folderMonitoringCoordinator: FolderMonitoringCoordinator?
+    private var fileMonitoringCoordinator: FileMonitoringCoordinator?
     private var statusDropView: StatusItemDropView?
 
     init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
@@ -60,9 +62,12 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             .appendingPathComponent("native-intake", isDirectory: true)
         if let environment = try? DocumentIntakeEnvironment(stateRoot: intakeRoot) {
             folderMonitoringCoordinator = environment.folderMonitoring
+            fileMonitoringCoordinator = environment.fileMonitoring
             folderManagementWindowController = FolderManagementWindowController(
-                store: environment.folderSubscriptions,
-                monitoring: environment.folderMonitoring
+                folderStore: environment.folderSubscriptions,
+                folderMonitoring: environment.folderMonitoring,
+                fileStore: environment.fileSubscriptions,
+                fileMonitoring: environment.fileMonitoring
             )
             let submitter = ManualCaptureSubmission(
                 environment: environment,
@@ -251,9 +256,11 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private func deliverPendingCaptures() {
         guard let captureDeliveryCoordinator else { return }
         let monitoring = folderMonitoringCoordinator
+        let fileMonitoring = fileMonitoringCoordinator
         Task {
             _ = await captureDeliveryCoordinator.deliverPending()
             _ = await monitoring?.reconcileReceipts()
+            _ = await fileMonitoring?.reconcileReceipts()
             await self.refreshFolderEventObservation()
         }
     }
@@ -261,17 +268,26 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private func reconcileWatchedFolders() {
         guard let folderMonitoringCoordinator else { return }
         let delivery = captureDeliveryCoordinator
+        let fileMonitoring = fileMonitoringCoordinator
         Task {
             _ = await folderMonitoringCoordinator.reconcileAll()
+            _ = await fileMonitoring?.reconcileAll()
             _ = await delivery?.deliverPending()
             _ = await folderMonitoringCoordinator.reconcileReceipts()
+            _ = await fileMonitoring?.reconcileReceipts()
             await self.refreshFolderEventObservation()
         }
     }
 
     private func refreshFolderEventObservation() async {
         guard let folderMonitoringCoordinator else { return }
-        let roots = await folderMonitoringCoordinator.activeObservationRoots()
+        let folderRoots = await folderMonitoringCoordinator.activeObservationRoots().map {
+            FolderObservationRoot(subscriptionID: "folder::\($0.subscriptionID)", url: $0.url)
+        }
+        let fileRoots = await fileMonitoringCoordinator?.activeObservationRoots().map {
+            FolderObservationRoot(subscriptionID: "file::\($0.subscriptionID)", url: $0.url)
+        } ?? []
+        let roots = folderRoots + fileRoots
         let fingerprint = roots
             .map { "\($0.subscriptionID)\u{0}\($0.url.standardizedFileURL.path)" }
             .sorted()
@@ -288,9 +304,20 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         guard !signal.subscriptionIDs.isEmpty,
               let folderMonitoringCoordinator
         else { return }
-        dirtyFolderSubscriptions.formUnion(signal.subscriptionIDs)
+        let folderIDs = Set(signal.subscriptionIDs.compactMap { value in
+            value.hasPrefix("folder::") ? String(value.dropFirst("folder::".count)) : nil
+        })
+        let fileIDs = Set(signal.subscriptionIDs.compactMap { value in
+            value.hasPrefix("file::") ? String(value.dropFirst("file::".count)) : nil
+        })
+        dirtyFolderSubscriptions.formUnion(folderIDs)
+        dirtyFileSubscriptions.formUnion(fileIDs)
         if firstFolderEventAt == nil { firstFolderEventAt = Date() }
-        Task { await folderMonitoringCoordinator.markDirty(subscriptionIDs: signal.subscriptionIDs) }
+        let fileMonitoring = fileMonitoringCoordinator
+        Task {
+            await folderMonitoringCoordinator.markDirty(subscriptionIDs: folderIDs)
+            await fileMonitoring?.markDirty(subscriptionIDs: fileIDs)
+        }
         folderEventDebounceTimer?.invalidate()
         let elapsed = Date().timeIntervalSince(firstFolderEventAt ?? Date())
         let interval = signal.requiresFullReconciliation ? 0.1 : min(3, max(0.1, 30 - elapsed))
@@ -304,14 +331,19 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private func reconcileDirtyFolders() {
         guard let folderMonitoringCoordinator else { return }
         let subscriptions = dirtyFolderSubscriptions
+        let fileSubscriptions = dirtyFileSubscriptions
         dirtyFolderSubscriptions.removeAll()
+        dirtyFileSubscriptions.removeAll()
         firstFolderEventAt = nil
         folderEventDebounceTimer = nil
         let delivery = captureDeliveryCoordinator
+        let fileMonitoring = fileMonitoringCoordinator
         Task {
             _ = await folderMonitoringCoordinator.reconcile(subscriptionIDs: subscriptions)
+            _ = await fileMonitoring?.reconcile(subscriptionIDs: fileSubscriptions)
             _ = await delivery?.deliverPending()
             _ = await folderMonitoringCoordinator.reconcileReceipts()
+            _ = await fileMonitoring?.reconcileReceipts()
             await self.refreshFolderEventObservation()
         }
     }
