@@ -86,7 +86,7 @@ enum Ov {
 /// `background: var(--ov-…-sheen), var(--ov-material-…)` means: two layers, the
 /// tint above the blur. An `NSVisualEffectView` alone gives only the blur, and
 /// setting a background colour on one defeats the vibrancy entirely.
-final class SheenView: NSVisualEffectView {
+class SheenView: NSVisualEffectView {
     private let sheen = CAGradientLayer()
 
     /// - Parameters:
@@ -501,7 +501,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// 60px branded header: the concentric-circle mark in brick, "OmniVia"
     /// wordmark with "Core Settings" secondary (prototype .cs-brand).
     private func headerView() -> NSView {
-        let header = SheenView(
+        let header = DraggableSheenView(
             material: .titlebar,
             stops: Ov.titlebarSheen,
             horizontal: true,
@@ -509,19 +509,6 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         )
         header.frame = NSRect(x: 0, y: 0, width: 900, height: 60)
         header.heightAnchor.constraint(equalToConstant: 60).isActive = true
-
-        // `.cs-head` carries a bottom hairline under the sheen.
-        let rule = NSView()
-        rule.wantsLayer = true
-        rule.layer?.backgroundColor = Ov.separator.cgColor
-        rule.translatesAutoresizingMaskIntoConstraints = false
-        header.addSubview(rule)
-        NSLayoutConstraint.activate([
-            rule.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            rule.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            rule.bottomAnchor.constraint(equalTo: header.bottomAnchor),
-            rule.heightAnchor.constraint(equalToConstant: 1),
-        ])
 
         let row = NSStackView()
         row.orientation = .horizontal
@@ -537,22 +524,26 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             row.trailingAnchor.constraint(lessThanOrEqualTo: header.trailingAnchor),
         ])
 
-        // The mark: the brand SVG (template-rendered so it tints), with the
-        // drawn tile as fallback when the resource is absent.
+        // The mark (`.cs-brand .mk`, 22×22, accent): the brand SVG rendered as
+        // a template so it tints, with the drawn tile as fallback. Both get an
+        // explicit size — the fallback has no intrinsic one, so without it the
+        // stack collapsed the mark to nothing and the failure was invisible.
         let markView: NSView
-        if var image = BrandAssets.image(named: "omnivia-mark") {
+        if let image = BrandAssets.image(named: "omnivia-mark") {
             image.isTemplate = true
             let icon = NSImageView()
             icon.image = image
+            icon.imageScaling = .scaleProportionallyUpOrDown
             icon.contentTintColor = Ov.accent
-            icon.translatesAutoresizingMaskIntoConstraints = false
-            icon.widthAnchor.constraint(equalToConstant: 22).isActive = true
-            icon.heightAnchor.constraint(equalToConstant: 22).isActive = true
             markView = icon
         } else {
-            let drawn = MarkView(frame: NSRect(x: 0, y: 0, width: 22, height: 22))
-            markView = drawn
+            markView = MarkView(frame: NSRect(x: 0, y: 0, width: 22, height: 22))
         }
+        markView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            markView.widthAnchor.constraint(equalToConstant: 22),
+            markView.heightAnchor.constraint(equalToConstant: 22),
+        ])
         row.addArrangedSubview(markView)
 
         let titleColumn = NSStackView()
@@ -1934,6 +1925,52 @@ final class SidebarRowView: NSView {
 }
 
 // MARK: - OmniVia buttons (.ov-btn / .ov-btn--bordered / --primary)
+
+/// The branded header stands in for the system titlebar, so it has to drag the
+/// window like one. The real titlebar is underneath — this view sits over it
+/// because the window uses `.fullSizeContentView` — and a view that swallows
+/// the click without acting on it leaves the window stuck.
+///
+/// `performDrag(with:)` hands the gesture to the window server, which gives the
+/// genuine article: snapping, Spaces, and Stage Manager. Controls are untouched,
+/// since an NSButton consumes its own `mouseDown` and this is never reached —
+/// the same split the design draws with `-webkit-app-region: drag` on the bar
+/// and `no-drag` on the controls inside it.
+final class DraggableSheenView: SheenView {
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+
+    /// The wordmark and the mark must not eat the drag. An `NSTextField`
+    /// answers `hitTest` with itself even when it is a plain label, so a
+    /// press on "OmniVia" would land on the label and the window would not
+    /// move. Anything in the bar that is not a live control is treated as the
+    /// bar itself; real controls keep their clicks.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point) else { return nil }
+        if let control = hit as? NSControl, control.isEnabled, control.action != nil {
+            return control
+        }
+        return self
+    }
+
+    /// Double-clicking a titlebar zooms or minimises, per the user's setting in
+    /// System Settings → Desktop & Dock. A custom titlebar that ignores this
+    /// feels broken in a way that is hard to name.
+    override func mouseUp(with event: NSEvent) {
+        guard event.clickCount == 2 else {
+            super.mouseUp(with: event)
+            return
+        }
+        let action = UserDefaults.standard
+            .string(forKey: "AppleActionOnDoubleClick") ?? "Maximize"
+        switch action {
+        case "Minimize": window?.miniaturize(nil)
+        case "None": break
+        default: window?.zoom(nil)
+        }
+    }
+}
 
 /// A scroll view's document view must be flipped for its origin to be the
 /// top-left. Unflipped, content stacks from the bottom and "scroll to the top"
