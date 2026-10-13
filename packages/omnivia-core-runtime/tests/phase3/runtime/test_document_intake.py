@@ -1,6 +1,9 @@
 """Document intake: capture atomicity, idempotency, stale bases, separate heads, profiles, retained-copy
 reprocessing, completion order, removal and retention fencing, and failure that keeps the previous head.
 
+Bindings are opaque owner/device routes; a capture records the binding lineage it was taken under, its intent kind
+and a stable disposition reason, and each new capture writes exactly one pending processing obligation.
+
 Every test drives `service/document_intake.py` against a real workspace owned by a `ServiceRunner`, so the
 fence, the guard triggers and the blob store are the ones the service meets. A row is altered only in-process,
 by widening the owned connection for one block with `authorised`, the way a tamperer with file access would.
@@ -20,17 +23,24 @@ from omnivia_core_runtime.ownership.identity import FakeProcessEvidence, Process
 from omnivia_core_runtime.service import document_intake as service
 from omnivia_core_runtime.service import runner as runner_module
 from omnivia_core_runtime.service.document_intake import (
+    BindingClaim,
+    DocumentCaptureSuppressed,
     DocumentIntakeRefused,
     ExtractionOutcome,
     admit_extraction,
     capture_document,
     complete_extraction,
+    connect_original,
+    current_capture,
+    disconnect_original,
     expire_capture,
     owned_workspace,
+    pending_capture_obligations,
     read_retained_source,
     register_profile,
     reprocess_captured_copy,
     set_document_source_state,
+    settle_capture_obligation,
 )
 from omnivia_core_runtime.service.runner import ServiceRunner
 from omnivia_core_runtime.service.versions import SERVER_VERSION
@@ -54,7 +64,7 @@ def digest_of(data: bytes) -> str:
 
 
 @pytest.fixture
-def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ServiceRunner]:
+def paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     process = FakeProcessEvidence(
         ProcessEvidence(
             pid=4343,
@@ -69,8 +79,13 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ServiceR
     initialise_workspace(
         workspace_root=workspace, installation_root=installation, core_version=SERVER_VERSION
     )
+    return workspace, installation
+
+
+@pytest.fixture
+def runner(paths: tuple[Path, Path]) -> Iterator[ServiceRunner]:
     with owned_workspace(
-        workspace_root=workspace, installation_root=installation, core_version=SERVER_VERSION
+        workspace_root=paths[0], installation_root=paths[1], core_version=SERVER_VERSION
     ) as owner:
         yield owner
 
@@ -97,6 +112,8 @@ def snapshot(runner: ServiceRunner) -> tuple[int, ...]:
             "omnivia_evidence_artifacts",
             "omnivia_extraction_revisions",
             "omnivia_extraction_results",
+            "omnivia_document_capture_outbox",
+            "omnivia_document_original_bindings",
         )
     )
 
@@ -123,6 +140,8 @@ class Sources:
         document_id: str = DOC,
         name: str | None = None,
         media_type: str = MEDIA,
+        intent: str | None = None,
+        binding: BindingClaim | None = None,
     ) -> service.DocumentCaptureResult:
         return capture_document(
             self.runner,
@@ -131,6 +150,8 @@ class Sources:
             expected_base_capture_id=base,
             operation_key=key,
             media_type=media_type,
+            intent_kind=intent or ("new_capture" if base is None else "refresh"),
+            binding=binding,
         )
 
 
@@ -190,7 +211,7 @@ def test_a_capture_writes_the_document_evidence_retention_and_head_together(
     assert capture.disposition == "head_eligible"
     assert capture.source_digest == digest_of(b"first body")
     assert capture.source_length_bytes == len(b"first body")
-    assert snapshot(runner) == (1, 1, 1, 1, 0, 0)
+    assert snapshot(runner) == (1, 1, 1, 1, 0, 0, 1, 0)
     state = head(runner)
     assert (state.current_capture_id, state.capture_head_sequence) == (capture.capture_id, 1)
     assert (state.current_extraction_id, state.extraction_head_ordinal) == (None, 0)
@@ -248,6 +269,7 @@ def test_a_refresh_that_cannot_read_its_source_keeps_the_previous_head(
             expected_base_capture_id=first.capture.capture_id,
             operation_key="cap-2",
             media_type=MEDIA,
+            intent_kind="refresh",
         )
 
     assert snapshot(runner) == before
@@ -269,7 +291,7 @@ def test_an_out_of_domain_identifier_or_media_type_is_refused_before_anything_is
         sources.capture(
             operation_key, b"x", None, document_id=document_id, name="x.txt", media_type=media_type
         )
-    assert snapshot(runner) == (0, 0, 0, 0, 0, 0)
+    assert snapshot(runner) == (0, 0, 0, 0, 0, 0, 0, 0)
 
 
 def test_an_expected_base_from_another_document_is_refused_and_creates_no_document(
@@ -379,10 +401,11 @@ def test_a_capture_on_a_stale_base_is_kept_as_history_and_never_becomes_the_head
     first = sources.capture("cap-1", b"one", None)
     second = sources.capture("cap-2", b"two", first.capture.capture_id)
     late = sources.capture("cap-3", b"late", first.capture.capture_id)
-    nothing = sources.capture("cap-4", b"unseen", None)
+    nothing = sources.capture("cap-4", b"unseen", None, intent="refresh")
 
     assert late.became_head is False and nothing.became_head is False
     assert late.capture.disposition == nothing.capture.disposition == "historical_only"
+    assert late.capture.disposition_reason == nothing.capture.disposition_reason == "stale_base"
     assert [late.capture.capture_sequence, nothing.capture.capture_sequence] == [3, 4]
     state = head(runner)
     assert (state.current_capture_id, state.capture_head_sequence) == (second.capture.capture_id, 2)
@@ -403,6 +426,260 @@ def test_a_historical_capture_can_be_the_base_of_another_historical_capture(
 
     assert chained.became_head is False
     assert chained.capture.expected_base_capture_id == late.capture.capture_id
+
+
+# -- capture: original bindings and admission intent ----------------------------------------
+
+
+def claim(binding: store.StoredBinding) -> BindingClaim:
+    return BindingClaim(
+        owner_ref=binding.owner_ref,
+        generation=binding.binding_generation,
+        route_kind=binding.route_kind,
+        root_ref=binding.root_ref,
+        member_ref=binding.member_ref,
+    )
+
+
+def test_a_disconnect_before_first_capture_is_an_owner_scoped_tombstone(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    tombstone = disconnect_original(
+        runner, document_id=DOC, owner_ref="owner-a", route_kind="direct_file"
+    )
+
+    captured = sources.capture("cap-1", b"late bytes", None, binding=claim(tombstone))
+
+    assert (tombstone.binding_generation, tombstone.connection_state) == (1, "disconnected")
+    assert (captured.capture.association_kind, captured.capture.disposition_reason) == (
+        "historical_binding",
+        "disconnected_generation",
+    )
+    assert captured.became_head is False
+    assert head(runner).current_capture_id is None
+    assert [row.capture_id for row in pending_capture_obligations(runner, limit=10)] == [
+        captured.capture.capture_id
+    ]
+
+
+def test_disconnecting_one_owner_does_not_disconnect_another_owner(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    owner_a = connect_original(
+        runner, document_id=DOC, owner_ref="owner-a", route_kind="direct_file"
+    )
+    owner_b = connect_original(
+        runner, document_id=DOC, owner_ref="owner-b", route_kind="direct_file"
+    )
+    disconnect_original(runner, document_id=DOC, owner_ref="owner-a", route_kind="direct_file")
+
+    active = sources.capture("cap-b", b"owner b", None, binding=claim(owner_b))
+    historical = sources.capture(
+        "cap-a", b"owner a", active.capture.capture_id, binding=claim(owner_a)
+    )
+
+    assert (active.capture.association_kind, active.capture.disposition_reason) == (
+        "active_binding",
+        "eligible",
+    )
+    assert (historical.capture.association_kind, historical.capture.disposition_reason) == (
+        "historical_binding",
+        "disconnected_generation",
+    )
+    assert head(runner).current_capture_id == active.capture.capture_id
+
+
+def test_relink_advances_generation_and_keeps_old_generation_historical(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    first_generation = connect_original(
+        runner,
+        document_id=DOC,
+        owner_ref="owner-a",
+        route_kind="root_member",
+        root_ref="root-a",
+        member_ref="member-a",
+    )
+    disconnect_original(
+        runner,
+        document_id=DOC,
+        owner_ref="owner-a",
+        route_kind="root_member",
+        root_ref="root-a",
+        member_ref="member-a",
+    )
+    relinked = connect_original(
+        runner,
+        document_id=DOC,
+        owner_ref="owner-a",
+        route_kind="root_member",
+        root_ref="root-a",
+        member_ref="member-a",
+    )
+
+    old = sources.capture("cap-old", b"old", None, binding=claim(first_generation))
+    current = sources.capture(
+        "cap-current", b"current", None, intent="refresh", binding=claim(relinked)
+    )
+
+    assert relinked.binding_generation == 2
+    assert (old.capture.association_kind, old.capture.disposition_reason) == (
+        "historical_binding",
+        "superseded_generation",
+    )
+    assert current.capture.association_kind == "active_binding"
+    assert current.became_head is True
+
+
+def test_unknown_cross_document_and_wrong_route_binding_claims_write_nothing(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    bound = connect_original(
+        runner, document_id="doc-other", owner_ref="owner-a", route_kind="direct_file"
+    )
+    before = snapshot(runner)
+
+    assert "unknown" in refusal(
+        lambda: sources.capture(
+            "cap-unknown",
+            b"x",
+            None,
+            binding=BindingClaim("owner-unknown", 1, "direct_file"),
+        )
+    )
+    assert "another document" in refusal(
+        lambda: sources.capture("cap-cross", b"x", None, binding=claim(bound))
+    )
+    assert "different route" in refusal(
+        lambda: sources.capture(
+            "cap-route",
+            b"x",
+            None,
+            document_id="doc-other",
+            binding=BindingClaim("owner-a", 1, "root_member", "root-a", "member-a"),
+        )
+    )
+    assert snapshot(runner) == before
+
+
+def test_snapshot_capture_has_no_binding_lineage_and_new_capture_is_a_creation_precondition(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    first = sources.capture("cap-1", b"one", None)
+    conflict = sources.capture("cap-2", b"two", None)
+
+    assert first.capture.association_kind == "snapshot_only"
+    assert (
+        first.capture.binding_owner_ref,
+        first.capture.binding_generation,
+        first.capture.binding_route_kind,
+    ) == (None, None, None)
+    assert (conflict.capture.disposition, conflict.capture.disposition_reason) == (
+        "historical_only",
+        "creation_conflict",
+    )
+    assert head(runner).current_capture_id == first.capture.capture_id
+
+
+def test_a_refresh_with_an_explicit_null_base_can_fill_an_empty_bound_document(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    binding = connect_original(
+        runner, document_id=DOC, owner_ref="owner-a", route_kind="direct_file"
+    )
+
+    captured = sources.capture(
+        "cap-1", b"first", None, intent="refresh", binding=claim(binding)
+    )
+
+    assert captured.became_head is True
+    assert captured.capture.disposition_reason == "eligible"
+
+
+def test_capture_replay_includes_binding_lineage_and_has_one_outbox_obligation(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    binding = connect_original(
+        runner, document_id=DOC, owner_ref="owner-a", route_kind="direct_file"
+    )
+    first = sources.capture("cap-1", b"one", None, binding=claim(binding))
+    replay = sources.capture("cap-1", b"one", None, binding=claim(binding))
+
+    assert replay.status == "replayed" and replay.capture == first.capture
+    assert count(runner, "omnivia_document_capture_outbox") == 1
+    assert "different capture request" in refusal(
+        lambda: sources.capture(
+            "cap-1",
+            b"one",
+            None,
+            binding=BindingClaim("owner-a", binding.binding_generation + 1, "direct_file"),
+        )
+    )
+
+
+# -- capture: durable processing obligation and retention-aware reads ----------------------
+
+
+def test_capture_obligations_are_ordered_bounded_and_settle_idempotently(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    first = sources.capture("cap-1", b"one", None)
+    second = sources.capture("cap-2", b"two", first.capture.capture_id)
+
+    assert [row.capture_id for row in pending_capture_obligations(runner, limit=1)] == [
+        first.capture.capture_id
+    ]
+    settled = settle_capture_obligation(runner, capture_id=first.capture.capture_id)
+    replay = settle_capture_obligation(runner, capture_id=first.capture.capture_id)
+
+    assert settled.outbox_state == "settled" and settled.settled_at_us is not None
+    assert replay == settled
+    assert [row.capture_id for row in pending_capture_obligations(runner, limit=10)] == [
+        second.capture.capture_id
+    ]
+    assert "bounded" in refusal(lambda: pending_capture_obligations(runner, limit=0))
+    assert "no such capture obligation" in refusal(
+        lambda: settle_capture_obligation(runner, capture_id="dcap-" + "0" * 64)
+    )
+
+
+def test_current_capture_never_falls_back_after_the_head_expires(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    first = sources.capture("cap-1", b"one", None)
+    second = sources.capture("cap-2", b"two", first.capture.capture_id)
+
+    assert current_capture(runner, document_id=DOC) == second.capture
+    expire_capture(runner, capture_id=second.capture.capture_id)
+
+    assert current_capture(runner, document_id=DOC) is None
+    assert head(runner).current_capture_id == second.capture.capture_id
+
+
+@pytest.mark.parametrize("intent", ["automatic_capture", "folder_capture"])
+def test_automatic_intents_cannot_reintroduce_identical_expired_bytes(
+    runner: ServiceRunner, sources: Sources, intent: str
+) -> None:
+    first = sources.capture("cap-1", b"one", None)
+    expire_capture(runner, capture_id=first.capture.capture_id)
+    before = snapshot(runner)
+
+    with pytest.raises(DocumentCaptureSuppressed, match="expired or deleted"):
+        sources.capture("cap-auto", b"one", first.capture.capture_id, intent=intent)
+
+    assert snapshot(runner) == before
+
+
+def test_manual_capture_can_reintroduce_identical_expired_bytes_as_history(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    first = sources.capture("cap-1", b"one", None)
+    expire_capture(runner, capture_id=first.capture.capture_id)
+
+    manual = sources.capture("cap-2", b"one", first.capture.capture_id, intent="refresh")
+
+    assert manual.capture.source_digest == first.capture.source_digest
+    assert manual.capture.disposition == "head_eligible"
 
 
 # -- independent heads ----------------------------------------------------------------------
@@ -619,6 +896,7 @@ def test_reprocessing_reads_only_the_retained_blob_and_creates_no_capture(
         expected_base_capture_id=None,
         operation_key="cap-1",
         media_type=MEDIA,
+        intent_kind="new_capture",
     )
     path.unlink()
     monkeypatch.setattr(service, "_read_source", lambda *_a, **_k: pytest.fail("the original was reread"))
@@ -869,14 +1147,13 @@ def test_a_restored_source_does_not_unfence_a_revision_admitted_before_the_remov
     assert head(runner).current_extraction_id is None
 
 
-def test_a_removed_source_refuses_new_captures_and_extractions_and_keeps_its_heads(
+def test_a_removed_source_admits_captures_as_history_refuses_extractions_and_keeps_its_heads(
     runner: ServiceRunner, sources: Sources
 ) -> None:
     first = sources.capture("cap-1", b"one", None)
     set_document_source_state(runner, document_id=DOC, removed=True)
-    before = snapshot(runner)
 
-    assert "source is removed" in refusal(lambda: sources.capture("cap-2", b"two", first.capture.capture_id))
+    late = sources.capture("cap-2", b"two", first.capture.capture_id)
     assert "source is removed" in refusal(
         lambda: admit_extraction(
             runner,
@@ -887,7 +1164,9 @@ def test_a_removed_source_refuses_new_captures_and_extractions_and_keeps_its_hea
         )
     )
 
-    assert snapshot(runner) == before
+    assert late.became_head is False
+    assert (late.capture.disposition, late.capture.disposition_reason) == ("historical_only", "removed_source")
+    assert late.capture.source_removal_generation == 2
     state = head(runner)
     assert state.source_state == "removed" and state.current_capture_id == first.capture.capture_id
 

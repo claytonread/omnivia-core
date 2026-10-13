@@ -1,4 +1,5 @@
-"""Logical documents, immutable source captures and immutable extraction revisions: persistence only (migration 0069).
+"""Logical documents, original bindings, immutable source captures, their outbox and immutable extraction revisions:
+persistence only (migration 0069).
 
 Shaped like `storage/task_context.py`. Every `insert_*`, `advance_*` and `set_*` function expects its caller to be
 inside a `fenced_transaction`; the domain rules in `service/document_intake.py` open that fence and decide what may
@@ -13,6 +14,11 @@ different request cannot take the key.
 
 The capture head and the extraction head are separate columns of one row in `omnivia_document_heads`, and each moves
 only through its own `advance_*` function.
+
+An original binding is an opaque owner/device/access reference plus an optional opaque root and member; no path,
+bookmark or credential reaches this module. A capture records the binding lineage it was captured under, its intent
+kind and a stable disposition reason, and `decide_capture` is the one place those are derived, in the order the
+migration's insert guard recomputes them.
 """
 
 from __future__ import annotations
@@ -33,6 +39,36 @@ MAX_PROFILE_BYTES: Final = 65536
 
 DISPOSITION_HEAD_ELIGIBLE: Final = "head_eligible"
 DISPOSITION_HISTORICAL_ONLY: Final = "historical_only"
+
+INTENT_NEW_CAPTURE: Final = "new_capture"
+INTENT_REFRESH: Final = "refresh"
+INTENT_AUTOMATIC: Final = "automatic_capture"
+INTENT_FOLDER: Final = "folder_capture"
+INTENTS: Final = frozenset({INTENT_NEW_CAPTURE, INTENT_REFRESH, INTENT_AUTOMATIC, INTENT_FOLDER})
+#: Intents that may be suppressed when identical bytes were explicitly expired or deleted.
+AUTOMATIC_INTENTS: Final = frozenset({INTENT_AUTOMATIC, INTENT_FOLDER})
+
+ASSOCIATION_SNAPSHOT_ONLY: Final = "snapshot_only"
+ASSOCIATION_ACTIVE_BINDING: Final = "active_binding"
+ASSOCIATION_HISTORICAL_BINDING: Final = "historical_binding"
+
+REASON_ELIGIBLE: Final = "eligible"
+REASON_REMOVED_SOURCE: Final = "removed_source"
+REASON_SUPERSEDED_GENERATION: Final = "superseded_generation"
+REASON_DISCONNECTED_GENERATION: Final = "disconnected_generation"
+REASON_CREATION_CONFLICT: Final = "creation_conflict"
+REASON_STALE_BASE: Final = "stale_base"
+
+ROUTE_DIRECT_FILE: Final = "direct_file"
+ROUTE_ROOT_MEMBER: Final = "root_member"
+ROUTE_KINDS: Final = frozenset({ROUTE_DIRECT_FILE, ROUTE_ROOT_MEMBER})
+BINDING_CONNECTED: Final = "connected"
+BINDING_DISCONNECTED: Final = "disconnected"
+
+OUTBOX_CAPTURE_PROCESSING: Final = "capture_processing"
+OUTBOX_PENDING: Final = "pending"
+OUTBOX_SETTLED: Final = "settled"
+MAX_OUTBOX_BATCH: Final = 1000
 RETENTION_RETAINED: Final = "retained"
 RETENTION_STATES: Final = frozenset({"retained", "expired", "deleted"})
 SOURCE_ACTIVE: Final = "active"
@@ -58,6 +94,17 @@ def _sha256_hex(text: str) -> str:
 def request_digest(request: dict[str, Any]) -> str:
     """The digest of one canonical request, as an operation key's replay check compares it."""
     return "sha256:" + _sha256_hex(to_canonical_json(request))
+
+
+def capture_request_digest(request: dict[str, Any], *, association: str, disposition: str, reason: str) -> str:
+    """The digest a capture stores: its caller request (intent and binding lineage included) and the decision made.
+
+    A replay recomputes it from the new request and the stored decision, so a changed request, or a stored decision
+    that no longer matches the request it was made for, is a different digest.
+    """
+    return request_digest(
+        {**request, "association": association, "disposition": disposition, "dispositionReason": reason}
+    )
 
 
 def capture_id_for(workspace_id: str, operation_key: str) -> str:
@@ -105,6 +152,21 @@ class DocumentHead:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredBinding:
+    workspace_id: str
+    owner_ref: str
+    document_id: str
+    route_kind: str
+    root_ref: str | None
+    member_ref: str | None
+    binding_generation: int
+    connection_state: str
+    fencing_generation: int
+    created_at_us: int
+    changed_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
 class StoredCapture:
     workspace_id: str
     capture_id: str
@@ -115,7 +177,15 @@ class StoredCapture:
     source_length_bytes: int
     media_type: str
     expected_base_capture_id: str | None
+    intent_kind: str
+    association_kind: str
+    binding_owner_ref: str | None
+    binding_generation: int | None
+    binding_route_kind: str | None
+    binding_root_ref: str | None
+    binding_member_ref: str | None
     disposition: str
+    disposition_reason: str
     source_removal_generation: int
     operation_key: str
     request_digest: str
@@ -129,6 +199,19 @@ class CaptureRetention:
     capture_id: str
     retention_state: str
     capture_retention_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class StoredOutbox:
+    workspace_id: str
+    capture_id: str
+    kind: str
+    document_id: str
+    outbox_sequence: int
+    outbox_state: str
+    fencing_generation: int
+    created_at_us: int
+    settled_at_us: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +314,45 @@ def read_retention(
         "workspace_id = ? AND capture_id = ?",
         (workspace_id, capture_id),
     )
+
+
+def read_binding(
+    connection: sqlite3.Connection, *, workspace_id: str, owner_ref: str
+) -> StoredBinding | None:
+    return _select(
+        connection,
+        StoredBinding,
+        "omnivia_document_original_bindings",
+        "workspace_id = ? AND owner_ref = ?",
+        (workspace_id, owner_ref),
+    )
+
+
+def read_outbox(
+    connection: sqlite3.Connection, *, workspace_id: str, capture_id: str
+) -> StoredOutbox | None:
+    return _select(
+        connection,
+        StoredOutbox,
+        "omnivia_document_capture_outbox",
+        "workspace_id = ? AND capture_id = ? AND kind = ?",
+        (workspace_id, capture_id, OUTBOX_CAPTURE_PROCESSING),
+    )
+
+
+def pending_outbox(
+    connection: sqlite3.Connection, *, workspace_id: str, limit: int
+) -> list[StoredOutbox]:
+    """The oldest pending obligations, in admission order, at most `limit` of them."""
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_OUTBOX_BATCH:
+        raise DocumentIntakeInvalid(f"an outbox read is bounded to 1 through {MAX_OUTBOX_BATCH} rows")
+    names = _names(StoredOutbox)
+    rows = connection.execute(
+        f"SELECT {', '.join(names)} FROM omnivia_document_capture_outbox "
+        "WHERE workspace_id = ? AND outbox_state = 'pending' ORDER BY outbox_sequence LIMIT ?",
+        (workspace_id, limit),
+    ).fetchall()
+    return [StoredOutbox(*row) for row in rows]
 
 
 def read_revision(
@@ -338,6 +460,125 @@ def ensure_document(
     return head
 
 
+def insert_binding(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    owner_ref: str,
+    document_id: str,
+    route_kind: str,
+    root_ref: str | None,
+    member_ref: str | None,
+    state: str,
+    fencing_generation: int,
+    now_us: int,
+) -> StoredBinding:
+    """Record a binding at generation one, connected or (for a tombstone that came first) disconnected."""
+    binding = StoredBinding(
+        workspace_id, owner_ref, document_id, route_kind, root_ref, member_ref, 1, state,
+        fencing_generation, now_us, now_us,
+    )  # fmt: skip
+    _insert(connection, "omnivia_document_original_bindings", binding)
+    return binding
+
+
+def move_binding(
+    connection: sqlite3.Connection,
+    binding: StoredBinding,
+    *,
+    connect: bool,
+    fencing_generation: int,
+    now_us: int,
+) -> StoredBinding:
+    """Disconnect a connected binding at its generation, or reconnect a disconnected one a generation later."""
+    generation = binding.binding_generation + (1 if connect else 0)
+    state = BINDING_CONNECTED if connect else BINDING_DISCONNECTED
+    cursor = connection.execute(
+        "UPDATE omnivia_document_original_bindings SET connection_state = ?, binding_generation = ?, "
+        "fencing_generation = ?, changed_at_us = ? "
+        "WHERE workspace_id = ? AND owner_ref = ? AND binding_generation = ? AND connection_state = ?",
+        (
+            state,
+            generation,
+            fencing_generation,
+            now_us,
+            binding.workspace_id,
+            binding.owner_ref,
+            binding.binding_generation,
+            binding.connection_state,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise sqlite3.IntegrityError("the original binding moved under this write")
+    moved = read_binding(connection, workspace_id=binding.workspace_id, owner_ref=binding.owner_ref)
+    assert moved is not None
+    return moved
+
+
+def decide_capture(
+    head: DocumentHead,
+    binding: StoredBinding | None,
+    *,
+    claimed_generation: int | None,
+    intent_kind: str,
+    expected_base_capture_id: str | None,
+    has_captures: bool,
+) -> tuple[str, str, str]:
+    """`(association, disposition, reason)` for a capture, by the first reason that applies.
+
+    The order is the one the migration's insert guard recomputes: removed source, superseded generation,
+    disconnected generation, creation conflict, stale base. A creation conflict is a new capture of a document that
+    already has any capture; every other intent is checked against the current capture as its base, null included.
+    """
+    if binding is None:
+        association = ASSOCIATION_SNAPSHOT_ONLY
+    elif binding.connection_state == BINDING_CONNECTED and binding.binding_generation == claimed_generation:
+        association = ASSOCIATION_ACTIVE_BINDING
+    else:
+        association = ASSOCIATION_HISTORICAL_BINDING
+    reason = REASON_ELIGIBLE
+    if head.source_state != SOURCE_ACTIVE:
+        reason = REASON_REMOVED_SOURCE
+    elif binding is not None and claimed_generation is not None and claimed_generation < binding.binding_generation:
+        reason = REASON_SUPERSEDED_GENERATION
+    elif binding is not None and binding.connection_state != BINDING_CONNECTED:
+        reason = REASON_DISCONNECTED_GENERATION
+    elif intent_kind == INTENT_NEW_CAPTURE and has_captures:
+        reason = REASON_CREATION_CONFLICT
+    elif intent_kind != INTENT_NEW_CAPTURE and expected_base_capture_id != head.current_capture_id:
+        reason = REASON_STALE_BASE
+    disposition = DISPOSITION_HEAD_ELIGIBLE if reason == REASON_ELIGIBLE else DISPOSITION_HISTORICAL_ONLY
+    return association, disposition, reason
+
+
+def has_nonretained_identical(
+    connection: sqlite3.Connection, *, workspace_id: str, document_id: str, source_digest: str
+) -> bool:
+    """Whether this document already has a capture of the same bytes that was explicitly expired or deleted."""
+    row = connection.execute(
+        "SELECT 1 FROM omnivia_document_captures c "
+        "JOIN omnivia_document_capture_retention r "
+        "ON r.workspace_id = c.workspace_id AND r.capture_id = c.capture_id "
+        "WHERE c.workspace_id = ? AND c.document_id = ? AND c.source_digest = ? "
+        "AND r.retention_state IN ('expired', 'deleted') LIMIT 1",
+        (workspace_id, document_id, source_digest),
+    ).fetchone()
+    return row is not None
+
+
+def current_retrievable_capture(
+    connection: sqlite3.Connection, *, workspace_id: str, document_id: str
+) -> StoredCapture | None:
+    """The document's head capture if it is still retained; never an older capture in its place."""
+    head = read_head(connection, workspace_id=workspace_id, document_id=document_id)
+    if head is None or head.current_capture_id is None:
+        return None
+    retention = read_retention(connection, workspace_id=workspace_id, capture_id=head.current_capture_id)
+    if retention is None or retention.retention_state != RETENTION_RETAINED:
+        return None
+    return read_capture(connection, workspace_id=workspace_id, capture_id=head.current_capture_id)
+
+
 def last_capture_sequence(connection: sqlite3.Connection, *, workspace_id: str, document_id: str) -> int:
     return int(
         connection.execute(
@@ -358,6 +599,46 @@ def insert_capture(
         "capture_retention_generation, fencing_generation, changed_at_us) VALUES (?, ?, 'retained', 1, ?, ?)",
         (capture.workspace_id, capture.capture_id, capture.fencing_generation, now_us),
     )
+
+
+def insert_capture_outbox(
+    connection: sqlite3.Connection, capture: StoredCapture, *, now_us: int
+) -> StoredOutbox:
+    """The one pending capture-processing obligation of a capture; written in the capture's own transaction."""
+    sequence = int(
+        connection.execute(
+            "SELECT COALESCE(MAX(outbox_sequence), 0) FROM omnivia_document_capture_outbox WHERE workspace_id = ?",
+            (capture.workspace_id,),
+        ).fetchone()[0]
+    )
+    row = StoredOutbox(
+        capture.workspace_id, capture.capture_id, OUTBOX_CAPTURE_PROCESSING, capture.document_id,
+        sequence + 1, OUTBOX_PENDING, capture.fencing_generation, now_us, None,
+    )  # fmt: skip
+    _insert(connection, "omnivia_document_capture_outbox", row)
+    return row
+
+
+def settle_outbox(
+    connection: sqlite3.Connection, *, workspace_id: str, capture_id: str, fencing_generation: int, now_us: int
+) -> StoredOutbox:
+    """Settle a capture's obligation; settling a settled one returns it unchanged."""
+    current = read_outbox(connection, workspace_id=workspace_id, capture_id=capture_id)
+    if current is None:
+        raise DocumentIntakeInvalid("no such capture obligation")
+    if current.outbox_state == OUTBOX_SETTLED:
+        return current
+    cursor = connection.execute(
+        "UPDATE omnivia_document_capture_outbox SET outbox_state = 'settled', settled_at_us = ?, "
+        "fencing_generation = ? WHERE workspace_id = ? AND capture_id = ? AND kind = ? "
+        "AND outbox_state = 'pending'",
+        (now_us, fencing_generation, workspace_id, capture_id, OUTBOX_CAPTURE_PROCESSING),
+    )
+    if cursor.rowcount != 1:
+        raise sqlite3.IntegrityError("the capture obligation moved under this write")
+    settled = read_outbox(connection, workspace_id=workspace_id, capture_id=capture_id)
+    assert settled is not None
+    return settled
 
 
 def advance_capture_head(

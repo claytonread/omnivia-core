@@ -65,8 +65,10 @@ def test_0069_applies_all_document_intake_tables_and_guards(runner: ServiceRunne
     assert max(applied_migrations(runner.connection)) == 69
     expected_tables = {
         "omnivia_documents",
+        "omnivia_document_original_bindings",
         "omnivia_document_captures",
         "omnivia_document_capture_retention",
+        "omnivia_document_capture_outbox",
         "omnivia_extraction_profiles",
         "omnivia_extraction_revisions",
         "omnivia_extraction_results",
@@ -126,4 +128,40 @@ def test_0069_identifier_checks_reject_invalid_rows(runner: ServiceRunner) -> No
             "INSERT INTO omnivia_documents "
             "(workspace_id, document_id, fencing_generation, created_at_us) VALUES (?, ?, ?, ?)",
             (runner.workspace_id, "_invalid", runner.generation, 1),
+        )
+
+
+def test_0069_binding_and_outbox_rows_only_move_forward(runner: ServiceRunner) -> None:
+    assert runner.connection is not None
+    binding = service.connect_original(
+        runner, document_id="doc-guarded", owner_ref="owner-a", route_kind="direct_file"
+    )
+    source = runner.layout.root / "guarded-source.txt"
+    source.write_bytes(b"guarded")
+    capture = service.capture_document(
+        runner,
+        source_path=source,
+        document_id="doc-guarded",
+        expected_base_capture_id=None,
+        operation_key="cap-guarded",
+        media_type="text/plain",
+        intent_kind="new_capture",
+        binding=service.BindingClaim("owner-a", binding.binding_generation, "direct_file"),
+    )
+
+    with service._fence(runner), pytest.raises(sqlite3.IntegrityError, match="disconnects at its generation"):
+        runner.connection.execute(
+            "UPDATE omnivia_document_original_bindings "
+            "SET binding_generation = binding_generation + 1, connection_state = 'disconnected'"
+        )
+    with service._fence(runner), pytest.raises(sqlite3.IntegrityError, match="only settles"):
+        runner.connection.execute(
+            "UPDATE omnivia_document_capture_outbox SET outbox_sequence = outbox_sequence + 1, "
+            "outbox_state = 'settled', settled_at_us = 1 WHERE capture_id = ?",
+            (capture.capture.capture_id,),
+        )
+    with service._fence(runner), pytest.raises(sqlite3.IntegrityError, match="never deleted"):
+        runner.connection.execute(
+            "DELETE FROM omnivia_document_capture_outbox WHERE capture_id = ?",
+            (capture.capture.capture_id,),
         )
