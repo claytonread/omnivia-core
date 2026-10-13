@@ -72,6 +72,16 @@ public struct NativeAccessDescriptor: Equatable, Sendable {
     public let route: NativeAccessRoute
 }
 
+public struct NativeAccessExpectation: Equatable, Sendable {
+    public let accessRef: String
+    public let generation: UInt64
+
+    public init(accessRef: String, generation: UInt64) {
+        self.accessRef = accessRef
+        self.generation = generation
+    }
+}
+
 public protocol SecurityScopedBookmarkCoding: Sendable {
     func makeReadOnlyBookmark(for url: URL) throws -> Data
     func resolveReadOnlyBookmark(_ data: Data) throws -> (url: URL, stale: Bool)
@@ -280,6 +290,31 @@ public final class NativeAccessStore: @unchecked Sendable {
         defer { codec.stopAccessing(resolved.url) }
         let target = try Self.targetURL(root: resolved.url, route: record.route)
         return try body(target)
+    }
+
+    /// Rechecks a complete prepared batch while preventing relink/disconnect from interleaving with
+    /// its publication. The body must only perform the bounded local queue commit.
+    public func withValidatedGenerations<T>(
+        _ expectations: [NativeAccessExpectation],
+        _ body: () throws -> T
+    ) throws -> T {
+        try lock.withLock {
+            guard !expectations.isEmpty,
+                  Set(expectations.map(\.accessRef)).count == expectations.count
+            else { throw NativeAccessError.invalidRoute }
+            for expectation in expectations {
+                guard let record = records[expectation.accessRef] else {
+                    throw NativeAccessError.unknownAccess
+                }
+                guard record.state == .connected, record.bookmark != nil else {
+                    throw NativeAccessError.disconnected
+                }
+                guard record.generation == expectation.generation else {
+                    throw NativeAccessError.generationMismatch
+                }
+            }
+            return try body()
+        }
     }
 
     private func persist(_ value: [String: NativeAccessRecord]) throws {

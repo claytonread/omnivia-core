@@ -138,61 +138,93 @@ public final class CaptureIntentQueue: @unchecked Sendable {
 
     @discardableResult
     public func enqueue(intent: CaptureIntentV3, payload: Data) throws -> CaptureQueueEntry {
-        try intent.validate()
-        let canonical = try intent.canonicalData()
-        let intentDigest = try intent.requestDigest()
-        guard UInt64(payload.count) == intent.byteLength,
-              Self.digest(payload) == intent.localIntegrityDigest
-        else { throw CaptureQueueError.payloadMismatch }
+        try enqueueBatch([(intent: intent, payload: payload)])[0]
+    }
+
+    /// Publishes a fully prepared selection as one manifest transition. Either every new item is
+    /// visible after restart or none is; exact replays return their existing entries.
+    @discardableResult
+    public func enqueueBatch(
+        _ items: [(intent: CaptureIntentV3, payload: Data)]
+    ) throws -> [CaptureQueueEntry] {
+        guard !items.isEmpty,
+              Set(items.map { $0.intent.itemId }).count == items.count,
+              Set(items.map { $0.intent.payloadRef }).count == items.count
+        else { throw CaptureQueueError.duplicateItem }
+        let prepared = try items.map { item -> (CaptureIntentV3, Data, String, UInt64) in
+            try item.intent.validate()
+            let canonical = try item.intent.canonicalData()
+            let intentDigest = try item.intent.requestDigest()
+            guard UInt64(item.payload.count) == item.intent.byteLength,
+                  Self.digest(item.payload) == item.intent.localIntegrityDigest
+            else { throw CaptureQueueError.payloadMismatch }
+            return (item.intent, item.payload, intentDigest, UInt64(canonical.count))
+        }
         return try lock.withLock {
-            if let existing = entries[intent.itemId] {
-                if existing.intentDigest == intentDigest,
-                   let existingPayload = try? Data(contentsOf: payloadPath(for: intent)),
-                   existingPayload == payload
-                {
-                    return existing
+            var results: [CaptureQueueEntry] = []
+            var newItems: [(CaptureIntentV3, Data, String)] = []
+            for (intent, payload, intentDigest, _) in prepared {
+                if let existing = entries[intent.itemId] {
+                    guard existing.intentDigest == intentDigest,
+                          let existingPayload = try? Data(contentsOf: payloadPath(for: intent)),
+                          existingPayload == payload
+                    else { throw CaptureQueueError.duplicateItem }
+                    results.append(existing)
+                } else {
+                    guard !FileManager.default.fileExists(atPath: payloadPath(for: intent).path) else {
+                        throw CaptureQueueError.duplicateItem
+                    }
+                    let entry = CaptureQueueEntry(
+                        intent: intent,
+                        intentDigest: intentDigest,
+                        state: .pending,
+                        attemptGeneration: 0,
+                        stageRequestDigest: nil,
+                        stageDescriptorDigest: nil,
+                        admittedCaptureID: nil,
+                        failureCode: nil
+                    )
+                    results.append(entry)
+                    newItems.append((intent, payload, intentDigest))
                 }
-                throw CaptureQueueError.duplicateItem
             }
             let unresolved = entries.values.filter { Self.unresolved($0.state) }
             let unresolvedBytes = unresolved.reduce(UInt64(0)) { $0 + $1.intent.byteLength }
             let ownedBytes = entries.values.reduce(UInt64(0)) { total, entry in
                 total + (entry.state == .admitted ? 0 : entry.intent.byteLength)
             }
-            guard unresolved.count < Self.maximumUnresolvedItems,
-                  unresolvedBytes + intent.byteLength <= Self.maximumUnresolvedPayloadBytes,
-                  ownedBytes + intent.byteLength + UInt64(canonical.count) <= Self.maximumOwnedBytes
-            else { throw CaptureQueueError.capacityExceeded }
-            let path = payloadPath(for: intent)
-            guard !FileManager.default.fileExists(atPath: path.path) else {
-                throw CaptureQueueError.duplicateItem
+            let addedBytes = newItems.reduce(UInt64(0)) { $0 + $1.0.byteLength }
+            let addedMetadata = prepared.reduce(UInt64(0)) { total, item in
+                total + (entries[item.0.itemId] == nil ? item.3 : 0)
             }
+            guard unresolved.count + newItems.count <= Self.maximumUnresolvedItems,
+                  unresolvedBytes + addedBytes <= Self.maximumUnresolvedPayloadBytes,
+                  ownedBytes + addedBytes + addedMetadata <= Self.maximumOwnedBytes
+            else { throw CaptureQueueError.capacityExceeded }
+            var written: [URL] = []
             do {
-                try payload.write(to: path, options: [.atomic])
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+                for (intent, payload, _) in newItems {
+                    let path = payloadPath(for: intent)
+                    try payload.write(to: path, options: [.atomic])
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+                    written.append(path)
+                }
             } catch {
+                for path in written { try? FileManager.default.removeItem(at: path) }
                 throw CaptureQueueError.stateUnavailable
             }
-            let entry = CaptureQueueEntry(
-                intent: intent,
-                intentDigest: intentDigest,
-                state: .pending,
-                attemptGeneration: 0,
-                stageRequestDigest: nil,
-                stageDescriptorDigest: nil,
-                admittedCaptureID: nil,
-                failureCode: nil
-            )
             var replacement = entries
-            replacement[intent.itemId] = entry
+            for entry in results where replacement[entry.intent.itemId] == nil {
+                replacement[entry.intent.itemId] = entry
+            }
             do {
                 try persist(replacement)
             } catch {
-                try? FileManager.default.removeItem(at: path)
+                for path in written { try? FileManager.default.removeItem(at: path) }
                 throw error
             }
             entries = replacement
-            return entry
+            return results
         }
     }
 
