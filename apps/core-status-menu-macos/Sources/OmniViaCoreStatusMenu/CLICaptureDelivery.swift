@@ -12,7 +12,7 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
         return "sha256:" + SHA256.hash(data: binding).map { String(format: "%02x", $0) }.joined()
     }
 
-    func deliver(input: Data, operationKey: String) async -> CaptureDeliveryOutcome {
+    func deliver(input: Data, payloadURL: URL, operationKey: String) async -> CaptureDeliveryOutcome {
         await Task.detached(priority: .utility) {
             let process = Process()
             process.executableURL = executable
@@ -22,6 +22,7 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
                 "--timeout-ms", "20000",
                 "document", "capture",
                 "--input-stdin",
+                "--payload-file", payloadURL.path,
                 "--idempotency-key", operationKey,
                 "--json",
             ]

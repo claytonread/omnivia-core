@@ -9427,9 +9427,10 @@ export interface EvidenceCaptureResult {
 }
 
 /**
- * Closed input for `document.capture`. Carries transferred snapshot bytes and opaque lineage
- * only; no original path, bookmark, credential, parser name, arbitrary endpoint, principal, or
- * workspace override is accepted.
+ * Closed input for `document.capture`. Carries exactly one bounded inline snapshot or an
+ * immutable server-issued staged-source descriptor plus opaque lineage; no original path,
+ * bookmark, credential, parser name, arbitrary endpoint, principal, or workspace override is
+ * accepted. Exact-one content selection is enforced semantically.
  */
 export interface DocumentCaptureInput {
   /**
@@ -9437,9 +9438,15 @@ export interface DocumentCaptureInput {
    */
   readonly document_id: Identifier;
   /**
-   * Strict RFC 4648 base64 of the complete immutable snapshot, bounded to 16 MiB after decode.
+   * Strict RFC 4648 base64 of a small complete immutable snapshot, bounded so the whole
+   * request remains inside OVC1.
    */
-  readonly content_base64: string;
+  readonly content_base64?: string;
+  /**
+   * Server-issued immutable descriptor for a snapshot transferred over the bounded local
+   * binary staging protocol.
+   */
+  readonly staged_source?: ImportSourceDescriptor;
   /**
    * Validated media type of the snapshot.
    */

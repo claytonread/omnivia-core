@@ -45,7 +45,6 @@ from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
 from omnivia_core_runtime.service.source_capture import (
     _IDENTIFIER,
-    MAX_SOURCE_BYTES,
     SourceCaptureRefused,
     _read_source,
     _validate_request,
@@ -62,7 +61,7 @@ from omnivia_core_runtime.workspace.blob_publication import (
 CAPTURE_STATUS_CAPTURED: Final = "captured"
 CAPTURE_STATUS_REPLAYED: Final = "replayed"
 CAPTURE_METADATA_KIND: Final = "document_intake"
-MAX_DOCUMENT_CAPTURE_BYTES: Final = 16 * 1024 * 1024
+MAX_DOCUMENT_CAPTURE_BYTES: Final = 50 * 1024 * 1024
 
 
 class DocumentIntakeRefused(RuntimeError):
@@ -758,7 +757,7 @@ def read_retained_source(runner: ServiceRunner, *, capture_id: str) -> bytes:
         raise DocumentIntakeRefused("the retained copy is not available") from error
     try:
         chunks: list[bytes] = []
-        remaining = min(capture.source_length_bytes, MAX_SOURCE_BYTES) + 1
+        remaining = min(capture.source_length_bytes, MAX_DOCUMENT_CAPTURE_BYTES) + 1
         while remaining:
             chunk = os.read(descriptor, min(1024 * 1024, remaining))
             if not chunk:

@@ -71,6 +71,7 @@ from omnivia_core_runtime.service.chat_generation_executor import (
 from omnivia_core_runtime.service.chat_provider_route import provider_route_from_env
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.document_processing import DocumentProcessingExecutor
+from omnivia_core_runtime.service.document_transfer import stage_document_bytes
 from omnivia_core_runtime.service.engineering_conflict_execution import (
     EngineeringConflictExecutor,
 )
@@ -1166,6 +1167,12 @@ def main(
                 seam=installation_authority, dispatcher=application
             ),
             mcp_administration=installation_authority,
+            binary_stage=lambda content, media_type, transfer_key: stage_document_bytes(
+                started,
+                content=content,
+                media_type=media_type,
+                transfer_key=transfer_key,
+            ),
             service_work=service_work,
             endpoint=endpoint,
             gate=started.sqlite_gate,

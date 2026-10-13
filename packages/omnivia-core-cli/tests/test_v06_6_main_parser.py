@@ -113,6 +113,19 @@ def test_input_stdin_and_inline_json_are_mutually_exclusive() -> None:
     assert raised.value.code == 2
 
 
+def test_document_capture_accepts_a_separate_absolute_payload_file() -> None:
+    payload = Path.cwd() / "snapshot.pdf"
+    parsed = build_parser().parse_args([
+        *BASE,
+        "document", "capture",
+        "--input-stdin",
+        "--payload-file", str(payload),
+        "--idempotency-key", "capture-1",
+    ])
+    assert parsed.input_stdin
+    assert parsed.payload_file == payload
+
+
 #: Commands that do not honour these flags at all: supplying one is a usage
 #: error raised before the connection, and the value supplied is the caller's.
 _NO_KEY = _first_command(lambda entry: not entry.idempotency.supports_idempotency_key)

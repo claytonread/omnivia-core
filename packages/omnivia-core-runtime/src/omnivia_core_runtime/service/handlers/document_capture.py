@@ -30,13 +30,16 @@ from omnivia_core_runtime.service.authorization import (
     ServiceBinding,
 )
 from omnivia_core_runtime.service.document_intake import (
-    MAX_DOCUMENT_CAPTURE_BYTES,
     BindingClaim,
     DocumentCaptureSuppressed,
     DocumentIntakeRefused,
     _check_route,
     _identifier,
     admit_document_capture_in_transaction,
+)
+from omnivia_core_runtime.service.document_transfer import (
+    DocumentTransferRefused,
+    read_staged_document,
 )
 from omnivia_core_runtime.service.mutation import (
     MutationSettlementContext,
@@ -58,14 +61,15 @@ from omnivia_core_runtime.storage.memory import IdentifierAllocator
 from omnivia_core_runtime.workspace.blob_publication import BlobPublicationRefused
 
 DOCUMENT_CAPTURE_OPERATION: Final = "document.capture"
-_MAX_ENCODED_BYTES: Final = 4 * ((MAX_DOCUMENT_CAPTURE_BYTES + 2) // 3)
+_MAX_INLINE_BYTES: Final = 3 * 1024 * 1024 - 64 * 1024
+_MAX_ENCODED_BYTES: Final = 4 * ((_MAX_INLINE_BYTES + 2) // 3)
 _MESSAGE_INVALID: Final = "the request payload is not a valid document capture"
 _MESSAGE_TOO_LARGE: Final = "the transferred document exceeds the capture size limit"
 _MESSAGE_NO_STORAGE: Final = "this service instance is not serving authoritative storage"
 _MESSAGE_UNAVAILABLE: Final = "the transferred document could not be preserved"
 _TOP_LEVEL_KEYS: Final = frozenset(
     {
-        "document_id", "content_base64", "media_type", "requested_source_identity",
+        "document_id", "content_base64", "staged_source", "media_type", "requested_source_identity",
         "intent_kind", "base", "target_binding_revision", "processing_profile",
         "original_binding", "consent", "bulk_origin", "display_name",
     }
@@ -76,6 +80,9 @@ _NESTED_KEYS: Final[dict[str, frozenset[str]]] = {
     "original_binding": frozenset({"owner_ref", "generation", "route_kind", "root_ref", "member_ref"}),
     "consent": frozenset({"subscription_id", "consent_generation", "config_generation", "dirty_epoch"}),
     "bulk_origin": frozenset({"bulk_run_id", "manifest_revision", "member_id"}),
+    "staged_source": frozenset(
+        {"staged_source_ref", "source_kind", "content_checksum", "content_length_bytes", "media_type", "source_version"}
+    ),
 }
 
 
@@ -92,13 +99,17 @@ def _closed(payload: object) -> bool:
 def _decode_content(value: str) -> bytes:
     if len(value) > _MAX_ENCODED_BYTES:
         raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_TOO_LARGE)
+    invalid = False
     try:
         content = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError):
-        raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from None
+        invalid = True
+        content = b""
+    if invalid:
+        raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
     if not content:
         raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
-    if len(content) > MAX_DOCUMENT_CAPTURE_BYTES:
+    if len(content) > _MAX_INLINE_BYTES:
         raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_TOO_LARGE)
     return content
 
@@ -120,6 +131,8 @@ def _binding(request: DocumentCaptureInput) -> BindingClaim | None:
 
 
 def _validate(request: DocumentCaptureInput) -> tuple[str | None, BindingClaim | None]:
+    if (request.content_base64 is None) == (request.staged_source is None):
+        raise DocumentIntakeRefused("capture needs exactly one content source")
     _identifier(request.document_id, "document id")
     _identifier(request.requested_source_identity, "source identity")
     _identifier(request.target_binding_revision, "target binding revision")
@@ -164,15 +177,40 @@ class DocumentCaptureHandlers:
         request: DocumentCaptureInput | None = None
         expected: str | None = None
         binding: BindingClaim | None = None
+        invalid = False
         try:
             if not _closed(context.request.input):
                 raise DocumentIntakeRefused("the capture request is not closed")
             request = DocumentCaptureInput.from_wire(context.request.input)
             expected, binding = _validate(request)
         except (ContractDecodeError, DocumentIntakeRefused, SourceCaptureRefused):
-            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID) from None
+            invalid = True
+        if invalid:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
         assert request is not None
-        content = _decode_content(request.content_base64)
+        if request.content_base64 is not None:
+            content = _decode_content(request.content_base64)
+        else:
+            assert request.staged_source is not None
+            staged = request.staged_source
+            if staged.media_type != request.media_type or staged.source_version is not None:
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+            staged_invalid = False
+            try:
+                content = read_staged_document(
+                    self.service,
+                    workspace_id=context.workspace_id,
+                    staged_source_ref=staged.staged_source_ref,
+                    source_kind=staged.source_kind,
+                    content_checksum=staged.content_checksum,
+                    content_length_bytes=staged.content_length_bytes,
+                    media_type=staged.media_type,
+                )
+            except (DocumentTransferRefused, BlobPublicationRefused, OSError):
+                staged_invalid = True
+                content = b""
+            if staged_invalid:
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
         operation_key = context.request.metadata.idempotency_key
         if operation_key is None or context.authorization is None:
             raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
@@ -208,6 +246,8 @@ class DocumentCaptureHandlers:
 
         def mutate(_fenced: Any, _settlement: MutationSettlementContext) -> Mapping[str, Any]:
             digest = "sha256:" + hashlib.sha256(content).hexdigest()
+            admitted = None
+            failure: str | None = None
             try:
                 publish_blob(blobs_root, digest, content)
                 admitted = admit_document_capture_in_transaction(
@@ -228,9 +268,14 @@ class DocumentCaptureHandlers:
                     display_name=request.display_name,
                 )
             except DocumentCaptureSuppressed:
-                raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_INVALID) from None
+                failure = "conflict"
             except (DocumentIntakeRefused, SourceCaptureRefused, BlobPublicationRefused, OSError):
-                raise OperationError(ERROR_CODE_INTERNAL_RECOVERABLE, _MESSAGE_UNAVAILABLE) from None
+                failure = "unavailable"
+            if failure == "conflict":
+                raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_INVALID)
+            if failure == "unavailable":
+                raise OperationError(ERROR_CODE_INTERNAL_RECOVERABLE, _MESSAGE_UNAVAILABLE)
+            assert admitted is not None
             capture = admitted.capture
             return DocumentCaptureResult(
                 capture_id=capture.capture_id,

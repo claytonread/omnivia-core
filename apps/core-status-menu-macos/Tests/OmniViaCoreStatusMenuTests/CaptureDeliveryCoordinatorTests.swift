@@ -9,15 +9,20 @@ final class CaptureDeliveryCoordinatorTests: XCTestCase {
         let outcome: CaptureDeliveryOutcome
         private let lock = NSLock()
         private var documents: [Data] = []
+        private var payloads: [URL] = []
 
         init(_ outcome: CaptureDeliveryOutcome) { self.outcome = outcome }
 
-        func deliver(input: Data, operationKey: String) async -> CaptureDeliveryOutcome {
-            lock.withLock { documents.append(input) }
+        func deliver(input: Data, payloadURL: URL, operationKey: String) async -> CaptureDeliveryOutcome {
+            lock.withLock {
+                documents.append(input)
+                payloads.append(payloadURL)
+            }
             return outcome
         }
 
         func delivered() -> [Data] { lock.withLock { documents } }
+        func deliveredPayloads() -> [URL] { lock.withLock { payloads } }
     }
 
     func testPendingEntryIsEncodedDeliveredAndReconciledAsAdmitted() async throws {
@@ -39,8 +44,9 @@ final class CaptureDeliveryCoordinatorTests: XCTestCase {
                 as? [String: Any]
         )
         XCTAssertEqual(wire["document_id"] as? String, "doc-1")
-        XCTAssertEqual(wire["content_base64"] as? String, payload.base64EncodedString())
+        XCTAssertNil(wire["content_base64"])
         XCTAssertEqual(wire["media_type"] as? String, "text/plain")
+        XCTAssertEqual(transport.deliveredPayloads().count, 1)
         XCTAssertThrowsError(try queue.payloadURL(for: intent.itemId))
     }
 

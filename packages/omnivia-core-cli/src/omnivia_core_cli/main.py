@@ -38,6 +38,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import stat
 import sys
 import time
 from collections.abc import Mapping
@@ -54,6 +56,7 @@ from omnivia_core_client import (
     DeadlineExceededError,
     EndpointUnavailableError,
     InstallationServiceConfig,
+    LocalIpcTransport,
     ManagedStartError,
     OperationCancelledError,
     ServiceClient,
@@ -110,6 +113,7 @@ DEFAULT_TIMEOUT_MS: Final = 10_000
 #: invocation cannot be mutated by anything downstream.
 _EMPTY_INPUT: Final[Mapping[str, Any]] = MappingProxyType({})
 _MAXIMUM_STDIN_INPUT_BYTES: Final = 24 * 1024 * 1024
+_MAXIMUM_DOCUMENT_PAYLOAD_BYTES: Final = 50 * 1024 * 1024
 
 #: The `Namespace` attribute the leaf parser stores its frozen command on. The
 #: command object itself, not its name: nothing here re-derives a path.
@@ -341,6 +345,14 @@ def build_parser() -> argparse.ArgumentParser:
             type=_input_object,
             help="the operation's input document (default {})",
         )
+        if application.operation == "document.capture":
+            leaf.add_argument(
+                "--payload-file",
+                default=None,
+                metavar="ABSOLUTE_PATH",
+                type=_absolute_path,
+                help="stage the bounded snapshot from this local file before capture",
+            )
         input_group.add_argument(
             "--input-stdin",
             action="store_true",
@@ -490,11 +502,31 @@ def main(
             )
             client = managed.client
         if isinstance(command, ApplicationCommand):
+            payload = arguments.input_json
+            payload_file = getattr(arguments, "payload_file", None)
+            if payload_file is not None:
+                if command.operation != "document.capture" or not isinstance(
+                    client.transport, LocalIpcTransport
+                ):
+                    return _refuse(_REFUSED_LOCALLY, 2)
+                content = _read_document_payload(payload_file)
+                media_type = payload.get("media_type")
+                transfer_key = arguments.idempotency_key
+                if not isinstance(media_type, str) or not isinstance(transfer_key, str):
+                    return _refuse(_REFUSED_LOCALLY, 2)
+                source = client.transport.stage_document(
+                    content,
+                    media_type=media_type,
+                    transfer_key=transfer_key,
+                    deadline=deadline,
+                )
+                payload = dict(payload)
+                payload["staged_source"] = dict(source)
             return _report_application(
                 dispatch_application(
                     client,
                     command,
-                    payload=arguments.input_json,
+                    payload=payload,
                     deadline=deadline,
                     principal=arguments.principal,
                     request_id=arguments.request_id,
@@ -521,6 +553,32 @@ def main(
         return _refuse(_REFUSED_LOCALLY, 2)
     except (ClientError, DispatchError, OSError):
         return _refuse(_NO_ANSWER, 1)
+
+
+def _read_document_payload(path: Path) -> bytes:
+    """Read one regular no-follow snapshot under the document transfer bound."""
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > _MAXIMUM_DOCUMENT_PAYLOAD_BYTES:
+            raise ValueError("document payload is not an accepted regular file")
+        chunks: list[bytes] = []
+        remaining = _MAXIMUM_DOCUMENT_PAYLOAD_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(descriptor)
+    content = b"".join(chunks)
+    if not content or len(content) > _MAXIMUM_DOCUMENT_PAYLOAD_BYTES:
+        raise ValueError("document payload is outside the accepted size bound")
+    return content
 
 
 def _safe_live_status(

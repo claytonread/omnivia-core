@@ -9,7 +9,7 @@ public enum CaptureDeliveryOutcome: Equatable, Sendable {
 
 public protocol CaptureDeliveryTransport: Sendable {
     var descriptorDigest: String { get }
-    func deliver(input: Data, operationKey: String) async -> CaptureDeliveryOutcome
+    func deliver(input: Data, payloadURL: URL, operationKey: String) async -> CaptureDeliveryOutcome
 }
 
 public enum CaptureDeliveryError: Error, Equatable {
@@ -20,8 +20,7 @@ public enum CaptureDeliveryError: Error, Equatable {
 public struct DocumentCaptureWireEncoder {
     public init() {}
 
-    public func encode(entry: CaptureQueueEntry, payload: Data) throws -> Data {
-        guard payload.count == entry.intent.byteLength else { throw CaptureDeliveryError.missingPayload }
+    public func encode(entry: CaptureQueueEntry) throws -> Data {
         let intent = entry.intent
         let base: [String: Any]
         switch intent.basePrecondition {
@@ -34,7 +33,6 @@ public struct DocumentCaptureWireEncoder {
         }
         var input: [String: Any] = [
             "document_id": intent.originalBinding?.linkedDocumentId ?? intent.itemId,
-            "content_base64": payload.base64EncodedString(),
             "media_type": Self.mediaType(intent.contentKind, displayName: intent.displayName),
             "requested_source_identity": intent.requestedSourceIdentity,
             "intent_kind": intent.intentKind.rawValue,
@@ -115,15 +113,28 @@ public actor CaptureDeliveryCoordinator {
         var outcomes: [CaptureQueueEntry] = []
         for entry in queue.allEntries() where entry.state == .pending {
             do {
-                let payload = try Data(contentsOf: queue.payloadURL(for: entry.intent.itemId))
-                let input = try encoder.encode(entry: entry, payload: payload)
-                let requestDigest = Self.digest(input)
+                let payloadURL = try queue.payloadURL(for: entry.intent.itemId)
+                let attributes = try FileManager.default.attributesOfItem(atPath: payloadURL.path)
+                guard (attributes[.size] as? NSNumber)?.uint64Value == entry.intent.byteLength,
+                      try Self.digestPayload(at: payloadURL) == entry.intent.localIntegrityDigest
+                else {
+                    throw CaptureDeliveryError.missingPayload
+                }
+                let input = try encoder.encode(entry: entry)
+                let requestDigest = Self.digest(
+                    input,
+                    payloadDigest: entry.intent.localIntegrityDigest
+                )
                 let staging = try queue.beginStage(
                     itemID: entry.intent.itemId,
                     requestDigest: requestDigest,
                     descriptorDigest: transport.descriptorDigest
                 )
-                switch await transport.deliver(input: input, operationKey: entry.intent.operationKey) {
+                switch await transport.deliver(
+                    input: input,
+                    payloadURL: payloadURL,
+                    operationKey: entry.intent.operationKey
+                ) {
                 case let .admitted(captureID):
                     outcomes.append(try queue.markAdmitted(
                         itemID: entry.intent.itemId,
@@ -157,7 +168,20 @@ public actor CaptureDeliveryCoordinator {
         return outcomes
     }
 
-    private static func digest(_ data: Data) -> String {
-        "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    private static func digest(_ data: Data, payloadDigest: String) -> String {
+        var bound = data
+        bound.append(0)
+        bound.append(contentsOf: payloadDigest.utf8)
+        return "sha256:" + SHA256.hash(data: bound).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func digestPayload(at url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return "sha256:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }

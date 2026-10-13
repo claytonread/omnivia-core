@@ -313,10 +313,11 @@ def test_only_managed_local_may_locate_start_or_stop_a_process() -> None:
     ``discovery.py`` or ``framing.py`` would still be a protocol foundation that
     had started writing to disk.
 
-    ``hashlib`` is shared with the store for the same kind of reason: the store
+    ``hashlib`` is shared with the store and local IPC for the same kind of reason: the store
     derives a filename from a credential reference by digesting it, which is what
     keeps a valid reference from spelling a reserved device name or colliding
-    with another on a case-insensitive filesystem.
+    with another on a case-insensitive filesystem; local IPC binds an OVB1 binary
+    stage header to the exact transferred bytes before the service admits it.
 
     ``subprocess`` is shared with ``owner_private.py`` for a narrow reason of its
     own: ``restrict_to_owner``'s Windows writer shells out to ``whoami.exe`` and
@@ -327,7 +328,7 @@ def test_only_managed_local_may_locate_start_or_stop_a_process() -> None:
     being exempted from this test.
     """
     shared = {
-        "hashlib": {"installed_credentials.py", "updates_apply.py"},
+        "hashlib": {"installed_credentials.py", "local_ipc.py", "updates_apply.py"},
         "subprocess": {"owner_private.py"},
         "sys": {"updates_apply.py"},
         "tempfile": {"installed_credentials.py", "owner_private.py"},

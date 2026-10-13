@@ -321,11 +321,12 @@
     },
     "DocumentCaptureInput": {
       "title": "DocumentCaptureInput",
-      "description": "Closed input for `document.capture`. Carries transferred snapshot bytes and opaque lineage only; no original path, bookmark, credential, parser name, arbitrary endpoint, principal, or workspace override is accepted.",
+      "description": "Closed input for `document.capture`. Carries exactly one bounded inline snapshot or an immutable server-issued staged-source descriptor plus opaque lineage; no original path, bookmark, credential, parser name, arbitrary endpoint, principal, or workspace override is accepted. Exact-one content selection is enforced semantically.",
       "type": "object",
       "properties": {
         "document_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Logical document identity selected before transfer."},
-        "content_base64": {"type": "string", "minLength": 4, "maxLength": 22369624, "description": "Strict RFC 4648 base64 of the complete immutable snapshot, bounded to 16 MiB after decode."},
+        "content_base64": {"type": "string", "minLength": 4, "maxLength": 4106924, "description": "Strict RFC 4648 base64 of a small complete immutable snapshot, bounded so the whole request remains inside OVC1."},
+        "staged_source": {"$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ImportSourceDescriptor", "description": "Server-issued immutable descriptor for a snapshot transferred over the bounded local binary staging protocol."},
         "media_type": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/MediaType", "description": "Validated media type of the snapshot."},
         "requested_source_identity": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Stable caller-selected source identity for this capture intent."},
         "intent_kind": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Closed capture intent kind."},
@@ -337,7 +338,7 @@
         "bulk_origin": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentBulkOriginInput", "description": "Frozen folder-run lineage for bulk work."},
         "display_name": {"type": "string", "minLength": 1, "maxLength": 255, "description": "Untrusted display-only filename claim."}
       },
-      "required": ["document_id", "content_base64", "media_type", "requested_source_identity", "intent_kind", "base", "target_binding_revision", "processing_profile"],
+      "required": ["document_id", "media_type", "requested_source_identity", "intent_kind", "base", "target_binding_revision", "processing_profile"],
       "unevaluatedProperties": false
     },
     "DocumentCaptureResult": {
@@ -349,7 +350,7 @@
         "document_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Logical document associated with the capture."},
         "evidence_id": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceId", "description": "Retained canonical evidence artifact."},
         "source_digest": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceChecksum", "description": "Core-computed SHA-256 identity of admitted bytes."},
-        "source_length_bytes": {"type": "integer", "minimum": 1, "maximum": 16777216, "description": "Core-computed snapshot byte length."},
+        "source_length_bytes": {"type": "integer", "minimum": 1, "maximum": 52428800, "description": "Core-computed snapshot byte length."},
         "capture_disposition": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Head-eligible or governed historical disposition."},
         "became_head": {"type": "boolean", "description": "Whether this capture became the current successful capture."}
       },

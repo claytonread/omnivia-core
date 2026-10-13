@@ -17964,19 +17964,21 @@ class EvidenceCaptureResult:
 
 @dataclass(frozen=True, slots=True)
 class DocumentCaptureInput:
-    """Closed input for `document.capture`. Carries transferred snapshot bytes and opaque
-    lineage only; no original path, bookmark, credential, parser name, arbitrary endpoint,
-    principal, or workspace override is accepted.
+    """Closed input for `document.capture`. Carries exactly one bounded inline snapshot or an
+    immutable server-issued staged-source descriptor plus opaque lineage; no original path,
+    bookmark, credential, parser name, arbitrary endpoint, principal, or workspace override
+    is accepted. Exact-one content selection is enforced semantically.
     """
 
     document_id: Identifier
-    content_base64: str
     media_type: MediaType
     requested_source_identity: Identifier
     intent_kind: OpenCode
     base: DocumentCaptureBase
     target_binding_revision: Identifier
     processing_profile: DocumentProcessingProfileInput
+    content_base64: str | None = None
+    staged_source: ImportSourceDescriptor | None = None
     original_binding: DocumentOriginalBindingInput | None = None
     consent: DocumentConsentInput | None = None
     bulk_origin: DocumentBulkOriginInput | None = None
@@ -17990,7 +17992,10 @@ class DocumentCaptureInput:
         """
         wire: dict[str, Any] = {}
         wire["document_id"] = self.document_id
-        wire["content_base64"] = self.content_base64
+        if self.content_base64 is not None:
+            wire["content_base64"] = self.content_base64
+        if self.staged_source is not None:
+            wire["staged_source"] = self.staged_source.to_wire()
         wire["media_type"] = self.media_type
         wire["requested_source_identity"] = self.requested_source_identity
         wire["intent_kind"] = self.intent_kind
@@ -18019,10 +18024,25 @@ class DocumentCaptureInput:
             _require_field(mapping, "document_id", path),
             f"{path}.document_id",
         )
-        field_content_base64 = _decode_str(
-            _require_field(mapping, "content_base64", path),
-            f"{path}.content_base64",
-        )
+        field_content_base64: str | None = None
+        if "content_base64" in mapping:
+            raw_content_base64 = mapping["content_base64"]
+            if raw_content_base64 is None:
+                raise ContractDecodeError(
+                    f"{path}.content_base64: null is not a valid value"
+                )
+            field_content_base64 = _decode_str(raw_content_base64, f"{path}.content_base64")
+        field_staged_source: ImportSourceDescriptor | None = None
+        if "staged_source" in mapping:
+            raw_staged_source = mapping["staged_source"]
+            if raw_staged_source is None:
+                raise ContractDecodeError(
+                    f"{path}.staged_source: null is not a valid value"
+                )
+            field_staged_source = ImportSourceDescriptor.from_wire(
+                raw_staged_source,
+                f"{path}.staged_source",
+            )
         field_media_type = _decode_str(
             _require_field(mapping, "media_type", path),
             f"{path}.media_type",
@@ -18088,6 +18108,7 @@ class DocumentCaptureInput:
         return cls(
             document_id=field_document_id,
             content_base64=field_content_base64,
+            staged_source=field_staged_source,
             media_type=field_media_type,
             requested_source_identity=field_requested_source_identity,
             intent_kind=field_intent_kind,

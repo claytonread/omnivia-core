@@ -143,7 +143,7 @@ public enum CaptureBasePrecondition: Equatable, Sendable {
 public struct CaptureIntentV3: Codable, Equatable, Sendable {
     public static let schema = "omnivia.macos.capture-intent.v3"
     public static let maximumMetadataBytes = 64 * 1024
-    public static let maximumPayloadBytes: UInt64 = 16 * 1024 * 1024
+    public static let maximumPayloadBytes: UInt64 = 50 * 1024 * 1024
 
     public let submissionId: String
     public let itemId: String
