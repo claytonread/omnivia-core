@@ -232,12 +232,18 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         let contentHost = NSView()
         contentHost.wantsLayer = true
         contentHost.layer?.backgroundColor = Ov.bgContent.cgColor
+        // The document view must be constraint-driven too. Left on its
+        // autoresizing mask it keeps whatever frame the scroll view hands it,
+        // and the pane renders empty however much content is stacked inside.
+        contentHost.translatesAutoresizingMaskIntoConstraints = false
         content.translatesAutoresizingMaskIntoConstraints = false
         contentHost.addSubview(content)
         NSLayoutConstraint.activate([
             content.topAnchor.constraint(equalTo: contentHost.topAnchor),
             content.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor),
+            // Without this the host has no height to derive from its content.
+            content.bottomAnchor.constraint(equalTo: contentHost.bottomAnchor),
         ])
         let scroll = NSScrollView()
         scroll.documentView = contentHost
@@ -245,6 +251,13 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         scroll.drawsBackground = true
         scroll.backgroundColor = Ov.bgContent
         scroll.translatesAutoresizingMaskIntoConstraints = false
+        // Match the clip view's width so the pane fills horizontally and
+        // wrapping labels get a real `preferredMaxLayoutWidth` to wrap against;
+        // only the vertical axis scrolls.
+        NSLayoutConstraint.activate([
+            contentHost.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+        ])
+        scroll.setContentHuggingPriority(.init(1), for: .horizontal)
         contentStack = content
 
         // ---- Body: sidebar + pane ----
@@ -252,6 +265,10 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         body.orientation = .horizontal
         body.alignment = .top
         body.spacing = 0
+        // Default gravity-area distribution centres the slack, which leaves a
+        // dead gap to the left of the sidebar. `.fill` hands the slack to the
+        // lowest-hugging child — the pane — and keeps the sidebar flush.
+        body.distribution = .fill
         body.addArrangedSubview(sidebar)
         body.addArrangedSubview(scroll)
 
@@ -264,6 +281,18 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.contentView = root
         NSLayoutConstraint.activate([
             sidebar.widthAnchor.constraint(equalToConstant: 200),
+            // A horizontal NSStackView has no "fill" alignment, so the sidebar
+            // and the pane are given the body's height explicitly. Otherwise
+            // both collapse to their intrinsic height and the pane has none.
+            sidebar.heightAnchor.constraint(equalTo: body.heightAnchor),
+            scroll.heightAnchor.constraint(equalTo: body.heightAnchor),
+            // The pane's width is otherwise circular — the document view is
+            // sized from the clip view, and the scroll view from the document
+            // view — so it settles on an intrinsic size and leaves the sidebar
+            // off the window edge. Giving the body the window's width breaks
+            // the cycle and `.fill` then hands the remainder to the pane.
+            body.widthAnchor.constraint(equalTo: root.widthAnchor),
+            header.widthAnchor.constraint(equalTo: root.widthAnchor),
         ])
         renderSidebar()
         render()
