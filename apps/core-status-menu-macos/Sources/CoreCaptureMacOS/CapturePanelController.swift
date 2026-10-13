@@ -19,21 +19,41 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         action: nil
     )
     private var waitingSelections: [[ManualCaptureCandidate]] = []
+    /// False only for lifecycle tests, which drive the draft without a window.
+    private let opensWindow: Bool
 
-    public init(
+    public convenience init(
         workspaceName: String,
         submitter: ManualCaptureSubmission,
         folderSubmitter: FolderCaptureSubmission? = nil,
         onQueued: (@MainActor () -> Void)? = nil
     ) {
+        self.init(
+            workspaceName: workspaceName,
+            submitter: submitter,
+            folderSubmitter: folderSubmitter,
+            onQueued: onQueued,
+            opensWindow: true
+        )
+    }
+
+    init(
+        workspaceName: String,
+        submitter: ManualCaptureSubmission,
+        folderSubmitter: FolderCaptureSubmission?,
+        onQueued: (@MainActor () -> Void)?,
+        opensWindow: Bool
+    ) {
         self.workspaceName = workspaceName
         self.submitter = submitter
         self.folderSubmitter = folderSubmitter
         self.onQueued = onQueued
+        self.opensWindow = opensWindow
         super.init()
     }
 
     public func openOrFocus() {
+        guard opensWindow else { return }
         if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -70,16 +90,29 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         addIncoming(candidates)
     }
 
+    /// Every candidate handed in ends up in exactly one place: in review, waiting
+    /// behind the current selection, or released. Nothing is dropped holding a
+    /// grant or owned bytes.
     private func addIncoming(_ candidates: [ManualCaptureCandidate]) {
+        // A native candidate already in review or waiting is the same candidate
+        // arriving again. Leave it, and the resources it names, untouched:
+        // releasing the repeat would release the live candidate's grant.
+        let live = draft.nativeCandidateRefs
+            .union(waitingSelections.flatMap { $0 }.compactMap { $0.native?.candidateRef })
+        let incoming = candidates.filter { candidate in
+            candidate.native.map { !live.contains($0.candidateRef) } ?? true
+        }
+        guard !incoming.isEmpty else { return }
         openOrFocus()
         if draft.items.isEmpty {
-            add(candidates)
+            add(incoming)
         } else if waitingSelections.count < 10,
-                  waitingSelections.reduce(0, { $0 + $1.count }) + candidates.count <= 100
+                  waitingSelections.reduce(0, { $0 + $1.count }) + incoming.count <= 100
         {
-            waitingSelections.append(candidates)
-            statusLabel.stringValue = "New selection waiting · \(candidates.count) item(s). Finish the current selection first."
+            waitingSelections.append(incoming)
+            statusLabel.stringValue = "New selection waiting · \(incoming.count) item(s). Finish the current selection first."
         } else {
+            submitter.discardUnsubmitted(incoming)
             statusLabel.stringValue = "Incoming selection limit reached. Finish a selection and try again."
         }
     }
@@ -351,25 +384,39 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
             } else {
                 statusLabel.stringValue = "Ready to add."
             }
-        } catch CaptureDraftError.tooManyItems {
-            statusLabel.stringValue = "Choose no more than 10 files at a time."
-        } catch CaptureDraftError.duplicateItem {
-            statusLabel.stringValue = "That item is already in this selection."
         } catch {
-            submitter.discardAdoptedCandidates(candidates)
-            statusLabel.stringValue = "That item is not a supported document."
+            // The draft takes a selection whole or not at all, so none of these
+            // candidates is in review and all of them are still ours to release.
+            submitter.discardUnsubmitted(candidates)
+            switch error as? CaptureDraftError {
+            case .tooManyItems:
+                statusLabel.stringValue = "Choose no more than 10 files at a time."
+            case .duplicateItem:
+                statusLabel.stringValue = "That item is already in this selection."
+            default:
+                statusLabel.stringValue = "That item is not a supported document."
+            }
         }
         refresh()
     }
 
-    @objc private func submitAction() {
-        guard draft.canSubmitFiles else { return }
+    @objc private func submitAction() { beginSubmit() }
+
+    /// Starts publishing the reviewed draft. The returned task ends once the
+    /// selection is queued or has failed; it is internal so lifecycle tests can
+    /// await it. Add is disabled before the task starts, so a second click
+    /// cannot start a second publication.
+    @discardableResult
+    func beginSubmit() -> Task<Void, Never>? {
+        guard draft.canSubmitFiles else { return nil }
         draft.note = note.string
         primaryButton.isEnabled = false
         statusLabel.stringValue = "Preparing current file versions…"
         let candidates = draft.fileCandidates(keepUpdated: keepUpdated.state == .on)
-        Task {
+        return Task {
             do {
+                // Publication releases the candidates' durable records itself;
+                // the grants they name now belong to the queued captures.
                 let entries = try await submitter.submit(candidates)
                 statusLabel.stringValue = entries.count == 1
                     ? "Queued on this Mac."
@@ -377,11 +424,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 draft = CaptureDraft()
                 note.string = ""
                 keepUpdated.state = .off
-                if !waitingSelections.isEmpty {
-                    let next = waitingSelections.removeFirst()
-                    try? draft.add(next)
-                    statusLabel.stringValue = "Review the next incoming selection."
-                }
+                promoteWaitingSelection()
                 refresh()
                 onQueued?()
             } catch ManualCaptureSubmissionError.duplicateAutomaticSource {
@@ -401,14 +444,42 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         }
     }
 
+    /// Closing the window keeps the draft, so the draft — not the window — owns
+    /// its candidates until they are published or discarded.
     @objc private func closeAction() { window?.close() }
 
+    /// The next waiting selection becomes the draft. One the draft refuses is
+    /// released rather than dropped, and the one after it gets its turn.
+    private func promoteWaitingSelection() {
+        while draft.items.isEmpty, !waitingSelections.isEmpty {
+            let next = waitingSelections.removeFirst()
+            do {
+                try draft.add(next)
+                statusLabel.stringValue = "Review the next incoming selection."
+            } catch {
+                submitter.discardUnsubmitted(next)
+            }
+        }
+    }
+
+    /// Releases every candidate still in review or waiting — their grants, owned
+    /// bytes and durable records — without publishing any. This is the discard
+    /// and quit path; nothing is added to Core.
     public func discardUnsubmittedCandidates() {
-        submitter.discardAdoptedCandidates(draft.fileCandidates)
-        submitter.discardAdoptedCandidates(waitingSelections.flatMap { $0 })
+        submitter.discardUnsubmitted(draft.fileCandidates + waitingSelections.flatMap { $0 })
         draft = CaptureDraft()
         waitingSelections.removeAll()
+        refresh()
     }
+
+    /// The native candidates currently in review or waiting, by reference.
+    var liveNativeCandidateRefs: Set<String> {
+        draft.nativeCandidateRefs
+            .union(waitingSelections.flatMap { $0 }.compactMap { $0.native?.candidateRef })
+    }
+
+    var reviewItemCount: Int { draft.items.count }
+    var waitingSelectionCount: Int { waitingSelections.count }
 
     @objc private func reviewSelectedFolder() {
         let row = table.selectedRow

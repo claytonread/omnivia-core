@@ -203,6 +203,19 @@ public final class NativeHandoffMailbox: @unchecked Sendable {
         return pending.sorted { $0.createdAt < $1.createdAt }
     }
 
+    /// The stored offer for one request while it can still be adopted. Unlike
+    /// `pendingOffers`, this removes nothing, so it can answer "could this
+    /// request still be replayed?" without side effects.
+    public func pendingOffer(nonce: String, now: Date = Date()) -> NativeHandoffOfferV1? {
+        guard Self.validNonce(nonce),
+              let data = try? Data(contentsOf: offerURL(nonce: nonce)),
+              let offer = try? decoder.decode(NativeHandoffOfferV1.self, from: data),
+              offer.requestNonce == nonce,
+              (try? Self.validate(offer, now: now)) != nil
+        else { return nil }
+        return offer
+    }
+
     public func writeAcknowledgement(_ acknowledgement: NativeHandoffAcknowledgementV1) throws {
         try validateAcknowledgement(acknowledgement)
         try write(
@@ -359,7 +372,7 @@ public final class NativeHandoffMailbox: @unchecked Sendable {
         else { throw NativeHandoffMailboxError.invalidAcknowledgement }
     }
 
-    private static func validNonce(_ value: String) -> Bool {
+    static func validNonce(_ value: String) -> Bool {
         UUID(uuidString: value) != nil && value.count == 36
     }
 }

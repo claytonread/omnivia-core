@@ -69,7 +69,17 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                root: intakeRoot.appendingPathComponent("owned-snapshots", isDirectory: true)
            )
         {
-            _ = snapshotStore.removeExpired()
+            // Adoption records name this companion's own grants, so they stay
+            // beside the protected handoff area, outside the App Group.
+            let intakeCandidates = try? NativeIntakeCandidateStore(
+                root: intakeRoot.appendingPathComponent("native-intake-candidates", isDirectory: true)
+            )
+            // An owned copy that backs a live adoption record is bounded by its
+            // request and review draft, never by age. If the records cannot be
+            // listed nothing can be proven unused, so nothing is pruned.
+            if let live = try? intakeCandidates?.nativeRequestIDs() {
+                _ = snapshotStore.removeExpired(keeping: Set(live))
+            }
             folderMonitoringCoordinator = environment.folderMonitoring
             folderBulkRunCoordinator = environment.folderBulkCoordinator
             fileMonitoringCoordinator = environment.fileMonitoring
@@ -88,7 +98,8 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             let submitter = ManualCaptureSubmission(
                 environment: environment,
                 binding: companionBinding,
-                snapshotStore: snapshotStore
+                snapshotStore: snapshotStore,
+                candidates: intakeCandidates
             )
             let folderSubmitter = FolderCaptureSubmission(
                 environment: environment,
@@ -123,11 +134,13 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                        "authenticated-native-handoff",
                        isDirectory: true
                    )
-               )
+               ),
+               let intakeCandidates
             {
                 let receiver = NativeHandoffReceiver(
                     mailbox: mailbox,
                     resources: resources,
+                    candidates: intakeCandidates,
                     submitter: submitter,
                     snapshotStore: snapshotStore,
                     accept: { [weak self] candidates in
@@ -210,7 +223,11 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         handoffTimer?.invalidate()
         folderEventDebounceTimer?.invalidate()
         folderEventObserver = nil
+        // Review lives in this process, so quitting ends every candidate's
+        // owner. The panel releases what it holds; the receiver then stops
+        // taking requests and releases whatever never reached review.
         capturePanelController?.discardUnsubmittedCandidates()
+        nativeHandoffReceiver?.companionWillTerminate()
         coordinator.companionWillTerminate()
         singleton.close()
     }
