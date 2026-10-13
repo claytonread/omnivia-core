@@ -1225,6 +1225,9 @@ _IMPORT_START: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "size_limit_exceede
 _EVIDENCE_CAPTURE: tuple[str, ...] = tuple(
     sorted((*_CREATE_MUT, "conflict", "projection_unavailable", "stale_projection", "size_limit_exceeded"))
 )
+_DOCUMENT_CAPTURE: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "conflict", "size_limit_exceeded"))
+)
 #: Deliberately excludes ``conflict``: a state-based cancel/retry refusal is a
 #: successful explicit disposition returning the unchanged handle, not an error.
 _JOB_CONTROL: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
@@ -1352,6 +1355,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ENGINEERING_CONTEXT_READ": _ENGINEERING_CONTEXT_READ,
     "CREATE_MUT": _CREATE_MUT,
     "EVIDENCE_CAPTURE": _EVIDENCE_CAPTURE,
+    "DOCUMENT_CAPTURE": _DOCUMENT_CAPTURE,
     "GOV_MUT": _GOV_MUT,
     "CHAT_MUT": _CHAT_MUT,
     "IMPORT_START": _IMPORT_START,
@@ -1419,7 +1423,7 @@ class FrozenOperation(NamedTuple):
     max_page_size: int = FROZEN_PAGE_SIZE
 
 
-#: The exact 79 application operations, in the frozen insertion order. Runtime
+#: The exact 80 application operations, in the frozen insertion order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1446,6 +1450,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "context_pack.build": FrozenOperation(
         "workspace", ("memory:read",), "none", "context_pack.build",
         "context-pack", "ContextPackBuild", "CONTEXT_READ", False,
+    ),
+    "document.capture": FrozenOperation(
+        "workspace", ("memory:write",), "create", "evidence.write",
+        "evidence", "DocumentCapture", "DOCUMENT_CAPTURE", False,
     ),
     "evidence.capture": FrozenOperation(
         "workspace", ("memory:write",), "create", "evidence.write",

@@ -257,6 +257,40 @@ def test_capture_bytes_rejects_empty_and_oversized_snapshots_without_rows(runner
     assert snapshot(runner) == before
 
 
+def test_first_transferred_capture_creates_its_generation_one_binding_atomically(
+    runner: ServiceRunner,
+) -> None:
+    content = b"first bound native snapshot"
+    claim = BindingClaim(
+        owner_ref="device-owner-1",
+        generation=1,
+        route_kind=store.ROUTE_DIRECT_FILE,
+    )
+
+    result = capture_document_bytes(
+        runner,
+        content=content,
+        document_id=DOC,
+        expected_base_capture_id=None,
+        operation_key="native-bound-1",
+        media_type=MEDIA,
+        intent_kind=store.INTENT_NEW_CAPTURE,
+        binding=claim,
+    )
+
+    assert result.became_head
+    assert runner.connection is not None and runner.workspace_id is not None
+    binding = store.read_binding(
+        runner.connection,
+        workspace_id=runner.workspace_id,
+        owner_ref=claim.owner_ref,
+    )
+    assert binding is not None
+    assert binding.document_id == DOC
+    assert binding.binding_generation == 1
+    assert binding.connection_state == store.BINDING_CONNECTED
+
+
 def succeeded(
     label: str = "out", segments: tuple[ExtractedSegment, ...] = ()
 ) -> ExtractionOutcome:

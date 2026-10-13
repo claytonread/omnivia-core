@@ -495,6 +495,13 @@
     "EvidenceCaptureResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceCaptureResult"
     },
+    "DocumentCaptureBase": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureBase"},
+    "DocumentOriginalBindingInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalBindingInput"},
+    "DocumentProcessingProfileInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingProfileInput"},
+    "DocumentConsentInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentConsentInput"},
+    "DocumentBulkOriginInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentBulkOriginInput"},
+    "DocumentCaptureInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureInput"},
+    "DocumentCaptureResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureResult"},
     "GovernanceRationale": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/GovernanceRationale"
     },

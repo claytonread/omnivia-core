@@ -1089,6 +1089,46 @@
       }
     },
     {
+      "description": "document.capture admits one immutable transferred snapshot.",
+      "expect": {"branch": "success"},
+      "id": "document.capture/primary-success",
+      "operation": "document.capture",
+      "request": {
+        "input": {
+          "document_id": "doc-1",
+          "content_base64": "aGVsbG8=",
+          "media_type": "text/plain",
+          "requested_source_identity": "source-1",
+          "intent_kind": "new_capture",
+          "base": {"kind": "creation"},
+          "target_binding_revision": "target-binding-1",
+          "processing_profile": {"profile_ref": "profile-1", "revision": "revision-1"},
+          "original_binding": {"owner_ref": "access-1", "generation": 1, "route_kind": "direct_file"},
+          "display_name": "hello.txt"
+        },
+        "metadata": {
+          "idempotency_key": "idem-document.capture",
+          "request_id": "req-document.capture-success",
+          "required_capabilities": [{"id": "evidence.write", "minimum_version": "1.0", "required": true}],
+          "scopes": ["memory:write"],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.capture"
+      },
+      "response": {
+        "metadata": {"audit_reference": "audit-document.capture", "request_id": "req-document.capture-success"},
+        "result": {
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "document_id": "doc-1",
+          "evidence_id": "ev-document-1",
+          "source_digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+          "source_length_bytes": 5,
+          "capture_disposition": "head_eligible",
+          "became_head": true
+        }
+      }
+    },
+    {
       "description": "evidence.capture answers a well-formed request on the success branch.",
       "expect": {
         "branch": "success"
@@ -3544,6 +3584,62 @@
           "audit_reference": "audit-candidate.reject",
           "request_id": "req-candidate.reject-conflict"
         }
+      }
+    },
+    {
+      "description": "document.capture exact replay returns the stored canonical receipt.",
+      "expect": {"branch": "success", "idempotency": "replay", "replay_of": "document.capture/primary-success"},
+      "id": "document.capture/honest-replay",
+      "operation": "document.capture",
+      "request": {
+        "input": {
+          "document_id": "doc-1", "content_base64": "aGVsbG8=", "media_type": "text/plain",
+          "requested_source_identity": "source-1", "intent_kind": "new_capture",
+          "base": {"kind": "creation"}, "target_binding_revision": "target-binding-1",
+          "processing_profile": {"profile_ref": "profile-1", "revision": "revision-1"},
+          "original_binding": {"owner_ref": "access-1", "generation": 1, "route_kind": "direct_file"},
+          "display_name": "hello.txt"
+        },
+        "metadata": {
+          "idempotency_key": "idem-document.capture", "request_id": "req-document.capture-replay",
+          "required_capabilities": [{"id": "evidence.write", "minimum_version": "1.0", "required": true}],
+          "scopes": ["memory:write"], "workspace_id": "ws-1"
+        },
+        "operation": "document.capture"
+      },
+      "response": {
+        "metadata": {"audit_reference": "audit-document.capture", "request_id": "req-document.capture-replay"},
+        "result": {
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "document_id": "doc-1", "evidence_id": "ev-document-1",
+          "source_digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+          "source_length_bytes": 5, "capture_disposition": "head_eligible", "became_head": true
+        }
+      }
+    },
+    {
+      "description": "document.capture refuses reuse of its operation key for different bytes.",
+      "expect": {"branch": "error", "error_code": "idempotency_conflict", "idempotency": "idempotency_conflict", "replay_of": "document.capture/primary-success", "retry_class": "non_retryable"},
+      "id": "document.capture/idempotency-conflict",
+      "operation": "document.capture",
+      "request": {
+        "input": {
+          "document_id": "doc-1", "content_base64": "d29ybGQ=", "media_type": "text/plain",
+          "requested_source_identity": "source-1", "intent_kind": "new_capture",
+          "base": {"kind": "creation"}, "target_binding_revision": "target-binding-1",
+          "processing_profile": {"profile_ref": "profile-1", "revision": "revision-1"},
+          "original_binding": {"owner_ref": "access-1", "generation": 1, "route_kind": "direct_file"}
+        },
+        "metadata": {
+          "idempotency_key": "idem-document.capture", "request_id": "req-document.capture-conflict",
+          "required_capabilities": [{"id": "evidence.write", "minimum_version": "1.0", "required": true}],
+          "scopes": ["memory:write"], "workspace_id": "ws-1"
+        },
+        "operation": "document.capture"
+      },
+      "response": {
+        "error": {"code": "idempotency_conflict", "message": "This idempotency key was already used for a different request.", "retry_class": "non_retryable"},
+        "metadata": {"audit_reference": "audit-document.capture", "request_id": "req-document.capture-conflict"}
       }
     },
     {

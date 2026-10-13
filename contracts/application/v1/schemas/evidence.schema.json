@@ -251,6 +251,110 @@
         "capture_disposition"
       ],
       "unevaluatedProperties": false
+    },
+    "DocumentCaptureBase": {
+      "title": "DocumentCaptureBase",
+      "description": "Closed capture-head precondition. `creation` carries no capture id; `existing` carries the observed successful capture id when one existed and omits it when the observed head was explicitly empty.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Closed value `creation` or `existing`."
+        },
+        "capture_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Observed successful capture for an existing document, absent when explicitly empty."
+        }
+      },
+      "required": ["kind"],
+      "unevaluatedProperties": false
+    },
+    "DocumentOriginalBindingInput": {
+      "title": "DocumentOriginalBindingInput",
+      "description": "Opaque native-owner lineage for the snapshot; it contains no path or bookmark bytes.",
+      "type": "object",
+      "properties": {
+        "owner_ref": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Opaque native access-owner reference."},
+        "generation": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "Expected native binding generation."},
+        "route_kind": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Closed value `direct_file` or `root_member`."},
+        "root_ref": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Opaque selected-root reference for a root member."},
+        "member_ref": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Opaque frozen member reference under the selected root."}
+      },
+      "required": ["owner_ref", "generation", "route_kind"],
+      "unevaluatedProperties": false
+    },
+    "DocumentProcessingProfileInput": {
+      "title": "DocumentProcessingProfileInput",
+      "description": "Exact immutable processing profile selection frozen by the native caller.",
+      "type": "object",
+      "properties": {
+        "profile_ref": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Immutable processing-profile reference."},
+        "revision": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Exact selected profile revision."}
+      },
+      "required": ["profile_ref", "revision"],
+      "unevaluatedProperties": false
+    },
+    "DocumentConsentInput": {
+      "title": "DocumentConsentInput",
+      "description": "Standing-consent lineage required for automatic capture.",
+      "type": "object",
+      "properties": {
+        "subscription_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Canonical capture-subscription identifier."},
+        "consent_generation": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "Acknowledged standing-consent generation."},
+        "config_generation": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "Acknowledged subscription configuration generation."},
+        "dirty_epoch": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "Native change epoch that authorised this snapshot."}
+      },
+      "required": ["subscription_id", "consent_generation", "config_generation", "dirty_epoch"],
+      "unevaluatedProperties": false
+    },
+    "DocumentBulkOriginInput": {
+      "title": "DocumentBulkOriginInput",
+      "description": "Frozen one-off folder-run membership lineage.",
+      "type": "object",
+      "properties": {
+        "bulk_run_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Canonical bulk-run identifier."},
+        "manifest_revision": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Exact frozen manifest revision."},
+        "member_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Frozen member in the reviewed manifest."}
+      },
+      "required": ["bulk_run_id", "manifest_revision", "member_id"],
+      "unevaluatedProperties": false
+    },
+    "DocumentCaptureInput": {
+      "title": "DocumentCaptureInput",
+      "description": "Closed input for `document.capture`. Carries transferred snapshot bytes and opaque lineage only; no original path, bookmark, credential, parser name, arbitrary endpoint, principal, or workspace override is accepted.",
+      "type": "object",
+      "properties": {
+        "document_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Logical document identity selected before transfer."},
+        "content_base64": {"type": "string", "minLength": 4, "maxLength": 22369624, "description": "Strict RFC 4648 base64 of the complete immutable snapshot, bounded to 16 MiB after decode."},
+        "media_type": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/MediaType", "description": "Validated media type of the snapshot."},
+        "requested_source_identity": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Stable caller-selected source identity for this capture intent."},
+        "intent_kind": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Closed capture intent kind."},
+        "base": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureBase", "description": "Frozen successful-head precondition."},
+        "target_binding_revision": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Trusted destination binding revision frozen before publication."},
+        "processing_profile": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingProfileInput", "description": "Exact processing profile requested for the admitted capture."},
+        "original_binding": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalBindingInput", "description": "Optional opaque original-access lineage."},
+        "consent": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentConsentInput", "description": "Standing-consent lineage for automatic work."},
+        "bulk_origin": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentBulkOriginInput", "description": "Frozen folder-run lineage for bulk work."},
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 255, "description": "Untrusted display-only filename claim."}
+      },
+      "required": ["document_id", "content_base64", "media_type", "requested_source_identity", "intent_kind", "base", "target_binding_revision", "processing_profile"],
+      "unevaluatedProperties": false
+    },
+    "DocumentCaptureResult": {
+      "title": "DocumentCaptureResult",
+      "description": "Canonical receipt for one document capture admission or exact replay.",
+      "type": "object",
+      "properties": {
+        "capture_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Canonical immutable capture identifier."},
+        "document_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Logical document associated with the capture."},
+        "evidence_id": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceId", "description": "Retained canonical evidence artifact."},
+        "source_digest": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceChecksum", "description": "Core-computed SHA-256 identity of admitted bytes."},
+        "source_length_bytes": {"type": "integer", "minimum": 1, "maximum": 16777216, "description": "Core-computed snapshot byte length."},
+        "capture_disposition": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Head-eligible or governed historical disposition."},
+        "became_head": {"type": "boolean", "description": "Whether this capture became the current successful capture."}
+      },
+      "required": ["capture_id", "document_id", "evidence_id", "source_digest", "source_length_bytes", "capture_disposition", "became_head"],
+      "unevaluatedProperties": false
     }
   }
 }

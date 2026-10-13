@@ -415,7 +415,20 @@ def capture_document_bytes(
                 root_ref=binding.root_ref, member_ref=binding.member_ref,
             )  # fmt: skip
             if stored_binding is None:
-                raise DocumentIntakeRefused("the original binding is unknown")
+                if intent_kind != store.INTENT_NEW_CAPTURE or binding.generation != 1:
+                    raise DocumentIntakeRefused("the original binding is unknown")
+                stored_binding = store.insert_binding(
+                    runner.connection,
+                    workspace_id=workspace_id,
+                    owner_ref=binding.owner_ref,
+                    document_id=document_id,
+                    route_kind=binding.route_kind,
+                    root_ref=binding.root_ref,
+                    member_ref=binding.member_ref,
+                    state=store.BINDING_CONNECTED,
+                    fencing_generation=runner.generation,
+                    now_us=now_us,
+                )
             if binding.generation > stored_binding.binding_generation:
                 raise DocumentIntakeRefused("the binding generation is newer than the binding")
         sequence = store.last_capture_sequence(

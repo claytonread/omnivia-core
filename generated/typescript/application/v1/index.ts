@@ -5307,6 +5307,136 @@ export interface EvidenceCaptureInput {
 }
 
 /**
+ * Closed capture-head precondition. `creation` carries no capture id; `existing` carries the
+ * observed successful capture id when one existed and omits it when the observed head was
+ * explicitly empty.
+ */
+export interface DocumentCaptureBase {
+  /**
+   * Closed value `creation` or `existing`.
+   */
+  readonly kind: OpenCode;
+  /**
+   * Observed successful capture for an existing document, absent when explicitly empty.
+   */
+  readonly capture_id?: Identifier;
+}
+
+/**
+ * Opaque native-owner lineage for the snapshot; it contains no path or bookmark bytes.
+ */
+export interface DocumentOriginalBindingInput {
+  /**
+   * Opaque native access-owner reference.
+   */
+  readonly owner_ref: Identifier;
+  /**
+   * Expected native binding generation.
+   */
+  readonly generation: number;
+  /**
+   * Closed value `direct_file` or `root_member`.
+   */
+  readonly route_kind: OpenCode;
+  /**
+   * Opaque selected-root reference for a root member.
+   */
+  readonly root_ref?: Identifier;
+  /**
+   * Opaque frozen member reference under the selected root.
+   */
+  readonly member_ref?: Identifier;
+}
+
+/**
+ * Exact immutable processing profile selection frozen by the native caller.
+ */
+export interface DocumentProcessingProfileInput {
+  /**
+   * Immutable processing-profile reference.
+   */
+  readonly profile_ref: Identifier;
+  /**
+   * Exact selected profile revision.
+   */
+  readonly revision: Identifier;
+}
+
+/**
+ * Standing-consent lineage required for automatic capture.
+ */
+export interface DocumentConsentInput {
+  /**
+   * Canonical capture-subscription identifier.
+   */
+  readonly subscription_id: Identifier;
+  /**
+   * Acknowledged standing-consent generation.
+   */
+  readonly consent_generation: number;
+  /**
+   * Acknowledged subscription configuration generation.
+   */
+  readonly config_generation: number;
+  /**
+   * Native change epoch that authorised this snapshot.
+   */
+  readonly dirty_epoch: number;
+}
+
+/**
+ * Frozen one-off folder-run membership lineage.
+ */
+export interface DocumentBulkOriginInput {
+  /**
+   * Canonical bulk-run identifier.
+   */
+  readonly bulk_run_id: Identifier;
+  /**
+   * Exact frozen manifest revision.
+   */
+  readonly manifest_revision: Identifier;
+  /**
+   * Frozen member in the reviewed manifest.
+   */
+  readonly member_id: Identifier;
+}
+
+/**
+ * Canonical receipt for one document capture admission or exact replay.
+ */
+export interface DocumentCaptureResult {
+  /**
+   * Canonical immutable capture identifier.
+   */
+  readonly capture_id: Identifier;
+  /**
+   * Logical document associated with the capture.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Retained canonical evidence artifact.
+   */
+  readonly evidence_id: EvidenceId;
+  /**
+   * Core-computed SHA-256 identity of admitted bytes.
+   */
+  readonly source_digest: EvidenceChecksum;
+  /**
+   * Core-computed snapshot byte length.
+   */
+  readonly source_length_bytes: number;
+  /**
+   * Head-eligible or governed historical disposition.
+   */
+  readonly capture_disposition: OpenCode;
+  /**
+   * Whether this capture became the current successful capture.
+   */
+  readonly became_head: boolean;
+}
+
+/**
  * The identity of one asynchronous job: what it is, which application operation started it, its
  * immutable audit linkage, and, when applicable, which workspace it runs against.
  */
@@ -9294,6 +9424,62 @@ export interface EvidenceCaptureResult {
    * a semantic-validation concern, not a wire-shape one.
    */
   readonly capture_disposition: OpenCode;
+}
+
+/**
+ * Closed input for `document.capture`. Carries transferred snapshot bytes and opaque lineage
+ * only; no original path, bookmark, credential, parser name, arbitrary endpoint, principal, or
+ * workspace override is accepted.
+ */
+export interface DocumentCaptureInput {
+  /**
+   * Logical document identity selected before transfer.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Strict RFC 4648 base64 of the complete immutable snapshot, bounded to 16 MiB after decode.
+   */
+  readonly content_base64: string;
+  /**
+   * Validated media type of the snapshot.
+   */
+  readonly media_type: MediaType;
+  /**
+   * Stable caller-selected source identity for this capture intent.
+   */
+  readonly requested_source_identity: Identifier;
+  /**
+   * Closed capture intent kind.
+   */
+  readonly intent_kind: OpenCode;
+  /**
+   * Frozen successful-head precondition.
+   */
+  readonly base: DocumentCaptureBase;
+  /**
+   * Trusted destination binding revision frozen before publication.
+   */
+  readonly target_binding_revision: Identifier;
+  /**
+   * Exact processing profile requested for the admitted capture.
+   */
+  readonly processing_profile: DocumentProcessingProfileInput;
+  /**
+   * Optional opaque original-access lineage.
+   */
+  readonly original_binding?: DocumentOriginalBindingInput;
+  /**
+   * Standing-consent lineage for automatic work.
+   */
+  readonly consent?: DocumentConsentInput;
+  /**
+   * Frozen folder-run lineage for bulk work.
+   */
+  readonly bulk_origin?: DocumentBulkOriginInput;
+  /**
+   * Untrusted display-only filename claim.
+   */
+  readonly display_name?: string;
 }
 
 /**
@@ -13348,6 +13534,40 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "stale_projection",
       "token_limit_exceeded",
       "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.capture",
+    scope: { required_scopes: ["memory:write"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureResult",
+    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
       "workspace_migration_required",
       "workspace_not_granted",
     ],
