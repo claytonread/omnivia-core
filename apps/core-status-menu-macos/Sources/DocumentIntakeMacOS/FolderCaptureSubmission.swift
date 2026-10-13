@@ -51,6 +51,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
 
     private let accessStore: NativeAccessStore
     private let preparation: CapturePreparationCoordinator
+    private let subscriptions: FolderSubscriptionStore
     private let workspaceRef: String
     private let targetRef: String
 
@@ -68,6 +69,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         )
         accessStore = environment.accessStore
         preparation = environment.preparation
+        subscriptions = environment.folderSubscriptions
         self.workspaceRef = workspaceRef
         self.targetRef = targetRef
     }
@@ -79,6 +81,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
     ) {
         accessStore = environment.accessStore
         preparation = environment.preparation
+        subscriptions = environment.folderSubscriptions
         self.workspaceRef = workspaceRef
         self.targetRef = targetRef
     }
@@ -171,6 +174,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         let subscriptionID = Self.identifier(prefix: "subscription")
         let createdAt = ISO8601DateFormatter().string(from: Date())
         var items: [CapturePreparationItem] = []
+        var subscriptionMembers: [FolderSubscriptionMember] = []
         for member in plan.members {
             let memberID = Self.identifier(prefix: "member")
             let itemID = Self.identifier(prefix: "item")
@@ -243,8 +247,69 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                     seed: seed
                 )
             )
+            if automatic {
+                subscriptionMembers.append(
+                    FolderSubscriptionMember(
+                        memberID: memberID,
+                        accessRef: descriptor.accessRef,
+                        linkedDocumentID: documentID,
+                        requestedSourceIdentity: seed.requestedSourceIdentity,
+                        relativeComponents: member.relativeComponents,
+                        displayName: member.displayName,
+                        contentKind: member.contentKind,
+                        membershipGeneration: descriptor.generation,
+                        baselineItemID: itemID,
+                        currentSuccessfulCaptureID: nil,
+                        lastObservedDigest: nil,
+                        lastObservedByteLength: nil,
+                        lastObservedAt: nil,
+                        lastQueuedItemID: itemID,
+                        dirtyEpoch: 1,
+                        state: .present
+                    )
+                )
+            }
         }
-        return try await preparation.prepareAndPublish(items)
+        if plan.policy.mode == .keepUpdated {
+            _ = try subscriptions.register(
+                FolderSubscription(
+                    subscriptionID: subscriptionID,
+                    rootRef: rootRef,
+                    targetRef: targetRef,
+                    workspaceRef: workspaceRef,
+                    targetBindingRevision: "1",
+                    callerContextBinding: CallerContextBinding(
+                        clientContextRef: "macos-companion",
+                        principalRef: "native-user",
+                        contextRevision: "1"
+                    ),
+                    recursive: plan.policy.recursive,
+                    includeHidden: plan.policy.includeHidden,
+                    configGeneration: 1,
+                    consentGeneration: 1,
+                    consentRecordedAt: createdAt,
+                    observationEpoch: Self.identifier(prefix: "observation"),
+                    state: .waitingForCore,
+                    needsFullReconciliation: true,
+                    lastCompletedMetadataScanAt: nil,
+                    members: subscriptionMembers
+                )
+            )
+        }
+        let entries = try await preparation.prepareAndPublish(items)
+        if plan.policy.mode == .keepUpdated {
+            let byItem = Dictionary(uniqueKeysWithValues: entries.map { ($0.intent.itemId, $0) })
+            _ = try subscriptions.update(id: subscriptionID) { subscription in
+                for index in subscription.members.indices {
+                    if let entry = byItem[subscription.members[index].baselineItemID] {
+                        subscription.members[index].lastObservedDigest = entry.intent.localIntegrityDigest
+                        subscription.members[index].lastObservedByteLength = entry.intent.byteLength
+                        subscription.members[index].lastObservedAt = entry.intent.createdAt
+                    }
+                }
+            }
+        }
+        return entries
     }
 
     private static func relativeComponents(root: URL, member: URL) throws -> [String] {

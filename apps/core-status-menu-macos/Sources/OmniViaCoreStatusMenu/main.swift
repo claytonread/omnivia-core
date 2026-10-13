@@ -21,11 +21,13 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private let addItem = NSMenuItem(title: "Add to Core…", action: #selector(openCapture), keyEquivalent: "a")
     private let settingsItem = NSMenuItem(title: "Core Settings…", action: #selector(openSettings), keyEquivalent: ",")
     private var pollTimer: Timer?
+    private var monitoringTimer: Timer?
     /// One owned Settings window (MR-001). Created on first open; closing it
     /// never touches Core lifecycle.
     private var settingsWindowController: SettingsWindowController?
     private var capturePanelController: CapturePanelController?
     private var captureDeliveryCoordinator: CaptureDeliveryCoordinator?
+    private var folderMonitoringCoordinator: FolderMonitoringCoordinator?
 
     init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
         self.configuration = configuration
@@ -49,6 +51,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         let intakeRoot = configuration.installationState.deletingLastPathComponent()
             .appendingPathComponent("native-intake", isDirectory: true)
         if let environment = try? DocumentIntakeEnvironment(stateRoot: intakeRoot) {
+            folderMonitoringCoordinator = environment.folderMonitoring
             let submitter = ManualCaptureSubmission(
                 environment: environment,
                 workspaceRef: configuration.workspaceID
@@ -57,12 +60,9 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 environment: environment,
                 workspaceRef: configuration.workspaceID
             )
-            if let resolvedExecutable,
-               let queue = try? CaptureIntentQueue(
-                   root: intakeRoot.appendingPathComponent("capture-queue", isDirectory: true)
-               ) {
+            if let resolvedExecutable {
                 captureDeliveryCoordinator = CaptureDeliveryCoordinator(
-                    queue: queue,
+                    queue: environment.queue,
                     transport: CLICaptureDelivery(
                         executable: resolvedExecutable,
                         installationState: configuration.installationState,
@@ -90,6 +90,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         render(.checking)
         coordinator.refresh()
         deliverPendingCaptures()
+        reconcileWatchedFolders()
 
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -99,12 +100,18 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         }
         RunLoop.main.add(timer, forMode: .common)
         pollTimer = timer
+        let monitoringTimer = Timer(timeInterval: 15 * 60, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.reconcileWatchedFolders() }
+        }
+        RunLoop.main.add(monitoringTimer, forMode: .common)
+        self.monitoringTimer = monitoringTimer
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         // The status menu is a companion, not the service owner. Quitting it
         // deliberately performs no Core lifecycle command.
         pollTimer?.invalidate()
+        monitoringTimer?.invalidate()
         coordinator.companionWillTerminate()
         singleton.close()
     }
@@ -186,7 +193,21 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
 
     private func deliverPendingCaptures() {
         guard let captureDeliveryCoordinator else { return }
-        Task { _ = await captureDeliveryCoordinator.deliverPending() }
+        let monitoring = folderMonitoringCoordinator
+        Task {
+            _ = await captureDeliveryCoordinator.deliverPending()
+            _ = await monitoring?.reconcileReceipts()
+        }
+    }
+
+    private func reconcileWatchedFolders() {
+        guard let folderMonitoringCoordinator else { return }
+        let delivery = captureDeliveryCoordinator
+        Task {
+            _ = await folderMonitoringCoordinator.reconcileAll()
+            _ = await delivery?.deliverPending()
+            _ = await folderMonitoringCoordinator.reconcileReceipts()
+        }
     }
 
     @objc private func startService() {

@@ -6,6 +6,9 @@ import Foundation
 public final class DocumentIntakeEnvironment: @unchecked Sendable {
     let accessStore: NativeAccessStore
     let preparation: CapturePreparationCoordinator
+    public let queue: CaptureIntentQueue
+    public let folderSubscriptions: FolderSubscriptionStore
+    public let folderMonitoring: FolderMonitoringCoordinator
 
     public init(
         stateRoot: URL,
@@ -16,11 +19,22 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             stateDirectory: stateRoot.appendingPathComponent("native-access", isDirectory: true),
             codec: bookmarkCodec
         )
+        queue = try CaptureIntentQueue(
+            root: stateRoot.appendingPathComponent("capture-queue", isDirectory: true)
+        )
         preparation = CapturePreparationCoordinator(
             accessStore: accessStore,
-            queue: try CaptureIntentQueue(
-                root: stateRoot.appendingPathComponent("capture-queue", isDirectory: true)
-            ),
+            queue: queue,
+            reader: reader
+        )
+        folderSubscriptions = try FolderSubscriptionStore(
+            stateDirectory: stateRoot.appendingPathComponent("folder-subscriptions", isDirectory: true)
+        )
+        folderMonitoring = FolderMonitoringCoordinator(
+            accessStore: accessStore,
+            preparation: preparation,
+            queue: queue,
+            subscriptions: folderSubscriptions,
             reader: reader
         )
     }

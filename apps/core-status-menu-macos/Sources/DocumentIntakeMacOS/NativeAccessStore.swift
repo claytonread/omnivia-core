@@ -292,6 +292,68 @@ public final class NativeAccessStore: @unchecked Sendable {
         return try body(target)
     }
 
+    /// Resolves the selected root behind an existing root-member route. This is available only to
+    /// the native monitoring owner; callers still have to enforce the persisted subscription scope.
+    public func withRootReadAccess<T>(
+        rootRef: String,
+        expectedGeneration: UInt64,
+        _ body: (URL) throws -> T
+    ) throws -> T {
+        let record = try lock.withLock { () throws -> NativeAccessRecord in
+            let candidates = records.values.filter { record in
+                guard record.state == .connected,
+                      record.bookmark != nil,
+                      case let .rootMember(candidateRoot, _, _) = record.route
+                else { return false }
+                return candidateRoot == rootRef && record.generation == expectedGeneration
+            }
+            guard let record = candidates.sorted(by: { $0.accessRef < $1.accessRef }).first else {
+                throw NativeAccessError.unknownAccess
+            }
+            return record
+        }
+        guard let bookmark = record.bookmark else { throw NativeAccessError.disconnected }
+        let resolved: (url: URL, stale: Bool)
+        do {
+            resolved = try codec.resolveReadOnlyBookmark(bookmark)
+        } catch {
+            throw NativeAccessError.accessDenied
+        }
+        guard !resolved.stale else { throw NativeAccessError.staleBookmark }
+        guard codec.startAccessing(resolved.url) else { throw NativeAccessError.accessDenied }
+        defer { codec.stopAccessing(resolved.url) }
+        let values = try resolved.url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values.isDirectory == true, values.isSymbolicLink != true else {
+            throw NativeAccessError.invalidRoute
+        }
+        return try body(resolved.url.resolvingSymlinksInPath().standardizedFileURL)
+    }
+
+    /// Adds a newly discovered child while the already-authorised root scope is active. The caller
+    /// supplies only opaque root/member identities and a validated root-relative locator.
+    @discardableResult
+    public func adoptRootMember(
+        accessRef: String,
+        linkedDocumentID: String,
+        rootRef: String,
+        memberRef: String,
+        relativeComponents: [String],
+        expectedRootGeneration: UInt64
+    ) throws -> NativeAccessDescriptor {
+        try withRootReadAccess(rootRef: rootRef, expectedGeneration: expectedRootGeneration) { root in
+            try adopt(
+                accessRef: accessRef,
+                linkedDocumentID: linkedDocumentID,
+                selectedURL: root,
+                route: .rootMember(
+                    rootRef: rootRef,
+                    memberRef: memberRef,
+                    relativeComponents: relativeComponents
+                )
+            )
+        }
+    }
+
     /// Rechecks a complete prepared batch while preventing relink/disconnect from interleaving with
     /// its publication. The body must only perform the bounded local queue commit.
     public func withValidatedGenerations<T>(
