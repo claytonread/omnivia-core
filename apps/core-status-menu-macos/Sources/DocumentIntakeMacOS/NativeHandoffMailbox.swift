@@ -104,6 +104,8 @@ public final class NativeHandoffMailbox: @unchecked Sendable {
     public static let companionBundleID = "com.omnivia.core.status"
     public static let finderBundleID = "com.omnivia.core.finder-action"
     public static let shareBundleID = "com.omnivia.core.share"
+    public static let finderBundleName = "Add to OmniVia Core.appex"
+    public static let shareBundleName = "Share to OmniVia Core.appex"
     public static let maximumSlots = 10
     public static let maximumLifetime: TimeInterval = 120
 
@@ -111,6 +113,7 @@ public final class NativeHandoffMailbox: @unchecked Sendable {
     private let offers: URL
     private let acknowledgements: URL
     private let snapshots: URL
+    public let peerSocketURL: URL
     private let fileManager: FileManager
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -121,6 +124,7 @@ public final class NativeHandoffMailbox: @unchecked Sendable {
         offers = self.root.appendingPathComponent("offers", isDirectory: true)
         acknowledgements = self.root.appendingPathComponent("acknowledgements", isDirectory: true)
         snapshots = self.root.appendingPathComponent("snapshots", isDirectory: true)
+        peerSocketURL = self.root.appendingPathComponent("h.sock", isDirectory: false)
         encoder = JSONEncoder()
         decoder = JSONDecoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -146,13 +150,34 @@ public final class NativeHandoffMailbox: @unchecked Sendable {
         )
     }
 
-    public func writeOffer(_ offer: NativeHandoffOfferV1, now: Date = Date()) throws {
+    /// Persists an offer only after the authenticated peer service has admitted
+    /// its kernel-identified, code-signature-verified connection. Callers must
+    /// keep this store outside the App Group.
+    public func storeAuthenticatedOffer(
+        _ offer: NativeHandoffOfferV1,
+        now: Date = Date()
+    ) throws {
         try Self.validate(offer, now: now)
         let destination = offerURL(nonce: offer.requestNonce)
-        guard !fileManager.fileExists(atPath: destination.path) else {
-            throw NativeHandoffMailboxError.invalidOffer
+        if fileManager.fileExists(atPath: destination.path) {
+            guard let existing = try? Data(contentsOf: destination),
+                  try decoder.decode(NativeHandoffOfferV1.self, from: existing) == offer
+            else { throw NativeHandoffMailboxError.invalidOffer }
+            return
         }
         try write(try encoder.encode(offer), to: destination)
+    }
+
+    public func encodedOffer(_ offer: NativeHandoffOfferV1, now: Date = Date()) throws -> Data {
+        try Self.validate(offer, now: now)
+        return try encoder.encode(offer)
+    }
+
+    public func decodeOffer(_ data: Data, now: Date = Date()) throws -> NativeHandoffOfferV1 {
+        guard data.count <= 4 * 1_024 * 1_024 else { throw NativeHandoffMailboxError.invalidOffer }
+        let offer = try decoder.decode(NativeHandoffOfferV1.self, from: data)
+        try Self.validate(offer, now: now)
+        return offer
     }
 
     public func pendingOffers(now: Date = Date()) -> [NativeHandoffOfferV1] {
@@ -179,11 +204,7 @@ public final class NativeHandoffMailbox: @unchecked Sendable {
     }
 
     public func writeAcknowledgement(_ acknowledgement: NativeHandoffAcknowledgementV1) throws {
-        guard Self.validNonce(acknowledgement.requestNonce),
-              !acknowledgement.adoptions.isEmpty,
-              acknowledgement.adoptions.count <= Self.maximumSlots,
-              Set(acknowledgement.adoptions.map(\.slotID)).count == acknowledgement.adoptions.count
-        else { throw NativeHandoffMailboxError.invalidAcknowledgement }
+        try validateAcknowledgement(acknowledgement)
         try write(
             try encoder.encode(acknowledgement),
             to: acknowledgementURL(nonce: acknowledgement.requestNonce)
@@ -194,9 +215,31 @@ public final class NativeHandoffMailbox: @unchecked Sendable {
         guard Self.validNonce(nonce),
               let data = try? Data(contentsOf: acknowledgementURL(nonce: nonce)),
               let value = try? decoder.decode(NativeHandoffAcknowledgementV1.self, from: data),
-              value.schema == "omnivia.native-handoff.ack.v1",
-              value.requestNonce == nonce
+              value.requestNonce == nonce,
+              (try? validateAcknowledgement(value)) != nil
         else { return nil }
+        return value
+    }
+
+    public func encodedAcknowledgement(
+        _ acknowledgement: NativeHandoffAcknowledgementV1
+    ) throws -> Data {
+        try validateAcknowledgement(acknowledgement)
+        return try encoder.encode(acknowledgement)
+    }
+
+    public func decodeAcknowledgement(
+        _ data: Data,
+        expectedNonce: String
+    ) throws -> NativeHandoffAcknowledgementV1 {
+        guard data.count <= 256 * 1_024 else {
+            throw NativeHandoffMailboxError.invalidAcknowledgement
+        }
+        let value = try decoder.decode(NativeHandoffAcknowledgementV1.self, from: data)
+        try validateAcknowledgement(value)
+        guard value.requestNonce == expectedNonce else {
+            throw NativeHandoffMailboxError.invalidAcknowledgement
+        }
         return value
     }
 
@@ -232,6 +275,11 @@ public final class NativeHandoffMailbox: @unchecked Sendable {
         if removeSnapshots {
             try? fileManager.removeItem(at: snapshots.appendingPathComponent(nonce, isDirectory: true))
         }
+    }
+
+    public func removeSnapshots(nonce: String) {
+        guard Self.validNonce(nonce) else { return }
+        try? fileManager.removeItem(at: snapshots.appendingPathComponent(nonce, isDirectory: true))
     }
 
     public func removeAcknowledgement(nonce: String) {
@@ -292,6 +340,23 @@ public final class NativeHandoffMailbox: @unchecked Sendable {
                 else { throw NativeHandoffMailboxError.invalidOffer }
             }
         }
+    }
+
+    private func validateAcknowledgement(
+        _ acknowledgement: NativeHandoffAcknowledgementV1
+    ) throws {
+        guard acknowledgement.schema == "omnivia.native-handoff.ack.v1",
+              Self.validNonce(acknowledgement.requestNonce),
+              !acknowledgement.adoptions.isEmpty,
+              acknowledgement.adoptions.count <= Self.maximumSlots,
+              Set(acknowledgement.adoptions.map(\.slotID)).count == acknowledgement.adoptions.count,
+              acknowledgement.adoptions.allSatisfy({ adoption in
+                  Self.validNonce(adoption.slotID)
+                      && !adoption.candidateRef.isEmpty
+                      && adoption.candidateRef.utf8.count <= 256
+                      && adoption.candidateRevision > 0
+              })
+        else { throw NativeHandoffMailboxError.invalidAcknowledgement }
     }
 
     private static func validNonce(_ value: String) -> Bool {

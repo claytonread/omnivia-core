@@ -3,8 +3,9 @@ import DocumentIntakeMacOS
 import Foundation
 
 @MainActor
-final class NativeHandoffReceiver {
+final class NativeHandoffReceiver: NSObject {
     private let mailbox: NativeHandoffMailbox
+    private let resources: NativeHandoffMailbox
     private let submitter: ManualCaptureSubmission
     private let snapshotStore: OwnedSnapshotStore
     private let accept: ([ManualCaptureCandidate]) -> Void
@@ -12,30 +13,71 @@ final class NativeHandoffReceiver {
 
     init(
         mailbox: NativeHandoffMailbox,
+        resources: NativeHandoffMailbox,
         submitter: ManualCaptureSubmission,
         snapshotStore: OwnedSnapshotStore,
         accept: @escaping ([ManualCaptureCandidate]) -> Void
     ) {
         self.mailbox = mailbox
+        self.resources = resources
         self.submitter = submitter
         self.snapshotStore = snapshotStore
         self.accept = accept
+        super.init()
     }
 
     func reconcile() {
-        for offer in mailbox.pendingOffers() where processing.insert(offer.requestNonce).inserted {
+        for offer in mailbox.pendingOffers()
+        where mailbox.acknowledgement(nonce: offer.requestNonce) == nil
+            && processing.insert(offer.requestNonce).inserted
+        {
             Task { @MainActor [weak self] in
-                await self?.adopt(offer)
+                guard let self else { return }
+                defer { self.processing.remove(offer.requestNonce) }
+                _ = try? await self.adopt(offer)
             }
         }
     }
 
-    private func adopt(_ offer: NativeHandoffOfferV1) async {
-        defer { processing.remove(offer.requestNonce) }
-        if mailbox.acknowledgement(nonce: offer.requestNonce) != nil {
-            mailbox.removeOffer(nonce: offer.requestNonce, removeSnapshots: true)
-            return
+    func submitAuthenticatedOffer(_ encodedOffer: Data) async throws -> Data {
+        let offer = try mailbox.decodeOffer(encodedOffer)
+        let acknowledgement = try await acceptAuthenticated(offer)
+        return try mailbox.encodedAcknowledgement(acknowledgement)
+    }
+
+    private func acceptAuthenticated(
+        _ offer: NativeHandoffOfferV1
+    ) async throws -> NativeHandoffAcknowledgementV1 {
+        // Always compare the complete replay before consulting its durable
+        // acknowledgement. A nonce can never be rebound to different slots or
+        // grant bytes, even after the first request completed.
+        try mailbox.storeAuthenticatedOffer(offer)
+        if let acknowledgement = mailbox.acknowledgement(nonce: offer.requestNonce) {
+            return acknowledgement
         }
+        guard processing.insert(offer.requestNonce).inserted else {
+            return try await waitForAcknowledgement(nonce: offer.requestNonce)
+        }
+        defer { processing.remove(offer.requestNonce) }
+        return try await adopt(offer)
+    }
+
+    private func waitForAcknowledgement(
+        nonce: String
+    ) async throws -> NativeHandoffAcknowledgementV1 {
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            if let acknowledgement = mailbox.acknowledgement(nonce: nonce) {
+                return acknowledgement
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw NativeHandoffMailboxError.unavailable
+    }
+
+    private func adopt(
+        _ offer: NativeHandoffOfferV1
+    ) async throws -> NativeHandoffAcknowledgementV1 {
         var candidates: [ManualCaptureCandidate] = []
         do {
             switch offer.surface {
@@ -66,7 +108,7 @@ final class NativeHandoffReceiver {
                         throw NativeHandoffMailboxError.invalidOffer
                     }
                     return .file(
-                        try mailbox.snapshotURL(
+                        try resources.snapshotURL(
                             nonce: offer.requestNonce,
                             relativePath: relativePath
                         ),
@@ -105,15 +147,22 @@ final class NativeHandoffReceiver {
                     candidateRevision: revision
                 )
             }
-            try mailbox.writeAcknowledgement(NativeHandoffAcknowledgementV1(
+            let acknowledgement = NativeHandoffAcknowledgementV1(
                 requestNonce: offer.requestNonce,
                 acknowledgedAt: Date(),
                 adoptions: adoptions
-            ))
-            mailbox.removeOffer(nonce: offer.requestNonce, removeSnapshots: true)
+            )
+            try mailbox.writeAcknowledgement(acknowledgement)
+            // Keep the authenticated offer through its short validity window
+            // so a lost acknowledgement can be matched to the exact request.
+            // Expiry cleanup removes the transfer blob; the adopted grant is
+            // already owned separately by the native access store.
+            resources.removeSnapshots(nonce: offer.requestNonce)
+            return acknowledgement
         } catch {
             submitter.discardAdoptedCandidates(candidates)
             snapshotStore.remove(candidates.filter { $0.source.isSnapshot }.map(\.url))
+            throw error
         }
     }
 }

@@ -41,6 +41,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private var fileMonitoringCoordinator: FileMonitoringCoordinator?
     private var statusDropView: StatusItemDropView?
     private var nativeHandoffReceiver: NativeHandoffReceiver?
+    private var nativeHandoffPeerServer: NativeHandoffPeerServer?
 
     init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
         self.configuration = configuration
@@ -116,14 +117,28 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                     self?.capturePanelController?.addIncomingSnapshots(urls, surface: .shortcut)
                 }
             )
-            if let mailbox = try? NativeHandoffMailbox.appGroupMailbox() {
-                nativeHandoffReceiver = NativeHandoffReceiver(
+            if let resources = try? NativeHandoffMailbox.appGroupMailbox(),
+               let mailbox = try? NativeHandoffMailbox(
+                   root: intakeRoot.appendingPathComponent(
+                       "authenticated-native-handoff",
+                       isDirectory: true
+                   )
+               )
+            {
+                let receiver = NativeHandoffReceiver(
                     mailbox: mailbox,
+                    resources: resources,
                     submitter: submitter,
                     snapshotStore: snapshotStore,
                     accept: { [weak self] candidates in
                         self?.capturePanelController?.addIncomingAdopted(candidates)
                     }
+                )
+                nativeHandoffReceiver = receiver
+                nativeHandoffPeerServer = try? NativeHandoffPeerServer(
+                    rendezvous: resources,
+                    receiver: receiver,
+                    companionBundleURL: Bundle.main.bundleURL
                 )
             }
         }

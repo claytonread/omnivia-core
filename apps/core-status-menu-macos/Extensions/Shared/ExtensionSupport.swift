@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 enum OmniViaExtensionError: Error {
@@ -33,19 +34,58 @@ func activateContainingApp() throws {
     )
 }
 
-func waitForAcknowledgement(
+@MainActor
+func submitAuthenticatedOffer(
+    _ offer: NativeHandoffOfferV1,
     mailbox: NativeHandoffMailbox,
-    nonce: String,
     timeout: TimeInterval = 30
 ) async throws -> NativeHandoffAcknowledgementV1 {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if let acknowledgement = mailbox.acknowledgement(nonce: nonce) {
-            return acknowledgement
+    let appURL = try containingAppURL()
+    let requirement = try NativePeerRequirement.designatedRequirement(
+        for: appURL,
+        expectedBundleID: NativeHandoffMailbox.companionBundleID
+    )
+    let encoded = try mailbox.encodedOffer(offer)
+    try activateContainingApp()
+    let socketURL = mailbox.peerSocketURL
+    let acknowledgementData = try await Task.detached(priority: .userInitiated) {
+        let deadline = Date().addingTimeInterval(timeout)
+        var descriptor: Int32?
+        while descriptor == nil, Date() < deadline {
+            do {
+                descriptor = try NativePeerSocket.connect(to: socketURL)
+            } catch NativePeerSocketError.unavailable {
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
         }
-        try await Task.sleep(nanoseconds: 200_000_000)
-    }
-    throw OmniViaExtensionError.acknowledgementTimeout
+        guard let descriptor else {
+            throw OmniViaExtensionError.companionUnavailable
+        }
+        defer { Darwin.close(descriptor) }
+
+        let identity = try NativePeerSocket.peerIdentity(of: descriptor)
+        guard identity.userID == geteuid() else {
+            throw NativePeerRequirementError.peerRejected
+        }
+        try requirement.validate(processID: identity.processID)
+        try NativePeerSocket.writeFrame(
+            encoded,
+            to: descriptor,
+            maximumBytes: 4 * 1_024 * 1_024
+        )
+        let response = try NativePeerSocket.readFrame(
+            from: descriptor,
+            maximumBytes: 256 * 1_024 + 1
+        )
+        guard response.first == 0 else {
+            throw OmniViaExtensionError.invalidInput
+        }
+        return Data(response.dropFirst())
+    }.value
+    return try mailbox.decodeAcknowledgement(
+        acknowledgementData,
+        expectedNonce: offer.requestNonce
+    )
 }
 
 func loadFileURL(from provider: NSItemProvider) async throws -> URL {

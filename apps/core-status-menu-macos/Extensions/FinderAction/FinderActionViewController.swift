@@ -67,7 +67,7 @@ final class FinderActionViewController: NSViewController {
                 ))
             }
             let now = Date()
-            try mailbox.writeOffer(NativeHandoffOfferV1(
+            let offer = NativeHandoffOfferV1(
                 requestNonce: nonce,
                 expectedOwnerBundleID: NativeHandoffMailbox.companionBundleID,
                 senderBundleID: NativeHandoffMailbox.finderBundleID,
@@ -75,15 +75,13 @@ final class FinderActionViewController: NSViewController {
                 createdAt: now,
                 expiresAt: now.addingTimeInterval(NativeHandoffMailbox.maximumLifetime),
                 slots: slots
-            ), now: now)
-            try activateContainingApp()
+            )
             status.stringValue = "Waiting for OmniVia Core…"
-            let acknowledgement = try await waitForAcknowledgement(mailbox: mailbox, nonce: nonce)
+            let acknowledgement = try await submitAuthenticatedOffer(offer, mailbox: mailbox)
             guard acknowledgement.adoptions.map(\.slotID) == slots.map(\.slotID) else {
                 throw OmniViaExtensionError.invalidInput
             }
             stopAccessing()
-            mailbox.removeAcknowledgement(nonce: nonce)
             context.completeRequest(returningItems: originalItems, completionHandler: nil)
         } catch {
             stopAccessing()

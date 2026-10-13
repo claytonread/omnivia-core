@@ -74,7 +74,7 @@ final class ShareViewController: NSViewController {
                 ))
             }
             let now = Date()
-            try mailbox.writeOffer(NativeHandoffOfferV1(
+            let offer = NativeHandoffOfferV1(
                 requestNonce: requestNonce,
                 expectedOwnerBundleID: NativeHandoffMailbox.companionBundleID,
                 senderBundleID: NativeHandoffMailbox.shareBundleID,
@@ -82,23 +82,18 @@ final class ShareViewController: NSViewController {
                 createdAt: now,
                 expiresAt: now.addingTimeInterval(NativeHandoffMailbox.maximumLifetime),
                 slots: slots
-            ), now: now)
-            try activateContainingApp()
-            status.stringValue = "Waiting for OmniVia Core…"
-            let acknowledgement = try await waitForAcknowledgement(
-                mailbox: mailbox,
-                nonce: requestNonce
             )
+            status.stringValue = "Waiting for OmniVia Core…"
+            let acknowledgement = try await submitAuthenticatedOffer(offer, mailbox: mailbox)
             guard acknowledgement.adoptions.map(\.slotID) == slots.map(\.slotID) else {
                 throw OmniViaExtensionError.invalidInput
             }
-            mailbox.removeAcknowledgement(nonce: requestNonce)
             context.completeRequest(returningItems: [], completionHandler: nil)
         } catch {
             if let nonce,
                let mailbox = try? NativeHandoffMailbox.appGroupMailbox()
             {
-                mailbox.removeOffer(nonce: nonce, removeSnapshots: true)
+                mailbox.removeSnapshots(nonce: nonce)
             }
             status.stringValue = "Couldn’t prepare this shared content. Retry or cancel."
         }

@@ -28,17 +28,21 @@ be linked with `_NSExtensionMain` and extension-safe API checking:
 xcrun swiftc -O -target arm64-apple-macos13.0 -application-extension \
   -parse-as-library -emit-executable \
   apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeHandoffMailbox.swift \
+  apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerRequirement.swift \
+  apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerSocket.swift \
   apps/core-status-menu-macos/Extensions/Shared/ExtensionSupport.swift \
   apps/core-status-menu-macos/Extensions/FinderAction/FinderActionViewController.swift \
-  -o /absolute/path/to/OmniViaFinderAction -framework AppKit \
+  -o /absolute/path/to/OmniViaFinderAction -framework AppKit -framework Security \
   -Xlinker -e -Xlinker _NSExtensionMain
 
 xcrun swiftc -O -target arm64-apple-macos13.0 -application-extension \
   -parse-as-library -emit-executable \
   apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeHandoffMailbox.swift \
+  apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerRequirement.swift \
+  apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerSocket.swift \
   apps/core-status-menu-macos/Extensions/Shared/ExtensionSupport.swift \
   apps/core-status-menu-macos/Extensions/Share/ShareViewController.swift \
-  -o /absolute/path/to/OmniViaShare -framework AppKit \
+  -o /absolute/path/to/OmniViaShare -framework AppKit -framework Security \
   -Xlinker -e -Xlinker _NSExtensionMain
 ```
 
