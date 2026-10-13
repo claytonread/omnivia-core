@@ -118,20 +118,44 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var cancellables: Set<AnyCancellable> = []
 
     // Pane selection
+    /// Order and labels follow `NAV` in the design's `core-settings.js`. That
+    /// list is seven items: the readiness and Local Decisions amendments both
+    /// say "exactly five", and the design has since added Capture and Document
+    /// processing. The design file is the later of the two, so it wins.
     private enum Pane: String, CaseIterable {
         case general = "General"
         case data = "Data"
+        case capture = "Capture"
+        case documentProcessing = "Document processing"
         case processing = "Processing"
         case access = "Access"
         case maintenance = "Maintenance"
 
+        /// The sentence under the pane title (design `U.head`'s second
+        /// argument), verbatim.
+        var lede: String {
+            switch self {
+            case .general: return "Choose how Core behaves on this Mac."
+            case .data: return "See where your workspace is stored and keep it backed up."
+            case .capture: return "How files and folders are added to Core from this Mac."
+            case .documentProcessing:
+                return "How Core reads text from captured documents and images on this Mac."
+            case .processing: return "Control how Core processes the information you have added."
+            case .access: return "Choose which applications can use this workspace."
+            case .maintenance: return "Check Core health and resolve problems."
+            }
+        }
+
+        /// SF Symbol nearest the design's Lucide icon.
         var symbol: String {
             switch self {
-            case .general: return "slider.horizontal.3"
-            case .data: return "internaldrive"
-            case .processing: return "arrow.triangle.2.circlepath"
-            case .access: return "shield"
-            case .maintenance: return "wrench.adjustable"
+            case .general: return "slider.horizontal.3"          // sliders-horizontal
+            case .data: return "internaldrive"                   // hard-drive
+            case .capture: return "square.3.layers.3d.top.filled" // layers
+            case .documentProcessing: return "text.magnifyingglass" // search-check
+            case .processing: return "arrow.triangle.2.circlepath" // refresh-cw
+            case .access: return "shield"                        // shield
+            case .maintenance: return "wrench.adjustable"        // wrench
             }
         }
     }
@@ -142,7 +166,14 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var openDisclosures: Set<String> = []
 
     private var selectedPane: Pane = .general {
-        didSet { guard oldValue != selectedPane else { return }; render(); renderSidebar() }
+        didSet {
+            guard oldValue != selectedPane else { return }
+            render()
+            renderSidebar()
+            // A new pane starts at its own top. Carrying the previous pane's
+            // offset over opens the next one already scrolled past its title.
+            scrollToTop()
+        }
     }
 
     private var sidebarStack: NSStackView?
@@ -229,7 +260,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         content.alignment = .leading
         content.spacing = 0
         content.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 56, right: 24)
-        let contentHost = NSView()
+        let contentHost = FlippedView()
         contentHost.wantsLayer = true
         contentHost.layer?.backgroundColor = Ov.bgContent.cgColor
         // The document view must be constraint-driven too. Left on its
@@ -394,10 +425,23 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         guard let stack = sidebarStack else { return }
         stack.views.forEach { stack.removeView($0) }
 
-        for pane in Pane.allCases {
+        let panes = Pane.allCases
+        for (index, pane) in panes.enumerated() {
             let row = SidebarRowView(title: pane.rawValue, symbol: pane.symbol)
             row.isSelected = pane == selectedPane
             row.onSelect = { [weak self] in self?.selectedPane = pane }
+            row.moveSelection = { [weak self] delta in
+                guard let self else { return }
+                let target: Int
+                switch delta {
+                case .min: target = 0
+                case .max: target = panes.count - 1
+                default: target = min(max(index + delta, 0), panes.count - 1)
+                }
+                guard target != index else { return }
+                self.selectedPane = panes[target]
+                self.focusSidebarRow(at: target)
+            }
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
@@ -412,6 +456,27 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         stack.addArrangedSubview(foot)
     }
 
+    /// Return the pane to its top. `contentHost` is a `FlippedView`, so the
+    /// document's origin is its top-left and the top is simply y = 0.
+    private func scrollToTop() {
+        guard let scroll = contentStack?.enclosingScrollView else { return }
+        // The new pane's views are added but not yet laid out, so the clip
+        // view would otherwise clamp the scroll against the old content height.
+        scroll.layoutSubtreeIfNeeded()
+        scroll.contentView.scroll(to: .zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
+    /// Keep the keyboard on the sidebar after an arrow key: selecting a pane
+    /// rebuilds every row, so the focused view is gone by the time the key
+    /// handler returns.
+    private func focusSidebarRow(at index: Int) {
+        guard let stack = sidebarStack else { return }
+        let rows = stack.views.compactMap { $0 as? SidebarRowView }
+        guard rows.indices.contains(index) else { return }
+        window?.makeFirstResponder(rows[index])
+    }
+
     // MARK: - Rendering
 
     private func render() {
@@ -420,11 +485,19 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         let title = OvFont.paneTitle(selectedPane.rawValue)
         content.addArrangedSubview(title)
+        content.addArrangedSubview(ovSpacer(4))
+        let lede = NSTextField(wrappingLabelWithString: selectedPane.lede)
+        lede.font = OvFont.sans(12.5)
+        lede.textColor = Ov.textSecondary
+        lede.preferredMaxLayoutWidth = 560
+        content.addArrangedSubview(lede)
         content.addArrangedSubview(ovSpacer(18))
 
         switch selectedPane {
         case .general: renderGeneral(content)
         case .data: renderData(content)
+        case .capture: renderCapture(content)
+        case .documentProcessing: renderDocumentProcessing(content)
         case .processing: renderProcessing(content)
         case .access: renderAccess(content)
         case .maintenance: renderMaintenance(content)
@@ -451,6 +524,13 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         card.layer?.borderWidth = 0.5
         card.layer?.borderColor = Ov.borderSubtle.cgColor
         stack.addArrangedSubview(card)
+        // Cards fill the pane. Left intrinsic, each card is only as wide as its
+        // widest row, so a trailing chip lands wherever that row's text happens
+        // to end and the status column never lines up.
+        card.widthAnchor.constraint(
+            equalTo: stack.widthAnchor,
+            constant: -(stack.edgeInsets.left + stack.edgeInsets.right)
+        ).isActive = true
         stack.addArrangedSubview(ovSpacer(18))
         return card
     }
@@ -537,6 +617,14 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             body.addArrangedSubview(d)
         }
         card.addArrangedSubview(body)
+        // The row and its title line both span the card, so the spring in
+        // `line` actually has slack to push the trailing control to the right
+        // edge. Without these the chip column is ragged.
+        body.widthAnchor.constraint(equalTo: card.widthAnchor).isActive = true
+        line.widthAnchor.constraint(
+            equalTo: body.widthAnchor,
+            constant: -(body.edgeInsets.left + body.edgeInsets.right)
+        ).isActive = true
         addSeparator(below: body, in: card)
         return body
     }
@@ -548,6 +636,9 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         line.layer?.backgroundColor = Ov.separator.cgColor
         line.heightAnchor.constraint(equalToConstant: 1).isActive = true
         card.insertArrangedSubview(line, at: index)
+        // A bare NSView has no intrinsic width, so the rule needs one or it
+        // draws as nothing in a leading-aligned stack.
+        line.widthAnchor.constraint(equalTo: card.widthAnchor).isActive = true
     }
 
     /// Recovery block (prototype .cs-fix): title, known effect, actions.
@@ -939,6 +1030,115 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         )
     }
 
+    // MARK: Capture
+
+    /// Capture (design `core-intake-panes.js` → `capture()`): the standing
+    /// defaults every Add or Watch is shown against, and the limits in force.
+    /// Every row here is a statement of fact rather than a control — in the
+    /// design too, the defaults are chosen per item at capture time, not set
+    /// on this page. Core does not report them to this window in this build.
+    private func renderCapture(_ content: NSStackView) {
+        let defaults = card(content, header: "Defaults")
+        notBuiltRow(
+            into: defaults,
+            title: "Destination",
+            detail: "Shown before every Add or Watch. Core doesn’t add anything without it.",
+            status: "Not reported"
+        )
+        notBuiltRow(
+            into: defaults,
+            title: "New files",
+            detail: "Keep updated is chosen per file when you add it.",
+            status: "Not reported"
+        )
+        notBuiltRow(
+            into: defaults,
+            title: "Folders",
+            detail: "Include subfolders is on by default and shown in every scope review. Watching starts with Include existing files.",
+            status: "Not reported"
+        )
+        notBuiltRow(
+            into: defaults,
+            title: "Cloud files",
+            detail: "Each file or folder has its own Download cloud files automatically setting. This page doesn’t override them.",
+            status: "Not reported"
+        )
+
+        // The limits are the design's verbatim table. They are constants of the
+        // capture contract rather than reported state, so they are shown plainly.
+        let limits = card(content, header: "Limits in effect")
+        let table: [(String, String)] = [
+            ("Text, Markdown, pasted text", "1 MiB per item, valid UTF-8"),
+            ("PDF, Office, CSV/TSV, images", "50 MiB per item"),
+            ("RTF, local HTML", "20 MiB per item"),
+            ("Manual addition", "10 items, 200 MiB"),
+            ("Waiting on this Mac", "512 MiB or 100 items"),
+            ("Watched folders", "20"),
+            ("Kept-updated files", "1,000"),
+            ("Folder run or watch", "10,000 eligible files"),
+        ]
+        for (name, value) in table {
+            row(
+                into: limits,
+                title: name,
+                detail: nil,
+                trailing: OvFont.label(value, size: 11.5, color: Ov.textSecondary, mono: true)
+            )
+        }
+        content.addArrangedSubview(
+            note("Workspace policy can be stricter. Notifications aren’t needed to capture documents.")
+        )
+    }
+
+    // MARK: Document processing
+
+    /// Document processing (design `core-intake-panes.js` → `docproc()`): how
+    /// text is read from captured files, and which language resources are
+    /// installed. The language rows carry a full install lifecycle in the
+    /// design — download, verify, install, storage-full — all of which belongs
+    /// to a capture backend this build does not have.
+    private func renderDocumentProcessing(_ content: NSStackView) {
+        let recognition = card(content, header: "Text recognition")
+        notBuiltRow(
+            into: recognition,
+            title: "Profile",
+            detail: "Reads native text and recognises text on every page and image, on this Mac. The alternative, Text only, is faster but doesn’t recognise images of text, including scanned pages.",
+            status: "Not in this build"
+        )
+        notBuiltRow(
+            into: recognition,
+            title: "Recognise text in embedded document images",
+            detail: "Word, PowerPoint, Excel, RTF and local HTML. Only images inside the captured file; linked images are never loaded.",
+            status: "Not in this build"
+        )
+
+        // Language packs. The design installs up to three; the sizes below are
+        // the design's own figures and are shown as the catalogue, not as a
+        // claim about what is on this Mac.
+        let languages = card(content, header: "Languages")
+        let packs: [(String, String)] = [
+            ("English", "18 MiB"),
+            ("French", "48 MiB"),
+            ("German", "41 MiB"),
+            ("Spanish", "39 MiB"),
+            ("Japanese", "Not available for this version"),
+        ]
+        for (name, size) in packs {
+            notBuiltRow(
+                into: languages,
+                title: name,
+                detail: size,
+                status: "Not in this build"
+            )
+        }
+        content.addArrangedSubview(
+            note(
+                "Choose up to three. Language resources are downloaded, verified and installed by the capture feature, which is not installed in this build — so nothing here can be selected or downloaded yet.",
+                symbol: "character.bubble"
+            )
+        )
+    }
+
     // MARK: Processing
 
     private func renderProcessing(_ content: NSStackView) {
@@ -1159,9 +1359,47 @@ final class SidebarRowView: NSView {
         row.addArrangedSubview(label)
 
         addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(clicked)))
+
+        // A bare NSView carries no role and no press action, so the sidebar
+        // reached assistive technology as seven unrelated labels with nothing
+        // to activate, and the keyboard could not get to it at all. The design
+        // gives this list arrow-key navigation (`#sw-nav` keydown) and a
+        // current-page marker; both are accessibility requirements (§A22), not
+        // polish.
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(title)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func accessibilityPerformPress() -> Bool {
+        onSelect?()
+        return true
+    }
+
+    // MARK: Keyboard
+
+    override var acceptsFirstResponder: Bool { true }
+    override var canBecomeKeyView: Bool { true }
+
+    override func drawFocusRingMask() { bounds.fill() }
+    override var focusRingMaskBounds: NSRect { bounds }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 36, 49: onSelect?()                       // Return, Space
+        case 125: moveSelection?(1)                    // Down
+        case 126: moveSelection?(-1)                   // Up
+        case 115: moveSelection?(.min)                 // Home
+        case 119: moveSelection?(.max)                 // End
+        default: super.keyDown(with: event)
+        }
+    }
+
+    /// Set by the window: step the selection by `delta`, or jump to the first
+    /// or last pane for `.min` / `.max`.
+    var moveSelection: ((Int) -> Void)?
 
     private func applySelection() {
         layer?.backgroundColor = isSelected ? Ov.accent.cgColor : NSColor.clear.cgColor
@@ -1192,10 +1430,16 @@ final class SidebarRowView: NSView {
     override func mouseExited(with event: NSEvent) { applySelection() }
 
     @objc private func clicked() { onSelect?() }
-    override var acceptsFirstResponder: Bool { true }
 }
 
 // MARK: - OmniVia buttons (.ov-btn / .ov-btn--bordered / --primary)
+
+/// A scroll view's document view must be flipped for its origin to be the
+/// top-left. Unflipped, content stacks from the bottom and "scroll to the top"
+/// has no single meaning.
+final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
 
 /// A borderless summary row that remembers which disclosure it drives, so one
 /// action selector can serve every disclosure in the window.
