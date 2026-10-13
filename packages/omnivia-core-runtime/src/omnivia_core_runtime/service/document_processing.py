@@ -65,6 +65,9 @@ def portable_profile(
         "text/csv": "delimited-text",
         "text/tab-separated-values": "delimited-text",
         "text/html": "inert-html",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx-ooxml",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx-ooxml",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx-ooxml",
     }.get(media_type, "unsupported")
     return {
         "schema": store.PROFILE_SCHEMA,
@@ -89,10 +92,10 @@ def portable_profile(
             "quote": '"',
         },
         "limits": {
-            "sourceBytes": 16 * 1024 * 1024,
+            "sourceBytes": 50 * 1024 * 1024,
             "decodedPixels": 1,
-            "containerEntries": 1,
-            "expandedBytes": 32 * 1024 * 1024,
+            "containerEntries": 10_000,
+            "expandedBytes": 512 * 1024 * 1024,
             "outputTextBytes": 32 * 1024 * 1024,
             "outputStructuredBytes": 32 * 1024 * 1024,
             "memoryBytes": 256 * 1024 * 1024,

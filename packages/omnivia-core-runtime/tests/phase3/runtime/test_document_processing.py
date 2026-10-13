@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import io
+import zipfile
+
+from omnivia_core_runtime.service.document_extractors import DOCX_MEDIA_TYPE
 from omnivia_core_runtime.service.document_intake import (
     capture_document_bytes,
     read_extraction_projection,
@@ -94,3 +98,35 @@ def test_service_executor_processes_a_bounded_capture_pass(
     assert [segment.text for segment in projected] == [
         "Processed by the service-owned executor."
     ]
+
+
+def test_service_executor_processes_a_retained_docx_package(
+    runner: ServiceRunner,
+) -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+        )
+        archive.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="urn:w"><w:body><w:p><w:r><w:t>DOCX in Core</w:t></w:r></w:p></w:body></w:document>',
+        )
+    capture_document_bytes(
+        runner,
+        content=buffer.getvalue(),
+        document_id="doc-processing-docx",
+        expected_base_capture_id=None,
+        operation_key="capture-processing-docx",
+        media_type=DOCX_MEDIA_TYPE,
+        intent_kind=store.INTENT_NEW_CAPTURE,
+    )
+
+    results = DocumentProcessingExecutor(runner).run_pending(budget=1, force=True)
+
+    assert [result.result_state for result in results] == ["succeeded"]
+    projected = read_extraction_projection(
+        runner, document_id="doc-processing-docx", query="DOCX"
+    )
+    assert [segment.text for segment in projected] == ["DOCX in Core"]

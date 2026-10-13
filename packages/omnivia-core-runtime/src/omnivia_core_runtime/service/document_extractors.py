@@ -19,11 +19,26 @@ from omnivia_core_runtime.service.document_intake import (
     ExtractedSegment,
     ExtractionOutcome,
 )
+from omnivia_core_runtime.service.ooxml_extractors import (
+    OOXMLInvalid,
+    extract_docx,
+    extract_pptx,
+    extract_xlsx,
+)
 
 WORKER_BUILD: Final = "core-portable-text-1"
 MAX_TEXT_BYTES: Final = 1_048_576
 MAX_RECORDS: Final = 100_000
 MAX_FIELDS: Final = 1_000_000
+DOCX_MEDIA_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+XLSX_MEDIA_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+PPTX_MEDIA_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+)
 
 
 class DocumentExtractionUnsupported(ValueError):
@@ -34,19 +49,48 @@ class DocumentExtractionInvalid(ValueError):
     """The source cannot be decoded under the selected deterministic profile."""
 
 
-def extract_document(content: bytes, *, media_type: str, capture_id: str) -> ExtractionOutcome:
+def extract_document(
+    content: bytes, *, media_type: str, capture_id: str
+) -> ExtractionOutcome:
     """Extract one admitted source with the deterministic adapter for ``media_type``."""
     if media_type in {"text/plain", "text/markdown"}:
         text = _decode_utf8(content)
         role = "body"
-        segments = () if not text else (ExtractedSegment(role, _locator(capture_id, unit="document"), text=text),)
+        segments = (
+            ()
+            if not text
+            else (
+                ExtractedSegment(
+                    role, _locator(capture_id, unit="document"), text=text
+                ),
+            )
+        )
         return _outcome(segments, unit_type="document", known_empty=not bool(text))
     if media_type in {"text/csv", "text/tab-separated-values"}:
         delimiter = "," if media_type == "text/csv" else "\t"
         return _extract_delimited(content, capture_id=capture_id, delimiter=delimiter)
     if media_type == "text/html":
         return _extract_html(content, capture_id=capture_id)
-    raise DocumentExtractionUnsupported("no qualified adapter for the admitted media type")
+    office_extractor = {
+        DOCX_MEDIA_TYPE: extract_docx,
+        XLSX_MEDIA_TYPE: extract_xlsx,
+        PPTX_MEDIA_TYPE: extract_pptx,
+    }.get(media_type)
+    if office_extractor is not None:
+        try:
+            extracted = office_extractor(content, capture_id=capture_id)
+        except OOXMLInvalid as error:
+            raise DocumentExtractionInvalid(str(error)) from error
+        return _outcome(
+            extracted.segments,
+            unit_type=extracted.unit_type,
+            expected=extracted.expected,
+            known_empty=not bool(extracted.segments),
+            limitations=extracted.limitations,
+        )
+    raise DocumentExtractionUnsupported(
+        "no qualified adapter for the admitted media type"
+    )
 
 
 def _decode_utf8(content: bytes) -> str:
@@ -66,12 +110,18 @@ def _decode_delimited(content: bytes) -> tuple[str, str]:
     try:
         return content.decode(encoding), encoding
     except UnicodeDecodeError as error:
-        raise DocumentExtractionInvalid("delimited text has an unsupported encoding") from error
+        raise DocumentExtractionInvalid(
+            "delimited text has an unsupported encoding"
+        ) from error
 
 
-def _extract_delimited(content: bytes, *, capture_id: str, delimiter: str) -> ExtractionOutcome:
+def _extract_delimited(
+    content: bytes, *, capture_id: str, delimiter: str
+) -> ExtractionOutcome:
     text, encoding = _decode_delimited(content)
-    reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, quotechar='"', strict=True)
+    reader = csv.reader(
+        io.StringIO(text, newline=""), delimiter=delimiter, quotechar='"', strict=True
+    )
     segments: list[ExtractedSegment] = []
     previous_line = 0
     field_count = 0
@@ -106,15 +156,29 @@ def _extract_delimited(content: bytes, *, capture_id: str, delimiter: str) -> Ex
         unit_type="record",
         expected=max(0, record if "record" in locals() else 0),
         known_empty=not bool(segments),
-        limitations={"encoding": encoding, "delimiter": delimiter, "headerTreatment": "preserved_as_record"},
+        limitations={
+            "encoding": encoding,
+            "delimiter": delimiter,
+            "headerTreatment": "preserved_as_record",
+        },
     )
 
 
 class _InertHTMLParser(HTMLParser):
     block_roles: Final = {
-        "h1": "heading", "h2": "heading", "h3": "heading", "h4": "heading",
-        "h5": "heading", "h6": "heading", "p": "body", "li": "list_item",
-        "pre": "body", "code": "body", "caption": "body", "th": "table_cell", "td": "table_cell",
+        "h1": "heading",
+        "h2": "heading",
+        "h3": "heading",
+        "h4": "heading",
+        "h5": "heading",
+        "h6": "heading",
+        "p": "body",
+        "li": "list_item",
+        "pre": "body",
+        "code": "body",
+        "caption": "body",
+        "th": "table_cell",
+        "td": "table_cell",
     }
 
     def __init__(self, capture_id: str) -> None:
@@ -131,18 +195,28 @@ class _InertHTMLParser(HTMLParser):
             self.stack.append((tag, role, [], attributes))
         if tag == "img" and attributes.get("alt"):
             self.ordinal += 1
-            self.segments.append(ExtractedSegment(
-                "image_alt",
-                _locator(self.capture_id, unit="element", element=tag, ordinal=self.ordinal),
-                text=attributes["alt"],
-            ))
+            self.segments.append(
+                ExtractedSegment(
+                    "image_alt",
+                    _locator(
+                        self.capture_id,
+                        unit="element",
+                        element=tag,
+                        ordinal=self.ordinal,
+                    ),
+                    text=attributes["alt"],
+                )
+            )
 
     def handle_data(self, data: str) -> None:
         for _, _, chunks, _ in self.stack:
             chunks.append(data)
 
     def handle_endtag(self, tag: str) -> None:
-        index = next((i for i in range(len(self.stack) - 1, -1, -1) if self.stack[i][0] == tag), None)
+        index = next(
+            (i for i in range(len(self.stack) - 1, -1, -1) if self.stack[i][0] == tag),
+            None,
+        )
         if index is None:
             return
         opened, role, chunks, attributes = self.stack.pop(index)
@@ -151,12 +225,20 @@ class _InertHTMLParser(HTMLParser):
             return
         self.ordinal += 1
         hidden = opened in {"script", "style", "template"} or "hidden" in attributes
-        self.segments.append(ExtractedSegment(
-            "hidden_content" if hidden else role or "body",
-            _locator(self.capture_id, unit="element", element=opened, ordinal=self.ordinal, elementId=attributes.get("id")),
-            text=text,
-            visibility="hidden" if hidden else "visible",
-        ))
+        self.segments.append(
+            ExtractedSegment(
+                "hidden_content" if hidden else role or "body",
+                _locator(
+                    self.capture_id,
+                    unit="element",
+                    element=opened,
+                    ordinal=self.ordinal,
+                    elementId=attributes.get("id"),
+                ),
+                text=text,
+                visibility="hidden" if hidden else "visible",
+            )
+        )
 
 
 def _extract_html(content: bytes, *, capture_id: str) -> ExtractionOutcome:
@@ -166,12 +248,21 @@ def _extract_html(content: bytes, *, capture_id: str) -> ExtractionOutcome:
         parser.feed(text)
         parser.close()
     except (ValueError, RecursionError) as error:
-        raise DocumentExtractionInvalid("HTML is outside the accepted parser bounds") from error
-    return _outcome(tuple(parser.segments), unit_type="element", known_empty=not bool(parser.segments))
+        raise DocumentExtractionInvalid(
+            "HTML is outside the accepted parser bounds"
+        ) from error
+    return _outcome(
+        tuple(parser.segments),
+        unit_type="element",
+        known_empty=not bool(parser.segments),
+    )
 
 
 def _locator(capture_id: str, **values: Any) -> dict[str, Any]:
-    return {"captureId": capture_id, **{key: value for key, value in values.items() if value is not None}}
+    return {
+        "captureId": capture_id,
+        **{key: value for key, value in values.items() if value is not None},
+    }
 
 
 def _outcome(
@@ -188,29 +279,35 @@ def _outcome(
     empty = count if known_empty else 0
     coverage = {
         "schema": "omnivia.extraction-coverage.v2",
-        "units": [{
-            "unitType": unit_type,
-            "expected": count,
-            "visited": count,
-            "usefulText": useful,
-            "knownEmpty": empty,
-            "excludedByProfile": 0,
-            "unsupported": 0,
-            "failed": 0,
-            "unknownRemaining": 0,
-        }],
+        "units": [
+            {
+                "unitType": unit_type,
+                "expected": count,
+                "visited": count,
+                "usefulText": useful,
+                "knownEmpty": empty,
+                "excludedByProfile": 0,
+                "unsupported": 0,
+                "failed": 0,
+                "unknownRemaining": 0,
+            }
+        ],
         "roleCoverage": roles,
     }
-    identity = [{
-        "role": segment.semantic_role,
-        "locator": dict(segment.source_locator),
-        "text": segment.text,
-        "value": segment.structured_value,
-        "visibility": segment.visibility,
-    } for segment in segments]
-    digest = "sha256:" + hashlib.sha256(
-        to_canonical_json({"segments": identity}).encode()
-    ).hexdigest()
+    identity = [
+        {
+            "role": segment.semantic_role,
+            "locator": dict(segment.source_locator),
+            "text": segment.text,
+            "value": segment.structured_value,
+            "visibility": segment.visibility,
+        }
+        for segment in segments
+    ]
+    digest = (
+        "sha256:"
+        + hashlib.sha256(to_canonical_json({"segments": identity}).encode()).hexdigest()
+    )
     return ExtractionOutcome(
         state="succeeded",
         output_digest=digest,
