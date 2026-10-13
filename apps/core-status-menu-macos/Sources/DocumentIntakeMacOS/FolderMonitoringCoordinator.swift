@@ -156,10 +156,15 @@ public actor FolderMonitoringCoordinator {
 
     @discardableResult
     public func stop(subscriptionID: String) throws -> FolderSubscription {
-        try subscriptions.update(id: subscriptionID) { value in
+        let subscription = try subscriptions.update(id: subscriptionID) { value in
             value.state = .stopped
             value.needsFullReconciliation = false
         }
+        _ = try accessStore.releaseRoot(
+            rootRef: subscription.rootRef,
+            ownerRef: subscription.subscriptionID
+        )
+        return subscription
     }
 
     private func reconcileAdmissions(_ persisted: FolderSubscription) throws -> FolderSubscription {

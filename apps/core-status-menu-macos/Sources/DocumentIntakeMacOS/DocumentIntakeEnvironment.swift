@@ -47,6 +47,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             stateDirectory: stateRoot.appendingPathComponent("folder-bulk-runs", isDirectory: true)
         )
         folderBulkCoordinator = FolderBulkRunCoordinator(
+            accessStore: accessStore,
             preparation: preparation,
             queue: queue,
             runs: folderBulkRuns

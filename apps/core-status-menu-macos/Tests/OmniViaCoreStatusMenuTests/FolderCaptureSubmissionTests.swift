@@ -145,6 +145,62 @@ final class FolderCaptureSubmissionTests: XCTestCase {
                 XCTAssertEqual(resolved, root.resolvingSymlinksInPath().standardizedFileURL)
             }
         )
+
+        _ = try await environment.folderMonitoring.stop(
+            subscriptionID: subscription.subscriptionID
+        )
+        let released = try XCTUnwrap(environment.accessStore.rootDescriptors().first)
+        XCTAssertTrue(released.ownerRefs.isEmpty)
+        XCTAssertEqual(released.state, .disconnected)
+        XCTAssertThrowsError(
+            try environment.accessStore.withRootReadAccess(
+                rootRef: released.rootRef,
+                expectedGeneration: released.generation
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .disconnected) }
+    }
+
+    func testBulkAndWatchOwnersReleaseIndependentlyWhileManualMemberRouteSurvives() async throws {
+        let root = try temporaryDirectory()
+        try Data("retained".utf8).write(to: root.appendingPathComponent("retained.txt"))
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec()
+        )
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(mode: .keepUpdated, recursive: true, includeHidden: false)
+        )
+        let entries = try await submission.submit(plan)
+        let run = try XCTUnwrap(environment.folderBulkRuns.all().first)
+        let subscription = try XCTUnwrap(environment.folderSubscriptions.all().first)
+        let member = try XCTUnwrap(run.members.first)
+        XCTAssertEqual(
+            Set(environment.accessStore.rootDescriptors().first?.ownerRefs ?? []),
+            [run.runID, subscription.subscriptionID]
+        )
+
+        _ = try await environment.folderMonitoring.stop(subscriptionID: subscription.subscriptionID)
+        var grant = try XCTUnwrap(environment.accessStore.rootDescriptors().first)
+        XCTAssertEqual(grant.ownerRefs, [run.runID])
+        XCTAssertEqual(grant.state, .connected)
+
+        try admit(
+            try XCTUnwrap(entries.first),
+            captureID: "dcap-" + String(repeating: "d", count: 64),
+            queue: environment.queue
+        )
+        _ = await environment.folderBulkCoordinator.reconcileReceipts()
+        grant = try XCTUnwrap(environment.accessStore.rootDescriptors().first)
+        XCTAssertTrue(grant.ownerRefs.isEmpty)
+        XCTAssertEqual(grant.state, .connected)
+        let text = try environment.accessStore.withReadAccess(
+            accessRef: member.accessRef,
+            expectedGeneration: member.bindingGeneration,
+            expectedRootBindingGeneration: run.rootBindingGeneration
+        ) { try String(contentsOf: $0, encoding: .utf8) }
+        XCTAssertEqual(text, "retained")
     }
 
     func testLargeFolderRunProgressesInDurableBoundedBatches() async throws {

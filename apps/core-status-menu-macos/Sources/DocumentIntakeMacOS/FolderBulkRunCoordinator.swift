@@ -19,12 +19,15 @@ public actor FolderBulkRunCoordinator {
     private let preparation: CapturePreparationCoordinator
     private let queue: CaptureIntentQueue
     private let runs: FolderBulkRunStore
+    private let accessStore: NativeAccessStore
 
     init(
+        accessStore: NativeAccessStore,
         preparation: CapturePreparationCoordinator,
         queue: CaptureIntentQueue,
         runs: FolderBulkRunStore
     ) {
+        self.accessStore = accessStore
         self.preparation = preparation
         self.queue = queue
         self.runs = runs
@@ -33,8 +36,12 @@ public actor FolderBulkRunCoordinator {
     @discardableResult
     public func advanceAll() async -> [FolderBulkRunReport] {
         var reports: [FolderBulkRunReport] = []
-        for run in runs.all() where [.adding, .needsAttention].contains(run.state) {
-            reports.append(await advance(runID: run.runID))
+        for run in runs.all() {
+            if Self.isTerminal(run.state) {
+                _ = try? releaseRootOwner(for: run)
+            } else if [.adding, .needsAttention].contains(run.state) {
+                reports.append(await advance(runID: run.runID))
+            }
         }
         return reports
     }
@@ -53,6 +60,9 @@ public actor FolderBulkRunCoordinator {
             )
         }
         run = (try? reconcile(run)) ?? run
+        if Self.isTerminal(run.state) {
+            _ = try? releaseRootOwner(for: run)
+        }
         guard run.state == .adding else { return report(run, newlyPublished: []) }
 
         let unresolved = queue.allEntries().filter {
@@ -120,12 +130,21 @@ public actor FolderBulkRunCoordinator {
         } else {
             run = runs.run(id: run.runID) ?? run
         }
+        if Self.isTerminal(run.state) {
+            _ = try? releaseRootOwner(for: run)
+        }
         return report(run, newlyPublished: published)
     }
 
     @discardableResult
     public func reconcileReceipts() -> [FolderBulkRun] {
-        runs.all().compactMap { try? reconcile($0) }
+        runs.all().compactMap { run in
+            guard let reconciled = try? reconcile(run) else { return nil }
+            if Self.isTerminal(reconciled.state) {
+                _ = try? releaseRootOwner(for: reconciled)
+            }
+            return reconciled
+        }
     }
 
     @discardableResult
@@ -150,12 +169,14 @@ public actor FolderBulkRunCoordinator {
 
     @discardableResult
     public func stopRemaining(runID: String) throws -> FolderBulkRun {
-        try runs.update(id: runID) { value in
+        let run = try runs.update(id: runID) { value in
             for index in value.members.indices where value.members[index].state == .planned {
                 value.members[index].state = .stopped
             }
             value.state = Self.derivedState(value.members)
         }
+        if Self.isTerminal(run.state) { _ = try releaseRootOwner(for: run) }
+        return run
     }
 
     private func reconcile(_ run: FolderBulkRun) throws -> FolderBulkRun {
@@ -256,5 +277,14 @@ public actor FolderBulkRunCoordinator {
         if members.contains(where: { $0.state == .needsAttention }) { return .needsAttention }
         if members.allSatisfy({ $0.state == .stopped }) { return .stopped }
         return .complete
+    }
+
+    private static func isTerminal(_ state: FolderBulkRunState) -> Bool {
+        state == .complete || state == .stopped
+    }
+
+    @discardableResult
+    private func releaseRootOwner(for run: FolderBulkRun) throws -> NativeRootAccessDescriptor {
+        try accessStore.releaseRoot(rootRef: run.rootRef, ownerRef: run.runID)
     }
 }
