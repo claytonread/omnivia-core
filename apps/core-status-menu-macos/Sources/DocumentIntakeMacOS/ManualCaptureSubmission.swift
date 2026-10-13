@@ -3,10 +3,12 @@ import Foundation
 public struct ManualCaptureCandidate: Sendable, Equatable {
     public let url: URL
     public let displayName: String
+    public let surface: CaptureSurface
 
-    public init(url: URL, displayName: String? = nil) {
+    public init(url: URL, displayName: String? = nil, surface: CaptureSurface = .manual) {
         self.url = url
         self.displayName = displayName ?? url.lastPathComponent
+        self.surface = surface
     }
 }
 
@@ -86,7 +88,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                     principalRef: "native-user",
                     contextRevision: "1"
                 ),
-                surface: .manual,
+                surface: candidate.surface,
                 contentKind: kind,
                 payloadRef: Self.identifier(prefix: "payload"),
                 requestedSourceIdentity: Self.identifier(prefix: "source"),

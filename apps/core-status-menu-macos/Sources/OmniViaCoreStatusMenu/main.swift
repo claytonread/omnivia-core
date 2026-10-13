@@ -35,6 +35,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private var folderManagementWindowController: FolderManagementWindowController?
     private var captureDeliveryCoordinator: CaptureDeliveryCoordinator?
     private var folderMonitoringCoordinator: FolderMonitoringCoordinator?
+    private var statusDropView: StatusItemDropView?
 
     init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
         self.configuration = configuration
@@ -92,6 +93,8 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureMenu()
+        NSApp.servicesProvider = self
+        NSUpdateDynamicServices()
         coordinator.onChange = { [weak self] snapshot in
             self?.render(snapshot)
         }
@@ -116,6 +119,28 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         }
         RunLoop.main.add(monitoringTimer, forMode: .common)
         self.monitoringTimer = monitoringTimer
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        capturePanelController?.addIncoming(urls, surface: .menuDrop)
+    }
+
+    @objc func addToOmniViaCore(
+        _ pasteboard: NSPasteboard,
+        userData: String?,
+        error: AutoreleasingUnsafeMutablePointer<NSString?>
+    ) {
+        guard let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL],
+              !urls.isEmpty,
+              urls.count <= 100
+        else {
+            error.pointee = "Choose up to 100 files or folders in Finder." as NSString
+            return
+        }
+        capturePanelController?.addIncoming(urls, surface: .finderService)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -159,6 +184,19 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
         addItem.isEnabled = capturePanelController != nil
         filesItem.isEnabled = folderManagementWindowController != nil
+        if let button = statusItem.button {
+            let dropView = StatusItemDropView { [weak self] urls in
+                self?.capturePanelController?.addIncoming(urls, surface: .menuDrop)
+            }
+            button.addSubview(dropView)
+            NSLayoutConstraint.activate([
+                dropView.leadingAnchor.constraint(equalTo: button.leadingAnchor),
+                dropView.trailingAnchor.constraint(equalTo: button.trailingAnchor),
+                dropView.topAnchor.constraint(equalTo: button.topAnchor),
+                dropView.bottomAnchor.constraint(equalTo: button.bottomAnchor),
+            ])
+            statusDropView = dropView
+        }
     }
 
     private func render(_ snapshot: MenuSnapshot) {
@@ -325,7 +363,7 @@ do {
     // the main thread; `assumeIsolated` states that rather than hopping through
     // an async entry point just to satisfy the isolation checker.
     try MainActor.assumeIsolated {
-        let configuration = try CompanionConfiguration.parse(arguments: CommandLine.arguments)
+        let configuration = try CompanionConfiguration.loadOrParse(arguments: CommandLine.arguments)
         let singleton: CompanionSingleton
         switch try CompanionSingleton.acquire(installationState: configuration.installationState) {
         case .forwarded:

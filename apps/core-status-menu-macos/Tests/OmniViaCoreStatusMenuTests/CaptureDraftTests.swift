@@ -25,6 +25,17 @@ final class CaptureDraftTests: XCTestCase {
         XCTAssertEqual(draft.fileCandidates.map(\.displayName), ["brief.pdf"])
     }
 
+    func testExternalInvocationSurfaceSurvivesDraftClassification() throws {
+        let root = try temporaryDirectory()
+        let file = root.appendingPathComponent("brief.pdf")
+        try Data("pdf".utf8).write(to: file)
+        var draft = CaptureDraft()
+
+        try draft.add([file], surface: .finderService)
+
+        XCTAssertEqual(draft.fileCandidates.map(\.surface), [.finderService])
+    }
+
     func testFolderRemainsVisibleAndRequiresSeparateReview() throws {
         let root = try temporaryDirectory()
         var draft = CaptureDraft()

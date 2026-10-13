@@ -61,6 +61,23 @@ def build_companion_app(*, executable: Path, output: Path, version: str) -> Path
         "LSMinimumSystemVersion": "13.0",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
+        "CFBundleDocumentTypes": [
+            {
+                "CFBundleTypeName": "Documents and folders",
+                "CFBundleTypeRole": "Viewer",
+                "LSHandlerRank": "Alternate",
+                "LSItemContentTypes": ["public.data", "public.folder"],
+            }
+        ],
+        "NSServices": [
+            {
+                "NSMenuItem": {"default": "Add to OmniVia Core…"},
+                "NSMessage": "addToOmniViaCore",
+                "NSPortName": BUNDLE_NAME,
+                "NSRequiredContext": {"NSApplicationIdentifier": "com.apple.finder"},
+                "NSSendFileTypes": ["public.data", "public.directory"],
+            }
+        ],
     }
     info = app / "Contents" / "Info.plist"
     info.write_bytes(plistlib.dumps(plist, fmt=plistlib.FMT_XML, sort_keys=True))

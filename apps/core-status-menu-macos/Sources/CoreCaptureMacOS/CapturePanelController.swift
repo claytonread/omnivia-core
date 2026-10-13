@@ -13,6 +13,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     private let primaryButton = NSButton(title: "Add", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
     private let note = NSTextView()
+    private var waitingSelections: [(urls: [URL], surface: CaptureSurface)] = []
 
     public init(
         workspaceName: String,
@@ -41,9 +42,18 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    public func addIncoming(_ urls: [URL]) {
+    public func addIncoming(_ urls: [URL], surface: CaptureSurface = .manual) {
         openOrFocus()
-        add(urls)
+        if draft.items.isEmpty {
+            add(urls, surface: surface)
+        } else if waitingSelections.count < 10,
+                  waitingSelections.reduce(0, { $0 + $1.urls.count }) + urls.count <= 100
+        {
+            waitingSelections.append((urls, surface))
+            statusLabel.stringValue = "New selection waiting · \(urls.count) item(s). Finish the current selection first."
+        } else {
+            statusLabel.stringValue = "Incoming selection limit reached. Finish a selection and try again."
+        }
     }
 
     public func windowWillClose(_ notification: Notification) { window = nil }
@@ -98,6 +108,8 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         table.rowHeight = 34
         table.dataSource = self
         table.delegate = self
+        table.target = self
+        table.doubleAction = #selector(reviewSelectedFolder)
         let listScroll = NSScrollView()
         listScroll.documentView = table
         listScroll.hasVerticalScroller = true
@@ -148,10 +160,10 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         panel.allowsMultipleSelection = true
         panel.treatsFilePackagesAsDirectories = false
         panel.resolvesAliases = false
-        if panel.runModal() == .OK, let root = panel.url { reviewFolder(root) }
+        if panel.runModal() == .OK { add(panel.urls, surface: .manual) }
     }
 
-    private func reviewFolder(_ root: URL) {
+    private func reviewFolder(_ root: URL, removeFromDraft: Bool = false) {
         guard let folderSubmitter else {
             statusLabel.stringValue = "Folder import isn’t available in this build."
             return
@@ -205,6 +217,13 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 }
                 statusLabel.stringValue = "Preparing current folder versions…"
                 let entries = try await folderSubmitter.submit(plan)
+                if removeFromDraft,
+                   let index = draft.items.firstIndex(where: {
+                       $0.url.standardizedFileURL == root.standardizedFileURL
+                   })
+                {
+                    draft.remove(at: index)
+                }
                 statusLabel.stringValue = policy.mode == .keepUpdated
                     ? "\(entries.count) baseline files queued; update setup awaits Core confirmation."
                     : "\(entries.count) folder files queued on this Mac."
@@ -227,12 +246,12 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         panel.allowsMultipleSelection = false
         panel.treatsFilePackagesAsDirectories = false
         panel.resolvesAliases = false
-        if panel.runModal() == .OK { add(panel.urls) }
+        if panel.runModal() == .OK, let root = panel.url { reviewFolder(root) }
     }
 
-    private func add(_ urls: [URL]) {
+    private func add(_ urls: [URL], surface: CaptureSurface) {
         do {
-            try draft.add(urls)
+            try draft.add(urls, surface: surface)
             statusLabel.stringValue = draft.containsFolders
                 ? "Folders require scope review before files can be added."
                 : "Ready to add."
@@ -260,6 +279,11 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                     : "\(entries.count) items queued on this Mac."
                 draft = CaptureDraft()
                 note.string = ""
+                if !waitingSelections.isEmpty {
+                    let next = waitingSelections.removeFirst()
+                    try? draft.add(next.urls, surface: next.surface)
+                    statusLabel.stringValue = "Review the next incoming selection."
+                }
                 refresh()
                 onQueued?()
             } catch {
@@ -270,6 +294,15 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     }
 
     @objc private func closeAction() { window?.close() }
+
+    @objc private func reviewSelectedFolder() {
+        let row = table.selectedRow
+        guard row >= 0,
+              row < draft.items.count,
+              draft.items[row].kind == .folder
+        else { return }
+        reviewFolder(draft.items[row].url, removeFromDraft: true)
+    }
 
     private func refresh() {
         table.reloadData()

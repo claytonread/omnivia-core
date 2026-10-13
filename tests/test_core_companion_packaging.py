@@ -49,6 +49,23 @@ def test_companion_bundle_has_stable_identity_and_unsigned_qualification_manifes
         "LSMinimumSystemVersion": "13.0",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
+        "CFBundleDocumentTypes": [
+            {
+                "CFBundleTypeName": "Documents and folders",
+                "CFBundleTypeRole": "Viewer",
+                "LSHandlerRank": "Alternate",
+                "LSItemContentTypes": ["public.data", "public.folder"],
+            }
+        ],
+        "NSServices": [
+            {
+                "NSMenuItem": {"default": "Add to OmniVia Core…"},
+                "NSMessage": "addToOmniViaCore",
+                "NSPortName": "OmniVia Core",
+                "NSRequiredContext": {"NSApplicationIdentifier": "com.apple.finder"},
+                "NSSendFileTypes": ["public.data", "public.directory"],
+            }
+        ],
     }
     executable = app / "Contents" / "MacOS" / "omnivia-core-status-menu"
     assert stat.S_IMODE(executable.stat().st_mode) == 0o755

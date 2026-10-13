@@ -16,6 +16,7 @@ public enum CaptureDraftItemKind: Equatable {
 public struct CaptureDraftItem: Equatable {
     public let url: URL
     public let kind: CaptureDraftItemKind
+    public let surface: CaptureSurface
     public var displayName: String { url.lastPathComponent }
 }
 
@@ -26,7 +27,7 @@ public struct CaptureDraft: Equatable {
 
     public init() {}
 
-    public mutating func add(_ urls: [URL]) throws {
+    public mutating func add(_ urls: [URL], surface: CaptureSurface = .manual) throws {
         guard items.count + urls.count <= Self.maximumOrdinaryItems else {
             throw CaptureDraftError.tooManyItems
         }
@@ -37,10 +38,10 @@ public struct CaptureDraft: Equatable {
             else { throw CaptureDraftError.duplicateItem }
             let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
             if values?.isDirectory == true {
-                additions.append(CaptureDraftItem(url: url, kind: .folder))
+                additions.append(CaptureDraftItem(url: url, kind: .folder, surface: surface))
             } else if values?.isRegularFile == true,
                       let kind = ManualCaptureSubmission.contentKind(for: url) {
-                additions.append(CaptureDraftItem(url: url, kind: .file(kind)))
+                additions.append(CaptureDraftItem(url: url, kind: .file(kind), surface: surface))
             } else {
                 throw CaptureDraftError.unsupportedItem
             }
@@ -56,7 +57,11 @@ public struct CaptureDraft: Equatable {
     public var fileCandidates: [ManualCaptureCandidate] {
         items.compactMap { item in
             guard case .file = item.kind else { return nil }
-            return ManualCaptureCandidate(url: item.url, displayName: item.displayName)
+            return ManualCaptureCandidate(
+                url: item.url,
+                displayName: item.displayName,
+                surface: item.surface
+            )
         }
     }
 
