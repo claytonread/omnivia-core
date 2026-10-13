@@ -8,11 +8,13 @@ public final class FolderManagementWindowController: NSWindowController,
     private enum Row {
         case file(FileSubscription)
         case folder(FolderSubscription)
+        case bulkRun(FolderBulkRun)
 
         var id: String {
             switch self {
             case let .file(value): value.subscriptionID
             case let .folder(value): value.subscriptionID
+            case let .bulkRun(value): value.runID
             }
         }
 
@@ -20,13 +22,23 @@ public final class FolderManagementWindowController: NSWindowController,
             switch self {
             case let .file(value): value.displayName
             case let .folder(value): value.rootDisplayName
+            case let .bulkRun(value): value.rootDisplayName
             }
         }
 
-        var state: FolderSubscriptionState {
+        var subscriptionState: FolderSubscriptionState? {
             switch self {
             case let .file(value): value.state
             case let .folder(value): value.state
+            case .bulkRun: nil
+            }
+        }
+
+        var isActive: Bool {
+            switch self {
+            case .file(let value): value.state == .active
+            case .folder(let value): value.state == .active
+            case .bulkRun(let value): value.state == .adding
             }
         }
     }
@@ -35,6 +47,8 @@ public final class FolderManagementWindowController: NSWindowController,
     private let folderMonitoring: FolderMonitoringCoordinator
     private let fileStore: FileSubscriptionStore
     private let fileMonitoring: FileMonitoringCoordinator
+    private let bulkStore: FolderBulkRunStore
+    private let bulkCoordinator: FolderBulkRunCoordinator
     private let table = NSTableView()
     private let statusLabel = NSTextField(labelWithString: "")
     private let pauseResumeButton = NSButton(title: "Pause", target: nil, action: nil)
@@ -46,12 +60,16 @@ public final class FolderManagementWindowController: NSWindowController,
         folderStore: FolderSubscriptionStore,
         folderMonitoring: FolderMonitoringCoordinator,
         fileStore: FileSubscriptionStore,
-        fileMonitoring: FileMonitoringCoordinator
+        fileMonitoring: FileMonitoringCoordinator,
+        bulkStore: FolderBulkRunStore,
+        bulkCoordinator: FolderBulkRunCoordinator
     ) {
         self.folderStore = folderStore
         self.folderMonitoring = folderMonitoring
         self.fileStore = fileStore
         self.fileMonitoring = fileMonitoring
+        self.bulkStore = bulkStore
+        self.bulkCoordinator = bulkCoordinator
         super.init(window: nil)
     }
 
@@ -76,11 +94,19 @@ public final class FolderManagementWindowController: NSWindowController,
         case ("source", _): text = value.displayName
         case ("kind", .file): text = "File"
         case ("kind", .folder): text = "Folder"
-        case ("status", _): text = Self.label(value.state)
+        case ("kind", .bulkRun): text = "Folder run"
+        case ("status", let .file(file)): text = Self.label(file.state)
+        case ("status", let .folder(folder)): text = Self.label(folder.state)
+        case ("status", let .bulkRun(run)): text = Self.label(run.state)
         case ("files", .file): text = "1"
         case ("files", let .folder(folder)): text = String(folder.members.count)
+        case ("files", let .bulkRun(run)): text = "\(run.admittedCount)/\(run.members.count)"
         case ("checked", let .file(file)): text = file.lastCheckedAt ?? "Not yet"
         case ("checked", let .folder(folder)): text = folder.lastCompletedMetadataScanAt ?? "Not yet"
+        case ("checked", let .bulkRun(run)):
+            text = run.attentionCount > 0
+                ? "\(run.attentionCount) need attention"
+                : "\(run.plannedCount) remaining"
         default: text = ""
         }
         let field = NSTextField(labelWithString: text)
@@ -153,7 +179,8 @@ public final class FolderManagementWindowController: NSWindowController,
     private func reload() {
         let files = fileStore.all().map(Row.file)
         let folders = folderStore.all().map(Row.folder)
-        rows = (files + folders).sorted {
+        let bulkRuns = bulkStore.all().map(Row.bulkRun)
+        rows = (files + folders + bulkRuns).sorted {
             if $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedSame {
                 return $0.id < $1.id
             }
@@ -163,7 +190,7 @@ public final class FolderManagementWindowController: NSWindowController,
         if rows.isEmpty {
             statusLabel.stringValue = "No files or folders are kept updated."
         } else {
-            let active = rows.filter { $0.state == .active }.count
+            let active = rows.filter(\.isActive).count
             statusLabel.stringValue = "\(active) active · \(rows.count) total"
         }
         updateControls()
@@ -176,11 +203,24 @@ public final class FolderManagementWindowController: NSWindowController,
             checkButton.isEnabled = false
             return
         }
-        pauseResumeButton.title = selected.state == .paused || selected.state == .needsAccess
-            ? "Resume" : "Pause"
-        pauseResumeButton.isEnabled = [.active, .paused, .needsAccess].contains(selected.state)
-        stopButton.isEnabled = selected.state != .stopped
-        checkButton.isEnabled = selected.state == .active
+        switch selected {
+        case let .bulkRun(run):
+            pauseResumeButton.title = run.state == .paused || run.state == .needsAttention
+                ? "Resume" : "Pause"
+            pauseResumeButton.isEnabled = [.adding, .paused, .needsAttention].contains(run.state)
+            stopButton.title = "Stop remaining"
+            stopButton.isEnabled = run.plannedCount > 0
+            checkButton.isEnabled = run.state == .adding
+        case .file, .folder:
+            let state = selected.subscriptionState
+            pauseResumeButton.title = state == .paused || state == .needsAccess ? "Resume" : "Pause"
+            pauseResumeButton.isEnabled = state.map {
+                [.active, .paused, .needsAccess].contains($0)
+            } ?? false
+            stopButton.title = "Stop updating"
+            stopButton.isEnabled = state != .stopped
+            checkButton.isEnabled = state == .active
+        }
     }
 
     private var selected: Row? {
@@ -191,19 +231,27 @@ public final class FolderManagementWindowController: NSWindowController,
     @objc private func pauseResume() {
         guard let selected else { return }
         Task {
-            let resume = selected.state == .paused || selected.state == .needsAccess
             switch selected {
             case let .folder(value):
+                let resume = value.state == .paused || value.state == .needsAccess
                 if resume {
                     _ = try? await folderMonitoring.resume(subscriptionID: value.subscriptionID)
                 } else {
                     _ = try? await folderMonitoring.pause(subscriptionID: value.subscriptionID)
                 }
             case let .file(value):
+                let resume = value.state == .paused || value.state == .needsAccess
                 if resume {
                     _ = try? await fileMonitoring.resume(subscriptionID: value.subscriptionID)
                 } else {
                     _ = try? await fileMonitoring.pause(subscriptionID: value.subscriptionID)
+                }
+            case let .bulkRun(value):
+                if value.state == .paused || value.state == .needsAttention {
+                    _ = try? await bulkCoordinator.resume(runID: value.runID)
+                    _ = await bulkCoordinator.advance(runID: value.runID)
+                } else {
+                    _ = try? await bulkCoordinator.pause(runID: value.runID)
                 }
             }
             reload()
@@ -213,9 +261,13 @@ public final class FolderManagementWindowController: NSWindowController,
     @objc private func stopUpdating() {
         guard let selected else { return }
         let alert = NSAlert()
-        alert.messageText = "Stop updating \(selected.displayName)?"
-        alert.informativeText = "Captured content remains in Core. Future changes will no longer be added automatically."
-        alert.addButton(withTitle: "Stop updating")
+        alert.messageText = selected.subscriptionState == nil
+            ? "Stop adding remaining files from \(selected.displayName)?"
+            : "Stop updating \(selected.displayName)?"
+        alert.informativeText = selected.subscriptionState == nil
+            ? "Already published files continue. Only files that have not started will be stopped."
+            : "Captured content remains in Core. Future changes will no longer be added automatically."
+        alert.addButton(withTitle: selected.subscriptionState == nil ? "Stop remaining" : "Stop updating")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task {
@@ -224,6 +276,8 @@ public final class FolderManagementWindowController: NSWindowController,
                 _ = try? await folderMonitoring.stop(subscriptionID: value.subscriptionID)
             case let .file(value):
                 _ = try? await fileMonitoring.stop(subscriptionID: value.subscriptionID)
+            case let .bulkRun(value):
+                _ = try? await bulkCoordinator.stopRemaining(runID: value.runID)
             }
             reload()
         }
@@ -238,6 +292,8 @@ public final class FolderManagementWindowController: NSWindowController,
                 _ = await folderMonitoring.reconcile(subscriptionIDs: [value.subscriptionID])
             case let .file(value):
                 _ = await fileMonitoring.reconcile(subscriptionIDs: [value.subscriptionID])
+            case let .bulkRun(value):
+                _ = await bulkCoordinator.advance(runID: value.runID)
             }
             reload()
         }
@@ -250,6 +306,16 @@ public final class FolderManagementWindowController: NSWindowController,
         case .paused: "Paused"
         case .reviewRequired: "Review required"
         case .needsAccess: "Needs access"
+        case .stopped: "Stopped"
+        }
+    }
+
+    private static func label(_ state: FolderBulkRunState) -> String {
+        switch state {
+        case .adding: "Adding"
+        case .paused: "Paused"
+        case .complete: "Added"
+        case .needsAttention: "Needs attention"
         case .stopped: "Stopped"
         }
     }

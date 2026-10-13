@@ -36,6 +36,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private var folderManagementWindowController: FolderManagementWindowController?
     private var captureDeliveryCoordinator: CaptureDeliveryCoordinator?
     private var folderMonitoringCoordinator: FolderMonitoringCoordinator?
+    private var folderBulkRunCoordinator: FolderBulkRunCoordinator?
     private var fileMonitoringCoordinator: FileMonitoringCoordinator?
     private var statusDropView: StatusItemDropView?
 
@@ -62,12 +63,15 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             .appendingPathComponent("native-intake", isDirectory: true)
         if let environment = try? DocumentIntakeEnvironment(stateRoot: intakeRoot) {
             folderMonitoringCoordinator = environment.folderMonitoring
+            folderBulkRunCoordinator = environment.folderBulkCoordinator
             fileMonitoringCoordinator = environment.fileMonitoring
             folderManagementWindowController = FolderManagementWindowController(
                 folderStore: environment.folderSubscriptions,
                 folderMonitoring: environment.folderMonitoring,
                 fileStore: environment.fileSubscriptions,
-                fileMonitoring: environment.fileMonitoring
+                fileMonitoring: environment.fileMonitoring,
+                bulkStore: environment.folderBulkRuns,
+                bulkCoordinator: environment.folderBulkCoordinator
             )
             let submitter = ManualCaptureSubmission(
                 environment: environment,
@@ -257,8 +261,11 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         guard let captureDeliveryCoordinator else { return }
         let monitoring = folderMonitoringCoordinator
         let fileMonitoring = fileMonitoringCoordinator
+        let bulkRuns = folderBulkRunCoordinator
         Task {
             _ = await captureDeliveryCoordinator.deliverPending()
+            _ = await bulkRuns?.reconcileReceipts()
+            _ = await bulkRuns?.advanceAll()
             _ = await monitoring?.reconcileReceipts()
             _ = await fileMonitoring?.reconcileReceipts()
             await self.refreshFolderEventObservation()
@@ -269,7 +276,10 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         guard let folderMonitoringCoordinator else { return }
         let delivery = captureDeliveryCoordinator
         let fileMonitoring = fileMonitoringCoordinator
+        let bulkRuns = folderBulkRunCoordinator
         Task {
+            _ = await bulkRuns?.reconcileReceipts()
+            _ = await bulkRuns?.advanceAll()
             _ = await folderMonitoringCoordinator.reconcileAll()
             _ = await fileMonitoring?.reconcileAll()
             _ = await delivery?.deliverPending()

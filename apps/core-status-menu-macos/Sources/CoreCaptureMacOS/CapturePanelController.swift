@@ -240,9 +240,12 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 {
                     draft.remove(at: index)
                 }
-                statusLabel.stringValue = policy.mode == .keepUpdated
-                    ? "\(entries.count) baseline files queued; update setup awaits Core confirmation."
+                let progress = plan.members.count > entries.count
+                    ? "\(plan.members.count) files frozen; \(entries.count) prepared now and the rest will continue in bounded batches."
                     : "\(entries.count) folder files queued on this Mac."
+                statusLabel.stringValue = policy.mode == .keepUpdated
+                    ? "\(progress) Watching starts after every baseline file is confirmed by Core."
+                    : progress
                 refresh()
                 onQueued?()
             } catch FolderCaptureSubmissionError.emptyScope {

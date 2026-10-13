@@ -104,6 +104,86 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         XCTAssertEqual(Set(entries.compactMap { $0.intent.originalBinding?.rootAccessGroupId }).count, 1)
     }
 
+    func testLargeFolderRunProgressesInDurableBoundedBatches() async throws {
+        let root = try temporaryDirectory()
+        for index in 0..<12 {
+            try Data("file \(index)".utf8).write(
+                to: root.appendingPathComponent(String(format: "%02d.txt", index))
+            )
+        }
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        let environment = try DocumentIntakeEnvironment(stateRoot: state, bookmarkCodec: BookmarkCodec())
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(mode: .importOnce, recursive: true, includeHidden: false)
+        )
+
+        let first = try await submission.submit(plan)
+
+        XCTAssertEqual(first.count, 10)
+        var run = try XCTUnwrap(environment.folderBulkRuns.all().first)
+        XCTAssertEqual(run.plannedCount, 2)
+        XCTAssertEqual(run.publishedCount, 10)
+        for (index, entry) in first.enumerated() {
+            try admit(
+                entry,
+                captureID: "dcap-" + String(repeating: String(format: "%x", index % 16), count: 64),
+                queue: environment.queue
+            )
+        }
+
+        let second = await environment.folderBulkCoordinator.advance(runID: run.runID)
+
+        XCTAssertEqual(second.newlyPublished.count, 2)
+        run = try XCTUnwrap(environment.folderBulkRuns.run(id: run.runID))
+        XCTAssertEqual(run.admittedCount, 10)
+        XCTAssertEqual(run.publishedCount, 2)
+        for (index, entry) in second.newlyPublished.enumerated() {
+            try admit(
+                entry,
+                captureID: "dcap-" + String(repeating: index == 0 ? "e" : "f", count: 64),
+                queue: environment.queue
+            )
+        }
+        _ = await environment.folderBulkCoordinator.reconcileReceipts()
+        XCTAssertEqual(environment.folderBulkRuns.run(id: run.runID)?.state, .complete)
+
+        let reopened = try DocumentIntakeEnvironment(stateRoot: state, bookmarkCodec: BookmarkCodec())
+        XCTAssertEqual(reopened.folderBulkRuns.run(id: run.runID)?.state, .complete)
+    }
+
+    func testBulkPauseAndStopAffectOnlyUnpublishedMembers() async throws {
+        let root = try temporaryDirectory()
+        for index in 0..<12 {
+            try Data("file \(index)".utf8).write(
+                to: root.appendingPathComponent(String(format: "%02d.txt", index))
+            )
+        }
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec()
+        )
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(mode: .importOnce, recursive: true, includeHidden: false)
+        )
+        let first = try await submission.submit(plan)
+        let runID = try XCTUnwrap(environment.folderBulkRuns.all().first?.runID)
+
+        _ = try await environment.folderBulkCoordinator.pause(runID: runID)
+        let paused = await environment.folderBulkCoordinator.advance(runID: runID)
+        XCTAssertTrue(paused.newlyPublished.isEmpty)
+        XCTAssertEqual(paused.state, .paused)
+        _ = try await environment.folderBulkCoordinator.resume(runID: runID)
+        _ = try await environment.folderBulkCoordinator.stopRemaining(runID: runID)
+
+        let stopped = try XCTUnwrap(environment.folderBulkRuns.run(id: runID))
+        XCTAssertEqual(stopped.members.filter { $0.state == .stopped }.count, 2)
+        XCTAssertEqual(stopped.members.filter { $0.state == .published }.count, first.count)
+    }
+
     func testKeepUpdatedBaselineFreezesStandingConsent() async throws {
         let root = try temporaryDirectory()
         try Data("watch me".utf8).write(to: root.appendingPathComponent("watch.txt"))

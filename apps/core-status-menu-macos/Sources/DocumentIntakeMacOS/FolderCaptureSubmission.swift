@@ -61,8 +61,9 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
     ]
 
     private let accessStore: NativeAccessStore
-    private let preparation: CapturePreparationCoordinator
     private let subscriptions: FolderSubscriptionStore
+    private let bulkRuns: FolderBulkRunStore
+    private let bulkCoordinator: FolderBulkRunCoordinator
     private let workspaceRef: String
     private let targetRef: String
 
@@ -79,8 +80,9 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
             reader: reader
         )
         accessStore = environment.accessStore
-        preparation = environment.preparation
         subscriptions = environment.folderSubscriptions
+        bulkRuns = environment.folderBulkRuns
+        bulkCoordinator = environment.folderBulkCoordinator
         self.workspaceRef = workspaceRef
         self.targetRef = targetRef
     }
@@ -91,8 +93,9 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         targetRef: String = "local"
     ) {
         accessStore = environment.accessStore
-        preparation = environment.preparation
         subscriptions = environment.folderSubscriptions
+        bulkRuns = environment.folderBulkRuns
+        bulkCoordinator = environment.folderBulkCoordinator
         self.workspaceRef = workspaceRef
         self.targetRef = targetRef
     }
@@ -225,7 +228,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         let manifestRevision = Self.identifier(prefix: "manifest")
         let subscriptionID = Self.identifier(prefix: "subscription")
         let createdAt = ISO8601DateFormatter().string(from: Date())
-        var items: [CapturePreparationItem] = []
+        var runMembers: [FolderBulkRunMember] = []
         var subscriptionMembers: [FolderSubscriptionMember] = []
         for member in plan.members {
             let memberID = Self.identifier(prefix: "member")
@@ -243,60 +246,23 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                 )
             )
             let automatic = plan.policy.mode == .keepUpdated
-            let seed = CaptureIntentSeed(
-                submissionId: submissionID,
-                itemId: itemID,
-                targetRef: targetRef,
-                workspaceRef: workspaceRef,
-                targetBindingRevision: "1",
-                callerContextBinding: CallerContextBinding(
-                    clientContextRef: "macos-companion",
-                    principalRef: "native-user",
-                    contextRevision: "1"
-                ),
-                surface: automatic ? .automaticFolder : .folderImport,
-                contentKind: member.contentKind,
-                payloadRef: Self.identifier(prefix: "payload"),
-                requestedSourceIdentity: Self.identifier(prefix: "source"),
-                operationKey: Self.identifier(prefix: "capture"),
-                intentKind: .folderCapture,
-                basePrecondition: .expected(nil),
-                processingProfile: ProcessingProfileBinding(
-                    profileRef: "document-default",
-                    revision: "1"
-                ),
-                originalBinding: OriginalBindingIntent(
-                    accessRecordId: descriptor.accessRef,
+            let sourceIdentity = Self.identifier(prefix: "source")
+            runMembers.append(
+                FolderBulkRunMember(
+                    memberID: memberID,
+                    accessRef: descriptor.accessRef,
+                    linkedDocumentID: documentID,
+                    requestedSourceIdentity: sourceIdentity,
+                    relativeComponents: member.relativeComponents,
+                    displayName: member.displayName,
+                    contentKind: member.contentKind,
                     bindingGeneration: descriptor.generation,
-                    linkedDocumentId: documentID,
-                    rootAccessGroupId: rootRef,
-                    rootBindingGeneration: 1,
-                    memberId: memberID,
-                    membershipGeneration: 1
-                ),
-                consent: automatic
-                    ? ConsentBinding(
-                        subscriptionId: subscriptionID,
-                        consentGeneration: 1,
-                        configGeneration: 1,
-                        dirtyEpoch: 1
-                    )
-                    : nil,
-                bulkOrigin: BulkOriginBinding(
-                    bulkRunId: bulkRunID,
-                    manifestRevision: manifestRevision,
-                    memberId: memberID
-                ),
-                createdAt: createdAt,
-                displayName: member.displayName
-            )
-            items.append(
-                CapturePreparationItem(
-                    access: NativeAccessExpectation(
-                        accessRef: descriptor.accessRef,
-                        generation: descriptor.generation
-                    ),
-                    seed: seed
+                    itemID: itemID,
+                    payloadRef: Self.identifier(prefix: "payload"),
+                    operationKey: Self.identifier(prefix: "capture"),
+                    declaredByteLength: member.byteLength,
+                    state: .planned,
+                    failureCode: nil
                 )
             )
             if automatic {
@@ -305,7 +271,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                         memberID: memberID,
                         accessRef: descriptor.accessRef,
                         linkedDocumentID: documentID,
-                        requestedSourceIdentity: seed.requestedSourceIdentity,
+                        requestedSourceIdentity: sourceIdentity,
                         relativeComponents: member.relativeComponents,
                         displayName: member.displayName,
                         contentKind: member.contentKind,
@@ -349,20 +315,28 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                 )
             )
         }
-        let entries = try await preparation.prepareAndPublish(items)
-        if plan.policy.mode == .keepUpdated {
-            let byItem = Dictionary(uniqueKeysWithValues: entries.map { ($0.intent.itemId, $0) })
-            _ = try subscriptions.update(id: subscriptionID) { subscription in
-                for index in subscription.members.indices {
-                    if let entry = byItem[subscription.members[index].baselineItemID] {
-                        subscription.members[index].lastObservedDigest = entry.intent.localIntegrityDigest
-                        subscription.members[index].lastObservedByteLength = entry.intent.byteLength
-                        subscription.members[index].lastObservedAt = entry.intent.createdAt
-                    }
-                }
-            }
-        }
-        return entries
+        _ = try bulkRuns.register(
+            FolderBulkRun(
+                runID: bulkRunID,
+                manifestRevision: manifestRevision,
+                submissionID: submissionID,
+                rootRef: rootRef,
+                rootDisplayName: plan.root.lastPathComponent,
+                subscriptionID: plan.policy.mode == .keepUpdated ? subscriptionID : nil,
+                targetRef: targetRef,
+                workspaceRef: workspaceRef,
+                targetBindingRevision: "1",
+                callerContextBinding: CallerContextBinding(
+                    clientContextRef: "macos-companion",
+                    principalRef: "native-user",
+                    contextRevision: "1"
+                ),
+                createdAt: createdAt,
+                state: .adding,
+                members: runMembers
+            )
+        )
+        return await bulkCoordinator.advance(runID: bulkRunID).newlyPublished
     }
 
     private static func relativeComponents(root: URL, member: URL) throws -> [String] {

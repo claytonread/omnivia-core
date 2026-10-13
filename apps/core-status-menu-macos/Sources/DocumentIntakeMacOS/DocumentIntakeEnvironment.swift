@@ -9,6 +9,8 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     public let queue: CaptureIntentQueue
     public let folderSubscriptions: FolderSubscriptionStore
     public let folderMonitoring: FolderMonitoringCoordinator
+    public let folderBulkRuns: FolderBulkRunStore
+    public let folderBulkCoordinator: FolderBulkRunCoordinator
     public let fileSubscriptions: FileSubscriptionStore
     public let fileMonitoring: FileMonitoringCoordinator
 
@@ -38,6 +40,14 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             queue: queue,
             subscriptions: folderSubscriptions,
             reader: reader
+        )
+        folderBulkRuns = try FolderBulkRunStore(
+            stateDirectory: stateRoot.appendingPathComponent("folder-bulk-runs", isDirectory: true)
+        )
+        folderBulkCoordinator = FolderBulkRunCoordinator(
+            preparation: preparation,
+            queue: queue,
+            runs: folderBulkRuns
         )
         fileSubscriptions = try FileSubscriptionStore(
             stateDirectory: stateRoot.appendingPathComponent("file-subscriptions", isDirectory: true)
