@@ -20,6 +20,21 @@ from omnivia_core_runtime.storage import document_intake as store
 
 DEFAULT_POLL_INTERVAL_SECONDS = 0.5
 DEFAULT_PROCESSING_BUDGET = 4
+OCR_MEDIA_TYPES = frozenset(
+    {
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/tiff",
+        "image/heic",
+        "image/heif",
+        "image/webp",
+    }
+)
+TESSERACT_MODEL_HASHES = [
+    "sha256:7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+    "sha256:9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff",
+]
 
 
 @dataclass
@@ -68,18 +83,26 @@ def portable_profile(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx-ooxml",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx-ooxml",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx-ooxml",
+        "application/pdf": "pdfium-text-and-raster",
+        "image/png": "pillow-image-ocr",
+        "image/jpeg": "pillow-image-ocr",
+        "image/tiff": "pillow-image-ocr",
+        "image/heic": "pillow-image-ocr",
+        "image/heif": "pillow-image-ocr",
+        "image/webp": "pillow-image-ocr",
     }.get(media_type, "unsupported")
+    uses_ocr = media_type in OCR_MEDIA_TYPES
     return {
         "schema": store.PROFILE_SCHEMA,
         "adapter": adapter,
         "adapterVersion": "1",
         "decoderBuild": f"{profile_ref}:{revision}",
-        "processingMode": "text_only",
+        "processingMode": "text_and_local_ocr" if uses_ocr else "text_only",
         "ocr": {
-            "engine": "none",
-            "engineRevision": "none",
-            "modelHashes": [],
-            "languages": [],
+            "engine": "tesseract" if uses_ocr else "none",
+            "engineRevision": "5.5.3" if uses_ocr else "none",
+            "modelHashes": TESSERACT_MODEL_HASHES if uses_ocr else [],
+            "languages": ["eng"] if uses_ocr else [],
         },
         "embeddedImageOcr": False,
         "revisionView": "current_text_with_separate_annotations",
@@ -104,7 +127,14 @@ def portable_profile(
         },
         "readingOrderVersion": "source-order-1",
         "deduplicationVersion": "none-1",
-        "parserFeatures": ["direct_text", "inert_references", "located_segments"],
+        "parserFeatures": sorted(
+            [
+                "direct_text",
+                "inert_references",
+                "located_segments",
+                *(["local_ocr", "pdf_raster"] if uses_ocr else []),
+            ]
+        ),
         "unknownFeaturePolicy": "partial",
         "completenessPolicy": "explicit_unit_coverage",
     }

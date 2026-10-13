@@ -14,6 +14,7 @@ from omnivia_core_runtime.service.document_processing import (
 )
 from omnivia_core_runtime.service.runner import ServiceRunner
 from omnivia_core_runtime.storage import document_intake as store
+from PIL import Image, ImageDraw, ImageFont
 
 pytest_plugins = ("test_document_intake",)
 
@@ -50,7 +51,7 @@ def test_pending_text_capture_becomes_a_searchable_projection(
     assert outbox is not None and outbox.outbox_state == store.OUTBOX_SETTLED
 
 
-def test_unsupported_capture_is_preserved_and_settled_without_projection(
+def test_corrupt_pdf_is_preserved_and_settled_without_projection(
     runner: ServiceRunner,
 ) -> None:
     capture = capture_document_bytes(
@@ -65,7 +66,7 @@ def test_unsupported_capture_is_preserved_and_settled_without_projection(
 
     results = process_capture_outbox(runner)
 
-    assert [result.result_state for result in results] == ["unsupported"]
+    assert [result.result_state for result in results] == ["failed"]
     assert read_extraction_projection(runner, document_id="doc-processing-pdf") == []
     assert runner.connection is not None and runner.workspace_id is not None
     outbox = store.read_outbox(
@@ -130,3 +131,32 @@ def test_service_executor_processes_a_retained_docx_package(
         runner, document_id="doc-processing-docx", query="DOCX"
     )
     assert [segment.text for segment in projected] == ["DOCX in Core"]
+
+
+def test_service_executor_publishes_local_image_ocr(runner: ServiceRunner) -> None:
+    image = Image.new("RGB", (1000, 240), "white")
+    ImageDraw.Draw(image).text(
+        (40, 55),
+        "Captured OCR",
+        fill="black",
+        font=ImageFont.load_default(size=92),
+    )
+    encoded = io.BytesIO()
+    image.save(encoded, format="PNG")
+    capture_document_bytes(
+        runner,
+        content=encoded.getvalue(),
+        document_id="doc-processing-image",
+        expected_base_capture_id=None,
+        operation_key="capture-processing-image",
+        media_type="image/png",
+        intent_kind=store.INTENT_NEW_CAPTURE,
+    )
+
+    results = DocumentProcessingExecutor(runner).run_pending(budget=1, force=True)
+
+    assert [result.result_state for result in results] == ["succeeded"]
+    projected = read_extraction_projection(
+        runner, document_id="doc-processing-image", query="Captured"
+    )
+    assert "Captured OCR" in " ".join(segment.text or "" for segment in projected)

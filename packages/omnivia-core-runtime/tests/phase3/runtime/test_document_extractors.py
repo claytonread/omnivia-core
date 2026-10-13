@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import io
 import zipfile
+from pathlib import Path
 
 import pytest
 from omnivia_core_runtime.service.document_extractors import (
     DOCX_MEDIA_TYPE,
+    PDF_MEDIA_TYPE,
     PPTX_MEDIA_TYPE,
     XLSX_MEDIA_TYPE,
     DocumentExtractionInvalid,
     DocumentExtractionUnsupported,
     extract_document,
 )
+from PIL import Image, ImageDraw, ImageFont
 
 CAPTURE = "dcap-" + "a" * 64
 
@@ -83,7 +86,7 @@ def test_invalid_encoding_and_unqualified_format_are_refused() -> None:
     with pytest.raises(DocumentExtractionInvalid):
         extract_document(b"\xff", media_type="text/plain", capture_id=CAPTURE)
     with pytest.raises(DocumentExtractionUnsupported):
-        extract_document(b"%PDF", media_type="application/pdf", capture_id=CAPTURE)
+        extract_document(b"legacy", media_type="application/msword", capture_id=CAPTURE)
 
 
 def test_docx_extracts_body_and_keeps_comments_separate() -> None:
@@ -162,3 +165,44 @@ def test_ooxml_rejects_traversal_and_macro_enabled_content() -> None:
         extract_document(
             buffer.getvalue(), media_type=DOCX_MEDIA_TYPE, capture_id=CAPTURE
         )
+
+
+def test_pdf_extracts_native_page_text_with_page_provenance() -> None:
+    repository = Path(__file__).resolve().parents[5]
+    content = (
+        repository / "services/omnivia-memory/tests/fixtures/sample.pdf"
+    ).read_bytes()
+
+    result = extract_document(content, media_type=PDF_MEDIA_TYPE, capture_id=CAPTURE)
+
+    native = [
+        item
+        for item in result.segments
+        if item.source_locator.get("method") == "native_text"
+    ]
+    assert len(native) == 1
+    assert "Test PDF Document" in (native[0].text or "")
+    assert native[0].source_locator["page"] == 1
+
+
+def test_png_runs_local_ocr_with_geometry_and_confidence() -> None:
+    image = Image.new("RGB", (1000, 240), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text(
+        (40, 55),
+        "OmniVia OCR",
+        fill="black",
+        font=ImageFont.load_default(size=92),
+    )
+    encoded = io.BytesIO()
+    image.save(encoded, format="PNG")
+
+    result = extract_document(
+        encoded.getvalue(), media_type="image/png", capture_id=CAPTURE
+    )
+
+    assert result.state == "succeeded"
+    assert "OmniVia OCR" in " ".join(item.text or "" for item in result.segments)
+    assert all(item.extraction_method == "ocr" for item in result.segments)
+    assert all(item.confidence is not None for item in result.segments)
+    assert all("box" in item.source_locator for item in result.segments)

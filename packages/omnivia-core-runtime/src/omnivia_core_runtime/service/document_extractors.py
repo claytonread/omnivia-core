@@ -25,6 +25,11 @@ from omnivia_core_runtime.service.ooxml_extractors import (
     extract_pptx,
     extract_xlsx,
 )
+from omnivia_core_runtime.service.raster_extractors import (
+    RasterExtractionInvalid,
+    extract_image,
+    extract_pdf,
+)
 
 WORKER_BUILD: Final = "core-portable-text-1"
 MAX_TEXT_BYTES: Final = 1_048_576
@@ -38,6 +43,10 @@ XLSX_MEDIA_TYPE: Final = (
 )
 PPTX_MEDIA_TYPE: Final = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+)
+PDF_MEDIA_TYPE: Final = "application/pdf"
+IMAGE_MEDIA_TYPES: Final = frozenset(
+    {"image/png", "image/jpeg", "image/tiff", "image/heic", "image/heif", "image/webp"}
 )
 
 
@@ -78,15 +87,51 @@ def extract_document(
     }.get(media_type)
     if office_extractor is not None:
         try:
-            extracted = office_extractor(content, capture_id=capture_id)
+            office_extraction = office_extractor(content, capture_id=capture_id)
         except OOXMLInvalid as error:
             raise DocumentExtractionInvalid(str(error)) from error
         return _outcome(
-            extracted.segments,
-            unit_type=extracted.unit_type,
-            expected=extracted.expected,
-            known_empty=not bool(extracted.segments),
-            limitations=extracted.limitations,
+            office_extraction.segments,
+            unit_type=office_extraction.unit_type,
+            expected=office_extraction.expected,
+            known_empty=not bool(office_extraction.segments),
+            limitations=office_extraction.limitations,
+        )
+    if media_type == PDF_MEDIA_TYPE or media_type in IMAGE_MEDIA_TYPES:
+        try:
+            raster_extraction = (
+                extract_pdf(content, capture_id=capture_id)
+                if media_type == PDF_MEDIA_TYPE
+                else extract_image(content, capture_id=capture_id)
+            )
+        except RasterExtractionInvalid as error:
+            raise DocumentExtractionInvalid(str(error)) from error
+        no_reliable_text = max(
+            0,
+            raster_extraction.expected
+            - raster_extraction.useful_units
+            - raster_extraction.failed_units,
+        )
+        failed = raster_extraction.failed_units + no_reliable_text
+        state = (
+            "succeeded"
+            if failed == 0
+            else "partial"
+            if raster_extraction.segments
+            else "failed"
+        )
+        limitations = {
+            **raster_extraction.limitations,
+            "noReliableTextUnits": no_reliable_text,
+        }
+        return _outcome(
+            raster_extraction.segments,
+            unit_type=raster_extraction.unit_type,
+            expected=raster_extraction.expected,
+            useful=raster_extraction.useful_units,
+            failed=failed,
+            state=state,
+            limitations=limitations,
         )
     raise DocumentExtractionUnsupported(
         "no qualified adapter for the admitted media type"
@@ -271,11 +316,16 @@ def _outcome(
     unit_type: str,
     expected: int | None = None,
     known_empty: bool = False,
+    useful: int | None = None,
+    failed: int = 0,
+    state: str = "succeeded",
     limitations: dict[str, Any] | None = None,
 ) -> ExtractionOutcome:
     roles = dict(Counter(segment.semantic_role for segment in segments))
     count = expected if expected is not None else (1 if segments or known_empty else 0)
-    useful = count if segments else 0
+    useful_count = count if segments else 0 if useful is None else useful
+    if useful is not None:
+        useful_count = useful
     empty = count if known_empty else 0
     coverage = {
         "schema": "omnivia.extraction-coverage.v2",
@@ -284,11 +334,11 @@ def _outcome(
                 "unitType": unit_type,
                 "expected": count,
                 "visited": count,
-                "usefulText": useful,
+                "usefulText": useful_count,
                 "knownEmpty": empty,
                 "excludedByProfile": 0,
                 "unsupported": 0,
-                "failed": 0,
+                "failed": failed,
                 "unknownRemaining": 0,
             }
         ],
@@ -309,7 +359,7 @@ def _outcome(
         + hashlib.sha256(to_canonical_json({"segments": identity}).encode()).hexdigest()
     )
     return ExtractionOutcome(
-        state="succeeded",
+        state=state,
         output_digest=digest,
         coverage=coverage,
         limitations=limitations or {},
