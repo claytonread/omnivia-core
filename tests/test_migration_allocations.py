@@ -269,9 +269,9 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # repinned to its current-content repair 9807ce91, which is where its current content lives.
     68: "9807ce91bcfe25db29d09757364105378fd58bda",
     # 0069 was introduced by 986da0b4, repinned to its canonical-admission
-    # hardening 8742d1fc, then to its located-segment publication 484ef1c1,
-    # which is where its current content lives.
-    69: "484ef1c1ee76193a2d0d151673fd08032d7f9974",
+    # hardening 8742d1fc, its located-segment publication 484ef1c1, then to
+    # governed capture persistence f495200b, which is where its current content lives.
+    69: "f495200b0178a38a7b597d526d2bfb0989e45075",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
