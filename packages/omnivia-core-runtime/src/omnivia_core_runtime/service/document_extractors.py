@@ -30,6 +30,7 @@ from omnivia_core_runtime.service.raster_extractors import (
     extract_image,
     extract_pdf,
 )
+from omnivia_core_runtime.service.rtf_extractor import RTFExtractionInvalid, extract_rtf
 
 WORKER_BUILD: Final = "core-portable-text-1"
 MAX_TEXT_BYTES: Final = 1_048_576
@@ -48,6 +49,7 @@ PDF_MEDIA_TYPE: Final = "application/pdf"
 IMAGE_MEDIA_TYPES: Final = frozenset(
     {"image/png", "image/jpeg", "image/tiff", "image/heic", "image/heif", "image/webp"}
 )
+RTF_MEDIA_TYPES: Final = frozenset({"application/rtf", "text/rtf"})
 
 
 class DocumentExtractionUnsupported(ValueError):
@@ -132,6 +134,18 @@ def extract_document(
             failed=failed,
             state=state,
             limitations=limitations,
+        )
+    if media_type in RTF_MEDIA_TYPES:
+        try:
+            rtf_extraction = extract_rtf(content, capture_id=capture_id)
+        except RTFExtractionInvalid as error:
+            raise DocumentExtractionInvalid(str(error)) from error
+        return _outcome(
+            rtf_extraction.segments,
+            unit_type="rtf_block",
+            expected=rtf_extraction.blocks,
+            known_empty=not bool(rtf_extraction.segments),
+            limitations=rtf_extraction.limitations,
         )
     raise DocumentExtractionUnsupported(
         "no qualified adapter for the admitted media type"

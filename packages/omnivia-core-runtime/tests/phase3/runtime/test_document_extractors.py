@@ -206,3 +206,25 @@ def test_png_runs_local_ocr_with_geometry_and_confidence() -> None:
     assert all(item.extraction_method == "ocr" for item in result.segments)
     assert all(item.confidence is not None for item in result.segments)
     assert all("box" in item.source_locator for item in result.segments)
+
+
+def test_rtf_uses_fixed_local_reader_and_records_ast_locators() -> None:
+    content = (
+        rb"{\rtf1\ansi\deff0 {\fonttbl {\f0 Arial;}}\fs24 Hello \b OmniVia\b0\par}"
+    )
+
+    result = extract_document(content, media_type="application/rtf", capture_id=CAPTURE)
+
+    assert result.state == "succeeded"
+    assert "Hello OmniVia" in " ".join(item.text or "" for item in result.segments)
+    assert all(item.source_locator["unit"] == "rtf_ast" for item in result.segments)
+    assert result.limitations["readerBuild"] == "pandoc-3.12.1-rtf-json"
+
+
+def test_rtf_refuses_unbalanced_groups_before_reader_execution() -> None:
+    with pytest.raises(DocumentExtractionInvalid, match="unbalanced"):
+        extract_document(
+            rb"{\rtf1\ansi missing-close",
+            media_type="application/rtf",
+            capture_id=CAPTURE,
+        )

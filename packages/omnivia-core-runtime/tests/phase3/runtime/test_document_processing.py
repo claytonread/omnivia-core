@@ -160,3 +160,25 @@ def test_service_executor_publishes_local_image_ocr(runner: ServiceRunner) -> No
         runner, document_id="doc-processing-image", query="Captured"
     )
     assert "Captured OCR" in " ".join(segment.text or "" for segment in projected)
+
+
+def test_service_executor_processes_rtf_through_the_retained_copy(
+    runner: ServiceRunner,
+) -> None:
+    capture_document_bytes(
+        runner,
+        content=rb"{\rtf1\ansi\deff0 Core RTF content\par}",
+        document_id="doc-processing-rtf",
+        expected_base_capture_id=None,
+        operation_key="capture-processing-rtf",
+        media_type="application/rtf",
+        intent_kind=store.INTENT_NEW_CAPTURE,
+    )
+
+    results = DocumentProcessingExecutor(runner).run_pending(budget=1, force=True)
+
+    assert [result.result_state for result in results] == ["succeeded"]
+    projected = read_extraction_projection(
+        runner, document_id="doc-processing-rtf", query="RTF"
+    )
+    assert "Core RTF content" in " ".join(segment.text or "" for segment in projected)

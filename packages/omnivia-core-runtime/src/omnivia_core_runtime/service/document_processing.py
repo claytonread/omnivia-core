@@ -90,6 +90,8 @@ def portable_profile(
         "image/heic": "pillow-image-ocr",
         "image/heif": "pillow-image-ocr",
         "image/webp": "pillow-image-ocr",
+        "application/rtf": "pandoc-rtf-json",
+        "text/rtf": "pandoc-rtf-json",
     }.get(media_type, "unsupported")
     uses_ocr = media_type in OCR_MEDIA_TYPES
     return {
