@@ -211,6 +211,48 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         XCTAssertNotNil(entries[0].intent.bulkOrigin)
     }
 
+    func testOnlyNewAndChangedEstablishesLocalBaselineWithoutCapturingExistingFiles() async throws {
+        let root = try temporaryDirectory()
+        let existing = root.appendingPathComponent("existing.txt")
+        try Data("baseline".utf8).write(to: existing)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec()
+        )
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(
+                mode: .keepUpdated,
+                recursive: true,
+                includeHidden: false,
+                watchInitialContent: .onlyNewAndChanged
+            )
+        )
+
+        let baselineEntries = try await submission.submit(plan)
+        let initialCheck = await environment.folderMonitoring.reconcileAll()
+
+        XCTAssertTrue(baselineEntries.isEmpty)
+        XCTAssertTrue(environment.queue.allEntries().isEmpty)
+        XCTAssertEqual(environment.folderSubscriptions.all().map(\.state), [.active])
+        XCTAssertEqual(initialCheck.map(\.unchanged), [1])
+        XCTAssertEqual(initialCheck.map(\.queued), [0])
+
+        try Data("changed".utf8).write(to: existing)
+        try Data("new".utf8).write(to: root.appendingPathComponent("new.md"))
+        let changed = await environment.folderMonitoring.reconcileAll()
+
+        XCTAssertEqual(changed.map(\.queued), [2])
+        XCTAssertEqual(
+            Set(environment.queue.allEntries().compactMap(\.intent.displayName)),
+            ["existing.txt", "new.md"]
+        )
+        XCTAssertTrue(environment.queue.allEntries().allSatisfy {
+            $0.intent.basePrecondition == .expected(nil)
+        })
+    }
+
     func testWatchDoesNotReadOrQueueChangesBeforeBaselineAdmission() async throws {
         let root = try temporaryDirectory()
         let watched = root.appendingPathComponent("watch.txt")

@@ -186,15 +186,18 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         }
         let mode = NSPopUpButton()
         mode.addItems(withTitles: ["Import once", "Keep updated"])
+        let existing = NSPopUpButton()
+        existing.addItems(withTitles: ["Include existing files", "Only new and changed files"])
+        existing.toolTip = "Applies when Keep updated is selected."
         let recursive = NSButton(checkboxWithTitle: "Include subfolders", target: nil, action: nil)
         recursive.state = .on
         let hidden = NSButton(checkboxWithTitle: "Include hidden files", target: nil, action: nil)
         hidden.state = .off
-        let options = NSStackView(views: [mode, recursive, hidden])
+        let options = NSStackView(views: [mode, existing, recursive, hidden])
         options.orientation = .vertical
         options.alignment = .leading
         options.spacing = 8
-        options.frame = NSRect(x: 0, y: 0, width: 300, height: 86)
+        options.frame = NSRect(x: 0, y: 0, width: 300, height: 116)
         let alert = NSAlert()
         alert.messageText = "Choose folder scope"
         alert.informativeText = "Core will read supported documents only. Symlinks and package contents are excluded."
@@ -206,7 +209,9 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         let policy = FolderCapturePolicy(
             mode: mode.indexOfSelectedItem == 1 ? .keepUpdated : .importOnce,
             recursive: recursive.state == .on,
-            includeHidden: hidden.state == .on
+            includeHidden: hidden.state == .on,
+            watchInitialContent: existing.indexOfSelectedItem == 1
+                ? .onlyNewAndChanged : .includeExisting
         )
         statusLabel.stringValue = "Reviewing folder scope…"
         primaryButton.isEnabled = false
@@ -231,7 +236,10 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                     refresh()
                     return
                 }
-                statusLabel.stringValue = "Preparing current folder versions…"
+                statusLabel.stringValue = policy.mode == .keepUpdated
+                    && policy.watchInitialContent == .onlyNewAndChanged
+                    ? "Setting baseline… Core checks existing files to recognise later changes without adding them."
+                    : "Preparing current folder versions…"
                 let entries = try await folderSubmitter.submit(plan)
                 if removeFromDraft,
                    let index = draft.items.firstIndex(where: {
@@ -240,10 +248,14 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 {
                     draft.remove(at: index)
                 }
-                let progress = plan.members.count > entries.count
+                let excludedBaseline = policy.mode == .keepUpdated
+                    && policy.watchInitialContent == .onlyNewAndChanged
+                let progress = plan.members.count > entries.count && !excludedBaseline
                     ? "\(plan.members.count) files frozen; \(entries.count) prepared now and the rest will continue in bounded batches."
                     : "\(entries.count) folder files queued on this Mac."
-                statusLabel.stringValue = policy.mode == .keepUpdated
+                statusLabel.stringValue = excludedBaseline
+                    ? "Baseline set for \(plan.members.count) existing files. Only later new and changed files will be added."
+                    : policy.mode == .keepUpdated
                     ? "\(progress) Watching starts after every baseline file is confirmed by Core."
                     : progress
                 refresh()

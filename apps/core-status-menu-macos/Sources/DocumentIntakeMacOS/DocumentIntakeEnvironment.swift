@@ -6,6 +6,7 @@ import Foundation
 public final class DocumentIntakeEnvironment: @unchecked Sendable {
     let accessStore: NativeAccessStore
     let preparation: CapturePreparationCoordinator
+    let reader: any CoordinatedOriginalReading
     public let queue: CaptureIntentQueue
     public let folderSubscriptions: FolderSubscriptionStore
     public let folderMonitoring: FolderMonitoringCoordinator
@@ -19,6 +20,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
         bookmarkCodec: any SecurityScopedBookmarkCoding = SystemSecurityScopedBookmarkCodec(),
         reader: any CoordinatedOriginalReading = SystemCoordinatedOriginalReader()
     ) throws {
+        self.reader = reader
         accessStore = try NativeAccessStore(
             stateDirectory: stateRoot.appendingPathComponent("native-access", isDirectory: true),
             codec: bookmarkCodec

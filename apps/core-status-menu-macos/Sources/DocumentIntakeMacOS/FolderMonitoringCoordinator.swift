@@ -164,8 +164,9 @@ public actor FolderMonitoringCoordinator {
             var baselineResolved = true
             var baselineFailed = false
             for index in value.members.indices {
-                let baselineID = value.members[index].baselineItemID
-                if let baseline = entries[baselineID] {
+                if let baselineID = value.members[index].baselineItemID,
+                   let baseline = entries[baselineID]
+                {
                     if baseline.state == .admitted, let captureID = baseline.admittedCaptureID {
                         if value.state == .waitingForCore
                             || value.members[index].currentSuccessfulCaptureID == nil
@@ -183,7 +184,7 @@ public actor FolderMonitoringCoordinator {
                         baselineResolved = false
                         baselineFailed = baselineFailed || baseline.state == .failed
                     }
-                } else {
+                } else if value.members[index].baselineItemID != nil {
                     baselineResolved = false
                 }
                 if let queuedID = value.members[index].lastQueuedItemID,
@@ -482,7 +483,7 @@ public actor FolderMonitoringCoordinator {
     }
 
     private static let excludedDirectoryNames: Set<String> = [
-        "node_modules", "__pycache__", "DerivedData",
+        ".git", ".venv", "node_modules", "__pycache__", "DerivedData",
     ]
 
     private static func excludedFile(_ name: String) -> Bool {

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum FolderCaptureMode: String, Sendable {
@@ -5,15 +6,27 @@ public enum FolderCaptureMode: String, Sendable {
     case keepUpdated
 }
 
+public enum FolderWatchInitialContent: String, Codable, Sendable {
+    case includeExisting = "include_existing"
+    case onlyNewAndChanged = "only_new_and_changed"
+}
+
 public struct FolderCapturePolicy: Equatable, Sendable {
     public let mode: FolderCaptureMode
     public let recursive: Bool
     public let includeHidden: Bool
+    public let watchInitialContent: FolderWatchInitialContent
 
-    public init(mode: FolderCaptureMode, recursive: Bool, includeHidden: Bool) {
+    public init(
+        mode: FolderCaptureMode,
+        recursive: Bool,
+        includeHidden: Bool,
+        watchInitialContent: FolderWatchInitialContent = .includeExisting
+    ) {
         self.mode = mode
         self.recursive = recursive
         self.includeHidden = includeHidden
+        self.watchInitialContent = watchInitialContent
     }
 }
 
@@ -61,6 +74,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
     ]
 
     private let accessStore: NativeAccessStore
+    private let reader: any CoordinatedOriginalReading
     private let subscriptions: FolderSubscriptionStore
     private let bulkRuns: FolderBulkRunStore
     private let bulkCoordinator: FolderBulkRunCoordinator
@@ -80,6 +94,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
             reader: reader
         )
         accessStore = environment.accessStore
+        self.reader = environment.reader
         subscriptions = environment.folderSubscriptions
         bulkRuns = environment.folderBulkRuns
         bulkCoordinator = environment.folderBulkCoordinator
@@ -93,6 +108,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         targetRef: String = "local"
     ) {
         accessStore = environment.accessStore
+        reader = environment.reader
         subscriptions = environment.folderSubscriptions
         bulkRuns = environment.folderBulkRuns
         bulkCoordinator = environment.folderBulkCoordinator
@@ -266,6 +282,18 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                 )
             )
             if automatic {
+                let excludedBaseline = plan.policy.watchInitialContent == .onlyNewAndChanged
+                let baselineBytes = excludedBaseline
+                    ? try accessStore.withReadAccess(
+                        accessRef: descriptor.accessRef,
+                        expectedGeneration: descriptor.generation
+                    ) { url in
+                        try reader.readStableBytes(
+                            from: url,
+                            maximumBytes: CaptureIntentV3.maximumPayloadBytes
+                        )
+                    }
+                    : nil
                 subscriptionMembers.append(
                     FolderSubscriptionMember(
                         memberID: memberID,
@@ -276,12 +304,12 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                         displayName: member.displayName,
                         contentKind: member.contentKind,
                         membershipGeneration: descriptor.generation,
-                        baselineItemID: itemID,
+                        baselineItemID: excludedBaseline ? nil : itemID,
                         currentSuccessfulCaptureID: nil,
-                        lastObservedDigest: nil,
-                        lastObservedByteLength: nil,
-                        lastObservedAt: nil,
-                        lastQueuedItemID: itemID,
+                        lastObservedDigest: baselineBytes.map(Self.digest),
+                        lastObservedByteLength: baselineBytes.map { UInt64($0.count) },
+                        lastObservedAt: excludedBaseline ? createdAt : nil,
+                        lastQueuedItemID: excludedBaseline ? nil : itemID,
                         dirtyEpoch: 1,
                         state: .present
                     )
@@ -308,12 +336,18 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                     consentGeneration: 1,
                     consentRecordedAt: createdAt,
                     observationEpoch: Self.identifier(prefix: "observation"),
-                    state: .waitingForCore,
+                    state: plan.policy.watchInitialContent == .onlyNewAndChanged
+                        ? .active : .waitingForCore,
                     needsFullReconciliation: true,
                     lastCompletedMetadataScanAt: nil,
                     members: subscriptionMembers
                 )
             )
+        }
+        if plan.policy.mode == .keepUpdated,
+           plan.policy.watchInitialContent == .onlyNewAndChanged
+        {
+            return []
         }
         _ = try bulkRuns.register(
             FolderBulkRun(
@@ -354,5 +388,9 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
 
     private static func identifier(prefix: String) -> String {
         "\(prefix)-\(UUID().uuidString.lowercased())"
+    }
+
+    private static func digest(_ data: Data) -> String {
+        "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }

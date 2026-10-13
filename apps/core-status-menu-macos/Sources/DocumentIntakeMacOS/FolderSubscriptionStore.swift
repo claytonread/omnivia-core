@@ -24,7 +24,7 @@ public struct FolderSubscriptionMember: Codable, Equatable, Sendable {
     public let displayName: String
     public let contentKind: CaptureContentKind
     public let membershipGeneration: UInt64
-    public let baselineItemID: String
+    public let baselineItemID: String?
     public var currentSuccessfulCaptureID: String?
     public var lastObservedDigest: String?
     public var lastObservedByteLength: UInt64?
@@ -213,7 +213,8 @@ public final class FolderSubscriptionStore: @unchecked Sendable {
                       && validIdentifier(member.accessRef)
                       && validIdentifier(member.linkedDocumentID)
                       && validIdentifier(member.requestedSourceIdentity)
-                      && validIdentifier(member.baselineItemID)
+                      && (member.baselineItemID.map(validIdentifier) ?? true)
+                      && (member.baselineItemID != nil || member.lastObservedDigest.map(validDigest) == true)
                       && member.membershipGeneration > 0
                       && member.dirtyEpoch > 0
                       && !member.relativeComponents.isEmpty
@@ -228,6 +229,12 @@ public final class FolderSubscriptionStore: @unchecked Sendable {
                 CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:-")
                     .contains($0)
             }
+    }
+
+    private static func validDigest(_ value: String) -> Bool {
+        value.hasPrefix("sha256:")
+            && value.count == 71
+            && value.dropFirst(7).allSatisfy { $0.isHexDigit }
     }
 
     private static func prepareDirectory(_ directory: URL) throws {
