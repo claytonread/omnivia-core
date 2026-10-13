@@ -5437,6 +5437,58 @@ export interface DocumentCaptureResult {
 }
 
 /**
+ * Closed successful-extraction-head precondition for reprocessing. The object is always
+ * required; `extraction_id` is present when the caller observed a successful extraction head and
+ * absent when it explicitly observed no successful extraction.
+ */
+export interface DocumentExtractionBase {
+  /**
+   * Observed successful extraction revision, absent only for an explicitly empty extraction
+   * head.
+   */
+  readonly extraction_id?: Identifier;
+}
+
+/**
+ * Canonical terminal receipt for one retained-copy reprocess or exact replay.
+ */
+export interface DocumentReprocessResult {
+  /**
+   * Canonical immutable extraction revision identifier.
+   */
+  readonly extraction_revision_id: Identifier;
+  /**
+   * Logical document associated with the retained capture.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Exact retained capture that was reprocessed.
+   */
+  readonly capture_id: Identifier;
+  /**
+   * Core-computed identity of the immutable processing profile.
+   */
+  readonly profile_digest: EvidenceChecksum;
+  /**
+   * Closed terminal extraction state.
+   */
+  readonly result_state: OpenCode;
+  /**
+   * Whether this revision atomically replaced retrieval, remained historical, was superseded
+   * or was fenced.
+   */
+  readonly publication_disposition: OpenCode;
+  /**
+   * Whether this extraction became the document's successful retrieval head.
+   */
+  readonly became_head: boolean;
+  /**
+   * Digest of the qualified extraction output when the terminal state produced one.
+   */
+  readonly output_digest?: EvidenceChecksum;
+}
+
+/**
  * The identity of one asynchronous job: what it is, which application operation started it, its
  * immutable audit linkage, and, when applicable, which workspace it runs against.
  */
@@ -9487,6 +9539,27 @@ export interface DocumentCaptureInput {
    * Untrusted display-only filename claim.
    */
   readonly display_name?: string;
+}
+
+/**
+ * Closed input for `document.reprocess`. Selects one already-retained immutable capture, one
+ * exact approved processing-profile revision and the observed successful extraction head. It
+ * accepts no source bytes, original path, URL, bookmark, parser implementation, arbitrary
+ * profile JSON, principal or workspace override.
+ */
+export interface DocumentReprocessInput {
+  /**
+   * Retained immutable capture to process again without rereading its original.
+   */
+  readonly capture_id: Identifier;
+  /**
+   * Exact approved processing profile selected for the new extraction revision.
+   */
+  readonly processing_profile: DocumentProcessingProfileInput;
+  /**
+   * Frozen successful-extraction-head precondition.
+   */
+  readonly expected_base: DocumentExtractionBase;
 }
 
 /**
@@ -13546,40 +13619,6 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
     ],
   },
   {
-    name: "document.capture",
-    scope: { required_scopes: ["memory:write"], side_effect: "create", scope_kind: "workspace" },
-    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureInput",
-    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureResult",
-    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
-    job: { completion_mode: "synchronous" },
-    pagination: { paginated: false },
-    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
-    precondition: { supports_mutation_precondition: false, required: false },
-    audit: { audited: true, audit_category: "mutation" },
-    allowed_errors: [
-      "authentication_required",
-      "authorization_denied",
-      "cancelled",
-      "capability_not_granted",
-      "conflict",
-      "deadline_exceeded",
-      "dependency_unavailable",
-      "idempotency_conflict",
-      "incompatible_version",
-      "internal_non_recoverable",
-      "internal_recoverable",
-      "invalid_purpose",
-      "invalid_request",
-      "rate_limited",
-      "size_limit_exceeded",
-      "upgrade_required",
-      "workspace_busy",
-      "workspace_lease_unavailable",
-      "workspace_migration_required",
-      "workspace_not_granted",
-    ],
-  },
-  {
     name: "evidence.capture",
     scope: { required_scopes: ["memory:write"], side_effect: "create", scope_kind: "workspace" },
     input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceCaptureInput",
@@ -16061,6 +16100,73 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "not_found",
       "rate_limited",
       "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.capture",
+    scope: { required_scopes: ["memory:write"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureResult",
+    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.reprocess",
+    scope: { required_scopes: ["memory:write"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessResult",
+    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
       "upgrade_required",
       "workspace_busy",
       "workspace_lease_unavailable",

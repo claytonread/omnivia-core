@@ -312,8 +312,11 @@ __all__ = [
     "DocumentCaptureInput",
     "DocumentCaptureResult",
     "DocumentConsentInput",
+    "DocumentExtractionBase",
     "DocumentOriginalBindingInput",
     "DocumentProcessingProfileInput",
+    "DocumentReprocessInput",
+    "DocumentReprocessResult",
     "DurationMs",
     "EffectIntent",
     "EffectOutcome",
@@ -8601,6 +8604,138 @@ class DocumentCaptureResult:
             source_length_bytes=field_source_length_bytes,
             capture_disposition=field_capture_disposition,
             became_head=field_became_head,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentExtractionBase:
+    """Closed successful-extraction-head precondition for reprocessing. The object is always
+    required; `extraction_id` is present when the caller observed a successful extraction
+    head and absent when it explicitly observed no successful extraction.
+    """
+
+    extraction_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        if self.extraction_id is not None:
+            wire["extraction_id"] = self.extraction_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentExtractionBase"
+    ) -> DocumentExtractionBase:
+        """Decode a wire payload into a DocumentExtractionBase.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_extraction_id: Identifier | None = None
+        if "extraction_id" in mapping:
+            raw_extraction_id = mapping["extraction_id"]
+            if raw_extraction_id is None:
+                raise ContractDecodeError(
+                    f"{path}.extraction_id: null is not a valid value"
+                )
+            field_extraction_id = _decode_str(raw_extraction_id, f"{path}.extraction_id")
+        return cls(
+            extraction_id=field_extraction_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentReprocessResult:
+    """Canonical terminal receipt for one retained-copy reprocess or exact replay."""
+
+    extraction_revision_id: Identifier
+    document_id: Identifier
+    capture_id: Identifier
+    profile_digest: EvidenceChecksum
+    result_state: OpenCode
+    publication_disposition: OpenCode
+    became_head: bool
+    output_digest: EvidenceChecksum | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["extraction_revision_id"] = self.extraction_revision_id
+        wire["document_id"] = self.document_id
+        wire["capture_id"] = self.capture_id
+        wire["profile_digest"] = self.profile_digest
+        wire["result_state"] = self.result_state
+        wire["publication_disposition"] = self.publication_disposition
+        wire["became_head"] = self.became_head
+        if self.output_digest is not None:
+            wire["output_digest"] = self.output_digest
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentReprocessResult"
+    ) -> DocumentReprocessResult:
+        """Decode a wire payload into a DocumentReprocessResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_extraction_revision_id = _decode_str(
+            _require_field(mapping, "extraction_revision_id", path),
+            f"{path}.extraction_revision_id",
+        )
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_capture_id = _decode_str(
+            _require_field(mapping, "capture_id", path),
+            f"{path}.capture_id",
+        )
+        field_profile_digest = _decode_str(
+            _require_field(mapping, "profile_digest", path),
+            f"{path}.profile_digest",
+        )
+        field_result_state = _decode_str(
+            _require_field(mapping, "result_state", path),
+            f"{path}.result_state",
+        )
+        field_publication_disposition = _decode_str(
+            _require_field(mapping, "publication_disposition", path),
+            f"{path}.publication_disposition",
+        )
+        field_became_head = _decode_bool(
+            _require_field(mapping, "became_head", path),
+            f"{path}.became_head",
+        )
+        field_output_digest: EvidenceChecksum | None = None
+        if "output_digest" in mapping:
+            raw_output_digest = mapping["output_digest"]
+            if raw_output_digest is None:
+                raise ContractDecodeError(
+                    f"{path}.output_digest: null is not a valid value"
+                )
+            field_output_digest = _decode_str(raw_output_digest, f"{path}.output_digest")
+        return cls(
+            extraction_revision_id=field_extraction_revision_id,
+            document_id=field_document_id,
+            capture_id=field_capture_id,
+            profile_digest=field_profile_digest,
+            result_state=field_result_state,
+            publication_disposition=field_publication_disposition,
+            became_head=field_became_head,
+            output_digest=field_output_digest,
         )
 
 
@@ -18123,6 +18258,59 @@ class DocumentCaptureInput:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentReprocessInput:
+    """Closed input for `document.reprocess`. Selects one already-retained immutable capture,
+    one exact approved processing-profile revision and the observed successful extraction
+    head. It accepts no source bytes, original path, URL, bookmark, parser implementation,
+    arbitrary profile JSON, principal or workspace override.
+    """
+
+    capture_id: Identifier
+    processing_profile: DocumentProcessingProfileInput
+    expected_base: DocumentExtractionBase
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["capture_id"] = self.capture_id
+        wire["processing_profile"] = self.processing_profile.to_wire()
+        wire["expected_base"] = self.expected_base.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentReprocessInput"
+    ) -> DocumentReprocessInput:
+        """Decode a wire payload into a DocumentReprocessInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_capture_id = _decode_str(
+            _require_field(mapping, "capture_id", path),
+            f"{path}.capture_id",
+        )
+        field_processing_profile = DocumentProcessingProfileInput.from_wire(
+            _require_field(mapping, "processing_profile", path),
+            f"{path}.processing_profile",
+        )
+        field_expected_base = DocumentExtractionBase.from_wire(
+            _require_field(mapping, "expected_base", path),
+            f"{path}.expected_base",
+        )
+        return cls(
+            capture_id=field_capture_id,
+            processing_profile=field_processing_profile,
+            expected_base=field_expected_base,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class GraphTraversalInput:
     """Input for `graph.traverse`. Workspace-scoped: the workspace is the request envelope's
     selected workspace; this payload never carries a second, independent workspace
@@ -26348,61 +26536,6 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
         ),
     ),
     OperationMetadata(
-        name="document.capture",
-        scope=OperationScope(
-            required_scopes=("memory:write",),
-            side_effect="create",
-            scope_kind="workspace",
-        ),
-        input_schema_ref=(
-            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
-            "#/$defs/DocumentCaptureInput"
-        ),
-        result_schema_ref=(
-            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
-            "#/$defs/DocumentCaptureResult"
-        ),
-        required_capability=CapabilityRequirement(
-            id="evidence.write",
-            minimum_version="1.0",
-            required=True,
-        ),
-        job=OperationJobMetadata(completion_mode="synchronous"),
-        pagination=OperationPaginationMetadata(paginated=False),
-        idempotency=OperationIdempotencyMetadata(
-            supports_idempotency_key=True,
-            required=True,
-            safe_to_retry=False,
-        ),
-        precondition=OperationPreconditionMetadata(
-            supports_mutation_precondition=False,
-            required=False,
-        ),
-        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
-        allowed_errors=(
-            "authentication_required",
-            "authorization_denied",
-            "cancelled",
-            "capability_not_granted",
-            "conflict",
-            "deadline_exceeded",
-            "dependency_unavailable",
-            "idempotency_conflict",
-            "incompatible_version",
-            "internal_non_recoverable",
-            "internal_recoverable",
-            "invalid_purpose",
-            "invalid_request",
-            "rate_limited",
-            "size_limit_exceeded",
-            "upgrade_required",
-            "workspace_busy",
-            "workspace_lease_unavailable",
-            "workspace_migration_required",
-            "workspace_not_granted",
-        ),
-    ),
-    OperationMetadata(
         name="evidence.capture",
         scope=OperationScope(
             required_scopes=("memory:write",),
@@ -30336,6 +30469,115 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "not_found",
             "rate_limited",
             "size_limit_exceeded",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="document.capture",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentCaptureInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentCaptureResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "size_limit_exceeded",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="document.reprocess",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentReprocessInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentReprocessResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
             "upgrade_required",
             "workspace_busy",
             "workspace_lease_unavailable",

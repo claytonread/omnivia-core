@@ -1129,6 +1129,40 @@
       }
     },
     {
+      "description": "document.reprocess creates one terminal extraction over retained capture bytes.",
+      "expect": {"branch": "success"},
+      "id": "document.reprocess/primary-success",
+      "operation": "document.reprocess",
+      "request": {
+        "input": {
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "processing_profile": {"profile_ref": "profile-2", "revision": "revision-1"},
+          "expected_base": {}
+        },
+        "metadata": {
+          "idempotency_key": "idem-document.reprocess",
+          "request_id": "req-document.reprocess-success",
+          "required_capabilities": [{"id": "evidence.write", "minimum_version": "1.0", "required": true}],
+          "scopes": ["memory:write"],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.reprocess"
+      },
+      "response": {
+        "metadata": {"audit_reference": "audit-document.reprocess", "request_id": "req-document.reprocess-success"},
+        "result": {
+          "extraction_revision_id": "dext-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "document_id": "doc-1",
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "result_state": "succeeded",
+          "publication_disposition": "promoted",
+          "became_head": true,
+          "output_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
       "description": "evidence.capture answers a well-formed request on the success branch.",
       "expect": {
         "branch": "success"
@@ -3640,6 +3674,58 @@
       "response": {
         "error": {"code": "idempotency_conflict", "message": "This idempotency key was already used for a different request.", "retry_class": "non_retryable"},
         "metadata": {"audit_reference": "audit-document.capture", "request_id": "req-document.capture-conflict"}
+      }
+    },
+    {
+      "description": "document.reprocess exact replay returns the stored canonical terminal receipt.",
+      "expect": {"branch": "success", "idempotency": "replay", "replay_of": "document.reprocess/primary-success"},
+      "id": "document.reprocess/honest-replay",
+      "operation": "document.reprocess",
+      "request": {
+        "input": {
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "processing_profile": {"profile_ref": "profile-2", "revision": "revision-1"},
+          "expected_base": {}
+        },
+        "metadata": {
+          "idempotency_key": "idem-document.reprocess", "request_id": "req-document.reprocess-replay",
+          "required_capabilities": [{"id": "evidence.write", "minimum_version": "1.0", "required": true}],
+          "scopes": ["memory:write"], "workspace_id": "ws-1"
+        },
+        "operation": "document.reprocess"
+      },
+      "response": {
+        "metadata": {"audit_reference": "audit-document.reprocess", "request_id": "req-document.reprocess-replay"},
+        "result": {
+          "extraction_revision_id": "dext-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "document_id": "doc-1", "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "result_state": "succeeded", "publication_disposition": "promoted", "became_head": true,
+          "output_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "description": "document.reprocess refuses reuse of its operation key for a different profile revision.",
+      "expect": {"branch": "error", "error_code": "idempotency_conflict", "idempotency": "idempotency_conflict", "replay_of": "document.reprocess/primary-success", "retry_class": "non_retryable"},
+      "id": "document.reprocess/idempotency-conflict",
+      "operation": "document.reprocess",
+      "request": {
+        "input": {
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "processing_profile": {"profile_ref": "profile-2", "revision": "revision-2"},
+          "expected_base": {}
+        },
+        "metadata": {
+          "idempotency_key": "idem-document.reprocess", "request_id": "req-document.reprocess-conflict",
+          "required_capabilities": [{"id": "evidence.write", "minimum_version": "1.0", "required": true}],
+          "scopes": ["memory:write"], "workspace_id": "ws-1"
+        },
+        "operation": "document.reprocess"
+      },
+      "response": {
+        "error": {"code": "idempotency_conflict", "message": "This idempotency key was already used for a different request.", "retry_class": "non_retryable"},
+        "metadata": {"audit_reference": "audit-document.reprocess", "request_id": "req-document.reprocess-conflict"}
       }
     },
     {

@@ -1254,6 +1254,174 @@ def reprocess_captured_copy(
     )
 
 
+def complete_reprocess_in_transaction(
+    runner: ServiceRunner,
+    *,
+    capture_id: str,
+    profile: dict[str, Any],
+    expected_base_extraction_id: str | None,
+    operation_key: str,
+    outcome: ExtractionOutcome | None,
+) -> tuple[store.StoredRevision, store.StoredResult]:
+    """Atomically admit and publish a retained-copy reprocess inside the caller's fence.
+
+    The governed application mutation already owns the fenced transaction that also
+    settles its audit and idempotency outcome, so this variant deliberately opens no
+    nested transaction.  Expensive extraction happens before this call.  Every fact
+    that can change while that work runs -- retained eligibility, source state, the
+    expected extraction head and publication generations -- is read again here before
+    the immutable revision and terminal result are written.
+
+    ``outcome`` may be absent only for an exact domain replay that already has a
+    terminal result.  That lets an application replay avoid running the extractor while
+    still failing closed if its durable mutation settlement were ever missing.
+    """
+    assert runner.connection is not None and runner.workspace_id is not None
+    assert runner.generation is not None
+    _identifier(operation_key, "operation key")
+    workspace_id = runner.workspace_id
+    connection = runner.connection
+    now_us = _now_us()
+    try:
+        profile_digest = store.record_profile(
+            connection,
+            workspace_id=workspace_id,
+            profile=profile,
+            fencing_generation=runner.generation,
+            now_us=now_us,
+        )
+        capture = store.read_capture(
+            connection, workspace_id=workspace_id, capture_id=capture_id
+        )
+        if capture is None:
+            raise DocumentIntakeRefused("no such capture")
+        request = store.request_digest(
+            {
+                "captureId": capture_id,
+                "expectedBaseExtractionId": expected_base_extraction_id,
+                "inputDigest": capture.source_digest,
+                "profileDigest": profile_digest,
+            }
+        )
+        revision = store.read_revision_by_key(
+            connection, workspace_id=workspace_id, operation_key=operation_key
+        )
+        if revision is not None:
+            if revision.request_digest != request:
+                raise DocumentIntakeRefused(
+                    "the operation key already names a different extraction request"
+                )
+            existing = store.read_result(
+                connection,
+                workspace_id=workspace_id,
+                extraction_revision_id=revision.extraction_revision_id,
+            )
+            if existing is not None:
+                return revision, existing
+        else:
+            retention = store.read_retention(
+                connection, workspace_id=workspace_id, capture_id=capture_id
+            )
+            assert retention is not None
+            if retention.retention_state != store.RETENTION_RETAINED:
+                raise DocumentIntakeRefused("the capture is no longer retained")
+            head = store.read_head(
+                connection, workspace_id=workspace_id, document_id=capture.document_id
+            )
+            assert head is not None
+            if head.source_state != store.SOURCE_ACTIVE:
+                raise DocumentIntakeRefused("the document's source is removed")
+            if expected_base_extraction_id is not None:
+                base = store.read_revision(
+                    connection,
+                    workspace_id=workspace_id,
+                    extraction_revision_id=expected_base_extraction_id,
+                )
+                if base is None or base.document_id != capture.document_id:
+                    raise DocumentIntakeRefused(
+                        "the expected base is not an extraction of this document"
+                    )
+            sequence, ordinal = store.last_extraction_numbers(
+                connection,
+                workspace_id=workspace_id,
+                document_id=capture.document_id,
+                capture_id=capture_id,
+            )
+            revision = store.StoredRevision(
+                workspace_id=workspace_id,
+                extraction_revision_id=store.revision_id_for(workspace_id, operation_key),
+                document_id=capture.document_id,
+                capture_id=capture_id,
+                input_digest=capture.source_digest,
+                profile_digest=profile_digest,
+                extraction_sequence=sequence + 1,
+                document_ordinal=ordinal + 1,
+                expected_base_extraction_id=expected_base_extraction_id,
+                head_eligible=int(expected_base_extraction_id == head.current_extraction_id),
+                source_removal_generation=head.source_removal_generation,
+                capture_retention_generation=retention.capture_retention_generation,
+                operation_key=operation_key,
+                request_digest=request,
+                fencing_generation=runner.generation,
+                created_at_us=now_us,
+            )
+            store.insert_revision(connection, revision)
+
+        if outcome is None:
+            raise DocumentIntakeRefused("the reprocess has no terminal extraction outcome")
+        if outcome.state not in store.RESULT_STATES:
+            raise DocumentIntakeRefused("the extraction outcome has an unknown state")
+        if outcome.state not in store.PUBLISHABLE_STATES and outcome.segments:
+            raise DocumentIntakeRefused(
+                "a non-publishable extraction outcome cannot carry segments"
+            )
+        try:
+            limitations = to_canonical_json(dict(outcome.limitations))
+        except (TypeError, ValueError) as error:
+            raise DocumentIntakeRefused("limitations must be canonical JSON") from error
+        segments, segments_digest = _validated_segments(
+            outcome.segments,
+            workspace_id=workspace_id,
+            extraction_revision_id=revision.extraction_revision_id,
+            capture_id=revision.capture_id,
+            fencing_generation=runner.generation,
+        )
+        coverage = _validated_coverage(outcome.coverage, segments)
+        disposition = _disposition(connection, revision, outcome.state)
+        result = store.StoredResult(
+            workspace_id=workspace_id,
+            extraction_revision_id=revision.extraction_revision_id,
+            result_state=outcome.state,
+            output_digest=outcome.output_digest,
+            segments_digest=segments_digest,
+            coverage_json=coverage,
+            limitations_json=limitations,
+            worker_build=outcome.worker_build,
+            publication_disposition=disposition,
+            fencing_generation=runner.generation,
+            completed_at_us=now_us,
+        )
+        store.insert_result(connection, result)
+        store.insert_segments(connection, segments)
+        if disposition == "promoted":
+            store.replace_projection(
+                connection,
+                revision,
+                segments,
+                fencing_generation=runner.generation,
+                now_us=now_us,
+            )
+            store.advance_extraction_head(
+                connection,
+                revision,
+                fencing_generation=runner.generation,
+                now_us=now_us,
+            )
+        return revision, result
+    except store.DocumentIntakeInvalid as error:
+        raise DocumentIntakeRefused(str(error)) from error
+
+
 def expire_capture(runner: ServiceRunner, *, capture_id: str, deleted: bool = False) -> int:
     """Move a capture's retention to expired (or deleted) and return its new generation.
 

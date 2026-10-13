@@ -161,6 +161,7 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         # purpose that would merely restate the operation name.
         "evidence.capture": CONTENT_INGESTION_PURPOSE,
         "document.capture": CONTENT_INGESTION_PURPOSE,
+        "document.reprocess": CONTENT_INGESTION_PURPOSE,
         "job.cancel": JOB_CONTROL_PURPOSE,
         "job.retry": JOB_CONTROL_PURPOSE,
         "chat.command": CHAT_AUTHORING_PURPOSE,
@@ -229,6 +230,7 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # nothing, and reaches outside no workspace it does not name.
         "evidence.capture": WORKSPACE_CONTRIBUTOR_ROLE,
         "document.capture": WORKSPACE_CONTRIBUTOR_ROLE,
+        "document.reprocess": WORKSPACE_CONTRIBUTOR_ROLE,
         "job.cancel": WORKSPACE_CONTRIBUTOR_ROLE,
         "job.retry": WORKSPACE_CONTRIBUTOR_ROLE,
         # A chat command authors conversation content in one workspace; it reviews

@@ -238,7 +238,9 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "document.capture",
+        "document.reprocess"
       ]
     },
     {
@@ -382,7 +384,9 @@
         "knowledge.share.decide",
         "task_context.export",
         "outcome.request.create",
-        "project.context.switch"
+        "project.context.switch",
+        "document.capture",
+        "document.reprocess"
       ]
     },
     {
@@ -435,7 +439,9 @@
         "knowledge.share.decide",
         "task_context.export",
         "outcome.request.create",
-        "project.context.switch"
+        "project.context.switch",
+        "document.capture",
+        "document.reprocess"
       ]
     },
     {
@@ -550,7 +556,9 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "document.capture",
+        "document.reprocess"
       ]
     },
     {
@@ -638,7 +646,9 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "document.capture",
+        "document.reprocess"
       ]
     },
     {

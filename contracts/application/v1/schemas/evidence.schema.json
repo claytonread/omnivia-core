@@ -356,6 +356,45 @@
       },
       "required": ["capture_id", "document_id", "evidence_id", "source_digest", "source_length_bytes", "capture_disposition", "became_head"],
       "unevaluatedProperties": false
+    },
+    "DocumentExtractionBase": {
+      "title": "DocumentExtractionBase",
+      "description": "Closed successful-extraction-head precondition for reprocessing. The object is always required; `extraction_id` is present when the caller observed a successful extraction head and absent when it explicitly observed no successful extraction.",
+      "type": "object",
+      "properties": {
+        "extraction_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Observed successful extraction revision, absent only for an explicitly empty extraction head."}
+      },
+      "required": [],
+      "unevaluatedProperties": false
+    },
+    "DocumentReprocessInput": {
+      "title": "DocumentReprocessInput",
+      "description": "Closed input for `document.reprocess`. Selects one already-retained immutable capture, one exact approved processing-profile revision and the observed successful extraction head. It accepts no source bytes, original path, URL, bookmark, parser implementation, arbitrary profile JSON, principal or workspace override.",
+      "type": "object",
+      "properties": {
+        "capture_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Retained immutable capture to process again without rereading its original."},
+        "processing_profile": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingProfileInput", "description": "Exact approved processing profile selected for the new extraction revision."},
+        "expected_base": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentExtractionBase", "description": "Frozen successful-extraction-head precondition."}
+      },
+      "required": ["capture_id", "processing_profile", "expected_base"],
+      "unevaluatedProperties": false
+    },
+    "DocumentReprocessResult": {
+      "title": "DocumentReprocessResult",
+      "description": "Canonical terminal receipt for one retained-copy reprocess or exact replay.",
+      "type": "object",
+      "properties": {
+        "extraction_revision_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Canonical immutable extraction revision identifier."},
+        "document_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Logical document associated with the retained capture."},
+        "capture_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Exact retained capture that was reprocessed."},
+        "profile_digest": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceChecksum", "description": "Core-computed identity of the immutable processing profile."},
+        "result_state": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Closed terminal extraction state."},
+        "publication_disposition": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Whether this revision atomically replaced retrieval, remained historical, was superseded or was fenced."},
+        "became_head": {"type": "boolean", "description": "Whether this extraction became the document's successful retrieval head."},
+        "output_digest": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceChecksum", "description": "Digest of the qualified extraction output when the terminal state produced one."}
+      },
+      "required": ["extraction_revision_id", "document_id", "capture_id", "profile_digest", "result_state", "publication_disposition", "became_head"],
+      "unevaluatedProperties": false
     }
   }
 }

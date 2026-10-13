@@ -98,6 +98,7 @@ from omnivia_core_runtime.service.handlers.decisions import (
 )
 from omnivia_core_runtime.service.handlers.document_capture import (
     DOCUMENT_CAPTURE_OPERATION,
+    DOCUMENT_REPROCESS_OPERATION,
     DocumentCaptureHandlers,
 )
 from omnivia_core_runtime.service.handlers.engineering import EngineeringHandlers
@@ -362,12 +363,14 @@ JOB_OBSERVATION_PURPOSE: Final = "job_observation"
 INGESTION_FAMILY_OPERATIONS: Final[frozenset[str]] = JOB_FAMILY_OPERATIONS | {
     EVIDENCE_CAPTURE_OPERATION,
     DOCUMENT_CAPTURE_OPERATION,
+    DOCUMENT_REPROCESS_OPERATION,
 }
 JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         IMPORT_START_OPERATION: MUTATION_PURPOSES[IMPORT_START_OPERATION],
         EVIDENCE_CAPTURE_OPERATION: MUTATION_PURPOSES[EVIDENCE_CAPTURE_OPERATION],
         DOCUMENT_CAPTURE_OPERATION: MUTATION_PURPOSES[DOCUMENT_CAPTURE_OPERATION],
+        DOCUMENT_REPROCESS_OPERATION: MUTATION_PURPOSES[DOCUMENT_REPROCESS_OPERATION],
         JOB_GET_OPERATION: JOB_OBSERVATION_PURPOSE,
         JOB_CANCEL_OPERATION: MUTATION_PURPOSES[JOB_CANCEL_OPERATION],
         JOB_RETRY_OPERATION: MUTATION_PURPOSES[JOB_RETRY_OPERATION],
@@ -857,6 +860,10 @@ def build_job_registry(
     registry.register(
         DOCUMENT_CAPTURE_OPERATION,
         cast(OperationHandler, documents.document_capture),
+    )
+    registry.register(
+        DOCUMENT_REPROCESS_OPERATION,
+        cast(OperationHandler, documents.document_reprocess),
     )
     registry.register(JOB_GET_OPERATION, cast(OperationHandler, handlers.job_get))
     registry.register(JOB_CANCEL_OPERATION, cast(OperationHandler, handlers.job_cancel))

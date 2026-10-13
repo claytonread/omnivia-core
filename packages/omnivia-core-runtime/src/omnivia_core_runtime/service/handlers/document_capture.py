@@ -1,4 +1,4 @@
-"""Governed application handler for ``document.capture``."""
+"""Governed application handlers for document capture and retained-copy reprocessing."""
 
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ from omnivia_core.contracts.v1 import (
 from omnivia_core.contracts.v1.generated import (
     DocumentCaptureInput,
     DocumentCaptureResult,
+    DocumentReprocessInput,
+    DocumentReprocessResult,
 )
 from omnivia_core_runtime.ownership.fencing import read_guard
 from omnivia_core_runtime.ownership.identity import Clock
@@ -29,14 +31,23 @@ from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
     ServiceBinding,
 )
+from omnivia_core_runtime.service.document_extractors import (
+    DocumentExtractionInvalid,
+    DocumentExtractionUnsupported,
+    extract_document,
+)
 from omnivia_core_runtime.service.document_intake import (
     BindingClaim,
     DocumentCaptureSuppressed,
     DocumentIntakeRefused,
+    ExtractionOutcome,
     _check_route,
     _identifier,
     admit_document_capture_in_transaction,
+    complete_reprocess_in_transaction,
+    read_retained_source,
 )
+from omnivia_core_runtime.service.document_processing import portable_profile
 from omnivia_core_runtime.service.document_transfer import (
     DocumentTransferRefused,
     read_staged_document,
@@ -61,9 +72,11 @@ from omnivia_core_runtime.storage.memory import IdentifierAllocator
 from omnivia_core_runtime.workspace.blob_publication import BlobPublicationRefused
 
 DOCUMENT_CAPTURE_OPERATION: Final = "document.capture"
+DOCUMENT_REPROCESS_OPERATION: Final = "document.reprocess"
 _MAX_INLINE_BYTES: Final = 3 * 1024 * 1024 - 64 * 1024
 _MAX_ENCODED_BYTES: Final = 4 * ((_MAX_INLINE_BYTES + 2) // 3)
 _MESSAGE_INVALID: Final = "the request payload is not a valid document capture"
+_MESSAGE_REPROCESS_INVALID: Final = "the request payload is not a valid document reprocess"
 _MESSAGE_TOO_LARGE: Final = "the transferred document exceeds the capture size limit"
 _MESSAGE_NO_STORAGE: Final = "this service instance is not serving authoritative storage"
 _MESSAGE_UNAVAILABLE: Final = "the transferred document could not be preserved"
@@ -84,12 +97,29 @@ _NESTED_KEYS: Final[dict[str, frozenset[str]]] = {
         {"staged_source_ref", "source_kind", "content_checksum", "content_length_bytes", "media_type", "source_version"}
     ),
 }
+_REPROCESS_TOP_LEVEL_KEYS: Final = frozenset(
+    {"capture_id", "processing_profile", "expected_base"}
+)
+_REPROCESS_NESTED_KEYS: Final[dict[str, frozenset[str]]] = {
+    "processing_profile": frozenset({"profile_ref", "revision"}),
+    "expected_base": frozenset({"extraction_id"}),
+}
 
 
 def _closed(payload: object) -> bool:
     if not isinstance(payload, Mapping) or not set(payload) <= _TOP_LEVEL_KEYS:
         return False
     for name, allowed in _NESTED_KEYS.items():
+        value = payload.get(name)
+        if value is not None and (not isinstance(value, Mapping) or not set(value) <= allowed):
+            return False
+    return True
+
+
+def _closed_reprocess(payload: object) -> bool:
+    if not isinstance(payload, Mapping) or not set(payload) <= _REPROCESS_TOP_LEVEL_KEYS:
+        return False
+    for name, allowed in _REPROCESS_NESTED_KEYS.items():
         value = payload.get(name)
         if value is not None and (not isinstance(value, Mapping) or not set(value) <= allowed):
             return False
@@ -306,6 +336,155 @@ class DocumentCaptureHandlers:
             allocate_identifier=self.allocate_identifier,
         )
         return AuditedOperationResult(outcome.result, outcome.audit_ref)
+
+    def document_reprocess(self, context: OperationContext) -> AuditedOperationResult:
+        request: DocumentReprocessInput | None = None
+        invalid = False
+        try:
+            if not _closed_reprocess(context.request.input):
+                raise DocumentIntakeRefused("the reprocess request is not closed")
+            request = DocumentReprocessInput.from_wire(context.request.input)
+            _identifier(request.capture_id, "capture id")
+            _identifier(request.processing_profile.profile_ref, "profile reference")
+            _identifier(request.processing_profile.revision, "profile revision")
+            expected = request.expected_base.extraction_id
+            if expected is not None:
+                _identifier(expected, "expected extraction")
+        except (ContractDecodeError, DocumentIntakeRefused):
+            invalid = True
+        if invalid:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_REPROCESS_INVALID)
+        assert request is not None
+        operation_key = context.request.metadata.idempotency_key
+        if operation_key is None or context.authorization is None:
+            raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
+        connection = getattr(self.service, "connection", None)
+        identity = getattr(self.service, "identity", None)
+        layout = getattr(self.service, "layout", None)
+        guard = None if connection is None else read_guard(connection)
+        if connection is None or identity is None or guard is None or layout is None:
+            raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            request.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+        grant = issue_mutation_grant(
+            context.authorization,
+            session=self.session,
+            binding=self.binding,
+            guard=guard,
+            equivalence=equivalence,
+            clock=self.clock,
+        )
+        capture_service: Any = _CaptureServiceView(
+            connection=connection,
+            identity=identity,
+            layout=layout,
+            workspace_id=context.workspace_id,
+            generation=guard.fencing_generation,
+        )
+        capture = store.read_capture(
+            connection,
+            workspace_id=context.workspace_id,
+            capture_id=request.capture_id,
+        )
+        if capture is None:
+            raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_REPROCESS_INVALID)
+        profile = portable_profile(
+            media_type=capture.media_type,
+            profile_ref=request.processing_profile.profile_ref,
+            revision=request.processing_profile.revision,
+        )
+        expected = request.expected_base.extraction_id
+        existing = store.read_revision_by_key(
+            connection,
+            workspace_id=context.workspace_id,
+            operation_key=operation_key,
+        )
+        extraction_outcome = None
+        if existing is None:
+            try:
+                content = read_retained_source(capture_service, capture_id=capture.capture_id)
+                extraction_outcome = extract_document(
+                    content,
+                    media_type=capture.media_type,
+                    capture_id=capture.capture_id,
+                )
+            except DocumentExtractionUnsupported:
+                extraction_outcome = _terminal_outcome("unsupported", "format_not_qualified")
+            except (DocumentExtractionInvalid, DocumentIntakeRefused):
+                extraction_outcome = _terminal_outcome("failed", "source_invalid")
+
+        def mutate(_fenced: Any, _settlement: MutationSettlementContext) -> Mapping[str, Any]:
+            try:
+                revision, result = complete_reprocess_in_transaction(
+                    capture_service,
+                    capture_id=capture.capture_id,
+                    profile=profile,
+                    expected_base_extraction_id=expected,
+                    operation_key=operation_key,
+                    outcome=extraction_outcome,
+                )
+            except DocumentIntakeRefused as error:
+                raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_REPROCESS_INVALID) from error
+            return DocumentReprocessResult(
+                extraction_revision_id=revision.extraction_revision_id,
+                document_id=revision.document_id,
+                capture_id=revision.capture_id,
+                profile_digest=revision.profile_digest,
+                result_state=result.result_state,
+                publication_disposition=result.publication_disposition,
+                became_head=result.publication_disposition == "promoted",
+                output_digest=result.output_digest,
+            ).to_wire()
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                result = DocumentReprocessResult.from_wire(wire)
+            except ContractDecodeError:
+                return False
+            return result.capture_id == request.capture_id
+
+        outcome = execute_mutation(
+            connection,
+            identity,
+            grant=grant,
+            context=context.authorization,
+            equivalence=equivalence,
+            mutate=mutate,
+            validate_result=valid_result,
+            clock=self.clock,
+            allocate_identifier=self.allocate_identifier,
+        )
+        return AuditedOperationResult(outcome.result, outcome.audit_ref)
+
+
+def _terminal_outcome(state: str, limitation: str) -> ExtractionOutcome:
+    return ExtractionOutcome(
+        state=state,
+        coverage={
+            "schema": "omnivia.extraction-coverage.v2",
+            "units": [
+                {
+                    "unitType": "document",
+                    "expected": 1,
+                    "visited": 1,
+                    "usefulText": 0,
+                    "knownEmpty": 0,
+                    "excludedByProfile": 0,
+                    "unsupported": int(state == "unsupported"),
+                    "failed": int(state == "failed"),
+                    "unknownRemaining": 0,
+                }
+            ],
+            "roleCoverage": {},
+        },
+        limitations={"code": limitation},
+        worker_build="core-portable-text-1",
+    )
 
 
 @dataclass(frozen=True)

@@ -1228,6 +1228,7 @@ _EVIDENCE_CAPTURE: tuple[str, ...] = tuple(
 _DOCUMENT_CAPTURE: tuple[str, ...] = tuple(
     sorted((*_CREATE_MUT, "conflict", "size_limit_exceeded"))
 )
+_DOCUMENT_REPROCESS: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
 #: Deliberately excludes ``conflict``: a state-based cancel/retry refusal is a
 #: successful explicit disposition returning the unchanged handle, not an error.
 _JOB_CONTROL: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
@@ -1356,6 +1357,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "CREATE_MUT": _CREATE_MUT,
     "EVIDENCE_CAPTURE": _EVIDENCE_CAPTURE,
     "DOCUMENT_CAPTURE": _DOCUMENT_CAPTURE,
+    "DOCUMENT_REPROCESS": _DOCUMENT_REPROCESS,
     "GOV_MUT": _GOV_MUT,
     "CHAT_MUT": _CHAT_MUT,
     "IMPORT_START": _IMPORT_START,
@@ -1450,10 +1452,6 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "context_pack.build": FrozenOperation(
         "workspace", ("memory:read",), "none", "context_pack.build",
         "context-pack", "ContextPackBuild", "CONTEXT_READ", False,
-    ),
-    "document.capture": FrozenOperation(
-        "workspace", ("memory:write",), "create", "evidence.write",
-        "evidence", "DocumentCapture", "DOCUMENT_CAPTURE", False,
     ),
     "evidence.capture": FrozenOperation(
         "workspace", ("memory:write",), "create", "evidence.write",
@@ -1773,6 +1771,14 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "project.context.switch": FrozenOperation(
         "workspace", ("project_context:switch",), "update", "project_context.switch",
         "knowledge", "ProjectContextSwitch", "TASK_CONTEXT_MUT", False,
+    ),
+    "document.capture": FrozenOperation(
+        "workspace", ("memory:write",), "create", "evidence.write",
+        "evidence", "DocumentCapture", "DOCUMENT_CAPTURE", False,
+    ),
+    "document.reprocess": FrozenOperation(
+        "workspace", ("memory:write",), "create", "evidence.write",
+        "evidence", "DocumentReprocess", "DOCUMENT_REPROCESS", False,
     ),
 }
 

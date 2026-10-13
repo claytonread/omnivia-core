@@ -502,6 +502,9 @@
     "DocumentBulkOriginInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentBulkOriginInput"},
     "DocumentCaptureInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureInput"},
     "DocumentCaptureResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureResult"},
+    "DocumentExtractionBase": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentExtractionBase"},
+    "DocumentReprocessInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessInput"},
+    "DocumentReprocessResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessResult"},
     "GovernanceRationale": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/GovernanceRationale"
     },
