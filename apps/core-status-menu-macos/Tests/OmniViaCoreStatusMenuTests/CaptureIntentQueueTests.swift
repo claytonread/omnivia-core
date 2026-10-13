@@ -192,6 +192,10 @@ final class CaptureIntentQueueTests: XCTestCase {
         let manifest = root.appendingPathComponent("capture-queue-v1.json")
         let mode = try FileManager.default.attributesOfItem(atPath: manifest.path)[.posixPermissions] as? NSNumber
         XCTAssertEqual(mode?.intValue, 0o600)
+        let document = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any]
+        )
+        XCTAssertEqual(document["schema"] as? String, "omnivia.macos.capture-queue.v2")
     }
 
     func testUnknownOutcomeRequiresExactKnownNoEffectEvidenceBeforeRetry() throws {
@@ -227,6 +231,74 @@ final class CaptureIntentQueueTests: XCTestCase {
         )
         XCTAssertEqual(recovered.state, .pending)
         XCTAssertEqual(recovered.intent.operationKey, "operation-item-1")
+        XCTAssertEqual(recovered.attempts.map(\.disposition), [.knownNoEffect])
+
+        let replacement = try queue.beginStage(
+            itemID: "item-1",
+            requestDigest: digest(Data("replacement-request".utf8)),
+            descriptorDigest: descriptor
+        )
+        XCTAssertEqual(replacement.attemptGeneration, 2)
+        XCTAssertEqual(replacement.attempts.map(\.generation), [1, 2])
+        XCTAssertEqual(replacement.attempts.map(\.disposition), [.knownNoEffect, .active])
+        XCTAssertNotEqual(replacement.attempts[0].operationKey, replacement.attempts[1].operationKey)
+
+        let reopened = try CaptureIntentQueue(root: root)
+        XCTAssertEqual(reopened.allEntries()[0].attempts.map(\.generation), [1, 2])
+        XCTAssertEqual(reopened.allEntries()[0].attempts.map(\.disposition), [.knownNoEffect, .unknown])
+    }
+
+    func testLegacyV1InterruptedAttemptMigratesWithoutInventingNewIdentity() throws {
+        let root = try temporaryQueue()
+        let payload = Data("pdf-body".utf8)
+        do {
+            let queue = try CaptureIntentQueue(root: root)
+            _ = try queue.enqueue(intent: intent(payload: payload), payload: payload)
+            _ = try queue.beginStage(
+                itemID: "item-1",
+                requestDigest: digest(Data("request".utf8)),
+                descriptorDigest: digest(Data("descriptor".utf8))
+            )
+        }
+        let manifest = root.appendingPathComponent("capture-queue-v1.json")
+        var document = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any]
+        )
+        document["schema"] = "omnivia.macos.capture-queue.v1"
+        var entries = try XCTUnwrap(document["entries"] as? [[String: Any]])
+        entries[0].removeValue(forKey: "attempts")
+        document["entries"] = entries
+        try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys]).write(to: manifest)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifest.path)
+
+        let reopened = try CaptureIntentQueue(root: root)
+        let recovered = try XCTUnwrap(reopened.allEntries().first)
+        XCTAssertEqual(recovered.state, .unknownOutcome)
+        XCTAssertEqual(recovered.attempts.count, 1)
+        XCTAssertEqual(recovered.attempts[0].generation, 1)
+        XCTAssertEqual(recovered.attempts[0].disposition, .unknown)
+    }
+
+    func testFutureQueueSchemaIsRejectedWithoutRewritingBytes() throws {
+        let root = try temporaryQueue()
+        let payload = Data("pdf-body".utf8)
+        do {
+            let queue = try CaptureIntentQueue(root: root)
+            _ = try queue.enqueue(intent: intent(payload: payload), payload: payload)
+        }
+        let manifest = root.appendingPathComponent("capture-queue-v1.json")
+        var document = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any]
+        )
+        document["schema"] = "omnivia.macos.capture-queue.v3"
+        let futureBytes = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+        try futureBytes.write(to: manifest)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifest.path)
+
+        XCTAssertThrowsError(try CaptureIntentQueue(root: root)) {
+            XCTAssertEqual($0 as? CaptureQueueError, .incompatibleSchema)
+        }
+        XCTAssertEqual(try Data(contentsOf: manifest), futureBytes)
     }
 
     func testRestartTurnsInterruptedStageIntoUnknownInsteadOfBlindRetry() throws {

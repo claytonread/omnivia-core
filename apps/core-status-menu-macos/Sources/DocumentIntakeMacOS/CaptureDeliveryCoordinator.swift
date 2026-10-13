@@ -216,10 +216,14 @@ public actor CaptureDeliveryCoordinator {
                     requestDigest: requestDigest,
                     descriptorDigest: transport.descriptorDigest
                 )
+                guard let attempt = staging.attempts.last,
+                      attempt.generation == staging.attemptGeneration,
+                      attempt.disposition == .active
+                else { throw CaptureDeliveryError.invalidIntent }
                 switch await transport.deliver(
                     input: input,
                     payloadURL: payloadURL,
-                    operationKey: entry.intent.operationKey
+                    operationKey: attempt.operationKey
                 ) {
                 case let .admitted(captureID):
                     outcomes.append(try queue.markAdmitted(
