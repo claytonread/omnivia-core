@@ -30,6 +30,7 @@ from omnivia_core_runtime.service.document_intake import (
     ExtractionOutcome,
     admit_extraction,
     capture_document,
+    capture_document_bytes,
     complete_extraction,
     connect_original,
     current_capture,
@@ -213,6 +214,47 @@ class Sources:
 @pytest.fixture
 def sources(runner: ServiceRunner, tmp_path: Path) -> Sources:
     return Sources(runner, tmp_path / "originals")
+
+
+def test_capture_bytes_admits_exact_snapshot_without_an_original_path(runner: ServiceRunner) -> None:
+    content = b"native immutable snapshot\n"
+
+    result = capture_document_bytes(
+        runner,
+        content=content,
+        document_id=DOC,
+        expected_base_capture_id=None,
+        operation_key="native-snapshot-1",
+        media_type=MEDIA,
+        intent_kind=store.INTENT_NEW_CAPTURE,
+    )
+
+    assert result.became_head
+    assert result.capture.source_digest == digest_of(content)
+    assert result.capture.source_length_bytes == len(content)
+    assert read_retained_source(runner, capture_id=result.capture.capture_id) == content
+
+
+def test_capture_bytes_rejects_empty_and_oversized_snapshots_without_rows(runner: ServiceRunner) -> None:
+    before = snapshot(runner)
+    common = {
+        "document_id": DOC,
+        "expected_base_capture_id": None,
+        "operation_key": "native-invalid-1",
+        "media_type": MEDIA,
+        "intent_kind": store.INTENT_NEW_CAPTURE,
+    }
+
+    with pytest.raises(DocumentIntakeRefused, match="empty or invalid"):
+        capture_document_bytes(runner, content=b"", **common)
+    with pytest.raises(DocumentIntakeRefused, match="exceeds the accepted bound"):
+        capture_document_bytes(
+            runner,
+            content=b"x" * (service.MAX_DOCUMENT_CAPTURE_BYTES + 1),
+            **common,
+        )
+
+    assert snapshot(runner) == before
 
 
 def succeeded(

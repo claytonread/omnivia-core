@@ -62,6 +62,7 @@ from omnivia_core_runtime.workspace.blob_publication import (
 CAPTURE_STATUS_CAPTURED: Final = "captured"
 CAPTURE_STATUS_REPLAYED: Final = "replayed"
 CAPTURE_METADATA_KIND: Final = "document_intake"
+MAX_DOCUMENT_CAPTURE_BYTES: Final = 16 * 1024 * 1024
 
 
 class DocumentIntakeRefused(RuntimeError):
@@ -300,10 +301,51 @@ def capture_document(
     Identical bytes taken by an automatic or folder capture after a capture of them was expired or deleted are
     suppressed (`DocumentCaptureSuppressed`); a manual capture of them is not.
     """
+    try:
+        _validate_request(document_id, media_type)
+        content = _read_source(source_path)
+    except SourceCaptureRefused as error:
+        raise DocumentIntakeRefused(str(error)) from error
+    return capture_document_bytes(
+        runner,
+        content=content,
+        document_id=document_id,
+        expected_base_capture_id=expected_base_capture_id,
+        operation_key=operation_key,
+        media_type=media_type,
+        intent_kind=intent_kind,
+        binding=binding,
+    )
+
+
+def capture_document_bytes(
+    runner: ServiceRunner,
+    *,
+    content: bytes,
+    document_id: str,
+    expected_base_capture_id: str | None,
+    operation_key: str,
+    media_type: str,
+    intent_kind: str,
+    binding: BindingClaim | None = None,
+) -> DocumentCaptureResult:
+    """Admit the exact immutable bytes supplied by a governed transfer boundary.
+
+    This function never opens an original path. The caller owns staging/transfer and must
+    provide the complete snapshot bytes; Core recomputes identity and length here.
+    """
     assert runner.connection is not None and runner.workspace_id is not None
     assert runner.generation is not None
     _identifier(document_id, "document id")
     _identifier(operation_key, "operation key")
+    if not isinstance(content, bytes) or not content:
+        raise DocumentIntakeRefused("the capture snapshot is empty or invalid")
+    if len(content) > MAX_DOCUMENT_CAPTURE_BYTES:
+        raise DocumentIntakeRefused("the capture snapshot exceeds the accepted bound")
+    try:
+        _validate_request(document_id, media_type)
+    except SourceCaptureRefused as error:
+        raise DocumentIntakeRefused(str(error)) from error
     if intent_kind not in store.INTENTS:
         raise DocumentIntakeRefused("unknown capture intent")
     if intent_kind == store.INTENT_NEW_CAPTURE and expected_base_capture_id is not None:
@@ -317,11 +359,6 @@ def capture_document(
             or not 1 <= binding.generation <= 2**63 - 1
         ):
             raise DocumentIntakeRefused("the binding generation is outside its accepted range")
-    try:
-        _validate_request(document_id, media_type)
-        content = _read_source(source_path)
-    except SourceCaptureRefused as error:
-        raise DocumentIntakeRefused(str(error)) from error
     digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
     request: dict[str, Any] = {
         "documentId": document_id,
