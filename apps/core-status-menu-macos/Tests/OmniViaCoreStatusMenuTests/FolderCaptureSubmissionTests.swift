@@ -80,11 +80,8 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         try Data("first".utf8).write(to: root.appendingPathComponent("one.txt"))
         try Data("second".utf8).write(to: root.appendingPathComponent("two.md"))
         let state = root.appendingPathComponent("state", isDirectory: true)
-        let submission = try FolderCaptureSubmission(
-            stateRoot: state,
-            workspaceRef: "workspace-1",
-            bookmarkCodec: BookmarkCodec()
-        )
+        let environment = try DocumentIntakeEnvironment(stateRoot: state, bookmarkCodec: BookmarkCodec())
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
         let plan = try submission.plan(
             root: root,
             policy: FolderCapturePolicy(
@@ -102,6 +99,12 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         XCTAssertTrue(entries.allSatisfy { $0.intent.bulkOrigin != nil })
         XCTAssertTrue(entries.allSatisfy { $0.intent.consent == nil })
         XCTAssertEqual(Set(entries.compactMap { $0.intent.originalBinding?.rootAccessGroupId }).count, 1)
+        let grant = try XCTUnwrap(environment.accessStore.rootDescriptors().first)
+        let run = try XCTUnwrap(environment.folderBulkRuns.all().first)
+        XCTAssertEqual(run.rootBindingGeneration, grant.generation)
+        XCTAssertTrue(entries.allSatisfy {
+            $0.intent.originalBinding?.rootBindingGeneration == grant.generation
+        })
     }
 
     func testEmptyOnlyNewWatchRetainsReviewedRootGrant() async throws {
@@ -228,11 +231,8 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         let root = try temporaryDirectory()
         try Data("watch me".utf8).write(to: root.appendingPathComponent("watch.txt"))
         let state = root.appendingPathComponent("state", isDirectory: true)
-        let submission = try FolderCaptureSubmission(
-            stateRoot: state,
-            workspaceRef: "workspace-1",
-            bookmarkCodec: BookmarkCodec()
-        )
+        let environment = try DocumentIntakeEnvironment(stateRoot: state, bookmarkCodec: BookmarkCodec())
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
         let plan = try submission.plan(
             root: root,
             policy: FolderCapturePolicy(
@@ -249,6 +249,72 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         XCTAssertEqual(entries[0].intent.intentKind, .folderCapture)
         XCTAssertNotNil(entries[0].intent.consent)
         XCTAssertNotNil(entries[0].intent.bulkOrigin)
+        let grant = try XCTUnwrap(environment.accessStore.rootDescriptors().first)
+        let run = try XCTUnwrap(environment.folderBulkRuns.all().first)
+        let subscription = try XCTUnwrap(environment.folderSubscriptions.all().first)
+        XCTAssertEqual(run.rootBindingGeneration, grant.generation)
+        XCTAssertEqual(subscription.rootBindingGeneration, grant.generation)
+        XCTAssertEqual(entries[0].intent.originalBinding?.rootBindingGeneration, grant.generation)
+    }
+
+    func testLegacyFolderLedgersDefaultRootGenerationAndFreezeItAcrossUpdates() async throws {
+        let root = try temporaryDirectory()
+        try Data("legacy".utf8).write(to: root.appendingPathComponent("legacy.txt"))
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        let environment = try DocumentIntakeEnvironment(stateRoot: state, bookmarkCodec: BookmarkCodec())
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(mode: .keepUpdated, recursive: true, includeHidden: false)
+        )
+        _ = try await submission.submit(plan)
+
+        let runID = try XCTUnwrap(environment.folderBulkRuns.all().first?.runID)
+        let subscriptionID = try XCTUnwrap(environment.folderSubscriptions.all().first?.subscriptionID)
+        let runFile = state
+            .appendingPathComponent("folder-bulk-runs", isDirectory: true)
+            .appendingPathComponent("folder-bulk-runs-v1.json")
+        let subscriptionFile = state
+            .appendingPathComponent("folder-subscriptions", isDirectory: true)
+            .appendingPathComponent("folder-subscriptions-v1.json")
+        try removeRootBindingGeneration(from: runFile, collectionKey: "runs")
+        try removeRootBindingGeneration(from: subscriptionFile, collectionKey: "subscriptions")
+
+        let migratedRuns = try FolderBulkRunStore(
+            stateDirectory: state.appendingPathComponent("folder-bulk-runs", isDirectory: true)
+        )
+        let migratedSubscriptions = try FolderSubscriptionStore(
+            stateDirectory: state.appendingPathComponent("folder-subscriptions", isDirectory: true)
+        )
+        XCTAssertEqual(migratedRuns.run(id: runID)?.rootBindingGeneration, 1)
+        XCTAssertEqual(
+            migratedSubscriptions.subscription(id: subscriptionID)?.rootBindingGeneration,
+            1
+        )
+
+        XCTAssertThrowsError(
+            try migratedRuns.update(id: runID) { $0.rootBindingGeneration = 2 }
+        ) { XCTAssertEqual($0 as? FolderBulkRunStoreError, .invalidState) }
+        XCTAssertThrowsError(
+            try migratedSubscriptions.update(id: subscriptionID) { $0.rootBindingGeneration = 2 }
+        ) { XCTAssertEqual($0 as? FolderSubscriptionStoreError, .invalidState) }
+        XCTAssertEqual(migratedRuns.run(id: runID)?.rootBindingGeneration, 1)
+        XCTAssertEqual(
+            migratedSubscriptions.subscription(id: subscriptionID)?.rootBindingGeneration,
+            1
+        )
+
+        let reopenedRuns = try FolderBulkRunStore(
+            stateDirectory: state.appendingPathComponent("folder-bulk-runs", isDirectory: true)
+        )
+        let reopenedSubscriptions = try FolderSubscriptionStore(
+            stateDirectory: state.appendingPathComponent("folder-subscriptions", isDirectory: true)
+        )
+        XCTAssertEqual(reopenedRuns.run(id: runID)?.rootBindingGeneration, 1)
+        XCTAssertEqual(
+            reopenedSubscriptions.subscription(id: subscriptionID)?.rootBindingGeneration,
+            1
+        )
     }
 
     func testOnlyNewAndChangedEstablishesLocalBaselineWithoutCapturingExistingFiles() async throws {
@@ -543,5 +609,18 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
         return url
+    }
+
+    private func removeRootBindingGeneration(from file: URL, collectionKey: String) throws {
+        let data = try Data(contentsOf: file)
+        var document = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var values = try XCTUnwrap(document[collectionKey] as? [[String: Any]])
+        for index in values.indices {
+            values[index].removeValue(forKey: "rootBindingGeneration")
+        }
+        document[collectionKey] = values
+        try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+            .write(to: file, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 }

@@ -39,6 +39,7 @@ public struct FolderBulkRun: Codable, Equatable, Sendable {
     public let manifestRevision: String
     public let submissionID: String
     public let rootRef: String
+    public var rootBindingGeneration: UInt64 = 1
     public let rootDisplayName: String
     public let subscriptionID: String?
     public let targetRef: String
@@ -110,7 +111,12 @@ public final class FolderBulkRunStore: @unchecked Sendable {
     ) throws -> FolderBulkRun {
         try lock.withLock {
             guard var value = runs[id] else { throw FolderBulkRunStoreError.unknownRun }
+            let frozenRootBindingGeneration = value.rootBindingGeneration
             try change(&value)
+            // The adopted root grant generation is frozen for the life of the run.
+            guard value.rootBindingGeneration == frozenRootBindingGeneration else {
+                throw FolderBulkRunStoreError.invalidState
+            }
             try Self.validate(value)
             var replacement = runs
             replacement[id] = value
@@ -166,9 +172,13 @@ public final class FolderBulkRunStore: @unchecked Sendable {
                   let permissions = attributes[.posixPermissions] as? NSNumber,
                   permissions.intValue & 0o077 == 0
             else { throw FolderBulkRunStoreError.invalidState }
+            let data = try Self.addLegacyRootBindingGeneration(
+                to: Data(contentsOf: stateFile, options: [.mappedIfSafe]),
+                collectionKey: "runs"
+            )
             let document = try JSONDecoder().decode(
                 FolderBulkRunDocument.self,
-                from: Data(contentsOf: stateFile, options: [.mappedIfSafe])
+                from: data
             )
             guard document.schema == schema else { throw FolderBulkRunStoreError.invalidState }
             var result: [String: FolderBulkRun] = [:]
@@ -192,6 +202,7 @@ public final class FolderBulkRunStore: @unchecked Sendable {
         ] + (run.subscriptionID.map { [$0] } ?? [])
         guard identifiers.allSatisfy(validIdentifier),
               !run.rootDisplayName.isEmpty,
+              run.rootBindingGeneration > 0,
               run.rootDisplayName.count <= 255,
               !run.members.isEmpty,
               run.members.count <= FolderCaptureSubmission.maximumMembers,
@@ -209,6 +220,23 @@ public final class FolderBulkRunStore: @unchecked Sendable {
                       && member.relativeComponents.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
               })
         else { throw FolderBulkRunStoreError.invalidState }
+    }
+
+    private static func addLegacyRootBindingGeneration(
+        to data: Data,
+        collectionKey: String
+    ) throws -> Data {
+        guard var document = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var values = document[collectionKey] as? [[String: Any]]
+        else { throw FolderBulkRunStoreError.invalidState }
+        var changed = false
+        for index in values.indices where values[index]["rootBindingGeneration"] == nil {
+            values[index]["rootBindingGeneration"] = 1
+            changed = true
+        }
+        guard changed else { return data }
+        document[collectionKey] = values
+        return try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
     }
 
     private static func validIdentifier(_ value: String) -> Bool {

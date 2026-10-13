@@ -72,10 +72,9 @@ public actor FolderMonitoringCoordinator {
     public func activeObservationRoots() -> [FolderObservationRoot] {
         subscriptions.all().compactMap { subscription in
             guard subscription.state == .active else { return nil }
-            let expectedGeneration = subscription.members.map(\.membershipGeneration).min() ?? 1
             return try? accessStore.withRootReadAccess(
                 rootRef: subscription.rootRef,
-                expectedGeneration: expectedGeneration
+                expectedGeneration: subscription.rootBindingGeneration
             ) { root in
                 FolderObservationRoot(subscriptionID: subscription.subscriptionID, url: root)
             }
@@ -220,7 +219,7 @@ public actor FolderMonitoringCoordinator {
     }
 
     private func reconcileActive(_ subscription: FolderSubscription) async throws -> FolderMonitoringReport {
-        let expectedGeneration = subscription.members.map(\.membershipGeneration).min() ?? 1
+        let expectedGeneration = subscription.rootBindingGeneration
         let candidates = try accessStore.withRootReadAccess(
             rootRef: subscription.rootRef,
             expectedGeneration: expectedGeneration

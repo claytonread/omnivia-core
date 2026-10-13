@@ -37,6 +37,7 @@ public struct FolderSubscriptionMember: Codable, Equatable, Sendable {
 public struct FolderSubscription: Codable, Equatable, Sendable {
     public let subscriptionID: String
     public let rootRef: String
+    public var rootBindingGeneration: UInt64 = 1
     public let rootDisplayName: String
     public let targetRef: String
     public let workspaceRef: String
@@ -118,7 +119,12 @@ public final class FolderSubscriptionStore: @unchecked Sendable {
             guard var current = subscriptions[id] else {
                 throw FolderSubscriptionStoreError.unknownSubscription
             }
+            let frozenRootBindingGeneration = current.rootBindingGeneration
             try change(&current)
+            // The adopted root grant generation is frozen for the life of the subscription.
+            guard current.rootBindingGeneration == frozenRootBindingGeneration else {
+                throw FolderSubscriptionStoreError.invalidState
+            }
             try Self.validate(current)
             var replacement = subscriptions
             replacement[id] = current
@@ -174,7 +180,9 @@ public final class FolderSubscriptionStore: @unchecked Sendable {
                   let permissions = attributes[.posixPermissions] as? NSNumber,
                   permissions.intValue & 0o077 == 0
             else { throw FolderSubscriptionStoreError.invalidState }
-            let data = try Data(contentsOf: stateFile, options: [.mappedIfSafe])
+            let data = try Self.addLegacyRootBindingGeneration(
+                to: Data(contentsOf: stateFile, options: [.mappedIfSafe])
+            )
             let document = try JSONDecoder().decode(FolderSubscriptionDocument.self, from: data)
             guard document.schema == schema else { throw FolderSubscriptionStoreError.invalidState }
             var result: [String: FolderSubscription] = [:]
@@ -205,6 +213,7 @@ public final class FolderSubscriptionStore: @unchecked Sendable {
         guard identifiers.allSatisfy(validIdentifier),
               value.configGeneration > 0,
               value.consentGeneration > 0,
+              value.rootBindingGeneration > 0,
               value.members.count <= FolderCaptureSubmission.maximumMembers,
               !value.rootDisplayName.isEmpty,
               value.rootDisplayName.count <= 255,
@@ -228,6 +237,20 @@ public final class FolderSubscriptionStore: @unchecked Sendable {
                       && member.relativeComponents.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
               })
         else { throw FolderSubscriptionStoreError.invalidState }
+    }
+
+    private static func addLegacyRootBindingGeneration(to data: Data) throws -> Data {
+        guard var document = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var values = document["subscriptions"] as? [[String: Any]]
+        else { throw FolderSubscriptionStoreError.invalidState }
+        var changed = false
+        for index in values.indices where values[index]["rootBindingGeneration"] == nil {
+            values[index]["rootBindingGeneration"] = 1
+            changed = true
+        }
+        guard changed else { return data }
+        document["subscriptions"] = values
+        return try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
     }
 
     private static func validIdentifier(_ value: String) -> Bool {

@@ -267,10 +267,9 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                 guard subscription.targetRef == binding.targetRef,
                       subscription.workspaceRef == binding.workspaceRef
                 else { return false }
-                let generation = subscription.members.map(\.membershipGeneration).min() ?? 1
                 return (try? accessStore.withRootReadAccess(
                     rootRef: subscription.rootRef,
-                    expectedGeneration: generation
+                    expectedGeneration: subscription.rootBindingGeneration
                 ) { root in
                     root.resolvingSymlinksInPath().standardizedFileURL.path == requestedPath
                 }) == true
@@ -377,6 +376,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                 FolderSubscription(
                     subscriptionID: subscriptionID,
                     rootRef: rootRef,
+                    rootBindingGeneration: root.generation,
                     rootDisplayName: plan.root.lastPathComponent,
                     targetRef: binding.targetRef,
                     workspaceRef: binding.workspaceRef,
@@ -412,6 +412,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                 manifestRevision: manifestRevision,
                 submissionID: submissionID,
                 rootRef: rootRef,
+                rootBindingGeneration: root.generation,
                 rootDisplayName: plan.root.lastPathComponent,
                 subscriptionID: plan.policy.mode == .keepUpdated ? subscriptionID : nil,
                 targetRef: binding.targetRef,

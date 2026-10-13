@@ -206,7 +206,7 @@ public actor FolderBulkRunCoordinator {
                 bindingGeneration: member.bindingGeneration,
                 linkedDocumentId: member.linkedDocumentID,
                 rootAccessGroupId: run.rootRef,
-                rootBindingGeneration: 1,
+                rootBindingGeneration: run.rootBindingGeneration,
                 memberId: member.memberID,
                 membershipGeneration: member.bindingGeneration
             ),
