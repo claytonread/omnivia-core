@@ -113,6 +113,7 @@ EXPECTED_ALLOCATION = (
     ),
     (41, "0041_evidence_source_identity.sql", "Evidence Runtime", "candidate"),
     (42, "0042_runtime_stop_progress.sql", "Workflow Runtime", "candidate"),
+    (43, "0043_app_settings.sql", "Core Settings", "reserved"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
