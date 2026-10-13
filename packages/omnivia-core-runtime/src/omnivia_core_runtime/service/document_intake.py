@@ -515,14 +515,43 @@ def reprocess_captured_copy(
 ) -> store.StoredResult:
     """Add an extraction revision over a capture's retained copy; never reread the original, never recapture.
 
-    The retained copy is read and verified first, so a deleted, expired or corrupt copy is refused before anything
-    is admitted. An extractor that raises is recorded as a failed result with a fixed limitation, not as a refusal.
-    A replay of an operation key whose revision already has a result returns that result without running the
-    extractor again.
+    A replay of an operation key whose revision already has a result returns that result without consulting current
+    retention or running the extractor again. For a new or unsettled operation, the retained copy is then read and
+    verified, so a deleted, expired or corrupt copy is refused before extraction runs. An extractor that raises is
+    recorded as a failed result with a fixed limitation, not as a refusal.
     """
     assert runner.connection is not None and runner.workspace_id is not None
     try:
         digest = register_profile(runner, profile)
+        with _fence(runner):
+            capture = store.read_capture(
+                runner.connection, workspace_id=runner.workspace_id, capture_id=capture_id
+            )
+            if capture is None:
+                raise DocumentIntakeRefused("no such capture")
+            request = store.request_digest(
+                {
+                    "captureId": capture_id,
+                    "expectedBaseExtractionId": expected_base_extraction_id,
+                    "inputDigest": capture.source_digest,
+                    "profileDigest": digest,
+                }
+            )
+            existing = store.read_revision_by_key(
+                runner.connection, workspace_id=runner.workspace_id, operation_key=operation_key
+            )
+            if existing is not None:
+                if existing.request_digest != request:
+                    raise DocumentIntakeRefused(
+                        "the operation key already names a different extraction request"
+                    )
+                stored = store.read_result(
+                    runner.connection,
+                    workspace_id=runner.workspace_id,
+                    extraction_revision_id=existing.extraction_revision_id,
+                )
+                if stored is not None:
+                    return stored
         content = read_retained_source(runner, capture_id=capture_id)
         revision, replayed = admit_extraction(
             runner,

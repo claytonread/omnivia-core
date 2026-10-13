@@ -694,6 +694,31 @@ def test_a_replayed_reprocess_returns_the_stored_result_without_running_the_extr
     assert count(runner, "omnivia_extraction_revisions") == 1
 
 
+def test_a_settled_reprocess_replay_survives_later_capture_expiry(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    first = sources.capture("cap-1", b"one", None)
+    calls: list[int] = []
+
+    def extractor(content: bytes, profile: Any) -> ExtractionOutcome:
+        calls.append(1)
+        return succeeded()
+
+    arguments: dict[str, Any] = {
+        "capture_id": first.capture.capture_id,
+        "profile": PROFILE,
+        "expected_base_extraction_id": None,
+        "operation_key": "ext-1",
+        "extractor": extractor,
+    }
+    stored = reprocess_captured_copy(runner, **arguments)
+    expire_capture(runner, capture_id=first.capture.capture_id)
+    again = reprocess_captured_copy(runner, **arguments)
+
+    assert again == stored and calls == [1]
+    assert count(runner, "omnivia_extraction_revisions") == 1
+
+
 def test_a_corrupt_missing_or_expired_retained_copy_is_refused_before_anything_is_admitted(
     runner: ServiceRunner, sources: Sources
 ) -> None:
