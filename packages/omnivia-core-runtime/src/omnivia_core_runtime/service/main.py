@@ -70,6 +70,7 @@ from omnivia_core_runtime.service.chat_generation_executor import (
 )
 from omnivia_core_runtime.service.chat_provider_route import provider_route_from_env
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.document_processing import DocumentProcessingExecutor
 from omnivia_core_runtime.service.engineering_conflict_execution import (
     EngineeringConflictExecutor,
 )
@@ -273,7 +274,9 @@ def _default_chat_generation(started: ServiceRunner) -> ChatGenerationExecution 
         return None
     route = provider_route_from_env(os.environ)
     invoke, config = (
-        route if route is not None else (_no_provider_adapter, _UNCONFIGURED_PROVIDER_ROUTE)
+        route
+        if route is not None
+        else (_no_provider_adapter, _UNCONFIGURED_PROVIDER_ROUTE)
     )
     return ChatGenerationExecutor(
         connection=started.connection,
@@ -328,10 +331,12 @@ def _build_production_application_surface(
             installation_id=installation_id,
             workspace_id=started.workspace_id,
             operations=frozenset(
-                op for op in registry.operations
+                op
+                for op in registry.operations
                 if next(
                     e for e in OPERATION_CATALOGUE if e.name == op
-                ).scope.side_effect == "none"
+                ).scope.side_effect
+                == "none"
             ),
         ),
         binding=ServiceBinding(
@@ -661,6 +666,16 @@ def _http_bind_to_serve(endpoint: str | None) -> HttpBind | None:
     if endpoint is None:
         return None
     return parse_http_endpoint(endpoint)
+
+
+def _compose_background_work(*passes: Callable[[], object]) -> Callable[[], None]:
+    """Compose bounded service-owned passes in a stable fairness order."""
+
+    def run() -> None:
+        for background_pass in passes:
+            background_pass()
+
+    return run
 
 
 def _serve_until_stopped(
@@ -1118,7 +1133,10 @@ def main(
             application=application,
             principal_id=LOCAL_PRINCIPAL,
         )
-        source_work = source_executor.run_pending
+        document_executor = DocumentProcessingExecutor(runner=started)
+        source_work = _compose_background_work(
+            source_executor.run_pending, document_executor.run_pending
+        )
         assessment_policy = relation_assessment_policy or RelationAssessmentPolicy()
         assessment_executor = (
             EngineeringRelationAssessmentExecutor(

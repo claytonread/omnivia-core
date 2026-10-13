@@ -1137,6 +1137,18 @@ def test_a_serving_run_hands_the_started_runner_to_the_renewal_loop(
     assert len(scheduled) == 1 and callable(scheduled[0])
 
 
+def test_background_work_runs_source_and_document_processing_in_order() -> None:
+    """The idle service tick advances both durable background-work lanes."""
+    passes: list[str] = []
+    work = service_main_module._compose_background_work(
+        lambda: passes.append("source"), lambda: passes.append("document")
+    )
+
+    work()
+
+    assert passes == ["source", "document"]
+
+
 def _serve_subprocess(workspace: Path, installation: InstallationLayout, endpoint: str):
     import subprocess as sp
     import sys as system
