@@ -12,6 +12,10 @@ let package = Package(
             name: "DocumentIntakeMacOS",
             targets: ["DocumentIntakeMacOS"]
         ),
+        .library(
+            name: "CoreCaptureMacOS",
+            targets: ["CoreCaptureMacOS"]
+        ),
         .executable(
             name: "omnivia-core-status-menu",
             targets: ["OmniViaCoreStatusMenu"]
@@ -22,9 +26,17 @@ let package = Package(
             name: "omnivia-core-settings-harness",
             targets: ["CoreSettingsHarness"]
         ),
+        .executable(
+            name: "omnivia-core-capture-harness",
+            targets: ["CoreCaptureHarness"]
+        ),
     ],
     targets: [
         .target(name: "DocumentIntakeMacOS"),
+        .target(
+            name: "CoreCaptureMacOS",
+            dependencies: ["DocumentIntakeMacOS"]
+        ),
         // The settings screen and readiness model are a library so both the
         // companion executable and the developer harness can host them.
         .target(
@@ -36,15 +48,19 @@ let package = Package(
         ),
         .executableTarget(
             name: "OmniViaCoreStatusMenu",
-            dependencies: ["CoreSettingsMacOS", "DocumentIntakeMacOS"]
+            dependencies: ["CoreSettingsMacOS", "CoreCaptureMacOS", "DocumentIntakeMacOS"]
         ),
         .executableTarget(
             name: "CoreSettingsHarness",
             dependencies: ["CoreSettingsMacOS"]
         ),
+        .executableTarget(
+            name: "CoreCaptureHarness",
+            dependencies: ["CoreCaptureMacOS", "DocumentIntakeMacOS"]
+        ),
         .testTarget(
             name: "OmniViaCoreStatusMenuTests",
-            dependencies: ["OmniViaCoreStatusMenu", "CoreSettingsMacOS", "DocumentIntakeMacOS"]
+            dependencies: ["OmniViaCoreStatusMenu", "CoreSettingsMacOS", "CoreCaptureMacOS", "DocumentIntakeMacOS"]
         ),
     ]
 )

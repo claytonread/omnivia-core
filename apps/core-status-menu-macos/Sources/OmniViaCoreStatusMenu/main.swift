@@ -1,5 +1,7 @@
 import AppKit
+import CoreCaptureMacOS
 import CoreSettingsMacOS
+import DocumentIntakeMacOS
 import Darwin
 import Foundation
 
@@ -16,11 +18,13 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private let startItem = NSMenuItem(title: "Start Service", action: #selector(startService), keyEquivalent: "")
     private let stopItem = NSMenuItem(title: "Stop Service", action: #selector(stopService), keyEquivalent: "")
     private let logItem = NSMenuItem(title: "Show Service Log", action: #selector(showServiceLog), keyEquivalent: "l")
+    private let addItem = NSMenuItem(title: "Add to Core…", action: #selector(openCapture), keyEquivalent: "a")
     private let settingsItem = NSMenuItem(title: "Core Settings…", action: #selector(openSettings), keyEquivalent: ",")
     private var pollTimer: Timer?
     /// One owned Settings window (MR-001). Created on first open; closing it
     /// never touches Core lifecycle.
     private var settingsWindowController: SettingsWindowController?
+    private var capturePanelController: CapturePanelController?
 
     init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
         self.configuration = configuration
@@ -38,6 +42,17 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         }
         coordinator = LifecycleCoordinator(runner: runner)
         super.init()
+        let intakeRoot = configuration.installationState.deletingLastPathComponent()
+            .appendingPathComponent("native-intake", isDirectory: true)
+        if let submitter = try? ManualCaptureSubmission(
+            stateRoot: intakeRoot,
+            workspaceRef: configuration.workspaceID
+        ) {
+            capturePanelController = CapturePanelController(
+                workspaceName: configuration.workspaceID,
+                submitter: submitter
+            )
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -72,13 +87,14 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         menu.autoenablesItems = false
         titleItem.isEnabled = false
         detailItem.isEnabled = false
-        for item in [refreshItem, startItem, stopItem, logItem, settingsItem] {
+        for item in [refreshItem, startItem, stopItem, logItem, addItem, settingsItem] {
             item.target = self
         }
 
         menu.addItem(titleItem)
         menu.addItem(detailItem)
         menu.addItem(.separator())
+        menu.addItem(addItem)
         menu.addItem(settingsItem)
         menu.addItem(.separator())
         menu.addItem(refreshItem)
@@ -94,6 +110,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         quit.target = self
         menu.addItem(quit)
         statusItem.menu = menu
+        addItem.isEnabled = capturePanelController != nil
     }
 
     private func render(_ snapshot: MenuSnapshot) {
@@ -135,6 +152,10 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             settingsWindowController = SettingsWindowController(coordinator: ReadinessCoordinator(context: context))
         }
         settingsWindowController?.openOrFocus()
+    }
+
+    @objc private func openCapture() {
+        capturePanelController?.openOrFocus()
     }
 
     @objc private func startService() {
