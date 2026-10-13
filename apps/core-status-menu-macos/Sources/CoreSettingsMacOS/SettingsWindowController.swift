@@ -136,6 +136,11 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Which disclosures the user has opened. View state, never service state,
+    /// and deliberately not persisted: it is scoped to one window session the
+    /// way the prototype's in-memory `open` map is.
+    private var openDisclosures: Set<String> = []
+
     private var selectedPane: Pane = .general {
         didSet { guard oldValue != selectedPane else { return }; render(); renderSidebar() }
     }
@@ -591,6 +596,54 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         return box
     }
 
+    /// Disclosure (prototype .cs-disc): a summary row that reveals a body.
+    /// NSStackView collapses a hidden arranged subview, so toggling `isHidden`
+    /// is the whole mechanism. Open state is keyed by `id` and survives the
+    /// full re-render that every snapshot change triggers.
+    private func disclosure(id: String, label: String, body: NSView) -> NSStackView {
+        let box = NSStackView()
+        box.orientation = .vertical
+        box.alignment = .leading
+        box.spacing = 0
+
+        let chevron = NSImageView()
+        let isOpen = openDisclosures.contains(id)
+        if let image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold)) {
+            chevron.image = image
+            chevron.contentTintColor = Ov.textTertiary
+        }
+        chevron.frameCenterRotation = isOpen ? 90 : 0
+        chevron.setContentHuggingPriority(.required, for: .horizontal)
+
+        let summary = DisclosureButton(id: id)
+        summary.target = self
+        summary.action = #selector(toggleDisclosure(_:))
+        summary.setAccessibilityLabel(label)
+        summary.setAccessibilityExpanded(isOpen)
+
+        let line = NSStackView(views: [chevron, OvFont.label(
+            label, size: 12, cssWeight: 600, color: Ov.textSecondary
+        )])
+        line.orientation = .horizontal
+        line.alignment = .centerY
+        line.spacing = 7
+        line.edgeInsets = NSEdgeInsets(top: 10, left: 0, bottom: 10, right: 0)
+        summary.addSubview(line)
+        line.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            line.leadingAnchor.constraint(equalTo: summary.leadingAnchor),
+            line.trailingAnchor.constraint(lessThanOrEqualTo: summary.trailingAnchor),
+            line.topAnchor.constraint(equalTo: summary.topAnchor),
+            line.bottomAnchor.constraint(equalTo: summary.bottomAnchor),
+        ])
+
+        box.addArrangedSubview(summary)
+        box.addArrangedSubview(body)
+        body.isHidden = !isOpen
+        return box
+    }
+
     /// A control the design specifies whose backend is absent in this build.
     /// The row renders at full fidelity — title, detail, trailing chip — so the
     /// shape of the finished pane is visible, but it offers no control to
@@ -760,13 +813,100 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     // MARK: Data
 
+    /// Data (prototype `data()`): workspace context, where it is stored, and
+    /// backups. The window is a thin client — it holds the workspace ref and
+    /// the installation revision it was launched with, and nothing else. Size,
+    /// path and backup history are Core's to report and Core does not report
+    /// them to this window yet, so they are marked rather than guessed. The
+    /// companion must not derive the workspace path from the installation
+    /// layout: that layout is Core's, not a shape this client may assume.
     private func renderData(_ content: NSStackView) {
-        let backupCard = card(content, header: "Backup")
+        let context = coordinator.snapshot.context
+
+        // ---- Workspace context (prototype wsContext) ----
+        let workspaceCard = card(content, header: nil)
         row(
+            into: workspaceCard,
+            title: "Workspace",
+            detail: "Managed here: Core on this Mac. Other applications keep their own workspace bindings.",
+            trailing: OvFont.label(
+                context.workspaceRef, size: 12, cssWeight: 500, color: Ov.textSecondary, mono: true
+            )
+        )
+
+        // ---- Storage ----
+        let storageCard = card(content, header: "Storage")
+        row(
+            into: storageCard,
+            title: "Location",
+            detail: nil,
+            trailing: OvFont.label("This Mac", size: 12, cssWeight: 500, color: Ov.textSecondary)
+        )
+        notBuiltRow(
+            into: storageCard,
+            title: "Storage location",
+            detail: "Reported by Core. Shown for reference; it can’t be edited here. Core does not report the workspace path to this window in this build, and the companion does not infer it.",
+            status: "Not reported"
+        )
+        notBuiltRow(
+            into: storageCard,
+            title: "Storage used",
+            detail: "A size and its breakdown appear here once Core reports them.",
+            status: "Not reported"
+        )
+
+        // ---- Backups ----
+        let backupCard = card(content, header: "Backups")
+        notBuiltRow(
             into: backupCard,
-            title: "Backup destination",
-            detail: "Not installed — optional. No backup feature is installed in this build; when it exists, its access status and a bounded test will appear here.",
-            trailing: chip("Off · Optional", tone: .neu)
+            title: "Last successful backup",
+            detail: "Back up this workspace to keep a copy outside Core. Backup history appears here once the backup feature exists.",
+            status: "Not in this build"
+        )
+        notBuiltRow(
+            into: backupCard,
+            title: "Back up",
+            detail: "Creates a new backup at the destination, then verifies it.",
+            status: "Not in this build"
+        )
+
+        let optionsBody = NSStackView()
+        optionsBody.orientation = .vertical
+        optionsBody.alignment = .leading
+        optionsBody.spacing = 0
+        notBuiltRow(
+            into: optionsBody,
+            title: "Destination",
+            detail: "Where Core writes backups.",
+            status: "Not in this build"
+        )
+        notBuiltRow(
+            into: optionsBody,
+            title: "Schedule",
+            detail: "How often Core backs this workspace up.",
+            status: "Not in this build"
+        )
+        notBuiltRow(
+            into: optionsBody,
+            title: "Keep backups for",
+            detail: "How long Core keeps earlier backups before removing them.",
+            status: "Not in this build"
+        )
+        notBuiltRow(
+            into: optionsBody,
+            title: "Destination access",
+            detail: "A bounded test — it may create and remove a small temporary file at the destination — appears here with the backup feature. Read access and write access are separate results.",
+            status: "Not in this build"
+        )
+        backupCard.addArrangedSubview(
+            disclosure(id: "backup-options", label: "Options", body: optionsBody)
+        )
+
+        content.addArrangedSubview(
+            note(
+                "Storage and backups belong to a workspace. These controls are the finished shape of the pane; the backup feature that fills them is not installed in this build, so there is nothing here to switch off or repair.",
+                symbol: "externaldrive"
+            )
         )
     }
 
@@ -842,6 +982,19 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     // MARK: - Explicit actions (§11)
+
+    /// Opening or closing a disclosure is pure view state: it re-renders the
+    /// pane but never triggers a refresh, a probe or a service call (§A2 —
+    /// changing panes must have no side effects).
+    @objc private func toggleDisclosure(_ sender: NSButton) {
+        guard let id = (sender as? DisclosureButton)?.disclosureID else { return }
+        if openDisclosures.contains(id) {
+            openDisclosures.remove(id)
+        } else {
+            openDisclosures.insert(id)
+        }
+        render()
+    }
 
     @objc private func refreshStatus() {
         coordinator.scheduleRefresh(.explicitRefresh)
@@ -1014,6 +1167,26 @@ final class SidebarRowView: NSView {
 }
 
 // MARK: - OmniVia buttons (.ov-btn / .ov-btn--bordered / --primary)
+
+/// A borderless summary row that remembers which disclosure it drives, so one
+/// action selector can serve every disclosure in the window.
+final class DisclosureButton: NSButton {
+    let disclosureID: String
+
+    init(id: String) {
+        self.disclosureID = id
+        super.init(frame: .zero)
+        title = ""
+        isBordered = false
+        setButtonType(.momentaryChange)
+        focusRingType = .default
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 34) }
+}
 
 enum OvButtonStyle { case bordered, primary }
 
