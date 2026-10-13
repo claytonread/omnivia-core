@@ -62,8 +62,10 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
     private let preparation: CapturePreparationCoordinator
     private let subscriptions: FileSubscriptionStore
     private let snapshotStore: OwnedSnapshotStore?
-    private let workspaceRef: String
-    private let targetRef: String
+    /// One source of truth for the target, workspace and caller facts frozen
+    /// into every intent this submission queues; delivery requires an exact
+    /// match against the transport's binding.
+    private let binding: CaptureDeliveryBinding
 
     public init(
         stateRoot: URL,
@@ -83,8 +85,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         snapshotStore = try OwnedSnapshotStore(
             root: stateRoot.appendingPathComponent("owned-snapshots", isDirectory: true)
         )
-        self.workspaceRef = workspaceRef
-        self.targetRef = targetRef
+        binding = .companion(workspaceRef: workspaceRef, targetRef: targetRef)
     }
 
     public init(
@@ -97,8 +98,19 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         preparation = environment.preparation
         subscriptions = environment.fileSubscriptions
         self.snapshotStore = snapshotStore
-        self.workspaceRef = workspaceRef
-        self.targetRef = targetRef
+        binding = .companion(workspaceRef: workspaceRef, targetRef: targetRef)
+    }
+
+    public init(
+        environment: DocumentIntakeEnvironment,
+        binding: CaptureDeliveryBinding,
+        snapshotStore: OwnedSnapshotStore? = nil
+    ) {
+        accessStore = environment.accessStore
+        preparation = environment.preparation
+        subscriptions = environment.fileSubscriptions
+        self.snapshotStore = snapshotStore
+        self.binding = binding
     }
 
     public func submit(_ candidates: [ManualCaptureCandidate]) async throws -> [CaptureQueueEntry] {
@@ -113,8 +125,8 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
             throw ManualCaptureSubmissionError.automaticSourceLimitExceeded
         }
         let existingPaths = Set<String>(existingAutomatic.compactMap { subscription -> String? in
-            guard subscription.targetRef == targetRef,
-                  subscription.workspaceRef == workspaceRef
+            guard subscription.targetRef == binding.targetRef,
+                  subscription.workspaceRef == binding.workspaceRef
             else { return nil }
             return try? accessStore.withReadAccess(
                 accessRef: subscription.accessRef,
@@ -167,14 +179,10 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
             let seed = CaptureIntentSeed(
                 submissionId: submissionID,
                 itemId: itemID,
-                targetRef: targetRef,
-                workspaceRef: workspaceRef,
-                targetBindingRevision: "1",
-                callerContextBinding: CallerContextBinding(
-                    clientContextRef: "macos-companion",
-                    principalRef: "native-user",
-                    contextRevision: "1"
-                ),
+                targetRef: binding.targetRef,
+                workspaceRef: binding.workspaceRef,
+                targetBindingRevision: binding.targetBindingRevision,
+                callerContextBinding: binding.callerContextBinding,
                 surface: candidate.surface,
                 contentKind: kind,
                 payloadRef: Self.identifier(prefix: "payload"),
@@ -213,9 +221,9 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                     contentKind: kind,
                     bindingGeneration: descriptor.generation,
                     baselineItemID: itemID,
-                    targetRef: targetRef,
-                    workspaceRef: workspaceRef,
-                    targetBindingRevision: "1",
+                    targetRef: binding.targetRef,
+                    workspaceRef: binding.workspaceRef,
+                    targetBindingRevision: binding.targetBindingRevision,
                     callerContextBinding: seed.callerContextBinding,
                     configGeneration: 1,
                     consentGeneration: 1,

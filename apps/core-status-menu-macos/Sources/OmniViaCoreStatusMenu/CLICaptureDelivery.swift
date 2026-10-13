@@ -5,11 +5,21 @@ import Foundation
 struct CLICaptureDelivery: CaptureDeliveryTransport {
     let executable: URL
     let installationState: URL
-    let workspaceID: String
+    let deliveryBinding: CaptureDeliveryBinding
 
     var descriptorDigest: String {
-        let binding = Data("\(executable.path)\u{0}\(installationState.path)\u{0}\(workspaceID)".utf8)
-        return "sha256:" + SHA256.hash(data: binding).map { String(format: "%02x", $0) }.joined()
+        let fields = [
+            executable.path,
+            installationState.path,
+            deliveryBinding.workspaceRef,
+            deliveryBinding.targetRef,
+            deliveryBinding.targetBindingRevision,
+            deliveryBinding.callerContextBinding.clientContextRef,
+            deliveryBinding.callerContextBinding.principalRef,
+            deliveryBinding.callerContextBinding.contextRevision,
+        ]
+        let descriptor = Data(fields.joined(separator: "\u{0}").utf8)
+        return "sha256:" + SHA256.hash(data: descriptor).map { String(format: "%02x", $0) }.joined()
     }
 
     func deliver(input: Data, payloadURL: URL, operationKey: String) async -> CaptureDeliveryOutcome {
@@ -18,7 +28,7 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
             process.executableURL = executable
             process.arguments = [
                 "--installation-state", installationState.path,
-                "--workspace-id", workspaceID,
+                "--workspace-id", deliveryBinding.workspaceRef,
                 "--timeout-ms", "20000",
                 "document", "capture",
                 "--input-stdin",

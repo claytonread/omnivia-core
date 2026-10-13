@@ -6,12 +6,19 @@ import XCTest
 final class CaptureDeliveryCoordinatorTests: XCTestCase {
     private final class Transport: @unchecked Sendable, CaptureDeliveryTransport {
         let descriptorDigest = "sha256:" + String(repeating: "b", count: 64)
+        let deliveryBinding: CaptureDeliveryBinding
         let outcome: CaptureDeliveryOutcome
         private let lock = NSLock()
         private var documents: [Data] = []
         private var payloads: [URL] = []
 
-        init(_ outcome: CaptureDeliveryOutcome) { self.outcome = outcome }
+        init(
+            _ outcome: CaptureDeliveryOutcome,
+            binding: CaptureDeliveryBinding = .companion(workspaceRef: "workspace-1")
+        ) {
+            self.outcome = outcome
+            deliveryBinding = binding
+        }
 
         func deliver(input: Data, payloadURL: URL, operationKey: String) async -> CaptureDeliveryOutcome {
             lock.withLock {
@@ -67,19 +74,18 @@ final class CaptureDeliveryCoordinatorTests: XCTestCase {
         XCTAssertNoThrow(try queue.payloadURL(for: intent.itemId))
     }
 
-    private func makeIntent(payload: Data) throws -> CaptureIntentV3 {
+    private func makeIntent(
+        payload: Data,
+        binding: CaptureDeliveryBinding = .companion(workspaceRef: "workspace-1")
+    ) throws -> CaptureIntentV3 {
         let digest = "sha256:" + SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
         return try CaptureIntentV3(
             submissionId: "submission-1",
             itemId: "item-1",
-            targetRef: "local",
-            workspaceRef: "workspace-1",
-            targetBindingRevision: "1",
-            callerContextBinding: CallerContextBinding(
-                clientContextRef: "macos-companion",
-                principalRef: "native-user",
-                contextRevision: "1"
-            ),
+            targetRef: binding.targetRef,
+            workspaceRef: binding.workspaceRef,
+            targetBindingRevision: binding.targetBindingRevision,
+            callerContextBinding: binding.callerContextBinding,
             surface: .manual,
             contentKind: .text,
             payloadRef: "payload-1",
@@ -97,6 +103,91 @@ final class CaptureDeliveryCoordinatorTests: XCTestCase {
             ),
             createdAt: "2026-10-14T00:00:00Z",
             displayName: "note.txt"
+        )
+    }
+
+    /// An intent frozen against `queued` must not be delivered by a transport
+    /// trusted only for `trusted`: no transport call, no stage transition, and
+    /// the item stays pending for recovery or reconfiguration.
+    private func assertRefusesMismatch(
+        queued: CaptureDeliveryBinding,
+        trusted: CaptureDeliveryBinding = .companion(workspaceRef: "workspace-1"),
+        line: UInt = #line
+    ) async throws {
+        let root = try temporaryDirectory()
+        let queue = try CaptureIntentQueue(root: root)
+        let payload = Data("hello".utf8)
+        let intent = try makeIntent(payload: payload, binding: queued)
+        try queue.enqueue(intent: intent, payload: payload)
+        let transport = Transport(
+            .admitted(captureID: "dcap-" + String(repeating: "a", count: 64)),
+            binding: trusted
+        )
+        let delivery = CaptureDeliveryCoordinator(queue: queue, transport: transport)
+
+        let outcomes = await delivery.deliverPending()
+
+        XCTAssertTrue(outcomes.isEmpty, line: line)
+        XCTAssertTrue(transport.delivered().isEmpty, line: line)
+        let entry = try XCTUnwrap(queue.allEntries().first, line: line)
+        XCTAssertEqual(entry.state, .pending, line: line)
+        XCTAssertEqual(entry.attemptGeneration, 0, line: line)
+        XCTAssertNil(entry.stageRequestDigest, line: line)
+        XCTAssertNil(entry.stageDescriptorDigest, line: line)
+        XCTAssertNoThrow(try queue.payloadURL(for: intent.itemId), line: line)
+    }
+
+    func testMismatchedWorkspaceIsNotDelivered() async throws {
+        try await assertRefusesMismatch(queued: .companion(workspaceRef: "workspace-2"))
+    }
+
+    func testMismatchedTargetBindingRevisionIsNotDelivered() async throws {
+        let trusted = CaptureDeliveryBinding.companion(workspaceRef: "workspace-1")
+        try await assertRefusesMismatch(
+            queued: CaptureDeliveryBinding(
+                targetRef: trusted.targetRef,
+                workspaceRef: trusted.workspaceRef,
+                targetBindingRevision: "2",
+                callerContextBinding: trusted.callerContextBinding
+            )
+        )
+    }
+
+    func testMismatchedCallerContextIsNotDelivered() async throws {
+        let trusted = CaptureDeliveryBinding.companion(workspaceRef: "workspace-1")
+        try await assertRefusesMismatch(
+            queued: CaptureDeliveryBinding(
+                targetRef: trusted.targetRef,
+                workspaceRef: trusted.workspaceRef,
+                targetBindingRevision: trusted.targetBindingRevision,
+                callerContextBinding: CallerContextBinding(
+                    clientContextRef: "macos-companion",
+                    principalRef: "native-user",
+                    contextRevision: "1"
+                )
+            )
+        )
+    }
+
+    func testMismatchedTargetIsNotDelivered() async throws {
+        try await assertRefusesMismatch(
+            queued: .companion(workspaceRef: "workspace-1", targetRef: "other")
+        )
+    }
+
+    func testCompanionBindingNamesTheRuntimeLocalPrincipal() {
+        let binding = CaptureDeliveryBinding.companion(workspaceRef: "workspace-1")
+        XCTAssertEqual(binding.callerContextBinding.principalRef, "local-user")
+    }
+
+    func testInstalledCompanionBindingMatchesCLITargetDerivation() {
+        let binding = CaptureDeliveryBinding.installedCompanion(
+            installationState: URL(fileURLWithPath: "/tmp/omnivia-install/state.json"),
+            workspaceRef: "workspace-1"
+        )
+        XCTAssertEqual(
+            binding.targetRef,
+            "core-target-5074f7e04a0ec622a411c1a5d00cbc57"
         )
     }
 

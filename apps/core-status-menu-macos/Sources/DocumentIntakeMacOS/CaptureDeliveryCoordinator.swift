@@ -7,8 +7,90 @@ public enum CaptureDeliveryOutcome: Equatable, Sendable {
     case unknown
 }
 
+/// The target, workspace and caller facts a queued intent was frozen against.
+/// A transport declares the binding it is actually configured to reach, and
+/// delivery is refused unless the queued intent matches it exactly, so an item
+/// queued for one workspace or target binding can never be delivered to
+/// whichever one happens to be configured later.
+public struct CaptureDeliveryBinding: Equatable, Sendable {
+    private static let targetDomain = Data("omnivia.core.target.v1".utf8)
+    /// Client context of this companion.
+    public static let companionClientContextRef = "macos-companion"
+    /// The runtime's configured local owner principal (`service/main.py`,
+    /// `LOCAL_PRINCIPAL`); the only principal production authenticates for a
+    /// local caller.
+    public static let localPrincipalRef = "local-user"
+
+    public let targetRef: String
+    public let workspaceRef: String
+    public let targetBindingRevision: String
+    public let callerContextBinding: CallerContextBinding
+
+    public init(
+        targetRef: String,
+        workspaceRef: String,
+        targetBindingRevision: String,
+        callerContextBinding: CallerContextBinding
+    ) {
+        self.targetRef = targetRef
+        self.workspaceRef = workspaceRef
+        self.targetBindingRevision = targetBindingRevision
+        self.callerContextBinding = callerContextBinding
+    }
+
+    /// The single binding every native companion submission and the companion's
+    /// own transport are built from.
+    public static func companion(
+        workspaceRef: String,
+        targetRef: String = "local"
+    ) -> CaptureDeliveryBinding {
+        CaptureDeliveryBinding(
+            targetRef: targetRef,
+            workspaceRef: workspaceRef,
+            targetBindingRevision: "1",
+            callerContextBinding: CallerContextBinding(
+                clientContextRef: companionClientContextRef,
+                principalRef: localPrincipalRef,
+                contextRevision: "1"
+            )
+        )
+    }
+
+    /// The exact target identity published by the CLI for an explicitly
+    /// selected installation/workspace. Keep this derivation byte-for-byte in
+    /// step with `omnivia_core_cli.safe_status.resolve_local_target`; it does
+    /// not inspect ambient state or substitute whichever target is current.
+    public static func installedCompanion(
+        installationState: URL,
+        workspaceRef: String
+    ) -> CaptureDeliveryBinding {
+        let selection = installationState.resolvingSymlinksInPath().standardizedFileURL.path
+        var material = targetDomain
+        material.append(0)
+        material.append(contentsOf: selection.utf8)
+        material.append(0)
+        material.append(contentsOf: workspaceRef.utf8)
+        let suffix = SHA256.hash(data: material).prefix(16).map {
+            String(format: "%02x", $0)
+        }.joined()
+        return companion(
+            workspaceRef: workspaceRef,
+            targetRef: "core-target-\(suffix)"
+        )
+    }
+
+    public func matches(_ intent: CaptureIntentV3) -> Bool {
+        intent.targetRef == targetRef
+            && intent.workspaceRef == workspaceRef
+            && intent.targetBindingRevision == targetBindingRevision
+            && intent.callerContextBinding == callerContextBinding
+    }
+}
+
 public protocol CaptureDeliveryTransport: Sendable {
     var descriptorDigest: String { get }
+    /// The binding this transport is trusted to deliver to.
+    var deliveryBinding: CaptureDeliveryBinding { get }
     func deliver(input: Data, payloadURL: URL, operationKey: String) async -> CaptureDeliveryOutcome
 }
 
@@ -112,6 +194,10 @@ public actor CaptureDeliveryCoordinator {
     public func deliverPending() async -> [CaptureQueueEntry] {
         var outcomes: [CaptureQueueEntry] = []
         for entry in queue.allEntries() where entry.state == .pending {
+            // Refuse before any payload read, stage transition or transport
+            // call: a binding the transport cannot honour leaves the item
+            // pending for recovery or reconfiguration.
+            guard transport.deliveryBinding.matches(entry.intent) else { continue }
             do {
                 let payloadURL = try queue.payloadURL(for: entry.intent.itemId)
                 let attributes = try FileManager.default.attributesOfItem(atPath: payloadURL.path)

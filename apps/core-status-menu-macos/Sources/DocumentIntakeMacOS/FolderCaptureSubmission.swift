@@ -81,8 +81,10 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
     private let subscriptions: FolderSubscriptionStore
     private let bulkRuns: FolderBulkRunStore
     private let bulkCoordinator: FolderBulkRunCoordinator
-    private let workspaceRef: String
-    private let targetRef: String
+    /// One source of truth for the target, workspace and caller facts frozen
+    /// into every intent this submission queues; delivery requires an exact
+    /// match against the transport's binding.
+    private let binding: CaptureDeliveryBinding
 
     public init(
         stateRoot: URL,
@@ -101,8 +103,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         subscriptions = environment.folderSubscriptions
         bulkRuns = environment.folderBulkRuns
         bulkCoordinator = environment.folderBulkCoordinator
-        self.workspaceRef = workspaceRef
-        self.targetRef = targetRef
+        binding = .companion(workspaceRef: workspaceRef, targetRef: targetRef)
     }
 
     public init(
@@ -115,8 +116,19 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         subscriptions = environment.folderSubscriptions
         bulkRuns = environment.folderBulkRuns
         bulkCoordinator = environment.folderBulkCoordinator
-        self.workspaceRef = workspaceRef
-        self.targetRef = targetRef
+        binding = .companion(workspaceRef: workspaceRef, targetRef: targetRef)
+    }
+
+    public init(
+        environment: DocumentIntakeEnvironment,
+        binding: CaptureDeliveryBinding
+    ) {
+        accessStore = environment.accessStore
+        reader = environment.reader
+        subscriptions = environment.folderSubscriptions
+        bulkRuns = environment.folderBulkRuns
+        bulkCoordinator = environment.folderBulkCoordinator
+        self.binding = binding
     }
 
     public func plan(root: URL, policy: FolderCapturePolicy) throws -> FolderCapturePlan {
@@ -248,8 +260,8 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
             }
             let requestedPath = plan.root.resolvingSymlinksInPath().standardizedFileURL.path
             let duplicate = watched.contains { subscription in
-                guard subscription.targetRef == targetRef,
-                      subscription.workspaceRef == workspaceRef
+                guard subscription.targetRef == binding.targetRef,
+                      subscription.workspaceRef == binding.workspaceRef
                 else { return false }
                 let generation = subscription.members.map(\.membershipGeneration).min() ?? 1
                 return (try? accessStore.withRootReadAccess(
@@ -345,14 +357,10 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                     subscriptionID: subscriptionID,
                     rootRef: rootRef,
                     rootDisplayName: plan.root.lastPathComponent,
-                    targetRef: targetRef,
-                    workspaceRef: workspaceRef,
-                    targetBindingRevision: "1",
-                    callerContextBinding: CallerContextBinding(
-                        clientContextRef: "macos-companion",
-                        principalRef: "native-user",
-                        contextRevision: "1"
-                    ),
+                    targetRef: binding.targetRef,
+                    workspaceRef: binding.workspaceRef,
+                    targetBindingRevision: binding.targetBindingRevision,
+                    callerContextBinding: binding.callerContextBinding,
                     recursive: plan.policy.recursive,
                     includeHidden: plan.policy.includeHidden,
                     configGeneration: 1,
@@ -384,14 +392,10 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                 rootRef: rootRef,
                 rootDisplayName: plan.root.lastPathComponent,
                 subscriptionID: plan.policy.mode == .keepUpdated ? subscriptionID : nil,
-                targetRef: targetRef,
-                workspaceRef: workspaceRef,
-                targetBindingRevision: "1",
-                callerContextBinding: CallerContextBinding(
-                    clientContextRef: "macos-companion",
-                    principalRef: "native-user",
-                    contextRevision: "1"
-                ),
+                targetRef: binding.targetRef,
+                workspaceRef: binding.workspaceRef,
+                targetBindingRevision: binding.targetBindingRevision,
+                callerContextBinding: binding.callerContextBinding,
                 createdAt: createdAt,
                 state: .adding,
                 members: runMembers

@@ -80,14 +80,18 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 bulkStore: environment.folderBulkRuns,
                 bulkCoordinator: environment.folderBulkCoordinator
             )
+            let companionBinding = CaptureDeliveryBinding.installedCompanion(
+                installationState: configuration.installationState,
+                workspaceRef: configuration.workspaceID
+            )
             let submitter = ManualCaptureSubmission(
                 environment: environment,
-                workspaceRef: configuration.workspaceID,
+                binding: companionBinding,
                 snapshotStore: snapshotStore
             )
             let folderSubmitter = FolderCaptureSubmission(
                 environment: environment,
-                workspaceRef: configuration.workspaceID
+                binding: companionBinding
             )
             if let resolvedExecutable {
                 captureDeliveryCoordinator = CaptureDeliveryCoordinator(
@@ -95,7 +99,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                     transport: CLICaptureDelivery(
                         executable: resolvedExecutable,
                         installationState: configuration.installationState,
-                        workspaceID: configuration.workspaceID
+                        deliveryBinding: companionBinding
                     )
                 )
             }
