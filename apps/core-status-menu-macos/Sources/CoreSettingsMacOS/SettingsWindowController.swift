@@ -286,8 +286,12 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             switch self {
             case .general: return "slider.horizontal.3"          // sliders-horizontal
             case .data: return "internaldrive"                   // hard-drive
-            case .capture: return "square.3.layers.3d.top.filled" // layers
-            case .documentProcessing: return "text.magnifyingglass" // search-check
+            // `square.3.layers.3d*` is macOS 14, and filled among outlines;
+            // `square.stack.3d.up` is the nearest outline stack on 13.
+            case .capture: return "square.stack.3d.up"            // layers
+            // No SF equivalent of search-check exists, and a page with a
+            // magnifier says "document processing" better than text alone.
+            case .documentProcessing: return "doc.text.magnifyingglass" // search-check
             case .processing: return "arrow.triangle.2.circlepath" // refresh-cw
             case .access: return "shield"                        // shield
             case .maintenance: return "wrench.adjustable"        // wrench
@@ -845,14 +849,50 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         return rows
     }
 
-    private enum ChipTone { case ok, warn, neu, checking, notBuilt }
+    /// The design's status kinds, one glyph each (`core-mac.js` → `KIND`):
+    ///
+    /// ```js
+    /// ok: check-circle-2   neutral/unknown: circle-dashed   approval: alert-circle
+    /// attention: alert-triangle   stale: clock   off: circle-slash   blocked: x-circle
+    /// ```
+    ///
+    /// `notBuilt` is the one addition — a feature absent from this build, which
+    /// the design never has to describe. It takes its own glyph rather than
+    /// borrowing `off`'s slash: "switched off" and "does not exist" must not be
+    /// the same mark in two colours, which is the failure §A6 names.
+    private enum ChipTone {
+        case ok, neutral, approval, attention, unknown, stale, checking, off, blocked, notBuilt
+    }
+
+    private static func chipGlyph(_ tone: ChipTone) -> String {
+        switch tone {
+        case .ok: return "checkmark.circle"          // check-circle-2 (outline)
+        case .neutral, .unknown: return "circle.dashed"
+        case .approval: return "exclamationmark.circle"
+        case .attention: return "exclamationmark.triangle"
+        case .stale: return "clock"
+        case .off: return "circle.slash"
+        case .blocked: return "xmark.circle"
+        case .notBuilt: return "minus.circle"
+        case .checking: return ""                     // a spinner, not a glyph
+        }
+    }
 
     private static func chipColor(_ tone: ChipTone) -> NSColor {
         switch tone {
         case .ok: return Ov.success
-        case .warn: return Ov.warning
+        case .approval, .attention: return Ov.warning
         case .notBuilt: return Ov.accent
-        case .neu, .checking: return Ov.textTertiary
+        case .neutral, .unknown, .stale, .off, .blocked, .checking: return Ov.textTertiary
+        }
+    }
+
+    /// `.cs-status.warn{color:var(--ov-text-primary)}` — only the two warning
+    /// kinds lift their label; everything else stays secondary.
+    private static func chipTextColor(_ tone: ChipTone) -> NSColor {
+        switch tone {
+        case .approval, .attention, .notBuilt: return Ov.textPrimary
+        default: return Ov.textSecondary
         }
     }
 
@@ -863,26 +903,31 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 5
-        let symbol: String
-        switch tone {
-        case .ok: symbol = "checkmark.circle.fill"
-        case .warn: symbol = "exclamationmark.circle"
-        case .notBuilt: symbol = "circle.slash"
-        case .neu, .checking: symbol = "circle.dashed"
-        }
-        let icon = NSImageView()
-        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: text)?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .regular)) {
-            icon.image = image
+
+        let leading: NSView
+        if tone == .checking {
+            // `.cs-sp` is a 12px spinning ring, not a glyph. A static dashed
+            // circle here read as "unknown", which is a different state.
+            let spinner = NSProgressIndicator()
+            spinner.style = .spinning
+            spinner.controlSize = .small
+            spinner.isIndeterminate = true
+            spinner.startAnimation(nil)
+            spinner.widthAnchor.constraint(equalToConstant: 13).isActive = true
+            spinner.heightAnchor.constraint(equalToConstant: 13).isActive = true
+            leading = spinner
+        } else {
+            let icon = NSImageView()
+            icon.image = NSImage(
+                systemSymbolName: Self.chipGlyph(tone), accessibilityDescription: text
+            )?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
             icon.contentTintColor = Self.chipColor(tone)
+            leading = icon
         }
-        icon.setContentHuggingPriority(.required, for: .horizontal)
-        let label = OvFont.label(
-            text,
-            size: 11.5,
-            color: tone == .warn || tone == .notBuilt ? Ov.textPrimary : Ov.textSecondary
-        )
-        row.addArrangedSubview(icon)
+        leading.setContentHuggingPriority(.required, for: .horizontal)
+
+        let label = OvFont.label(text, size: 11.5, color: Self.chipTextColor(tone))
+        row.addArrangedSubview(leading)
         row.addArrangedSubview(label)
         return row
     }
@@ -1264,9 +1309,12 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         let startupState: (String, ChipTone)
         switch startupRow.registration {
         case "Enabled": startupState = ("Enabled", .ok)
-        case "Needs approval": startupState = ("Needs approval", .warn)
-        case "Not set up": startupState = ("Off · Optional", .neu)
-        default: startupState = (coordinator.refreshInFlight ? "Checking…" : "Not checked", .checking)
+        case "Needs approval": startupState = ("Needs approval", .approval)
+        case "Not set up": startupState = ("Off · Optional", .off)
+        default:
+            startupState = coordinator.refreshInFlight
+                ? ("Checking…", .checking)
+                : ("Not checked", .unknown)
         }
         let startupBody = row(
             into: behaviour,
@@ -1296,12 +1344,15 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         let notifyState: (String, ChipTone)
         switch notifyCheck?.observedState {
         case .allowed: notifyState = ("Allowed", .ok)
-        case .limitedDelivery: notifyState = ("Limited — alerts are off", .warn)
-        case .denied: notifyState = ("Blocked in macOS", .warn)
-        case .notDetermined: notifyState = ("Not set up", .neu)
-        case .unrecognized: notifyState = ("Not checked", .neu)
+        case .limitedDelivery: notifyState = ("Alerts off · badges allowed", .attention)
+        case .denied: notifyState = ("Blocked in macOS", .attention)
+        // Not yet asked is a decision waiting on the user, not an unknown.
+        case .notDetermined: notifyState = ("Needs your permission", .approval)
+        case .unrecognized: notifyState = ("Not checked", .unknown)
         default:
-            notifyState = coordinator.refreshInFlight ? ("Checking…", .checking) : ("Not checked", .neu)
+            notifyState = coordinator.refreshInFlight
+                ? ("Checking…", .checking)
+                : ("Not checked", .unknown)
         }
         let notifyToggle = ovToggle(
             on: attentionNotificationsSelected,
@@ -1381,14 +1432,14 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             title: "Storage location",
             detail: "Reported by Core. Shown for reference; it can’t be edited here. Core does not report the workspace path to this window in this build, and the companion does not infer it.",
             status: "Not reported",
-            tone: .neu
+            tone: .neutral
         )
         notBuiltRow(
             into: storageCard,
             title: "Storage used",
             detail: "A size and its breakdown appear here once Core reports them.",
             status: "Not reported",
-            tone: .neu
+            tone: .neutral
         )
 
         // The design's Storage group carries a breakdown behind a disclosure.
@@ -1402,7 +1453,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                 title: part,
                 detail: nil,
                 status: "Not reported",
-                tone: .neu
+                tone: .neutral
             )
         }
         content.addArrangedSubview(
@@ -1460,7 +1511,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         content.addArrangedSubview(
             note(
                 "Storage and backups belong to a workspace. These controls are the finished shape of the pane; the backup feature that fills them is not installed in this build, so there is nothing here to switch off or repair.",
-                symbol: "externaldrive"
+                symbol: "internaldrive"
             )
         )
     }
@@ -1479,28 +1530,28 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             title: "Destination",
             detail: "Shown before every Add or Watch. Core doesn’t add anything without it.",
             status: "Not reported",
-            tone: .neu
+            tone: .neutral
         )
         notBuiltRow(
             into: defaults,
             title: "New files",
             detail: "Keep updated is chosen per file when you add it.",
             status: "Not reported",
-            tone: .neu
+            tone: .neutral
         )
         notBuiltRow(
             into: defaults,
             title: "Folders",
             detail: "Include subfolders is on by default and shown in every scope review. Watching starts with Include existing files.",
             status: "Not reported",
-            tone: .neu
+            tone: .neutral
         )
         notBuiltRow(
             into: defaults,
             title: "Cloud files",
             detail: "Each file or folder has its own Download cloud files automatically setting. This page doesn’t override them.",
             status: "Not reported",
-            tone: .neu
+            tone: .neutral
         )
 
         // The limits are the design's verbatim table. They are constants of the
@@ -1573,7 +1624,6 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         content.addArrangedSubview(
             note(
                 "Choose up to three. Language resources are downloaded, verified and installed by the capture feature, which is not installed in this build — so nothing here can be selected or downloaded yet.",
-                symbol: "character.bubble"
             )
         )
     }
@@ -1595,7 +1645,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             title: "Sources",
             detail: "Sources are approved in OmniVia. Per-source access status and recovery appear beside each source once that feature exists.",
             status: "None configured",
-            tone: .neu
+            tone: .neutral
         )
         notBuiltRow(
             into: automatic,
@@ -1616,7 +1666,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             title: "Processing state unknown",
             detail: "Core does not report processing activity to this window in this build.",
             status: "Not reported",
-            tone: .neu
+            tone: .neutral
         )
 
         // ---- Local Decisions (LD-01 overview) ----
@@ -1684,7 +1734,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             title: "No configured applications",
             detail: "Applications that may use this workspace are listed here with their access level. Per-application access is granted by a store this build does not have.",
             status: "None configured",
-            tone: .neu
+            tone: .neutral
         )
         notBuiltRow(
             into: apps,
@@ -1706,21 +1756,21 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             title: "Transport",
             detail: "How applications reach Core on this Mac.",
             status: "Not reported",
-            tone: .neu
+            tone: .neutral
         )
         notBuiltRow(
             into: connectionBody,
             title: "Reachable from",
             detail: nil,
             status: "Not reported",
-            tone: .neu
+            tone: .neutral
         )
         notBuiltRow(
             into: connectionBody,
             title: "Socket",
             detail: "Core does not report its socket path to this window in this build.",
             status: "Not reported",
-            tone: .neu
+            tone: .neutral
         )
         content.addArrangedSubview(
             disclosure(id: "conn-details", label: "Connection details", body: card(connectionBody))
@@ -1747,14 +1797,14 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             title: "Service",
             detail: "Runs on this Mac. Closing this window does not stop it. Start, stop and restart live in the Core menu, which owns the lifecycle; this window never invokes it.",
             status: "Shown in the menu",
-            tone: .neu
+            tone: .neutral
         )
         notBuiltRow(
             into: core,
             title: "Core version",
             detail: nil,
             status: "Not reported",
-            tone: .neu
+            tone: .neutral
         )
         row(
             into: core,
