@@ -31,6 +31,9 @@ public struct FolderCapturePlan: Equatable, Sendable {
     public let members: [FolderCaptureMember]
     public let skippedUnsupported: Int
     public let skippedHidden: Int
+    public let skippedExcluded: Int
+    public let skippedUnavailable: Int
+    public let examinedEntries: Int
     public var totalBytes: UInt64 { members.reduce(0) { $0 + $1.byteLength } }
 }
 
@@ -40,6 +43,8 @@ public enum FolderCaptureSubmissionError: Error, Equatable {
     case aggregateTooLarge
     case emptyScope
     case unsafeMember
+    case unsafeRoot
+    case scanLimitExceeded
 }
 
 /// Reviews and freezes one selected folder without traversing symlinks or packages.
@@ -48,6 +53,12 @@ public enum FolderCaptureSubmissionError: Error, Equatable {
 public final class FolderCaptureSubmission: @unchecked Sendable {
     public static let maximumMembers = 10_000
     public static let maximumAggregateBytes: UInt64 = 2 * 1024 * 1024 * 1024
+    public static let maximumExaminedEntries = 100_000
+    public static let maximumRecursionDepth = 32
+
+    private static let excludedDirectoryNames: Set<String> = [
+        ".git", ".venv", "node_modules", "__pycache__", "DerivedData",
+    ]
 
     private let accessStore: NativeAccessStore
     private let preparation: CapturePreparationCoordinator
@@ -92,6 +103,11 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
             throw FolderCaptureSubmissionError.rootUnavailable
         }
         let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL
+        let home = FileManager.default.homeDirectoryForCurrentUser
+            .resolvingSymlinksInPath().standardizedFileURL
+        guard canonicalRoot.path != "/", canonicalRoot != home else {
+            throw FolderCaptureSubmissionError.unsafeRoot
+        }
         let keys: Set<URLResourceKey> = [
             .isRegularFileKey,
             .isDirectoryKey,
@@ -110,20 +126,40 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         var members: [FolderCaptureMember] = []
         var skippedUnsupported = 0
         var skippedHidden = 0
+        var skippedExcluded = 0
+        var skippedUnavailable = 0
+        var examinedEntries = 0
         var totalBytes: UInt64 = 0
         for case let candidate as URL in enumerator {
-            let values = try candidate.resourceValues(forKeys: keys)
+            examinedEntries += 1
+            guard examinedEntries <= Self.maximumExaminedEntries else {
+                throw FolderCaptureSubmissionError.scanLimitExceeded
+            }
+            guard let values = try? candidate.resourceValues(forKeys: keys) else {
+                skippedUnavailable += 1
+                continue
+            }
             if values.isSymbolicLink == true {
                 if values.isDirectory == true { enumerator.skipDescendants() }
                 continue
             }
             let relative = try Self.relativeComponents(root: canonicalRoot, member: candidate)
+            if relative.count > Self.maximumRecursionDepth {
+                skippedExcluded += values.isRegularFile == true ? 1 : 0
+                if values.isDirectory == true { enumerator.skipDescendants() }
+                continue
+            }
             if !policy.recursive, relative.count > 1 {
                 if values.isDirectory == true { enumerator.skipDescendants() }
                 continue
             }
             if !policy.includeHidden, values.isHidden == true {
                 skippedHidden += values.isRegularFile == true ? 1 : 0
+                if values.isDirectory == true { enumerator.skipDescendants() }
+                continue
+            }
+            if Self.isDefaultExcluded(relativeComponents: relative, isDirectory: values.isDirectory == true) {
+                skippedExcluded += values.isRegularFile == true ? 1 : 0
                 if values.isDirectory == true { enumerator.skipDescendants() }
                 continue
             }
@@ -162,8 +198,24 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
             policy: policy,
             members: members,
             skippedUnsupported: skippedUnsupported,
-            skippedHidden: skippedHidden
+            skippedHidden: skippedHidden,
+            skippedExcluded: skippedExcluded,
+            skippedUnavailable: skippedUnavailable,
+            examinedEntries: examinedEntries
         )
+    }
+
+    private static func isDefaultExcluded(
+        relativeComponents: [String],
+        isDirectory: Bool
+    ) -> Bool {
+        guard let name = relativeComponents.last else { return true }
+        if isDirectory, excludedDirectoryNames.contains(name) { return true }
+        if name == ".DS_Store" || name.hasPrefix("~$") { return true }
+        let lower = name.lowercased()
+        return [".swp", ".swo", ".tmp", ".part", ".crdownload"].contains {
+            lower.hasSuffix($0)
+        }
     }
 
     public func submit(_ plan: FolderCapturePlan) async throws -> [CaptureQueueEntry] {

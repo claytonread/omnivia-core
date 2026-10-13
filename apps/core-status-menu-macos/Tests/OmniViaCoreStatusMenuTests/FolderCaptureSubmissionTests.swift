@@ -52,6 +52,29 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         )
     }
 
+    func testPlanSkipsDefaultTemporaryAndToolTrees() throws {
+        let root = try temporaryDirectory()
+        try Data("keep".utf8).write(to: root.appendingPathComponent("keep.md"))
+        try Data("partial".utf8).write(to: root.appendingPathComponent("download.part"))
+        let dependency = root.appendingPathComponent("node_modules", isDirectory: true)
+        try FileManager.default.createDirectory(at: dependency, withIntermediateDirectories: true)
+        try Data("ignore".utf8).write(to: dependency.appendingPathComponent("readme.md"))
+        let submission = try FolderCaptureSubmission(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            workspaceRef: "workspace-1",
+            bookmarkCodec: BookmarkCodec()
+        )
+
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(mode: .importOnce, recursive: true, includeHidden: true)
+        )
+
+        XCTAssertEqual(plan.members.map(\.displayName), ["keep.md"])
+        XCTAssertGreaterThanOrEqual(plan.skippedExcluded, 1)
+        XCTAssertGreaterThanOrEqual(plan.examinedEntries, 3)
+    }
+
     func testImportOncePublishesFolderLineageAndFrozenMembers() async throws {
         let root = try temporaryDirectory()
         try Data("first".utf8).write(to: root.appendingPathComponent("one.txt"))

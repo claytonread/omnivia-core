@@ -223,7 +223,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                     fromByteCount: Int64(plan.totalBytes),
                     countStyle: .file
                 )
-                confirmation.informativeText = "\(plan.members.count) supported file(s), \(size). \(plan.skippedUnsupported) unsupported and \(plan.skippedHidden) hidden file(s) will be skipped."
+                confirmation.informativeText = "\(plan.members.count) supported file(s), \(size), from \(plan.examinedEntries) examined entries. \(plan.skippedUnsupported) unsupported, \(plan.skippedHidden) hidden, \(plan.skippedExcluded) temporary/cache, and \(plan.skippedUnavailable) unavailable item(s) will be skipped. Files are captured as they are read; this is not a backup of the folder at one instant."
                 confirmation.addButton(withTitle: policy.mode == .keepUpdated ? "Keep updated" : "Import")
                 confirmation.addButton(withTitle: "Cancel")
                 guard confirmation.runModal() == .alertFirstButtonReturn else {
@@ -247,6 +247,12 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 onQueued?()
             } catch FolderCaptureSubmissionError.emptyScope {
                 statusLabel.stringValue = "No supported documents were found in that scope."
+                refresh()
+            } catch FolderCaptureSubmissionError.scanLimitExceeded {
+                statusLabel.stringValue = "This folder exceeds the review limit. Choose a narrower folder or add exclusions."
+                refresh()
+            } catch FolderCaptureSubmissionError.unsafeRoot {
+                statusLabel.stringValue = "Choose a narrower document folder, not a filesystem or home folder."
                 refresh()
             } catch {
                 statusLabel.stringValue = "Couldn’t queue this folder. Check access, scope, and size limits."
