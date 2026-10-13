@@ -10,6 +10,8 @@
 --   omnivia_extraction_profiles            one content-addressed ExtractionProfileV1; immutable
 --   omnivia_extraction_revisions           one admitted extraction over one capture; immutable
 --   omnivia_extraction_results             the one terminal result of a revision; immutable
+--   omnivia_extracted_segments             immutable structurally located output of one revision
+--   omnivia_document_extraction_projection current promoted retrieval rows of one document
 --   omnivia_document_heads                 one document's current capture, current extraction and source state
 --
 -- Bindings. A binding is an opaque `owner_ref` (the native owner, device and access identity), unique in the
@@ -415,6 +417,7 @@ CREATE TABLE IF NOT EXISTS omnivia_extraction_results (
     extraction_revision_id      TEXT    NOT NULL,
     result_state                TEXT    NOT NULL,
     output_digest               TEXT,
+    segments_digest             TEXT    NOT NULL,
     coverage_json               TEXT    NOT NULL,
     limitations_json            TEXT    NOT NULL,
     worker_build                TEXT    NOT NULL,
@@ -435,6 +438,9 @@ CREATE TABLE IF NOT EXISTS omnivia_extraction_results (
             AND substr(output_digest, 1, 7) = 'sha256:'
             AND substr(output_digest, 8) NOT GLOB '*[^0-9a-f]*')
            OR (result_state IN ('unsupported', 'failed') AND output_digest IS NULL)),
+    CHECK (typeof(segments_digest) = 'text' AND length(segments_digest) = 71
+           AND substr(segments_digest, 1, 7) = 'sha256:'
+           AND substr(segments_digest, 8) NOT GLOB '*[^0-9a-f]*'),
     CHECK (typeof(coverage_json) = 'text' AND length(CAST(coverage_json AS BLOB)) BETWEEN 2 AND 65536),
     CHECK (typeof(limitations_json) = 'text' AND length(CAST(limitations_json AS BLOB)) BETWEEN 2 AND 65536),
     CHECK (typeof(worker_build) = 'text' AND length(worker_build) BETWEEN 1 AND 128
@@ -449,6 +455,105 @@ CREATE TABLE IF NOT EXISTS omnivia_extraction_results (
     PRIMARY KEY (workspace_id, extraction_revision_id),
     FOREIGN KEY (workspace_id, extraction_revision_id)
         REFERENCES omnivia_extraction_revisions (workspace_id, extraction_revision_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS omnivia_extracted_segments (
+    workspace_id                TEXT    NOT NULL,
+    extraction_revision_id      TEXT    NOT NULL,
+    segment_ordinal             INTEGER NOT NULL,
+    semantic_role               TEXT    NOT NULL,
+    text                        TEXT,
+    structured_value_json       TEXT,
+    source_locator_json         TEXT    NOT NULL,
+    extraction_method           TEXT    NOT NULL,
+    visibility                  TEXT    NOT NULL,
+    revision_state              TEXT    NOT NULL,
+    language                    TEXT,
+    confidence                  REAL,
+    fencing_generation          INTEGER NOT NULL,
+
+    CHECK (typeof(workspace_id) = 'text' AND length(workspace_id) BETWEEN 1 AND 128
+           AND workspace_id GLOB '[A-Za-z0-9]*'
+           AND workspace_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(workspace_id, char(0)) = 0),
+    CHECK (typeof(extraction_revision_id) = 'text' AND length(extraction_revision_id) = 69
+           AND substr(extraction_revision_id, 1, 5) = 'dext-'
+           AND substr(extraction_revision_id, 6) NOT GLOB '*[^0-9a-f]*'),
+    CHECK (typeof(segment_ordinal) = 'integer' AND segment_ordinal BETWEEN 1 AND 100000),
+    CHECK (semantic_role IN
+           ('body', 'heading', 'list_item', 'table_cell', 'formula', 'saved_value', 'chart',
+            'image_alt', 'equation', 'comment', 'note', 'hidden_content', 'deleted_text',
+            'field_instruction', 'object_inventory')),
+    CHECK ((typeof(text) = 'text' AND length(CAST(text AS BLOB)) BETWEEN 1 AND 131072
+            AND structured_value_json IS NULL)
+           OR (text IS NULL AND typeof(structured_value_json) = 'text'
+               AND length(CAST(structured_value_json AS BLOB)) BETWEEN 1 AND 131072)),
+    CHECK (typeof(source_locator_json) = 'text'
+           AND length(CAST(source_locator_json AS BLOB)) BETWEEN 2 AND 131072),
+    CHECK (extraction_method IN ('direct', 'ocr', 'derived', 'inventory')),
+    CHECK (visibility IN ('visible', 'hidden', 'annotation')),
+    CHECK (revision_state IN ('current', 'inserted', 'deleted', 'none')),
+    CHECK (language IS NULL OR (typeof(language) = 'text' AND length(language) BETWEEN 1 AND 128
+           AND language GLOB '[A-Za-z0-9]*'
+           AND language NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(language, char(0)) = 0)),
+    CHECK (confidence IS NULL OR (typeof(confidence) IN ('integer', 'real')
+           AND confidence BETWEEN 0.0 AND 1.0)),
+    CHECK (typeof(fencing_generation) = 'integer'
+           AND fencing_generation BETWEEN 1 AND 9223372036854775807),
+
+    PRIMARY KEY (workspace_id, extraction_revision_id, segment_ordinal),
+    FOREIGN KEY (workspace_id, extraction_revision_id)
+        REFERENCES omnivia_extraction_results (workspace_id, extraction_revision_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS omnivia_document_extraction_projection (
+    workspace_id                TEXT    NOT NULL,
+    document_id                 TEXT    NOT NULL,
+    extraction_revision_id      TEXT    NOT NULL,
+    capture_id                  TEXT    NOT NULL,
+    profile_digest              TEXT    NOT NULL,
+    segment_ordinal             INTEGER NOT NULL,
+    semantic_role               TEXT    NOT NULL,
+    text                        TEXT,
+    structured_value_json       TEXT,
+    source_locator_json         TEXT    NOT NULL,
+    extraction_method           TEXT    NOT NULL,
+    visibility                  TEXT    NOT NULL,
+    revision_state              TEXT    NOT NULL,
+    language                    TEXT,
+    confidence                  REAL,
+    fencing_generation          INTEGER NOT NULL,
+    published_at_us             INTEGER NOT NULL,
+
+    CHECK (typeof(document_id) = 'text' AND length(document_id) BETWEEN 1 AND 128
+           AND document_id GLOB '[A-Za-z0-9]*'
+           AND document_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(document_id, char(0)) = 0),
+    CHECK (typeof(segment_ordinal) = 'integer' AND segment_ordinal BETWEEN 1 AND 100000),
+    CHECK (semantic_role IN
+           ('body', 'heading', 'list_item', 'table_cell', 'formula', 'saved_value', 'chart',
+            'image_alt', 'equation', 'comment', 'note', 'hidden_content', 'deleted_text',
+            'field_instruction', 'object_inventory')),
+    CHECK ((typeof(text) = 'text' AND structured_value_json IS NULL)
+           OR (text IS NULL AND typeof(structured_value_json) = 'text')),
+    CHECK (extraction_method IN ('direct', 'ocr', 'derived', 'inventory')),
+    CHECK (visibility IN ('visible', 'hidden', 'annotation')),
+    CHECK (revision_state IN ('current', 'inserted', 'deleted', 'none')),
+    CHECK (confidence IS NULL OR confidence BETWEEN 0.0 AND 1.0),
+    CHECK (typeof(fencing_generation) = 'integer'
+           AND fencing_generation BETWEEN 1 AND 9223372036854775807),
+    CHECK (typeof(published_at_us) = 'integer' AND published_at_us BETWEEN 1 AND 9223372036854775807),
+
+    PRIMARY KEY (workspace_id, document_id, segment_ordinal),
+    FOREIGN KEY (workspace_id, extraction_revision_id, segment_ordinal)
+        REFERENCES omnivia_extracted_segments (workspace_id, extraction_revision_id, segment_ordinal),
+    FOREIGN KEY (workspace_id, extraction_revision_id, document_id)
+        REFERENCES omnivia_extraction_revisions (workspace_id, extraction_revision_id, document_id),
+    FOREIGN KEY (workspace_id, capture_id, document_id)
+        REFERENCES omnivia_document_captures (workspace_id, capture_id, document_id),
+    FOREIGN KEY (workspace_id, profile_digest)
+        REFERENCES omnivia_extraction_profiles (workspace_id, profile_digest)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS omnivia_document_heads (
@@ -1001,6 +1106,121 @@ CREATE TRIGGER IF NOT EXISTS omnivia_guard_extraction_results_delete
 BEFORE DELETE ON omnivia_extraction_results
 BEGIN
     SELECT RAISE(ABORT, 'omnivia: omnivia_extraction_results is append-only; DELETE is never permitted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_extracted_segments_insert
+BEFORE INSERT ON omnivia_extracted_segments
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: unguarded INSERT on omnivia_extracted_segments')
+    WHERE omnivia_service_writer() IS NOT 1
+       OR NOT EXISTS (
+            SELECT 1 FROM omnivia_mutation_guard g
+            JOIN omnivia_workspace_state s ON s.singleton = 1
+            JOIN omnivia_workspace_lease l ON l.singleton = 1
+            WHERE g.singleton = 1 AND g.fencing_generation = s.fencing_generation
+              AND g.workspace_id = s.workspace_id
+              AND l.fencing_generation = g.fencing_generation
+              AND l.workspace_id = g.workspace_id
+              AND l.service_instance_id = g.service_instance_id
+              AND l.lifecycle IN ('acquiring', 'held', 'draining'));
+    SELECT RAISE(ABORT, 'omnivia: an extracted segment must bind the open workspace and current fence')
+    WHERE NEW.workspace_id IS NOT (
+              SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1)
+       OR NEW.fencing_generation IS NOT (
+              SELECT fencing_generation FROM omnivia_workspace_state WHERE singleton = 1);
+    SELECT RAISE(ABORT, 'omnivia: extracted segment ordinals are contiguous within a revision')
+    WHERE NEW.segment_ordinal IS NOT 1 + (
+        SELECT COALESCE(MAX(s.segment_ordinal), 0) FROM omnivia_extracted_segments s
+        WHERE s.workspace_id = NEW.workspace_id
+          AND s.extraction_revision_id = NEW.extraction_revision_id);
+    SELECT RAISE(ABORT, 'omnivia: only a publishable extraction result can carry segments')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM omnivia_extraction_results r
+        WHERE r.workspace_id = NEW.workspace_id
+          AND r.extraction_revision_id = NEW.extraction_revision_id
+          AND r.result_state IN ('succeeded', 'partial'));
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_extracted_segments_update
+BEFORE UPDATE ON omnivia_extracted_segments
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: omnivia_extracted_segments is append-only; UPDATE is never permitted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_extracted_segments_delete
+BEFORE DELETE ON omnivia_extracted_segments
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: omnivia_extracted_segments is append-only; DELETE is never permitted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_document_extraction_projection_insert
+BEFORE INSERT ON omnivia_document_extraction_projection
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: unguarded INSERT on omnivia_document_extraction_projection')
+    WHERE omnivia_service_writer() IS NOT 1
+       OR NOT EXISTS (
+            SELECT 1 FROM omnivia_mutation_guard g
+            JOIN omnivia_workspace_state s ON s.singleton = 1
+            JOIN omnivia_workspace_lease l ON l.singleton = 1
+            WHERE g.singleton = 1 AND g.fencing_generation = s.fencing_generation
+              AND g.workspace_id = s.workspace_id
+              AND l.fencing_generation = g.fencing_generation
+              AND l.workspace_id = g.workspace_id
+              AND l.service_instance_id = g.service_instance_id
+              AND l.lifecycle IN ('acquiring', 'held', 'draining'));
+    SELECT RAISE(ABORT, 'omnivia: a document extraction projection must bind the open workspace and current fence')
+    WHERE NEW.workspace_id IS NOT (
+              SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1)
+       OR NEW.fencing_generation IS NOT (
+              SELECT fencing_generation FROM omnivia_workspace_state WHERE singleton = 1);
+    SELECT RAISE(ABORT, 'omnivia: a projected segment must exactly reproduce its immutable segment and promoted revision')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM omnivia_extracted_segments s
+        JOIN omnivia_extraction_revisions v
+          ON v.workspace_id = s.workspace_id
+         AND v.extraction_revision_id = s.extraction_revision_id
+        JOIN omnivia_extraction_results r
+          ON r.workspace_id = v.workspace_id
+         AND r.extraction_revision_id = v.extraction_revision_id
+        WHERE s.workspace_id = NEW.workspace_id
+          AND s.extraction_revision_id = NEW.extraction_revision_id
+          AND s.segment_ordinal = NEW.segment_ordinal
+          AND v.document_id = NEW.document_id
+          AND v.capture_id = NEW.capture_id
+          AND v.profile_digest = NEW.profile_digest
+          AND r.publication_disposition = 'promoted'
+          AND s.semantic_role IS NEW.semantic_role
+          AND s.text IS NEW.text
+          AND s.structured_value_json IS NEW.structured_value_json
+          AND s.source_locator_json IS NEW.source_locator_json
+          AND s.extraction_method IS NEW.extraction_method
+          AND s.visibility IS NEW.visibility
+          AND s.revision_state IS NEW.revision_state
+          AND s.language IS NEW.language
+          AND s.confidence IS NEW.confidence);
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_document_extraction_projection_update
+BEFORE UPDATE ON omnivia_document_extraction_projection
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: a document extraction projection is replaced, never updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_document_extraction_projection_delete
+BEFORE DELETE ON omnivia_document_extraction_projection
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: unguarded DELETE on omnivia_document_extraction_projection')
+    WHERE omnivia_service_writer() IS NOT 1
+       OR NOT EXISTS (
+            SELECT 1 FROM omnivia_mutation_guard g
+            JOIN omnivia_workspace_state s ON s.singleton = 1
+            JOIN omnivia_workspace_lease l ON l.singleton = 1
+            WHERE g.singleton = 1 AND g.fencing_generation = s.fencing_generation
+              AND g.workspace_id = s.workspace_id
+              AND l.fencing_generation = g.fencing_generation
+              AND l.workspace_id = g.workspace_id
+              AND l.service_instance_id = g.service_instance_id
+              AND l.lifecycle IN ('acquiring', 'held', 'draining'));
 END;
 
 CREATE TRIGGER IF NOT EXISTS omnivia_guard_document_heads_insert

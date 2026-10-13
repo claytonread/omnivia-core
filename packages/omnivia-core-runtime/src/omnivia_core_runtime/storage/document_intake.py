@@ -36,6 +36,8 @@ REVISION_PREFIX: Final = "dext-"
 PROFILE_SCHEMA: Final = "omnivia.extraction-profile.v1"
 PROCESSING_MODES: Final = frozenset({"text_only", "text_and_local_ocr"})
 MAX_PROFILE_BYTES: Final = 65536
+MAX_SEGMENT_JSON_BYTES: Final = 131072
+MAX_SEGMENTS_PER_REVISION: Final = 100000
 
 DISPOSITION_HEAD_ELIGIBLE: Final = "head_eligible"
 DISPOSITION_HISTORICAL_ONLY: Final = "historical_only"
@@ -79,6 +81,32 @@ PUBLISHABLE_STATES: Final = frozenset({"succeeded", "partial"})
 PUBLICATION_DISPOSITIONS: Final = frozenset(
     {"promoted", "superseded", "historical_only", "fenced_removal", "fenced_retention", "not_published"}
 )
+
+SEGMENT_ROLES: Final = frozenset(
+    {
+        "body",
+        "heading",
+        "list_item",
+        "table_cell",
+        "formula",
+        "saved_value",
+        "chart",
+        "image_alt",
+        "equation",
+        "comment",
+        "note",
+        "hidden_content",
+        "deleted_text",
+        "field_instruction",
+        "object_inventory",
+    }
+)
+DEFAULT_RETRIEVAL_ROLES: Final = frozenset(
+    {"body", "heading", "list_item", "table_cell", "formula", "saved_value", "chart", "image_alt", "equation"}
+)
+SEGMENT_METHODS: Final = frozenset({"direct", "ocr", "derived", "inventory"})
+SEGMENT_VISIBILITIES: Final = frozenset({"visible", "hidden", "annotation"})
+SEGMENT_REVISIONS: Final = frozenset({"current", "inserted", "deleted", "none"})
 
 _T = TypeVar("_T")
 
@@ -240,12 +268,51 @@ class StoredResult:
     extraction_revision_id: str
     result_state: str
     output_digest: str | None
+    segments_digest: str
     coverage_json: str
     limitations_json: str
     worker_build: str
     publication_disposition: str
     fencing_generation: int
     completed_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class StoredSegment:
+    workspace_id: str
+    extraction_revision_id: str
+    segment_ordinal: int
+    semantic_role: str
+    text: str | None
+    structured_value_json: str | None
+    source_locator_json: str
+    extraction_method: str
+    visibility: str
+    revision_state: str
+    language: str | None
+    confidence: float | None
+    fencing_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedSegment:
+    workspace_id: str
+    document_id: str
+    extraction_revision_id: str
+    capture_id: str
+    profile_digest: str
+    segment_ordinal: int
+    semantic_role: str
+    text: str | None
+    structured_value_json: str | None
+    source_locator_json: str
+    extraction_method: str
+    visibility: str
+    revision_state: str
+    language: str | None
+    confidence: float | None
+    fencing_generation: int
+    published_at_us: int
 
 
 def _names(cls: type[Any]) -> tuple[str, ...]:
@@ -389,6 +456,48 @@ def read_result(
         "workspace_id = ? AND extraction_revision_id = ?",
         (workspace_id, extraction_revision_id),
     )
+
+
+def read_segments(
+    connection: sqlite3.Connection, *, workspace_id: str, extraction_revision_id: str
+) -> list[StoredSegment]:
+    names = _names(StoredSegment)
+    rows = connection.execute(
+        f"SELECT {', '.join(names)} FROM omnivia_extracted_segments "
+        "WHERE workspace_id = ? AND extraction_revision_id = ? ORDER BY segment_ordinal",
+        (workspace_id, extraction_revision_id),
+    ).fetchall()
+    return [StoredSegment(*row) for row in rows]
+
+
+def read_projection(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    document_id: str,
+    roles: frozenset[str] = DEFAULT_RETRIEVAL_ROLES,
+    query: str | None = None,
+) -> list[ProjectedSegment]:
+    """Read the current extraction projection, limited to explicitly allowed semantic roles."""
+    if not roles or not roles <= SEGMENT_ROLES:
+        raise DocumentIntakeInvalid("retrieval roles are outside the accepted semantic-role set")
+    names = _names(ProjectedSegment)
+    placeholders = ", ".join("?" for _ in roles)
+    params: list[Any] = [workspace_id, document_id, *sorted(roles)]
+    predicate = ""
+    if query is not None:
+        normalized = query.strip().casefold()
+        if not normalized:
+            raise DocumentIntakeInvalid("a projection search needs a non-empty query")
+        predicate = " AND text IS NOT NULL AND instr(lower(text), ?) > 0"
+        params.append(normalized)
+    rows = connection.execute(
+        f"SELECT {', '.join(names)} FROM omnivia_document_extraction_projection "
+        f"WHERE workspace_id = ? AND document_id = ? AND semantic_role IN ({placeholders})"
+        f"{predicate} ORDER BY segment_ordinal",
+        tuple(params),
+    ).fetchall()
+    return [ProjectedSegment(*row) for row in rows]
 
 
 def read_profile(
@@ -680,6 +789,52 @@ def insert_revision(connection: sqlite3.Connection, revision: StoredRevision) ->
 
 def insert_result(connection: sqlite3.Connection, result: StoredResult) -> None:
     _insert(connection, "omnivia_extraction_results", result)
+
+
+def insert_segments(connection: sqlite3.Connection, segments: tuple[StoredSegment, ...]) -> None:
+    if len(segments) > MAX_SEGMENTS_PER_REVISION:
+        raise DocumentIntakeInvalid("an extraction has too many segments")
+    for segment in segments:
+        _insert(connection, "omnivia_extracted_segments", segment)
+
+
+def replace_projection(
+    connection: sqlite3.Connection,
+    revision: StoredRevision,
+    segments: tuple[StoredSegment, ...],
+    *,
+    fencing_generation: int,
+    now_us: int,
+) -> None:
+    """Atomically replace one document's retrieval projection with a promoted revision's segments."""
+    connection.execute(
+        "DELETE FROM omnivia_document_extraction_projection WHERE workspace_id = ? AND document_id = ?",
+        (revision.workspace_id, revision.document_id),
+    )
+    for segment in segments:
+        _insert(
+            connection,
+            "omnivia_document_extraction_projection",
+            ProjectedSegment(
+                workspace_id=revision.workspace_id,
+                document_id=revision.document_id,
+                extraction_revision_id=revision.extraction_revision_id,
+                capture_id=revision.capture_id,
+                profile_digest=revision.profile_digest,
+                segment_ordinal=segment.segment_ordinal,
+                semantic_role=segment.semantic_role,
+                text=segment.text,
+                structured_value_json=segment.structured_value_json,
+                source_locator_json=segment.source_locator_json,
+                extraction_method=segment.extraction_method,
+                visibility=segment.visibility,
+                revision_state=segment.revision_state,
+                language=segment.language,
+                confidence=segment.confidence,
+                fencing_generation=fencing_generation,
+                published_at_us=now_us,
+            ),
+        )
 
 
 def advance_extraction_head(

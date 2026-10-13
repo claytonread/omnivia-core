@@ -72,6 +72,8 @@ def test_0069_applies_all_document_intake_tables_and_guards(runner: ServiceRunne
         "omnivia_extraction_profiles",
         "omnivia_extraction_revisions",
         "omnivia_extraction_results",
+        "omnivia_extracted_segments",
+        "omnivia_document_extraction_projection",
         "omnivia_document_heads",
     }
     tables = {

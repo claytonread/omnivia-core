@@ -100,6 +100,22 @@ class ExtractionOutcome:
     coverage: Mapping[str, Any] = field(default_factory=dict)
     limitations: Mapping[str, Any] = field(default_factory=dict)
     worker_build: str = "unspecified"
+    segments: tuple[ExtractedSegment, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedSegment:
+    """One structurally located extraction unit; exactly one of text or structured value is present."""
+
+    semantic_role: str
+    source_locator: Mapping[str, Any]
+    text: str | None = None
+    structured_value: Any | None = None
+    extraction_method: str = "direct"
+    visibility: str = "visible"
+    revision_state: str = "current"
+    language: str | None = None
+    confidence: float | None = None
 
 
 Extractor = Callable[[bytes, Mapping[str, Any]], ExtractionOutcome]
@@ -634,6 +650,8 @@ def complete_extraction(
     workspace_id = runner.workspace_id
     if outcome.state not in store.RESULT_STATES:
         raise DocumentIntakeRefused("the extraction outcome has an unknown state")
+    if outcome.state not in store.PUBLISHABLE_STATES and outcome.segments:
+        raise DocumentIntakeRefused("a non-publishable extraction outcome cannot carry segments")
     try:
         coverage = to_canonical_json(dict(outcome.coverage))
         limitations = to_canonical_json(dict(outcome.limitations))
@@ -645,6 +663,13 @@ def complete_extraction(
         )
         if revision is None:
             raise DocumentIntakeRefused("no such extraction revision")
+        segments, segments_digest = _validated_segments(
+            outcome.segments,
+            workspace_id=workspace_id,
+            extraction_revision_id=revision.extraction_revision_id,
+            capture_id=revision.capture_id,
+            fencing_generation=runner.generation,
+        )
         now_us = _now_us()
         disposition = _disposition(runner.connection, revision, outcome.state)
         result = store.StoredResult(
@@ -652,6 +677,7 @@ def complete_extraction(
             extraction_revision_id=extraction_revision_id,
             result_state=outcome.state,
             output_digest=outcome.output_digest,
+            segments_digest=segments_digest,
             coverage_json=coverage,
             limitations_json=limitations,
             worker_build=outcome.worker_build,
@@ -666,22 +692,150 @@ def complete_extraction(
             same = (
                 existing.result_state,
                 existing.output_digest,
+                existing.segments_digest,
                 existing.coverage_json,
                 existing.limitations_json,
                 existing.worker_build,
-            ) == (outcome.state, outcome.output_digest, coverage, limitations, outcome.worker_build)
+            ) == (
+                outcome.state,
+                outcome.output_digest,
+                segments_digest,
+                coverage,
+                limitations,
+                outcome.worker_build,
+            )
             if not same:
                 raise DocumentIntakeRefused("the extraction revision already has a different terminal result")
             return existing
         try:
             store.insert_result(runner.connection, result)
+            store.insert_segments(runner.connection, segments)
         except sqlite3.IntegrityError as error:
             raise DocumentIntakeRefused("the extraction result is outside its closed shape") from error
         if disposition == "promoted":
+            store.replace_projection(
+                runner.connection,
+                revision,
+                segments,
+                fencing_generation=runner.generation,
+                now_us=now_us,
+            )
             store.advance_extraction_head(
                 runner.connection, revision, fencing_generation=runner.generation, now_us=now_us
             )
     return result
+
+
+def _validated_segments(
+    segments: tuple[ExtractedSegment, ...],
+    *,
+    workspace_id: str,
+    extraction_revision_id: str,
+    capture_id: str,
+    fencing_generation: int,
+) -> tuple[tuple[store.StoredSegment, ...], str]:
+    if not isinstance(segments, tuple) or len(segments) > store.MAX_SEGMENTS_PER_REVISION:
+        raise DocumentIntakeRefused("extraction segments are outside the accepted bound")
+    stored: list[store.StoredSegment] = []
+    identity: list[dict[str, Any]] = []
+    for ordinal, segment in enumerate(segments, start=1):
+        if not isinstance(segment, ExtractedSegment):
+            raise DocumentIntakeRefused("an extraction segment has the wrong shape")
+        if segment.semantic_role not in store.SEGMENT_ROLES:
+            raise DocumentIntakeRefused("an extraction segment has an unknown semantic role")
+        if segment.extraction_method not in store.SEGMENT_METHODS:
+            raise DocumentIntakeRefused("an extraction segment has an unknown extraction method")
+        if segment.visibility not in store.SEGMENT_VISIBILITIES:
+            raise DocumentIntakeRefused("an extraction segment has an unknown visibility")
+        if segment.revision_state not in store.SEGMENT_REVISIONS:
+            raise DocumentIntakeRefused("an extraction segment has an unknown revision state")
+        if (segment.text is None) == (segment.structured_value is None):
+            raise DocumentIntakeRefused("an extraction segment needs exactly one content representation")
+        if segment.text is not None and (
+            not isinstance(segment.text, str)
+            or not segment.text
+            or len(segment.text.encode("utf-8")) > store.MAX_SEGMENT_JSON_BYTES
+        ):
+            raise DocumentIntakeRefused("an extraction segment's text is outside the accepted bound")
+        if not isinstance(segment.source_locator, Mapping):
+            raise DocumentIntakeRefused("an extraction segment locator has the wrong shape")
+        locator = dict(segment.source_locator)
+        if locator.get("captureId") != capture_id:
+            raise DocumentIntakeRefused("an extraction segment locator must name its capture")
+        try:
+            locator_json = to_canonical_json(locator)
+            value_json = (
+                None if segment.structured_value is None else to_canonical_json(segment.structured_value)
+            )
+        except (TypeError, ValueError) as error:
+            raise DocumentIntakeRefused("an extraction segment is not canonical JSON") from error
+        if not locator or len(locator_json.encode("utf-8")) > store.MAX_SEGMENT_JSON_BYTES:
+            raise DocumentIntakeRefused("an extraction segment locator is outside the accepted bound")
+        if value_json is not None and len(value_json.encode("utf-8")) > store.MAX_SEGMENT_JSON_BYTES:
+            raise DocumentIntakeRefused("an extraction segment value is outside the accepted bound")
+        if segment.language is not None:
+            _identifier(segment.language, "segment language")
+        confidence = segment.confidence
+        if confidence is not None and (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not 0.0 <= float(confidence) <= 1.0
+        ):
+            raise DocumentIntakeRefused("an extraction segment confidence is outside zero through one")
+        row = store.StoredSegment(
+            workspace_id=workspace_id,
+            extraction_revision_id=extraction_revision_id,
+            segment_ordinal=ordinal,
+            semantic_role=segment.semantic_role,
+            text=segment.text,
+            structured_value_json=value_json,
+            source_locator_json=locator_json,
+            extraction_method=segment.extraction_method,
+            visibility=segment.visibility,
+            revision_state=segment.revision_state,
+            language=segment.language,
+            confidence=None if confidence is None else float(confidence),
+            fencing_generation=fencing_generation,
+        )
+        stored.append(row)
+        identity.append(
+            {
+                "confidence": row.confidence,
+                "extractionMethod": row.extraction_method,
+                "language": row.language,
+                "revisionState": row.revision_state,
+                "semanticRole": row.semantic_role,
+                "sourceLocator": locator,
+                "structuredValue": segment.structured_value,
+                "text": row.text,
+                "visibility": row.visibility,
+            }
+        )
+    canonical = to_canonical_json({"segments": identity})
+    digest = f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+    return tuple(stored), digest
+
+
+def read_extraction_projection(
+    runner: ServiceRunner,
+    *,
+    document_id: str,
+    include_roles: frozenset[str] = store.DEFAULT_RETRIEVAL_ROLES,
+    query: str | None = None,
+) -> list[store.ProjectedSegment]:
+    """Read/search only the current promoted projection and only the explicitly allowed content roles."""
+    assert runner.connection is not None and runner.workspace_id is not None
+    _identifier(document_id, "document id")
+    try:
+        return store.read_projection(
+            runner.connection,
+            workspace_id=runner.workspace_id,
+            document_id=document_id,
+            roles=include_roles,
+            query=query,
+        )
+    except store.DocumentIntakeInvalid as error:
+        raise DocumentIntakeRefused(str(error)) from error
 
 
 def _disposition(connection: sqlite3.Connection, revision: store.StoredRevision, state: str) -> str:

@@ -26,6 +26,7 @@ from omnivia_core_runtime.service.document_intake import (
     BindingClaim,
     DocumentCaptureSuppressed,
     DocumentIntakeRefused,
+    ExtractedSegment,
     ExtractionOutcome,
     admit_extraction,
     capture_document,
@@ -36,6 +37,7 @@ from omnivia_core_runtime.service.document_intake import (
     expire_capture,
     owned_workspace,
     pending_capture_obligations,
+    read_extraction_projection,
     read_retained_source,
     register_profile,
     reprocess_captured_copy,
@@ -160,13 +162,16 @@ def sources(runner: ServiceRunner, tmp_path: Path) -> Sources:
     return Sources(runner, tmp_path / "originals")
 
 
-def succeeded(label: str = "out") -> ExtractionOutcome:
+def succeeded(
+    label: str = "out", segments: tuple[ExtractedSegment, ...] = ()
+) -> ExtractionOutcome:
     return ExtractionOutcome(
         state="succeeded",
         output_digest=digest_of(label.encode()),
         coverage={"pages": 1},
         limitations={},
         worker_build="test-1",
+        segments=segments,
     )
 
 
@@ -763,6 +768,163 @@ def test_the_two_heads_cannot_move_in_one_write(runner: ServiceRunner, sources: 
     state = head(runner)
     assert state.current_capture_id == third.capture.capture_id
     assert state.current_extraction_id == other.extraction_revision_id
+
+
+# -- located extraction output and current retrieval projection -----------------------------
+
+
+def segment(
+    capture_id: str,
+    text: str,
+    *,
+    role: str = "body",
+    visibility: str = "visible",
+    revision_state: str = "current",
+) -> ExtractedSegment:
+    return ExtractedSegment(
+        semantic_role=role,
+        source_locator={"captureId": capture_id, "block": text},
+        text=text,
+        visibility=visibility,
+        revision_state=revision_state,
+    )
+
+
+def test_a_promoted_result_publishes_located_segments_with_protected_roles_filtered(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    captured = sources.capture("cap-1", b"one", None)
+    revision = admit(runner, captured.capture.capture_id, "ext-1", None)
+    segments = (
+        segment(captured.capture.capture_id, "Needle body"),
+        segment(captured.capture.capture_id, "Reviewer note", role="comment", visibility="annotation"),
+        segment(captured.capture.capture_id, "Hidden run", role="hidden_content", visibility="hidden"),
+    )
+
+    result = complete_extraction(
+        runner,
+        extraction_revision_id=revision.extraction_revision_id,
+        outcome=succeeded(segments=segments),
+    )
+
+    assert result.publication_disposition == "promoted"
+    assert len(result.segments_digest) == 71
+    assert [
+        row.text
+        for row in store.read_segments(
+            runner.connection,
+            workspace_id=runner.workspace_id,
+            extraction_revision_id=revision.extraction_revision_id,
+        )
+    ] == ["Needle body", "Reviewer note", "Hidden run"]
+    assert [row.text for row in read_extraction_projection(runner, document_id=DOC)] == [
+        "Needle body"
+    ]
+    all_roles = frozenset({"body", "comment", "hidden_content"})
+    assert [
+        row.semantic_role
+        for row in read_extraction_projection(runner, document_id=DOC, include_roles=all_roles)
+    ] == ["body", "comment", "hidden_content"]
+    assert [
+        row.text for row in read_extraction_projection(runner, document_id=DOC, query="needle")
+    ] == ["Needle body"]
+
+
+def test_a_new_promoted_revision_atomically_replaces_the_document_projection(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    captured = sources.capture("cap-1", b"one", None)
+    first = admit(runner, captured.capture.capture_id, "ext-1", None)
+    complete_extraction(
+        runner,
+        extraction_revision_id=first.extraction_revision_id,
+        outcome=succeeded("first", (segment(captured.capture.capture_id, "old"),)),
+    )
+    second = admit(runner, captured.capture.capture_id, "ext-2", first.extraction_revision_id)
+
+    complete_extraction(
+        runner,
+        extraction_revision_id=second.extraction_revision_id,
+        outcome=succeeded("second", (segment(captured.capture.capture_id, "new"),)),
+    )
+
+    projected = read_extraction_projection(runner, document_id=DOC)
+    assert [(row.extraction_revision_id, row.text) for row in projected] == [
+        (second.extraction_revision_id, "new")
+    ]
+    assert count(runner, "omnivia_document_extraction_projection") == 1
+    assert count(runner, "omnivia_extracted_segments") == 2
+
+
+def test_a_historical_result_keeps_its_segments_without_replacing_current_retrieval(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    captured = sources.capture("cap-1", b"one", None)
+    first = admit(runner, captured.capture.capture_id, "ext-1", None)
+    complete_extraction(
+        runner,
+        extraction_revision_id=first.extraction_revision_id,
+        outcome=succeeded("first", (segment(captured.capture.capture_id, "current"),)),
+    )
+    historical = admit(runner, captured.capture.capture_id, "ext-2", None)
+
+    result = complete_extraction(
+        runner,
+        extraction_revision_id=historical.extraction_revision_id,
+        outcome=succeeded("late", (segment(captured.capture.capture_id, "historical"),)),
+    )
+
+    assert result.publication_disposition == "historical_only"
+    assert [row.text for row in read_extraction_projection(runner, document_id=DOC)] == ["current"]
+    assert [
+        row.text
+        for row in store.read_segments(
+            runner.connection,
+            workspace_id=runner.workspace_id,
+            extraction_revision_id=historical.extraction_revision_id,
+        )
+    ] == ["historical"]
+
+
+def test_an_invalid_segment_locator_rolls_back_result_segments_projection_and_head(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    captured = sources.capture("cap-1", b"one", None)
+    revision = admit(runner, captured.capture.capture_id, "ext-1", None)
+
+    assert "must name its capture" in refusal(
+        lambda: complete_extraction(
+            runner,
+            extraction_revision_id=revision.extraction_revision_id,
+            outcome=succeeded(segments=(segment("dcap-" + "0" * 64, "wrong capture"),)),
+        )
+    )
+
+    assert count(runner, "omnivia_extraction_results") == 0
+    assert count(runner, "omnivia_extracted_segments") == 0
+    assert count(runner, "omnivia_document_extraction_projection") == 0
+    assert head(runner).current_extraction_id is None
+
+
+def test_a_terminal_replay_requires_the_exact_same_segment_set(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    captured = sources.capture("cap-1", b"one", None)
+    revision = admit(runner, captured.capture.capture_id, "ext-1", None)
+    complete_extraction(
+        runner,
+        extraction_revision_id=revision.extraction_revision_id,
+        outcome=succeeded(segments=(segment(captured.capture.capture_id, "same"),)),
+    )
+
+    assert "different terminal result" in refusal(
+        lambda: complete_extraction(
+            runner,
+            extraction_revision_id=revision.extraction_revision_id,
+            outcome=succeeded(segments=(segment(captured.capture.capture_id, "changed"),)),
+        )
+    )
+    assert [row.text for row in read_extraction_projection(runner, document_id=DOC)] == ["same"]
 
 
 # -- content-addressed profiles -------------------------------------------------------------
