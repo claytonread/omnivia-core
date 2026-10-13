@@ -1,11 +1,12 @@
 // ============================================================================
-// OmniVia Core Settings — the five-pane settings window (MR-001, MR-002, §15).
+// OmniVia Core Settings — the seven-pane settings window (MR-001, MR-002, §15).
 //
 // One owned window, opened/focused from the companion menu. Closing it never
 // stops Core (the menu keeps its own lifecycle authority). Layout, row
 // grammar, tokens and copy follow the Core Settings prototype (I01) and
 // amendment v1.1 (I05): the OmniVia dark token layer (bg-content #1E1E20,
-// sidebar #1C1C21, card #232326, brick accent #D2756C, semantic success/
+// cards on bg-content with a hairline, recovery blocks #232326, brick accent
+// #D2756C, semantic success/
 // warning/danger), the branded 60px header with the concentric-circle mark,
 // the 200px source list with pill selection, group cards with 10px radius,
 // status chips (icon + word, never colour alone) and OmniVia buttons.
@@ -22,7 +23,6 @@ import UserNotifications
 // MARK: - OmniVia dark tokens (styles/tokens.css, dark layer)
 
 enum Ov {
-    static let bgWindow = NSColor(srgbRed: 0x1c / 255.0, green: 0x1c / 255.0, blue: 0x21 / 255.0, alpha: 1)
     static let bgContent = NSColor(srgbRed: 0x1E / 255.0, green: 0x1E / 255.0, blue: 0x20 / 255.0, alpha: 1)
     static let bgContentSecondary = NSColor(srgbRed: 0x23 / 255.0, green: 0x23 / 255.0, blue: 0x26 / 255.0, alpha: 1)
     static let bgElevated = NSColor(srgbRed: 0x26 / 255.0, green: 0x26 / 255.0, blue: 0x2e / 255.0, alpha: 1)
@@ -45,7 +45,6 @@ enum Ov {
     /// `--ov-accent-muted`: the selected source-list row in dark mode is the
     /// accent at low opacity, not the solid accent fill light mode uses.
     static let accentMuted = NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: 0.28)
-    static let selectionTextBg = NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: 0.30)
     static let onAccent = NSColor.white
 
     // MARK: Materials and sheens (ov-ui-palette.css, os/overlay.css)
@@ -187,9 +186,9 @@ enum OvFont {
     private static func weight(_ css: CGFloat) -> NSFont.Weight {
         switch css {
         case ..<450: return .regular        // 400
-        case ..<580: return .medium         // 500
-        case ..<650: return NSFont.Weight(rawValue: 0.28) // 590
-        case ..<750: return .semibold       // 600
+        case ..<550: return .medium         // 500
+        case ..<595: return NSFont.Weight(rawValue: 0.28) // 590
+        case ..<660: return .semibold       // 600
         default: return .bold               // 700
         }
     }
@@ -450,7 +449,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     private func buildWindow() -> NSWindow {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 640),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -460,6 +459,11 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.backgroundColor = Ov.bgContent
         window.isReleasedWhenClosed = false
+        // `#cs-win{height:min(640px, 100vh-110px);min-height:420px}` — the
+        // design window adapts, so this one does too. 640 wide is the
+        // breakpoint `core-settings.css` narrows the sidebar at; stopping
+        // there keeps the pane usable without needing that rule.
+        window.minSize = NSSize(width: 640, height: 420)
 
         // ---- Branded header (60px, prototype .cs-head) ----
         let header = headerView()
@@ -768,11 +772,10 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         let title = OvFont.paneTitle(selectedPane.rawValue)
         content.addArrangedSubview(title)
-        content.addArrangedSubview(ovSpacer(4))
+        content.addArrangedSubview(ovSpacer(5))
         let lede = NSTextField(wrappingLabelWithString: selectedPane.lede)
         lede.font = OvFont.sans(12.5)
         lede.textColor = Ov.textSecondary
-        lede.preferredMaxLayoutWidth = 560
         content.addArrangedSubview(lede)
         content.addArrangedSubview(ovSpacer(18))
 
@@ -790,7 +793,9 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     // MARK: Card/group helpers (prototype .sw-group / .sw-rows)
 
-    private func card(_ stack: NSStackView, header: String?) -> NSStackView {
+    private func card(
+        _ stack: NSStackView, header: String?, followedByDisclosure: Bool = false
+    ) -> NSStackView {
         if let header {
             let label = OvFont.groupHeader(header)
             stack.addArrangedSubview(label)
@@ -804,7 +809,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         card.wantsLayer = true
         card.layer?.backgroundColor = Ov.bgContent.cgColor
         card.layer?.cornerRadius = 10
-        card.layer?.borderWidth = 0.5
+        card.layer?.borderWidth = 1
         card.layer?.borderColor = Ov.borderSubtle.cgColor
         stack.addArrangedSubview(card)
         // Cards fill the pane. Left intrinsic, each card is only as wide as its
@@ -814,7 +819,10 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             equalTo: stack.widthAnchor,
             constant: -(stack.edgeInsets.left + stack.edgeInsets.right)
         ).isActive = true
-        stack.addArrangedSubview(ovSpacer(18))
+        // A disclosure belonging to this group sits 10pt under the rows box
+        // (`.cs-disc{margin-top:10px}`), which it supplies itself; the 18pt
+        // gap is between *groups*.
+        if !followedByDisclosure { stack.addArrangedSubview(ovSpacer(18)) }
         return card
     }
 
@@ -823,6 +831,20 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// success/warning: it is neither healthy nor broken, and an amber chip
     /// would read as a fault the user could repair (amendment §A6 — "A
     /// preference deliberately switched off is not an issue to repair").
+    /// Apply the `.sw-rows` chrome to a stack that already holds rows. A
+    /// disclosure's *body* is a rows box; its summary is not, which is why the
+    /// chrome goes here rather than around the whole disclosure.
+    @discardableResult
+    private func card(_ rows: NSStackView) -> NSStackView {
+        rows.wantsLayer = true
+        rows.layer?.backgroundColor = Ov.bgContent.cgColor
+        rows.layer?.cornerRadius = 10
+        rows.layer?.borderWidth = 1
+        rows.layer?.borderColor = Ov.borderSubtle.cgColor
+        rows.layer?.masksToBounds = true
+        return rows
+    }
+
     private enum ChipTone { case ok, warn, neu, checking, notBuilt }
 
     private static func chipColor(_ tone: ChipTone) -> NSColor {
@@ -892,12 +914,13 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         body.spacing = 3
         body.edgeInsets = NSEdgeInsets(top: 13, left: 16, bottom: 13, right: 16)
         body.addArrangedSubview(line)
+        var detailLabel: NSTextField?
         if let detail {
             let d = NSTextField(wrappingLabelWithString: detail)
             d.font = OvFont.sans(11.5)
             d.textColor = Ov.textTertiary
-            d.preferredMaxLayoutWidth = 560
             body.addArrangedSubview(d)
+            detailLabel = d
         }
         card.addArrangedSubview(body)
         // The row and its title line both span the card, so the spring in
@@ -908,12 +931,19 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             equalTo: body.widthAnchor,
             constant: -(body.edgeInsets.left + body.edgeInsets.right)
         ).isActive = true
+        if let detailLabel {
+            wrap(detailLabel, within: body, inset: body.edgeInsets.left + body.edgeInsets.right)
+        }
         addSeparator(below: body, in: card)
         return body
     }
 
+    /// A rule *between* rows. `.sw-row:last-child{border-bottom:none}`, so the
+    /// previous row's rule is added when the next one arrives rather than
+    /// trailing every row — otherwise the last separator lands straight on the
+    /// card's own border and every card ends in a doubled hairline.
     private func addSeparator(below view: NSView, in card: NSStackView) {
-        let index = card.arrangedSubviews.firstIndex(of: view).map { $0 + 1 } ?? card.arrangedSubviews.count
+        guard let index = card.arrangedSubviews.firstIndex(of: view), index > 0 else { return }
         let line = NSView()
         line.wantsLayer = true
         line.layer?.backgroundColor = Ov.separator.cgColor
@@ -946,13 +976,11 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         let t = NSTextField(wrappingLabelWithString: title)
         t.font = OvFont.sans(12.5, 600)
         t.textColor = Ov.textPrimary
-        t.preferredMaxLayoutWidth = 520
         block.addArrangedSubview(t)
         if let detail {
             let d = NSTextField(wrappingLabelWithString: detail)
             d.font = OvFont.sans(11.5)
             d.textColor = Ov.textSecondary
-            d.preferredMaxLayoutWidth = 520
             block.addArrangedSubview(d)
         }
         if !actions.isEmpty {
@@ -970,33 +998,46 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// Pane note (prototype .cs-note / .cs-note.attn): an icon and a sentence,
     /// used for the standing facts a pane needs to state rather than a status
     /// a row owns.
+    /// Pane note (`.cs-note`): an icon and a sentence, for the standing facts a
+    /// pane states rather than a status a row owns.
+    ///
+    /// Deliberately unboxed. `.cs-note` declares no background, border, padding
+    /// or radius — it is tertiary text with a 13px glyph. Drawing it as a
+    /// filled slab made it read as a recovery block, which *is* boxed, losing
+    /// the one cue that separates "a fact about this pane" from "something you
+    /// can act on".
     private func note(_ text: String, symbol: String = "info.circle", attn: Bool = false) -> NSStackView {
         let box = NSStackView()
         box.orientation = .horizontal
         box.alignment = .firstBaseline
-        box.spacing = 7
-        box.edgeInsets = NSEdgeInsets(top: 9, left: 11, bottom: 9, right: 11)
-        box.wantsLayer = true
-        box.layer?.cornerRadius = 7
-        box.layer?.backgroundColor = Ov.bgContentSecondary.cgColor
-        if attn {
-            box.layer?.borderWidth = 1
-            box.layer?.borderColor = Ov.warning.withAlphaComponent(0.35).cgColor
-        }
+        box.spacing = 8
+        box.edgeInsets = NSEdgeInsets(top: 14, left: 0, bottom: 0, right: 0)
         let icon = NSImageView()
         if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 12, weight: .regular)) {
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .regular)) {
             icon.image = image
             icon.contentTintColor = attn ? Ov.warning : Ov.textTertiary
         }
         icon.setContentHuggingPriority(.required, for: .horizontal)
         let label = NSTextField(wrappingLabelWithString: text)
         label.font = OvFont.sans(11.5)
-        label.textColor = Ov.textSecondary
-        label.preferredMaxLayoutWidth = 540
+        label.textColor = attn ? Ov.textSecondary : Ov.textTertiary
         box.addArrangedSubview(icon)
         box.addArrangedSubview(label)
+        wrap(label, within: box, inset: 8 + 13 + 8)
         return box
+    }
+
+    /// Let a wrapping label follow its container instead of a fixed
+    /// `preferredMaxLayoutWidth`. Hard-coded wrap widths meant text could not
+    /// reflow, which is only invisible while the window cannot be resized.
+    private func wrap(_ label: NSTextField, within container: NSView, inset: CGFloat) {
+        label.translatesAutoresizingMaskIntoConstraints = false
+        let width = label.widthAnchor.constraint(
+            equalTo: container.widthAnchor, constant: -inset
+        )
+        width.priority = .defaultHigh
+        width.isActive = true
     }
 
     /// Disclosure (prototype .cs-disc): a summary row that reveals a body.
@@ -1026,12 +1067,12 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         summary.setAccessibilityExpanded(isOpen)
 
         let line = NSStackView(views: [chevron, OvFont.label(
-            label, size: 12, cssWeight: 600, color: Ov.textSecondary
+            label, size: 12.5, cssWeight: 590, color: Ov.textSecondary
         )])
         line.orientation = .horizontal
         line.alignment = .centerY
-        line.spacing = 7
-        line.edgeInsets = NSEdgeInsets(top: 10, left: 0, bottom: 10, right: 0)
+        line.spacing = 5
+        line.edgeInsets = NSEdgeInsets(top: 3, left: 3, bottom: 3, right: 6)
         summary.addSubview(line)
         line.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -1041,9 +1082,15 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             line.bottomAnchor.constraint(equalTo: summary.bottomAnchor),
         ])
 
+        box.edgeInsets = NSEdgeInsets(top: 10, left: 0, bottom: 0, right: 0)
         box.addArrangedSubview(summary)
+        let gap = ovSpacer(8)
+        box.addArrangedSubview(gap)
         box.addArrangedSubview(body)
         body.isHidden = !isOpen
+        gap.isHidden = !isOpen
+        // The rows box fills the pane like any other card.
+        body.widthAnchor.constraint(equalTo: box.widthAnchor).isActive = true
         return box
     }
 
@@ -1057,9 +1104,18 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         into card: NSStackView,
         title: String,
         detail: String?,
-        status: String = "Not in this build"
+        status: String = "Not in this build",
+        tone: ChipTone = .notBuilt
     ) -> NSStackView {
-        row(into: card, title: title, detail: detail, trailing: chip(status, tone: .notBuilt))
+        // Status goes in the row's supporting area, under the detail, which is
+        // where the design puts it (`d: "…<br>" + status`). The trailing slot
+        // holds controls; putting a chip there mixed status into the control
+        // column and left General — which does follow the design — looking
+        // like a different pane.
+        let body = row(into: card, title: title, detail: detail)
+        body.addArrangedSubview(ovSpacer(1))
+        body.addArrangedSubview(chip(status, tone: tone))
+        return body
     }
 
     /// `.ov-toggle`. `NSSwitch` is the native control: correct hit target,
@@ -1088,11 +1144,6 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         button.action = action
         if let subject { button.setAccessibilityLabel("\(title) — \(subject)") }
         return button
-    }
-
-    private func rowButton(_ title: String, style: OvButtonStyle, action: Selector, subject: String? = nil) -> NSButton {
-        let b = button(title, style: style, action: action, subject: subject)
-        return b
     }
 
     // MARK: General
@@ -1160,7 +1211,6 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         let headline = NSTextField(wrappingLabelWithString: summary.headline)
         headline.font = OvFont.sans(13, 590)
         headline.textColor = Ov.textPrimary
-        headline.preferredMaxLayoutWidth = 480
         headlineRow.addArrangedSubview(headline)
         let spring = NSView()
         spring.setContentHuggingPriority(.init(1), for: .horizontal)
@@ -1172,13 +1222,13 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         summaryBody.orientation = .vertical
         summaryBody.alignment = .leading
         summaryBody.spacing = 4
-        summaryBody.edgeInsets = NSEdgeInsets(top: 11, left: 0, bottom: 11, right: 0)
+        // Share the row inset (16) rather than sitting flush to the card edge.
+        summaryBody.edgeInsets = NSEdgeInsets(top: 13, left: 16, bottom: 13, right: 16)
         summaryBody.addArrangedSubview(headlineRow)
         if let detail = summary.detail {
             let d = NSTextField(wrappingLabelWithString: detail)
             d.font = OvFont.sans(11.5)
             d.textColor = Ov.textTertiary
-            d.preferredMaxLayoutWidth = 560
             summaryBody.addArrangedSubview(d)
         }
         summaryCard.addArrangedSubview(summaryBody)
@@ -1314,33 +1364,54 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             title: "Workspace",
             detail: "Managed here: Core on this Mac. Other applications keep their own workspace bindings.",
             trailing: OvFont.label(
-                context.workspaceRef, size: 12, cssWeight: 500, color: Ov.textSecondary, mono: true
+                context.workspaceRef, size: 11.5, color: Ov.textSecondary, mono: true
             )
         )
 
         // ---- Storage ----
-        let storageCard = card(content, header: "Storage")
+        let storageCard = card(content, header: "Storage", followedByDisclosure: true)
         row(
             into: storageCard,
             title: "Location",
             detail: nil,
-            trailing: OvFont.label("This Mac", size: 12, cssWeight: 500, color: Ov.textSecondary)
+            trailing: OvFont.label("This Mac", size: 12.5, color: Ov.textPrimary)
         )
         notBuiltRow(
             into: storageCard,
             title: "Storage location",
             detail: "Reported by Core. Shown for reference; it can’t be edited here. Core does not report the workspace path to this window in this build, and the companion does not infer it.",
-            status: "Not reported"
+            status: "Not reported",
+            tone: .neu
         )
         notBuiltRow(
             into: storageCard,
             title: "Storage used",
             detail: "A size and its breakdown appear here once Core reports them.",
-            status: "Not reported"
+            status: "Not reported",
+            tone: .neu
         )
 
+        // The design's Storage group carries a breakdown behind a disclosure.
+        let breakdownBody = NSStackView()
+        breakdownBody.orientation = .vertical
+        breakdownBody.alignment = .leading
+        breakdownBody.spacing = 0
+        for part in ["Source content", "Records", "Indexes", "Temporary data"] {
+            notBuiltRow(
+                into: breakdownBody,
+                title: part,
+                detail: nil,
+                status: "Not reported",
+                tone: .neu
+            )
+        }
+        content.addArrangedSubview(
+            disclosure(id: "storage-details", label: "Storage details", body: card(breakdownBody))
+        )
+        content.addArrangedSubview(ovSpacer(18))
+
         // ---- Backups ----
-        let backupCard = card(content, header: "Backups")
+        let backupCard = card(content, header: "Backups", followedByDisclosure: true)
         notBuiltRow(
             into: backupCard,
             title: "Last successful backup",
@@ -1382,8 +1453,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             detail: "A bounded test — it may create and remove a small temporary file at the destination — appears here with the backup feature. Read access and write access are separate results.",
             status: "Not in this build"
         )
-        backupCard.addArrangedSubview(
-            disclosure(id: "backup-options", label: "Options", body: optionsBody)
+        content.addArrangedSubview(
+            disclosure(id: "backup-options", label: "Options", body: card(optionsBody))
         )
 
         content.addArrangedSubview(
@@ -1407,25 +1478,29 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             into: defaults,
             title: "Destination",
             detail: "Shown before every Add or Watch. Core doesn’t add anything without it.",
-            status: "Not reported"
+            status: "Not reported",
+            tone: .neu
         )
         notBuiltRow(
             into: defaults,
             title: "New files",
             detail: "Keep updated is chosen per file when you add it.",
-            status: "Not reported"
+            status: "Not reported",
+            tone: .neu
         )
         notBuiltRow(
             into: defaults,
             title: "Folders",
             detail: "Include subfolders is on by default and shown in every scope review. Watching starts with Include existing files.",
-            status: "Not reported"
+            status: "Not reported",
+            tone: .neu
         )
         notBuiltRow(
             into: defaults,
             title: "Cloud files",
             detail: "Each file or folder has its own Download cloud files automatically setting. This page doesn’t override them.",
-            status: "Not reported"
+            status: "Not reported",
+            tone: .neu
         )
 
         // The limits are the design's verbatim table. They are constants of the
@@ -1519,7 +1594,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             into: automatic,
             title: "Sources",
             detail: "Sources are approved in OmniVia. Per-source access status and recovery appear beside each source once that feature exists.",
-            status: "None configured"
+            status: "None configured",
+            tone: .neu
         )
         notBuiltRow(
             into: automatic,
@@ -1539,7 +1615,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             into: activity,
             title: "Processing state unknown",
             detail: "Core does not report processing activity to this window in this build.",
-            status: "Not reported"
+            status: "Not reported",
+            tone: .neu
         )
 
         // ---- Local Decisions (LD-01 overview) ----
@@ -1550,9 +1627,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         let decisionsLede = NSTextField(
             wrappingLabelWithString: "Suggest categories and follow-ups using information you choose."
         )
-        decisionsLede.font = OvFont.sans(11.5)
-        decisionsLede.textColor = Ov.textTertiary
-        decisionsLede.preferredMaxLayoutWidth = 560
+        decisionsLede.font = OvFont.sans(12)
+        decisionsLede.textColor = Ov.textSecondary
         content.addArrangedSubview(OvFont.groupHeader("Local Decisions"))
         content.addArrangedSubview(ovSpacer(6))
         content.addArrangedSubview(decisionsLede)
@@ -1583,9 +1659,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                 status: "Not reported"
             )
         }
-        let detailsCard = card(content, header: nil)
-        detailsCard.addArrangedSubview(
-            disclosure(id: "proc-details", label: "Processing details", body: detailsBody)
+        content.addArrangedSubview(
+            disclosure(id: "proc-details", label: "Processing details", body: card(detailsBody))
         )
         content.addArrangedSubview(
             note(
@@ -1608,7 +1683,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             into: apps,
             title: "No configured applications",
             detail: "Applications that may use this workspace are listed here with their access level. Per-application access is granted by a store this build does not have.",
-            status: "None configured"
+            status: "None configured",
+            tone: .neu
         )
         notBuiltRow(
             into: apps,
@@ -1629,23 +1705,25 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             into: connectionBody,
             title: "Transport",
             detail: "How applications reach Core on this Mac.",
-            status: "Not reported"
+            status: "Not reported",
+            tone: .neu
         )
         notBuiltRow(
             into: connectionBody,
             title: "Reachable from",
             detail: nil,
-            status: "Not reported"
+            status: "Not reported",
+            tone: .neu
         )
         notBuiltRow(
             into: connectionBody,
             title: "Socket",
             detail: "Core does not report its socket path to this window in this build.",
-            status: "Not reported"
+            status: "Not reported",
+            tone: .neu
         )
-        let connectionCard = card(content, header: nil)
-        connectionCard.addArrangedSubview(
-            disclosure(id: "conn-details", label: "Connection details", body: connectionBody)
+        content.addArrangedSubview(
+            disclosure(id: "conn-details", label: "Connection details", body: card(connectionBody))
         )
         content.addArrangedSubview(
             note(
@@ -1668,13 +1746,15 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             into: core,
             title: "Service",
             detail: "Runs on this Mac. Closing this window does not stop it. Start, stop and restart live in the Core menu, which owns the lifecycle; this window never invokes it.",
-            status: "Shown in the menu"
+            status: "Shown in the menu",
+            tone: .neu
         )
         notBuiltRow(
             into: core,
             title: "Core version",
             detail: nil,
-            status: "Not reported"
+            status: "Not reported",
+            tone: .neu
         )
         row(
             into: core,
@@ -1721,9 +1801,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             detail: "Rebuilds the search and embedding indexes from workspace records. Records themselves are not changed or deleted.",
             status: "Not in this build"
         )
-        let options = card(content, header: nil)
-        options.addArrangedSubview(
-            disclosure(id: "maint-options", label: "Maintenance options", body: optionsBody)
+        content.addArrangedSubview(
+            disclosure(id: "maint-options", label: "Maintenance options", body: card(optionsBody))
         )
 
         renderMacCheckDetails(content)
@@ -1754,7 +1833,6 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         let text = NSTextField(wrappingLabelWithString: details)
         text.font = OvFont.mono(11)
         text.textColor = Ov.textSecondary
-        text.preferredMaxLayoutWidth = 560
         let logBox = NSStackView()
         logBox.orientation = .vertical
         logBox.alignment = .leading
@@ -1774,7 +1852,6 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         let note = NSTextField(wrappingLabelWithString: "These details are what diagnostics export contains. Nothing else is recorded.")
         note.font = OvFont.sans(11.5)
         note.textColor = Ov.textTertiary
-        note.preferredMaxLayoutWidth = 560
         detailsCard.addArrangedSubview(note)
     }
 
@@ -1821,19 +1898,18 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         coordinator.scheduleRefresh(.explicitRefresh)
     }
 
-    @objc private func openLoginItems() {
+    @objc private func openLoginItems() { openDestination(.loginItems) }
+
+    /// One route for every System Settings destination, so the alert's Try
+    /// again can re-run exactly what failed.
+    private func openDestination(_ destination: SettingsDestination) {
         Task { @MainActor in
-            let (result, route) = await navigator.open(.loginItems)
-            presentNavigation(result, route: route, destination: .loginItems)
+            let (result, route) = await navigator.open(destination)
+            presentNavigation(result, route: route, destination: destination)
         }
     }
 
-    @objc private func openNotifications() {
-        Task { @MainActor in
-            let (result, route) = await navigator.open(.notifications)
-            presentNavigation(result, route: route, destination: .notifications)
-        }
-    }
+    @objc private func openNotifications() { openDestination(.notifications) }
 
     /// Explicit notification request (§9.2, §11.2): only from this trusted
     /// button, only once per pending interaction; the passive provider re-reads
@@ -1864,10 +1940,24 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         case .launchFailed, .cancelled, .unsupportedDestination:
             alert.messageText = "System Settings could not be opened"
             alert.informativeText = (route ?? navigator.manualRoute(for: destination) ?? "")
-                + "\n\nNothing has changed; use Try again if you want another attempt."
+                + "\n\nNothing has changed."
+            // §A7 asks for the manual route *with* Try again. The copy named a
+            // button that was never added, so it pointed at nothing.
+            alert.addButton(withTitle: "Try again")
+            alert.addButton(withTitle: "Cancel")
         }
         alert.alertStyle = result == .launchFailed ? .warning : .informational
-        alert.beginSheetModal(for: window)
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            switch result {
+            case .launchFailed, .cancelled, .unsupportedDestination:
+                // Retrying opens System Settings again. A failed launch changed
+                // no permission, so this re-attempts the navigation and nothing
+                // else (§A8 — the result must not change because we retried).
+                self?.openDestination(destination)
+            default: break
+            }
+        }
     }
 }
 
@@ -1926,7 +2016,8 @@ final class SidebarRowView: NSView {
     init(title: String, symbol: String) {
         label = OvFont.label(title, size: 13, color: Ov.textPrimary)
         icon = NSImageView()
-        // 16px glyphs (`#sw-nav .nav-row svg`), not the shared shell's 15.
+        // A 16×16 glyph box (`#sw-nav .nav-row svg`); the symbol is sized 15 so
+        // wide glyphs fit it without being scaled down.
         icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
             .withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
         icon.imageScaling = .scaleProportionallyDown
@@ -2151,13 +2242,44 @@ final class DisclosureButton: NSButton {
         title = ""
         isBordered = false
         setButtonType(.momentaryChange)
-        focusRingType = .default
+        // Brick, like the source list — not the system blue, which was the one
+        // place in the window still ringing in the OS accent.
+        focusRingType = .none
+        wantsLayer = true
+        layer?.cornerRadius = 5
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 34) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 22) }
+
+    override func becomeFirstResponder() -> Bool {
+        layer?.borderWidth = 3
+        layer?.borderColor = Ov.focusRing.cgColor
+        return super.becomeFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        layer?.borderWidth = 0
+        return super.resignFirstResponder()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow], owner: self
+        ))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        layer?.backgroundColor = Ov.hoverBg.cgColor
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = NSColor.clear.cgColor
+    }
 }
 
 enum OvButtonStyle { case bordered, primary }
