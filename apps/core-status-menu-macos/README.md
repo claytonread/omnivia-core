@@ -1,13 +1,12 @@
 # OmniVia Core Status Menu for macOS
 
-This Swift Package is the optional native lifecycle companion for the headless
-OmniVia Core Service. It is a **thin status and control client**: it owns no
-workspace, lease, database, process identity, endpoint, or lifecycle logic, it
-decides nothing about Core's state, and it offers no control Core has not told
-it that it may offer. It only invokes the installed
-`omnivia ... service start|stop|status --json` adapter and renders what comes back. It is a
-separate process by design: stopping Core must not also remove the control that
-can start Core again.
+This Swift Package is the native macOS companion for the headless OmniVia Core
+Service. It remains a thin client for lifecycle controls, but it now also owns
+the native document-intake boundary: reviewed file/folder selection,
+security-scoped grants, durable local capture publication, monitoring,
+review-first App Intents, and the Finder Action/Share extension handoff. Core's
+workspace, lease and service lifecycle remain outside this process. Stopping
+Core must not remove the control that can start Core again.
 
 The source target is macOS 13 or later. That baseline provides the AppKit and SF
 Symbols behavior used for a native dark-mode/Retina menu-bar icon while keeping
@@ -22,18 +21,45 @@ swift test --package-path apps/core-status-menu-macos
 swift build --package-path apps/core-status-menu-macos
 ```
 
-Build a deterministic unsigned qualification bundle from the release executable:
+Build the release companion and both extension executables. The extensions must
+be linked with `_NSExtensionMain` and extension-safe API checking:
+
+```bash
+xcrun swiftc -O -target arm64-apple-macos13.0 -application-extension \
+  -parse-as-library -emit-executable \
+  apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeHandoffMailbox.swift \
+  apps/core-status-menu-macos/Extensions/Shared/ExtensionSupport.swift \
+  apps/core-status-menu-macos/Extensions/FinderAction/FinderActionViewController.swift \
+  -o /absolute/path/to/OmniViaFinderAction -framework AppKit \
+  -Xlinker -e -Xlinker _NSExtensionMain
+
+xcrun swiftc -O -target arm64-apple-macos13.0 -application-extension \
+  -parse-as-library -emit-executable \
+  apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeHandoffMailbox.swift \
+  apps/core-status-menu-macos/Extensions/Shared/ExtensionSupport.swift \
+  apps/core-status-menu-macos/Extensions/Share/ShareViewController.swift \
+  -o /absolute/path/to/OmniViaShare -framework AppKit \
+  -Xlinker -e -Xlinker _NSExtensionMain
+```
+
+Package a deterministic qualification bundle from those three executables:
 
 ```bash
 python scripts/build-core-companion-app.py \
   --executable /absolute/path/to/omnivia-core-status-menu \
+  --finder-extension-executable /absolute/path/to/OmniViaFinderAction \
+  --share-extension-executable /absolute/path/to/OmniViaShare \
   --output /absolute/path/to/new-candidate-directory \
   --version 0.6.5
 ```
 
-The result is explicitly `qualification_only` until signed and notarized by the
-production release process. The app does not embed the Core runtime or CLI; it
-continues to address the explicit shared installation and Workspace supplied at
+The result embeds `Add to OmniVia Core.appex` and `Share to OmniVia Core.appex`
+under `Contents/PlugIns`. It remains explicitly `qualification_only` until each
+extension and the containing app are signed with the entitlements under
+`Packaging/`, then notarized by the production release process. Ad-hoc signing
+can launch the app for local UI checks, but it is not evidence that macOS has
+registered App Group-backed extensions. The app does not embed the Core runtime
+or CLI; it addresses the explicit shared installation and Workspace supplied at
 launch.
 
 Run the development executable with an explicit Core selection and the fixed
@@ -139,14 +165,15 @@ nothing, so it is shown, and shows, only what a safe status may carry.
   companion's own closed runner failures. `display_name` is validated but never
   rendered; the menu's words are this build's own.
 
-## Non-goals in this source slice
+## Remaining distribution boundaries
 
 - no service auto-start or auto-restart;
 - no launch-at-login, LaunchAgent, daemon, or reboot persistence;
 - no port scanning, process-name scanning, or pid-based controls;
-- no telemetry, notifications, network calls, or settings UI;
-- no signing, notarization, installer, or Platform cutover yet.
+- no telemetry or network calls are introduced by native intake;
+- production signing, notarization, installer ownership, and Platform cutover
+  remain external release qualifications.
 
-Packaging, signing, installation lifecycle, CI integration, and removal of the
-legacy Platform status menu remain staged follow-up work after this source and
-its lifecycle contract are accepted.
+The companion package now owns native intake implementation and qualification
+packaging. Production signing identities and the installation/update owner are
+still required to close WP-14 and the installed portions of WP-15.

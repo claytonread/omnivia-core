@@ -18,11 +18,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         target: nil,
         action: nil
     )
-    private var waitingSelections: [(
-        urls: [URL],
-        surface: CaptureSurface,
-        source: ManualCaptureCandidate.Source
-    )] = []
+    private var waitingSelections: [[ManualCaptureCandidate]] = []
 
     public init(
         workspaceName: String,
@@ -64,14 +60,25 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         surface: CaptureSurface,
         source: ManualCaptureCandidate.Source
     ) {
+        let candidates = urls.map {
+            ManualCaptureCandidate(url: $0, surface: surface, source: source)
+        }
+        addIncoming(candidates)
+    }
+
+    public func addIncomingAdopted(_ candidates: [ManualCaptureCandidate]) {
+        addIncoming(candidates)
+    }
+
+    private func addIncoming(_ candidates: [ManualCaptureCandidate]) {
         openOrFocus()
         if draft.items.isEmpty {
-            add(urls, surface: surface, source: source)
+            add(candidates)
         } else if waitingSelections.count < 10,
-                  waitingSelections.reduce(0, { $0 + $1.urls.count }) + urls.count <= 100
+                  waitingSelections.reduce(0, { $0 + $1.count }) + candidates.count <= 100
         {
-            waitingSelections.append((urls, surface, source))
-            statusLabel.stringValue = "New selection waiting · \(urls.count) item(s). Finish the current selection first."
+            waitingSelections.append(candidates)
+            statusLabel.stringValue = "New selection waiting · \(candidates.count) item(s). Finish the current selection first."
         } else {
             statusLabel.stringValue = "Incoming selection limit reached. Finish a selection and try again."
         }
@@ -333,6 +340,28 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         refresh()
     }
 
+    private func add(_ candidates: [ManualCaptureCandidate]) {
+        do {
+            try draft.add(candidates)
+            if draft.containsSnapshots {
+                keepUpdated.state = .off
+                statusLabel.stringValue = "Captured copies are ready for review. They are not linked to temporary source files."
+            } else if draft.containsFolders {
+                statusLabel.stringValue = "Double-click a folder to review its scope before adding it."
+            } else {
+                statusLabel.stringValue = "Ready to add."
+            }
+        } catch CaptureDraftError.tooManyItems {
+            statusLabel.stringValue = "Choose no more than 10 files at a time."
+        } catch CaptureDraftError.duplicateItem {
+            statusLabel.stringValue = "That item is already in this selection."
+        } catch {
+            submitter.discardAdoptedCandidates(candidates)
+            statusLabel.stringValue = "That item is not a supported document."
+        }
+        refresh()
+    }
+
     @objc private func submitAction() {
         guard draft.canSubmitFiles else { return }
         draft.note = note.string
@@ -350,7 +379,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 keepUpdated.state = .off
                 if !waitingSelections.isEmpty {
                     let next = waitingSelections.removeFirst()
-                    try? draft.add(next.urls, surface: next.surface, source: next.source)
+                    try? draft.add(next)
                     statusLabel.stringValue = "Review the next incoming selection."
                 }
                 refresh()
@@ -373,6 +402,13 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     }
 
     @objc private func closeAction() { window?.close() }
+
+    public func discardUnsubmittedCandidates() {
+        submitter.discardAdoptedCandidates(draft.fileCandidates)
+        submitter.discardAdoptedCandidates(waitingSelections.flatMap { $0 })
+        draft = CaptureDraft()
+        waitingSelections.removeAll()
+    }
 
     @objc private func reviewSelectedFolder() {
         let row = table.selectedRow

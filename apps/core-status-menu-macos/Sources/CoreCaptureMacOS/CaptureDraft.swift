@@ -65,6 +65,12 @@ public struct CaptureDraft: Equatable {
         items.append(contentsOf: additions)
     }
 
+    public mutating func add(_ candidates: [ManualCaptureCandidate]) throws {
+        for candidate in candidates {
+            try add([candidate.url], surface: candidate.surface, source: candidate.source)
+        }
+    }
+
     public mutating func remove(at index: Int) {
         guard items.indices.contains(index) else { return }
         items.remove(at: index)
@@ -88,6 +94,6 @@ public struct CaptureDraft: Equatable {
     }
 
     public var containsFolders: Bool { items.contains { $0.kind == .folder } }
-    public var containsSnapshots: Bool { items.contains { $0.source == .capturedSnapshot } }
+    public var containsSnapshots: Bool { items.contains { $0.source.isSnapshot } }
     public var canSubmitFiles: Bool { !fileCandidates.isEmpty && !containsFolders }
 }

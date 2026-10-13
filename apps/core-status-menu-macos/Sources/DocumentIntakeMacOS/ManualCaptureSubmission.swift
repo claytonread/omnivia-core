@@ -4,6 +4,21 @@ public struct ManualCaptureCandidate: Sendable, Equatable {
     public enum Source: Sendable, Equatable {
         case original
         case capturedSnapshot
+        case adoptedOriginal(
+            accessRef: String,
+            generation: UInt64,
+            linkedDocumentID: String
+        )
+
+        public var isSnapshot: Bool {
+            if case .capturedSnapshot = self { return true }
+            return false
+        }
+
+        public var isAdoptedOriginal: Bool {
+            if case .adoptedOriginal = self { return true }
+            return false
+        }
     }
 
     public let url: URL
@@ -90,7 +105,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         guard !candidates.isEmpty else { throw ManualCaptureSubmissionError.emptySelection }
         guard candidates.count <= Self.maximumItems else { throw ManualCaptureSubmissionError.tooManyItems }
         let automaticCandidates = candidates.filter(\.keepUpdated)
-        guard !automaticCandidates.contains(where: { $0.source == .capturedSnapshot }) else {
+        guard !automaticCandidates.contains(where: { $0.source.isSnapshot }) else {
             throw ManualCaptureSubmissionError.snapshotCannotBeMonitored
         }
         let existingAutomatic = subscriptions.all().filter { $0.state != .stopped }
@@ -127,15 +142,28 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                 throw ManualCaptureSubmissionError.unsupportedType
             }
             let itemID = Self.identifier(prefix: "item")
-            let documentID = Self.identifier(prefix: "doc")
-            let accessRef = Self.identifier(prefix: "access")
-            let descriptor = try accessStore.adopt(
-                accessRef: accessRef,
-                linkedDocumentID: documentID,
-                selectedURL: candidate.url,
-                route: .directFile
-            )
-            if candidate.source == .capturedSnapshot { snapshotAccessRefs.append(descriptor.accessRef) }
+            let documentID: String
+            let descriptor: NativeAccessDescriptor
+            switch candidate.source {
+            case let .adoptedOriginal(accessRef, generation, linkedDocumentID):
+                documentID = linkedDocumentID
+                guard let existing = accessStore.descriptors().first(where: {
+                    $0.accessRef == accessRef
+                        && $0.generation == generation
+                        && $0.linkedDocumentID == linkedDocumentID
+                        && $0.state == .connected
+                }) else { throw NativeAccessError.unknownAccess }
+                descriptor = existing
+            case .original, .capturedSnapshot:
+                documentID = Self.identifier(prefix: "doc")
+                descriptor = try accessStore.adopt(
+                    accessRef: Self.identifier(prefix: "access"),
+                    linkedDocumentID: documentID,
+                    selectedURL: candidate.url,
+                    route: .directFile
+                )
+            }
+            if candidate.source.isSnapshot { snapshotAccessRefs.append(descriptor.accessRef) }
             let seed = CaptureIntentSeed(
                 submissionId: submissionID,
                 itemId: itemID,
@@ -158,13 +186,13 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                     profileRef: "document-default",
                     revision: "1"
                 ),
-                originalBinding: candidate.source == .original
-                    ? OriginalBindingIntent(
+                originalBinding: candidate.source.isSnapshot
+                    ? nil
+                    : OriginalBindingIntent(
                         accessRecordId: descriptor.accessRef,
                         bindingGeneration: descriptor.generation,
                         linkedDocumentId: documentID
-                    )
-                    : nil,
+                    ),
                 createdAt: createdAt,
                 displayName: candidate.displayName
             )
@@ -207,7 +235,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
             }
         }
         let entries = try await preparation.prepareAndPublish(items)
-        snapshotStore?.remove(candidates.filter { $0.source == .capturedSnapshot }.map(\.url))
+        snapshotStore?.remove(candidates.filter { $0.source.isSnapshot }.map(\.url))
         let byItem = Dictionary(uniqueKeysWithValues: entries.map { ($0.intent.itemId, $0) })
         for subscription in pendingSubscriptions {
             guard let entry = byItem[subscription.baselineItemID] else { continue }
@@ -218,6 +246,43 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
             }
         }
         return entries
+    }
+
+    /// Converts a live implicit handoff URL into a companion-owned persistent
+    /// read-only grant before the extension is acknowledged.
+    public func adoptOriginal(
+        _ url: URL,
+        displayName: String,
+        surface: CaptureSurface
+    ) throws -> ManualCaptureCandidate {
+        guard Self.contentKind(for: url) != nil else {
+            throw ManualCaptureSubmissionError.unsupportedType
+        }
+        let accessRef = Self.identifier(prefix: "candidate-access")
+        let documentID = Self.identifier(prefix: "candidate-doc")
+        let descriptor = try accessStore.adopt(
+            accessRef: accessRef,
+            linkedDocumentID: documentID,
+            selectedURL: url,
+            route: .directFile
+        )
+        return ManualCaptureCandidate(
+            url: url,
+            displayName: displayName,
+            surface: surface,
+            source: .adoptedOriginal(
+                accessRef: descriptor.accessRef,
+                generation: descriptor.generation,
+                linkedDocumentID: descriptor.linkedDocumentID
+            )
+        )
+    }
+
+    public func discardAdoptedCandidates(_ candidates: [ManualCaptureCandidate]) {
+        for candidate in candidates {
+            guard case let .adoptedOriginal(accessRef, _, _) = candidate.source else { continue }
+            _ = try? accessStore.disconnect(accessRef: accessRef)
+        }
     }
 
     public static func contentKind(for url: URL) -> CaptureContentKind? {

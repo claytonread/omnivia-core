@@ -105,3 +105,66 @@ def test_companion_packaging_refuses_overwrite_and_symlinked_input(tmp_path: Pat
         module.build_companion_app(
             executable=linked, output=tmp_path / "other", version="0.6.5"
         )
+
+
+def test_companion_embeds_real_finder_and_share_extension_bundles(tmp_path: Path) -> None:
+    module = _module()
+    finder = tmp_path / "OmniViaFinderAction"
+    share = tmp_path / "OmniViaShare"
+    finder.write_bytes(b"finder-mach-o")
+    share.write_bytes(b"share-mach-o")
+    finder.chmod(0o755)
+    share.chmod(0o755)
+
+    output = tmp_path / "candidate"
+    app = module.build_companion_app(
+        executable=_executable(tmp_path),
+        output=output,
+        version="0.6.5",
+        finder_extension_executable=finder,
+        share_extension_executable=share,
+    )
+
+    finder_bundle = app / "Contents" / "PlugIns" / "Add to OmniVia Core.appex"
+    finder_plist = plistlib.loads((finder_bundle / "Contents" / "Info.plist").read_bytes())
+    assert finder_plist["CFBundleIdentifier"] == "com.omnivia.core.finder-action"
+    assert finder_plist["NSExtension"]["NSExtensionPointIdentifier"] == "com.apple.ui-services"
+    assert finder_plist["NSExtension"]["NSExtensionAttributes"] == {
+        "NSExtensionActivationRule": {
+            "NSExtensionActivationSupportsFileWithMaxCount": 10,
+        },
+        "NSExtensionServiceAllowsFinderPreviewItem": True,
+        "NSExtensionServiceRoleType": "NSExtensionServiceRoleTypeViewer",
+    }
+    assert stat.S_IMODE(
+        (finder_bundle / "Contents" / "MacOS" / "OmniViaFinderAction").stat().st_mode
+    ) == 0o755
+
+    share_bundle = app / "Contents" / "PlugIns" / "Share to OmniVia Core.appex"
+    share_plist = plistlib.loads((share_bundle / "Contents" / "Info.plist").read_bytes())
+    assert share_plist["CFBundleIdentifier"] == "com.omnivia.core.share"
+    assert share_plist["NSExtension"]["NSExtensionPointIdentifier"] == "com.apple.share-services"
+    assert share_plist["NSExtension"]["NSExtensionAttributes"]["NSExtensionActivationRule"] == {
+        "NSExtensionActivationSupportsFileWithMaxCount": 10,
+        "NSExtensionActivationSupportsImageWithMaxCount": 10,
+    }
+
+    manifest = json.loads((output / "companion-manifest.json").read_text(encoding="ascii"))
+    assert [item["bundle_id"] for item in manifest["extensions"]] == [
+        "com.omnivia.core.finder-action",
+        "com.omnivia.core.share",
+    ]
+
+
+def test_companion_refuses_partial_extension_pair(tmp_path: Path) -> None:
+    module = _module()
+    finder = tmp_path / "OmniViaFinderAction"
+    finder.write_bytes(b"finder-mach-o")
+    finder.chmod(0o755)
+    with pytest.raises(module.PackagingError, match="extension pair refused"):
+        module.build_companion_app(
+            executable=_executable(tmp_path),
+            output=tmp_path / "candidate",
+            version="0.6.5",
+            finder_extension_executable=finder,
+        )

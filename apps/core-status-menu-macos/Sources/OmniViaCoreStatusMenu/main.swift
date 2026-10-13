@@ -23,6 +23,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private let settingsItem = NSMenuItem(title: "Core Settings…", action: #selector(openSettings), keyEquivalent: ",")
     private var pollTimer: Timer?
     private var monitoringTimer: Timer?
+    private var handoffTimer: Timer?
     private var folderEventObserver: FolderEventObserver?
     private var folderEventObserverFingerprint = ""
     private var folderEventDebounceTimer: Timer?
@@ -39,6 +40,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private var folderBulkRunCoordinator: FolderBulkRunCoordinator?
     private var fileMonitoringCoordinator: FileMonitoringCoordinator?
     private var statusDropView: StatusItemDropView?
+    private var nativeHandoffReceiver: NativeHandoffReceiver?
 
     init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
         self.configuration = configuration
@@ -110,6 +112,16 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                     self?.capturePanelController?.addIncomingSnapshots(urls, surface: .shortcut)
                 }
             )
+            if let mailbox = try? NativeHandoffMailbox.appGroupMailbox() {
+                nativeHandoffReceiver = NativeHandoffReceiver(
+                    mailbox: mailbox,
+                    submitter: submitter,
+                    snapshotStore: snapshotStore,
+                    accept: { [weak self] candidates in
+                        self?.capturePanelController?.addIncomingAdopted(candidates)
+                    }
+                )
+            }
         }
     }
 
@@ -127,6 +139,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         coordinator.refresh()
         deliverPendingCaptures()
         reconcileWatchedFolders()
+        nativeHandoffReceiver?.reconcile()
 
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -141,6 +154,11 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         }
         RunLoop.main.add(monitoringTimer, forMode: .common)
         self.monitoringTimer = monitoringTimer
+        let handoffTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.nativeHandoffReceiver?.reconcile() }
+        }
+        RunLoop.main.add(handoffTimer, forMode: .common)
+        self.handoffTimer = handoffTimer
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -170,8 +188,10 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         // deliberately performs no Core lifecycle command.
         pollTimer?.invalidate()
         monitoringTimer?.invalidate()
+        handoffTimer?.invalidate()
         folderEventDebounceTimer?.invalidate()
         folderEventObserver = nil
+        capturePanelController?.discardUnsubmittedCandidates()
         coordinator.companionWillTerminate()
         singleton.close()
     }

@@ -151,6 +151,33 @@ final class CaptureDraftTests: XCTestCase {
         }
     }
 
+    func testPreAdoptedOriginalKeepsTheAcknowledgedGrantThroughSubmission() async throws {
+        let root = try temporaryDirectory()
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        let file = root.appendingPathComponent("finder.txt")
+        try Data("selected in Finder".utf8).write(to: file)
+        let submission = try ManualCaptureSubmission(
+            stateRoot: state,
+            workspaceRef: "workspace-1",
+            bookmarkCodec: BookmarkCodec()
+        )
+
+        let candidate = try submission.adoptOriginal(
+            file,
+            displayName: "finder.txt",
+            surface: .finderQuickAction
+        )
+        guard case let .adoptedOriginal(accessRef, generation, documentID) = candidate.source else {
+            return XCTFail("Expected a companion-owned original")
+        }
+
+        let entries = try await submission.submit([candidate])
+
+        XCTAssertEqual(entries.first?.intent.originalBinding?.accessRecordId, accessRef)
+        XCTAssertEqual(entries.first?.intent.originalBinding?.bindingGeneration, generation)
+        XCTAssertEqual(entries.first?.intent.originalBinding?.linkedDocumentId, documentID)
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
