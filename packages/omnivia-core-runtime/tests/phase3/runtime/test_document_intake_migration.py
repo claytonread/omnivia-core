@@ -22,9 +22,33 @@ from omnivia_core_runtime.storage.migrations import applied_migrations, load_mig
 MIGRATION_FILENAME = "0069_document_intake.sql"
 PROFILE = {
     "schema": "omnivia.extraction-profile.v1",
-    "processingMode": "text_only",
     "adapter": "plain-text",
     "adapterVersion": "1",
+    "decoderBuild": "plain-text-test-1",
+    "processingMode": "text_only",
+    "ocr": {"engine": "none", "engineRevision": "none-1", "modelHashes": [], "languages": []},
+    "embeddedImageOcr": False,
+    "revisionView": "current_text_with_separate_annotations",
+    "secondaryContentPolicy": "preserve_role_and_visibility",
+    "formulaPolicy": "expression_and_saved_cache_without_calculation",
+    "html": {"encoding": "utf-8"},
+    "delimited": {"encoding": "utf-8", "delimiter": ",", "quote": '"'},
+    "limits": {
+        "sourceBytes": 16 * 1024 * 1024,
+        "decodedPixels": 100_000_000,
+        "containerEntries": 10_000,
+        "expandedBytes": 256 * 1024 * 1024,
+        "outputTextBytes": 32 * 1024 * 1024,
+        "outputStructuredBytes": 128 * 1024 * 1024,
+        "memoryBytes": 512 * 1024 * 1024,
+        "timeMs": 120_000,
+        "temporaryBytes": 512 * 1024 * 1024,
+    },
+    "readingOrderVersion": "source-order-1",
+    "deduplicationVersion": "exact-span-1",
+    "parserFeatures": ["exact_text"],
+    "unknownFeaturePolicy": "partial",
+    "completenessPolicy": "explicit_unit_coverage",
 }
 
 

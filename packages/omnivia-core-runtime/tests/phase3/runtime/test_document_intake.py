@@ -54,9 +54,38 @@ from omnivia_core_runtime.workspace.blob_publication import blob_path
 DOC = "doc-0001"
 PROFILE: dict[str, Any] = {
     "schema": "omnivia.extraction-profile.v1",
-    "processingMode": "text_only",
     "adapter": "plain-text",
     "adapterVersion": "1",
+    "decoderBuild": "plain-text-test-1",
+    "processingMode": "text_only",
+    "ocr": {
+        "engine": "none",
+        "engineRevision": "none-1",
+        "modelHashes": [],
+        "languages": [],
+    },
+    "embeddedImageOcr": False,
+    "revisionView": "current_text_with_separate_annotations",
+    "secondaryContentPolicy": "preserve_role_and_visibility",
+    "formulaPolicy": "expression_and_saved_cache_without_calculation",
+    "html": {"encoding": "utf-8"},
+    "delimited": {"encoding": "utf-8", "delimiter": ",", "quote": '"'},
+    "limits": {
+        "sourceBytes": 16 * 1024 * 1024,
+        "decodedPixels": 100_000_000,
+        "containerEntries": 10_000,
+        "expandedBytes": 256 * 1024 * 1024,
+        "outputTextBytes": 32 * 1024 * 1024,
+        "outputStructuredBytes": 128 * 1024 * 1024,
+        "memoryBytes": 512 * 1024 * 1024,
+        "timeMs": 120_000,
+        "temporaryBytes": 512 * 1024 * 1024,
+    },
+    "readingOrderVersion": "source-order-1",
+    "deduplicationVersion": "exact-span-1",
+    "parserFeatures": ["exact_text"],
+    "unknownFeaturePolicy": "partial",
+    "completenessPolicy": "explicit_unit_coverage",
 }
 MEDIA = "text/plain"
 
@@ -943,6 +972,27 @@ def test_a_profile_is_identified_by_the_digest_of_its_canonical_json(runner: Ser
     assert store.read_profile(runner.connection, workspace_id=runner.workspace_id, digest=digest) == PROFILE
 
 
+def test_a_local_ocr_profile_pins_the_engine_models_and_ordered_languages(
+    runner: ServiceRunner,
+) -> None:
+    ocr = {
+        **PROFILE,
+        "processingMode": "text_and_local_ocr",
+        "ocr": {
+            "engine": "tesseract",
+            "engineRevision": "5.4.1-lstm",
+            "modelHashes": ["sha256:" + "a" * 64, "sha256:" + "b" * 64],
+            "languages": ["eng", "deu"],
+        },
+    }
+
+    digest = register_profile(runner, ocr)
+
+    assert digest == store.profile_digest(ocr)
+    assert runner.connection is not None and runner.workspace_id is not None
+    assert store.read_profile(runner.connection, workspace_id=runner.workspace_id, digest=digest) == ocr
+
+
 @pytest.mark.parametrize(
     "profile",
     [
@@ -950,6 +1000,20 @@ def test_a_profile_is_identified_by_the_digest_of_its_canonical_json(runner: Ser
         pytest.param({**PROFILE, "processingMode": "cloud_ocr"}, id="mode"),
         pytest.param({**PROFILE, "adapter": ""}, id="adapter"),
         pytest.param({k: v for k, v in PROFILE.items() if k != "adapterVersion"}, id="version"),
+        pytest.param({**PROFILE, "embeddedImageOcr": 0}, id="ocr-boolean"),
+        pytest.param({**PROFILE, "parserFeatures": ["z", "a"]}, id="feature-order"),
+        pytest.param(
+            {
+                **PROFILE,
+                "ocr": {
+                    "engine": "tesseract",
+                    "engineRevision": "5",
+                    "modelHashes": ["sha256:" + "a" * 64],
+                    "languages": ["eng"],
+                },
+            },
+            id="ocr-under-text-only",
+        ),
         pytest.param({**PROFILE, "blob": "x" * 70_000}, id="oversized"),
         pytest.param({**PROFILE, "bad": float("nan")}, id="not-canonical"),
     ],

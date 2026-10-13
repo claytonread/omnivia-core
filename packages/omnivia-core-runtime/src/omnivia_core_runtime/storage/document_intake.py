@@ -108,6 +108,42 @@ SEGMENT_METHODS: Final = frozenset({"direct", "ocr", "derived", "inventory"})
 SEGMENT_VISIBILITIES: Final = frozenset({"visible", "hidden", "annotation"})
 SEGMENT_REVISIONS: Final = frozenset({"current", "inserted", "deleted", "none"})
 
+PROFILE_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "adapter",
+        "adapterVersion",
+        "decoderBuild",
+        "processingMode",
+        "ocr",
+        "embeddedImageOcr",
+        "revisionView",
+        "secondaryContentPolicy",
+        "formulaPolicy",
+        "html",
+        "delimited",
+        "limits",
+        "readingOrderVersion",
+        "deduplicationVersion",
+        "parserFeatures",
+        "unknownFeaturePolicy",
+        "completenessPolicy",
+    }
+)
+PROFILE_LIMIT_FIELDS: Final = frozenset(
+    {
+        "sourceBytes",
+        "decodedPixels",
+        "containerEntries",
+        "expandedBytes",
+        "outputTextBytes",
+        "outputStructuredBytes",
+        "memoryBytes",
+        "timeMs",
+        "temporaryBytes",
+    }
+)
+
 _T = TypeVar("_T")
 
 
@@ -147,12 +183,57 @@ def canonical_profile(profile: dict[str, Any]) -> str:
     """The canonical JSON of an ExtractionProfileV1, after the closed fields it must carry are checked."""
     if not isinstance(profile, dict) or profile.get("schema") != PROFILE_SCHEMA:
         raise DocumentIntakeInvalid("extraction profile has the wrong schema")
+    if frozenset(profile) != PROFILE_FIELDS:
+        raise DocumentIntakeInvalid("extraction profile fields are not the closed v1 shape")
     if profile.get("processingMode") not in PROCESSING_MODES:
         raise DocumentIntakeInvalid("extraction profile has an unknown processing mode")
-    for key in ("adapter", "adapterVersion"):
+    for key in (
+        "adapter",
+        "adapterVersion",
+        "decoderBuild",
+        "readingOrderVersion",
+        "deduplicationVersion",
+    ):
         value = profile.get(key)
         if not isinstance(value, str) or not value:
             raise DocumentIntakeInvalid(f"extraction profile needs a non-empty {key}")
+    if not isinstance(profile.get("embeddedImageOcr"), bool):
+        raise DocumentIntakeInvalid("extraction profile embedded-image OCR must be boolean")
+    if profile.get("revisionView") != "current_text_with_separate_annotations":
+        raise DocumentIntakeInvalid("extraction profile has an unknown revision view")
+    if profile.get("secondaryContentPolicy") != "preserve_role_and_visibility":
+        raise DocumentIntakeInvalid("extraction profile has an unknown secondary-content policy")
+    if profile.get("formulaPolicy") != "expression_and_saved_cache_without_calculation":
+        raise DocumentIntakeInvalid("extraction profile has an unknown formula policy")
+    if profile.get("unknownFeaturePolicy") not in {"partial", "unsupported"}:
+        raise DocumentIntakeInvalid("extraction profile has an unknown-feature policy outside v1")
+    if profile.get("completenessPolicy") != "explicit_unit_coverage":
+        raise DocumentIntakeInvalid("extraction profile has an unknown completeness policy")
+    _validate_ocr_profile(profile.get("ocr"), processing_mode=str(profile["processingMode"]))
+    _validate_text_decision(profile.get("html"), kind="html", allowed_fields={"encoding"})
+    _validate_text_decision(
+        profile.get("delimited"),
+        kind="delimited",
+        allowed_fields={"encoding", "delimiter", "quote"},
+    )
+    limits = profile.get("limits")
+    if not isinstance(limits, dict) or frozenset(limits) != PROFILE_LIMIT_FIELDS:
+        raise DocumentIntakeInvalid("extraction profile limits are not the closed v1 shape")
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 2**63 - 1
+        for value in limits.values()
+    ):
+        raise DocumentIntakeInvalid("extraction profile limits must be positive integers")
+    features = profile.get("parserFeatures")
+    if (
+        not isinstance(features, list)
+        or not features
+        or len(features) > 128
+        or any(not isinstance(value, str) or not value or len(value) > 128 for value in features)
+        or len(set(features)) != len(features)
+        or features != sorted(features)
+    ):
+        raise DocumentIntakeInvalid("extraction profile parser features must be a sorted unique string list")
     try:
         document = to_canonical_json(profile)
     except (TypeError, ValueError) as error:
@@ -160,6 +241,55 @@ def canonical_profile(profile: dict[str, Any]) -> str:
     if len(document.encode("utf-8")) > MAX_PROFILE_BYTES:
         raise DocumentIntakeInvalid("extraction profile exceeds the accepted bound")
     return document
+
+
+def _validate_ocr_profile(value: Any, *, processing_mode: str) -> None:
+    if not isinstance(value, dict) or frozenset(value) != {
+        "engine",
+        "engineRevision",
+        "modelHashes",
+        "languages",
+    }:
+        raise DocumentIntakeInvalid("extraction profile OCR fields are not the closed v1 shape")
+    engine = value.get("engine")
+    revision = value.get("engineRevision")
+    hashes = value.get("modelHashes")
+    languages = value.get("languages")
+    if engine not in {"none", "tesseract", "apple_vision"}:
+        raise DocumentIntakeInvalid("extraction profile has an unknown OCR engine")
+    if not isinstance(revision, str) or not revision:
+        raise DocumentIntakeInvalid("extraction profile needs an OCR engine revision")
+    if (
+        not isinstance(hashes, list)
+        or len(hashes) > 16
+        or any(
+            not isinstance(digest, str)
+            or len(digest) != 71
+            or not digest.startswith("sha256:")
+            or any(character not in "0123456789abcdef" for character in digest[7:])
+            for digest in hashes
+        )
+        or hashes != sorted(set(hashes))
+    ):
+        raise DocumentIntakeInvalid("extraction profile OCR model hashes are invalid")
+    if (
+        not isinstance(languages, list)
+        or len(languages) > 3
+        or any(not isinstance(language, str) or not language for language in languages)
+        or len(set(languages)) != len(languages)
+    ):
+        raise DocumentIntakeInvalid("extraction profile OCR languages are invalid")
+    if processing_mode == "text_only" and (engine != "none" or hashes or languages):
+        raise DocumentIntakeInvalid("a text-only profile cannot select OCR resources")
+    if processing_mode == "text_and_local_ocr" and (engine == "none" or not hashes or not languages):
+        raise DocumentIntakeInvalid("a local-OCR profile must pin its engine, models and languages")
+
+
+def _validate_text_decision(value: Any, *, kind: str, allowed_fields: set[str]) -> None:
+    if not isinstance(value, dict) or set(value) != allowed_fields:
+        raise DocumentIntakeInvalid(f"extraction profile {kind} fields are not the closed v1 shape")
+    if any(not isinstance(item, str) or not item for item in value.values()):
+        raise DocumentIntakeInvalid(f"extraction profile {kind} decisions must be non-empty strings")
 
 
 def profile_digest(profile: dict[str, Any]) -> str:
