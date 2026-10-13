@@ -678,6 +678,7 @@ def test_unknown_cross_document_and_wrong_route_binding_claims_write_nothing(
             "cap-unknown",
             b"x",
             None,
+            intent="refresh",
             binding=BindingClaim("owner-unknown", 1, "direct_file"),
         )
     )
