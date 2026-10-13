@@ -113,7 +113,7 @@ EXPECTED_ALLOCATION = (
     ),
     (41, "0041_evidence_source_identity.sql", "Evidence Runtime", "candidate"),
     (42, "0042_runtime_stop_progress.sql", "Workflow Runtime", "candidate"),
-    (43, "0043_app_settings.sql", "Core Settings", "reserved"),
+    (43, "0043_app_settings.sql", "Core Settings", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -157,6 +157,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     40: "90841d13ed2fa96cf4ac350f3d55b06014c1032a",
     41: "a550759bc3026027b3965f44dc0e588d4c4645e8",
     42: "0373e229d2ded9b4c48fdba48fc8e760054f58a6",
+    43: "94c802d0c4226915eaf6650a8dd19ad6138bcbb0",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
