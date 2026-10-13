@@ -23,6 +23,8 @@ public enum ManualCaptureSubmissionError: Error, Equatable {
     case emptySelection
     case tooManyItems
     case unsupportedType
+    case duplicateAutomaticSource
+    case automaticSourceLimitExceeded
 }
 
 /// Converts one reviewed native file selection into the durable v3 queue.
@@ -30,6 +32,7 @@ public enum ManualCaptureSubmissionError: Error, Equatable {
 /// the complete ordinary batch is published atomically.
 public final class ManualCaptureSubmission: @unchecked Sendable {
     public static let maximumItems = 10
+    public static let maximumAutomaticFiles = 1_000
 
     private let accessStore: NativeAccessStore
     private let preparation: CapturePreparationCoordinator
@@ -71,6 +74,26 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
     public func submit(_ candidates: [ManualCaptureCandidate]) async throws -> [CaptureQueueEntry] {
         guard !candidates.isEmpty else { throw ManualCaptureSubmissionError.emptySelection }
         guard candidates.count <= Self.maximumItems else { throw ManualCaptureSubmissionError.tooManyItems }
+        let automaticCandidates = candidates.filter(\.keepUpdated)
+        let existingAutomatic = subscriptions.all().filter { $0.state != .stopped }
+        guard existingAutomatic.count + automaticCandidates.count <= Self.maximumAutomaticFiles else {
+            throw ManualCaptureSubmissionError.automaticSourceLimitExceeded
+        }
+        let existingPaths = Set<String>(existingAutomatic.compactMap { subscription -> String? in
+            guard subscription.targetRef == targetRef,
+                  subscription.workspaceRef == workspaceRef
+            else { return nil }
+            return try? accessStore.withReadAccess(
+                accessRef: subscription.accessRef,
+                expectedGeneration: subscription.bindingGeneration
+            ) { $0.resolvingSymlinksInPath().standardizedFileURL.path }
+        })
+        let requestedPaths = automaticCandidates.map {
+            $0.url.resolvingSymlinksInPath().standardizedFileURL.path
+        }
+        guard Set(requestedPaths).count == requestedPaths.count,
+              existingPaths.isDisjoint(with: requestedPaths)
+        else { throw ManualCaptureSubmissionError.duplicateAutomaticSource }
         let submissionID = Self.identifier(prefix: "submission")
         let createdAt = ISO8601DateFormatter().string(from: Date())
         var items: [CapturePreparationItem] = []

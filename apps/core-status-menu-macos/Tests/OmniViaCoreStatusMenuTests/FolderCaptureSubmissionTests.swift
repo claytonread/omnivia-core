@@ -346,6 +346,34 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         XCTAssertEqual(environment.queue.allEntries().map(\.intent.itemId), baseline.map(\.intent.itemId))
     }
 
+    func testExactDuplicateFolderWatchIsRejectedForTheSameDestination() async throws {
+        let root = try temporaryDirectory()
+        try Data("baseline".utf8).write(to: root.appendingPathComponent("watch.txt"))
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec()
+        )
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(
+                mode: .keepUpdated,
+                recursive: true,
+                includeHidden: false,
+                watchInitialContent: .onlyNewAndChanged
+            )
+        )
+        _ = try await submission.submit(plan)
+
+        do {
+            _ = try await submission.submit(plan)
+            XCTFail("duplicate folder watch should be rejected")
+        } catch {
+            XCTAssertEqual(error as? FolderCaptureSubmissionError, .duplicateWatch)
+        }
+        XCTAssertEqual(environment.folderSubscriptions.all().count, 1)
+    }
+
     func testAdmittedWatchPersistsAndQueuesChangedAndNewMembersWithCurrentBase() async throws {
         let root = try temporaryDirectory()
         let watched = root.appendingPathComponent("watch.txt")

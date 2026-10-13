@@ -58,6 +58,8 @@ public enum FolderCaptureSubmissionError: Error, Equatable {
     case unsafeMember
     case unsafeRoot
     case scanLimitExceeded
+    case duplicateWatch
+    case watchLimitExceeded
 }
 
 /// Reviews and freezes one selected folder without traversing symlinks or packages.
@@ -68,6 +70,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
     public static let maximumAggregateBytes: UInt64 = 2 * 1024 * 1024 * 1024
     public static let maximumExaminedEntries = 100_000
     public static let maximumRecursionDepth = 32
+    public static let maximumActiveWatches = 20
 
     private static let excludedDirectoryNames: Set<String> = [
         ".git", ".venv", "node_modules", "__pycache__", "DerivedData",
@@ -238,6 +241,26 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
     }
 
     public func submit(_ plan: FolderCapturePlan) async throws -> [CaptureQueueEntry] {
+        if plan.policy.mode == .keepUpdated {
+            let watched = subscriptions.all().filter { $0.state != .stopped }
+            guard watched.count < Self.maximumActiveWatches else {
+                throw FolderCaptureSubmissionError.watchLimitExceeded
+            }
+            let requestedPath = plan.root.resolvingSymlinksInPath().standardizedFileURL.path
+            let duplicate = watched.contains { subscription in
+                guard subscription.targetRef == targetRef,
+                      subscription.workspaceRef == workspaceRef
+                else { return false }
+                let generation = subscription.members.map(\.membershipGeneration).min() ?? 1
+                return (try? accessStore.withRootReadAccess(
+                    rootRef: subscription.rootRef,
+                    expectedGeneration: generation
+                ) { root in
+                    root.resolvingSymlinksInPath().standardizedFileURL.path == requestedPath
+                }) == true
+            }
+            guard !duplicate else { throw FolderCaptureSubmissionError.duplicateWatch }
+        }
         let submissionID = Self.identifier(prefix: "submission")
         let rootRef = Self.identifier(prefix: "root")
         let bulkRunID = Self.identifier(prefix: "bulk")

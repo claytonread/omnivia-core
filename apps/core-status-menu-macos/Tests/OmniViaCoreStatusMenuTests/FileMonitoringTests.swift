@@ -94,6 +94,27 @@ final class FileMonitoringTests: XCTestCase {
         )
     }
 
+    func testDuplicateIndividualAutomaticSourceIsRejectedBeforeAnotherCapture() async throws {
+        let root = try temporaryDirectory()
+        let original = root.appendingPathComponent("watched.txt")
+        try Data("baseline".utf8).write(to: original)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec()
+        )
+        let submission = ManualCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        _ = try await submission.submit([ManualCaptureCandidate(url: original, keepUpdated: true)])
+
+        do {
+            _ = try await submission.submit([ManualCaptureCandidate(url: original, keepUpdated: true)])
+            XCTFail("duplicate automatic source should be rejected")
+        } catch {
+            XCTAssertEqual(error as? ManualCaptureSubmissionError, .duplicateAutomaticSource)
+        }
+        XCTAssertEqual(environment.queue.allEntries().count, 1)
+        XCTAssertEqual(environment.fileSubscriptions.all().count, 1)
+    }
+
     private func admit(
         _ entry: CaptureQueueEntry,
         captureID: String,

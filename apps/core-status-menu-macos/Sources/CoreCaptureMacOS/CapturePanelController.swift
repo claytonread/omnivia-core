@@ -269,6 +269,12 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
             } catch FolderCaptureSubmissionError.unsafeRoot {
                 statusLabel.stringValue = "Choose a narrower document folder, not a filesystem or home folder."
                 refresh()
+            } catch FolderCaptureSubmissionError.duplicateWatch {
+                statusLabel.stringValue = "This folder is already watched for this destination."
+                refresh()
+            } catch FolderCaptureSubmissionError.watchLimitExceeded {
+                statusLabel.stringValue = "This Mac already has 20 active watched folders. Stop one before adding another."
+                refresh()
             } catch {
                 statusLabel.stringValue = "Couldn’t queue this folder. Check access, scope, and size limits."
                 refresh()
@@ -324,6 +330,12 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 }
                 refresh()
                 onQueued?()
+            } catch ManualCaptureSubmissionError.duplicateAutomaticSource {
+                statusLabel.stringValue = "One of these files is already kept updated for this destination."
+                primaryButton.isEnabled = true
+            } catch ManualCaptureSubmissionError.automaticSourceLimitExceeded {
+                statusLabel.stringValue = "This Mac already has the maximum number of individually updated files."
+                primaryButton.isEnabled = true
             } catch {
                 statusLabel.stringValue = "Couldn’t queue this selection. Check access and try again."
                 primaryButton.isEnabled = true
