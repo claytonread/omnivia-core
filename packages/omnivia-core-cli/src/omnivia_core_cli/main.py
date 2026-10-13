@@ -109,6 +109,7 @@ DEFAULT_TIMEOUT_MS: Final = 10_000
 #: The empty input document. Read-only so the one instance shared by every
 #: invocation cannot be mutated by anything downstream.
 _EMPTY_INPUT: Final[Mapping[str, Any]] = MappingProxyType({})
+_MAXIMUM_STDIN_INPUT_BYTES: Final = 24 * 1024 * 1024
 
 #: The `Namespace` attribute the leaf parser stores its frozen command on. The
 #: command object itself, not its name: nothing here re-derives a path.
@@ -332,12 +333,18 @@ def build_parser() -> argparse.ArgumentParser:
         leaf = leaves(group).add_parser(
             leaf_name, allow_abbrev=False, help=application.operation
         )
-        leaf.add_argument(
+        input_group = leaf.add_mutually_exclusive_group()
+        input_group.add_argument(
             "--input-json",
             default=_EMPTY_INPUT,
             metavar="JSON_OBJECT",
             type=_input_object,
             help="the operation's input document (default {})",
+        )
+        input_group.add_argument(
+            "--input-stdin",
+            action="store_true",
+            help="read one bounded JSON input object from standard input",
         )
         leaf.add_argument("--principal", default=None, help="the principal to claim")
         leaf.add_argument(
@@ -451,6 +458,14 @@ def main(
             parser.error("--workspace-id is required for this command")
         if isinstance(command, ApplicationCommand):
             _check_mutation_metadata(parser, command, arguments)
+            if arguments.input_stdin:
+                raw = sys.stdin.buffer.read(_MAXIMUM_STDIN_INPUT_BYTES + 1)
+                if len(raw) > _MAXIMUM_STDIN_INPUT_BYTES:
+                    parser.error(_BAD_INPUT)
+                try:
+                    arguments.input_json = _input_object(raw.decode("utf-8"))
+                except (UnicodeDecodeError, argparse.ArgumentTypeError):
+                    parser.error(_BAD_INPUT)
     except SystemExit as requested:
         # argparse exits rather than returning, and this function is declared to
         # return a status. Both are the same number.

@@ -23,6 +23,8 @@ so `main` returns before a client is connected. Nothing opens a socket.
 
 from __future__ import annotations
 
+import io
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -84,6 +86,31 @@ def _first_command(predicate: Callable[[Any], bool]) -> Any:
         if predicate(get_operation_metadata(command.operation)):
             return command
     raise AssertionError("the catalogue declares no operation with this posture")
+
+
+def test_input_stdin_rejects_a_malformed_document_before_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(b'{"secret":'))
+    monkeypatch.setattr(sys, "stdin", stream)
+
+    assert main([
+        *BASE,
+        "document", "capture",
+        "--input-stdin",
+        "--idempotency-key", "capture-1",
+    ]) == 2
+
+
+def test_input_stdin_and_inline_json_are_mutually_exclusive() -> None:
+    with pytest.raises(SystemExit) as raised:
+        build_parser().parse_args([
+            *BASE,
+            "document", "capture",
+            "--input-stdin",
+            "--input-json", "{}",
+        ])
+    assert raised.value.code == 2
 
 
 #: Commands that do not honour these flags at all: supplying one is a usage
