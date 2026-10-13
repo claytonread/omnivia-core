@@ -25,19 +25,23 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     /// never touches Core lifecycle.
     private var settingsWindowController: SettingsWindowController?
     private var capturePanelController: CapturePanelController?
+    private var captureDeliveryCoordinator: CaptureDeliveryCoordinator?
 
     init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
         self.configuration = configuration
         self.singleton = singleton
         let runner: LifecycleRunning
+        let resolvedExecutable: URL?
         do {
             let executable = try CLIResolver().resolve(override: configuration.cliOverride)
+            resolvedExecutable = executable
             runner = CLICommandRunner(
                 executable: executable,
                 installationState: configuration.installationState,
                 workspaceID: configuration.workspaceID
             )
         } catch {
+            resolvedExecutable = nil
             runner = UnavailableLifecycleRunner()
         }
         coordinator = LifecycleCoordinator(runner: runner)
@@ -48,9 +52,23 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             stateRoot: intakeRoot,
             workspaceRef: configuration.workspaceID
         ) {
+            if let resolvedExecutable,
+               let queue = try? CaptureIntentQueue(
+                   root: intakeRoot.appendingPathComponent("capture-queue", isDirectory: true)
+               ) {
+                captureDeliveryCoordinator = CaptureDeliveryCoordinator(
+                    queue: queue,
+                    transport: CLICaptureDelivery(
+                        executable: resolvedExecutable,
+                        installationState: configuration.installationState,
+                        workspaceID: configuration.workspaceID
+                    )
+                )
+            }
             capturePanelController = CapturePanelController(
                 workspaceName: configuration.workspaceID,
-                submitter: submitter
+                submitter: submitter,
+                onQueued: { [weak self] in self?.deliverPendingCaptures() }
             )
         }
     }
@@ -65,10 +83,12 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         }
         render(.checking)
         coordinator.refresh()
+        deliverPendingCaptures()
 
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.coordinator.refresh()
+                self?.deliverPendingCaptures()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -156,6 +176,11 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openCapture() {
         capturePanelController?.openOrFocus()
+    }
+
+    private func deliverPendingCaptures() {
+        guard let captureDeliveryCoordinator else { return }
+        Task { _ = await captureDeliveryCoordinator.deliverPending() }
     }
 
     @objc private func startService() {

@@ -7,14 +7,20 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     private var draft = CaptureDraft()
     private let workspaceName: String
     private let submitter: ManualCaptureSubmission
+    private let onQueued: (@MainActor () -> Void)?
     private let table = NSTableView()
     private let primaryButton = NSButton(title: "Add", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
     private let note = NSTextView()
 
-    public init(workspaceName: String, submitter: ManualCaptureSubmission) {
+    public init(
+        workspaceName: String,
+        submitter: ManualCaptureSubmission,
+        onQueued: (@MainActor () -> Void)? = nil
+    ) {
         self.workspaceName = workspaceName
         self.submitter = submitter
+        self.onQueued = onQueued
         super.init()
     }
 
@@ -183,6 +189,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 draft = CaptureDraft()
                 note.string = ""
                 refresh()
+                onQueued?()
             } catch {
                 statusLabel.stringValue = "Couldn’t queue this selection. Check access and try again."
                 primaryButton.isEnabled = true
