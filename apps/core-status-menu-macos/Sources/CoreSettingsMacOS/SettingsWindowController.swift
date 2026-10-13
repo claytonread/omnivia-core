@@ -421,9 +421,24 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         return card
     }
 
-    private enum ChipTone { case ok, warn, neu, checking }
+    /// `notBuilt` marks a control the design specifies but whose backend does
+    /// not exist in this build. It is deliberately the brand accent rather than
+    /// success/warning: it is neither healthy nor broken, and an amber chip
+    /// would read as a fault the user could repair (amendment §A6 — "A
+    /// preference deliberately switched off is not an issue to repair").
+    private enum ChipTone { case ok, warn, neu, checking, notBuilt }
 
-    /// Status chip (prototype .cs-status): icon + word, never colour alone.
+    private static func chipColor(_ tone: ChipTone) -> NSColor {
+        switch tone {
+        case .ok: return Ov.success
+        case .warn: return Ov.warning
+        case .notBuilt: return Ov.accent
+        case .neu, .checking: return Ov.textTertiary
+        }
+    }
+
+    /// Status chip (prototype .cs-status): icon + word, never colour alone
+    /// (amendment §A6, §A22 — the word carries the state without the colour).
     private func chip(_ text: String, tone: ChipTone) -> NSView {
         let row = NSStackView()
         row.orientation = .horizontal
@@ -433,16 +448,21 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         switch tone {
         case .ok: symbol = "checkmark.circle.fill"
         case .warn: symbol = "exclamationmark.circle"
+        case .notBuilt: symbol = "circle.slash"
         case .neu, .checking: symbol = "circle.dashed"
         }
         let icon = NSImageView()
         if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: text)?
             .withSymbolConfiguration(.init(pointSize: 13, weight: .regular)) {
             icon.image = image
-            icon.contentTintColor = tone == .ok ? Ov.success : (tone == .warn ? Ov.warning : Ov.textTertiary)
+            icon.contentTintColor = Self.chipColor(tone)
         }
         icon.setContentHuggingPriority(.required, for: .horizontal)
-        let label = OvFont.label(text, size: 11.5, color: tone == .warn ? Ov.textPrimary : Ov.textSecondary)
+        let label = OvFont.label(
+            text,
+            size: 11.5,
+            color: tone == .warn || tone == .notBuilt ? Ov.textPrimary : Ov.textSecondary
+        )
         row.addArrangedSubview(icon)
         row.addArrangedSubview(label)
         return row
@@ -537,6 +557,53 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             block.addArrangedSubview(acts)
         }
         return block
+    }
+
+    /// Pane note (prototype .cs-note / .cs-note.attn): an icon and a sentence,
+    /// used for the standing facts a pane needs to state rather than a status
+    /// a row owns.
+    private func note(_ text: String, symbol: String = "info.circle", attn: Bool = false) -> NSStackView {
+        let box = NSStackView()
+        box.orientation = .horizontal
+        box.alignment = .firstBaseline
+        box.spacing = 7
+        box.edgeInsets = NSEdgeInsets(top: 9, left: 11, bottom: 9, right: 11)
+        box.wantsLayer = true
+        box.layer?.cornerRadius = 7
+        box.layer?.backgroundColor = Ov.bgContentSecondary.cgColor
+        if attn {
+            box.layer?.borderWidth = 1
+            box.layer?.borderColor = Ov.warning.withAlphaComponent(0.35).cgColor
+        }
+        let icon = NSImageView()
+        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 12, weight: .regular)) {
+            icon.image = image
+            icon.contentTintColor = attn ? Ov.warning : Ov.textTertiary
+        }
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = OvFont.sans(11.5)
+        label.textColor = Ov.textSecondary
+        label.preferredMaxLayoutWidth = 540
+        box.addArrangedSubview(icon)
+        box.addArrangedSubview(label)
+        return box
+    }
+
+    /// A control the design specifies whose backend is absent in this build.
+    /// The row renders at full fidelity — title, detail, trailing chip — so the
+    /// shape of the finished pane is visible, but it offers no control to
+    /// change, because there is nothing behind it to change (§A5 — "Hide an
+    /// unimplemented control rather than falsely offering installation").
+    @discardableResult
+    private func notBuiltRow(
+        into card: NSStackView,
+        title: String,
+        detail: String,
+        status: String = "Not in this build"
+    ) -> NSStackView {
+        row(into: card, title: title, detail: detail, trailing: chip(status, tone: .notBuilt))
     }
 
     // MARK: OmniVia buttons (prototype .ov-btn / .ov-btn--bordered / --primary)
