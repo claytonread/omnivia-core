@@ -33,6 +33,7 @@ import hashlib
 import os
 import sqlite3
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -653,10 +654,9 @@ def complete_extraction(
     if outcome.state not in store.PUBLISHABLE_STATES and outcome.segments:
         raise DocumentIntakeRefused("a non-publishable extraction outcome cannot carry segments")
     try:
-        coverage = to_canonical_json(dict(outcome.coverage))
         limitations = to_canonical_json(dict(outcome.limitations))
     except (TypeError, ValueError) as error:
-        raise DocumentIntakeRefused("coverage and limitations must be canonical JSON") from error
+        raise DocumentIntakeRefused("limitations must be canonical JSON") from error
     with _fence(runner):
         revision = store.read_revision(
             runner.connection, workspace_id=workspace_id, extraction_revision_id=extraction_revision_id
@@ -670,6 +670,7 @@ def complete_extraction(
             capture_id=revision.capture_id,
             fencing_generation=runner.generation,
         )
+        coverage = _validated_coverage(outcome.coverage, segments)
         now_us = _now_us()
         disposition = _disposition(runner.connection, revision, outcome.state)
         result = store.StoredResult(
@@ -816,6 +817,76 @@ def _validated_segments(
     return tuple(stored), digest
 
 
+def _validated_coverage(
+    coverage: Mapping[str, Any], segments: tuple[store.StoredSegment, ...]
+) -> str:
+    if not isinstance(coverage, Mapping):
+        raise DocumentIntakeRefused("extraction coverage has the wrong shape")
+    document = dict(coverage)
+    if set(document) != {"schema", "units", "roleCoverage"}:
+        raise DocumentIntakeRefused("extraction coverage fields are not the closed v2 shape")
+    if document.get("schema") != "omnivia.extraction-coverage.v2":
+        raise DocumentIntakeRefused("extraction coverage has the wrong schema")
+    units = document.get("units")
+    if not isinstance(units, list) or len(units) > 128:
+        raise DocumentIntakeRefused("extraction coverage units are outside the accepted bound")
+    count_fields = {
+        "expected",
+        "visited",
+        "usefulText",
+        "knownEmpty",
+        "excludedByProfile",
+        "unsupported",
+        "failed",
+        "unknownRemaining",
+    }
+    unit_types: set[str] = set()
+    for unit in units:
+        if not isinstance(unit, dict) or set(unit) != count_fields | {"unitType"}:
+            raise DocumentIntakeRefused("an extraction coverage unit has the wrong shape")
+        unit_type = unit.get("unitType")
+        if (
+            not isinstance(unit_type, str)
+            or not unit_type
+            or unit_type in unit_types
+            or _IDENTIFIER.fullmatch(unit_type) is None
+        ):
+            raise DocumentIntakeRefused("extraction coverage unit types must be unique identifiers")
+        unit_types.add(unit_type)
+        if any(
+            not isinstance(unit.get(field), int)
+            or isinstance(unit.get(field), bool)
+            or not 0 <= unit[field] <= 2**63 - 1
+            for field in count_fields
+        ):
+            raise DocumentIntakeRefused("extraction coverage counts must be non-negative integers")
+        if unit["visited"] != sum(
+            unit[field]
+            for field in ("usefulText", "knownEmpty", "excludedByProfile", "unsupported", "failed")
+        ):
+            raise DocumentIntakeRefused("extraction coverage visited count does not reconcile")
+        if unit["expected"] != unit["visited"] + unit["unknownRemaining"]:
+            raise DocumentIntakeRefused("extraction coverage expected count does not reconcile")
+    role_coverage = document.get("roleCoverage")
+    if not isinstance(role_coverage, dict):
+        raise DocumentIntakeRefused("extraction role coverage has the wrong shape")
+    if any(
+        role not in store.SEGMENT_ROLES
+        or not isinstance(value, int)
+        or isinstance(value, bool)
+        or value <= 0
+        for role, value in role_coverage.items()
+    ):
+        raise DocumentIntakeRefused("extraction role coverage is outside the accepted role set")
+    actual_roles = dict(Counter(segment.semantic_role for segment in segments))
+    if role_coverage != actual_roles:
+        raise DocumentIntakeRefused("extraction role coverage does not match its segments")
+    try:
+        return to_canonical_json(document)
+    except (TypeError, ValueError) as error:
+        raise DocumentIntakeRefused("extraction coverage must be canonical JSON") from error
+
+
 def read_extraction_projection(
     runner: ServiceRunner,
     *,
@@ -936,7 +1007,14 @@ def reprocess_captured_copy(
         outcome = extractor(content, profile)
     except Exception:  # noqa: BLE001 - an injected extractor failure is a recorded terminal outcome
         outcome = ExtractionOutcome(
-            state="failed", limitations={"reason": "extractor_raised"}, worker_build="unavailable"
+            state="failed",
+            coverage={
+                "schema": "omnivia.extraction-coverage.v2",
+                "units": [],
+                "roleCoverage": {},
+            },
+            limitations={"reason": "extractor_raised"},
+            worker_build="unavailable",
         )
     return complete_extraction(
         runner, extraction_revision_id=revision.extraction_revision_id, outcome=outcome

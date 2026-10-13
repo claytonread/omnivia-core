@@ -94,6 +94,30 @@ def digest_of(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+def coverage_for(segments: tuple[ExtractedSegment, ...] = ()) -> dict[str, Any]:
+    roles: dict[str, int] = {}
+    for item in segments:
+        roles[item.semantic_role] = roles.get(item.semantic_role, 0) + 1
+    expected = max(1, len(segments))
+    return {
+        "schema": "omnivia.extraction-coverage.v2",
+        "units": [
+            {
+                "unitType": "block",
+                "expected": expected,
+                "visited": expected,
+                "usefulText": len(segments),
+                "knownEmpty": expected - len(segments),
+                "excludedByProfile": 0,
+                "unsupported": 0,
+                "failed": 0,
+                "unknownRemaining": 0,
+            }
+        ],
+        "roleCoverage": roles,
+    }
+
+
 @pytest.fixture
 def paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     process = FakeProcessEvidence(
@@ -197,7 +221,7 @@ def succeeded(
     return ExtractionOutcome(
         state="succeeded",
         output_digest=digest_of(label.encode()),
-        coverage={"pages": 1},
+        coverage=coverage_for(segments),
         limitations={},
         worker_build="test-1",
         segments=segments,
@@ -956,6 +980,45 @@ def test_a_terminal_replay_requires_the_exact_same_segment_set(
     assert [row.text for row in read_extraction_projection(runner, document_id=DOC)] == ["same"]
 
 
+def test_extraction_coverage_must_reconcile_and_match_the_published_roles(
+    runner: ServiceRunner, sources: Sources
+) -> None:
+    captured = sources.capture("cap-1", b"one", None)
+    revision = admit(runner, captured.capture.capture_id, "ext-1", None)
+    located = (segment(captured.capture.capture_id, "body"),)
+    wrong_roles = coverage_for(located)
+    wrong_roles["roleCoverage"] = {}
+
+    assert "does not match" in refusal(
+        lambda: complete_extraction(
+            runner,
+            extraction_revision_id=revision.extraction_revision_id,
+            outcome=ExtractionOutcome(
+                state="succeeded",
+                output_digest=digest_of(b"out"),
+                coverage=wrong_roles,
+                segments=located,
+            ),
+        )
+    )
+    wrong_counts = coverage_for(located)
+    wrong_counts["units"][0]["visited"] = 2
+    assert "does not reconcile" in refusal(
+        lambda: complete_extraction(
+            runner,
+            extraction_revision_id=revision.extraction_revision_id,
+            outcome=ExtractionOutcome(
+                state="succeeded",
+                output_digest=digest_of(b"out"),
+                coverage=wrong_counts,
+                segments=located,
+            ),
+        )
+    )
+    assert count(runner, "omnivia_extraction_results") == 0
+    assert count(runner, "omnivia_extracted_segments") == 0
+
+
 # -- content-addressed profiles -------------------------------------------------------------
 
 
@@ -1498,7 +1561,11 @@ def test_an_unsupported_or_failed_result_is_recorded_and_keeps_the_previous_extr
     result = complete_extraction(
         runner,
         extraction_revision_id=bad.extraction_revision_id,
-        outcome=ExtractionOutcome(state=state, limitations={"reason": "no adapter"}),
+        outcome=ExtractionOutcome(
+            state=state,
+            coverage=coverage_for(),
+            limitations={"reason": "no adapter"},
+        ),
     )
 
     assert result.publication_disposition == "not_published" and result.output_digest is None
