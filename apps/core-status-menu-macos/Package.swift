@@ -8,6 +8,10 @@ let package = Package(
         .macOS(.v13),
     ],
     products: [
+        .library(
+            name: "DocumentIntakeMacOS",
+            targets: ["DocumentIntakeMacOS"]
+        ),
         .executable(
             name: "omnivia-core-status-menu",
             targets: ["OmniViaCoreStatusMenu"]
@@ -20,6 +24,7 @@ let package = Package(
         ),
     ],
     targets: [
+        .target(name: "DocumentIntakeMacOS"),
         // The settings screen and readiness model are a library so both the
         // companion executable and the developer harness can host them.
         .target(
@@ -31,7 +36,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "OmniViaCoreStatusMenu",
-            dependencies: ["CoreSettingsMacOS"]
+            dependencies: ["CoreSettingsMacOS", "DocumentIntakeMacOS"]
         ),
         .executableTarget(
             name: "CoreSettingsHarness",
@@ -39,7 +44,7 @@ let package = Package(
         ),
         .testTarget(
             name: "OmniViaCoreStatusMenuTests",
-            dependencies: ["OmniViaCoreStatusMenu", "CoreSettingsMacOS"]
+            dependencies: ["OmniViaCoreStatusMenu", "CoreSettingsMacOS", "DocumentIntakeMacOS"]
         ),
     ]
 )
