@@ -110,6 +110,7 @@ public actor FileMonitoringCoordinator {
                     ))
                     continue
                 }
+                let observedDirtyEpoch = value.dirtyEpoch
                 value.dirtyEpoch += 1
                 let itemID = Self.identifier(prefix: "item")
                 let seed = CaptureIntentSeed(
@@ -144,15 +145,24 @@ public actor FileMonitoringCoordinator {
                     createdAt: checkedAt,
                     displayName: value.displayName
                 )
-                let entries = try await preparation.prepareAndPublish([
-                    CapturePreparationItem(
-                        access: NativeAccessExpectation(
-                            accessRef: value.accessRef,
-                            generation: value.bindingGeneration
+                let entries = try await preparation.prepareAndPublish(
+                    [
+                        CapturePreparationItem(
+                            access: NativeAccessExpectation(
+                                accessRef: value.accessRef,
+                                generation: value.bindingGeneration
+                            ),
+                            seed: seed,
+                            observedDirtyEpoch: observedDirtyEpoch
                         ),
-                        seed: seed
-                    ),
-                ])
+                    ],
+                    binding: CaptureDeliveryBinding(
+                        targetRef: value.targetRef,
+                        workspaceRef: value.workspaceRef,
+                        targetBindingRevision: value.targetBindingRevision,
+                        callerContextBinding: value.callerContextBinding
+                    )
+                )
                 guard let entry = entries.first else { continue }
                 _ = try subscriptions.update(id: value.subscriptionID) {
                     $0.dirtyEpoch = value.dirtyEpoch

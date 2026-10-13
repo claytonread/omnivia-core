@@ -1,6 +1,42 @@
 import CryptoKit
 import Foundation
 
+/// The one coordination primitive every publication-relevant mutation shares.
+///
+/// Lock order: this gate is the outermost and only lock in the publication path.
+/// `NativeAccessStore`, `FileSubscriptionStore`, `FolderSubscriptionStore` and
+/// `CaptureIntentQueue` each hold it for the whole of their own critical
+/// sections, so the final recheck inside `NativeAccessStore
+/// .withValidatedGenerations` can read the subscription stores and commit the
+/// queue batch without an owner relink, a subscription pause, a reconfigure, a
+/// dirty-epoch bump or a delivery claim interleaving. It is recursive because
+/// that nesting all happens on one thread; nothing held under it ever waits on
+/// another thread, and no second lock is taken before it, so there is no cycle
+/// to deadlock on. `CapturePreparationCoordinator.ticketLock` is a leaf taken
+/// under the gate and never takes it.
+///
+/// Production shares exactly one gate — see `DocumentIntakeEnvironment`. The
+/// default argument gives a standalone owner its own, so a test can build one
+/// store in isolation.
+/// ponytail: one lock for all intake state. Split it per owner with an explicit
+/// order only if contention ever shows up in a profile.
+public final class PublicationGate: @unchecked Sendable {
+    /// Safe default for owners assembled outside `DocumentIntakeEnvironment`.
+    /// Production creates an explicitly scoped gate for each intake state root.
+    public static let processShared = PublicationGate()
+
+    private let lock = NSRecursiveLock()
+
+    public init() {}
+
+    public func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        try lock.withLock(body)
+    }
+
+    func lockForTesting() { lock.lock() }
+    func unlockForTesting() { lock.unlock() }
+}
+
 public enum CapturePreparationError: Error, Equatable {
     case emptySelection
     case duplicateItem
@@ -9,6 +45,15 @@ public enum CapturePreparationError: Error, Equatable {
     case fileTooLarge
     case fileChanged
     case coordinatedReadFailed
+    /// The submission was cancelled, or its preparation tokens no longer name
+    /// exactly this batch, before publication committed.
+    case cancelled
+    /// A frozen intent does not carry the exact caller, target and workspace
+    /// binding this publication was authorised for.
+    case bindingMismatch
+    /// The subscription an automatic item was prepared against has been
+    /// suppressed, reconfigured, or has moved on to a later dirty epoch.
+    case consentChanged
 }
 
 public struct CaptureIntentSeed: Sendable {
@@ -105,10 +150,20 @@ public struct CaptureIntentSeed: Sendable {
 public struct CapturePreparationItem: Sendable {
     public let access: NativeAccessExpectation
     public let seed: CaptureIntentSeed
+    /// The persisted dirty epoch this automatic item was prepared against; 0
+    /// for a member this scan discovered and has not persisted yet. Required
+    /// for an item carrying consent and rejected for any other item, so an
+    /// automatic publication always has something to revalidate.
+    public let observedDirtyEpoch: UInt64?
 
-    public init(access: NativeAccessExpectation, seed: CaptureIntentSeed) {
+    public init(
+        access: NativeAccessExpectation,
+        seed: CaptureIntentSeed,
+        observedDirtyEpoch: UInt64? = nil
+    ) {
         self.access = access
         self.seed = seed
+        self.observedDirtyEpoch = observedDirtyEpoch
     }
 }
 
@@ -167,38 +222,101 @@ public struct SystemCoordinatedOriginalReader: CoordinatedOriginalReading {
     }
 }
 
-/// Prepares original bytes away from the caller thread, then rechecks every route generation while
-/// atomically publishing the complete selection to the durable queue.
+/// Prepares original bytes away from the caller thread, then revalidates the complete batch while
+/// atomically publishing it to the durable queue.
+///
+/// Publication is one critical section on the shared `PublicationGate`, the same gate every owner
+/// relink, disconnect, adopt, subscription register/update and delivery claim holds. Inside it
+/// every item is rechecked together — its access generations, its frozen caller binding, its
+/// subscription facts, its preparation token and the submission's cancellation — and only then
+/// does the queue commit, still under the same gate. Nothing is written for a rejected batch, so
+/// no mutation can interleave between the final validation and the commit, and no delivery claim
+/// observes a half-completed publication.
 public final class CapturePreparationCoordinator: @unchecked Sendable {
     private let accessStore: NativeAccessStore
     private let queue: CaptureIntentQueue
     private let reader: any CoordinatedOriginalReading
+    private let fileSubscriptions: FileSubscriptionStore?
+    private let folderSubscriptions: FolderSubscriptionStore?
+    private let gate: PublicationGate
+
+    /// Test seam: runs inside the publication critical section, after every
+    /// item's consent has been revalidated and before the queue commits. Set it
+    /// before the call that should observe it; production leaves it nil.
+    var afterConsentValidation: (() -> Void)?
+
+    /// Leaf under `gate`: taken while the gate is held and never takes it.
+    private let ticketLock = NSLock()
+    /// Live preparation tokens per submission. A submission is cancelled by
+    /// name, and stays cancelled: an identity that was withdrawn must never
+    /// publish, not even on a later retry.
+    /// ponytail: in memory only — a crash drops the whole in-flight
+    /// preparation anyway. Persist it only if cancellation has to outlive the
+    /// process.
+    private var openPreparations: [String: Set<String>] = [:]
+    private var cancelledSubmissions: Set<String> = []
 
     public init(
         accessStore: NativeAccessStore,
         queue: CaptureIntentQueue,
-        reader: any CoordinatedOriginalReading = SystemCoordinatedOriginalReader()
+        reader: any CoordinatedOriginalReading = SystemCoordinatedOriginalReader(),
+        fileSubscriptions: FileSubscriptionStore? = nil,
+        folderSubscriptions: FolderSubscriptionStore? = nil,
+        gate: PublicationGate = .processShared
     ) {
         self.accessStore = accessStore
         self.queue = queue
         self.reader = reader
+        self.fileSubscriptions = fileSubscriptions
+        self.folderSubscriptions = folderSubscriptions
+        self.gate = gate
     }
 
-    public func prepareAndPublish(_ items: [CapturePreparationItem]) async throws -> [CaptureQueueEntry] {
+    /// Withdraws a submission. A cancellation that lands while its bytes are
+    /// still being read is seen by the publication boundary, which then rejects
+    /// the whole batch, including a batch of snapshot-only items.
+    ///
+    /// It takes the shared gate so it is ordered against publication the same
+    /// way every other mutation is: it either lands before the final validation
+    /// and rejects the batch, or after the commit, never between the two.
+    public func cancel(submissionId: String) {
+        gate.withLock {
+            ticketLock.withLock {
+                cancelledSubmissions.insert(submissionId)
+                openPreparations[submissionId] = []
+            }
+        }
+    }
+
+    /// Publishes one complete prepared selection for exactly `binding`.
+    public func prepareAndPublish(
+        _ items: [CapturePreparationItem],
+        binding: CaptureDeliveryBinding
+    ) async throws -> [CaptureQueueEntry] {
         guard !items.isEmpty else { throw CapturePreparationError.emptySelection }
         guard Set(items.map { $0.seed.itemId }).count == items.count,
               Set(items.map { $0.access.accessRef }).count == items.count
         else { throw CapturePreparationError.duplicateItem }
+        // One submission publishes as one unit, so one cancellation covers it.
+        let submissionId = items[0].seed.submissionId
+        guard items.allSatisfy({ $0.seed.submissionId == submissionId }) else {
+            throw CapturePreparationError.invalidBinding
+        }
         for item in items {
-            if let binding = item.seed.originalBinding {
-                guard binding.accessRecordId == item.access.accessRef,
-                      binding.bindingGeneration == item.access.generation
+            if let original = item.seed.originalBinding {
+                guard original.accessRecordId == item.access.accessRef,
+                      original.bindingGeneration == item.access.generation
                 else { throw CapturePreparationError.invalidBinding }
+            }
+            guard (item.seed.consent == nil) == (item.observedDirtyEpoch == nil) else {
+                throw CapturePreparationError.invalidBinding
             }
         }
 
-        let accessStore = self.accessStore
-        let queue = self.queue
+        let tokens = Set(items.map { _ in UUID().uuidString })
+        try openPreparation(submissionId: submissionId, tokens: tokens)
+        defer { closePreparation(submissionId: submissionId) }
+
         let reader = self.reader
         return try await Task.detached(priority: .userInitiated) {
             var prepared: [(intent: CaptureIntentV3, payload: Data)] = []
@@ -207,7 +325,7 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
                 var payload: Data?
                 for _ in 0..<3 {
                     do {
-                        payload = try accessStore.withReadAccess(
+                        payload = try self.accessStore.withReadAccess(
                             accessRef: item.access.accessRef,
                             expectedGeneration: item.access.generation,
                             expectedRootBindingGeneration: item.access.rootBindingGeneration
@@ -228,9 +346,92 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
                 }
                 prepared.append((try item.seed.freeze(payload: payload), payload))
             }
-            return try accessStore.withValidatedGenerations(items.map(\.access)) {
-                try queue.enqueueBatch(prepared)
+            return try self.accessStore.withValidatedGenerations(items.map(\.access)) {
+                try self.consume(submissionId: submissionId, tokens: tokens)
+                for (item, frozen) in zip(items, prepared) {
+                    guard binding.matches(frozen.intent) else {
+                        throw CapturePreparationError.bindingMismatch
+                    }
+                    try self.validateConsent(
+                        frozen.intent,
+                        observedDirtyEpoch: item.observedDirtyEpoch
+                    )
+                }
+                self.afterConsentValidation?()
+                return try self.queue.enqueueBatch(prepared)
             }
         }.value
+    }
+
+    /// Rechecks the subscription an automatic item was prepared against. The
+    /// subscription stores are read inside the publication critical section and
+    /// take the same shared gate, so a register/update cannot land between this
+    /// recheck and the queue commit that follows it.
+    private func validateConsent(
+        _ intent: CaptureIntentV3,
+        observedDirtyEpoch: UInt64?
+    ) throws {
+        guard let consent = intent.consent else { return }
+        guard let observedDirtyEpoch else { throw CapturePreparationError.invalidBinding }
+        switch intent.surface {
+        case .automaticFile:
+            let watched = fileSubscriptions?.all().first {
+                $0.subscriptionID == consent.subscriptionId
+            }
+            guard let current = watched,
+                  Self.acknowledged(current.state),
+                  current.consentGeneration == consent.consentGeneration,
+                  current.configGeneration == consent.configGeneration,
+                  current.dirtyEpoch == observedDirtyEpoch
+            else { throw CapturePreparationError.consentChanged }
+        case .automaticFolder:
+            guard let current = folderSubscriptions?.subscription(id: consent.subscriptionId),
+                  Self.acknowledged(current.state),
+                  current.consentGeneration == consent.consentGeneration,
+                  current.configGeneration == consent.configGeneration,
+                  let memberId = intent.originalBinding?.memberId
+            else { throw CapturePreparationError.consentChanged }
+            // A member this scan discovered is not persisted until the scan
+            // commits, so it was prepared against no epoch at all.
+            let persisted = current.members.first { $0.memberID == memberId }
+            guard (persisted?.dirtyEpoch ?? 0) == observedDirtyEpoch else {
+                throw CapturePreparationError.consentChanged
+            }
+        default:
+            throw CapturePreparationError.invalidBinding
+        }
+    }
+
+    /// Consent is acknowledged and unsuppressed only while the subscription is
+    /// running or still waiting for Core to admit its reviewed baseline.
+    private static func acknowledged(_ state: FolderSubscriptionState) -> Bool {
+        state == .active || state == .waitingForCore
+    }
+
+    private func openPreparation(submissionId: String, tokens: Set<String>) throws {
+        try ticketLock.withLock {
+            guard !cancelledSubmissions.contains(submissionId) else {
+                throw CapturePreparationError.cancelled
+            }
+            guard openPreparations[submissionId] == nil else {
+                throw CapturePreparationError.duplicateItem
+            }
+            openPreparations[submissionId] = tokens
+        }
+    }
+
+    /// Every token minted for this preparation has to still be live and name
+    /// exactly this batch, so a cancelled or partial selection cannot publish.
+    private func consume(submissionId: String, tokens: Set<String>) throws {
+        try ticketLock.withLock {
+            guard openPreparations[submissionId] == tokens else {
+                throw CapturePreparationError.cancelled
+            }
+            openPreparations[submissionId] = []
+        }
+    }
+
+    private func closePreparation(submissionId: String) {
+        ticketLock.withLock { _ = openPreparations.removeValue(forKey: submissionId) }
     }
 }

@@ -272,13 +272,18 @@ public final class CaptureIntentQueue: @unchecked Sendable {
 
     private static let schema = "omnivia.macos.capture-queue.v2"
     private static let legacySchema = "omnivia.macos.capture-queue.v1"
-    private let lock = NSLock()
+    /// Shared with the other publication owners; see `PublicationGate`. Enqueue
+    /// publication and every delivery claim/stage transition hold it, so a
+    /// claim can never observe a batch the publication boundary has not
+    /// committed.
+    private let gate: PublicationGate
     private let root: URL
     private let payloadDirectory: URL
     private let manifest: URL
     private var entries: [String: CaptureQueueEntry]
 
-    public init(root: URL) throws {
+    public init(root: URL, gate: PublicationGate = .processShared) throws {
+        self.gate = gate
         self.root = root
         payloadDirectory = root.appendingPathComponent("payloads", isDirectory: true)
         manifest = root.appendingPathComponent("capture-queue-v1.json", isDirectory: false)
@@ -305,11 +310,11 @@ public final class CaptureIntentQueue: @unchecked Sendable {
     }
 
     public func allEntries() -> [CaptureQueueEntry] {
-        lock.withLock { entries.values.sorted { $0.intent.itemId < $1.intent.itemId } }
+        gate.withLock { entries.values.sorted { $0.intent.itemId < $1.intent.itemId } }
     }
 
     public func payloadURL(for itemID: String) throws -> URL {
-        try lock.withLock {
+        try gate.withLock {
             guard let entry = entries[itemID] else { throw CaptureQueueError.unknownItem }
             guard Self.unresolved(entry.state) else { throw CaptureQueueError.invalidTransition }
             return payloadDirectory.appendingPathComponent(entry.intent.payloadRef + ".payload")
@@ -340,7 +345,7 @@ public final class CaptureIntentQueue: @unchecked Sendable {
             else { throw CaptureQueueError.payloadMismatch }
             return (item.intent, item.payload, intentDigest, UInt64(canonical.count))
         }
-        return try lock.withLock {
+        return try gate.withLock {
             var results: [CaptureQueueEntry] = []
             var newItems: [(CaptureIntentV3, Data, String)] = []
             for (intent, payload, intentDigest, _) in prepared {
@@ -522,7 +527,7 @@ public final class CaptureIntentQueue: @unchecked Sendable {
         _ itemID: String,
         change: (CaptureQueueEntry) throws -> CaptureQueueEntry
     ) throws -> CaptureQueueEntry {
-        try lock.withLock {
+        try gate.withLock {
             guard let current = entries[itemID] else { throw CaptureQueueError.unknownItem }
             let changed = try change(current)
             var replacement = entries

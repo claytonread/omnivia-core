@@ -325,6 +325,7 @@ public actor FolderMonitoringCoordinator {
                     Self.replace(member, in: &updated.members)
                     continue
                 }
+                let observedDirtyEpoch = member.dirtyEpoch
                 member.dirtyEpoch += 1
                 let itemID = Self.identifier(prefix: "item")
                 let seed = Self.seed(
@@ -341,16 +342,20 @@ public actor FolderMonitoringCoordinator {
                 )
                 let entries: [CaptureQueueEntry]
                 do {
-                    entries = try await preparation.prepareAndPublish([
-                        CapturePreparationItem(
-                            access: NativeAccessExpectation(
-                                accessRef: member.accessRef,
-                                generation: member.membershipGeneration,
-                                rootBindingGeneration: expectedGeneration
+                    entries = try await preparation.prepareAndPublish(
+                        [
+                            CapturePreparationItem(
+                                access: NativeAccessExpectation(
+                                    accessRef: member.accessRef,
+                                    generation: member.membershipGeneration,
+                                    rootBindingGeneration: expectedGeneration
+                                ),
+                                seed: seed,
+                                observedDirtyEpoch: observedDirtyEpoch
                             ),
-                            seed: seed
-                        ),
-                    ])
+                        ],
+                        binding: Self.binding(of: subscription)
+                    )
                 } catch CaptureQueueError.capacityExceeded {
                     capacityDeferred = true
                     break
@@ -412,16 +417,21 @@ public actor FolderMonitoringCoordinator {
                 )
                 let entries: [CaptureQueueEntry]
                 do {
-                    entries = try await preparation.prepareAndPublish([
-                        CapturePreparationItem(
-                            access: NativeAccessExpectation(
-                                accessRef: accessRef,
-                                generation: descriptor.generation,
-                                rootBindingGeneration: expectedGeneration
+                    entries = try await preparation.prepareAndPublish(
+                        [
+                            CapturePreparationItem(
+                                access: NativeAccessExpectation(
+                                    accessRef: accessRef,
+                                    generation: descriptor.generation,
+                                    rootBindingGeneration: expectedGeneration
+                                ),
+                                seed: seed,
+                                // This member is not persisted until the scan commits.
+                                observedDirtyEpoch: 0
                             ),
-                            seed: seed
-                        ),
-                    ])
+                        ],
+                        binding: Self.binding(of: subscription)
+                    )
                 } catch CaptureQueueError.capacityExceeded {
                     capacityDeferred = true
                     break
@@ -459,6 +469,15 @@ public actor FolderMonitoringCoordinator {
             queued: queued,
             unchanged: unchanged,
             absent: absent
+        )
+    }
+
+    private static func binding(of subscription: FolderSubscription) -> CaptureDeliveryBinding {
+        CaptureDeliveryBinding(
+            targetRef: subscription.targetRef,
+            workspaceRef: subscription.workspaceRef,
+            targetBindingRevision: subscription.targetBindingRevision,
+            callerContextBinding: subscription.callerContextBinding
         )
     }
 

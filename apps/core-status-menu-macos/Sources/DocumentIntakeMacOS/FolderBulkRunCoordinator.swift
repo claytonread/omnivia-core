@@ -94,9 +94,10 @@ public actor FolderBulkRunCoordinator {
         guard !selected.isEmpty else { return report(run, newlyPublished: []) }
 
         let items = selected.map { preparationItem(run: run, member: $0) }
+        let binding = Self.binding(of: run)
         var published: [CaptureQueueEntry] = []
         do {
-            published = try await preparation.prepareAndPublish(items)
+            published = try await preparation.prepareAndPublish(items, binding: binding)
         } catch CaptureQueueError.capacityExceeded {
             return report(run, newlyPublished: [])
         } catch {
@@ -104,7 +105,9 @@ public actor FolderBulkRunCoordinator {
             // preserving each item's identity for an explicit retry of only the failed source.
             for item in items {
                 do {
-                    published.append(contentsOf: try await preparation.prepareAndPublish([item]))
+                    published.append(
+                        contentsOf: try await preparation.prepareAndPublish([item], binding: binding)
+                    )
                 } catch CaptureQueueError.capacityExceeded {
                     break
                 } catch {
@@ -253,7 +256,20 @@ public actor FolderBulkRunCoordinator {
                 generation: member.bindingGeneration,
                 rootBindingGeneration: seed.originalBinding?.rootBindingGeneration
             ),
-            seed: seed
+            seed: seed,
+            // A run's members are planned at the subscription's first epoch, and
+            // monitoring cannot advance it until every reviewed baseline — that
+            // is, every member of this run — has been admitted.
+            observedDirtyEpoch: automatic ? 1 : nil
+        )
+    }
+
+    private static func binding(of run: FolderBulkRun) -> CaptureDeliveryBinding {
+        CaptureDeliveryBinding(
+            targetRef: run.targetRef,
+            workspaceRef: run.workspaceRef,
+            targetBindingRevision: run.targetBindingRevision,
+            callerContextBinding: run.callerContextBinding
         )
     }
 

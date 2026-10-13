@@ -42,12 +42,14 @@ private struct FileSubscriptionDocument: Codable {
 
 public final class FileSubscriptionStore: @unchecked Sendable {
     private static let schema = "omnivia.file-subscriptions.v1"
-    private let lock = NSLock()
+    /// Shared with the other publication owners; see `PublicationGate`.
+    private let gate: PublicationGate
     private let directory: URL
     private let stateFile: URL
     private var values: [String: FileSubscription]
 
-    public init(stateDirectory: URL) throws {
+    public init(stateDirectory: URL, gate: PublicationGate = .processShared) throws {
+        self.gate = gate
         directory = stateDirectory
         stateFile = stateDirectory.appendingPathComponent("file-subscriptions-v1.json")
         try Self.prepareDirectory(stateDirectory)
@@ -55,12 +57,12 @@ public final class FileSubscriptionStore: @unchecked Sendable {
     }
 
     public func all() -> [FileSubscription] {
-        lock.withLock { values.values.sorted { $0.subscriptionID < $1.subscriptionID } }
+        gate.withLock { values.values.sorted { $0.subscriptionID < $1.subscriptionID } }
     }
 
     @discardableResult
     public func register(_ value: FileSubscription) throws -> FileSubscription {
-        try lock.withLock {
+        try gate.withLock {
             guard values[value.subscriptionID] == nil else {
                 throw FileSubscriptionStoreError.duplicateSubscription
             }
@@ -78,7 +80,7 @@ public final class FileSubscriptionStore: @unchecked Sendable {
         id: String,
         _ change: (inout FileSubscription) throws -> Void
     ) throws -> FileSubscription {
-        try lock.withLock {
+        try gate.withLock {
             guard var value = values[id] else { throw FileSubscriptionStoreError.unknownSubscription }
             try change(&value)
             try Self.validate(value)

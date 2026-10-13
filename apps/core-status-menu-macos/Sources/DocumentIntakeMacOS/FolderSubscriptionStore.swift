@@ -75,12 +75,14 @@ private struct FolderSubscriptionDocument: Codable {
 /// locators; the selected root's bookmark and absolute path remain in `NativeAccessStore`.
 public final class FolderSubscriptionStore: @unchecked Sendable {
     private static let schema = "omnivia.folder-subscriptions.v1"
-    private let lock = NSLock()
+    /// Shared with the other publication owners; see `PublicationGate`.
+    private let gate: PublicationGate
     private let directory: URL
     private let stateFile: URL
     private var subscriptions: [String: FolderSubscription]
 
-    public init(stateDirectory: URL) throws {
+    public init(stateDirectory: URL, gate: PublicationGate = .processShared) throws {
+        self.gate = gate
         directory = stateDirectory
         stateFile = stateDirectory.appendingPathComponent("folder-subscriptions-v1.json")
         try Self.prepareDirectory(stateDirectory)
@@ -88,16 +90,16 @@ public final class FolderSubscriptionStore: @unchecked Sendable {
     }
 
     public func all() -> [FolderSubscription] {
-        lock.withLock { subscriptions.values.sorted { $0.subscriptionID < $1.subscriptionID } }
+        gate.withLock { subscriptions.values.sorted { $0.subscriptionID < $1.subscriptionID } }
     }
 
     public func subscription(id: String) -> FolderSubscription? {
-        lock.withLock { subscriptions[id] }
+        gate.withLock { subscriptions[id] }
     }
 
     @discardableResult
     public func register(_ subscription: FolderSubscription) throws -> FolderSubscription {
-        try lock.withLock {
+        try gate.withLock {
             guard subscriptions[subscription.subscriptionID] == nil else {
                 throw FolderSubscriptionStoreError.duplicateSubscription
             }
@@ -115,7 +117,7 @@ public final class FolderSubscriptionStore: @unchecked Sendable {
         id: String,
         _ change: (inout FolderSubscription) throws -> Void
     ) throws -> FolderSubscription {
-        try lock.withLock {
+        try gate.withLock {
             guard var current = subscriptions[id] else {
                 throw FolderSubscriptionStoreError.unknownSubscription
             }

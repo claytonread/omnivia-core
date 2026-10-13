@@ -186,7 +186,8 @@ public final class NativeAccessStore: @unchecked Sendable {
         charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:-"
     )
 
-    private let lock = NSLock()
+    /// Shared with the other publication owners; see `PublicationGate`.
+    private let gate: PublicationGate
     private let directory: URL
     private let stateFile: URL
     private let codec: any SecurityScopedBookmarkCoding
@@ -195,8 +196,10 @@ public final class NativeAccessStore: @unchecked Sendable {
 
     public init(
         stateDirectory: URL,
-        codec: any SecurityScopedBookmarkCoding = SystemSecurityScopedBookmarkCodec()
+        codec: any SecurityScopedBookmarkCoding = SystemSecurityScopedBookmarkCodec(),
+        gate: PublicationGate = .processShared
     ) throws {
+        self.gate = gate
         self.directory = stateDirectory
         self.stateFile = stateDirectory.appendingPathComponent("native-access-v1.json", isDirectory: false)
         self.codec = codec
@@ -212,13 +215,13 @@ public final class NativeAccessStore: @unchecked Sendable {
     }
 
     public func descriptors() -> [NativeAccessDescriptor] {
-        lock.withLock {
+        gate.withLock {
             records.values.sorted { $0.accessRef < $1.accessRef }.map(Self.descriptor)
         }
     }
 
     public func rootDescriptors() -> [NativeRootAccessDescriptor] {
-        lock.withLock {
+        gate.withLock {
             roots.values.sorted { $0.rootRef < $1.rootRef }.map(Self.rootDescriptor)
         }
     }
@@ -241,7 +244,7 @@ public final class NativeAccessStore: @unchecked Sendable {
         } catch {
             throw NativeAccessError.accessDenied
         }
-        return try lock.withLock {
+        return try gate.withLock {
             let existing = records[accessRef]
             if existing?.state == .connected {
                 throw NativeAccessError.duplicateConnectedAccess
@@ -282,7 +285,7 @@ public final class NativeAccessStore: @unchecked Sendable {
             selectedURL,
             for: .rootMember(rootRef: rootRef, memberRef: "member", relativeComponents: ["member"])
         )
-        return try lock.withLock {
+        return try gate.withLock {
             if let current = roots[rootRef], current.state == .connected {
                 guard let bookmark = current.bookmark else { throw NativeAccessError.invalidState }
                 let resolved: (url: URL, stale: Bool)
@@ -339,7 +342,7 @@ public final class NativeAccessStore: @unchecked Sendable {
     public func releaseRoot(rootRef: String, ownerRef: String) throws -> NativeRootAccessDescriptor {
         try Self.validateIdentifier(rootRef)
         try Self.validateIdentifier(ownerRef)
-        return try lock.withLock {
+        return try gate.withLock {
             guard let current = roots[rootRef] else { throw NativeAccessError.unknownAccess }
             let owners = current.ownerRefs.filter { $0 != ownerRef }
             let hasMember = records.values.contains {
@@ -366,7 +369,7 @@ public final class NativeAccessStore: @unchecked Sendable {
 
     @discardableResult
     public func disconnect(accessRef: String) throws -> NativeAccessDescriptor {
-        try lock.withLock {
+        try gate.withLock {
             guard let current = records[accessRef] else { throw NativeAccessError.unknownAccess }
             if current.state == .disconnected { return Self.descriptor(current) }
             let record = NativeAccessRecord(
@@ -391,7 +394,7 @@ public final class NativeAccessStore: @unchecked Sendable {
 
     public func disconnect(linkedDocumentID: String) throws -> [NativeAccessDescriptor] {
         try Self.validateIdentifier(linkedDocumentID)
-        return try lock.withLock {
+        return try gate.withLock {
             let matches = records.values.filter {
                 $0.linkedDocumentID == linkedDocumentID && $0.state == .connected
             }
@@ -426,7 +429,7 @@ public final class NativeAccessStore: @unchecked Sendable {
         expectedRootBindingGeneration: UInt64? = nil,
         _ body: (URL) throws -> T
     ) throws -> T {
-        let resolvedAccess = try lock.withLock { () throws -> (NativeAccessRecord, Data) in
+        let resolvedAccess = try gate.withLock { () throws -> (NativeAccessRecord, Data) in
             guard let record = records[accessRef] else { throw NativeAccessError.unknownAccess }
             guard record.state == .connected else { throw NativeAccessError.disconnected }
             guard record.generation == expectedGeneration else {
@@ -473,7 +476,7 @@ public final class NativeAccessStore: @unchecked Sendable {
         expectedGeneration: UInt64,
         _ body: (URL) throws -> T
     ) throws -> T {
-        let root = try lock.withLock { () throws -> NativeRootAccessRecord in
+        let root = try gate.withLock { () throws -> NativeRootAccessRecord in
             guard let root = roots[rootRef] else { throw NativeAccessError.unknownAccess }
             guard root.state == .connected, root.bookmark != nil else {
                 throw NativeAccessError.disconnected
@@ -519,7 +522,7 @@ public final class NativeAccessStore: @unchecked Sendable {
             relativeComponents: relativeComponents
         )
         try Self.validate(route)
-        return try lock.withLock {
+        return try gate.withLock {
             guard let root = roots[rootRef], root.state == .connected, root.bookmark != nil else {
                 throw NativeAccessError.unknownAccess
             }
@@ -556,7 +559,7 @@ public final class NativeAccessStore: @unchecked Sendable {
         _ expectations: [NativeAccessExpectation],
         _ body: () throws -> T
     ) throws -> T {
-        try lock.withLock {
+        try gate.withLock {
             guard !expectations.isEmpty,
                   Set(expectations.map(\.accessRef)).count == expectations.count
             else { throw NativeAccessError.invalidRoute }

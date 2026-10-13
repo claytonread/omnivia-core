@@ -271,7 +271,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                 pendingSubscriptions.append(subscription)
             }
         }
-        let entries = try await preparation.prepareAndPublish(items)
+        let entries = try await preparation.prepareAndPublish(items, binding: binding)
         snapshotStore?.remove(candidates.filter { $0.source.isSnapshot }.map(\.url))
         // Ownership moved to the queue: its intents now hold the originals'
         // grants, and the snapshots' bytes were just consumed. Only the
