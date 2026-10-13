@@ -104,6 +104,46 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         XCTAssertEqual(Set(entries.compactMap { $0.intent.originalBinding?.rootAccessGroupId }).count, 1)
     }
 
+    func testEmptyOnlyNewWatchRetainsReviewedRootGrant() async throws {
+        let root = try temporaryDirectory()
+        let state = root.appendingPathComponent(".state", isDirectory: true)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: BookmarkCodec()
+        )
+        let submission = FolderCaptureSubmission(
+            environment: environment,
+            workspaceRef: "workspace-1"
+        )
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(
+                mode: .keepUpdated,
+                recursive: true,
+                includeHidden: false,
+                watchInitialContent: .onlyNewAndChanged
+            )
+        )
+
+        let entries = try await submission.submit(plan)
+
+        XCTAssertTrue(entries.isEmpty)
+        let subscription = try XCTUnwrap(environment.folderSubscriptions.all().first)
+        XCTAssertTrue(subscription.members.isEmpty)
+        let grant = try XCTUnwrap(environment.accessStore.rootDescriptors().first)
+        XCTAssertEqual(grant.rootRef, subscription.rootRef)
+        XCTAssertEqual(grant.ownerRefs, [subscription.subscriptionID])
+        XCTAssertEqual(grant.state, .connected)
+        XCTAssertNoThrow(
+            try environment.accessStore.withRootReadAccess(
+                rootRef: grant.rootRef,
+                expectedGeneration: grant.generation
+            ) { resolved in
+                XCTAssertEqual(resolved, root.resolvingSymlinksInPath().standardizedFileURL)
+            }
+        )
+    }
+
     func testLargeFolderRunProgressesInDurableBoundedBatches() async throws {
         let root = try temporaryDirectory()
         for index in 0..<12 {

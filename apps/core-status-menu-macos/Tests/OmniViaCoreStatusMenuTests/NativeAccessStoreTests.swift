@@ -3,13 +3,15 @@ import XCTest
 @testable import DocumentIntakeMacOS
 
 private final class TestBookmarkCodec: SecurityScopedBookmarkCoding, @unchecked Sendable {
+    private(set) var makes = 0
     private(set) var starts = 0
     private(set) var stops = 0
     var stale = false
     var permitsAccess = true
 
     func makeReadOnlyBookmark(for url: URL) throws -> Data {
-        Data(url.path.utf8)
+        makes += 1
+        return Data(url.path.utf8)
     }
 
     func resolveReadOnlyBookmark(_ data: Data) throws -> (url: URL, stale: Bool) {
@@ -109,11 +111,18 @@ final class NativeAccessStoreTests: XCTestCase {
         try Data("c".utf8).write(to: root.appendingPathComponent("c.txt"))
         let codec = TestBookmarkCodec()
         let store = try NativeAccessStore(stateDirectory: state, codec: codec)
-        _ = try store.adopt(
+        let rootGrant = try store.adoptRoot(
+            rootRef: "root-a",
+            ownerRef: "run-a",
+            selectedURL: root
+        )
+        _ = try store.adoptRootMember(
             accessRef: "owner-a",
             linkedDocumentID: "doc-a",
-            selectedURL: root,
-            route: .rootMember(rootRef: "root-a", memberRef: "member-a", relativeComponents: ["a.txt"])
+            rootRef: "root-a",
+            memberRef: "member-a",
+            relativeComponents: ["a.txt"],
+            expectedRootGeneration: rootGrant.generation
         )
         _ = try store.adopt(
             accessRef: "owner-b",
@@ -148,35 +157,202 @@ final class NativeAccessStoreTests: XCTestCase {
             withDestinationURL: outside
         )
         let store = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
-        _ = try store.adopt(
+        let rootGrant = try store.adoptRoot(
+            rootRef: "root-a",
+            ownerRef: "run-a",
+            selectedURL: root
+        )
+        _ = try store.adoptRootMember(
             accessRef: "owner-a",
             linkedDocumentID: "doc-a",
-            selectedURL: root,
-            route: .rootMember(
-                rootRef: "root-a",
-                memberRef: "member-a",
-                relativeComponents: ["escape", "secret.txt"]
-            )
+            rootRef: "root-a",
+            memberRef: "member-a",
+            relativeComponents: ["escape", "secret.txt"],
+            expectedRootGeneration: rootGrant.generation
         )
 
         XCTAssertThrowsError(
-            try store.withReadAccess(accessRef: "owner-a", expectedGeneration: 1) { _ in () }
+            try store.withReadAccess(
+                accessRef: "owner-a",
+                expectedGeneration: 1,
+                expectedRootBindingGeneration: rootGrant.generation
+            ) { _ in () }
         ) { XCTAssertEqual($0 as? NativeAccessError, .memberOutsideRoot) }
+    }
+
+    func testRootMembersShareOnePersistedBookmarkUntilLastOwnerAndMemberRelease() throws {
+        let state = try temporaryDirectory()
+        let root = state.deletingLastPathComponent().appendingPathComponent("root", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("a".utf8).write(to: root.appendingPathComponent("a.txt"))
+        try Data("b".utf8).write(to: root.appendingPathComponent("b.txt"))
+        let codec = TestBookmarkCodec()
+        let store = try NativeAccessStore(stateDirectory: state, codec: codec)
+
+        let runGrant = try store.adoptRoot(
+            rootRef: "root-a",
+            ownerRef: "run-a",
+            selectedURL: root
+        )
+        let subscriptionGrant = try store.adoptRoot(
+            rootRef: "root-a",
+            ownerRef: "subscription-a",
+            selectedURL: root
+        )
+        let first = try store.adoptRootMember(
+            accessRef: "access-a",
+            linkedDocumentID: "doc-a",
+            rootRef: "root-a",
+            memberRef: "member-a",
+            relativeComponents: ["a.txt"],
+            expectedRootGeneration: runGrant.generation
+        )
+        let second = try store.adoptRootMember(
+            accessRef: "access-b",
+            linkedDocumentID: "doc-b",
+            rootRef: "root-a",
+            memberRef: "member-b",
+            relativeComponents: ["b.txt"],
+            expectedRootGeneration: runGrant.generation
+        )
+
+        XCTAssertEqual(codec.makes, 1)
+        XCTAssertEqual(runGrant.generation, subscriptionGrant.generation)
+        XCTAssertEqual(subscriptionGrant.ownerRefs, ["run-a", "subscription-a"])
+        XCTAssertEqual(first.rootBindingGeneration, runGrant.generation)
+        XCTAssertEqual(second.rootBindingGeneration, runGrant.generation)
+        let text = try store.withReadAccess(
+            accessRef: first.accessRef,
+            expectedGeneration: first.generation,
+            expectedRootBindingGeneration: runGrant.generation
+        ) { try String(contentsOf: $0, encoding: .utf8) }
+        XCTAssertEqual(text, "a")
+
+        let stateData = try Data(contentsOf: state.appendingPathComponent("native-access-v1.json"))
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: stateData) as? [String: Any])
+        let records = try XCTUnwrap(document["records"] as? [[String: Any]])
+        let roots = try XCTUnwrap(document["roots"] as? [[String: Any]])
+        XCTAssertTrue(records.allSatisfy { $0["bookmark"] == nil })
+        XCTAssertEqual(roots.filter { $0["bookmark"] != nil }.count, 1)
+
+        XCTAssertEqual(
+            try store.releaseRoot(rootRef: "root-a", ownerRef: "run-a").state,
+            .connected
+        )
+        XCTAssertEqual(
+            try store.releaseRoot(rootRef: "root-a", ownerRef: "subscription-a").state,
+            .connected
+        )
+        _ = try store.disconnect(accessRef: first.accessRef)
+        XCTAssertEqual(try store.disconnect(accessRef: second.accessRef).state, .disconnected)
+        XCTAssertEqual(store.rootDescriptors().first?.state, .disconnected)
+    }
+
+    func testEmptyRootOwnerPersistsAcrossRestart() throws {
+        let state = try temporaryDirectory()
+        let root = state.deletingLastPathComponent().appendingPathComponent("empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let grant = try NativeAccessStore(
+            stateDirectory: state,
+            codec: TestBookmarkCodec()
+        ).adoptRoot(rootRef: "root-empty", ownerRef: "subscription-empty", selectedURL: root)
+
+        let reopened = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        XCTAssertEqual(reopened.rootDescriptors(), [grant])
+        XCTAssertNoThrow(
+            try reopened.withRootReadAccess(
+                rootRef: grant.rootRef,
+                expectedGeneration: grant.generation
+            ) { resolved in
+                XCTAssertEqual(resolved, root.resolvingSymlinksInPath().standardizedFileURL)
+            }
+        )
+    }
+
+    func testLegacyPerMemberBookmarksMigrateToOneRootGrant() throws {
+        let state = try temporaryDirectory()
+        let root = state.deletingLastPathComponent().appendingPathComponent("legacy", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let bookmark = Data(root.path.utf8).base64EncodedString()
+        let legacy: [String: Any] = [
+            "schema": "omnivia.native-access.v1",
+            "records": [
+                [
+                    "accessRef": "access-a", "linkedDocumentID": "doc-a", "generation": 1,
+                    "state": "connected", "bookmark": bookmark,
+                    "route": [
+                        "kind": "root_member", "rootRef": "root-a", "memberRef": "member-a",
+                        "relativeComponents": ["a.txt"],
+                    ],
+                ],
+                [
+                    "accessRef": "access-b", "linkedDocumentID": "doc-b", "generation": 1,
+                    "state": "connected", "bookmark": bookmark,
+                    "route": [
+                        "kind": "root_member", "rootRef": "root-a", "memberRef": "member-b",
+                        "relativeComponents": ["b.txt"],
+                    ],
+                ],
+            ],
+        ]
+        let stateFile = state.appendingPathComponent("native-access-v1.json")
+        try JSONSerialization.data(withJSONObject: legacy).write(to: stateFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
+
+        let migrated = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        XCTAssertEqual(migrated.rootDescriptors().count, 1)
+        XCTAssertEqual(Set(migrated.descriptors().compactMap(\.rootBindingGeneration)), [1])
+        let rewritten = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: stateFile)) as? [String: Any]
+        )
+        XCTAssertEqual(rewritten["schema"] as? String, "omnivia.native-access.v2")
+        XCTAssertTrue(
+            try XCTUnwrap(rewritten["records"] as? [[String: Any]])
+                .allSatisfy { $0["bookmark"] == nil }
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(rewritten["roots"] as? [[String: Any]])
+                .filter { $0["bookmark"] != nil }.count,
+            1
+        )
+    }
+
+    func testLegacyContradictoryRootBookmarksFailClosed() throws {
+        let state = try temporaryDirectory()
+        let legacy: [String: Any] = [
+            "schema": "omnivia.native-access.v1",
+            "records": ["one", "two"].enumerated().map { index, name in
+                [
+                    "accessRef": "access-\(name)", "linkedDocumentID": "doc-\(name)",
+                    "generation": 1, "state": "connected",
+                    "bookmark": Data("/private/tmp/root-\(index)".utf8).base64EncodedString(),
+                    "route": [
+                        "kind": "root_member", "rootRef": "root-a", "memberRef": "member-\(name)",
+                        "relativeComponents": ["file-\(index).txt"],
+                    ],
+                ]
+            },
+        ]
+        let stateFile = state.appendingPathComponent("native-access-v1.json")
+        try JSONSerialization.data(withJSONObject: legacy).write(to: stateFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
+
+        XCTAssertThrowsError(
+            try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        ) { XCTAssertEqual($0 as? NativeAccessError, .invalidState) }
     }
 
     func testRoutesAndPeerRequirementsFailClosed() throws {
         let state = try temporaryDirectory()
         let store = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
         XCTAssertThrowsError(
-            try store.adopt(
+            try store.adoptRootMember(
                 accessRef: "owner-a",
                 linkedDocumentID: "doc-a",
-                selectedURL: state,
-                route: .rootMember(
-                    rootRef: "root-a",
-                    memberRef: "member-a",
-                    relativeComponents: ["..", "escape"]
-                )
+                rootRef: "root-a",
+                memberRef: "member-a",
+                relativeComponents: ["..", "escape"],
+                expectedRootGeneration: 1
             )
         ) { XCTAssertEqual($0 as? NativeAccessError, .invalidRoute) }
         XCTAssertThrowsError(try NativePeerRequirement("")) {

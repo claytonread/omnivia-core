@@ -225,7 +225,11 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                 throw FolderCaptureSubmissionError.tooManyMembers
             }
         }
-        guard !members.isEmpty else { throw FolderCaptureSubmissionError.emptyScope }
+        if members.isEmpty,
+           !(policy.mode == .keepUpdated && policy.watchInitialContent == .onlyNewAndChanged)
+        {
+            throw FolderCaptureSubmissionError.emptyScope
+        }
         members.sort { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
         return FolderCapturePlan(
             root: canonicalRoot,
@@ -279,6 +283,24 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         let manifestRevision = Self.identifier(prefix: "manifest")
         let subscriptionID = Self.identifier(prefix: "subscription")
         let createdAt = ISO8601DateFormatter().string(from: Date())
+        let keepsUpdated = plan.policy.mode == .keepUpdated
+        let importsExisting = !keepsUpdated
+            || plan.policy.watchInitialContent != .onlyNewAndChanged
+        let hasBulkRun = importsExisting && !plan.members.isEmpty
+        if !keepsUpdated && !hasBulkRun { return [] }
+        let firstOwner = keepsUpdated ? subscriptionID : bulkRunID
+        let root = try accessStore.adoptRoot(
+            rootRef: rootRef,
+            ownerRef: firstOwner,
+            selectedURL: plan.root
+        )
+        if keepsUpdated && hasBulkRun {
+            _ = try accessStore.adoptRoot(
+                rootRef: rootRef,
+                ownerRef: bulkRunID,
+                selectedURL: plan.root
+            )
+        }
         var runMembers: [FolderBulkRunMember] = []
         var subscriptionMembers: [FolderSubscriptionMember] = []
         for member in plan.members {
@@ -286,15 +308,13 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
             let itemID = Self.identifier(prefix: "item")
             let documentID = Self.identifier(prefix: "doc")
             let accessRef = Self.identifier(prefix: "access")
-            let descriptor = try accessStore.adopt(
+            let descriptor = try accessStore.adoptRootMember(
                 accessRef: accessRef,
                 linkedDocumentID: documentID,
-                selectedURL: plan.root,
-                route: .rootMember(
-                    rootRef: rootRef,
-                    memberRef: memberID,
-                    relativeComponents: member.relativeComponents
-                )
+                rootRef: rootRef,
+                memberRef: memberID,
+                relativeComponents: member.relativeComponents,
+                expectedRootGeneration: root.generation
             )
             let automatic = plan.policy.mode == .keepUpdated
             let sourceIdentity = Self.identifier(prefix: "source")
@@ -321,7 +341,8 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                 let baselineBytes = excludedBaseline
                     ? try accessStore.withReadAccess(
                         accessRef: descriptor.accessRef,
-                        expectedGeneration: descriptor.generation
+                        expectedGeneration: descriptor.generation,
+                        expectedRootBindingGeneration: descriptor.rootBindingGeneration
                     ) { url in
                         try reader.readStableBytes(
                             from: url,
@@ -384,8 +405,9 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         {
             return []
         }
-        _ = try bulkRuns.register(
-            FolderBulkRun(
+        if hasBulkRun {
+            _ = try bulkRuns.register(
+                FolderBulkRun(
                 runID: bulkRunID,
                 manifestRevision: manifestRevision,
                 submissionID: submissionID,
@@ -398,10 +420,12 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                 callerContextBinding: binding.callerContextBinding,
                 createdAt: createdAt,
                 state: .adding,
-                members: runMembers
+                    members: runMembers
+                )
             )
-        )
-        return await bulkCoordinator.advance(runID: bulkRunID).newlyPublished
+            return await bulkCoordinator.advance(runID: bulkRunID).newlyPublished
+        }
+        return []
     }
 
     private static func relativeComponents(root: URL, member: URL) throws -> [String] {

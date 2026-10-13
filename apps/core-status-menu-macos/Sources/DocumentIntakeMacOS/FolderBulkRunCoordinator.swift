@@ -229,7 +229,8 @@ public actor FolderBulkRunCoordinator {
         return CapturePreparationItem(
             access: NativeAccessExpectation(
                 accessRef: member.accessRef,
-                generation: member.bindingGeneration
+                generation: member.bindingGeneration,
+                rootBindingGeneration: seed.originalBinding?.rootBindingGeneration
             ),
             seed: seed
         )

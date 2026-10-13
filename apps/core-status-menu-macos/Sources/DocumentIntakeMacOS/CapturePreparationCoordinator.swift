@@ -209,7 +209,8 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
                     do {
                         payload = try accessStore.withReadAccess(
                             accessRef: item.access.accessRef,
-                            expectedGeneration: item.access.generation
+                            expectedGeneration: item.access.generation,
+                            expectedRootBindingGeneration: item.access.rootBindingGeneration
                         ) { url in
                             try reader.readStableBytes(
                                 from: url,

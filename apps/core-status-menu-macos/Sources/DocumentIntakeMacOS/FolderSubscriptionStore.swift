@@ -205,7 +205,6 @@ public final class FolderSubscriptionStore: @unchecked Sendable {
         guard identifiers.allSatisfy(validIdentifier),
               value.configGeneration > 0,
               value.consentGeneration > 0,
-              !value.members.isEmpty,
               value.members.count <= FolderCaptureSubmission.maximumMembers,
               !value.rootDisplayName.isEmpty,
               value.rootDisplayName.count <= 255,

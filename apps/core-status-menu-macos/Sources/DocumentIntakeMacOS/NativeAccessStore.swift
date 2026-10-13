@@ -68,17 +68,31 @@ public struct NativeAccessDescriptor: Equatable, Sendable {
     public let accessRef: String
     public let linkedDocumentID: String
     public let generation: UInt64
+    public let rootBindingGeneration: UInt64?
     public let state: NativeAccessState
     public let route: NativeAccessRoute
+}
+
+public struct NativeRootAccessDescriptor: Equatable, Sendable {
+    public let rootRef: String
+    public let generation: UInt64
+    public let state: NativeAccessState
+    public let ownerRefs: [String]
 }
 
 public struct NativeAccessExpectation: Equatable, Sendable {
     public let accessRef: String
     public let generation: UInt64
+    public let rootBindingGeneration: UInt64?
 
-    public init(accessRef: String, generation: UInt64) {
+    public init(
+        accessRef: String,
+        generation: UInt64,
+        rootBindingGeneration: UInt64? = nil
+    ) {
         self.accessRef = accessRef
         self.generation = generation
+        self.rootBindingGeneration = rootBindingGeneration
     }
 }
 
@@ -124,14 +138,42 @@ private struct NativeAccessRecord: Codable, Equatable {
     let accessRef: String
     let linkedDocumentID: String
     let generation: UInt64
+    let rootBindingGeneration: UInt64?
     let state: NativeAccessState
     let route: NativeAccessRoute
+    let bookmark: Data?
+}
+
+private struct NativeRootAccessRecord: Codable, Equatable {
+    let rootRef: String
+    let generation: UInt64
+    let state: NativeAccessState
+    let ownerRefs: [String]
     let bookmark: Data?
 }
 
 private struct NativeAccessDocument: Codable {
     let schema: String
     let records: [NativeAccessRecord]
+    let roots: [NativeRootAccessRecord]
+}
+
+private struct LegacyNativeAccessRecord: Codable {
+    let accessRef: String
+    let linkedDocumentID: String
+    let generation: UInt64
+    let state: NativeAccessState
+    let route: NativeAccessRoute
+    let bookmark: Data?
+}
+
+private struct LegacyNativeAccessDocument: Codable {
+    let schema: String
+    let records: [LegacyNativeAccessRecord]
+}
+
+private struct NativeAccessSchemaEnvelope: Codable {
+    let schema: String
 }
 
 /// The sole native owner of persistent original-file grants.
@@ -139,7 +181,7 @@ private struct NativeAccessDocument: Codable {
 /// Bookmarks and relative member routes stay in this owner-only store. Public descriptors contain opaque
 /// references only. Reads are generation checked, balanced, and constrained to the selected root.
 public final class NativeAccessStore: @unchecked Sendable {
-    private static let schema = "omnivia.native-access.v1"
+    private static let schema = "omnivia.native-access.v2"
     private static let identifierCharacters = CharacterSet(
         charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:-"
     )
@@ -149,6 +191,7 @@ public final class NativeAccessStore: @unchecked Sendable {
     private let stateFile: URL
     private let codec: any SecurityScopedBookmarkCoding
     private var records: [String: NativeAccessRecord]
+    private var roots: [String: NativeRootAccessRecord]
 
     public init(
         stateDirectory: URL,
@@ -158,13 +201,25 @@ public final class NativeAccessStore: @unchecked Sendable {
         self.stateFile = stateDirectory.appendingPathComponent("native-access-v1.json", isDirectory: false)
         self.codec = codec
         self.records = [:]
+        self.roots = [:]
         try Self.prepareDirectory(stateDirectory)
-        self.records = try Self.load(from: stateFile)
+        let loaded = try Self.load(from: stateFile, codec: codec)
+        self.records = loaded.records
+        self.roots = loaded.roots
+        if loaded.migrated {
+            try persist(records: loaded.records, roots: loaded.roots)
+        }
     }
 
     public func descriptors() -> [NativeAccessDescriptor] {
         lock.withLock {
             records.values.sorted { $0.accessRef < $1.accessRef }.map(Self.descriptor)
+        }
+    }
+
+    public func rootDescriptors() -> [NativeRootAccessDescriptor] {
+        lock.withLock {
+            roots.values.sorted { $0.rootRef < $1.rootRef }.map(Self.rootDescriptor)
         }
     }
 
@@ -178,6 +233,7 @@ public final class NativeAccessStore: @unchecked Sendable {
         try Self.validateIdentifier(accessRef)
         try Self.validateIdentifier(linkedDocumentID)
         try Self.validate(route)
+        guard route == .directFile else { throw NativeAccessError.invalidRoute }
         try Self.validateSelection(selectedURL, for: route)
         let bookmark: Data
         do {
@@ -198,15 +254,113 @@ public final class NativeAccessStore: @unchecked Sendable {
                 accessRef: accessRef,
                 linkedDocumentID: linkedDocumentID,
                 generation: generation,
+                rootBindingGeneration: nil,
                 state: .connected,
                 route: route,
                 bookmark: bookmark
             )
             var replacement = records
             replacement[accessRef] = record
-            try persist(replacement)
+            try persist(records: replacement, roots: roots)
             records = replacement
             return Self.descriptor(record)
+        }
+    }
+
+    /// Adopts one selected folder grant and retains it for a durable owner such
+    /// as a bulk run or subscription. Repeating adoption for another owner of
+    /// the same root reuses the single bookmark and binding generation.
+    @discardableResult
+    public func adoptRoot(
+        rootRef: String,
+        ownerRef: String,
+        selectedURL: URL
+    ) throws -> NativeRootAccessDescriptor {
+        try Self.validateIdentifier(rootRef)
+        try Self.validateIdentifier(ownerRef)
+        try Self.validateSelection(
+            selectedURL,
+            for: .rootMember(rootRef: rootRef, memberRef: "member", relativeComponents: ["member"])
+        )
+        return try lock.withLock {
+            if let current = roots[rootRef], current.state == .connected {
+                guard let bookmark = current.bookmark else { throw NativeAccessError.invalidState }
+                let resolved: (url: URL, stale: Bool)
+                do {
+                    resolved = try codec.resolveReadOnlyBookmark(bookmark)
+                } catch {
+                    throw NativeAccessError.accessDenied
+                }
+                guard !resolved.stale else { throw NativeAccessError.staleBookmark }
+                let existing = resolved.url.resolvingSymlinksInPath().standardizedFileURL
+                let selected = selectedURL.resolvingSymlinksInPath().standardizedFileURL
+                guard existing == selected else { throw NativeAccessError.invalidRoute }
+                guard !current.ownerRefs.contains(ownerRef) else {
+                    return Self.rootDescriptor(current)
+                }
+                let updated = NativeRootAccessRecord(
+                    rootRef: current.rootRef,
+                    generation: current.generation,
+                    state: current.state,
+                    ownerRefs: (current.ownerRefs + [ownerRef]).sorted(),
+                    bookmark: bookmark
+                )
+                var replacement = roots
+                replacement[rootRef] = updated
+                try persist(records: records, roots: replacement)
+                roots = replacement
+                return Self.rootDescriptor(updated)
+            }
+            let bookmark: Data
+            do {
+                bookmark = try codec.makeReadOnlyBookmark(for: selectedURL)
+            } catch {
+                throw NativeAccessError.accessDenied
+            }
+            let record = NativeRootAccessRecord(
+                rootRef: rootRef,
+                generation: (roots[rootRef]?.generation ?? 0) + 1,
+                state: .connected,
+                ownerRefs: [ownerRef],
+                bookmark: bookmark
+            )
+            var replacement = roots
+            replacement[rootRef] = record
+            try persist(records: records, roots: replacement)
+            roots = replacement
+            return Self.rootDescriptor(record)
+        }
+    }
+
+    /// Releases one durable root owner. Member records independently retain the
+    /// shared grant; bookmark bytes are removed only after the last owner and
+    /// last connected member are both gone.
+    @discardableResult
+    public func releaseRoot(rootRef: String, ownerRef: String) throws -> NativeRootAccessDescriptor {
+        try Self.validateIdentifier(rootRef)
+        try Self.validateIdentifier(ownerRef)
+        return try lock.withLock {
+            guard let current = roots[rootRef] else { throw NativeAccessError.unknownAccess }
+            let owners = current.ownerRefs.filter { $0 != ownerRef }
+            let hasMember = records.values.contains {
+                guard $0.state == .connected,
+                      case let .rootMember(candidate, _, _) = $0.route
+                else { return false }
+                return candidate == rootRef
+            }
+            let connected = !owners.isEmpty || hasMember
+            let updated = NativeRootAccessRecord(
+                rootRef: current.rootRef,
+                generation: current.generation,
+                state: connected ? .connected : .disconnected,
+                ownerRefs: owners,
+                bookmark: connected ? current.bookmark : nil
+            )
+            var replacement = roots
+            replacement[rootRef] = updated
+            try persist(records: records, roots: replacement)
+            roots = replacement
+            return Self.rootDescriptor(updated)
         }
     }
 
@@ -219,14 +373,18 @@ public final class NativeAccessStore: @unchecked Sendable {
                 accessRef: current.accessRef,
                 linkedDocumentID: current.linkedDocumentID,
                 generation: current.generation,
+                rootBindingGeneration: current.rootBindingGeneration,
                 state: .disconnected,
                 route: current.route,
                 bookmark: nil
             )
             var replacement = records
             replacement[accessRef] = record
-            try persist(replacement)
+            var replacementRoots = roots
+            Self.pruneUnusedRoot(for: current.route, records: replacement, roots: &replacementRoots)
+            try persist(records: replacement, roots: replacementRoots)
             records = replacement
+            roots = replacementRoots
             return Self.descriptor(record)
         }
     }
@@ -244,13 +402,19 @@ public final class NativeAccessStore: @unchecked Sendable {
                     accessRef: current.accessRef,
                     linkedDocumentID: current.linkedDocumentID,
                     generation: current.generation,
+                    rootBindingGeneration: current.rootBindingGeneration,
                     state: .disconnected,
                     route: current.route,
                     bookmark: nil
                 )
             }
-            try persist(replacement)
+            var replacementRoots = roots
+            for current in matches {
+                Self.pruneUnusedRoot(for: current.route, records: replacement, roots: &replacementRoots)
+            }
+            try persist(records: replacement, roots: replacementRoots)
             records = replacement
+            roots = replacementRoots
             return matches.map { Self.descriptor(replacement[$0.accessRef]!) }
                 .sorted { $0.accessRef < $1.accessRef }
         }
@@ -259,26 +423,36 @@ public final class NativeAccessStore: @unchecked Sendable {
     public func withReadAccess<T>(
         accessRef: String,
         expectedGeneration: UInt64,
+        expectedRootBindingGeneration: UInt64? = nil,
         _ body: (URL) throws -> T
     ) throws -> T {
-        let record = try lock.withLock { () throws -> NativeAccessRecord in
+        let resolvedAccess = try lock.withLock { () throws -> (NativeAccessRecord, Data) in
             guard let record = records[accessRef] else { throw NativeAccessError.unknownAccess }
-            guard record.state == .connected, let bookmark = record.bookmark else {
-                throw NativeAccessError.disconnected
-            }
+            guard record.state == .connected else { throw NativeAccessError.disconnected }
             guard record.generation == expectedGeneration else {
                 throw NativeAccessError.generationMismatch
             }
-            return NativeAccessRecord(
-                accessRef: record.accessRef,
-                linkedDocumentID: record.linkedDocumentID,
-                generation: record.generation,
-                state: record.state,
-                route: record.route,
-                bookmark: bookmark
-            )
+            switch record.route {
+            case .directFile:
+                guard expectedRootBindingGeneration == nil, let bookmark = record.bookmark else {
+                    throw NativeAccessError.generationMismatch
+                }
+                return (record, bookmark)
+            case let .rootMember(rootRef, _, _):
+                guard record.bookmark == nil,
+                      let frozenRootGeneration = record.rootBindingGeneration,
+                      let expectedRootBindingGeneration,
+                      frozenRootGeneration == expectedRootBindingGeneration,
+                      let root = roots[rootRef],
+                      root.state == .connected,
+                      root.generation == expectedRootBindingGeneration,
+                      let bookmark = root.bookmark
+                else { throw NativeAccessError.generationMismatch }
+                return (record, bookmark)
+            }
         }
-        guard let bookmark = record.bookmark else { throw NativeAccessError.disconnected }
+        let record = resolvedAccess.0
+        let bookmark = resolvedAccess.1
         let resolved: (url: URL, stale: Bool)
         do {
             resolved = try codec.resolveReadOnlyBookmark(bookmark)
@@ -299,20 +473,17 @@ public final class NativeAccessStore: @unchecked Sendable {
         expectedGeneration: UInt64,
         _ body: (URL) throws -> T
     ) throws -> T {
-        let record = try lock.withLock { () throws -> NativeAccessRecord in
-            let candidates = records.values.filter { record in
-                guard record.state == .connected,
-                      record.bookmark != nil,
-                      case let .rootMember(candidateRoot, _, _) = record.route
-                else { return false }
-                return candidateRoot == rootRef && record.generation == expectedGeneration
+        let root = try lock.withLock { () throws -> NativeRootAccessRecord in
+            guard let root = roots[rootRef] else { throw NativeAccessError.unknownAccess }
+            guard root.state == .connected, root.bookmark != nil else {
+                throw NativeAccessError.disconnected
             }
-            guard let record = candidates.sorted(by: { $0.accessRef < $1.accessRef }).first else {
-                throw NativeAccessError.unknownAccess
+            guard root.generation == expectedGeneration else {
+                throw NativeAccessError.generationMismatch
             }
-            return record
+            return root
         }
-        guard let bookmark = record.bookmark else { throw NativeAccessError.disconnected }
+        guard let bookmark = root.bookmark else { throw NativeAccessError.disconnected }
         let resolved: (url: URL, stale: Bool)
         do {
             resolved = try codec.resolveReadOnlyBookmark(bookmark)
@@ -340,17 +511,42 @@ public final class NativeAccessStore: @unchecked Sendable {
         relativeComponents: [String],
         expectedRootGeneration: UInt64
     ) throws -> NativeAccessDescriptor {
-        try withRootReadAccess(rootRef: rootRef, expectedGeneration: expectedRootGeneration) { root in
-            try adopt(
+        try Self.validateIdentifier(accessRef)
+        try Self.validateIdentifier(linkedDocumentID)
+        let route = NativeAccessRoute.rootMember(
+            rootRef: rootRef,
+            memberRef: memberRef,
+            relativeComponents: relativeComponents
+        )
+        try Self.validate(route)
+        return try lock.withLock {
+            guard let root = roots[rootRef], root.state == .connected, root.bookmark != nil else {
+                throw NativeAccessError.unknownAccess
+            }
+            guard root.generation == expectedRootGeneration else {
+                throw NativeAccessError.generationMismatch
+            }
+            let existing = records[accessRef]
+            if existing?.state == .connected { throw NativeAccessError.duplicateConnectedAccess }
+            if let existing,
+               existing.linkedDocumentID != linkedDocumentID || existing.route != route
+            {
+                throw NativeAccessError.invalidRoute
+            }
+            let record = NativeAccessRecord(
                 accessRef: accessRef,
                 linkedDocumentID: linkedDocumentID,
-                selectedURL: root,
-                route: .rootMember(
-                    rootRef: rootRef,
-                    memberRef: memberRef,
-                    relativeComponents: relativeComponents
-                )
+                generation: (existing?.generation ?? 0) + 1,
+                rootBindingGeneration: root.generation,
+                state: .connected,
+                route: route,
+                bookmark: nil
             )
+            var replacement = records
+            replacement[accessRef] = record
+            try persist(records: replacement, roots: roots)
+            records = replacement
+            return Self.descriptor(record)
         }
     }
 
@@ -368,21 +564,39 @@ public final class NativeAccessStore: @unchecked Sendable {
                 guard let record = records[expectation.accessRef] else {
                     throw NativeAccessError.unknownAccess
                 }
-                guard record.state == .connected, record.bookmark != nil else {
-                    throw NativeAccessError.disconnected
-                }
+                guard record.state == .connected else { throw NativeAccessError.disconnected }
                 guard record.generation == expectation.generation else {
                     throw NativeAccessError.generationMismatch
+                }
+                switch record.route {
+                case .directFile:
+                    guard record.bookmark != nil, expectation.rootBindingGeneration == nil else {
+                        throw NativeAccessError.generationMismatch
+                    }
+                case let .rootMember(rootRef, _, _):
+                    guard record.bookmark == nil,
+                          let frozen = record.rootBindingGeneration,
+                          let expected = expectation.rootBindingGeneration,
+                          frozen == expected,
+                          let root = roots[rootRef],
+                          root.state == .connected,
+                          root.generation == expected,
+                          root.bookmark != nil
+                    else { throw NativeAccessError.generationMismatch }
                 }
             }
             return try body()
         }
     }
 
-    private func persist(_ value: [String: NativeAccessRecord]) throws {
+    private func persist(
+        records: [String: NativeAccessRecord],
+        roots: [String: NativeRootAccessRecord]
+    ) throws {
         let document = NativeAccessDocument(
             schema: Self.schema,
-            records: value.values.sorted { $0.accessRef < $1.accessRef }
+            records: records.values.sorted { $0.accessRef < $1.accessRef },
+            roots: roots.values.sorted { $0.rootRef < $1.rootRef }
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -424,8 +638,15 @@ public final class NativeAccessStore: @unchecked Sendable {
         }
     }
 
-    private static func load(from stateFile: URL) throws -> [String: NativeAccessRecord] {
-        guard FileManager.default.fileExists(atPath: stateFile.path) else { return [:] }
+    private static func load(
+        from stateFile: URL,
+        codec: any SecurityScopedBookmarkCoding
+    ) throws -> (
+        records: [String: NativeAccessRecord],
+        roots: [String: NativeRootAccessRecord],
+        migrated: Bool
+    ) {
+        guard FileManager.default.fileExists(atPath: stateFile.path) else { return ([:], [:], false) }
         do {
             let attributes = try FileManager.default.attributesOfItem(atPath: stateFile.path)
             guard (attributes[.type] as? FileAttributeType) == .typeRegular else {
@@ -438,10 +659,12 @@ public final class NativeAccessStore: @unchecked Sendable {
                   let permissions = attributes[.posixPermissions] as? NSNumber,
                   permissions.intValue & 0o077 == 0
             else { throw NativeAccessError.invalidState }
-            let document = try JSONDecoder().decode(
-                NativeAccessDocument.self,
-                from: Data(contentsOf: stateFile, options: [.mappedIfSafe])
-            )
+            let data = try Data(contentsOf: stateFile, options: [.mappedIfSafe])
+            let envelope = try JSONDecoder().decode(NativeAccessSchemaEnvelope.self, from: data)
+            if envelope.schema == "omnivia.native-access.v1" {
+                return try migrateLegacy(data, codec: codec)
+            }
+            let document = try JSONDecoder().decode(NativeAccessDocument.self, from: data)
             guard document.schema == schema, document.records.count <= 100_000 else {
                 throw NativeAccessError.invalidState
             }
@@ -453,17 +676,140 @@ public final class NativeAccessStore: @unchecked Sendable {
                 guard record.generation > 0, result[record.accessRef] == nil else {
                     throw NativeAccessError.invalidState
                 }
-                guard (record.state == .connected) == (record.bookmark != nil) else {
-                    throw NativeAccessError.invalidState
+                switch record.route {
+                case .directFile:
+                    guard record.rootBindingGeneration == nil,
+                          (record.state == .connected) == (record.bookmark != nil)
+                    else { throw NativeAccessError.invalidState }
+                case .rootMember:
+                    guard record.rootBindingGeneration != nil, record.bookmark == nil else {
+                        throw NativeAccessError.invalidState
+                    }
                 }
                 result[record.accessRef] = record
             }
-            return result
+            guard document.roots.count <= 100_000 else { throw NativeAccessError.invalidState }
+            var loadedRoots: [String: NativeRootAccessRecord] = [:]
+            for root in document.roots {
+                try validateIdentifier(root.rootRef)
+                guard root.generation > 0,
+                      loadedRoots[root.rootRef] == nil,
+                      root.ownerRefs == root.ownerRefs.sorted(),
+                      Set(root.ownerRefs).count == root.ownerRefs.count,
+                      root.ownerRefs.allSatisfy({ (try? validateIdentifier($0)) != nil }),
+                      (root.state == .connected) == (root.bookmark != nil)
+                else { throw NativeAccessError.invalidState }
+                loadedRoots[root.rootRef] = root
+            }
+            for record in result.values {
+                guard case let .rootMember(rootRef, _, _) = record.route else { continue }
+                guard let root = loadedRoots[rootRef] else { throw NativeAccessError.invalidState }
+                if record.state == .connected {
+                    guard root.state == .connected,
+                          root.generation == record.rootBindingGeneration
+                    else { throw NativeAccessError.invalidState }
+                }
+            }
+            return (result, loadedRoots, false)
         } catch let error as NativeAccessError {
             throw error
         } catch {
             throw NativeAccessError.invalidState
         }
+    }
+
+    private static func migrateLegacy(
+        _ data: Data,
+        codec: any SecurityScopedBookmarkCoding
+    ) throws -> (
+        records: [String: NativeAccessRecord],
+        roots: [String: NativeRootAccessRecord],
+        migrated: Bool
+    ) {
+        let legacy = try JSONDecoder().decode(LegacyNativeAccessDocument.self, from: data)
+        guard legacy.schema == "omnivia.native-access.v1", legacy.records.count <= 100_000 else {
+            throw NativeAccessError.invalidState
+        }
+        var records: [String: NativeAccessRecord] = [:]
+        var roots: [String: NativeRootAccessRecord] = [:]
+        var canonicalRoots: [String: URL] = [:]
+        for old in legacy.records {
+            try validateIdentifier(old.accessRef)
+            try validateIdentifier(old.linkedDocumentID)
+            try validate(old.route)
+            guard old.generation > 0, records[old.accessRef] == nil else {
+                throw NativeAccessError.invalidState
+            }
+            switch old.route {
+            case .directFile:
+                guard (old.state == .connected) == (old.bookmark != nil) else {
+                    throw NativeAccessError.invalidState
+                }
+                records[old.accessRef] = NativeAccessRecord(
+                    accessRef: old.accessRef,
+                    linkedDocumentID: old.linkedDocumentID,
+                    generation: old.generation,
+                    rootBindingGeneration: nil,
+                    state: old.state,
+                    route: old.route,
+                    bookmark: old.bookmark
+                )
+            case let .rootMember(rootRef, _, _):
+                guard (old.state == .connected) == (old.bookmark != nil) else {
+                    throw NativeAccessError.invalidState
+                }
+                if let bookmark = old.bookmark {
+                    let resolved = try codec.resolveReadOnlyBookmark(bookmark)
+                    guard !resolved.stale else { throw NativeAccessError.staleBookmark }
+                    let canonical = resolved.url.resolvingSymlinksInPath().standardizedFileURL
+                    if let existing = canonicalRoots[rootRef], existing != canonical {
+                        throw NativeAccessError.invalidState
+                    }
+                    canonicalRoots[rootRef] = canonical
+                    if let root = roots[rootRef] {
+                        if root.bookmark == nil {
+                            roots[rootRef] = NativeRootAccessRecord(
+                                rootRef: rootRef,
+                                generation: root.generation,
+                                state: .connected,
+                                ownerRefs: root.ownerRefs,
+                                bookmark: bookmark
+                            )
+                        }
+                    } else {
+                        roots[rootRef] = NativeRootAccessRecord(
+                            rootRef: rootRef,
+                            generation: 1,
+                            state: .connected,
+                            ownerRefs: [],
+                            bookmark: bookmark
+                        )
+                    }
+                } else if roots[rootRef] == nil {
+                    roots[rootRef] = NativeRootAccessRecord(
+                        rootRef: rootRef,
+                        generation: 1,
+                        state: .disconnected,
+                        ownerRefs: [],
+                        bookmark: nil
+                    )
+                }
+                records[old.accessRef] = NativeAccessRecord(
+                    accessRef: old.accessRef,
+                    linkedDocumentID: old.linkedDocumentID,
+                    generation: old.generation,
+                    rootBindingGeneration: 1,
+                    state: old.state,
+                    route: old.route,
+                    bookmark: nil
+                )
+            }
+        }
+        for record in records.values where record.state == .connected {
+            guard case let .rootMember(rootRef, _, _) = record.route else { continue }
+            guard roots[rootRef]?.state == .connected else { throw NativeAccessError.invalidState }
+        }
+        return (records, roots, true)
     }
 
     private static func validateIdentifier(_ value: String) throws {
@@ -535,8 +881,43 @@ public final class NativeAccessStore: @unchecked Sendable {
             accessRef: record.accessRef,
             linkedDocumentID: record.linkedDocumentID,
             generation: record.generation,
+            rootBindingGeneration: record.rootBindingGeneration,
             state: record.state,
             route: record.route
+        )
+    }
+
+    private static func rootDescriptor(_ record: NativeRootAccessRecord) -> NativeRootAccessDescriptor {
+        NativeRootAccessDescriptor(
+            rootRef: record.rootRef,
+            generation: record.generation,
+            state: record.state,
+            ownerRefs: record.ownerRefs
+        )
+    }
+
+    private static func pruneUnusedRoot(
+        for route: NativeAccessRoute,
+        records: [String: NativeAccessRecord],
+        roots: inout [String: NativeRootAccessRecord]
+    ) {
+        guard case let .rootMember(rootRef, _, _) = route,
+              let root = roots[rootRef],
+              root.ownerRefs.isEmpty
+        else { return }
+        let hasMember = records.values.contains {
+            guard $0.state == .connected,
+                  case let .rootMember(candidate, _, _) = $0.route
+            else { return false }
+            return candidate == rootRef
+        }
+        guard !hasMember else { return }
+        roots[rootRef] = NativeRootAccessRecord(
+            rootRef: root.rootRef,
+            generation: root.generation,
+            state: .disconnected,
+            ownerRefs: [],
+            bookmark: nil
         )
     }
 }

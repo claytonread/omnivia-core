@@ -308,7 +308,8 @@ public actor FolderMonitoringCoordinator {
                 }
                 let bytes = try accessStore.withReadAccess(
                     accessRef: member.accessRef,
-                    expectedGeneration: member.membershipGeneration
+                    expectedGeneration: member.membershipGeneration,
+                    expectedRootBindingGeneration: expectedGeneration
                 ) { url in
                     try reader.readStableBytes(from: url, maximumBytes: CaptureIntentV3.maximumPayloadBytes)
                 }
@@ -331,7 +332,8 @@ public actor FolderMonitoringCoordinator {
                     base: .expected(member.currentSuccessfulCaptureID),
                     bulkRunID: bulkRunID,
                     manifestRevision: manifestRevision,
-                    observedAt: observedAt
+                    observedAt: observedAt,
+                    rootBindingGeneration: expectedGeneration
                 )
                 let entries: [CaptureQueueEntry]
                 do {
@@ -339,7 +341,8 @@ public actor FolderMonitoringCoordinator {
                         CapturePreparationItem(
                             access: NativeAccessExpectation(
                                 accessRef: member.accessRef,
-                                generation: member.membershipGeneration
+                                generation: member.membershipGeneration,
+                                rootBindingGeneration: expectedGeneration
                             ),
                             seed: seed
                         ),
@@ -400,7 +403,8 @@ public actor FolderMonitoringCoordinator {
                     base: .expected(nil),
                     bulkRunID: bulkRunID,
                     manifestRevision: manifestRevision,
-                    observedAt: observedAt
+                    observedAt: observedAt,
+                    rootBindingGeneration: expectedGeneration
                 )
                 let entries: [CaptureQueueEntry]
                 do {
@@ -408,7 +412,8 @@ public actor FolderMonitoringCoordinator {
                         CapturePreparationItem(
                             access: NativeAccessExpectation(
                                 accessRef: accessRef,
-                                generation: descriptor.generation
+                                generation: descriptor.generation,
+                                rootBindingGeneration: expectedGeneration
                             ),
                             seed: seed
                         ),
@@ -462,7 +467,8 @@ public actor FolderMonitoringCoordinator {
         base: CaptureBasePrecondition,
         bulkRunID: String,
         manifestRevision: String,
-        observedAt: String
+        observedAt: String,
+        rootBindingGeneration: UInt64
     ) -> CaptureIntentSeed {
         CaptureIntentSeed(
             submissionId: identifier(prefix: "submission"),
@@ -484,7 +490,7 @@ public actor FolderMonitoringCoordinator {
                 bindingGeneration: member.membershipGeneration,
                 linkedDocumentId: member.linkedDocumentID,
                 rootAccessGroupId: subscription.rootRef,
-                rootBindingGeneration: 1,
+                rootBindingGeneration: rootBindingGeneration,
                 memberId: member.memberID,
                 membershipGeneration: member.membershipGeneration
             ),
