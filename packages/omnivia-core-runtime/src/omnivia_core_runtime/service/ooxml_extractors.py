@@ -239,6 +239,41 @@ _XLSX_THREADED_MAIN: Final = (
 # widen only if a real workbook is refused by these.
 _MAX_XLSX_THREADED_RECORDS: Final = 10_000
 _MAX_XLSX_THREADED_CHARS: Final = 100_000
+# The relationship and content types that together qualify a worksheet's
+# drawing part: the one part a sheet anchors its graphic frames in. As with
+# every other type here, only the two URIs OOXML defines qualify --
+# Transitional and Strict -- so nothing reaches a drawing by ending the same
+# way, and the legacy VML drawing a sheet names beside its comments carries
+# another type entirely and reaches nothing here. The content type is compared
+# against ``declared_type``, which case-folds; the authored spelling is already
+# folded, and it is the same under both profiles.
+_XLSX_DRAWING_RELATIONSHIPS: Final = frozenset(
+    {
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing",
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/drawing",
+    }
+)
+_XLSX_DRAWING_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.drawing+xml"
+)
+# The two spreadsheet-drawing namespaces a worksheet's drawing part is rooted
+# in. The part is reached by its declared type, so the root is the one remaining
+# check that it holds the vocabulary that declaration promised; below the root
+# anchors are read by local name, as the rest of the XLSX reader does.
+_XLSX_DRAWING_NAMESPACES: Final = frozenset(
+    {
+        "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing",
+        "http://purl.oclc.org/ooxml/drawingml/spreadsheetDrawing",
+    }
+)
+# The three kinds of anchor a drawing positions a frame with. All three are
+# counted, so an anchor's reported index is its position among the anchors the
+# drawing wrote rather than among the ones read.
+_XLSX_ANCHORS: Final = frozenset({"twoCellAnchor", "oneCellAnchor", "absoluteAnchor"})
+# One drawing's own bound: the anchors it may declare, counted as they are
+# walked and before any frame below one is reached.
+# ponytail: 4096 anchors per drawing; widen only if a real workbook is refused.
+_MAX_XLSX_ANCHORS: Final = 4_096
 # The shape-tree children that carry an identity and a z-order position.
 # ``contentPart`` carries neither, so it is not a shape here.
 _PPTX_SHAPES: Final = frozenset({"sp", "grpSp", "graphicFrame", "cxnSp", "pic"})
@@ -1613,6 +1648,35 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                         ),
                         structured_value=table,
                         extraction_method="inventory",
+                        visibility="hidden" if sheet_hidden else "visible",
+                    )
+                )
+                _bounded(segments)
+            # A chart's values live in the chart part the sheet's drawing
+            # reached, so the sheet is provenance for them rather than their
+            # place: ``sheetPart`` names it, as an XLSX comment's locator
+            # already does. ``freshness`` is unknown because the values are the
+            # copy the package stored and nothing here opens the workbook
+            # behind them, resolves a source formula or recalculates anything.
+            for value, provenance in _xlsx_charts(package, part, root):
+                segments.append(
+                    ExtractedSegment(
+                        "chart",
+                        _locator(
+                            capture_id,
+                            sheetPart=part,
+                            sheetId=sheet_id,
+                            sheet=sheet_name,
+                            sheetState=state,
+                            **provenance,
+                            freshness="unknown",
+                        ),
+                        # A cache that stored an empty value is still a record
+                        # the chart claims, so it is reported as the empty claim
+                        # it is; ``document_intake`` takes exactly one content
+                        # representation and refuses empty text.
+                        text=value or None,
+                        structured_value=None if value else {"value": ""},
                         visibility="hidden" if sheet_hidden else "visible",
                     )
                 )
@@ -3073,6 +3137,145 @@ def _xlsx_mention_offset(element: ElementTree.Element, name: str, label: str) ->
     return int(raw)
 
 
+def _xlsx_charts(
+    package: _Package, part: str, root: ElementTree.Element
+) -> list[tuple[str, dict[str, object]]]:
+    """Return the stored chart records a worksheet's drawing anchors, in order.
+
+    A workbook reaches a chart the long way round: the worksheet relates one
+    drawing part, the drawing anchors a graphic frame, and that frame's
+    ``c:chart`` relates the chart part. Every step is walked and none is
+    guessed -- the drawing is reached through the exact relationship id the
+    ``drawing`` element names, held to the relationship and content types OOXML
+    defines for a worksheet drawing, and the chart through the frame's own id
+    from the drawing part's relationships -- so no part is read for merely
+    looking like one, and no path is derived from the sheet's own name. A sheet
+    displays one drawing, so two ``drawing`` elements leave which one it shows
+    ambiguous and nothing here picks between them.
+
+    Anchors are walked in source order and each record names the anchor showing
+    it and the cells that anchor covers. What is read at the end of the route is
+    the shared chart reader already serving PPTX frames and DOCX drawings, so
+    the record vocabulary is theirs unchanged, and nothing behind the values is
+    opened: neither the chart part's own relationships nor the workbook a chart
+    may embed.
+    """
+    named = [node for node in root if _local(node.tag) == "drawing"]
+    if not named:
+        return []
+    if len(named) > 1:
+        raise OOXMLInvalid("XLSX worksheet names more than one drawing")
+    relation_id = _relationship_id(named[0].attrib)
+    if not relation_id:
+        raise OOXMLInvalid("XLSX drawing reference names no relationship")
+    drawing_part = _referenced_part(
+        package,
+        part,
+        relation_id,
+        _XLSX_DRAWING_RELATIONSHIPS,
+        _XLSX_DRAWING_CONTENT_TYPE,
+        "drawing",
+        "XLSX",
+    )
+    drawing = package.xml(drawing_part)
+    namespace, _, local = drawing.tag.rpartition("}")
+    if namespace.lstrip("{") not in _XLSX_DRAWING_NAMESPACES:
+        raise OOXMLInvalid("XLSX drawing part uses an unsupported namespace")
+    if local != "wsDr":
+        raise OOXMLInvalid("XLSX drawing part is not rooted at its own drawing")
+    result: list[tuple[str, dict[str, object]]] = []
+    for index, anchor in enumerate(
+        node for node in drawing if _local(node.tag) in _XLSX_ANCHORS
+    ):
+        if index >= _MAX_XLSX_ANCHORS:
+            raise OOXMLInvalid("XLSX drawing has too many anchors")
+        # ponytail: two-cell anchors only; the single-cell and absolute kinds
+        # are passed over until a unit asks for the ranges they name, each of
+        # which is derived from an extent rather than written as a corner.
+        if _local(anchor.tag) != "twoCellAnchor":
+            continue
+        frames = [node for node in anchor if _local(node.tag) == "graphicFrame"]
+        if len(frames) > 1:
+            raise OOXMLInvalid("XLSX anchor holds more than one graphic frame")
+        if not frames:
+            continue
+        chart_id = _drawing_chart(frames[0], "XLSX", "graphic frame")
+        if chart_id is None:
+            continue
+        chart_part = _referenced_part(
+            package,
+            drawing_part,
+            chart_id,
+            _CHART_RELATIONSHIPS,
+            _CHART_CONTENT_TYPE,
+            "chart",
+            "XLSX",
+        )
+        where: dict[str, object] = {
+            "drawingPart": drawing_part,
+            "drawingRelationshipId": relation_id,
+            "anchorIndex": index,
+            "anchorType": "twoCell",
+            "anchorRange": _xlsx_anchor_range(anchor),
+            "chartPart": chart_part,
+            "relationshipId": chart_id,
+        }
+        result.extend(
+            (value, {**where, **place})
+            for place, value in _chart_records(package, chart_part, "XLSX")
+        )
+    return result
+
+
+def _xlsx_anchor_range(anchor: ElementTree.Element) -> str:
+    """Return the inclusive A1 range a two-cell anchor's two corners cover.
+
+    A corner's ``xdr:col`` and ``xdr:row`` are zero-based, so each is reported
+    as the A1 position the sheet calls it. The offsets beside them place the
+    frame inside those cells and name no further cell, so they are not read, and
+    the range covers both corners' own cells rather than the extent the frame is
+    drawn to. A corner pair whose end precedes its start describes no rectangle,
+    so it is refused rather than reordered into the one it was probably meant to
+    be, as a cell range already is.
+    """
+    first = _xlsx_anchor_corner(anchor, "from")
+    last = _xlsx_anchor_corner(anchor, "to")
+    if last[0] < first[0] or last[1] < first[1]:
+        raise OOXMLInvalid("XLSX anchor range is malformed")
+    return f"{_column_name(first[0])}{first[1]}:{_column_name(last[0])}{last[1]}"
+
+
+def _xlsx_anchor_corner(anchor: ElementTree.Element, name: str) -> tuple[int, int]:
+    """Return the one-based (column, row) one anchor corner names, or refuse it.
+
+    An anchor positions a frame by exactly two corners, so a corner written
+    twice -- or not at all -- leaves where the frame sits unanswerable.
+    """
+    corners = [node for node in anchor if _local(node.tag) == name]
+    if len(corners) != 1:
+        raise OOXMLInvalid("XLSX anchor does not name exactly one of its corners")
+    return (
+        _xlsx_anchor_coordinate(corners[0], "col", _MAX_COLUMN),
+        _xlsx_anchor_coordinate(corners[0], "row", _MAX_ROW),
+    )
+
+
+def _xlsx_anchor_coordinate(corner: ElementTree.Element, name: str, bound: int) -> int:
+    """Read one zero-based coordinate as the one-based position it names.
+
+    The value is held to the grid SpreadsheetML itself accepts, so a coordinate
+    beyond the sheet names no cell and is refused rather than reported as an
+    anchor over one.
+    """
+    nodes = [node for node in corner if _local(node.tag) == name]
+    if len(nodes) != 1:
+        raise OOXMLInvalid("XLSX anchor corner is malformed")
+    raw = (nodes[0].text or "").strip()
+    if _DIGITS.fullmatch(raw) is None or int(raw) >= bound:
+        raise OOXMLInvalid("XLSX anchor coordinate is outside the sheet")
+    return int(raw) + 1
+
+
 def _cell_index(coordinate: str) -> tuple[int, int]:
     """Return the (column, row) one A1 coordinate names, or refuse it."""
     match = _CELL_REF.fullmatch(coordinate)
@@ -3085,6 +3288,15 @@ def _cell_index(coordinate: str) -> tuple[int, int]:
     if not 1 <= column <= _MAX_COLUMN or not 1 <= row <= _MAX_ROW:
         raise OOXMLInvalid("XLSX cell coordinate is outside the sheet")
     return column, row
+
+
+def _column_name(column: int) -> str:
+    """Return the A1 letters one one-based column index is written as."""
+    letters = ""
+    while column:
+        column, remainder = divmod(column - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return letters
 
 
 def _cell_range(reference: str) -> tuple[int, int, int, int]:
@@ -6789,7 +7001,7 @@ class _DocxWalker:
         over the record and over every value it carried, exactly as it is over
         an image and its claims.
         """
-        relation_id = _docx_drawing_chart(drawing)
+        relation_id = _drawing_chart(drawing, "DOCX", "drawing")
         assert relation_id is not None
         part = _referenced_part(
             self._package,
@@ -7526,30 +7738,36 @@ def _docx_drawing_blip(drawing: ElementTree.Element) -> ElementTree.Element | No
     return blips[0] if blips else None
 
 
-def _docx_drawing_chart(drawing: ElementTree.Element) -> str | None:
-    """Return the relationship id one drawing object names its chart on, or None.
+def _drawing_chart(element: ElementTree.Element, owner: str, holder: str) -> str | None:
+    """Return the relationship id one graphic holder names its chart on, or None.
 
-    The route in is the schema's own and nothing else: the object's direct
+    The route in is the schema's own and nothing else: the holder's direct
     ``a:graphic``, that graphic's direct ``a:graphicData``, and the ``c:chart``
     directly below that. Every step is held to the qualified names OOXML
     defines for it -- the two DrawingML main namespaces for the graphic and its
     data, the two DrawingML chart namespaces for the reference -- so an element
     merely called ``graphic``, ``graphicData`` or ``chart`` in another
     vocabulary is not on the route and names nothing, whichever step it stands
-    at. A reference reached anywhere else below the object -- in an
+    at. A reference reached anywhere else below the holder -- in an
     alternate-content fallback, inside a text box's own content, in an
     extension list, below another graphic carried along -- is not what this
-    object displays and is passed over.
+    holder displays and is passed over.
 
-    One drawing object displays one graphic, so two of anything along that
-    route leaves which chart it shows unanswerable and nothing here chooses
-    between them. A reference that names no relationship identifies no chart,
-    and no chart path is derived from the story's own name: the id is resolved
-    through the holding part's relationships or not at all.
+    One holder displays one graphic, so two of anything along that route leaves
+    which chart it shows unanswerable and nothing here chooses between them. A
+    reference that names no relationship identifies no chart, and no chart path
+    is derived from the holding part's own name: the id is resolved through that
+    part's relationships or not at all.
+
+    A Word story's drawing object and a worksheet drawing's graphic frame
+    declare a chart on the one route, so both are read here. ``owner`` is the
+    format the holder came from and ``holder`` is what that format calls it,
+    carried through so a refusal names the file it came from and never the
+    other format.
     """
     charts = [
         node
-        for graphic in drawing
+        for graphic in element
         if graphic.tag in _DRAWING_GRAPHIC
         for data in graphic
         if data.tag in _DRAWING_GRAPHIC_DATA
@@ -7559,10 +7777,10 @@ def _docx_drawing_chart(drawing: ElementTree.Element) -> str | None:
     if not charts:
         return None
     if len(charts) > 1:
-        raise OOXMLInvalid("DOCX drawing declares more than one chart reference")
+        raise OOXMLInvalid(f"{owner} {holder} declares more than one chart reference")
     relation_id = _relationship_id(charts[0].attrib)
     if not relation_id:
-        raise OOXMLInvalid("DOCX chart reference names no relationship")
+        raise OOXMLInvalid(f"{owner} chart reference names no relationship")
     return relation_id
 
 
@@ -7581,7 +7799,7 @@ def _docx_drawing_object(drawing: ElementTree.Element) -> str | None:
         kind
         for kind, present in (
             ("g", _docx_drawing_blip(drawing) is not None),
-            ("k", _docx_drawing_chart(drawing) is not None),
+            ("k", _drawing_chart(drawing, "DOCX", "drawing") is not None),
             ("s", _diagram_reference(drawing, "DOCX", "drawing") is not None),
         )
         if present
