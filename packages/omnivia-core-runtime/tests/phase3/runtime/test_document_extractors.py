@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import zipfile
 from pathlib import Path
+from typing import Any, Final
 
 import pytest
 from _trusted_ocr import catalogue_over, host_models
+from omnivia_core_runtime.service import rtf_extractor
 from omnivia_core_runtime.service.document_extractors import (
     DOCX_MEDIA_TYPE,
     PDF_MEDIA_TYPE,
@@ -15,11 +18,14 @@ from omnivia_core_runtime.service.document_extractors import (
     DocumentExtractionUnsupported,
     extract_document,
 )
+from omnivia_core_runtime.service.document_intake import ExtractionOutcome
 from omnivia_core_runtime.service.ocr_resources import (
     ExtractionSettings,
     local_ocr_settings,
 )
 from PIL import Image, ImageDraw, ImageFont
+
+from omnivia_core.contracts.v1 import to_canonical_json
 
 CAPTURE = "dcap-" + "a" * 64
 
@@ -312,3 +318,243 @@ def test_rtf_refuses_unbalanced_groups_before_reader_execution() -> None:
             media_type="application/rtf",
             capture_id=CAPTURE,
         )
+
+
+# --------------------------------------------------------------------------
+# DOC-06: the bounded RTF lexical scan and its coverage inventory
+# --------------------------------------------------------------------------
+#
+# The scan is adversarial input handling: every fixture below is a construct
+# that a naive byte loop reads as structure when it is data, or as data when it
+# is structure. Each one also pins the honest coverage claim, because the pinned
+# reader extracts body text only and the inventory is the only place a source's
+# headers, notes, revisions, fields and objects are stated at all.
+
+
+def rtf(content: bytes) -> ExtractionOutcome:
+    return extract_document(content, media_type="application/rtf", capture_id=CAPTURE)
+
+
+#: A ``{\object}`` whose ``\bin`` payload is nothing but structural bytes:
+#: braces and backslashes that a scanner reading them as syntax would follow
+#: into a wrong group depth and an unbalanced refusal.
+BINARY_OBJECT: Final = (
+    b"{\\rtf1\\ansi{\\object\\objemb{\\*\\objclass Excel.Sheet}"
+    b"{\\*\\objdata \\bin12 {\\}\\\\{{{\\\\ab}}body\\par}"
+)
+#: Headers, footers, a footnote, an annotation, revision and deleted runs, one
+#: ignorable and one substantive unknown destination, and a body paragraph.
+FEATURE_RICH: Final = (
+    rb"{\rtf1\ansi{\header hdr}{\footer ftr}{\footnote note}{\*\annotation cmt}"
+    rb"\revised rev\deleted gone{\*\mydest ignorable}{\myother substantive}body\par}"
+)
+#: Two fields: an external hyperlink and an INCLUDETEXT of a local path, each
+#: with a cached result the reader does extract.
+EXTERNAL_FIELDS: Final = (
+    rb"{\rtf1\ansi{\field\flddirty{\*\fldinst HYPERLINK "
+    rb"\"http://example.invalid/leak\"}{\fldrslt link}}"
+    rb"{\field{\*\fldinst INCLUDETEXT c:\\secret\\payload.doc}{\fldrslt cached}}\par}"
+)
+
+
+def test_rtf_scan_reads_escaped_syntax_unicode_and_declared_code_pages() -> None:
+    escaped = rtf(
+        rb"{\rtf1\ansi\ansicpg1252 A \{brace\} a \\ backslash"
+        rb" \'41\u8364?\uc2\u8364??\par}"
+    )
+
+    # Escaped braces and backslashes are text, not group structure, and the
+    # signed Unicode control words consume exactly their declared fallbacks.
+    assert escaped.state == "succeeded"
+    assert escaped.segments[0].text == "A {brace} a \\ backslash A\u20ac\u20ac"
+    assert escaped.limitations["groups"] == 1
+    assert escaped.limitations["escapedLiterals"] == 3
+    assert escaped.limitations["hexEscapes"] == 1
+    assert escaped.limitations["unicodeEscapes"] == 2
+    assert escaped.limitations["declaredCharsets"] == ["ansi"]
+    assert escaped.limitations["declaredCodePages"] == [1252]
+
+    legacy = rtf(rb"{\rtf1\mac\ansicpg10000\deff0 caf\'e9\par}")
+
+    assert legacy.limitations["declaredCharsets"] == ["mac"]
+    assert legacy.limitations["declaredCodePages"] == [10000]
+
+
+def test_rtf_scan_skips_binary_payloads_holding_structural_bytes() -> None:
+    result = rtf(BINARY_OBJECT)
+
+    # The payload's braces and backslashes were skipped as a block, so the
+    # group accounting is the document's and not the object data's.
+    assert result.limitations["groups"] == 4
+    assert result.limitations["maximumGroupDepth"] == 3
+    assert result.limitations["binarySections"] == 1
+    assert result.limitations["binaryBytes"] == 12
+    assert result.limitations["inventory"] == {
+        "object": 1,
+        "object_class": 1,
+        "object_data": 1,
+        "object_embedded": 1,
+    }
+    # The embedded object is inventoried and never executed; only the body text
+    # outside it is extracted.
+    assert [item.text for item in result.segments] == ["body"]
+    assert result.limitations["objectAndFieldHandling"] == (
+        "inventoried_without_execution"
+    )
+
+
+def test_rtf_scan_inventories_notes_revisions_and_unknown_destinations() -> None:
+    result = rtf(FEATURE_RICH)
+
+    assert result.limitations["inventory"] == {
+        "annotation": 1,
+        "deleted_content": 1,
+        "footer": 1,
+        "footnote": 1,
+        "header": 1,
+        "revision_marked": 1,
+    }
+    # A ``\*``-marked unknown destination is separable from an unmarked one,
+    # which is the substantive case: its content reaches the body.
+    assert result.limitations["unknownDestinations"] == {"myother": 1}
+    assert result.limitations["ignorableUnknownDestinations"] == {"mydest": 1}
+    assert result.limitations["ignorableDestinationGroups"] == 2
+    # The three coverage classes are distinct, and nothing claims completeness:
+    # the reader extracted body text only, which is why the header, footer,
+    # footnote and annotation text below is absent from the segments.
+    assert result.limitations["extractedScope"] == "pandoc_body_text_only"
+    assert result.limitations["coverage"] == {
+        "supported": ["body_text"],
+        "inventoriedDisabled": [
+            "annotation",
+            "deleted_content",
+            "footer",
+            "footnote",
+            "header",
+            "revision_marked",
+        ],
+        "unsupported": ["mydest", "myother"],
+    }
+    extracted = " ".join(item.text or "" for item in result.segments)
+    assert "hdr" not in extracted
+    assert "ftr" not in extracted
+    assert "note" not in extracted
+    assert "cmt" not in extracted
+
+
+def test_rtf_scan_inventories_nested_table_markers() -> None:
+    result = rtf(rb"{\rtf1\ansi\trowd\itap2 inner\nestcell{\*\nesttableprops\nestrow}}")
+
+    assert result.limitations["inventory"] == {"nested_table": 4}
+
+
+def test_rtf_scan_names_field_risks_without_resolving_or_executing_them() -> None:
+    result = rtf(EXTERNAL_FIELDS)
+
+    # Only the instruction keyword is classified. The URL and the local path are
+    # never read out of the bytes, so they cannot appear in the inventory, and
+    # nothing resolves or fetches either one.
+    assert result.limitations["fieldRisks"] == {"HYPERLINK": 1, "INCLUDETEXT": 1}
+    assert result.limitations["inventory"] == {
+        "field": 2,
+        "field_dirty": 1,
+        "field_instruction": 2,
+        "field_result": 2,
+    }
+    assert result.limitations["pathAndUrlHandling"] == (
+        "inventoried_without_resolution"
+    )
+    recorded = to_canonical_json(dict(result.limitations))
+    assert "example.invalid" not in recorded
+    assert "payload.doc" not in recorded
+    # The cached results the source already carried are extracted as text; the
+    # instructions that would produce them are not run.
+    assert [item.text for item in result.segments] == ["linkcached"]
+
+
+def test_rtf_scan_inventory_is_deterministic_and_canonical() -> None:
+    first = rtf(FEATURE_RICH).limitations
+    second = rtf(FEATURE_RICH).limitations
+
+    assert dict(first) == dict(second)
+    assert to_canonical_json(dict(first)) == to_canonical_json(dict(second))
+    # Every name-keyed part is emitted in sorted order, so the serialized
+    # inventory does not depend on the order the document happened to use.
+    for part in ("inventory", "unknownDestinations", "ignorableUnknownDestinations"):
+        names = list(first[part])
+        assert names == sorted(names)
+
+
+def test_rtf_scan_output_stays_bounded_when_the_source_names_more() -> None:
+    names = rtf_extractor.MAX_INVENTORY_NAMES
+    # A control word carries no digits in its name, so the destinations are
+    # distinguished by a two-letter suffix.
+    content = (
+        rb"{\rtf1\ansi"
+        + b"".join(
+            b"{\\cpg%d x}{\\dst%c%c x}"
+            % (3000 + ordinal, 97 + ordinal // 26, 97 + ordinal % 26)
+            for ordinal in range(names + 8)
+        )
+        + rb"body\par}"
+    )
+
+    result = rtf(content)
+
+    # Both name-keyed parts stop at the bound and say how many went unnamed, so
+    # a source cannot grow the inventory by declaring more of either.
+    assert len(result.limitations["declaredCodePages"]) == names
+    assert result.limitations["unnamedCodePages"] == 8
+    assert len(result.limitations["unknownDestinations"]) == names
+    assert result.limitations["unnamedUnknownDestinations"] == 8
+
+
+def test_rtf_reader_arguments_stay_fixed_and_carry_no_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], bytes]] = []
+
+    def record(arguments: list[str], **keywords: object) -> Any:
+        calls.append((arguments, keywords["input"]))  # type: ignore[arg-type]
+        return subprocess.CompletedProcess(arguments, 0, b'{"blocks":[]}', b"")
+
+    monkeypatch.setattr(rtf_extractor.subprocess, "run", record)
+
+    rtf(rb"{\rtf1\ansi body\par}")
+
+    # The reader is invoked with the pinned argument vector and the bytes on
+    # stdin: no document-derived argument, no path on the command line, no
+    # shell, and the sandbox flag retained.
+    assert calls == [
+        (["pandoc", "--from=rtf", "--to=json", "--sandbox"], rb"{\rtf1\ansi body\par}")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [
+        (b"not an rtf file", "signature"),
+        (rb"{\rtf1\ansi text\\" + b"\\", "ends in an escape"),
+        (rb"{\rtf1\ansi {unclosed}", "unbalanced"),
+        (rb"{\rtf1\ansi }}", "unbalanced"),
+        (rb"{\rtf1\ansi \'zz}", "hex escape is invalid"),
+        (rb"{\rtf1\ansi \'4", "hex escape is truncated"),
+        (rb"{\rtf1\ansi \bin900 short}", "binary section is malformed"),
+        (rb"{\rtf1\ansi \bin-4 x}", "binary section is malformed"),
+        (rb"{\rtf1\ansi \u ?}", "no code point"),
+        (b"{\\rtf1\\ansi \\fs" + b"9" * 11 + b" x}", "parameter exceeds"),
+        (b"{\\rtf1\\ansi \\" + b"a" * 33 + b" x}", "control word exceeds"),
+        (b"{\\rtf1" + b"{" * 200 + b"}" * 200 + b"}", "nesting exceeds"),
+        (b"{\\rtf1" + b"a" * rtf_extractor.MAX_SOURCE_BYTES, "source exceeds"),
+    ],
+)
+def test_rtf_malformed_and_out_of_bound_sources_are_refused_before_the_reader(
+    content: bytes, reason: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*arguments: object, **keywords: object) -> Any:
+        raise AssertionError("the reader must not run on a refused source")
+
+    monkeypatch.setattr(rtf_extractor.subprocess, "run", refuse)
+
+    with pytest.raises(DocumentExtractionInvalid, match=reason):
+        rtf(content)
