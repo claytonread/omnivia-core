@@ -59,6 +59,9 @@ _HIDDEN_RUN_PROPERTIES: Final = frozenset({"vanish", "webHidden"})
 _INSERTED: Final = frozenset({"ins", "moveTo"})
 _REMOVED: Final = frozenset({"del", "moveFrom"})
 _MAX_REVISION_DEPTH: Final = 4
+# OmniVia's deterministic safety bound on complex field nesting: a deeper stack
+# is refused rather than read, so one file cannot drive unbounded recursion.
+_MAX_DOCX_FIELD_DEPTH: Final = 20
 _HEADING_STYLE: Final = re.compile(r"title|heading[1-9]")
 _NOTE_ID: Final = re.compile(r"-?[0-9]{1,9}")
 # At least two characters, so a drive letter such as ``C:`` stays a path.
@@ -1099,6 +1102,7 @@ def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 if walker.inventory_note(container):
                     continue
                 walker.walk(container, "", 0)
+                walker.finish()
                 blocks += walker.paragraphs
         return OOXMLExtraction(
             tuple(segments),
@@ -4665,6 +4669,29 @@ class _CellRun:
     marks: list[tuple[str, dict[str, object], str, bool]] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class _FieldState:
+    """One complex field held open by its ``fldChar begin``.
+
+    ``instruction`` is the instruction so far in source order, never longer
+    than ``_MAX_TARGET_CHARS`` so one field cannot hold an arbitrarily large
+    string, ``truncated`` is whether any source character was dropped to keep
+    it there, ``record`` is the field's metadata once ``separate`` has ordered
+    it, and ``result`` is whether any text was stored under that separator.
+    """
+
+    instruction: str = ""
+    truncated: bool = False
+    result: bool = False
+    record: dict[str, object] | None = None
+
+    def extend(self, text: str) -> None:
+        """Keep what still fits of one fragment, remembering what did not."""
+        room = _MAX_TARGET_CHARS - len(self.instruction)
+        self.instruction += text[:room]
+        self.truncated = self.truncated or len(text) > room
+
+
 class _DocxWalker:
     """Walks one story's paragraphs and tables in XML document order.
 
@@ -4677,18 +4704,22 @@ class _DocxWalker:
     ``hidden_content`` segment) and text boxes (``<paragraph>.x<n>.<block>``)
     where they are anchored, and current text is never joined across one of
     them. A table cell reads its current paragraphs as one ``table_cell`` run,
-    closed by any deletion, hidden stretch, text box, simple field or nested
-    table, and later runs sit at ``<cell>.t<n>``.
+    closed by any deletion, hidden stretch, text box, field or nested table,
+    and later runs sit at ``<cell>.t<n>``.
 
-    Hyperlinks, simple fields and annotation references stay out of the text:
-    each becomes an inert ``object_inventory`` segment at ``<paragraph>.h<n>``
+    Hyperlinks, fields and annotation references stay out of the text: each
+    becomes an inert ``object_inventory`` segment at ``<paragraph>.h<n>``
     (hyperlinks), ``<paragraph>.n<n>`` (note and comment references) or
-    ``<paragraph>.f<n>`` (``fldSimple`` fields), and range markers between
-    blocks at ``<level>m<n>``. A link or reference follows the stretch it sits
-    in; a field is inventoried first and the result stored under it then reads
-    as the ordinary text it is. A reference names its target by (story,
-    ``noteId``), the same identity the annotation's own segments carry, so
-    repeating one reference repeats a pointer and never the annotation text.
+    ``<paragraph>.f<n>`` (fields of either form, numbered together in source
+    order), and range markers between blocks at ``<level>m<n>``. A link or
+    reference follows the stretch it sits in; a field is inventoried first and
+    the result stored under it then reads as the ordinary text it is. A complex
+    field's boundaries belong to the story, not to a paragraph, so one spans the
+    paragraphs between them; ``finish`` refuses one the story leaves open, and a
+    text box is walked as its own story so no boundary crosses into it. A
+    reference names its target by (story, ``noteId``), the same identity the
+    annotation's own segments carry, so repeating one reference repeats a
+    pointer and never the annotation text.
     """
 
     def __init__(
@@ -4719,6 +4750,9 @@ class _DocxWalker:
         self._relations = package.relationships.get(rels, {})
         self._relation_types = package.relationship_types.get(rels, {})
         self.paragraphs = 0
+        # The complex fields open in this story. A field may span paragraphs, so
+        # the stack belongs to the story and not to any one paragraph.
+        self._fields: list[_FieldState] = []
 
     def walk(
         self,
@@ -4740,6 +4774,16 @@ class _DocxWalker:
             else:
                 self._table(block, position, depth, removed)
             index += 1
+
+    def finish(self) -> None:
+        """Close this story, refusing a complex field its walk left open.
+
+        A field spans the paragraphs between its own boundaries, so nothing is
+        decided at a paragraph's end; the story's own end is where an unclosed
+        field becomes one, and a field that leaves its story is refused here.
+        """
+        if self._fields:
+            raise OOXMLInvalid("DOCX field is never closed")
 
     def inventory_note(self, entry: ElementTree.Element) -> bool:
         """Inventory what is not note prose; True when the entry is excluded.
@@ -4909,7 +4953,9 @@ class _DocxWalker:
         self.paragraphs += 1
         role = "table_cell" if cell else self._role(paragraph)
         current = removed = boxes = links = refs = fields = concealed = 0
-        for kind, value, box_deleted in _paragraph_items(paragraph, deleted):
+        for kind, value, box_deleted in _paragraph_items(
+            paragraph, deleted, self._fields
+        ):
             if kind == "m":
                 assert isinstance(value, ElementTree.Element)
                 item = _local(value.tag)
@@ -4926,11 +4972,23 @@ class _DocxWalker:
                 else:
                     label, refs = f"n{refs}", refs + 1
                 self._mark(value, f"{position}.{label}", box_deleted, cell)
+            elif isinstance(value, dict):
+                label, fields = f"f{fields}", fields + 1
+                # A complex field is ordered at its own boundary, so in a cell it
+                # closes the current run for the same reason a simple field does.
+                self._flush(cell)
+                self._inventory(f"{position}.{label}", value, "visible", box_deleted)
             elif isinstance(value, ElementTree.Element):
                 self._flush(cell)
                 if depth >= _MAX_DOCX_DEPTH:
                     raise OOXMLInvalid("DOCX text boxes are nested too deeply")
+                # A text box is traversed as its own story, so its fields neither
+                # close nor are closed by the ones open around it: a boundary
+                # that tries to cross the box is refused, not leaked through.
+                outer, self._fields = self._fields, []
                 self.walk(value, f"{position}.x{boxes}.", depth + 1, box_deleted)
+                self.finish()
+                self._fields = outer
                 boxes += 1
             elif kind == "v":
                 # A hidden stretch closes the cell's current text, exactly as a
@@ -5075,24 +5133,36 @@ def _blocks(
 
 
 def _paragraph_items(
-    paragraph: ElementTree.Element, deleted: bool
-) -> list[tuple[str, str | ElementTree.Element, bool]]:
+    paragraph: ElementTree.Element,
+    deleted: bool,
+    fields: list[_FieldState],
+) -> list[tuple[str, str | ElementTree.Element | dict[str, object], bool]]:
     """Split a paragraph into ordered ``(kind, value, deleted)`` items.
 
     Kinds are ``t`` current text, ``d`` deleted text, ``v`` text a run's own
-    properties hide (carrying whether a deletion wrapped it), ``x`` a text box
-    and ``m`` a hyperlink, simple field or annotation marker (with whether a
-    deletion wrapped it). Adjacent text of one kind is one stretch; tabs and
-    breaks stay separators inside it. Hidden text is a stretch of its own, so
-    it is never joined to the visible text around it.
+    properties hide (carrying whether a deletion wrapped it), ``x`` a text box,
+    ``m`` a hyperlink, simple field or annotation marker, and ``c`` an already
+    recorded complex field (each carrying whether a deletion wrapped it).
+    Adjacent text of one kind is one stretch; tabs and breaks stay separators
+    inside it. Hidden text is a stretch of its own, so it is never joined to the
+    visible text around it.
+
+    ``fields`` is the story's stack of complex fields a ``fldChar`` has opened,
+    carried in and left as this paragraph leaves it, because a field spans the
+    paragraphs between its own boundaries. Text inside the innermost open
+    field's instruction is field code, which Word does not render as prose: it
+    joins that field's instruction in source order and never the paragraph's
+    text. Text is read as the ordinary text it is only once every open field has
+    separated, so a nested field's result is recorded under its own separator and
+    still kept out of the prose while an outer instruction encloses it.
     """
-    items: list[tuple[str, str | ElementTree.Element, bool]] = []
+    items: list[tuple[str, str | ElementTree.Element | dict[str, object], bool]] = []
     pending: list[str] = []
     pending_kind = ""
     pending_deleted = False
 
     # Markers follow the stretch they sit in, so they never split the text.
-    deferred: list[tuple[str, str | ElementTree.Element, bool]] = []
+    deferred: list[tuple[str, str | ElementTree.Element | dict[str, object], bool]] = []
 
     def close() -> None:
         if pending:
@@ -5122,6 +5192,14 @@ def _paragraph_items(
                 items.append(("m", node, state))
                 if len(items) > MAX_SEGMENTS:
                     raise OOXMLInvalid("OOXML extraction has too many segments")
+            if tag == "fldChar":
+                record = _docx_field_char(node, fields)
+                if record is not None:
+                    close()
+                    items.append(("c", record, state))
+                    if len(items) > MAX_SEGMENTS:
+                        raise OOXMLInvalid("OOXML extraction has too many segments")
+                continue
             if tag in _INLINE_MARKS:
                 if ("d" if state else "t", state) != (pending_kind, pending_deleted):
                     close()
@@ -5131,11 +5209,35 @@ def _paragraph_items(
                     raise OOXMLInvalid("OOXML extraction has too many segments")
                 if tag != "hyperlink":
                     continue
-            text = {"t": node.text, "delText": node.text, "tab": "\t"}.get(tag)
+            text = {
+                "t": node.text,
+                "delText": node.text,
+                "instrText": node.text,
+                "tab": "\t",
+            }.get(tag)
             if tag in {"br", "cr"}:
                 text = "\n"
-            if tag in {"t", "delText", "tab", "br", "cr"}:
+            if tag in {"t", "delText", "instrText", "tab", "br", "cr"}:
                 if not text:
+                    continue
+                if fields and fields[-1].record is None:
+                    fields[-1].extend(text)
+                    continue
+                if tag == "instrText":
+                    # Instruction text reached outside the instruction it belongs
+                    # to is still instruction, so it is still never prose.
+                    continue
+                if tag in {"t", "delText"}:
+                    # A result read here is stored under every separator still
+                    # open around it, exactly as a simple field counts its own.
+                    for open_field in fields:
+                        if open_field.record is not None:
+                            open_field.result = True
+                if any(open_field.record is None for open_field in fields):
+                    # A nested field's result sits inside an outer field's
+                    # instruction, and Word renders no more of that than of the
+                    # code around it: the inner record keeps the result, the
+                    # prose does not, until the outer field separates too.
                     continue
                 removed = state or tag == "delText"
                 kind = "v" if hidden else "d" if removed else "t"
@@ -5164,29 +5266,85 @@ def _paragraph_items(
     return items
 
 
-def _docx_simple_field(element: ElementTree.Element) -> dict[str, object]:
-    """Inventory one ``fldSimple``, refusing one that names no instruction.
+def _docx_field_record(
+    form: str, instruction: str, truncated: bool, saved_result: bool
+) -> dict[str, object]:
+    """Record one Word field, in either form, as inert bounded metadata.
 
-    The instruction is kept as a bounded string and never parsed, so the field
-    is not executed and nothing it names is resolved. Only whether Word left a
-    result behind is recorded: whether that result still answers the
-    instruction cannot be known from the file, so its freshness is unknown.
+    ``instruction`` already sits inside ``_MAX_TARGET_CHARS`` and ``truncated``
+    is whether source characters were dropped to keep it there, so the caller
+    that bounded it says so rather than the bound being rediscovered here. The
+    instruction is never parsed, so the field is not executed and nothing it
+    names is resolved. Only whether Word left a result behind is recorded:
+    whether that result still answers the instruction cannot be known from the
+    file, so its freshness is unknown.
     """
+    return {
+        "kind": "wordField",
+        "fieldForm": form,
+        "instruction": instruction,
+        "instructionTruncated": truncated,
+        "executed": False,
+        "refreshed": False,
+        "savedResultPresent": saved_result,
+        "resultFreshness": "unknown",
+    }
+
+
+def _docx_simple_field(element: ElementTree.Element) -> dict[str, object]:
+    """Inventory one ``fldSimple``, refusing one that names no instruction."""
     instruction = _attr(element, "instr")
     if instruction is None:
         raise OOXMLInvalid("DOCX simple field names no instruction")
-    return {
-        "kind": "wordField",
-        "fieldForm": "simple",
-        "instruction": _clip(instruction, _MAX_TARGET_CHARS),
-        "instructionTruncated": len(instruction) > _MAX_TARGET_CHARS,
-        "executed": False,
-        "refreshed": False,
-        "savedResultPresent": any(
+    return _docx_field_record(
+        "simple",
+        _clip(instruction, _MAX_TARGET_CHARS),
+        len(instruction) > _MAX_TARGET_CHARS,
+        any(
             node.text for node in element.iter() if _local(node.tag) in {"t", "delText"}
         ),
-        "resultFreshness": "unknown",
-    }
+    )
+
+
+def _docx_field_char(
+    node: ElementTree.Element, fields: list[_FieldState]
+) -> dict[str, object] | None:
+    """Advance ``fields`` over one ``fldChar``, returning a record to order here.
+
+    A ``separate`` records the field before the result Word stored under it, so
+    the record is returned at that boundary and its ``savedResultPresent`` is
+    settled when the matching ``end`` is reached. A field that never separates
+    stored no result, so it is recorded at its ``end`` instead: nothing is
+    reordered, because there is no result for the record to precede.
+
+    A boundary that opens no field, a second ``separate``, an unknown kind and a
+    stack past the safety bound are all refused: none of them has one
+    reading, and guessing one would invent structure the file does not carry.
+    """
+    kind = _attr(node, "fldCharType")
+    if kind not in {"begin", "separate", "end"}:
+        raise OOXMLInvalid("DOCX field boundary names no kind")
+    if kind == "begin":
+        if len(fields) >= _MAX_DOCX_FIELD_DEPTH:
+            raise OOXMLInvalid("DOCX fields are nested too deeply")
+        fields.append(_FieldState())
+        return None
+    if not fields:
+        raise OOXMLInvalid("DOCX field boundary opens no field")
+    if kind == "separate":
+        if fields[-1].record is not None:
+            raise OOXMLInvalid("DOCX field separates twice")
+        fields[-1].record = _docx_field_record(
+            "complex", fields[-1].instruction, fields[-1].truncated, False
+        )
+        return fields[-1].record
+    closed = fields.pop()
+    if closed.record is None:
+        return _docx_field_record(
+            "complex", closed.instruction, closed.truncated, False
+        )
+    closed.record["savedResultPresent"] = closed.result
+    return None
 
 
 def _docx_styles(package: _Package) -> dict[str, tuple[str, str | None, bool, bool]]:

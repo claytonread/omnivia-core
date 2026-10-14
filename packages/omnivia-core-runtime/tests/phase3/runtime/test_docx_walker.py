@@ -7,8 +7,10 @@ import zipfile
 
 import pytest
 from omnivia_core_runtime.service.ooxml_extractors import (
+    _MAX_DOCX_FIELD_DEPTH,
     _MAX_TARGET_CHARS,
     OOXMLInvalid,
+    _FieldState,
     extract_docx,
 )
 
@@ -1093,3 +1095,305 @@ def test_a_simple_field_instruction_is_bounded_and_says_when_it_was_clipped() ->
     assert clipped["instructionTruncated"] is True
     assert clipped["instruction"] == at_limit
     assert len(clipped["instruction"]) == _MAX_TARGET_CHARS  # type: ignore[arg-type]
+
+
+def fld(kind: str) -> str:
+    return f'<w:r><w:fldChar w:fldCharType="{kind}"/></w:r>'
+
+
+def instr(text: str) -> str:
+    return run(text, "instrText")
+
+
+def test_complex_field_is_inventoried_before_the_result_it_saved() -> None:
+    code = instr(" DATE \\@ &quot;d MMMM yyyy&quot; ")
+    body = (
+        f"<w:p>{run('Printed ')}{fld('begin')}{code}"
+        f"{fld('separate')}{run('3 May 2026')}{fld('end')}{run(' sharp')}</w:p>"
+    )
+    content = docx(body, styles=False)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("body", "Printed ", "0"),
+        ("object_inventory", None, "0.f0"),
+        ("body", "3 May 2026 sharp", "0.t1"),
+    ]
+    assert inventory(content) == [
+        (
+            "0.f0",
+            {
+                "kind": "wordField",
+                "fieldForm": "complex",
+                "instruction": ' DATE \\@ "d MMMM yyyy" ',
+                "instructionTruncated": False,
+                "executed": False,
+                "refreshed": False,
+                "savedResultPresent": True,
+                "resultFreshness": "unknown",
+            },
+        )
+    ]
+
+
+def test_complex_field_naming_a_file_stays_inert_and_joins_its_fragments() -> None:
+    path = instr("&quot;C:\\\\secret\\\\x.docx&quot;")
+    body = (
+        f"<w:p>{fld('begin')}{instr(' INCLUDE')}{instr('TEXT ')}{path}{instr(' ')}"
+        f"{fld('separate')}{run('Stored copy')}{fld('end')}</w:p>"
+    )
+    content = docx(body, styles=False)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+    ((_, include),) = inventory(content)
+
+    # Fragments join exactly in source order, separators doubled as stored.
+    assert include["instruction"] == ' INCLUDETEXT "C:\\\\secret\\\\x.docx" '
+    # Nothing the instruction names is read, resolved or counted as a reference.
+    assert "target" not in include and "relationshipId" not in include
+    assert result.limitations["externalReferences"] == 0
+    # Only the saved result reads as text; no fragment of the code does.
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("object_inventory", None, "0.f0"),
+        ("body", "Stored copy", "0"),
+    ]
+
+
+def test_a_nested_field_result_inside_an_instruction_is_recorded_but_not_read() -> None:
+    body = (
+        f"<w:p>{fld('begin')}{instr(' IF ')}"
+        f"{fld('begin')}{instr(' PAGE ')}{fld('separate')}{run('3')}{fld('end')}"
+        f"{instr(' = 3 ')}{fld('separate')}{run('yes')}{fld('end')}</w:p>"
+    )
+    content = docx(body, styles=False)
+
+    # Each record still sits at its own boundary, and the inner one's result is
+    # the outer instruction's argument, which Word renders no more than the code
+    # around it: it is recorded, and only the outer result is read as prose.
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("object_inventory", None, "0.f0"),
+        ("object_inventory", None, "0.f1"),
+        ("body", "yes", "0"),
+    ]
+    inner, outer = (value for _, value in inventory(content))
+    assert (inner["instruction"], outer["instruction"]) == (" PAGE ", " IF  = 3 ")
+    assert [inner["savedResultPresent"], outer["savedResultPresent"]] == [True, True]
+
+
+def test_a_nested_field_result_is_kept_out_of_every_reading_of_the_prose() -> None:
+    inner = (
+        f"{fld('begin')}{instr(' PAGE ')}{fld('separate')}"
+        "<w:del><w:r><w:delText>2</w:delText></w:r></w:del>"
+        "<w:r><w:rPr><w:vanish/></w:rPr><w:t>quiet</w:t></w:r>"
+        f"{run('3')}{fld('end')}"
+    )
+    body = (
+        f"<w:p>{fld('begin')}{instr(' IF ')}{inner}"
+        f"{instr(' = 3 ')}{fld('separate')}{run('yes')}{fld('end')}</w:p>"
+    )
+    content = docx(body, styles=False)
+
+    # No deleted or hidden reading of the inner result survives either: inside
+    # an open instruction there is no prose of any visibility to place it in.
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("object_inventory", None, "0.f0"),
+        ("object_inventory", None, "0.f1"),
+        ("body", "yes", "0"),
+    ]
+    assert [value["savedResultPresent"] for _, value in inventory(content)] == [
+        True,
+        True,
+    ]
+
+
+def test_a_complex_field_without_a_separator_is_recorded_where_it_closes() -> None:
+    body = (
+        f"<w:p>{run('Page ')}{fld('begin')}{instr(' PAGE ')}"
+        f"{fld('end')}{run(' of 9')}</w:p>"
+    )
+    content = docx(body, styles=False)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+    ((_, record),) = inventory(content)
+
+    assert (record["instruction"], record["savedResultPresent"]) == (" PAGE ", False)
+    # The record sits at the boundary it closed: there is no result to precede.
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("body", "Page ", "0"),
+        ("object_inventory", None, "0.f0"),
+        ("body", " of 9", "0.t1"),
+    ]
+
+
+def test_a_complex_field_result_keeps_the_revision_and_hidden_reading_it_had() -> None:
+    body = (
+        f"<w:p>{fld('begin')}{instr(' DATE ')}{fld('separate')}"
+        "<w:del><w:r><w:delText>old</w:delText></w:r></w:del>"
+        "<w:r><w:rPr><w:vanish/></w:rPr><w:t>quiet</w:t></w:r>"
+        f"{run('new')}{fld('end')}</w:p>"
+    )
+    content = docx(body, styles=False)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("object_inventory", None, "0.f0"),
+        ("deleted_text", "old", "0.d0"),
+        ("hidden_content", "quiet", "0.v0"),
+        ("body", "new", "0"),
+    ]
+    assert inventory(content)[0][1]["savedResultPresent"] is True
+
+
+def test_a_complex_field_in_a_cell_is_inventoried_before_the_run_it_opens() -> None:
+    body = (
+        f"<w:tbl><w:tr><w:tc><w:p>{run('Due ')}{fld('begin')}{instr(' DATE ')}"
+        f"{fld('separate')}{run('3 May 2026')}{fld('end')}{run(' sharp')}</w:p>"
+        f"<w:p>{run('after')}</w:p></w:tc></w:tr></w:tbl>"
+    )
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"])
+        for i in extract_docx(docx(body, styles=False), capture_id=CAPTURE).segments
+    ] == [
+        ("table_cell", "Due ", "0.r0.c0"),
+        ("object_inventory", None, "0.r0.c0.0.f0"),
+        ("table_cell", "3 May 2026 sharp\nafter", "0.r0.c0.t1"),
+    ]
+
+
+def test_a_complex_field_spans_the_paragraphs_between_its_own_boundaries() -> None:
+    code = instr(" TOC \\o &quot;1-3&quot; ")
+    body = (
+        f"<w:p>{run('Contents')}{fld('begin')}{code}</w:p>"
+        f"<w:p>{fld('separate')}{run('1 Opening')}</w:p>"
+        f"<w:p>{run('2 Closing')}</w:p>"
+        f"<w:p>{fld('end')}{run('after')}</w:p>"
+    )
+    content = docx(body, styles=False)
+
+    # The record is ordered at the separator, so it still precedes every stored
+    # result; each position is the block the item was read in and nothing else.
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("body", "Contents", "0"),
+        ("object_inventory", None, "1.f0"),
+        ("body", "1 Opening", "1"),
+        ("body", "2 Closing", "2"),
+        ("body", "after", "3"),
+    ]
+    assert inventory(content) == [
+        (
+            "1.f0",
+            {
+                "kind": "wordField",
+                "fieldForm": "complex",
+                "instruction": ' TOC \\o "1-3" ',
+                "instructionTruncated": False,
+                "executed": False,
+                "refreshed": False,
+                "savedResultPresent": True,
+                "resultFreshness": "unknown",
+            },
+        )
+    ]
+
+
+def test_a_field_boundary_may_not_cross_a_separately_walked_story() -> None:
+    stray = box(f"<w:p>{fld('end')}{run('inner')}</w:p>")
+    opened = box(f"<w:p>{fld('begin')}{instr(' PAGE ')}</w:p>")
+    whole = (
+        f"<w:p>{fld('begin')}{instr(' DATE ')}{fld('separate')}"
+        f"{run('x')}{fld('end')}</w:p>"
+    )
+    note = (
+        f'<w:footnotes {W}><w:footnote w:id="2"><w:p>{fld("end")}</w:p>'
+        "</w:footnote></w:footnotes>"
+    )
+    cases = (
+        # A text box is its own story: a field open around it is out of reach of
+        # a boundary inside it, and one opened inside it may not outlive it.
+        (
+            docx(f"<w:p>{fld('begin')}{instr(' IF ')}{stray}</w:p>", styles=False),
+            "opens no field",
+        ),
+        (docx(f"<w:p>{opened}</w:p>", styles=False), "is never closed"),
+        # A note container is walked on its own too, so the body lends it nothing.
+        (docx(whole, {"word/footnotes.xml": note}, styles=False), "opens no field"),
+    )
+
+    for content, refusal in cases:
+        with pytest.raises(OOXMLInvalid, match=refusal):
+            extract_docx(content, capture_id=CAPTURE)
+
+
+@pytest.mark.parametrize(
+    ("body", "refusal"),
+    [
+        (f"<w:p>{fld('separate')}</w:p>", "opens no field"),
+        (f"<w:p>{fld('end')}</w:p>", "opens no field"),
+        (
+            f"<w:p>{fld('begin')}{fld('separate')}{fld('separate')}{fld('end')}</w:p>",
+            "separates twice",
+        ),
+        (f"<w:p>{fld('begin')}{instr(' DATE ')}</w:p>", "is never closed"),
+        (f"<w:p>{fld('begin')}{fld('separate')}{run('x')}</w:p>", "is never closed"),
+        (f"<w:p>{fld('resume')}</w:p>", "names no kind"),
+        ("<w:p><w:r><w:fldChar/></w:r></w:p>", "names no kind"),
+        (
+            (
+                f"<w:p>{fld('begin') * (_MAX_DOCX_FIELD_DEPTH + 1)}"
+                f"{fld('end') * (_MAX_DOCX_FIELD_DEPTH + 1)}</w:p>"
+            ),
+            "nested too deeply",
+        ),
+    ],
+)
+def test_a_malformed_field_sequence_is_refused_rather_than_guessed(
+    body: str, refusal: str
+) -> None:
+    with pytest.raises(OOXMLInvalid, match=refusal):
+        extract_docx(docx(body, styles=False), capture_id=CAPTURE)
+
+
+def test_a_complex_field_instruction_is_bounded_across_its_fragments() -> None:
+    fragment = "a" * 512
+    fragments = 4 * (1 + _MAX_TARGET_CHARS // len(fragment))
+    body = (
+        f"<w:p>{fld('begin')}{instr(' REF ')}"
+        f"{instr(fragment) * fragments}"
+        f"{fld('separate')}{run('x')}{fld('end')}</w:p>"
+    )
+
+    ((_, record),) = inventory(docx(body, styles=False))
+
+    # Far more source text arrives than the bound allows, and what comes out is
+    # exactly the bounded prefix: nothing past the bound was ever held.
+    assert record["instruction"] == (" REF " + fragment * fragments)[:_MAX_TARGET_CHARS]
+    assert record["instructionTruncated"] is True
+    assert len(record["instruction"]) == _MAX_TARGET_CHARS  # type: ignore[arg-type]
+
+
+def test_a_field_state_never_holds_more_than_the_bound() -> None:
+    state = _FieldState()
+
+    for _ in range(100):
+        state.extend("a" * _MAX_TARGET_CHARS)
+
+    assert (len(state.instruction), state.truncated) == (_MAX_TARGET_CHARS, True)
