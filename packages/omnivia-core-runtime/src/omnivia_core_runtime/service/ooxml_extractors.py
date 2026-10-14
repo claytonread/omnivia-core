@@ -10,7 +10,7 @@ import stat
 import unicodedata
 import zipfile
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final, Self
 from xml.etree import ElementTree
 
@@ -56,6 +56,25 @@ _INSERTED: Final = frozenset({"ins", "moveTo"})
 _REMOVED: Final = frozenset({"del", "moveFrom"})
 _MAX_REVISION_DEPTH: Final = 4
 _HEADING_STYLE: Final = re.compile(r"title|heading[1-9]")
+_NOTE_ID: Final = re.compile(r"-?[0-9]{1,9}")
+# At least two characters, so a drive letter such as ``C:`` stays a path.
+_SCHEME: Final = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]+):")
+_MAX_TARGET_CHARS: Final = 2048
+_MAX_META_CHARS: Final = 256
+_SEPARATOR_NOTES: Final = frozenset(
+    {"separator", "continuationSeparator", "continuationNotice"}
+)
+# Element tag -> (annotation story it names, which end of the reference it is).
+_ANNOTATION_MARKS: Final = {
+    "footnoteReference": ("footnote", "reference"),
+    "endnoteReference": ("endnote", "reference"),
+    "commentReference": ("comment", "reference"),
+    "commentRangeStart": ("comment", "rangeStart"),
+    "commentRangeEnd": ("comment", "rangeEnd"),
+}
+# Range markers are also legal between blocks, rows and cells.
+_RANGE_TAGS: Final = frozenset({"commentRangeStart", "commentRangeEnd"})
+_INLINE_MARKS: Final = frozenset(_ANNOTATION_MARKS) | {"hyperlink"}
 
 
 class OOXMLInvalid(ValueError):
@@ -328,10 +347,17 @@ def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
             )
         )
         styles = _docx_styles(package)
+        # Annotation parts are read first so every reference in any story can
+        # be checked against the notes and comments that actually exist.
+        roots = {
+            part: package.xml(part) for part in parts if _docx_story(part) in _NOTE_TAGS
+        }
+        notes = _annotation_index(roots)
+        seen: dict[tuple[str, str, str], int] = {}
         segments: list[ExtractedSegment] = []
         blocks = 0
         for part in parts:
-            root = package.xml(part)
+            root = roots[part] if part in roots else package.xml(part)
             story = _docx_story(part)
             containers = (
                 [
@@ -339,11 +365,23 @@ def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                     for item in root
                     if _local(item.tag) in _NOTE_TAGS
                 ]
-                if story in {"footnote", "endnote", "comment"}
+                if story in _NOTE_TAGS
                 else []
             ) or [(None, root)]
             for note_id, container in containers:
-                walker = _DocxWalker(capture_id, part, story, note_id, styles, segments)
+                walker = _DocxWalker(
+                    capture_id,
+                    part,
+                    story,
+                    note_id,
+                    styles,
+                    segments,
+                    package,
+                    notes,
+                    seen,
+                )
+                if walker.inventory_note(container):
+                    continue
                 walker.walk(container, "", 0)
                 blocks += walker.paragraphs
         return OOXMLExtraction(
@@ -355,6 +393,39 @@ def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 "externalReferences": package.external_relationships,
             },
         )
+
+
+def _annotation_index(
+    roots: dict[str, ElementTree.Element],
+) -> dict[tuple[str, str], str]:
+    """Map (story, id) to the part holding each readable note or comment.
+
+    A malformed or repeated identifier, a second entry without one, or an
+    unknown note type leaves references ambiguous, so the package is refused.
+    A lone entry without an identifier is still read but can be no target, and
+    separator entries are accepted but never become reference targets.
+    """
+    index: dict[tuple[str, str], str] = {}
+    seen: set[tuple[str, str | None]] = set()
+    for part, root in roots.items():
+        story = _docx_story(part)
+        for item in root:
+            if _local(item.tag) not in _NOTE_TAGS:
+                continue
+            note_id = _attr(item, "id")
+            if note_id is not None and _NOTE_ID.fullmatch(note_id) is None:
+                raise OOXMLInvalid("DOCX annotation has a malformed id")
+            # Without an id the locator carries no identity, so only one entry
+            # per story can go without.
+            if (story, note_id) in seen:
+                raise OOXMLInvalid("DOCX annotation id is repeated")
+            seen.add((story, note_id))
+            note_type = _attr(item, "type") or "normal"
+            if story != "comment" and note_type not in _SEPARATOR_NOTES | {"normal"}:
+                raise OOXMLInvalid("DOCX note has an unknown type")
+            if note_id is not None and (story == "comment" or note_type == "normal"):
+                index[(story, note_id)] = part
+    return index
 
 
 def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
@@ -574,6 +645,8 @@ class _CellRun:
     position: str
     parts: list[str]
     runs: int = 0
+    # Inventory segments wait for the run that holds their text.
+    marks: list[tuple[str, dict[str, object], str, bool]] = field(default_factory=list)
 
 
 class _DocxWalker:
@@ -588,6 +661,14 @@ class _DocxWalker:
     text is never joined across one of them. A table cell reads its current
     paragraphs as one ``table_cell`` run, closed by any deletion, text box or
     nested table, and later runs sit at ``<cell>.t<n>``.
+
+    Hyperlinks and annotation references stay out of the text: each becomes an
+    inert ``object_inventory`` segment right after the stretch it sits in, at
+    ``<paragraph>.h<n>`` (hyperlinks) or ``<paragraph>.n<n>`` (note and comment
+    references), and range markers between blocks at ``<level>m<n>``. A
+    reference names its target by (story, ``noteId``), the same identity the
+    annotation's own segments carry, so repeating one reference repeats a
+    pointer and never the annotation text.
     """
 
     def __init__(
@@ -598,6 +679,9 @@ class _DocxWalker:
         note_id: str | None,
         styles: dict[str, tuple[str, str | None, bool, bool]],
         segments: list[ExtractedSegment],
+        package: _Package,
+        notes: dict[tuple[str, str], str],
+        seen: dict[tuple[str, str, str], int],
     ) -> None:
         self._capture_id = capture_id
         self._part = part
@@ -605,6 +689,15 @@ class _DocxWalker:
         self._note_id = note_id
         self._styles = styles
         self._segments = segments
+        self._notes = notes
+        self._seen = seen
+        # Relationships resolve against the part that holds the reference, and
+        # no other: a part without a relationships part has none to name.
+        rels = posixpath.join(
+            posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels"
+        )
+        self._relations = package.relationships.get(rels, {})
+        self._relation_types = package.relationship_types.get(rels, {})
         self.paragraphs = 0
 
     def walk(
@@ -614,12 +707,155 @@ class _DocxWalker:
         depth: int,
         deleted: bool = False,
     ) -> None:
-        for index, (block, removed) in enumerate(_blocks(parent, deleted)):
+        index = marks = 0
+        for block, removed in _blocks(parent, deleted):
+            tag = _local(block.tag)
+            if tag in _RANGE_TAGS:
+                self._mark(block, f"{prefix}m{marks}", removed, None)
+                marks += 1
+                continue
             position = f"{prefix}{index}"
-            if _local(block.tag) == "p":
+            if tag == "p":
                 self._paragraph(block, position, depth, removed)
             else:
                 self._table(block, position, depth, removed)
+            index += 1
+
+    def inventory_note(self, entry: ElementTree.Element) -> bool:
+        """Inventory what is not note prose; True when the entry is excluded.
+
+        Separator entries hold Word's own rule and notice, not text the author
+        wrote, so they are recorded and never read. A comment's author, date
+        and initials are kept as clipped strings and never resolved to anyone.
+        """
+        if self._story in {"footnote", "endnote"}:
+            note_type = _attr(entry, "type") or "normal"
+            if note_type == "normal":
+                return False
+            self._inventory(
+                "inventory",
+                {
+                    "kind": "noteSeparator",
+                    "noteId": self._note_id,
+                    "noteType": note_type,
+                    "excluded": True,
+                },
+                "annotation",
+                False,
+            )
+            return True
+        metadata = {
+            key: _clip(value, _MAX_META_CHARS)
+            for key in ("author", "date", "initials")
+            if (value := _attr(entry, key))
+        }
+        if metadata:
+            self._inventory(
+                "inventory",
+                {"kind": "commentMetadata", "noteId": self._note_id, **metadata},
+                "annotation",
+                False,
+            )
+        return False
+
+    def _inventory(
+        self,
+        position: str,
+        value: dict[str, object],
+        visibility: str,
+        deleted: bool,
+    ) -> None:
+        self._segments.append(
+            ExtractedSegment(
+                "object_inventory",
+                self._locator(position),
+                structured_value=value,
+                extraction_method="inventory",
+                visibility="annotation" if deleted else visibility,
+                revision_state="deleted" if deleted else "current",
+            )
+        )
+        _bounded(self._segments)
+
+    def _mark(
+        self,
+        element: ElementTree.Element,
+        position: str,
+        deleted: bool,
+        cell: _CellRun | None,
+    ) -> None:
+        """Inventory one hyperlink or annotation marker, refusing a bad one."""
+        if _local(element.tag) == "hyperlink":
+            value, visibility = self._hyperlink(element), "visible"
+        else:
+            value = self._annotation_reference(element)
+            # Only a footnote or endnote reference is visible in the page.
+            visibility = "annotation" if value["annotation"] == "comment" else "visible"
+        if cell is None:
+            self._inventory(position, value, visibility, deleted)
+        else:
+            cell.marks.append((position, value, visibility, deleted))
+
+    def _hyperlink(self, element: ElementTree.Element) -> dict[str, object]:
+        ids = [(key, val) for key, val in element.attrib.items() if _local(key) == "id"]
+        anchor = _attr(element, "anchor")
+        if (
+            len(ids) > 1
+            or any(not key.startswith("{") or not val for key, val in ids)
+            or not (ids or anchor)
+        ):
+            raise OOXMLInvalid("DOCX hyperlink is malformed")
+        value: dict[str, object] = {
+            "kind": "hyperlink",
+            "relationshipId": None,
+            "relationshipType": None,
+            "target": None,
+            "scheme": None,
+            "resolved": False,
+            "targetTruncated": False,
+            "anchor": _clip(anchor, _MAX_TARGET_CHARS) if anchor else None,
+        }
+        if not ids:
+            return value
+        relation_id = ids[0][1]
+        entry = self._relations.get(relation_id)
+        if entry is None:
+            raise OOXMLInvalid("DOCX hyperlink names a missing relationship")
+        relation_type = self._relation_types.get(relation_id, "")
+        if not relation_type.endswith("/hyperlink"):
+            raise OOXMLInvalid("DOCX hyperlink names a relationship of another type")
+        target, external = entry
+        value.update(
+            relationshipId=_clip(relation_id, _MAX_META_CHARS),
+            relationshipType=_clip(relation_type, _MAX_TARGET_CHARS),
+            target=_clip(target, _MAX_TARGET_CHARS),
+            targetTruncated=len(target) > _MAX_TARGET_CHARS,
+        )
+        if external:
+            # Verbatim and inert: never fetched, opened or normalised.
+            match = _SCHEME.match(target)
+            value["scheme"] = match.group(1).casefold() if match else ""
+        else:
+            value["resolved"] = True
+        return value
+
+    def _annotation_reference(self, element: ElementTree.Element) -> dict[str, object]:
+        story, marker = _ANNOTATION_MARKS[_local(element.tag)]
+        note_id = _attr(element, "id")
+        target = self._notes.get((story, note_id or ""))
+        if note_id is None or _NOTE_ID.fullmatch(note_id) is None or target is None:
+            raise OOXMLInvalid("DOCX annotation reference names no annotation")
+        key = (story, note_id, marker)
+        occurrence = self._seen.get(key, 0)
+        self._seen[key] = occurrence + 1
+        return {
+            "kind": "annotationReference",
+            "annotation": story,
+            "marker": marker,
+            "noteId": note_id,
+            "targetPart": target,
+            "occurrence": occurrence,
+        }
 
     def _locator(self, position: str) -> dict[str, object]:
         values: dict[str, object] = {
@@ -654,9 +890,16 @@ class _DocxWalker:
     ) -> None:
         self.paragraphs += 1
         role = "table_cell" if cell else self._role(paragraph)
-        current = removed = boxes = 0
+        current = removed = boxes = links = refs = 0
         for kind, value, box_deleted in _paragraph_items(paragraph, deleted):
-            if isinstance(value, ElementTree.Element):
+            if kind == "m":
+                assert isinstance(value, ElementTree.Element)
+                if _local(value.tag) == "hyperlink":
+                    label, links = f"h{links}", links + 1
+                else:
+                    label, refs = f"n{refs}", refs + 1
+                self._mark(value, f"{position}.{label}", box_deleted, cell)
+            elif isinstance(value, ElementTree.Element):
                 self._flush(cell)
                 if depth >= _MAX_DOCX_DEPTH:
                     raise OOXMLInvalid("DOCX text boxes are nested too deeply")
@@ -679,12 +922,16 @@ class _DocxWalker:
                 current += 1
 
     def _flush(self, cell: _CellRun | None) -> None:
-        if cell is None or not cell.parts:
+        if cell is None:
             return
-        position = f"{cell.position}.t{cell.runs}" if cell.runs else cell.position
-        self._add("table_cell", position, "\n".join(cell.parts), False)
-        cell.runs += 1
-        cell.parts.clear()
+        if cell.parts:
+            position = f"{cell.position}.t{cell.runs}" if cell.runs else cell.position
+            self._add("table_cell", position, "\n".join(cell.parts), False)
+            cell.runs += 1
+            cell.parts.clear()
+        for mark in cell.marks:
+            self._inventory(*mark)
+        cell.marks.clear()
 
     def _role(self, paragraph: ElementTree.Element) -> str:
         if self._story == "footnote" or self._story == "endnote":
@@ -704,20 +951,46 @@ class _DocxWalker:
     ) -> None:
         if depth > _MAX_DOCX_DEPTH:
             raise OOXMLInvalid("DOCX tables are nested too deeply")
-        rows = (item for item in table if _local(item.tag) == "tr")
-        for row_index, row in enumerate(rows):
-            cells = (item for item in row if _local(item.tag) == "tc")
-            for cell_index, cell in enumerate(cells):
-                cell_position = f"{position}.r{row_index}.c{cell_index}"
-                run = _CellRun(cell_position, [])
-                for index, (block, removed) in enumerate(_blocks(cell, deleted)):
-                    block_position = f"{cell_position}.{index}"
-                    if _local(block.tag) == "tbl":
-                        self._flush(run)
-                        self._table(block, block_position, depth + 1, removed)
-                    else:
-                        self._paragraph(block, block_position, depth, removed, run)
-                self._flush(run)
+        row_index = marks = 0
+        for row in table:
+            tag = _local(row.tag)
+            if tag in _RANGE_TAGS:
+                self._mark(row, f"{position}.m{marks}", deleted, None)
+                marks += 1
+            elif tag == "tr":
+                self._row(row, f"{position}.r{row_index}", depth, deleted)
+                row_index += 1
+
+    def _row(
+        self, row: ElementTree.Element, position: str, depth: int, deleted: bool
+    ) -> None:
+        cell_index = marks = 0
+        for cell in row:
+            tag = _local(cell.tag)
+            if tag in _RANGE_TAGS:
+                self._mark(cell, f"{position}.m{marks}", deleted, None)
+                marks += 1
+                continue
+            if tag != "tc":
+                continue
+            cell_position = f"{position}.c{cell_index}"
+            cell_index += 1
+            run = _CellRun(cell_position, [])
+            index = block_marks = 0
+            for block, removed in _blocks(cell, deleted):
+                block_tag = _local(block.tag)
+                if block_tag in _RANGE_TAGS:
+                    self._mark(block, f"{cell_position}.m{block_marks}", removed, run)
+                    block_marks += 1
+                    continue
+                block_position = f"{cell_position}.{index}"
+                index += 1
+                if block_tag == "tbl":
+                    self._flush(run)
+                    self._table(block, block_position, depth + 1, removed)
+                else:
+                    self._paragraph(block, block_position, depth, removed, run)
+            self._flush(run)
 
 
 def _revised(tag: str, deleted: bool, depth: int) -> tuple[bool, int]:
@@ -742,7 +1015,8 @@ def _blocks(
 ) -> Iterator[tuple[ElementTree.Element, bool]]:
     """Yield paragraphs and tables below ``parent`` in document order.
 
-    Each comes with whether a deletion wrapped it. Transparent wrappers
+    Comment range markers between blocks are yielded too. Each comes with
+    whether a deletion wrapped it. Transparent wrappers
     (``body``, content controls, revisions) are entered; a yielded paragraph or
     table is not entered, so nothing is seen twice.
     """
@@ -751,7 +1025,7 @@ def _blocks(
         children, state, depth = stack[-1]
         for child in children:
             tag = _local(child.tag)
-            if tag in {"p", "tbl"}:
+            if tag in {"p", "tbl"} or tag in _RANGE_TAGS:
                 yield child, state
             elif tag not in _NON_BLOCK_TAGS:
                 inner, level = _revised(tag, state, depth)
@@ -766,18 +1040,23 @@ def _paragraph_items(
 ) -> list[tuple[str, str | ElementTree.Element, bool]]:
     """Split a paragraph into ordered ``(kind, value, deleted)`` items.
 
-    Kinds are ``t`` current text, ``d`` deleted text and ``x`` a text box (with
-    whether its anchor was deleted). Adjacent text of one kind is one stretch;
+    Kinds are ``t`` current text, ``d`` deleted text, ``x`` a text box and ``m``
+    a hyperlink or annotation marker (with whether a deletion wrapped it). Adjacent text of one kind is one stretch;
     tabs and breaks stay as separators inside it.
     """
     items: list[tuple[str, str | ElementTree.Element, bool]] = []
     pending: list[str] = []
     pending_kind = ""
 
+    # Markers follow the stretch they sit in, so they never split the text.
+    deferred: list[tuple[str, str | ElementTree.Element, bool]] = []
+
     def close() -> None:
         if pending:
             items.append((pending_kind, "".join(pending), False))
             pending.clear()
+        items.extend(deferred)
+        deferred.clear()
 
     stack = [(iter(paragraph), deleted, 0)]
     while stack:
@@ -792,6 +1071,15 @@ def _paragraph_items(
                 if len(items) > MAX_SEGMENTS:
                     raise OOXMLInvalid("OOXML extraction has too many segments")
                 continue
+            if tag in _INLINE_MARKS:
+                if ("d" if state else "t") != pending_kind:
+                    close()
+                    pending_kind = "d" if state else "t"
+                deferred.append(("m", node, state))
+                if len(items) + len(deferred) > MAX_SEGMENTS:
+                    raise OOXMLInvalid("OOXML extraction has too many segments")
+                if tag != "hyperlink":
+                    continue
             text = {"t": node.text, "delText": node.text, "tab": "\t"}.get(tag)
             if tag in {"br", "cr"}:
                 text = "\n"
@@ -927,6 +1215,10 @@ def _relationship_id(attributes: dict[str, str]) -> str:
         None,
     )
     return namespaced or attributes.get("id", "")
+
+
+def _clip(value: str, limit: int) -> str:
+    return value[:limit]
 
 
 def _local(tag: str) -> str:
