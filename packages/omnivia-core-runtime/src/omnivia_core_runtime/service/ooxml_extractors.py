@@ -7724,8 +7724,11 @@ class _CellRun:
     position: str
     parts: list[str]
     runs: int = 0
-    # Inventory segments wait for the run that holds their text.
-    marks: list[tuple[str, dict[str, object], str, bool]] = field(default_factory=list)
+    # Inventory segments wait for the run that holds their text, each beside the
+    # identity of the paragraph it was read from so waiting does not lose it.
+    marks: list[tuple[str, dict[str, object], str, bool, str | None]] = field(
+        default_factory=list
+    )
     # Where this cell sits in its table's grid, carried by every run it emits.
     grid: dict[str, object] | None = None
 
@@ -7816,6 +7819,27 @@ class _DocxWalker:
     reference names its target by (story, ``noteId``), the same identity the
     annotation's own segments carry, so repeating one reference repeats a
     pointer and never the annotation text.
+
+    Everything read out of one paragraph also carries that paragraph's own
+    identity in ``paragraphId`` when it declared one: its current, deleted and
+    hidden text, the hyperlinks, fields and annotation references standing in
+    it, and the equations, images, charts, SmartArt, embedded objects and legacy
+    images it anchors, down to the claims and values those records derive. The
+    identity is the exact ``w14:paraId`` the paragraph wrote, held to the range
+    MS-DOCX reserves and kept as authored, never recased; a written value
+    outside that range is refused rather than reported. An attribute written in
+    no namespace, in another namespace, or under a similar local name is not
+    that attribute and is never read as one, and a paragraph that declares none
+    carries no key -- the absent key is how "this file said nothing" is told
+    apart from any identity, in every story.
+
+    A paragraph's identity is scoped to that paragraph: a text box is walked as
+    its own story, so the paragraphs inside it carry their own identities and the
+    paragraph anchoring the box resumes carrying its own afterwards. What is not
+    read out of a paragraph carries none -- display math standing between
+    blocks, range markers between them, a table's own record, a cell's geometry
+    record -- and neither does a ``table_cell`` run, which joins the current
+    prose of every paragraph in its cell and so belongs to no one of them.
     """
 
     def __init__(
@@ -7852,6 +7876,10 @@ class _DocxWalker:
         # The complex fields open in this story. A field may span paragraphs, so
         # the stack belongs to the story and not to any one paragraph.
         self._fields: list[_FieldState] = []
+        # The identity of the paragraph being read, or None outside one, which is
+        # where a block, a marker, a table's geometry and a cell's joined prose
+        # all stand.
+        self._para_id: str | None = None
 
     def walk(
         self,
@@ -7991,7 +8019,7 @@ class _DocxWalker:
         if cell is None:
             self._inventory(position, value, visibility, deleted)
         else:
-            cell.marks.append((position, value, visibility, deleted))
+            cell.marks.append((position, value, visibility, deleted, self._para_id))
 
     def _hyperlink(self, element: ElementTree.Element) -> dict[str, object]:
         ids = [(key, val) for key, val in element.attrib.items() if _local(key) == "id"]
@@ -8046,6 +8074,8 @@ class _DocxWalker:
         }
         if self._note_id is not None:
             values["noteId"] = self._note_id
+        if self._para_id is not None:
+            values["paragraphId"] = self._para_id
         return _locator(self._capture_id, **values, **extra)
 
     def _add(
@@ -8088,110 +8118,122 @@ class _DocxWalker:
     ) -> None:
         self.paragraphs += 1
         role = "table_cell" if cell else self._role(paragraph)
-        current = removed = boxes = links = refs = fields = concealed = 0
-        maths = images = charts = diagrams = objects = legacy = 0
-        for kind, value, box_deleted in _paragraph_items(
-            paragraph, deleted, self._fields
-        ):
-            if kind == "e":
-                assert isinstance(value, ElementTree.Element)
-                # Math is ordered where it sits, so in a cell it closes the
-                # current run rather than trailing the prose it interrupts.
-                self._flush(cell)
-                self._equation(value, f"{position}.e{maths}", box_deleted)
-                maths += 1
-            elif kind == "g":
-                assert isinstance(value, ElementTree.Element)
-                # An image is ordered where it sits, for the reason math is.
-                self._flush(cell)
-                self._drawing(value, f"{position}.i{images}", box_deleted)
-                images += 1
-            elif kind == "k":
-                assert isinstance(value, ElementTree.Element)
-                # A chart is ordered where it sits, for the reason an image is.
-                self._flush(cell)
-                self._chart(value, f"{position}.c{charts}", box_deleted)
-                charts += 1
-            elif kind == "s":
-                assert isinstance(value, ElementTree.Element)
-                # SmartArt is ordered where it sits, for the reason a chart is.
-                self._flush(cell)
-                self._diagram(value, f"{position}.d{diagrams}", box_deleted)
-                diagrams += 1
-            elif kind == "o":
-                assert isinstance(value, ElementTree.Element)
-                # An object is ordered where it sits, for the reason SmartArt is.
-                self._flush(cell)
-                self._object(value, f"{position}.o{objects}", box_deleted)
-                objects += 1
-            elif kind == "p":
-                assert isinstance(value, ElementTree.Element)
-                # A legacy image is ordered where it sits, for the reason an
-                # object is.
-                self._flush(cell)
-                self._vml_image(value, f"{position}.v{legacy}", box_deleted)
-                legacy += 1
-            elif kind == "m":
-                assert isinstance(value, ElementTree.Element)
-                item = _local(value.tag)
-                if item == "hyperlink":
-                    label, links = f"h{links}", links + 1
-                elif item == "fldSimple":
-                    label, fields = f"f{fields}", fields + 1
-                    # A field is inventoried where it sits, so in a cell it
-                    # closes the current run rather than waiting for the end of
-                    # the cell, where it would trail the result it precedes.
+        # The identity belongs to this paragraph and to nothing around it: the
+        # one standing here is held while its own items are read and put back in
+        # the ``finally`` below, so a text box's paragraphs do not leak their
+        # identities out to the paragraph anchoring the box, nor inherit its,
+        # and a refusal raised mid-paragraph leaves no identity standing either.
+        outer_para_id = self._para_id
+        self._para_id = _docx_para_id(
+            paragraph.attrib.get(_DOCX_PARA_ID), "identity", "DOCX paragraph"
+        )
+        try:
+            current = removed = boxes = links = refs = fields = concealed = 0
+            maths = images = charts = diagrams = objects = legacy = 0
+            for kind, value, box_deleted in _paragraph_items(
+                paragraph, deleted, self._fields
+            ):
+                if kind == "e":
+                    assert isinstance(value, ElementTree.Element)
+                    # Math is ordered where it sits, so in a cell it closes the
+                    # current run rather than trailing the prose it interrupts.
                     self._flush(cell)
-                    self._mark(value, f"{position}.{label}", box_deleted, None)
-                    continue
+                    self._equation(value, f"{position}.e{maths}", box_deleted)
+                    maths += 1
+                elif kind == "g":
+                    assert isinstance(value, ElementTree.Element)
+                    # An image is ordered where it sits, for the reason math is.
+                    self._flush(cell)
+                    self._drawing(value, f"{position}.i{images}", box_deleted)
+                    images += 1
+                elif kind == "k":
+                    assert isinstance(value, ElementTree.Element)
+                    # A chart is ordered where it sits, for the reason an image is.
+                    self._flush(cell)
+                    self._chart(value, f"{position}.c{charts}", box_deleted)
+                    charts += 1
+                elif kind == "s":
+                    assert isinstance(value, ElementTree.Element)
+                    # SmartArt is ordered where it sits, for the reason a chart is.
+                    self._flush(cell)
+                    self._diagram(value, f"{position}.d{diagrams}", box_deleted)
+                    diagrams += 1
+                elif kind == "o":
+                    assert isinstance(value, ElementTree.Element)
+                    # An object is ordered where it sits, for the reason SmartArt is.
+                    self._flush(cell)
+                    self._object(value, f"{position}.o{objects}", box_deleted)
+                    objects += 1
+                elif kind == "p":
+                    assert isinstance(value, ElementTree.Element)
+                    # A legacy image is ordered where it sits, for the reason an
+                    # object is.
+                    self._flush(cell)
+                    self._vml_image(value, f"{position}.v{legacy}", box_deleted)
+                    legacy += 1
+                elif kind == "m":
+                    assert isinstance(value, ElementTree.Element)
+                    item = _local(value.tag)
+                    if item == "hyperlink":
+                        label, links = f"h{links}", links + 1
+                    elif item == "fldSimple":
+                        label, fields = f"f{fields}", fields + 1
+                        # A field is inventoried where it sits, so in a cell it
+                        # closes the current run rather than waiting for the end of
+                        # the cell, where it would trail the result it precedes.
+                        self._flush(cell)
+                        self._mark(value, f"{position}.{label}", box_deleted, None)
+                        continue
+                    else:
+                        label, refs = f"n{refs}", refs + 1
+                    self._mark(value, f"{position}.{label}", box_deleted, cell)
+                elif isinstance(value, dict):
+                    label, fields = f"f{fields}", fields + 1
+                    # A complex field is ordered at its own boundary, so in a cell it
+                    # closes the current run for the same reason a simple field does.
+                    self._flush(cell)
+                    self._inventory(f"{position}.{label}", value, "visible", box_deleted)
+                elif isinstance(value, ElementTree.Element):
+                    self._flush(cell)
+                    if depth >= _MAX_DOCX_DEPTH:
+                        raise OOXMLInvalid("DOCX text boxes are nested too deeply")
+                    # A text box is traversed as its own story, so its fields neither
+                    # close nor are closed by the ones open around it: a boundary
+                    # that tries to cross the box is refused, not leaked through.
+                    outer, self._fields = self._fields, []
+                    self.walk(value, f"{position}.x{boxes}.", depth + 1, box_deleted)
+                    self.finish()
+                    self._fields = outer
+                    boxes += 1
+                elif kind == "v":
+                    # A hidden stretch closes the cell's current text, exactly as a
+                    # deletion does, so hidden text never joins the cell's prose.
+                    self._flush(cell)
+                    self._add(
+                        role,
+                        f"{position}.v{concealed}",
+                        value,
+                        box_deleted,
+                        hidden=True,
+                    )
+                    concealed += 1
+                elif kind == "d":
+                    self._flush(cell)
+                    self._add("body", f"{position}.d{removed}", value, True)
+                    removed += 1
+                elif cell is not None:
+                    cell.parts.append(value)
                 else:
-                    label, refs = f"n{refs}", refs + 1
-                self._mark(value, f"{position}.{label}", box_deleted, cell)
-            elif isinstance(value, dict):
-                label, fields = f"f{fields}", fields + 1
-                # A complex field is ordered at its own boundary, so in a cell it
-                # closes the current run for the same reason a simple field does.
-                self._flush(cell)
-                self._inventory(f"{position}.{label}", value, "visible", box_deleted)
-            elif isinstance(value, ElementTree.Element):
-                self._flush(cell)
-                if depth >= _MAX_DOCX_DEPTH:
-                    raise OOXMLInvalid("DOCX text boxes are nested too deeply")
-                # A text box is traversed as its own story, so its fields neither
-                # close nor are closed by the ones open around it: a boundary
-                # that tries to cross the box is refused, not leaked through.
-                outer, self._fields = self._fields, []
-                self.walk(value, f"{position}.x{boxes}.", depth + 1, box_deleted)
-                self.finish()
-                self._fields = outer
-                boxes += 1
-            elif kind == "v":
-                # A hidden stretch closes the cell's current text, exactly as a
-                # deletion does, so hidden text never joins the cell's prose.
-                self._flush(cell)
-                self._add(
-                    role,
-                    f"{position}.v{concealed}",
-                    value,
-                    box_deleted,
-                    hidden=True,
-                )
-                concealed += 1
-            elif kind == "d":
-                self._flush(cell)
-                self._add("body", f"{position}.d{removed}", value, True)
-                removed += 1
-            elif cell is not None:
-                cell.parts.append(value)
-            else:
-                # The first current stretch keeps the paragraph's own position.
-                self._add(
-                    role,
-                    f"{position}.t{current}" if current else position,
-                    value,
-                    False,
-                )
-                current += 1
+                    # The first current stretch keeps the paragraph's own position.
+                    self._add(
+                        role,
+                        f"{position}.t{current}" if current else position,
+                        value,
+                        False,
+                    )
+                    current += 1
+        finally:
+            self._para_id = outer_para_id
 
     def _math(
         self,
@@ -8663,18 +8705,35 @@ class _DocxWalker:
             _bounded(self._segments)
 
     def _flush(self, cell: _CellRun | None) -> None:
+        """Close the cell's joined prose and release the marks waiting under it.
+
+        The run joins the current prose of every paragraph the cell holds, so it
+        is sourced from no one of them and carries no ``paragraphId``: naming one
+        would claim provenance the run does not have. Each waiting mark was read
+        inside a single paragraph and is emitted under that paragraph's own
+        identity, which is why the identity waited beside it. A flush stands
+        inside the paragraph being read, so the identity it borrows is put back
+        however the flush leaves -- a refusal raised here included.
+        """
         if cell is None:
             return
-        if cell.parts:
-            position = f"{cell.position}.t{cell.runs}" if cell.runs else cell.position
-            self._add(
-                "table_cell", position, "\n".join(cell.parts), False, extra=cell.grid
-            )
-            cell.runs += 1
-            cell.parts.clear()
-        for mark in cell.marks:
-            self._inventory(*mark)
-        cell.marks.clear()
+        outer, self._para_id = self._para_id, None
+        try:
+            if cell.parts:
+                position = (
+                    f"{cell.position}.t{cell.runs}" if cell.runs else cell.position
+                )
+                self._add(
+                    "table_cell", position, "\n".join(cell.parts), False, extra=cell.grid
+                )
+                cell.runs += 1
+                cell.parts.clear()
+            for position, value, visibility, deleted, para_id in cell.marks:
+                self._para_id = para_id
+                self._inventory(position, value, visibility, deleted)
+            cell.marks.clear()
+        finally:
+            self._para_id = outer
 
     def _cell_inventory(
         self,

@@ -5689,3 +5689,337 @@ def test_a_wrapper_around_a_cell_s_content_cannot_make_it_look_empty() -> None:
     assert structural(docx(body)) == [
         ("0.r0.c1", cell_record(0, 1, 1, False, columns=2))
     ]
+
+
+W14 = 'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"'
+W15 = 'xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"'
+# Mixed case on purpose: the digits are hex and the identity is kept as the file
+# wrote it, never recased into a canonical spelling.
+PARA_ID = "12AB34cd"
+
+
+def para_attr(value: str) -> str:
+    """The one qualified attribute a paragraph declares its identity with."""
+    return f'w14:paraId="{value}"'
+
+
+PARA_ID_ATTR = para_attr(PARA_ID)
+
+
+def identified(*children: str, attrs: str = PARA_ID_ATTR) -> str:
+    """One paragraph declaring ``attrs``, holding ``children`` or a single run.
+
+    Both namespaces Word carries a paragraph identity under are declared on the
+    paragraph itself, so a test naming either prefix needs no other fixture.
+    """
+    return f"<w:p {W14} {W15} {attrs}>{''.join(children) or run('prose')}</w:p>"
+
+
+def identities(content: bytes) -> list[tuple[str, object, object]]:
+    """Each segment's role, position and the identity its locator carries."""
+    return [
+        (
+            item.semantic_role,
+            item.source_locator["position"],
+            item.source_locator.get("paragraphId"),
+        )
+        for item in extract_docx(content, capture_id=CAPTURE).segments
+    ]
+
+
+def test_a_paragraph_identity_rides_with_every_stretch_read_out_of_it() -> None:
+    """The identity is the paragraph's, so everything the paragraph sourced
+    carries it: its current text, the stretches a deletion and a hidden run
+    split out of it, and the equation standing between them. A paragraph that
+    declared none carries no key at all, which is how "this file said nothing"
+    stays distinguishable from any identity it could have written."""
+    body = (
+        identified(
+            run("one "),
+            f"<w:del>{run('two', 'delText')}</w:del>",
+            hidden("three"),
+            MATH,
+            run("four"),
+        )
+        + p("plain")
+    )
+    content = docx(body, styles=False)
+
+    assert identities(content) == [
+        ("body", "0", PARA_ID),
+        ("deleted_text", "0.d0", PARA_ID),
+        ("hidden_content", "0.v0", PARA_ID),
+        ("equation", "0.e0", PARA_ID),
+        ("body", "0.t1", PARA_ID),
+        ("body", "1", None),
+    ]
+    plain = extract_docx(content, capture_id=CAPTURE).segments[-1]
+    assert "paragraphId" not in plain.source_locator
+
+
+def test_a_paragraph_identity_rides_with_the_links_and_references_it_holds() -> None:
+    """A hyperlink, a field and an annotation reference are inventoried out of
+    the paragraph they stand in, so each names that paragraph too."""
+    body = identified(
+        run("a"),
+        link("rId1", "linked"),
+        '<w:fldSimple w:instr=" PAGE ">' + run("7") + "</w:fldSimple>",
+        f"<w:r>{ref('footnoteReference', '2')}</w:r>",
+    )
+    content = docx(
+        body,
+        {
+            **NOTES,
+            "word/_rels/document.xml.rels": rels(
+                ("rId1", "https://a.invalid/", True, "hyperlink")
+            ),
+        },
+        styles=False,
+    )
+
+    # The hyperlink's mark follows the stretch it stands in, the field's is
+    # ordered before the result stored under it, and the reference's follows the
+    # result's stretch -- the identity rides with each wherever it lands.
+    assert identities(content)[:5] == [
+        ("body", "0", PARA_ID),
+        ("object_inventory", "0.h0", PARA_ID),
+        ("object_inventory", "0.f0", PARA_ID),
+        ("body", "0.t1", PARA_ID),
+        ("object_inventory", "0.n0", PARA_ID),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("content", "roles"),
+    [
+        pytest.param(
+            lambda: imaged(identified(drawing(doc_pr=DOC_PR + ' descr="Chart of it"'))),
+            ["object_inventory", "image_alt"],
+            id="image",
+        ),
+        pytest.param(
+            lambda: charted(RICH_TITLE + PLOTTED, identified(CHART_DRAWING)),
+            ["object_inventory"] + ["chart"] * 4,
+            id="chart",
+        ),
+        pytest.param(
+            lambda: smart(identified(SMART_DRAWING)),
+            ["object_inventory", "body", "body", "object_inventory"],
+            id="smartart",
+        ),
+        pytest.param(
+            lambda: objected(identified(ole())),
+            ["object_inventory"],
+            id="object",
+        ),
+        pytest.param(
+            lambda: imaged(identified(pict(shape=' alt="Legacy"'))),
+            ["object_inventory", "image_alt"],
+            id="legacy-image",
+        ),
+    ],
+)
+def test_an_anchored_object_and_everything_derived_from_it_names_its_paragraph(
+    content: object, roles: list[str]
+) -> None:
+    """An inline object is read out of the paragraph that anchors it, and so is
+    every claim, point and value derived from the part behind it, so the record
+    and all of its derivations name that one paragraph."""
+    assert callable(content)
+    found = identities(content())
+
+    assert [role for role, _position, _identity in found] == roles
+    assert {identity for _role, _position, identity in found} == {PARA_ID}
+
+
+def test_a_text_box_scopes_its_own_identities_and_restores_the_one_outside() -> None:
+    """A text box is walked as its own story, so the paragraphs inside it carry
+    their own identities and the paragraph anchoring the box carries its own
+    again on the other side -- at any nesting depth, and whether or not the
+    paragraphs in between declared one."""
+    inner = identified(run("deep"), attrs=para_attr("0000000F"))
+    middle = identified(run("around "), box(inner), attrs=para_attr("7EADBEE1"))
+    body = identified(run("before "), box(p("plain"), middle), run("after"))
+
+    assert identities(docx(body, styles=False)) == [
+        ("body", "0", PARA_ID),
+        ("body", "0.x0.0", None),
+        ("body", "0.x0.1", "7EADBEE1"),
+        ("body", "0.x0.1.x0.0", "0000000F"),
+        ("body", "0.t1", PARA_ID),
+    ]
+
+
+def test_every_story_reports_the_identities_its_own_paragraphs_declared() -> None:
+    """A header, a footnote, an endnote and a comment are each walked as their
+    own story, so an identity declared in one is reported there and nowhere
+    else."""
+    head, foot, end, said = (
+        identified(run(text), attrs=para_attr(value))
+        for text, value in (
+            ("Header", "0000AAA1"),
+            ("Foot", "0000AAA2"),
+            ("End", "0000AAA3"),
+            ("Said", "0000AAA4"),
+        )
+    )
+    notes = {
+        "word/footnotes.xml": (
+            f'<w:footnotes {W}><w:footnote w:id="2">{foot}</w:footnote></w:footnotes>'
+        ),
+        "word/endnotes.xml": (
+            f'<w:endnotes {W}><w:endnote w:id="3">{end}</w:endnote></w:endnotes>'
+        ),
+        "word/comments.xml": (
+            f'<w:comments {W}><w:comment w:id="7">{said}</w:comment></w:comments>'
+        ),
+    }
+    body = (
+        identified(
+            run("Body"),
+            f"<w:r>{ref('footnoteReference', '2')}</w:r>",
+            f"<w:r>{ref('endnoteReference', '3')}</w:r>",
+            f"<w:r>{ref('commentReference', '7')}</w:r>",
+        )
+        + HEADER_SECTION
+    )
+    content = docx(
+        body,
+        {
+            **notes,
+            "word/header1.xml": f"<w:hdr {W}>{head}</w:hdr>",
+            "word/_rels/document.xml.rels": rels(HEADER_RELATION),
+        },
+        styles=False,
+        content_types=HEADER_OVERRIDE,
+    )
+
+    assert [
+        (role, identity)
+        for role, _position, identity in identities(content)
+        if role != "object_inventory"
+    ] == [
+        ("body", PARA_ID),
+        ("comment", "0000AAA4"),
+        ("note", "0000AAA3"),
+        ("note", "0000AAA2"),
+        ("body", "0000AAA1"),
+    ]
+
+
+def test_a_cell_run_joining_several_paragraphs_claims_no_one_identity() -> None:
+    """A ``table_cell`` run is the joined prose of every paragraph in its cell,
+    so it belongs to no one of them and names none, even where every paragraph
+    in the cell declared one. What the cell's paragraphs did source on their own
+    -- a deletion, a hidden stretch, a link -- still names the paragraph it came
+    from, and so does nothing structural about the table or the cell."""
+    first = identified(run("a"), attrs=para_attr("0000BBB1"))
+    second = identified(
+        run("b"),
+        f"<w:del>{run('gone', 'delText')}</w:del>",
+        link("rId1", "linked"),
+        attrs=para_attr("0000BBB2"),
+    )
+    body = tbl(tr(f"<w:tc>{first}{second}</w:tc>", tc()), columns=2)
+    content = docx(
+        body,
+        {
+            "word/_rels/document.xml.rels": rels(
+                ("rId1", "https://a.invalid/", True, "hyperlink")
+            )
+        },
+        styles=False,
+    )
+
+    assert identities(content) == [
+        # The joined run of both paragraphs' current prose names neither.
+        ("table_cell", "0.r0.c0", None),
+        ("deleted_text", "0.r0.c0.1.d0", "0000BBB2"),
+        ("table_cell", "0.r0.c0.t1", None),
+        ("object_inventory", "0.r0.c0.1.h0", "0000BBB2"),
+        # The empty cell's own geometry record is the table's, not a paragraph's.
+        ("object_inventory", "0.r0.c1", None),
+    ]
+
+
+def test_a_block_equation_and_a_table_s_own_records_name_no_paragraph() -> None:
+    """Display math standing between blocks is its own block and no paragraph's
+    content, and neither is the record a table holding no cell takes, so neither
+    carries an identity -- not even the one the paragraph before them wrote."""
+    body = (
+        identified(run("before"))
+        + f'<m:oMathPara xmlns:m="{MATH_NS}">{MATH}</m:oMathPara>'
+        + tbl(columns=2)
+    )
+
+    assert identities(docx(body, styles=False)) == [
+        ("body", "0", PARA_ID),
+        ("equation", "1", None),
+        ("object_inventory", "2.inventory", None),
+    ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "0000000", "000000000", "0000000g", "00000000", "80000000", "FFFFFFFF", " 1"],
+)
+def test_a_malformed_paragraph_identity_is_refused_rather_than_reported(
+    value: str,
+) -> None:
+    """A written identity is held to ``ST_LongHexNumber`` and to the range
+    MS-DOCX reserves, exactly as a comment's is: eight hex digits naming a
+    number above zero and below ``0x80000000``. One outside that is not an
+    identity to report under, so the package is refused."""
+    body = identified(run("x"), attrs=para_attr(value))
+
+    with pytest.raises(OOXMLInvalid, match="DOCX paragraph identity is malformed"):
+        extract_docx(docx(body, styles=False), capture_id=CAPTURE)
+
+
+@pytest.mark.parametrize(
+    "attrs",
+    [
+        pytest.param(f'paraId="{PARA_ID}"', id="unqualified"),
+        pytest.param(f'w:paraId="{PARA_ID}"', id="wordprocessing-namespace"),
+        pytest.param(f'w15:paraId="{PARA_ID}"', id="other-microsoft-namespace"),
+        pytest.param(f'w14:paraid="{PARA_ID}"', id="other-case"),
+        pytest.param(f'w14:textId="{PARA_ID}"', id="other-local-name"),
+        pytest.param(f'w14:paraIdParent="{PARA_ID}"', id="longer-local-name"),
+    ],
+)
+def test_only_the_one_qualified_attribute_declares_a_paragraph_identity(
+    attrs: str,
+) -> None:
+    """The identity is the exact Word 2010 ``w14:paraId`` and nothing else: an
+    attribute written in no namespace, in another namespace, or under a similar
+    local name declares no identity, so it is neither reported as one nor held
+    to the range one would be held to."""
+    body = identified(
+        run("x"), attrs=f"{attrs} {para_attr('0000CCC1')}"
+    ) + identified(run("y"), attrs=attrs)
+
+    assert identities(docx(body, styles=False)) == [
+        ("body", "0", "0000CCC1"),
+        ("body", "1", None),
+    ]
+
+
+def test_one_identity_written_in_two_stories_is_reported_in_each_of_them() -> None:
+    """Nothing about reporting an identity makes it exclusive: a body paragraph
+    and a comment paragraph may write the same one, and each is reported under
+    its own story's own position without borrowing the other's. What the
+    extended comments part joins on is the dedicated threaded-comment suite's,
+    and reporting identities in the locator is no part of that join."""
+    body = identified(run("Body"), f"<w:r>{ref('commentReference', '7')}</w:r>")
+    said = identified(run("Said")) + identified(
+        run("More"), attrs=para_attr("0000DDD1")
+    )
+    comments = f'<w:comments {W}><w:comment w:id="7">{said}</w:comment></w:comments>'
+    content = docx(body, {"word/comments.xml": comments}, styles=False)
+
+    assert identities(content) == [
+        ("body", "0", PARA_ID),
+        ("object_inventory", "0.n0", PARA_ID),
+        ("comment", "0", PARA_ID),
+        ("comment", "1", "0000DDD1"),
+    ]
