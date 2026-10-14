@@ -415,7 +415,7 @@ def _keep_field_byte(group: _Group, byte: int) -> None:
         # The keyword has ended. The single trailing space closes the prefix, so
         # the operand that follows - a path, a URL, a command - is never read
         # out of the source, not merely withheld from the result.
-        if prefix:
+        if prefix and not prefix.endswith(b" "):
             prefix.append(0x20)
     elif not prefix.endswith(b" "):
         prefix.append(byte)
