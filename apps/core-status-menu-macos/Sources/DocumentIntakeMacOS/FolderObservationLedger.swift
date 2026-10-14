@@ -82,7 +82,7 @@ public struct FolderObservationScope: Codable, Hashable, Sendable {
         self.components = components
     }
 
-    fileprivate func covers(_ other: Self) -> Bool {
+    func covers(_ other: Self) -> Bool {
         switch kind {
         case .subtree: return other.components.starts(with: components)
         case .member: return other.kind == .member && other.components == components
@@ -572,7 +572,7 @@ public final class FolderObservationLedger: @unchecked Sendable {
         else { throw FolderObservationLedgerError.outOfScope }
     }
 
-    private static func validComponent(_ value: String) -> Bool {
+    static func validComponent(_ value: String) -> Bool {
         !value.isEmpty && value.utf8.count <= 255 && value != "." && value != ".."
             && !value.unicodeScalars.contains { $0 == "/" || $0.value < 0x20 || $0.value == 0x7F }
     }

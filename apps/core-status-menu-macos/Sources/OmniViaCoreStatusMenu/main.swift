@@ -82,7 +82,12 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private var pollTimer: Timer?
     private var monitoringTimer: Timer?
     private var handoffTimer: Timer?
+    /// File roots only: they have no durable ledger. Folder roots go through the bridge.
     private var folderEventObserver: FolderEventObserver?
+    private var folderEventBridge: FolderEventBridge?
+    /// Set when the observation ledger refused a write and its observer was stopped. Periodic
+    /// reconciliation still covers the folder; nothing else surfaces this yet.
+    private var folderObservationAttention: [FolderObservationAttention] = []
     private var folderEventObserverFingerprint = ""
     private var folderEventDebounceTimer: Timer?
     private var firstFolderEventAt: Date?
@@ -324,6 +329,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         handoffTimer?.invalidate()
         folderEventDebounceTimer?.invalidate()
         folderEventObserver = nil
+        folderEventBridge = nil
         // Review lives in this process, so quitting ends every candidate's
         // owner. The panel releases what it holds; the receiver then stops
         // taking requests and releases whatever never reached review.
@@ -539,23 +545,38 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshFolderEventObservation() async {
-        guard let folderMonitoringCoordinator else { return }
-        let folderRoots = await folderMonitoringCoordinator.activeObservationRoots().map {
-            FolderObservationRoot(subscriptionID: "folder::\($0.subscriptionID)", url: $0.url)
-        }
+        guard let folderMonitoringCoordinator, let environment = intakeEnvironment else { return }
+        let folderRoots = await folderMonitoringCoordinator.activeObservationRoots()
         let fileRoots = await fileMonitoringCoordinator?.activeObservationRoots().map {
             FolderObservationRoot(subscriptionID: "file::\($0.subscriptionID)", url: $0.url)
         } ?? []
-        let roots = folderRoots + fileRoots
-        let fingerprint = roots
-            .map { "\($0.subscriptionID)\u{0}\($0.url.standardizedFileURL.path)" }
-            .sorted()
-            .joined(separator: "\u{1}")
+        let fingerprint = (
+            folderRoots.map {
+                let generation = environment.folderSubscriptions.subscription(id: $0.subscriptionID)?.configGeneration ?? 0
+                return "folder::\($0.subscriptionID)\u{0}\(generation)\u{0}\($0.url.standardizedFileURL.path)"
+            } + fileRoots.map { "\($0.subscriptionID)\u{0}\($0.url.standardizedFileURL.path)" }
+        ).sorted().joined(separator: "\u{1}")
         guard fingerprint != folderEventObserverFingerprint else { return }
         folderEventObserver = nil
+        folderEventBridge = nil
         folderEventObserverFingerprint = fingerprint
-        folderEventObserver = FolderEventObserver(roots: roots) { [weak self] signal in
+        folderEventObserver = FolderEventObserver(roots: fileRoots) { [weak self] signal in
             Task { @MainActor [weak self] in self?.receiveFolderEvent(signal) }
+        }
+        folderEventBridge = FolderEventBridge(
+            roots: folderRoots,
+            ledger: environment.folderObservation,
+            subscriptions: environment.folderSubscriptions,
+            onAttention: { [weak self] value in
+                Task { @MainActor [weak self] in self?.folderObservationAttention.append(value) }
+            }
+        ) { [weak self] signal in
+            // The bridge has already persisted what produced this signal.
+            let prefixed = FolderEventSignal(
+                subscriptionIDs: Set(signal.subscriptionIDs.map { "folder::\($0)" }),
+                requiresFullReconciliation: signal.requiresFullReconciliation
+            )
+            Task { @MainActor [weak self] in self?.receiveFolderEvent(prefixed) }
         }
     }
 

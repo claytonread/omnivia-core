@@ -14,6 +14,11 @@ public struct FolderObservationRoot: Equatable, Sendable {
 public struct FolderEventSignal: Sendable {
     public let subscriptionIDs: Set<String>
     public let requiresFullReconciliation: Bool
+
+    public init(subscriptionIDs: Set<String>, requiresFullReconciliation: Bool) {
+        self.subscriptionIDs = subscriptionIDs
+        self.requiresFullReconciliation = requiresFullReconciliation
+    }
 }
 
 private final class FolderEventCallbackBox: @unchecked Sendable {

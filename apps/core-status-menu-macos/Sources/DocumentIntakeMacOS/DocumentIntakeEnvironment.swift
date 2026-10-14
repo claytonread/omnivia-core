@@ -12,7 +12,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     public let queue: CaptureIntentQueue
     public let folderSubscriptions: FolderSubscriptionStore
     public let folderMonitoring: FolderMonitoringCoordinator
-    /// Durable event-stream cursor and dirty obligations. Not yet fed by the native observer.
+    /// Durable event-stream cursor and dirty obligations. Fed by `FolderEventBridge`; reconciliation does not acknowledge it yet.
     public let folderObservation: FolderObservationLedger
     public let folderBulkRuns: FolderBulkRunStore
     public let folderBulkCoordinator: FolderBulkRunCoordinator
