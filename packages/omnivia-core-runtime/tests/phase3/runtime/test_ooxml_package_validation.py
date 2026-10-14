@@ -79,7 +79,13 @@ def test_valid_stored_and_deflated_packages_still_read(compression: int) -> None
     result = extract_docx(package(compression=compression), capture_id=CAPTURE)
 
     assert [item.text for item in result.segments] == ["Body"]
-    assert result.limitations == {"packageMembers": 2, "externalReferences": 0}
+    # The document is written in a foreign vocabulary, so it declares no
+    # section of its own and reaches no header or footer.
+    assert result.limitations == {
+        "packageMembers": 2,
+        "externalReferences": 0,
+        "documentSections": 0,
+    }
 
 
 def test_package_absolute_relationship_target_resolves_inside_the_package() -> None:

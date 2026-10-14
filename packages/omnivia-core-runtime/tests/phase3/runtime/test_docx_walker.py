@@ -194,7 +194,6 @@ def test_annotation_stories_keep_their_roles_and_note_identity() -> None:
         "word/footnotes.xml": f'<w:footnotes {W}><w:footnote w:id="2">{p("Foot")}</w:footnote></w:footnotes>',
         "word/endnotes.xml": f'<w:endnotes {W}><w:endnote w:id="5">{p("End")}</w:endnote></w:endnotes>',
         "word/comments.xml": f'<w:comments {W}><w:comment w:id="9">{p("Said")}</w:comment></w:comments>',
-        "word/header1.xml": f"<w:hdr {W}>{p('Head', HEAD_STYLE)}</w:hdr>",
     }
 
     result = extract_docx(docx(p("Body"), parts), capture_id=CAPTURE)
@@ -212,7 +211,6 @@ def test_annotation_stories_keep_their_roles_and_note_identity() -> None:
         ("comment", "Said", "annotation", "9"),
         ("note", "End", "annotation", "5"),
         ("note", "Foot", "annotation", "2"),
-        ("body", "Head", "visible", None),
     ]
 
 
@@ -1670,6 +1668,14 @@ PNG_DEFAULT = '<Default Extension="png" ContentType="image/png"/>'
 IMAGE_RELATION = ("rId9", "media/image1.png", False, "image")
 STRICT_REL_NS = "http://purl.oclc.org/ooxml/officeDocument/relationships"
 DOC_PR = ' id="7" name="Picture 7"'
+# A header is reached only through the document's own section and relationship,
+# so a story in one takes the three declarations Word writes for it.
+HEADER_OVERRIDE = (
+    '<Override PartName="/word/header1.xml" ContentType="application/vnd.'
+    'openxmlformats-officedocument.wordprocessingml.header+xml"/>'
+)
+HEADER_RELATION = ("rId4", "header1.xml", False, "header")
+HEADER_SECTION = '<w:sectPr><w:headerReference w:type="default" r:id="rId4"/></w:sectPr>'
 
 
 def blip(embed: str | None = "rId9", target: str | None = None, extra: str = "") -> str:
@@ -1894,9 +1900,12 @@ def test_images_are_inventoried_in_every_story_the_walker_reaches() -> None:
         f'<w:footnotes {W}><w:footnote w:id="2"><w:p>{drawing()}</w:p>'
         "</w:footnote></w:footnotes>"
     )
-    content = imaged(
-        body,
+    content = linked(
+        body + HEADER_SECTION,
         IMAGE_RELATION,
+        HEADER_RELATION,
+        content_types=PNG_DEFAULT + HEADER_OVERRIDE,
+        members=IMAGE_MEMBER,
         **{
             "word/header1.xml": header,
             "word/_rels/header1.xml.rels": rels(IMAGE_RELATION),
@@ -1911,6 +1920,7 @@ def test_images_are_inventoried_in_every_story_the_walker_reaches() -> None:
     ] == [
         ("object_inventory", "word/document.xml", "0.i0"),
         ("object_inventory", "word/footnotes.xml", "0.i0"),
+        ("object_inventory", "word/header1.xml", "inventory"),
         ("object_inventory", "word/header1.xml", "0.i0"),
     ]
 
@@ -1922,7 +1932,14 @@ def test_a_part_resolves_only_its_own_relationships() -> None:
 
     with pytest.raises(OOXMLInvalid, match="names a missing image relationship"):
         extract_docx(
-            imaged("", IMAGE_RELATION, **{"word/header1.xml": header}),
+            linked(
+                HEADER_SECTION,
+                IMAGE_RELATION,
+                HEADER_RELATION,
+                content_types=PNG_DEFAULT + HEADER_OVERRIDE,
+                members=IMAGE_MEMBER,
+                **{"word/header1.xml": header},
+            ),
             capture_id=CAPTURE,
         )
 

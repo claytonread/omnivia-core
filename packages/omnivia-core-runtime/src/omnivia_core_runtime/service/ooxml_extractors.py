@@ -854,6 +854,81 @@ _DOCX_MERGE_VALUES: Final = frozenset({"restart", "continue"})
 _MAX_DOCX_TABLE_COLUMNS: Final = 256
 _MAX_DOCX_TABLE_ROWS: Final = 10_000
 _MAX_DOCX_COLUMN_TWIPS: Final = 1_000_000
+# The section structure, each element by its qualified name in both profiles. A
+# section break is a structural claim about the document, so a ``sectPr``,
+# ``pPr``, ``p`` or ``body`` in another vocabulary declares none of it.
+_DOCX_BODY: Final = frozenset(f"{{{namespace}}}body" for namespace in _WORDPROCESSINGML)
+_DOCX_P: Final = frozenset(f"{{{namespace}}}p" for namespace in _WORDPROCESSINGML)
+_DOCX_P_PR: Final = frozenset(f"{{{namespace}}}pPr" for namespace in _WORDPROCESSINGML)
+_DOCX_SECT_PR: Final = frozenset(
+    f"{{{namespace}}}sectPr" for namespace in _WORDPROCESSINGML
+)
+# The two references a section declares its page furniture by, mapped to the
+# story each one names. Both are read only by their qualified names, so an
+# element merely called ``headerReference`` elsewhere references nothing.
+_DOCX_HDR_FTR_REFERENCES: Final[dict[str, str]] = {
+    f"{{{namespace}}}{story}Reference": story
+    for namespace in _WORDPROCESSINGML
+    for story in ("header", "footer")
+}
+_DOCX_HDR_FTR_TYPE: Final = tuple(
+    f"{{{namespace}}}type" for namespace in _WORDPROCESSINGML
+)
+# Each WordprocessingML profile and the one relationship-namespaced ``id`` that
+# belongs with it, Transitional with Transitional and Strict with Strict. A
+# reference's id is read only in its own profile, exactly as its ``type`` is: an
+# id written in the other profile's relationships namespace mixes Transitional
+# and Strict in a single declaration, so it names no relationship here.
+_DOCX_HDR_FTR_ID: Final[dict[str, str]] = {
+    "http://schemas.openxmlformats.org/wordprocessingml/2006/main": (
+        "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+    ),
+    "http://purl.oclc.org/ooxml/wordprocessingml/main": (
+        "{http://purl.oclc.org/ooxml/officeDocument/relationships}id"
+    ),
+}
+# ``ST_HdrFtr`` is a closed enumeration of exactly three kinds, and ``w:type``
+# is required: a reference claiming any other kind, or none, places nothing.
+_DOCX_HDR_FTR_KINDS: Final = frozenset({"default", "first", "even"})
+# The relationship and content types that together qualify a header or a footer
+# part. As everywhere else here, only the two URIs OOXML itself defines qualify
+# -- Transitional and Strict -- so nothing is reached by ending the same way,
+# and a header relationship never resolves to a footer part or the reverse.
+_DOCX_HDR_FTR_RELATIONSHIPS: Final[dict[str, frozenset[str]]] = {
+    "header": frozenset(
+        {
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header",
+            "http://purl.oclc.org/ooxml/officeDocument/relationships/header",
+        }
+    ),
+    "footer": frozenset(
+        {
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer",
+            "http://purl.oclc.org/ooxml/officeDocument/relationships/footer",
+        }
+    ),
+}
+# The root element each resolved part has to be, by the story it was resolved
+# as. A relationship and a content type say what Word wrote the part for, and
+# the root says what the part is: a member reached as a header whose root is a
+# footer, an unqualified ``hdr``, or any other element entirely, is not the
+# story it was reached as, and none of its prose is read as that story's.
+_DOCX_HDR_FTR_ROOTS: Final[dict[str, frozenset[str]]] = {
+    story: frozenset(f"{{{namespace}}}{root}" for namespace in _WORDPROCESSINGML)
+    for story, root in (("header", "hdr"), ("footer", "ftr"))
+}
+_DOCX_HDR_FTR_CONTENT_TYPES: Final[dict[str, str]] = {
+    "header": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"
+    ),
+    "footer": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"
+    ),
+}
+# OmniVia's own practical bound on how many sections one document declares,
+# taken before any reference is resolved.
+# ponytail: 10,000 sections per document; raise it if a real source needs more.
+_MAX_DOCX_SECTIONS: Final = 10_000
 # The one element inside that container which declares the embedded or linked
 # object. It is an Office drawing extension rather than part of either OOXML
 # profile, so it has a single namespace and no Strict spelling: the same local
@@ -1586,31 +1661,39 @@ def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
     with _Package(content) as package:
         if "word/document.xml" not in package.names:
             raise OOXMLInvalid("DOCX main document part is missing")
-        parts = ["word/document.xml"]
-        parts.extend(
-            sorted(
-                name
-                for name in package.names
-                if name.startswith("word/")
-                and name.endswith(".xml")
-                and posixpath.basename(name).startswith(
-                    ("header", "footer", "footnotes", "endnotes", "comments")
-                )
+        document = package.xml("word/document.xml")
+        # Headers and footers are reached only through the document's own
+        # sections and relationships, so a member that merely looks like one is
+        # never read, and a part several sections share is read exactly once.
+        furniture, section_count = _docx_header_footer_parts(package, document)
+        stories = {
+            name: _docx_story(name)
+            for name in package.names
+            if name.startswith("word/")
+            and name.endswith(".xml")
+            and posixpath.basename(name).startswith(
+                ("footnotes", "endnotes", "comments")
             )
-        )
+        }
+        stories.update({part: story for part, (story, _) in furniture.items()})
+        parts = ["word/document.xml", *sorted(stories)]
+        stories["word/document.xml"] = "body"
         styles = _docx_styles(package)
         # Annotation parts are read first so every reference in any story can
         # be checked against the notes and comments that actually exist.
         roots = {
-            part: package.xml(part) for part in parts if _docx_story(part) in _NOTE_TAGS
+            part: package.xml(part) for part in parts if stories[part] in _NOTE_TAGS
         }
         notes = _annotation_index(roots)
+        roots["word/document.xml"] = document
         seen: dict[tuple[str, str, str], int] = {}
         segments: list[ExtractedSegment] = []
         blocks = 0
         for part in parts:
             root = roots[part] if part in roots else package.xml(part)
-            story = _docx_story(part)
+            story = stories[part]
+            if part in furniture and root.tag not in _DOCX_HDR_FTR_ROOTS[story]:
+                raise OOXMLInvalid(f"DOCX {story} part is not a {story}")
             containers = (
                 [
                     (_attr(item, "id"), item)
@@ -1634,6 +1717,8 @@ def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 )
                 if walker.inventory_note(container):
                     continue
+                if part in furniture:
+                    walker.inventory_applicability(furniture[part][1])
                 walker.walk(container, "", 0)
                 walker.finish()
                 blocks += walker.paragraphs
@@ -1644,6 +1729,7 @@ def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
             {
                 "packageMembers": len(package.names),
                 "externalReferences": package.external_relationships,
+                "documentSections": section_count,
             },
         )
 
@@ -1679,6 +1765,134 @@ def _annotation_index(
             if note_id is not None and (story == "comment" or note_type == "normal"):
                 index[(story, note_id)] = part
     return index
+
+
+def _docx_sections(root: ElementTree.Element) -> list[ElementTree.Element]:
+    """Return every section's own ``sectPr`` in source order.
+
+    A section break lives in the properties of the paragraph that ends the
+    section, and the body's own trailing ``sectPr`` describes the section after
+    the last break, so both routes are sections and the order they appear in is
+    the order they are numbered in. Each is read only where WordprocessingML
+    places it -- a qualified ``sectPr`` directly below the qualified body, or
+    below the qualified ``pPr`` of a qualified paragraph directly below it -- so
+    one nested in a table cell, a text box or another vocabulary declares no
+    section and is never read as one.
+    """
+    body = next((item for item in root if item.tag in _DOCX_BODY), None)
+    if body is None:
+        return []
+    sections: list[ElementTree.Element] = []
+    for block in body:
+        if block.tag in _DOCX_SECT_PR:
+            sections.append(block)
+        elif block.tag in _DOCX_P:
+            properties = next((item for item in block if item.tag in _DOCX_P_PR), None)
+            if properties is not None:
+                sections.extend(
+                    item for item in properties if item.tag in _DOCX_SECT_PR
+                )
+    if len(sections) > _MAX_DOCX_SECTIONS:
+        raise OOXMLInvalid("DOCX declares too many sections")
+    return sections
+
+
+def _docx_header_footer_parts(
+    package: _Package, root: ElementTree.Element
+) -> tuple[dict[str, tuple[str, tuple[dict[str, object], ...]]], int]:
+    """Resolve the header and footer part every section applies, with its sections.
+
+    Each section's own references are read first, then Word's inheritance is
+    applied: a kind a section never declares keeps whatever the section before
+    it left in force, and a kind no section has declared yet applies nowhere.
+    An inherited reference is the same relationship to the same part, so it is
+    recorded as the relationship it is and flagged as inherited rather than
+    re-derived.
+
+    The result maps each part to its story and to every ``(section, kind)`` it
+    applies at, so a part several sections share is read exactly once and
+    carries all of its applicability. Only a part a reference actually resolves
+    to is in the map, so a member that merely looks like a header or a footer is
+    never read. The count beside it is how many sections the document declares,
+    which stands whether or not any of them references anything.
+    """
+    resolved: dict[str, tuple[str, list[dict[str, object]]]] = {}
+    # (story, kind) -> the (relationship id, part) the sections so far left in
+    # force, which is what a section omitting that kind inherits.
+    applied: dict[tuple[str, str], tuple[str, str]] = {}
+    sections = _docx_sections(root)
+    for ordinal, section in enumerate(sections):
+        declared: dict[tuple[str, str], tuple[str, str]] = {}
+        for element in section:
+            story = _DOCX_HDR_FTR_REFERENCES.get(element.tag)
+            if story is None:
+                continue
+            key = (story, _docx_header_footer_kind(element))
+            if key in declared:
+                raise OOXMLInvalid("DOCX section references one kind twice")
+            relationship_id = _docx_header_footer_id(element)
+            declared[key] = (
+                relationship_id,
+                _referenced_part(
+                    package,
+                    "word/document.xml",
+                    relationship_id,
+                    _DOCX_HDR_FTR_RELATIONSHIPS[story],
+                    _DOCX_HDR_FTR_CONTENT_TYPES[story],
+                    story,
+                    "DOCX",
+                ),
+            )
+        applied.update(declared)
+        for (story, kind), (relationship_id, part) in sorted(applied.items()):
+            resolved.setdefault(part, (story, []))[1].append(
+                {
+                    "section": ordinal,
+                    "kind": kind,
+                    "relationshipId": relationship_id,
+                    "inherited": (story, kind) not in declared,
+                }
+            )
+    return {
+        part: (story, tuple(applies)) for part, (story, applies) in resolved.items()
+    }, len(sections)
+
+
+def _docx_header_footer_id(element: ElementTree.Element) -> str:
+    """Read the relationship id one header or footer reference names.
+
+    ``r:id`` is required and names exactly one relationship, and it is read only
+    in the reference's own profile: the WordprocessingML namespace the reference
+    element is written in settles which relationships namespace carries its id,
+    so a Transitional reference takes a Transitional id and a Strict one takes a
+    Strict id. An id written in the other profile, in no namespace, or in a
+    foreign one is not the attribute at all, and a reference carrying both
+    profiles' ids names two relationships rather than one; none of them places
+    the reference anywhere.
+    """
+    namespace = element.tag.partition("}")[0].lstrip("{")
+    relationship_id = element.attrib.get(_DOCX_HDR_FTR_ID[namespace])
+    if relationship_id is None or len(_namespaced_ids(element, "id")) != 1:
+        raise OOXMLInvalid("DOCX header or footer reference is malformed")
+    return relationship_id
+
+
+def _docx_header_footer_kind(element: ElementTree.Element) -> str:
+    """Read the kind one header or footer reference declares.
+
+    ``w:type`` is required and carries one of exactly three kinds, and it is
+    read only in the reference's own profile: a Transitional reference whose
+    type is written in the Strict namespace mixes two profiles in one
+    declaration, and an unqualified or foreign ``type`` is not the attribute at
+    all, so neither places the reference anywhere.
+    """
+    if len([name for name in _DOCX_HDR_FTR_TYPE if name in element.attrib]) > 1:
+        raise OOXMLInvalid("DOCX header or footer reference declares two kinds")
+    namespace = element.tag.partition("}")[0].lstrip("{")
+    kind = element.attrib.get(f"{{{namespace}}}type")
+    if kind not in _DOCX_HDR_FTR_KINDS:
+        raise OOXMLInvalid("DOCX header or footer reference is malformed")
+    return kind
 
 
 def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
@@ -7401,6 +7615,23 @@ class _DocxWalker:
             )
         return False
 
+    def inventory_applicability(
+        self, applies: tuple[dict[str, object], ...]
+    ) -> None:
+        """Record every section and kind this header or footer part stands for.
+
+        A part several sections share is read once, so its applicability is
+        what says where its prose appears: one record per ``(section, kind)``
+        in section order, each naming the relationship that placed it and
+        whether that section declared it or inherited it from the one before.
+        """
+        self._inventory(
+            "inventory",
+            {"kind": "headerFooter", "story": self._story, "sections": applies},
+            "visible",
+            False,
+        )
+
     def _inventory(
         self,
         position: str,
@@ -9197,8 +9428,14 @@ def _attr(element: ElementTree.Element, name: str) -> str | None:
 
 
 def _docx_story(part: str) -> str:
+    """Name the annotation story one part holds, by the name Word gives it.
+
+    Headers and footers are not named here: they are reached through the
+    document's own sections and relationships, which say what each part is
+    regardless of what it is called.
+    """
     name = posixpath.basename(part)
-    for prefix in ("header", "footer", "footnote", "endnote", "comment"):
+    for prefix in ("footnote", "endnote", "comment"):
         if name.startswith(prefix):
             return prefix
     return "body"
