@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 from _trusted_ocr import catalogue_over, host_models, stand_in_models
-from omnivia_core_runtime.service.document_extractors import DOCX_MEDIA_TYPE
+from omnivia_core_runtime.service.document_extractors import (
+    DOCX_MEDIA_TYPE,
+    XHTML_MEDIA_TYPE,
+)
 from omnivia_core_runtime.service.document_intake import (
     capture_document_bytes,
     read_extraction_projection,
@@ -358,3 +361,35 @@ def test_service_executor_processes_rtf_through_the_retained_copy(
         runner, document_id="doc-processing-rtf", query="RTF"
     )
     assert "Core RTF content" in " ".join(segment.text or "" for segment in projected)
+
+
+def test_service_executor_processes_xhtml_through_the_retained_copy(
+    runner: ServiceRunner,
+) -> None:
+    capture_document_bytes(
+        runner,
+        content=(
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            b"<h1>Core XHTML heading</h1><p>Core XHTML content</p>"
+            b"</body></html>"
+        ),
+        document_id="doc-processing-xhtml",
+        expected_base_capture_id=None,
+        operation_key="capture-processing-xhtml",
+        media_type=XHTML_MEDIA_TYPE,
+        intent_kind=store.INTENT_NEW_CAPTURE,
+    )
+
+    results = DocumentProcessingExecutor(runner).run_pending(budget=1, force=True)
+
+    # The XHTML media type is carried the whole way: a retained source reaches
+    # the markup adapter, settles succeeded, and is projected as searchable text.
+    assert [result.result_state for result in results] == ["succeeded"]
+    projected = read_extraction_projection(
+        runner, document_id="doc-processing-xhtml", query="XHTML"
+    )
+    assert [segment.text for segment in projected] == [
+        "Core XHTML heading",
+        "Core XHTML content",
+    ]

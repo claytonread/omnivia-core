@@ -12,6 +12,8 @@ from typing import Any
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service import document_intake
 from omnivia_core_runtime.service.document_extractors import (
+    HTML_MEDIA_TYPES,
+    MAX_HTML_SOURCE_BYTES,
     DocumentExtractionInvalid,
     DocumentExtractionUnsupported,
     extract_document,
@@ -148,6 +150,7 @@ def portable_profile(
         "text/csv": "delimited-text",
         "text/tab-separated-values": "delimited-text",
         "text/html": "inert-html",
+        "application/xhtml+xml": "inert-html",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx-ooxml",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx-ooxml",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx-ooxml",
@@ -237,7 +240,11 @@ def _profile_limits(
     """The ceilings this profile was produced under, as actually enforced."""
     if media_type in {"text/plain", "text/markdown"}:
         source_bytes = 1024 * 1024
-    elif media_type in {"application/rtf", "text/rtf", "text/html"}:
+    elif media_type in HTML_MEDIA_TYPES:
+        # Published from the constant the markup adapter enforces, so the two
+        # cannot drift into a profile that claims a bound nothing applies.
+        source_bytes = MAX_HTML_SOURCE_BYTES
+    elif media_type in {"application/rtf", "text/rtf"}:
         source_bytes = 20 * 1024 * 1024
     else:
         source_bytes = MAX_SOURCE_BYTES

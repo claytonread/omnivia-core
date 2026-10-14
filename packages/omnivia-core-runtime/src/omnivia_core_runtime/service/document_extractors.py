@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any, Final
 
+from lxml import etree  # type: ignore[import-untyped]
+from lxml import html as lxml_html
+
 from omnivia_core.contracts.v1 import to_canonical_json
 from omnivia_core_runtime.service.document_intake import (
     ExtractedSegment,
@@ -52,6 +55,10 @@ RASTER_WORKER_BUILD: Final = RASTER_BUILD
 #: searchable text: **Source captured; no reliable text found**.
 DOCUMENT_NO_RELIABLE_TEXT: Final = "no_reliable_text_found"
 MAX_TEXT_BYTES: Final = 1_048_576
+#: The source bound for markup, which the published profile pins at 20 MiB for
+#: these media types. Plain text and Markdown keep ``MAX_TEXT_BYTES``, so the
+#: two bounds are separate rather than one shared ceiling raised for everyone.
+MAX_HTML_SOURCE_BYTES: Final = 20 * 1_048_576
 #: Delimited bounds: records in one source, columns in one record, decoded
 #: UTF-8 bytes in one field, fields in the whole source, and decoded characters
 #: in the whole source. Every one of them refuses the source when it is
@@ -71,6 +78,9 @@ MAX_HTML_ATTRIBUTES: Final = 256
 MAX_HTML_SEGMENT_CHARS: Final = 100_000
 MAX_HTML_REFERENCE_CHARS: Final = 2048
 MAX_HTML_SEGMENTS: Final = 50_000
+#: Distinct libxml2 conditions reported from one admission parse. A warning list
+#: is diagnostics, not prose, so this one is a cap rather than a refusal.
+MAX_HTML_PARSER_WARNINGS: Final = 32
 DOCX_MEDIA_TYPE: Final = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
@@ -85,6 +95,10 @@ IMAGE_MEDIA_TYPES: Final = frozenset(
     {"image/png", "image/jpeg", "image/tiff", "image/heic", "image/heif", "image/webp"}
 )
 RTF_MEDIA_TYPES: Final = frozenset({"application/rtf", "text/rtf"})
+XHTML_MEDIA_TYPE: Final = "application/xhtml+xml"
+#: The markup media types this adapter reads. Both are read by the same inert
+#: walk; only the admission parse in front of it differs between them.
+HTML_MEDIA_TYPES: Final = frozenset({"text/html", XHTML_MEDIA_TYPE})
 #: Elements that carry no end tag, so the walk must not hold one open.
 _HTML_VOID: Final = frozenset(
     {
@@ -109,6 +123,9 @@ _HTML_HIDDEN: Final = frozenset({"script", "style", "template"})
 #: Elements that cannot be their own direct child, so a repeat implies an end.
 _HTML_PEER_CLOSING: Final = frozenset({"li", "p", "td", "th"})
 _REFERENCE_SCHEME: Final = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]{1,31}):")
+#: An XML declaration at the head of the source declares the same thing, so
+#: XML-declared XHTML served as ``text/html`` is still read as XML.
+_XML_DECLARATION: Final = re.compile(rb"\s*<\?xml[\s?]")
 #: Byte-order marks that declare a delimited source's encoding, each with the
 #: codec it declares and the name the outcome reports.
 _DELIMITED_BOMS: Final = (
@@ -159,8 +176,8 @@ def extract_document(
     if media_type in {"text/csv", "text/tab-separated-values"}:
         delimiter = "," if media_type == "text/csv" else "\t"
         return _extract_delimited(content, capture_id=capture_id, delimiter=delimiter)
-    if media_type == "text/html":
-        return _extract_html(content, capture_id=capture_id)
+    if media_type in HTML_MEDIA_TYPES:
+        return _extract_html(content, capture_id=capture_id, media_type=media_type)
     office_extractor = {
         DOCX_MEDIA_TYPE: extract_docx,
         XLSX_MEDIA_TYPE: extract_xlsx,
@@ -213,8 +230,8 @@ def extract_document(
     )
 
 
-def _decode_utf8(content: bytes) -> str:
-    if len(content) > MAX_TEXT_BYTES:
+def _decode_utf8(content: bytes, *, limit: int | None = None) -> str:
+    if len(content) > (MAX_TEXT_BYTES if limit is None else limit):
         raise DocumentExtractionInvalid("decoded text exceeds the accepted bound")
     try:
         return content.decode("utf-8")
@@ -480,9 +497,7 @@ class _InertHTMLParser(HTMLParser):
             return
         if len(self.stack) > MAX_HTML_DEPTH:
             raise DocumentExtractionInvalid("HTML nesting exceeds the accepted bound")
-        self.stack.append(
-            _OpenElement(tag, path, role, hidden, attributes.get("id"))
-        )
+        self.stack.append(_OpenElement(tag, path, role, hidden, attributes.get("id")))
 
     def handle_data(self, data: str) -> None:
         for element in reversed(self.stack):
@@ -588,8 +603,72 @@ def _reference_scheme(target: str) -> str:
     return match.group(1).lower() if match else "relative"
 
 
-def _extract_html(content: bytes, *, capture_id: str) -> ExtractionOutcome:
-    text = _decode_utf8(content)
+def _admit_markup(content: bytes, *, media_type: str) -> dict[str, Any]:
+    """Admit one HTML/XHTML source through a bounded, inert lxml parse.
+
+    The parse resolves nothing: no DTD is loaded, no entity is expanded and no
+    network fetch is attempted. The bytes are always handed over as bytes to
+    ``fromstring``, never to ``parse``, so nothing the source contains is ever
+    read as a path or a URL.
+
+    XHTML — declared by the media type or by an XML declaration in the bytes —
+    is read by the XML parser, which refuses a source carrying a DTD or an
+    entity declaration rather than reading it with those declarations quietly
+    ignored. Ordinary HTML is read by libxml2's recovering HTML parser, and what
+    it had to recover from is reported rather than discarded.
+
+    The parse is bounded by the source bound ``_decode_utf8`` has already
+    enforced and by ``huge_tree=False``; the element and depth bounds stay with
+    the inert walk, which reads the same bytes and refuses them there.
+    """
+    xml = media_type == XHTML_MEDIA_TYPE or _XML_DECLARATION.match(content) is not None
+    kind = "lxml.etree.XMLParser" if xml else "lxml.html.HTMLParser"
+    if not content.strip():
+        return {"parser": kind, "parserRecovered": False, "parserWarnings": []}
+    parser = (
+        etree.XMLParser(
+            resolve_entities=False,
+            load_dtd=False,
+            dtd_validation=False,
+            no_network=True,
+            huge_tree=False,
+        )
+        if xml
+        else lxml_html.HTMLParser(no_network=True, huge_tree=False)
+    )
+    try:
+        root = etree.fromstring(content, parser)
+    except etree.LxmlError as error:
+        raise DocumentExtractionInvalid(
+            "XHTML is not well formed"
+            if xml
+            else "HTML is outside the accepted parser bounds"
+        ) from error
+    if xml and root is not None:
+        # An entity can only be declared inside a document type, so refusing
+        # the one refuses the other: no declaration is read with its effect
+        # quietly dropped, which is the reading that hides a billion laughs.
+        docinfo = root.getroottree().docinfo
+        if docinfo.internalDTD is not None or docinfo.externalDTD is not None:
+            raise DocumentExtractionInvalid(
+                "XHTML declares a document type or an entity"
+            )
+    warnings = sorted({entry.type_name for entry in parser.error_log})
+    return {
+        "parser": kind,
+        "parserRecovered": bool(warnings),
+        "parserWarnings": warnings[:MAX_HTML_PARSER_WARNINGS],
+    }
+
+
+def _extract_html(
+    content: bytes, *, capture_id: str, media_type: str
+) -> ExtractionOutcome:
+    text = _decode_utf8(content, limit=MAX_HTML_SOURCE_BYTES)
+    limitations = _admit_markup(content, media_type=media_type)
+    # The admission parse decides whether the source is readable at all; the
+    # segments are still located by the inert walk over the same bytes, so what
+    # this adapter publishes does not move when libxml2's tree does.
     parser = _InertHTMLParser(capture_id)
     try:
         parser.feed(text)
@@ -604,6 +683,7 @@ def _extract_html(content: bytes, *, capture_id: str) -> ExtractionOutcome:
         tuple(parser.segments),
         unit_type="element",
         known_empty=not bool(parser.segments),
+        limitations=limitations,
     )
 
 
