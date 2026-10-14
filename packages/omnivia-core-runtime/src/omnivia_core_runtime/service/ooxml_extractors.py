@@ -501,28 +501,94 @@ _DOCX_GRAPHICS: Final[dict[str, str]] = {
     "k": "a chart",
     "s": "SmartArt",
 }
-# The legacy object container, in the two WordprocessingML main namespaces OOXML
-# defines -- Transitional and Strict. The rest of the DOCX reader matches local
-# names, because a story's own vocabulary is settled by the part it was reached
-# through; an object container is admitted on its qualified name alone, so an
-# element merely called ``object`` in another vocabulary declares nothing.
+# The two WordprocessingML main namespaces OOXML defines, Transitional and
+# Strict. The rest of the DOCX reader matches local names, because a story's own
+# vocabulary is settled by the part it was reached through; the two legacy
+# containers below are admitted on their qualified names alone, so an element
+# merely called ``object`` or ``pict`` in another vocabulary declares nothing.
+_WORDPROCESSINGML: Final = (
+    "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    "http://purl.oclc.org/ooxml/wordprocessingml/main",
+)
+# The legacy object container.
 _DOCX_OBJECTS: Final = frozenset(
-    f"{{{namespace}}}object"
-    for namespace in (
-        "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
-        "http://purl.oclc.org/ooxml/wordprocessingml/main",
-    )
+    f"{{{namespace}}}object" for namespace in _WORDPROCESSINGML
+)
+# The legacy picture container. It is where Word writes a VML image that stands
+# on its own rather than for an object, and it is also the wrapper a VML text
+# box arrives in, so admitting the container is not yet admitting an image.
+_DOCX_PICTURES: Final = frozenset(
+    f"{{{namespace}}}pict" for namespace in _WORDPROCESSINGML
 )
 # The one element inside that container which declares the embedded or linked
 # object. It is an Office drawing extension rather than part of either OOXML
 # profile, so it has a single namespace and no Strict spelling: the same local
 # name anywhere else is another vocabulary's element and declares no object.
 _DOCX_OLE_OBJECT: Final = "{urn:schemas-microsoft-com:office:office}OLEObject"
-# The VML shape a legacy object carries its on-page stand-in as. It is a picture
-# *of* the object, not the object: it is recorded as declared and is never
-# opened, decoded, resolved or inventoried as an image of its own. Standalone
-# VML images wait for their own slice.
-_DOCX_OLE_PREVIEW: Final = "{urn:schemas-microsoft-com:vml}shape"
+# The legacy drawing layer's own vocabulary. It predates both OOXML profiles, so
+# each element has a single namespace and no Strict spelling: the same local name
+# anywhere else is another vocabulary's element and declares nothing.
+#
+# A ``v:shape`` is one legacy shape, and the ``v:imagedata`` inside it is the
+# one place that shape names the image it displays.
+_DOCX_VML_SHAPE: Final = "{urn:schemas-microsoft-com:vml}shape"
+_DOCX_VML_IMAGEDATA: Final = "{urn:schemas-microsoft-com:vml}imagedata"
+# The Office title an ``imagedata`` may carry about the image itself. It is an
+# Office drawing extension rather than VML, and it is a third claim distinct
+# from the shape's own two.
+_DOCX_VML_TITLE: Final = "{urn:schemas-microsoft-com:office:office}title"
+# The VML shape a legacy object carries its on-page stand-in as -- the same
+# element a ``w:pict`` shows a standalone image through, reached by a route of
+# its own. Below an object it is a picture *of* the object, not the object: it is
+# recorded as declared and is never opened, decoded, resolved or inventoried as
+# an image, because the image a story shows is the one its own ``w:pict`` names.
+_DOCX_OLE_PREVIEW: Final = _DOCX_VML_SHAPE
+# The one ``style`` declaration that moves a legacy shape off the text flow,
+# written exactly as CSS writes it. Neither half is folded, trimmed to a prefix
+# or otherwise interpreted: ``POSITION``, ``Absolute`` and ``absolutely`` are not
+# these tokens, so a shape declaring one of those is the inline shape it is by
+# default rather than an anchored one.
+_DOCX_VML_POSITION: Final = "position"
+_DOCX_VML_ABSOLUTE: Final = "absolute"
+# What a standalone legacy image records, defaulted so an embedded part and an
+# external link are shaped alike, exactly as a legacy object's record is. One
+# ``imagedata`` names one relationship, so there is one reference here rather
+# than the embed/link pair a DrawingML blip may write. ``scheme`` is the scheme
+# a linked target's own text names; the three part fields describe a member the
+# package holds, and the byte length is the figure the package measured while
+# validating it. Reporting any of it opens nothing.
+#
+# The last five are the shape's own uninterpreted markup: the identifier the
+# legacy drawing layer knew it by, which is resolved against nothing, the style
+# it was drawn with, kept as written, and the three claims its author may have
+# made about what the image shows, each kept apart from the others.
+_DOCX_VML_RECORD: Final[dict[str, object]] = {
+    "placement": None,
+    "relationshipId": None,
+    "relationshipType": None,
+    "target": None,
+    "external": None,
+    "scheme": None,
+    "imagePart": None,
+    "contentType": None,
+    "imageBytes": None,
+    "shapeId": None,
+    "shapeStyle": None,
+    "shapeAlt": None,
+    "shapeTitle": None,
+    "imageTitle": None,
+}
+# Those three claims, each with the ``altRole`` the segment carrying it records
+# and the element that declared it, in the order they are reported. The role and
+# the source are both needed to tell them apart: a shape's ``title`` and an
+# ``imagedata``'s Office title are both titles, written on different elements
+# about different things, and neither stands in for the other or for the alt
+# text beside it.
+_DOCX_VML_ALT_CLAIMS: Final = (
+    ("shapeTitle", "title", "shape"),
+    ("shapeAlt", "description", "shape"),
+    ("imageTitle", "title", "imagedata"),
+)
 # ``OLEObject/@Type``, the only thing that says whether the object is embedded
 # or linked, mapped to the mode its record reports. The value is closed and
 # case-sensitive, so one differing in case is not that value: the relationship
@@ -5150,7 +5216,7 @@ class _DocxWalker:
         self.paragraphs += 1
         role = "table_cell" if cell else self._role(paragraph)
         current = removed = boxes = links = refs = fields = concealed = 0
-        maths = images = charts = diagrams = objects = 0
+        maths = images = charts = diagrams = objects = legacy = 0
         for kind, value, box_deleted in _paragraph_items(
             paragraph, deleted, self._fields
         ):
@@ -5185,6 +5251,13 @@ class _DocxWalker:
                 self._flush(cell)
                 self._object(value, f"{position}.o{objects}", box_deleted)
                 objects += 1
+            elif kind == "p":
+                assert isinstance(value, ElementTree.Element)
+                # A legacy image is ordered where it sits, for the reason an
+                # object is.
+                self._flush(cell)
+                self._vml_image(value, f"{position}.v{legacy}", box_deleted)
+                legacy += 1
             elif kind == "m":
                 assert isinstance(value, ElementTree.Element)
                 item = _local(value.tag)
@@ -5559,7 +5632,8 @@ class _DocxWalker:
         relationship holds it, beside the scheme its own text names. The VML
         shape standing in for the object on the page is recorded as declared and
         no more: it is never opened, decoded, resolved or inventoried as an
-        image, which waits for its own slice.
+        image, because the image a story shows is the one its own ``w:pict``
+        names and a stand-in for an object is not that.
 
         A deletion wrapped around the container is kept as the revision it is,
         exactly as it is over an image, a chart or a diagram.
@@ -5615,6 +5689,105 @@ class _DocxWalker:
             )
             record["objectBytes"] = self._package.archive.getinfo(target).file_size
         self._inventory(position, record, "visible", deleted)
+
+    def _vml_image(
+        self, element: ElementTree.Element, position: str, deleted: bool
+    ) -> None:
+        """Inventory one standalone legacy image, then report its author's claims.
+
+        The inventory record comes first and is emitted for every image a
+        ``w:pict`` shows, whether or not its author claimed anything, so a
+        story's legacy images are inventoried where the XML placed them, exactly
+        as its DrawingML ones are. It names where the shape sits, the one
+        relationship its ``v:imagedata`` referenced, and what the package already
+        knows about what that reached.
+
+        The reference resolves only through the holding story part's own
+        relationships, so containment, path safety and existence were all settled
+        when the package validated them, and it has to carry the image type OOXML
+        defines: an image reference that reaches an OLE object, a media part or a
+        hyperlink reaches no image. An internal part contributes its safe name,
+        the type the package declares for it -- which has to be an image, because
+        inventorying anything else as one would say the package holds an image
+        where it holds something else -- and the byte length the package already
+        measured while validating the member. An external one is carried exactly
+        as the relationship holds it, beside the scheme its own text names.
+
+        That is inventory about an image and nothing read out of one: no byte was
+        opened, decoded or rendered, no OCR was run, and an image never
+        contributes text. The shape's own markup rides along uninterpreted -- the
+        identifier the legacy drawing layer knew it by, resolved against nothing,
+        and the style it was drawn with, bounded and unparsed beyond the one
+        declaration that says whether it is anchored.
+
+        The author's claims then follow in one fixed order, each under
+        ``image_alt`` with the role it played and the element that declared it, so
+        the shape's title, the shape's alt text and the ``imagedata``'s Office
+        title stay three distinguishable claims rather than one. A claim nothing
+        wrote and a claim written empty are both reported by the record alone: no
+        text is invented for an image whose author described it with none, least
+        of all out of the shape's identifier.
+
+        A deletion wrapped around the container is kept as the revision it is,
+        over the record and over every claim it carried, exactly as it is over a
+        DrawingML image and its claims.
+        """
+        admitted = _docx_vml_image(element)
+        assert admitted is not None
+        shape, data, relation_id = admitted
+        target, external, kind = _image_relation(
+            self._relations, self._relation_types, relation_id, "DOCX VML image"
+        )
+        claims = {
+            "shapeId": shape.attrib.get("id"),
+            "shapeAlt": shape.attrib.get("alt"),
+            "shapeTitle": shape.attrib.get("title"),
+            "imageTitle": data.attrib.get(_DOCX_VML_TITLE),
+        }
+        style = shape.attrib.get("style")
+        record = dict(_DOCX_VML_RECORD)
+        record.update(
+            {
+                "kind": "vmlImage",
+                "placement": _docx_vml_placement(style),
+                "relationshipId": _clip(relation_id, _MAX_META_CHARS),
+                "relationshipType": _clip(kind, _MAX_TARGET_CHARS),
+                "target": _clip(target, _MAX_TARGET_CHARS),
+                "external": external,
+                "shapeStyle": None if style is None else _clip(style, _MAX_TARGET_CHARS),
+                "imageDecoded": False,
+                "ocrPerformed": False,
+                **{
+                    name: None if value is None else _clip(value, _MAX_META_CHARS)
+                    for name, value in claims.items()
+                },
+            }
+        )
+        if external:
+            match = _SCHEME.match(target)
+            record["scheme"] = match.group(1).casefold() if match else None
+        else:
+            content_type = self._package.resolved_type(target)
+            if not content_type.startswith(_IMAGE_CONTENT_PREFIX):
+                raise OOXMLInvalid("DOCX VML image part is not declared an image")
+            record["imagePart"] = _clip(target, _MAX_TARGET_CHARS)
+            record["contentType"] = _clip(content_type, _MAX_META_CHARS)
+            record["imageBytes"] = self._package.archive.getinfo(target).file_size
+        self._inventory(position, record, "visible", deleted)
+        for name, role, source in _DOCX_VML_ALT_CLAIMS:
+            text = claims[name]
+            if not text:
+                continue
+            self._segments.append(
+                ExtractedSegment(
+                    "image_alt",
+                    self._locator(position, altRole=role, altSource=source),
+                    text=text,
+                    visibility="annotation" if deleted else "visible",
+                    revision_state="deleted" if deleted else "current",
+                )
+            )
+            _bounded(self._segments)
 
     def _flush(self, cell: _CellRun | None) -> None:
         if cell is None:
@@ -5745,7 +5918,9 @@ def _paragraph_items(
     properties hide (carrying whether a deletion wrapped it), ``x`` a text box,
     ``e`` an ``m:oMath`` or ``m:oMathPara`` equation, ``g`` a ``wp:inline`` or
     ``wp:anchor`` drawing object that displays an image, ``k`` one that names a
-    chart, ``s`` one that names SmartArt,
+    chart, ``s`` one that names SmartArt, ``o`` a ``w:object`` declaring a
+    legacy embedded or linked object, ``p`` a ``w:pict`` showing a standalone
+    legacy image,
     ``m`` a hyperlink, simple field or annotation marker, and ``c`` an
     already recorded complex field (each carrying whether a deletion wrapped
     it).
@@ -5831,6 +6006,19 @@ def _paragraph_items(
                 _field_result(fields, "an embedded object")
                 close()
                 items.append(("o", node, state))
+                if len(items) > MAX_SEGMENTS:
+                    raise OOXMLInvalid("OOXML extraction has too many segments")
+                continue
+            if node.tag in _DOCX_PICTURES and _docx_vml_image(node) is not None:
+                # A standalone legacy image is recorded where it sits and holds
+                # no prose of its own, so the container is not entered: its bytes
+                # are never opened and its shape is never drawn. A ``w:pict``
+                # that shows no image of its own -- the one holding a VML text
+                # box above all -- is the transparent wrapper it is today and is
+                # walked for the content it carries.
+                _field_result(fields, "a legacy image")
+                close()
+                items.append(("p", node, state))
                 if len(items) > MAX_SEGMENTS:
                     raise OOXMLInvalid("OOXML extraction has too many segments")
                 continue
@@ -5983,9 +6171,8 @@ def _docx_drawing_blip(drawing: ElementTree.Element) -> ElementTree.Element | No
     fill carried in an extension list, the drawing a chart or a diagram holds
     of its own -- is not the image this object displays and is passed over, so
     a drawing that displays no image reports none rather than one found
-    somewhere else. Charts and SmartArt are other declarations entirely, read
-    on their own routes; embedded objects and VML are left for their own
-    slices.
+    somewhere else. Charts, SmartArt, embedded objects and VML are other
+    declarations entirely, each read on its own route.
 
     One drawing object displays one image, so two of anything along that route
     -- two graphics, two pictures, two fills, two blips -- leave which image it
@@ -6058,7 +6245,7 @@ def _docx_drawing_object(drawing: ElementTree.Element) -> str | None:
     the pair it made. An object making none is the transparent wrapper it has
     always been -- the one holding a text box above all -- and is walked for the
     content it carries. Embedded objects and VML are other declarations
-    entirely and are left for their own slices.
+    entirely, each reached by a container of its own.
     """
     declared = [
         kind
@@ -6096,6 +6283,72 @@ def _docx_ole_object(element: ElementTree.Element) -> ElementTree.Element | None
     if len(declared) > 1:
         raise OOXMLInvalid("DOCX object declares more than one embedded object")
     return declared[0] if declared else None
+
+
+def _docx_vml_image(
+    element: ElementTree.Element,
+) -> tuple[ElementTree.Element, ElementTree.Element, str] | None:
+    """Return the shape, image data and relationship id one ``w:pict`` shows.
+
+    The route in is two hops and no deeper: the ``v:shape`` directly below the
+    container, and the ``v:imagedata`` directly below that shape. A shape or an
+    image reference reached anywhere else is not this container's own -- one
+    inside a group, one carried in an alternate-content fallback, one below a
+    shape hung along, and one written in a vocabulary that merely shares the
+    local name are all passed over -- so a container showing no standalone image
+    is reported as showing none and stays the transparent wrapper it is today,
+    which is what keeps a ``w:pict`` holding only a VML text box yielding its
+    prose. The stand-in a ``w:object`` carries is reached by its own route and
+    never this one, so it is still recorded as declared rather than inventoried
+    here.
+
+    A container shows one image, so two shapes, or two image references on one
+    shape, leave which image it shows ambiguous and nothing here chooses between
+    them. The single relationship-namespaced ``r:id`` on the image data is the
+    one reference read: an id written in no namespace, or in two of the
+    namespaces that carry it, names no one relationship, and image data naming
+    none declares an image it does not identify.
+    """
+    shapes = [node for node in element if node.tag == _DOCX_VML_SHAPE]
+    if len(shapes) > 1:
+        raise OOXMLInvalid("DOCX picture declares more than one shape")
+    if not shapes:
+        return None
+    data = [node for node in shapes[0] if node.tag == _DOCX_VML_IMAGEDATA]
+    if len(data) > 1:
+        raise OOXMLInvalid("DOCX picture shape declares more than one image")
+    if not data:
+        return None
+    ids = _namespaced_ids(data[0], "id")
+    if len(ids) > 1:
+        raise OOXMLInvalid("DOCX VML image names more than one image relationship")
+    if not ids:
+        raise OOXMLInvalid("DOCX VML image names no image relationship")
+    return shapes[0], data[0], ids[0]
+
+
+def _docx_vml_placement(style: str | None) -> str:
+    """Say where a legacy shape sits, from its own ``style`` and nothing else.
+
+    A legacy shape is part of the text flow unless its style says otherwise, so
+    ``inline`` is what a shape with no style, no ``position`` declaration or any
+    other position declares. Only the exact ``position:absolute`` CSS pair moves
+    it off the flow; whitespace around either half is CSS syntax rather than part
+    of the token, so it is not read as part of either.
+
+    Nothing else is consulted: no wrap, no offset, no anchor child and nothing
+    the shape is drawn relative to. A style declaring ``position`` twice with two
+    different values leaves where the shape sits unanswerable, and nothing here
+    chooses between them.
+    """
+    positions = set()
+    for declaration in (style or "").split(";"):
+        name, colon, value = declaration.partition(":")
+        if colon and name.strip() == _DOCX_VML_POSITION:
+            positions.add(value.strip())
+    if len(positions) > 1:
+        raise OOXMLInvalid("DOCX VML image declares more than one position")
+    return "anchor" if positions == {_DOCX_VML_ABSOLUTE} else "inline"
 
 
 def _docx_doc_pr(drawing: ElementTree.Element) -> dict[str, str | None]:

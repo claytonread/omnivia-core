@@ -4220,3 +4220,657 @@ def test_a_claim_in_another_vocabulary_claims_nothing_about_this_object() -> Non
     assert inventory(content) == [
         ("0.o0", EMBEDDED | dict.fromkeys(CLAIM_FIELDS, None))
     ]
+
+
+# The legacy picture container, in the markup Word actually writes: the VML
+# shape directly below ``w:pict``, and the one ``v:imagedata`` below that shape
+# naming the image. ``v:`` is bound on the document root with the rest; ``o:``
+# is bound on the ``imagedata`` itself, because the Office title is the only
+# thing here that needs it.
+SHAPE_ID = "_x0000_i1026"
+VML_STYLE = "width:96pt;height:72pt"
+# The one style that moves the shape off the text flow, among the declarations
+# Word writes beside it, none of which is read.
+ANCHOR_STYLE = "position:absolute;margin-left:0;margin-top:9pt;z-index:1"
+# A target outside the package, carried in the case the relationship holds it.
+VML_LINK = ("rId9", "HTTPS://files.example/Logo.PNG", True, "image")
+
+
+def pict(
+    *,
+    shape_id: str | None = SHAPE_ID,
+    style: str | None = VML_STYLE,
+    shape: str = "",
+    data: str = "",
+) -> str:
+    """One ``w:pict`` showing one image, inside the run that anchors it."""
+    named = "" if shape_id is None else f' id="{shape_id}"'
+    styled = "" if style is None else f' style="{style}"'
+    return (
+        f"<w:r><w:pict><v:shape{named}{styled}{shape}>"
+        f'<v:imagedata r:id="rId9"{data}/>'
+        "</v:shape></w:pict></w:r>"
+    )
+
+
+def placements(content: bytes) -> list[tuple[object, object, object]]:
+    """Each legacy image's position, where it sits and the style it said so with."""
+    return [
+        (position, value["placement"], value["shapeStyle"])
+        for position, value in inventory(content)
+    ]
+
+
+# What the default fixture's record says about the image part it embeds. The
+# relationship's target and the part behind it are the same member, because an
+# embedded reference names one; the content type is the one the package declares
+# for the extension, and the byte length is the figure the package already
+# measured. ``imageDecoded`` and ``ocrPerformed`` are the two facts the record
+# states about reading, and both are false: nothing opened the bytes.
+VML_IMAGE: dict[str, object] = {
+    "kind": "vmlImage",
+    "placement": "inline",
+    "relationshipId": "rId9",
+    "relationshipType": REL + "image",
+    "target": "word/media/image1.png",
+    "external": False,
+    "scheme": None,
+    "imagePart": "word/media/image1.png",
+    "contentType": "image/png",
+    "imageBytes": len(IMAGE_MEMBER["word/media/image1.png"]),
+    "shapeId": "_x0000_i1026",
+    "shapeStyle": VML_STYLE,
+    "shapeAlt": None,
+    "shapeTitle": None,
+    "imageTitle": None,
+    "imageDecoded": False,
+    "ocrPerformed": False,
+}
+
+
+def test_a_legacy_image_is_inventoried_where_it_sits_and_holds_no_text() -> None:
+    """One record, where the story places the picture, naming the one
+    relationship the ``v:imagedata`` referenced, what the package already knows
+    about the part it reached, and the shape's own uninterpreted markup. The
+    record states that nothing was decoded and no OCR was run, and it is the
+    paragraph's only segment beyond the prose around it: the PNG member -- which
+    is not a PNG at all -- never becomes text."""
+    body = f"<w:p>{run('Before ')}{pict()}{run(' after')}</w:p>"
+    content = imaged(body)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("body", "Before ", "0"),
+        ("object_inventory", None, "0.v0"),
+        # The picture closed the stretch it interrupted rather than joining it.
+        ("body", " after", "0.t1"),
+    ]
+    assert inventory(content) == [("0.v0", VML_IMAGE)]
+    assert [i.extraction_method for i in result.segments[1:2]] == ["inventory"]
+
+
+def test_only_the_exact_absolute_declaration_moves_a_legacy_image_off_the_flow() -> (
+    None
+):
+    """A legacy shape is in the text flow unless its own style says otherwise, so
+    only the exact ``position:absolute`` pair anchors it: a style declaring sizes
+    and no position, and no style at all, are both the inline shape the default
+    is. The style rides along as written either way, and its absence is reported
+    as the absence it is."""
+    body = (
+        f"<w:p>{pict(style=ANCHOR_STYLE)}</w:p>"
+        f"<w:p>{pict()}</w:p>"
+        f"<w:p>{pict(style=None)}</w:p>"
+    )
+
+    assert placements(imaged(body)) == [
+        ("0.v0", "anchor", ANCHOR_STYLE),
+        ("1.v0", "inline", VML_STYLE),
+        ("2.v0", "inline", None),
+    ]
+
+
+def test_a_linked_legacy_image_carries_its_target_and_scheme_without_part_data() -> (
+    None
+):
+    """An external relationship is a reference out of the package, and the
+    reference is inventory: it is carried exactly as the relationship holds it,
+    beside the scheme its own text names, and nothing fetches, probes or
+    normalises it. There is no part inside the package, so the three part fields
+    stay absent rather than being invented for it."""
+    content = imaged(f"<w:p>{pict()}</w:p>", VML_LINK)
+
+    assert inventory(content) == [
+        (
+            "0.v0",
+            VML_IMAGE
+            | {
+                "target": "HTTPS://files.example/Logo.PNG",
+                "external": True,
+                "scheme": "https",
+                "imagePart": None,
+                "contentType": None,
+                "imageBytes": None,
+            },
+        )
+    ]
+    assert extract_docx(content, capture_id=CAPTURE).limitations[
+        "externalReferences"
+    ] == 1
+
+
+def test_the_three_claims_about_a_legacy_image_stay_three_claims() -> None:
+    """The shape's title, the shape's alt text and the ``imagedata``'s Office
+    title are three claims written on two elements about two things, so each is
+    reported on its own, in one fixed order, after the record -- under the role
+    it played and the element that declared it. Neither title stands in for the
+    other, and neither stands in for the alt text beside it."""
+    claimed = pict(
+        shape=' title="Figure 3" alt="A bar chart of quarterly revenue"',
+        data=f' {OFFICE} o:title="Revenue by quarter"',
+    )
+    content = imaged(f"<w:p>{claimed}</w:p>")
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [
+        (
+            i.semantic_role,
+            i.text,
+            i.source_locator["position"],
+            i.source_locator.get("altRole"),
+            i.source_locator.get("altSource"),
+        )
+        for i in result.segments
+    ] == [
+        ("object_inventory", None, "0.v0", None, None),
+        ("image_alt", "Figure 3", "0.v0", "title", "shape"),
+        ("image_alt", "A bar chart of quarterly revenue", "0.v0", "description", "shape"),
+        ("image_alt", "Revenue by quarter", "0.v0", "title", "imagedata"),
+    ]
+    assert inventory(content) == [
+        (
+            "0.v0",
+            VML_IMAGE
+            | {
+                "shapeTitle": "Figure 3",
+                "shapeAlt": "A bar chart of quarterly revenue",
+                "imageTitle": "Revenue by quarter",
+            },
+        )
+    ]
+
+
+def test_the_stand_in_an_object_carries_is_not_inventoried_as_a_legacy_image() -> None:
+    """The picture a ``w:object`` shows is a picture *of* the object, reached by
+    a route of its own, so it is recorded as declared and never a second time as
+    an image. Its ``v:imagedata`` here names a genuine image relationship the
+    package holds, which would resolve if anything read it: the one record the
+    container produces is what says nothing did."""
+    preview = (
+        f'<w:r><w:object><v:shape id="_x0000_i1025" style="{VML_STYLE}">'
+        '<v:imagedata r:id="rId8"/></v:shape>'
+        f'<o:OLEObject {OFFICE} Type="Embed" r:id="rId9"{CLAIMS}/>'
+        "</w:object></w:r>"
+    )
+    content = linked(
+        f"<w:p>{preview}</w:p>",
+        OBJECT_RELATION,
+        ("rId8", "media/image1.png", False, "image"),
+        content_types=OBJECT_DEFAULTS + PNG_DEFAULT,
+        members=OBJECT_MEMBERS | IMAGE_MEMBER,
+    )
+
+    assert inventory(content) == [("0.o0", EMBEDDED)]
+
+
+def test_a_legacy_image_keeps_cell_order_and_a_deletion_over_one_is_preserved() -> None:
+    """A picture closes the cell's current run where it sits, so the prose before
+    it and the prose after it stay separate cell runs rather than joining across
+    it, and the record and the claims it carried stand between them under the
+    picture's own ``.v0``. A deletion wrapped around the container is kept over
+    the record and over every claim it carried. Every segment keeps a locator of
+    its own: a claim shares the record's position and is told apart by the role
+    it played and the element that declared it."""
+    shown = pict(shape=' title="Figure 3" alt="Quarterly revenue"')
+    gone = pict(shape=' alt="Gone"')
+    body = (
+        "<w:tbl><w:tr><w:tc>"
+        f"<w:p>{run('Attached ')}{shown}{run(' see above')}</w:p>"
+        f"<w:p><w:del>{gone}</w:del></w:p>"
+        "</w:tc></w:tr></w:tbl>"
+    )
+    content = imaged(body)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [
+        (
+            i.semantic_role,
+            i.text,
+            i.source_locator["position"],
+            i.source_locator.get("altRole"),
+            i.revision_state,
+            i.visibility,
+        )
+        for i in result.segments
+    ] == [
+        ("table_cell", "Attached ", "0.r0.c0", None, "current", "visible"),
+        ("object_inventory", None, "0.r0.c0.0.v0", None, "current", "visible"),
+        ("image_alt", "Figure 3", "0.r0.c0.0.v0", "title", "current", "visible"),
+        (
+            "image_alt",
+            "Quarterly revenue",
+            "0.r0.c0.0.v0",
+            "description",
+            "current",
+            "visible",
+        ),
+        ("table_cell", " see above", "0.r0.c0.t1", None, "current", "visible"),
+        ("object_inventory", None, "0.r0.c0.1.v0", None, "deleted", "annotation"),
+        ("image_alt", "Gone", "0.r0.c0.1.v0", "description", "deleted", "annotation"),
+    ]
+    locators = [tuple(sorted(i.source_locator.items())) for i in result.segments]
+    assert len(set(locators)) == len(locators)
+
+
+def test_a_legacy_image_is_the_saved_result_of_the_field_it_sits_under() -> None:
+    """A field whose stored result is a legacy picture alone stored a result,
+    exactly as one whose result is a DrawingML image did."""
+    body = (
+        f"<w:p>{fld('begin')}{instr(' INCLUDEPICTURE &quot;Logo.PNG&quot; ')}"
+        f"{fld('separate')}{pict()}{fld('end')}</w:p>"
+    )
+    content = imaged(body)
+
+    assert [
+        (i.semantic_role, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [("object_inventory", "0.f0"), ("object_inventory", "0.v0")]
+    assert inventory(content)[0][1]["savedResultPresent"] is True
+
+
+def test_a_legacy_image_inside_a_field_instruction_is_refused() -> None:
+    """An instruction is field code, which shows no picture of its own, so one
+    reached before the separator is refused rather than inventoried."""
+    body = (
+        f"<w:p>{fld('begin')}{instr(' INCLUDEPICTURE ')}{pict()}"
+        f"{fld('separate')}{fld('end')}</w:p>"
+    )
+
+    with pytest.raises(OOXMLInvalid, match="instruction holds a legacy image"):
+        extract_docx(imaged(body), capture_id=CAPTURE)
+
+
+def test_two_legacy_images_in_one_paragraph_are_numbered_as_they_stand() -> None:
+    """The counter is the paragraph's own, so each container gets its own locator
+    in source order rather than both landing on the same one."""
+    content = imaged(f"<w:p>{pict()}{run(' and ')}{pict()}</w:p>")
+
+    assert [position for position, _ in inventory(content)] == ["0.v0", "0.v1"]
+
+
+# A claim and a style longer than the field each rides in. The style declares no
+# position, so the shape it describes is the inline one it is by default however
+# much of the declaration the record keeps.
+LONG_CLAIM = "C" * (_MAX_META_CHARS + 144)
+LONG_STYLE = "width:" + "9" * (_MAX_TARGET_CHARS + 144) + "pt"
+
+
+def test_every_legacy_claim_is_clipped_at_the_bound_its_own_field_has() -> None:
+    """The shape's identifier and style and all three claims ride in the one
+    bounded JSON record, so each is clipped at the bound its own field has -- the
+    style at the target bound it shares with a reference, the rest at the
+    metadata bound -- rather than carried at whatever length the file wrote it.
+    Each stays apart from the others rather than joining, and the style is still
+    read whole for where the shape sits before the record keeps a prefix of
+    it."""
+    shape = f' alt="{LONG_CLAIM}" title="{LONG_CLAIM}"'
+    data = f' {OFFICE} o:title="{LONG_CLAIM}"'
+    content = imaged(
+        f"<w:p>{pict(shape_id=LONG_CLAIM, style=LONG_STYLE, shape=shape, data=data)}"
+        "</w:p>"
+    )
+
+    assert inventory(content) == [
+        (
+            "0.v0",
+            VML_IMAGE
+            | {
+                "placement": "inline",
+                "shapeStyle": LONG_STYLE[:_MAX_TARGET_CHARS],
+                "shapeId": "C" * _MAX_META_CHARS,
+                "shapeAlt": "C" * _MAX_META_CHARS,
+                "shapeTitle": "C" * _MAX_META_CHARS,
+                "imageTitle": "C" * _MAX_META_CHARS,
+            },
+        )
+    ]
+
+
+def test_a_legacy_claim_written_empty_stays_in_the_record_and_invents_no_text() -> None:
+    """A claim nothing wrote and a claim written empty are different facts, and
+    the record keeps them apart rather than folding one into the other. Neither
+    is text about the image, so neither becomes an ``image_alt`` segment: no text
+    is invented for an image whose author described it with none, least of all
+    out of the shape's identifier."""
+    empty = pict(shape=' alt="" title=""', data=f' {OFFICE} o:title=""')
+    content = imaged(f"<w:p>{pict()}</w:p><w:p>{empty}</w:p>")
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [(i.semantic_role, i.source_locator["position"]) for i in result.segments] == [
+        ("object_inventory", "0.v0"),
+        ("object_inventory", "1.v0"),
+    ]
+    assert [
+        (value["shapeAlt"], value["shapeTitle"], value["imageTitle"])
+        for _, value in inventory(content)
+    ] == [(None, None, None), ("", "", "")]
+
+
+def test_a_legacy_claim_in_another_vocabulary_claims_nothing_about_this_image() -> None:
+    """The shape's four declarations are unqualified, as VML writes them, and the
+    ``imagedata``'s title is Office-qualified, as the drawing extension writes
+    it. So the same local name carried in another vocabulary is that vocabulary's
+    extension and claims nothing here: each field is reported absent rather than
+    filled from the foreign attribute sitting beside it -- the style included, so
+    a foreign ``position`` does not move the shape off the text flow -- no claim
+    becomes a segment, and the image itself still resolves, because an extension
+    nobody here reads refuses nothing."""
+    foreign = (
+        f" {OTHER} z:id=\"claimed\" z:style=\"position:absolute\""
+        ' z:alt="claimed" z:title="claimed"'
+    )
+    claimed = pict(shape_id=None, style=None, shape=foreign, data=' z:title="claimed"')
+    content = imaged(f"<w:p>{claimed}</w:p>")
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [i.semantic_role for i in result.segments] == ["object_inventory"]
+    assert inventory(content) == [
+        (
+            "0.v0",
+            VML_IMAGE
+            | {
+                "placement": "inline",
+                "shapeId": None,
+                "shapeStyle": None,
+                "shapeAlt": None,
+                "shapeTitle": None,
+                "imageTitle": None,
+            },
+        )
+    ]
+
+
+def shaped(
+    inside: str = '<v:imagedata r:id="rId9"/>',
+    name: str = "v:shape",
+    attrs: str = "",
+) -> str:
+    """One shape of the given qualified name, holding the given markup."""
+    return f"<{name}{attrs}>{inside}</{name}>"
+
+
+def vml_typed(kind: str, body: str | None = None) -> bytes:
+    """The default picture document, whose one relationship is exactly ``kind``.
+
+    ``rels`` names the types OOXML defines by their last segment; a type is
+    admitted or refused on the whole URI it was written as, so these are spelled
+    out in full instead.
+    """
+    return docx(
+        body if body is not None else f"<w:p>{pict()}</w:p>",
+        {
+            "word/_rels/document.xml.rels": (
+                '<Relationships><Relationship Id="rId9" '
+                f'Type="{kind}" Target="media/image1.png"/></Relationships>'
+            )
+        },
+        styles=False,
+        content_types=PNG_DEFAULT,
+        members=IMAGE_MEMBER,
+    )
+
+
+def test_only_the_two_wordprocessing_namespaces_admit_a_picture_container() -> None:
+    """The container is admitted on its qualified name alone, unlike the local
+    names the rest of the story is read by. An element merely called ``pict`` in
+    another vocabulary, or in none at all, shows nothing whatever it holds: it
+    stays the transparent wrapper every unrecognised element is, so the prose
+    inside it is still read and the shape it carries reaches no record."""
+    for name, attrs in (("z:pict", " " + OTHER), ("pict", "")):
+        content = imaged("<w:p>" + holder(shaped() + CAPTION, name, attrs) + "</w:p>")
+
+        assert read(content) == [("body", "stand-in caption", "0")]
+        assert inventory(content) == []
+
+
+def test_the_strict_container_reference_and_type_reach_the_same_record() -> None:
+    """Strict is the same declaration at every step that has a Strict spelling:
+    the container in the Strict WordprocessingML main namespace, the id in the
+    Strict relationships namespace, and the relationship type in the Strict
+    spelling of the one type OOXML defines for an image. The shape itself keeps
+    its one VML namespace either way, and the record is the Transitional one
+    exactly, down to the type being reported as the file wrote it."""
+    strict_id = f' r2:id="rId9" xmlns:r2="{STRICT_REL_NS}"'
+    inside = shaped(
+        f"<v:imagedata{strict_id}/>", attrs=f' id="{SHAPE_ID}" style="{VML_STYLE}"'
+    )
+    wrapper = holder(inside, "ws:pict", f' xmlns:ws="{STRICT_MAIN_NS}"')
+    body = f"<w:p>{wrapper}</w:p>"
+    kind = STRICT_REL_NS + "/image"
+
+    assert inventory(vml_typed(kind, body)) == [
+        ("0.v0", VML_IMAGE | {"relationshipType": kind})
+    ]
+
+
+def test_only_the_two_direct_hops_reach_a_standalone_legacy_image() -> None:
+    """The route in is the ``v:shape`` directly below the container and the
+    ``v:imagedata`` directly below that shape, and no deeper. A shape inside a
+    group, one carried under an alternate-content choice, one sharing the local
+    name in another vocabulary or in none, another VML element entirely, an
+    image reference with no shape above it, one a step below the shape rather
+    than directly under it, and one sharing the reference's local name
+    elsewhere are each passed over -- so the container shows no standalone image
+    rather than one found elsewhere, and stays the transparent wrapper it is
+    today, prose and all."""
+    for inside in (
+        f"<v:group>{shaped()}</v:group>",
+        f"<mc:AlternateContent><mc:Choice>{shaped()}</mc:Choice></mc:AlternateContent>",
+        shaped(name="z:shape", attrs=" " + OTHER),
+        shaped(name="shape"),
+        shaped(name="v:rect"),
+        '<v:imagedata r:id="rId9"/>',
+        shaped('<v:fill><v:imagedata r:id="rId9"/></v:fill>'),
+        shaped(f'<z:imagedata {OTHER} r:id="rId9"/>'),
+        shaped('<imagedata r:id="rId9"/>'),
+    ):
+        content = imaged("<w:p>" + holder(inside + CAPTION, "w:pict") + "</w:p>")
+
+        assert read(content) == [("body", "stand-in caption", "0")]
+        assert inventory(content) == []
+
+
+def test_a_picture_showing_two_shapes_or_two_images_is_refused() -> None:
+    """A container shows one image, so two shapes directly below it, or two
+    image references directly below one shape, leave which image it shows
+    unanswerable -- and nothing here chooses between them even where both spell
+    out the same image."""
+    for inside, reason in (
+        (shaped() + shaped(), "picture declares more than one shape"),
+        (
+            shaped('<v:imagedata r:id="rId9"/><v:imagedata r:id="rId9"/>'),
+            "picture shape declares more than one image",
+        ),
+    ):
+        content = imaged("<w:p>" + holder(inside, "w:pict") + "</w:p>")
+
+        with pytest.raises(OOXMLInvalid, match="DOCX " + reason):
+            extract_docx(content, capture_id=CAPTURE)
+
+
+def test_the_image_reference_must_be_one_relationship_namespaced_attribute() -> None:
+    """The id is defined in the relationships namespace, so one written in no
+    namespace at all, or in a vocabulary that defines no such attribute, names
+    no relationship whatever the package would resolve the text to -- and image
+    data naming none declares an image it does not identify. One written in each
+    of the two namespaces that do carry it is two ids rather than a repeat, even
+    where both spell out the same relationship."""
+    for ident, reason in (
+        ("", "names no image relationship"),
+        (' id="rId9"', "names no image relationship"),
+        (" " + OTHER + ' z:id="rId9"', "names no image relationship"),
+        (
+            f' r:id="rId9" r2:id="rId9" xmlns:r2="{STRICT_REL_NS}"',
+            "names more than one image relationship",
+        ),
+    ):
+        content = imaged(
+            "<w:p>" + holder(shaped(f"<v:imagedata{ident}/>"), "w:pict") + "</w:p>"
+        )
+
+        with pytest.raises(OOXMLInvalid, match="DOCX VML image " + reason):
+            extract_docx(content, capture_id=CAPTURE)
+
+
+def test_a_legacy_image_names_its_relationship_by_id_and_never_by_target() -> None:
+    """The id is the whole reference. A package holding the very image the shape
+    displays, under another id, holds no relationship the shape names: nothing
+    searches the story's relationships by target, content type or resemblance,
+    so the image is refused rather than resolved to the match sitting beside
+    it."""
+    content = imaged(
+        f"<w:p>{pict()}</w:p>", ("rId3", "media/image1.png", False, "image")
+    )
+
+    with pytest.raises(
+        OOXMLInvalid, match="DOCX VML image names a missing image relationship"
+    ):
+        extract_docx(content, capture_id=CAPTURE)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        # Another type entirely reaches no image at all, whatever the target
+        # behind it holds: an OLE object, a media part and a hyperlink are each
+        # something that is not the image a shape displays.
+        REL + "oleObject",
+        REL + "media",
+        REL + "hyperlink",
+        # A type that merely ends the same way is not the one OOXML defines:
+        # the last segment is not the type, the whole URI is.
+        "http://example.invalid/relationships/image",
+        # The defined URI under another scheme is another URI, and the path does
+        # not fold under RFC 3986, so a segment differing in case is a different
+        # type rather than the same one spelled loudly.
+        "https://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+        REL + "Image",
+    ],
+)
+def test_a_relationship_of_another_type_names_no_legacy_image(kind: str) -> None:
+    """The relationship has to be one of the two URIs OOXML defines for an
+    image. The image is refused rather than read through a reference that
+    qualifies the part it reaches as something else."""
+    with pytest.raises(
+        OOXMLInvalid, match="DOCX VML image names an image relationship of another type"
+    ):
+        extract_docx(vml_typed(kind), capture_id=CAPTURE)
+
+
+@pytest.mark.parametrize(
+    ("content_types", "members", "reason"),
+    [
+        # Containment and existence are settled while the package is validated,
+        # which is why nothing re-checks them here.
+        (PNG_DEFAULT, None, "escapes or misses the package"),
+        # A part the package declares nothing about is not a part it declares an
+        # image.
+        ("", IMAGE_MEMBER, "DOCX VML image part is not declared an image"),
+        (
+            '<Default Extension="png" ContentType="text/plain"/>',
+            IMAGE_MEMBER,
+            "DOCX VML image part is not declared an image",
+        ),
+    ],
+)
+def test_an_internal_target_has_to_be_a_member_the_package_declares_an_image(
+    content_types: str, members: dict[str, bytes] | None, reason: str
+) -> None:
+    """An embedded reference names a part inside the package, so the part has to
+    be there and has to be declared an image: inventorying anything else as one
+    would say the package holds an image where it holds something else. Neither
+    is reported with a type nothing declared or a length nothing measured."""
+    content = linked(
+        f"<w:p>{pict()}</w:p>",
+        IMAGE_RELATION,
+        content_types=content_types,
+        members=members,
+    )
+
+    with pytest.raises(OOXMLInvalid, match=reason):
+        extract_docx(content, capture_id=CAPTURE)
+
+
+# A target outside the package written as a relative reference, spelled exactly
+# like the member the package holds. External is external: it names no scheme,
+# and nothing here invents one, resolves it against the package or reads the
+# member whose name it happens to share.
+RELATIVE_IMAGE_LINK = ("rId9", "media/image1.png", True, "image")
+
+
+def test_a_relative_external_target_names_no_scheme_and_is_never_opened() -> None:
+    """A reference out of the package is carried exactly as the relationship
+    holds it and is counted as the external reference it is, which is the whole
+    of what happens to it: nothing fetches, probes or normalises it, and it is
+    not resolved against the package even where a member of that very name sits
+    inside. There is no part inside the package, so the three part fields stay
+    absent rather than being filled from the member sharing the name."""
+    content = imaged(f"<w:p>{pict()}</w:p>", RELATIVE_IMAGE_LINK)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [(i.semantic_role, i.text) for i in result.segments] == [
+        ("object_inventory", None)
+    ]
+    assert inventory(content) == [
+        (
+            "0.v0",
+            VML_IMAGE
+            | {
+                "target": "media/image1.png",
+                "external": True,
+                "scheme": None,
+                "imagePart": None,
+                "contentType": None,
+                "imageBytes": None,
+            },
+        )
+    ]
+    assert result.limitations["externalReferences"] == 1
+
+
+def test_a_shape_declaring_two_different_positions_is_refused() -> None:
+    """A style declaring ``position`` twice with two different values leaves
+    where the shape sits unanswerable, and nothing here chooses between them or
+    takes whichever came last. The same value declared twice contradicts
+    nothing, so it is the one position it states."""
+    conflicting = "position:absolute;position:relative"
+
+    with pytest.raises(
+        OOXMLInvalid, match="DOCX VML image declares more than one position"
+    ):
+        extract_docx(
+            imaged(f"<w:p>{pict(style=conflicting)}</w:p>"), capture_id=CAPTURE
+        )
+
+    repeated = "position:absolute;position:absolute"
+    assert placements(imaged(f"<w:p>{pict(style=repeated)}</w:p>")) == [
+        ("0.v0", "anchor", repeated)
+    ]
