@@ -167,6 +167,64 @@ _PRESENTATIONML: Final = frozenset(
         "http://purl.oclc.org/ooxml/presentationml/main",
     }
 )
+# The relationship and content types that together qualify a DrawingML chart
+# part. As with the notes-slide and comment types, only the two URIs OOXML
+# itself defines qualify -- Transitional and Strict -- so nothing reaches a
+# chart by ending the same way.
+_CHART_RELATIONSHIPS: Final = frozenset(
+    {
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart",
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/chart",
+    }
+)
+_CHART_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.drawingml.chart+xml"
+)
+# The two DrawingML chart namespaces a chart part may be written in. The chart
+# part also holds ``a:`` drawing vocabulary for its rich text, so only the root
+# is held to these; everything below it is read by local name as elsewhere.
+_CHART_NAMESPACES: Final = frozenset(
+    {
+        "http://schemas.openxmlformats.org/drawingml/2006/chart",
+        "http://purl.oclc.org/ooxml/drawingml/chart",
+    }
+)
+# The place every chart record names, defaulted so each one carries the same
+# keys whether or not the record it describes sits inside a series, a level or a
+# cache.
+_CHART_PLACE: Final[dict[str, object]] = {
+    "seriesIndex": None,
+    "seriesOrder": None,
+    "categoryLevel": None,
+    "pointIndex": None,
+    "formula": None,
+}
+# ``c:tx`` is the series name, ``c:cat`` its categories, ``c:val`` its values.
+_CHART_SLOTS: Final = (
+    ("tx", "chart_series_name"),
+    ("cat", "chart_category"),
+    ("val", "chart_value"),
+)
+# The reference shapes a slot may hold, each mapped to the one cache element it
+# keeps its stored points in. A reference names a source and caches what that
+# source once held; the cache is the only place its values are read from, and a
+# reference whose cache is of another kind is not the shape its name promised.
+_CHART_REFERENCES: Final = {
+    "strRef": "strCache",
+    "numRef": "numCache",
+    "multiLvlStrRef": "multiLvlStrCache",
+}
+# The literal shapes a slot may hold: a list of points written inline, naming no
+# source at all. ``c:v`` on its own is the single literal a series name may be.
+_CHART_LITERALS: Final = frozenset({"strLit", "numLit"})
+_CHART_SOURCES: Final = frozenset({"v", *_CHART_REFERENCES, *_CHART_LITERALS})
+_MAX_PPTX_CHART_SERIES: Final = 1_000
+# Counted across one chart part, over every cache and literal list it holds.
+_MAX_PPTX_CHART_POINTS: Final = 100_000
+# A level is work a multi-level cache asks for whether or not it holds a point,
+# so the levels are bounded before any of them is read.
+_MAX_PPTX_CHART_CATEGORY_LEVELS: Final = 256
+_MAX_PPTX_CHART_TITLE_RUNS: Final = 20_000
 _MAX_PPTX_COMMENTS: Final = 10_000
 _MAX_PPTX_COMMENT_AUTHORS: Final = 10_000
 _MAX_PPTX_COMMENT_CHARS: Final = 100_000
@@ -681,7 +739,9 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         authors = _pptx_comment_authors(package)
         segments: list[ExtractedSegment] = []
         for ordinal, (slide_id, part, hidden) in enumerate(slides, start=1):
-            walker = _PptxWalker(capture_id, part, slide_id, ordinal, hidden, segments)
+            walker = _PptxWalker(
+                capture_id, part, slide_id, ordinal, hidden, segments, package
+            )
             walker.walk(_pptx_tree(package.xml(part)), (), (), 0)
             notes = _related_part(
                 package, part, _NOTES_RELATIONSHIPS, _NOTES_CONTENT_TYPE, "notes"
@@ -1365,6 +1425,295 @@ def _pptx_table(table: ElementTree.Element) -> _PptxTable:
     return _PptxTable(columns, rows, merges)
 
 
+def _pptx_frame_chart(frame: ElementTree.Element) -> str | None:
+    """Return the relationship id the frame's chart reference names, or None.
+
+    A frame holds one graphic object, so two chart references below one frame
+    leave which chart the frame shows ambiguous and nothing here chooses
+    between them. The id is read from the frame itself; no chart path is
+    derived from the slide's own name.
+    """
+    charts = [node for node in frame.iter() if _local(node.tag) == "chart"]
+    if not charts:
+        return None
+    if len(charts) > 1:
+        raise OOXMLInvalid("PPTX graphic frame holds more than one chart reference")
+    relation_id = _relationship_id(charts[0].attrib)
+    if not relation_id:
+        raise OOXMLInvalid("PPTX chart reference names no relationship")
+    return relation_id
+
+
+def _pptx_chart_part(package: _Package, slide: str, relation_id: str) -> str:
+    """Return the chart part one frame's own relationship id names.
+
+    The id is resolved only through the slide's relationships, so containment,
+    path safety and existence were all settled when that relationship was
+    resolved and no member is reached by merely looking like a chart. The
+    relationship has to be internal, has to carry one of the two URIs OOXML
+    defines for a chart, and has to resolve to a part the package declares with
+    the chart content type.
+    """
+    rels = posixpath.join(
+        posixpath.dirname(slide), "_rels", posixpath.basename(slide) + ".rels"
+    )
+    entry = package.relationships.get(rels, {}).get(relation_id)
+    if entry is None:
+        raise OOXMLInvalid("PPTX chart reference names a missing relationship")
+    kind = package.relationship_types.get(rels, {}).get(relation_id, "")
+    if not _is_defined_relationship(kind, _CHART_RELATIONSHIPS):
+        raise OOXMLInvalid("PPTX chart reference names a relationship of another type")
+    target, external = entry
+    if external:
+        raise OOXMLInvalid("PPTX chart relationship is external")
+    if package.declared_type(target) != _CHART_CONTENT_TYPE:
+        raise OOXMLInvalid("PPTX chart relationship does not name a chart part")
+    return target
+
+
+def _pptx_chart_root(package: _Package, part: str) -> ElementTree.Element:
+    """Parse one chart part, refusing a root that is not a chart space.
+
+    The declared content type says what the part is; the root element is where
+    the part says so itself, in one of the two namespaces OOXML defines for
+    DrawingML charts. Anything else is not the vocabulary the declaration
+    promised, so the part is refused rather than read for whatever happens to
+    be in it.
+    """
+    root = package.xml(part)
+    namespace, _, local = root.tag.rpartition("}")
+    if namespace.lstrip("{") not in _CHART_NAMESPACES:
+        raise OOXMLInvalid("PPTX chart part uses an unsupported namespace")
+    if local != "chartSpace":
+        raise OOXMLInvalid("PPTX chart part is not rooted at its own chart space")
+    return root
+
+
+def _pptx_chart_records(
+    package: _Package, part: str
+) -> list[tuple[dict[str, object], str]]:
+    """Read one chart's stored title and stored points as (place, value) records.
+
+    Only what the package already stored is reported: the title text as
+    written, and the caches and inline literal lists each series carries. The
+    embedded workbook a chart may ship is never opened, an absent cache value is
+    never invented, and nothing is evaluated, so a record's source formula is
+    inert metadata beside the value rather than something resolved.
+
+    Records come out in source order -- the title, then each series as the
+    chart wrote it, and inside a series its name, categories and values, each
+    level of a multi-level category axis in turn. A series index or order
+    claimed twice leaves two series in one position, a slot written twice leaves
+    a series with two of one thing, and a point index claimed twice leaves one
+    position with two values, so the chart is refused rather than read under one
+    of them.
+    """
+    root = _pptx_chart_root(package, part)
+    # Only the chart's own title: an axis or a legend carries a ``c:title`` of
+    # its own further down, and neither is what the chart is called.
+    chart = next((node for node in root if _local(node.tag) == "chart"), None)
+    titles = [] if chart is None else [n for n in chart if _local(n.tag) == "title"]
+    if len(titles) > 1:
+        raise OOXMLInvalid("PPTX chart holds more than one title")
+    records: list[tuple[dict[str, object], str]] = (
+        [] if not titles else _pptx_chart_title(titles[0])
+    )
+    indices: set[str] = set()
+    orders: set[str] = set()
+    points = 0
+    for series in (node for node in root.iter() if _local(node.tag) == "ser"):
+        if len(indices) >= _MAX_PPTX_CHART_SERIES:
+            raise OOXMLInvalid("PPTX chart has too many series")
+        index = _pptx_chart_index(series, "idx")
+        order = _pptx_chart_index(series, "order")
+        if index in indices or order in orders:
+            raise OOXMLInvalid("PPTX chart series index or order is repeated")
+        indices.add(index)
+        orders.add(order)
+        for slot, role in _CHART_SLOTS:
+            holders = [item for item in series if _local(item.tag) == slot]
+            if len(holders) > 1:
+                raise OOXMLInvalid("PPTX chart series holds more than one of a slot")
+            if not holders:
+                continue
+            formula, cached = _pptx_chart_cache(holders[0])
+            points += len(cached)
+            if points > _MAX_PPTX_CHART_POINTS:
+                raise OOXMLInvalid("PPTX chart has too many cached points")
+            records.extend(
+                (
+                    {
+                        **_CHART_PLACE,
+                        "chartRole": role,
+                        "seriesIndex": index,
+                        "seriesOrder": order,
+                        "categoryLevel": level,
+                        "pointIndex": point,
+                        "formula": formula,
+                    },
+                    value,
+                )
+                for level, point, value in cached
+            )
+    return records
+
+
+def _pptx_chart_title(
+    title: ElementTree.Element,
+) -> list[tuple[dict[str, object], str]]:
+    """Read the title text a chart stored, as rich runs or as a stored value.
+
+    A rich title is the text the author typed, joined as written; a referenced
+    title is the stored copy of what its source held, reported with the formula
+    beside it. A title that holds neither leaves nothing to report, and nothing
+    is taken from a layout or recomputed from the data.
+    """
+    holder = next((node for node in title if _local(node.tag) == "tx"), None)
+    if holder is None:
+        return []
+    rich = next((node for node in holder if _local(node.tag) == "rich"), None)
+    if rich is not None:
+        runs = [node.text or "" for node in rich.iter() if _local(node.tag) == "t"]
+        if len(runs) > _MAX_PPTX_CHART_TITLE_RUNS:
+            raise OOXMLInvalid("PPTX chart title has too many runs")
+        return [({**_CHART_PLACE, "chartRole": "chart_title"}, "".join(runs))]
+    formula, cached = _pptx_chart_cache(holder)
+    return [
+        (
+            {
+                **_CHART_PLACE,
+                "chartRole": "chart_title",
+                "categoryLevel": level,
+                "pointIndex": point,
+                "formula": formula,
+            },
+            value,
+        )
+        for level, point, value in cached
+    ]
+
+
+def _pptx_chart_cache(
+    holder: ElementTree.Element,
+) -> tuple[str | None, list[tuple[str | None, str | None, str]]]:
+    """Read one slot's source formula and the points it already stored.
+
+    A slot holds one source: a reference, whose cache is the stored copy of what
+    the source once held, or a value written inline -- a single literal, or a
+    literal list of its own. A reference carrying no cache stored nothing, so it
+    reports nothing rather than a value fetched from the source it names, and a
+    reference's formula stays inert metadata either way. Two sources in one slot
+    leave which one the slot holds ambiguous, so the chart is refused rather
+    than read from whichever comes first.
+
+    Each point comes back as the category level it sits at, its index and its
+    value. Only a multi-level reference has levels, so every other source
+    reports none, and a single literal names no index either.
+    """
+    sources = [node for node in holder if _local(node.tag) in _CHART_SOURCES]
+    if len(sources) > 1:
+        raise OOXMLInvalid("PPTX chart slot holds more than one data source")
+    if not sources:
+        return None, []
+    source = sources[0]
+    local = _local(source.tag)
+    if local == "v":
+        return None, [(None, None, source.text or "")]
+    if local in _CHART_LITERALS:
+        return None, _pptx_chart_points(source, _pptx_chart_declared(source))
+    formula = next((node for node in source if _local(node.tag) == "f"), None)
+    stored = None if formula is None else _clip(formula.text or "", _MAX_TARGET_CHARS)
+    cache = next(
+        (node for node in source if _local(node.tag) == _CHART_REFERENCES[local]), None
+    )
+    if cache is None:
+        return stored, []
+    if local == "multiLvlStrRef":
+        return stored, _pptx_chart_levels(cache)
+    return stored, _pptx_chart_points(cache, _pptx_chart_declared(cache))
+
+
+def _pptx_chart_levels(
+    cache: ElementTree.Element,
+) -> list[tuple[str | None, str | None, str]]:
+    """Read a multi-level category cache, level by level in source order.
+
+    Every level indexes the same points, so the level a point sits at is
+    reported beside its index: without it one position in two levels would be
+    two records in the same place. Levels are numbered as written and never
+    reordered, because which end of the sequence is the outermost is the chart's
+    own convention rather than anything restated here. ``ptCount`` sits on the
+    cache, not on its levels, so it bounds the indices of all of them.
+    """
+    levels = [node for node in cache if _local(node.tag) == "lvl"]
+    if len(levels) > _MAX_PPTX_CHART_CATEGORY_LEVELS:
+        raise OOXMLInvalid("PPTX chart has too many category levels")
+    declared = _pptx_chart_declared(cache)
+    return [
+        point
+        for level, node in enumerate(levels)
+        for point in _pptx_chart_points(node, declared, str(level))
+    ]
+
+
+def _pptx_chart_declared(holder: ElementTree.Element) -> int | None:
+    """Read what a cache or a literal list claims its source held, if it says."""
+    count = next((node for node in holder if _local(node.tag) == "ptCount"), None)
+    return None if count is None else _pptx_chart_count(count, "val")
+
+
+def _pptx_chart_points(
+    holder: ElementTree.Element, declared: int | None, level: str | None = None
+) -> list[tuple[str | None, str | None, str]]:
+    """Read one list's stored points in source order, refusing a malformed one.
+
+    ``declared`` is what the list claims its source held, so it bounds the
+    indices the list may use; nothing is materialised for an index the list left
+    out, because a cache is sparse by design and a literal list is written the
+    same way. A point without a value stored none, which is not the same as
+    having stored an empty one, so it is refused rather than read as blank.
+    """
+    points: list[tuple[str | None, str | None, str]] = []
+    seen: set[str] = set()
+    for node in holder:
+        if _local(node.tag) != "pt":
+            continue
+        index = _pptx_chart_count(node, "idx")
+        if declared is not None and index >= declared:
+            raise OOXMLInvalid("PPTX chart cache point index is outside its count")
+        if str(index) in seen:
+            raise OOXMLInvalid("PPTX chart cache point index is repeated")
+        seen.add(str(index))
+        value = next((item for item in node if _local(item.tag) == "v"), None)
+        if value is None or len(value):
+            raise OOXMLInvalid("PPTX chart cache point value is malformed")
+        points.append((level, str(index), value.text or ""))
+    return points
+
+
+def _pptx_chart_count(element: ElementTree.Element, name: str) -> int:
+    """Read one ``xsd:unsignedInt`` attribute, refusing a value that is not one."""
+    raw = element.attrib.get(name)
+    if raw is None or _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
+        raise OOXMLInvalid("PPTX chart cache point count is malformed")
+    return int(raw)
+
+
+def _pptx_chart_index(series: ElementTree.Element, name: str) -> str:
+    """Read one series index or order verbatim, refusing a malformed value.
+
+    The value is kept as the chart wrote it, never renumbered, so only its
+    range is checked.
+    """
+    node = next((item for item in series if _local(item.tag) == name), None)
+    if node is None:
+        raise OOXMLInvalid("PPTX chart series index or order is malformed")
+    raw = node.attrib.get("val")
+    if raw is None or _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
+        raise OOXMLInvalid("PPTX chart series index or order is malformed")
+    return raw
+
+
 def _pptx_span(cell: ElementTree.Element, name: str) -> int:
     """Read one merge span, refusing a value that is not a count of cells."""
     raw = cell.attrib.get(name)
@@ -1398,7 +1747,8 @@ class _PptxWalker:
     Each run of each paragraph becomes one segment, in source order, carrying
     its paragraph and run index inside the shape it belongs to. A graphic frame
     holding a table reports its cells as table cells instead, each at its own
-    row and column in the declared grid. Geometry and
+    row and column in the declared grid; one referring to a chart reports that
+    chart's stored title and stored points. Geometry and
     the placeholder reference are recorded exactly as the shape encodes them;
     nothing is inherited from a layout or master, and no group child-space
     mapping is applied, so a shape that encodes no transform carries none.
@@ -1416,6 +1766,7 @@ class _PptxWalker:
         ordinal: int,
         hidden: bool,
         segments: list[ExtractedSegment],
+        package: _Package,
     ) -> None:
         self._capture_id = capture_id
         self._part = part
@@ -1423,6 +1774,7 @@ class _PptxWalker:
         self._ordinal = ordinal
         self._hidden = hidden
         self._segments = segments
+        self._package = package
         self._ids: set[str] = set()
         self.shapes = 0
         self.paragraphs = 0
@@ -1456,8 +1808,14 @@ class _PptxWalker:
                 self.walk(child, (*path, shape_id), here, depth + 1)
                 continue
             where = self._where(child, kind, shape_id, path, here, geometry)
-            table = _pptx_frame_table(child) if kind == "graphicFrame" else None
-            if table is not None:
+            frame = kind == "graphicFrame"
+            table = _pptx_frame_table(child) if frame else None
+            chart = _pptx_frame_chart(child) if frame else None
+            if table is not None and chart is not None:
+                raise OOXMLInvalid("PPTX graphic frame holds more than one graphic")
+            if chart is not None:
+                self._chart(chart, where)
+            elif table is not None:
                 self._table(table, where)
             elif kind in _PPTX_TEXT_SHAPES:
                 self._emit(child, "body", where)
@@ -1537,6 +1895,39 @@ class _PptxWalker:
                         "mergeAnchor": None if anchor is None else list(anchor),
                     },
                 )
+
+    def _chart(self, relation_id: str, where: dict[str, object]) -> None:
+        """Emit one chart's stored title and stored series records.
+
+        Every record carries the chart part and the relationship id that
+        reached it, the slide, shape and group path of the frame showing it,
+        and ``freshness`` of ``unknown``: the values are the copy the package
+        stored, and nothing here opens the workbook behind them or recalculates
+        anything, so how current they are is not knowable from the package.
+        """
+        part = _pptx_chart_part(self._package, self._part, relation_id)
+        for place, value in _pptx_chart_records(self._package, part):
+            self._segments.append(
+                ExtractedSegment(
+                    "chart",
+                    _locator(
+                        self._capture_id,
+                        **where,
+                        chartPart=part,
+                        relationshipId=relation_id,
+                        **place,
+                        freshness="unknown",
+                    ),
+                    # A cache that stored an empty value is still a record the
+                    # chart claims, so it is reported as the empty claim it is;
+                    # ``document_intake`` takes exactly one content
+                    # representation and refuses empty text.
+                    text=value or None,
+                    structured_value=None if value else {"value": ""},
+                    visibility="hidden" if self._hidden else "visible",
+                )
+            )
+            _bounded(self._segments)
 
     def _emit(
         self, holder: ElementTree.Element, role: str, where: dict[str, object]
