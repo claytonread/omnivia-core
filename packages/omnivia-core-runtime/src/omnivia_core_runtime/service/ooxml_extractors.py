@@ -439,6 +439,80 @@ _PPTX_PICTURE_IMAGE: Final[dict[str, object]] = {
     "imageLinkScheme": None,
     "imageLinkExternal": None,
 }
+# The two holders a picture's media reference is reached through, each in the
+# PresentationML namespaces every other PresentationML element here is held to:
+# the picture's own non-visual properties, and the application properties
+# inside them. That is the one route the schema puts a media reference on, so
+# it is the only one read -- a reference hung off a group above the picture, a
+# shape beside it, an extension list or anything deeper is not this picture's
+# own declaration and is passed over.
+_PPTX_PICTURE_NON_VISUAL: Final = frozenset(
+    f"{{{namespace}}}nvPicPr" for namespace in _PRESENTATIONML
+)
+_PPTX_APPLICATION_PROPERTIES: Final = frozenset(
+    f"{{{namespace}}}nvPr" for namespace in _PRESENTATIONML
+)
+# The media references this slice inventories, each paired with the role its
+# record reports it under. Only a direct ``audioFile`` or ``videoFile``
+# qualifies: an audio CD, a WAV reference and a QuickTime file are other
+# declarations entirely, and the modern ``p14:media`` extension is a different
+# route that nothing here follows.
+#
+# Both elements are DrawingML -- ``a:audioFile`` and ``a:videoFile`` -- even
+# though the holders above them are PresentationML, so only the two DrawingML
+# main namespaces qualify: Transitional and Strict. Anything outside that pair,
+# the PresentationML spelling of the same local name included, shares a local
+# name and nothing else, and names no media.
+_PPTX_MEDIA_ELEMENTS: Final[dict[str, str]] = {
+    f"{{{namespace}}}{element}": role
+    for element, role in (("audioFile", "audio"), ("videoFile", "video"))
+    for namespace in (
+        "http://schemas.openxmlformats.org/drawingml/2006/main",
+        "http://purl.oclc.org/ooxml/drawingml/main",
+    )
+}
+# The relationship type each of those references has to carry, keyed by the
+# role declaring it. As everywhere else here only the two URIs OOXML defines
+# qualify -- Transitional and Strict -- so nothing reaches a media part by
+# ending the same way, and the audio type never qualifies a video reference or
+# the reverse: an element says which of the two it is, and the relationship has
+# to agree with it.
+_PPTX_MEDIA_RELATIONSHIPS: Final[dict[str, frozenset[str]]] = {
+    "audio": frozenset(
+        {
+            (
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+                "/audio"
+            ),
+            "http://purl.oclc.org/ooxml/officeDocument/relationships/audio",
+        }
+    ),
+    "video": frozenset(
+        {
+            (
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+                "/video"
+            ),
+            "http://purl.oclc.org/ooxml/officeDocument/relationships/video",
+        }
+    ),
+}
+# What a picture's media record carries, defaulted so an internal part and an
+# external link are shaped alike. The first four are what every reference
+# declares; ``mediaScheme`` is the scheme an external target's own text names,
+# and the last three describe a part the package holds. The byte length is the
+# figure the package measured while validating the member, so reporting it
+# opens nothing: no media is ever fetched, played, decoded, launched or read.
+_PPTX_PICTURE_MEDIA: Final[dict[str, object]] = {
+    "mediaRelationshipId": None,
+    "mediaRelationshipType": None,
+    "mediaTarget": None,
+    "mediaExternal": None,
+    "mediaScheme": None,
+    "mediaPart": None,
+    "mediaContentType": None,
+    "mediaBytes": None,
+}
 # The relationship and content types that together qualify the two parts a
 # slide's inherited text lives in: the layout the slide itself names, and the
 # master that layout itself names. As with the notes and comment types, only
@@ -3535,6 +3609,14 @@ class _PptxWalker:
         decodes, renders, OCRs or fetches it, and no image ever contributes
         text.
 
+        A picture that references audio or video gets one further record at the
+        same place, told from the picture's own by its ``kind`` and from the
+        other by the ``mediaRole`` its locator carries. It is inventory on the
+        same terms: the relationship it names, the part or external target that
+        resolves to, and what the package already knows about that part. No
+        media is ever fetched, played, decoded, launched or inspected, and
+        media never contributes text either.
+
         The claims then follow in one fixed order -- title, then description --
         each under ``image_alt`` with the claim that supplied it in ``altRole``,
         so two claims on one picture stay distinguishable and a reader can tell
@@ -3557,6 +3639,7 @@ class _PptxWalker:
         """
         visibility = "hidden" if self._hidden else "visible"
         claims = _pptx_picture_claims(pic)
+        media = _pptx_picture_media(self._package, self._part, pic)
         self._segments.append(
             ExtractedSegment(
                 "object_inventory",
@@ -3574,6 +3657,22 @@ class _PptxWalker:
             )
         )
         _bounded(self._segments)
+        if media is not None:
+            kind, reference = media
+            self._segments.append(
+                ExtractedSegment(
+                    "object_inventory",
+                    _locator(self._capture_id, **where, mediaRole=kind),
+                    structured_value={
+                        "kind": "pictureMedia",
+                        "media": kind,
+                        **reference,
+                    },
+                    extraction_method="inventory",
+                    visibility=visibility,
+                )
+            )
+            _bounded(self._segments)
         for name, role in _PPTX_ALT_CLAIMS:
             text = claims[name]
             if not text:
@@ -4021,6 +4120,91 @@ def _pptx_linked_image(
         "imageLinkScheme": match.group(1).casefold() if match else None,
         "imageLinkExternal": external,
     }
+
+
+def _pptx_picture_media(
+    package: _Package, part: str, pic: ElementTree.Element
+) -> tuple[str, dict[str, object]] | None:
+    """Inventory the audio or video one picture references, inertly.
+
+    The route in is the schema's own: the picture's direct ``p:nvPicPr``, that
+    holder's direct ``p:nvPr``, and a direct DrawingML ``a:audioFile`` or
+    ``a:videoFile`` below it. A lookalike anywhere else -- nested deeper, hung off a group or a
+    neighbouring shape, or written in a vocabulary that merely shares the local
+    name -- declares nothing about this picture and is passed over, so a
+    picture that references no media is reported as referencing none rather
+    than as referencing something found elsewhere.
+
+    ``EG_Media`` is a choice, so a picture references one piece of media or
+    none. Two declarations -- two of a kind, one of each, or the same element
+    written in two of the namespaces that qualify it -- leave which one the
+    picture references ambiguous, and nothing here chooses between them.
+
+    The reference itself is a single ``r:link``, read in the relationships
+    namespaces OOXML defines for it. The attribute is named ``link`` whether
+    the relationship turns out to be internal or external, which is the
+    schema's own spelling; an ``r:embed`` written beside it contradicts that
+    declaration rather than qualifying it, and is refused instead of resolved.
+
+    The id resolves only through the holding part's own relationships, so
+    containment, path safety and existence were all settled when the package
+    validated them -- which is why an internal target is a member the archive
+    holds and nothing re-checks it here -- and the relationship has to carry
+    the type the element's own kind names. Nothing here fetches, plays,
+    decodes, launches or inspects media: an internal part contributes its safe
+    part name, the type the package declares for it and the already-validated
+    byte length it already measured, and an external target is
+    carried exactly as the relationship holds it, beside the scheme its own
+    text names.
+    """
+    declarations = [
+        (_PPTX_MEDIA_ELEMENTS[node.tag], node)
+        for holder in pic
+        if holder.tag in _PPTX_PICTURE_NON_VISUAL
+        for properties in holder
+        if properties.tag in _PPTX_APPLICATION_PROPERTIES
+        for node in properties
+        if node.tag in _PPTX_MEDIA_ELEMENTS
+    ]
+    if not declarations:
+        return None
+    if len(declarations) > 1:
+        raise OOXMLInvalid("PPTX picture declares more than one media reference")
+    role, node = declarations[0]
+    if _pptx_relationship_ids(node, "embed"):
+        raise OOXMLInvalid("PPTX picture media reference also names an embedded part")
+    ids = _pptx_relationship_ids(node, "link")
+    if len(ids) > 1:
+        raise OOXMLInvalid("PPTX picture names more than one media relationship")
+    if not ids:
+        raise OOXMLInvalid("PPTX picture media reference names no relationship")
+    rels = posixpath.join(
+        posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels"
+    )
+    entry = package.relationships.get(rels, {}).get(ids[0])
+    if entry is None:
+        raise OOXMLInvalid("PPTX picture names a missing media relationship")
+    kind = package.relationship_types.get(rels, {}).get(ids[0], "")
+    if not _is_defined_relationship(kind, _PPTX_MEDIA_RELATIONSHIPS[role]):
+        raise OOXMLInvalid("PPTX picture names a media relationship of another type")
+    target, external = entry
+    record = dict(_PPTX_PICTURE_MEDIA)
+    record.update(
+        {
+            "mediaRelationshipId": _clip(ids[0], _MAX_META_CHARS),
+            "mediaRelationshipType": _clip(kind, _MAX_TARGET_CHARS),
+            "mediaTarget": _clip(target, _MAX_TARGET_CHARS),
+            "mediaExternal": external,
+        }
+    )
+    if external:
+        match = _SCHEME.match(target)
+        record["mediaScheme"] = match.group(1).casefold() if match else None
+        return role, record
+    record["mediaPart"] = _clip(target, _MAX_TARGET_CHARS)
+    record["mediaContentType"] = _clip(package.resolved_type(target), _MAX_META_CHARS)
+    record["mediaBytes"] = package.archive.getinfo(target).file_size
+    return role, record
 
 
 def _shared_strings(package: _Package) -> list[str]:
