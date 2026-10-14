@@ -640,6 +640,60 @@ _DRAWING_IMAGE: Final[dict[str, object]] = {
     "imageLinkScheme": None,
     "imageLinkExternal": None,
 }
+# The objects a spreadsheet-drawing anchor may hold, every one of them read as
+# inventory. ``contentPart`` is one of them here, unlike in a slide's shape
+# tree: it carries no identity and no z-order, but it is still an object the
+# drawing anchored, and a sheet that shows one shows something.
+_XLSX_DRAWING_OBJECTS: Final = frozenset(
+    {"sp", "grpSp", "graphicFrame", "cxnSp", "pic", "contentPart"}
+)
+# The ``cNvPr`` claims a drawing object's author made about it, each beside the
+# field the inventory record keeps it in. The identity comes from the same
+# element as the words, which is why they are read together; the three
+# descriptive claims are the picture reader's own, kept distinct for its
+# reasons.
+_XLSX_OBJECT_CLAIMS: Final = (("id", "shapeId"), *_PICTURE_CLAIMS)
+# The one element each object kind holds its ``cNvPr`` in, named after the kind
+# itself as the spreadsheet-drawing schema writes it. ``contentPart`` has no
+# non-visual-properties holder of its own.
+_XLSX_NON_VISUAL: Final = {
+    "sp": "nvSpPr",
+    "grpSp": "nvGrpSpPr",
+    "graphicFrame": "nvGraphicFramePr",
+    "cxnSp": "nvCxnSpPr",
+    "pic": "nvPicPr",
+}
+# One drawing's second bound: the objects its anchors hold between them. The
+# anchor bound alone leaves malformed input unbounded because one anchor can
+# physically contain many object elements even though the grammar permits one.
+_MAX_XLSX_DRAWING_OBJECTS: Final = 4_096
+# The two elements a connector names its endpoints on, in the two DrawingML main
+# namespaces OOXML defines, each beside the fields its claims are kept in. A
+# lookalike in another vocabulary shares a local name and names no endpoint.
+_DRAWING_MAIN: Final = (
+    "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "http://purl.oclc.org/ooxml/drawingml/main",
+)
+_DRAWING_START_CONNECTION: Final = frozenset(
+    f"{{{namespace}}}stCxn" for namespace in _DRAWING_MAIN
+)
+_DRAWING_END_CONNECTION: Final = frozenset(
+    f"{{{namespace}}}endCxn" for namespace in _DRAWING_MAIN
+)
+_XLSX_CONNECTION_ENDS: Final = (
+    (_DRAWING_START_CONNECTION, "connectionStartId", "connectionStartIndex"),
+    (_DRAWING_END_CONNECTION, "connectionEndId", "connectionEndIndex"),
+)
+# What a connector records about the two ends it declares, defaulted so every
+# connector's record carries the same keys whether it named both ends, one or
+# none. ``None`` says the connector declared that end on nothing, which is not
+# the same as an end attached to shape ``0`` at site ``0``.
+_XLSX_CONNECTOR: Final[dict[str, object]] = {
+    "connectionStartId": None,
+    "connectionStartIndex": None,
+    "connectionEndId": None,
+    "connectionEndIndex": None,
+}
 # The two WordprocessingDrawing namespaces OOXML defines, Transitional and
 # Strict. A drawing object is reached by its qualified name alone, so an
 # element merely called ``inline``, ``anchor`` or ``docPr`` in some other
@@ -1682,6 +1736,31 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                         # representation and refuses empty text.
                         text=value or None,
                         structured_value=None if value else {"value": ""},
+                        visibility="hidden" if sheet_hidden else "visible",
+                    )
+                )
+                _bounded(segments)
+            # What the same drawing anchors beside its charts, as inventory: the
+            # objects' own metadata and the references they encode, never their
+            # content. ``sheetPart`` names the sheet for the reason a chart's
+            # locator does -- the object lives in the drawing part, and the
+            # worksheet is provenance for it -- and the drawing part, the anchor
+            # and the object's own index are all named beside it, so a record
+            # says which object on which anchor of which drawing it describes.
+            for provenance, record in _xlsx_drawing_objects(package, part, root):
+                segments.append(
+                    ExtractedSegment(
+                        "object_inventory",
+                        _locator(
+                            capture_id,
+                            sheetPart=part,
+                            sheetId=sheet_id,
+                            sheet=sheet_name,
+                            sheetState=state,
+                            **provenance,
+                        ),
+                        structured_value=record,
+                        extraction_method="inventory",
                         visibility="hidden" if sheet_hidden else "visible",
                     )
                 )
@@ -3142,30 +3221,27 @@ def _xlsx_mention_offset(element: ElementTree.Element, name: str, label: str) ->
     return int(raw)
 
 
-def _xlsx_charts(
+def _xlsx_drawing_anchors(
     package: _Package, part: str, root: ElementTree.Element
-) -> list[tuple[str, dict[str, object]]]:
-    """Return the stored chart records a worksheet's drawing anchors, in order.
+) -> tuple[str, str, str, list[ElementTree.Element]] | None:
+    """Resolve the one drawing a worksheet declares and return its anchors.
 
-    A workbook reaches a chart the long way round: the worksheet relates one
-    drawing part, the drawing anchors a graphic frame, and that frame's
-    ``c:chart`` relates the chart part. Every step is walked and none is
+    A workbook reaches whatever a sheet displays the long way round: the
+    worksheet relates one drawing part and the drawing anchors its objects.
+    This is that route and nothing past it. Every step is walked and none is
     guessed -- the drawing is reached through the exact relationship id the
     ``drawing`` element names, held to the relationship and content types OOXML
-    defines for a worksheet drawing, and the chart through the frame's own id
-    from the drawing part's relationships -- so no part is read for merely
-    looking like one, and no path is derived from the sheet's own name. A sheet
-    displays one drawing, so two ``drawing`` elements leave which one it shows
-    ambiguous and nothing here picks between them.
+    defines for a worksheet drawing -- so no part is read for merely looking
+    like one, and no path is derived from the sheet's own name. A sheet displays
+    one drawing, so two ``drawing`` elements leave which one it shows ambiguous
+    and nothing here picks between them.
 
-    Anchors are walked in source order and each record names the anchor showing
-    it, its kind, and where that kind places the frame: the cells it covers for
-    the two cell-anchored kinds, and the stored geometry the sized kinds are
-    placed by. What is read at the end of the route is
-    the shared chart reader already serving PPTX frames and DOCX drawings, so
-    the record vocabulary is theirs unchanged, and nothing behind the values is
-    opened: neither the chart part's own relationships nor the workbook a chart
-    may embed.
+    The result is the drawing part, the relationship id the sheet reached it by,
+    the drawing's own validated namespace and its anchors in source order, or
+    ``None`` where the sheet declares no drawing at all. Each reader past this
+    point resolves the route itself, so the part is parsed once per reader
+    rather than cached between them: the cost is one parse of a bounded member,
+    and the alternative is one function reading two unrelated things.
     """
     # As with the table-part route: the rest of the sheet reader matches local
     # names, because a sheet's vocabulary is settled by the part it was reached
@@ -3176,10 +3252,10 @@ def _xlsx_charts(
     namespace, _, _ = root.tag.rpartition("}")
     namespace = namespace.lstrip("{")
     if namespace not in _SPREADSHEETML:
-        return []
+        return None
     named = [node for node in root if node.tag == f"{{{namespace}}}drawing"]
     if not named:
-        return []
+        return None
     if len(named) > 1:
         raise OOXMLInvalid("XLSX worksheet names more than one drawing")
     relation_id = _relationship_id(named[0].attrib)
@@ -3205,12 +3281,38 @@ def _xlsx_charts(
     # so an anchor counts only where its qualified name is that namespace's:
     # an unqualified or foreign lookalike declares nothing and is transparent.
     anchor_names = {f"{{{drawing_namespace}}}{name}" for name in _XLSX_ANCHORS}
+    anchors = [node for node in drawing if node.tag in anchor_names]
+    if len(anchors) > _MAX_XLSX_ANCHORS:
+        raise OOXMLInvalid("XLSX drawing has too many anchors")
+    return drawing_part, relation_id, drawing_namespace, anchors
+
+
+def _xlsx_charts(
+    package: _Package, part: str, root: ElementTree.Element
+) -> list[tuple[str, dict[str, object]]]:
+    """Return the stored chart records a worksheet's drawing anchors, in order.
+
+    The route in is the shared worksheet-drawing one, and the last step is this
+    reader's own: the drawing anchors a graphic frame, and that frame's
+    ``c:chart`` relates the chart part through the frame's own id from the
+    drawing part's relationships, so no chart is read for merely looking like
+    one.
+
+    Anchors are walked in source order and each record names the anchor showing
+    it, its kind, and where that kind places the frame: the cells it covers for
+    the two cell-anchored kinds, and the stored geometry the sized kinds are
+    placed by. What is read at the end of the route is
+    the shared chart reader already serving PPTX frames and DOCX drawings, so
+    the record vocabulary is theirs unchanged, and nothing behind the values is
+    opened: neither the chart part's own relationships nor the workbook a chart
+    may embed.
+    """
+    resolved = _xlsx_drawing_anchors(package, part, root)
+    if resolved is None:
+        return []
+    drawing_part, relation_id, drawing_namespace, anchors = resolved
     result: list[tuple[str, dict[str, object]]] = []
-    for index, anchor in enumerate(
-        node for node in drawing if node.tag in anchor_names
-    ):
-        if index >= _MAX_XLSX_ANCHORS:
-            raise OOXMLInvalid("XLSX drawing has too many anchors")
+    for index, anchor in enumerate(anchors):
         frames = [
             node
             for node in anchor
@@ -3245,6 +3347,210 @@ def _xlsx_charts(
             for place, value in _chart_records(package, chart_part, "XLSX")
         )
     return result
+
+
+def _xlsx_drawing_objects(
+    package: _Package, part: str, root: ElementTree.Element
+) -> list[tuple[dict[str, object], dict[str, object]]]:
+    """Inventory the non-chart objects a worksheet's drawing anchors, in order.
+
+    The route in is the shared worksheet-drawing one, so nothing is reached that
+    the chart route would not reach either. An object counts only where it is a
+    direct child of an anchor and its qualified name is the drawing's own
+    validated namespace: a lookalike in a foreign vocabulary, one stripped of
+    its prefix, and one nested further down -- inside a group's own shape list,
+    in an alternate-content fallback, below a graphic -- are all transparent
+    here, exactly as the anchors above them are.
+
+    What comes out is metadata and encoded references, never content. Each
+    record names the object's kind and the claims its author wrote about it, and
+    for the two kinds that encode a reference it names that reference as
+    written: a picture's embedded image part or external link target, and a
+    connector's two endpoint claims. Nothing is opened, decoded, rendered,
+    OCRed, fetched or resolved past the package's own relationships, no shape
+    text is read, and no connection graph is inferred from the endpoints -- a
+    claim about a shape id is a claim, not an edge.
+
+    A graphic frame showing a chart is passed over: the chart route already
+    reports that frame, on this same anchor, as the chart records it holds, so
+    inventorying it here would be the same object said twice. The object's index
+    still counts it, so an index is the object's position among the ones the
+    drawing wrote rather than among the ones reported.
+    """
+    resolved = _xlsx_drawing_anchors(package, part, root)
+    if resolved is None:
+        return []
+    drawing_part, relation_id, namespace, anchors = resolved
+    kinds = {f"{{{namespace}}}{kind}": kind for kind in _XLSX_DRAWING_OBJECTS}
+    result: list[tuple[dict[str, object], dict[str, object]]] = []
+    count = 0
+    for index, anchor in enumerate(anchors):
+        object_index = 0
+        for node in anchor:
+            kind = kinds.get(node.tag)
+            if kind is None:
+                continue
+            current_object_index = object_index
+            object_index += 1
+            count += 1
+            if count > _MAX_XLSX_DRAWING_OBJECTS:
+                raise OOXMLInvalid("XLSX drawing has too many objects")
+            if kind == "graphicFrame" and (
+                _drawing_chart(node, "XLSX", "graphic frame") is not None
+            ):
+                continue
+            record = _xlsx_object_claims(node, namespace, kind)
+            if kind == "pic":
+                record.update(
+                    _xlsx_picture_image(package, drawing_part, node, namespace)
+                )
+            elif kind == "cxnSp":
+                record.update(_xlsx_connector_ends(node, namespace))
+            result.append(
+                (
+                    {
+                        "drawingPart": drawing_part,
+                        "drawingRelationshipId": relation_id,
+                        "anchorIndex": index,
+                        **_xlsx_anchor_placement(anchor),
+                        "drawingObjectIndex": current_object_index,
+                        "drawingObjectType": kind,
+                    },
+                    record,
+                )
+            )
+    return result
+
+
+def _xlsx_object_claims(
+    obj: ElementTree.Element, namespace: str, kind: str
+) -> dict[str, object]:
+    """Return the ``cNvPr`` claims one drawing object's author made about it.
+
+    Each object kind names its non-visual properties holder after itself --
+    ``nvSpPr``, ``nvPicPr``, ``nvCxnSpPr`` and so on -- so the holder is matched
+    on the prefix they share, qualified in the drawing's own namespace, and only
+    one directly below the object is read. ``contentPart`` has no such holder at
+    all, so it claims nothing and every field comes back absent.
+
+    Two sets of properties, in one holder or across two, leaves which claims are
+    the object's own ambiguous, so it is refused rather than read from whichever
+    was written first: an object's identity and its author's words come from the
+    same element, and neither can be taken from a different one than the other.
+
+    Every field is present whatever the object wrote, and each claim is kept
+    apart from the others: a claim nothing wrote is ``None``, and a claim
+    written empty is the empty string, because a file that declared a
+    description and left it blank said something a file that declared none did
+    not. Values are the author's own, read as written and only bounded.
+    """
+    holder_name = _XLSX_NON_VISUAL.get(kind)
+    properties = (
+        []
+        if holder_name is None
+        else [
+            node
+            for holder in obj
+            if holder.tag == f"{{{namespace}}}{holder_name}"
+            for node in holder
+            if node.tag == f"{{{namespace}}}cNvPr"
+        ]
+    )
+    if len(properties) > 1:
+        raise OOXMLInvalid("XLSX drawing object declares its claims twice")
+    claims = properties[0].attrib if properties else {}
+    return {
+        field: None
+        if attribute not in claims
+        else _clip(claims[attribute], _MAX_META_CHARS)
+        for attribute, field in _XLSX_OBJECT_CLAIMS
+    }
+
+
+def _xlsx_picture_image(
+    package: _Package, part: str, pic: ElementTree.Element, namespace: str
+) -> dict[str, object]:
+    """Inventory the image one worksheet picture names, without reaching it.
+
+    The route in is the picture's own direct ``xdr:blipFill`` child, qualified
+    in the drawing's validated namespace, and that fill's own direct ``a:blip``
+    child, qualified in a DrawingML main namespace. That is the one place a
+    picture declares the image it displays, so a blip reached anywhere else
+    below it -- in its shape properties, in a fill on some other element, in
+    extension metadata -- is not the displayed image and is passed over. A
+    picture shows one image, so two direct fills leave which one it shows
+    ambiguous, and nothing here chooses between them.
+
+    ``part`` is the drawing part, because that is the part holding the
+    reference, so the ids resolve through its relationships or not at all.
+    Everything past the blip is the shared inert image reader PPTX pictures and
+    DOCX drawings already use, unchanged.
+    """
+    fills = [node for node in pic if node.tag == f"{{{namespace}}}blipFill"]
+    if len(fills) > 1:
+        raise OOXMLInvalid("XLSX picture declares more than one image reference")
+    return _blip_image(
+        package,
+        part,
+        [node for node in fills[0] if node.tag in _DRAWING_BLIP] if fills else [],
+        "XLSX picture",
+    )
+
+
+def _xlsx_connector_ends(cxn: ElementTree.Element, namespace: str) -> dict[str, object]:
+    """Return the two endpoint claims one connector wrote, as written.
+
+    The route in is the schema's own: the connector's direct ``xdr:nvCxnSpPr``
+    and that holder's direct ``xdr:cNvCxnSpPr``, both qualified in the drawing's
+    validated namespace, then a direct ``a:stCxn`` or ``a:endCxn`` below it,
+    qualified in a DrawingML main namespace. An endpoint written anywhere else,
+    or in a vocabulary that merely shares the local name, declares nothing about
+    this connector.
+
+    A connector has one set of connector properties and one of each endpoint, so
+    two of either leaves what it is attached to ambiguous and nothing here
+    chooses. Each endpoint names both an element id and a connection site index
+    and the schema requires both, so one missing or not a number leaves the
+    endpoint unreadable rather than half-read. An endpoint the connector never
+    wrote stays ``None``: a connector may be attached at one end, or at neither.
+
+    The claims are the file's own and stay claims. The id is not resolved to the
+    shape it names, the index is not resolved to a site on it, and no graph or
+    hierarchy is built out of them -- which would be a reading of the drawing
+    rather than an inventory of it.
+    """
+    properties = [
+        node
+        for holder in cxn
+        if holder.tag == f"{{{namespace}}}nvCxnSpPr"
+        for node in holder
+        if node.tag == f"{{{namespace}}}cNvCxnSpPr"
+    ]
+    if len(properties) > 1:
+        raise OOXMLInvalid("XLSX connector declares its connector properties twice")
+    holder = properties[0] if properties else None
+    record = dict(_XLSX_CONNECTOR)
+    for names, id_field, index_field in _XLSX_CONNECTION_ENDS:
+        ends = [] if holder is None else [n for n in holder if n.tag in names]
+        if not ends:
+            continue
+        if len(ends) > 1:
+            raise OOXMLInvalid("XLSX connector declares one of its endpoints twice")
+        record[id_field] = _xlsx_connection_claim(ends[0], "id")
+        record[index_field] = _xlsx_connection_claim(ends[0], "idx")
+    return record
+
+
+def _xlsx_connection_claim(end: ElementTree.Element, name: str) -> str:
+    """Read one required unsigned endpoint attribute, or refuse the endpoint."""
+    value = end.attrib.get(name)
+    if (
+        value is None
+        or _SHAPE_ID.fullmatch(value) is None
+        or int(value) > _MAX_INDEX
+    ):
+        raise OOXMLInvalid("XLSX connector endpoint is malformed")
+    return value
 
 
 def _xlsx_anchor_placement(anchor: ElementTree.Element) -> dict[str, object]:
@@ -6254,6 +6560,33 @@ def _pptx_picture_image(
     fill written beside the picture's own is a second declaration, not a
     qualifier on the first -- and nothing here chooses between them.
 
+    What the blip then declares is read by the shared blip reader.
+    """
+    fills = [node for node in pic if _local(node.tag) == "blipFill"]
+    if len(fills) > 1:
+        raise OOXMLInvalid("PPTX picture declares more than one image reference")
+    return _blip_image(
+        package,
+        part,
+        [node for node in fills[0] if node.tag in _DRAWING_BLIP] if fills else [],
+        "PPTX picture",
+    )
+
+
+def _blip_image(
+    package: _Package,
+    part: str,
+    blips: list[ElementTree.Element],
+    what: str,
+) -> dict[str, object]:
+    """Describe the image the one blip a drawing object named declares, inertly.
+
+    ``blips`` is every qualified blip on the object's own fill route, so an
+    object showing one image named one and an object showing none named none.
+    Two blips in one fill leave which image the object shows ambiguous -- a blip
+    written beside the object's own is a second declaration, not a qualifier on
+    the first -- and nothing here chooses between them.
+
     A blip declares its image on two attributes, each read in the relationships
     namespaces OOXML defines for it: ``r:embed`` names a part inside the
     package, ``r:link`` names a reference out of it. Both may be written, and
@@ -6261,35 +6594,29 @@ def _pptx_picture_image(
     link or the reverse. One attribute written in both namespaces at once names
     two relationships, which is refused for the reason two blips are.
 
-    The ids resolve only through the holding part's own relationships, so
-    containment, path safety and existence were all settled when the package
-    validated them. Nothing here opens, decodes, renders, OCRs or fetches
-    anything: an embedded part contributes its name, its declared type and the
-    byte length the package already measured, and a linked target is carried
-    exactly as written.
+    The ids resolve only through ``part``'s own relationships -- the part holding
+    the reference -- so containment, path safety and existence were all settled
+    when the package validated them. Nothing here opens, decodes, renders, OCRs
+    or fetches anything: an embedded part contributes its name, its declared
+    type and the byte length the package already measured, and a linked target
+    is carried exactly as written.
     """
-    fills = [node for node in pic if _local(node.tag) == "blipFill"]
-    if len(fills) > 1:
-        raise OOXMLInvalid("PPTX picture declares more than one image reference")
-    blips = [node for node in fills[0] if node.tag in _DRAWING_BLIP] if fills else []
     if not blips:
         return dict(_DRAWING_IMAGE)
     if len(blips) > 1:
-        raise OOXMLInvalid("PPTX picture declares more than one image reference")
+        raise OOXMLInvalid(f"{what} declares more than one image reference")
     rels = posixpath.join(
         posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels"
     )
     relations = package.relationships.get(rels, {})
     types = package.relationship_types.get(rels, {})
-    embedded = _blip_id(blips[0], "embed", "PPTX picture")
-    linked = _blip_id(blips[0], "link", "PPTX picture")
+    embedded = _blip_id(blips[0], "embed", what)
+    linked = _blip_id(blips[0], "link", what)
     record = dict(_DRAWING_IMAGE)
     if embedded is not None:
-        record.update(
-            _embedded_image(package, relations, types, embedded, "PPTX picture")
-        )
+        record.update(_embedded_image(package, relations, types, embedded, what))
     if linked is not None:
-        record.update(_linked_image(relations, types, linked, "PPTX picture"))
+        record.update(_linked_image(relations, types, linked, what))
     return record
 
 
