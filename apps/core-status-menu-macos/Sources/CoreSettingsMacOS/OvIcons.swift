@@ -51,6 +51,7 @@ enum OvIcon: String {
     case chevronDown = "chevron-down"
     case plus
     case x
+    case check
 
     /// The inner markup of the 24×24 viewBox, verbatim from the design.
     private var path: String {
@@ -117,6 +118,8 @@ enum OvIcon: String {
             return #"<path d="M12 5v14"/><path d="M5 12h14"/>"#
         case .x:
             return #"<path d="M18 6 6 18"/><path d="M6 6l12 12"/>"#
+        case .check:
+            return #"<path d="M20 6 9 17l-5-5"/>"#
         }
     }
 

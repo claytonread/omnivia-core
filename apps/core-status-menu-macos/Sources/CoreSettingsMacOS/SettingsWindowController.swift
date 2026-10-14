@@ -67,6 +67,8 @@ enum Ov {
     static let accentActive = dynamic(srgb(0x631A17), srgb(0xE6968D))
     static let success = dynamic(srgb(0x2E9E6B), srgb(0x3DBE83))
     static let warning = dynamic(srgb(0xC8821E), srgb(0xE0A33E))
+    static let danger = dynamic(srgb(0xE0484D), srgb(0xF2585D))
+    static let dangerMuted = dynamic(srgb(0xE0484D, 0.13), srgb(0xF2585D, 0.18))
     static let onAccent = NSColor.white
 
     /// `.ov-btn--primary`. In dark, `os/next.css` redefines it to the muted
@@ -358,6 +360,9 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var serviceState: CoreServiceState = .unknown
     private var serviceHost = "This Mac"
     private var addSheet: AddApplicationSheet?
+    private var confirmSheet: ConfirmSheet?
+    /// Which application's details are open (`V.app`).
+    private var openApplication: String?
     private var footerDot: NSView?
     private var footerLabel: NSTextField?
 
@@ -2074,15 +2079,15 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         return add
     }
 
-    /// One MCP host, as the design's application row.
+    /// One MCP host, as the design's application row: the level control and
+    /// a Details disclosure on the line, the detail panel under it.
     private func accessRow(_ host: McpHostStatus, into card: NSStackView, reachable: Bool) {
         let configured = host.grant == .active
-        let level = host.profile?.accessLevel
+        let level = host.profile.map { AccessLevel.named($0.rawValue) }
         let detail: String
         switch host.grant {
         case .active:
-            detail = "MCP client · \(level ?? "Access level not reported")"
-                + (host.workspaceID.map { " · Workspace: \($0)" } ?? "")
+            detail = "MCP client · \(level?.name ?? "Access level not reported")"
         case .revoked:
             detail = "MCP client · Access was revoked. Add it again to restore it."
         case .absent:
@@ -2095,23 +2100,56 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                 : "MCP client · Not configured on this Mac. Its grant can't be confirmed while Core isn't running."
         }
 
+        // `U.select("acc-level", …)` and the Details button. Both belong to a
+        // configured host: there is no level to change on one that has none,
+        // and nothing to detail.
         var trailing: NSView?
         if configured {
-            let revoke = button(
-                "Revoke access…",
-                style: .bordered,
-                action: #selector(revokeApplication(_:)),
+            let controls = NSStackView()
+            controls.orientation = .horizontal
+            controls.alignment = .centerY
+            controls.spacing = 8
+
+            if mcpBusy == host.host {
+                controls.addArrangedSubview(chip("Working…", tone: .checking))
+            } else {
+                let picker = NSPopUpButton(frame: .zero, pullsDown: false)
+                for option in AccessLevel.all {
+                    let item = NSMenuItem(title: option.name, action: nil, keyEquivalent: "")
+                    item.attributedTitle = NSAttributedString(
+                        string: option.name,
+                        attributes: [.font: OvFont.sans(12.5), .foregroundColor: Ov.textPrimary]
+                    )
+                    picker.menu?.addItem(item)
+                }
+                picker.selectItem(at: level?.profile == "authoring" ? 1 : 0)
+                picker.target = self
+                picker.action = #selector(changeAccessLevel(_:))
+                picker.identifier = NSUserInterfaceItemIdentifier(host.host)
+                picker.isEnabled = reachable
+                picker.setAccessibilityLabel("Access level for \(host.displayName)")
+                // `.cs-select` is the row-sized one: 26pt, not the sheet's 30.
+                controls.addArrangedSubview(
+                    AddApplicationSheet.selectBox(picker, width: 168, height: 26)
+                )
+            }
+
+            let open = openApplication == host.host
+            let details = button(
+                open ? "Hide details" : "Details",
+                style: .plain,
+                action: #selector(toggleApplicationDetails(_:)),
                 subject: host.displayName
             )
-            revoke.identifier = NSUserInterfaceItemIdentifier(host.host)
-            revoke.isEnabled = reachable && mcpBusy == nil
-            trailing = revoke
+            details.identifier = NSUserInterfaceItemIdentifier(host.host)
+            controls.addArrangedSubview(details)
+            trailing = controls
         }
 
         let body = row(into: card, title: host.displayName, detail: detail, trailing: trailing)
         body.addArrangedSubview(ovSpacer(1))
 
-        if mcpBusy == host.host {
+        if mcpBusy == host.host, !configured {
             body.addArrangedSubview(chip("Working…", tone: .checking))
             return
         }
@@ -2123,12 +2161,121 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         case .absent: body.addArrangedSubview(chip("Not configured", tone: .neutral))
         case .unknown: body.addArrangedSubview(chip("Core not running", tone: .unknown))
         }
+
+        if configured, openApplication == host.host {
+            accessDetails(host, level: level, reachable: reachable, into: card)
+        }
+    }
+
+    /// `.cs-app-d`: the definition list and the row's destructive actions, on
+    /// their own surface under the row.
+    private func accessDetails(
+        _ host: McpHostStatus, level: AccessLevel?, reachable: Bool, into card: NSStackView
+    ) {
+        let panel = NSStackView()
+        panel.orientation = .vertical
+        panel.alignment = .leading
+        panel.spacing = 0
+        panel.edgeInsets = NSEdgeInsets(top: 4, left: 16, bottom: 14, right: 16)
+        panel.wantsLayer = true
+        panel.layer?.backgroundColor = panel.resolved(Ov.bgContentSecondary)
+
+        // The design lists Connection and Last activity as live facts. Core
+        // reports neither to this window, and the honest value is what it is
+        // rather than a dash that reads as "none".
+        var pairs: [(String, String)] = [
+            ("Connection", "Not reported by this build"),
+            ("Last activity", "Not recorded"),
+            ("Application type", "MCP client"),
+            ("Workspace", host.workspaceID ?? coordinator.snapshot.context.workspaceRef),
+            ("Access", level?.name ?? "Not reported"),
+        ]
+        if let tools = host.advertisedToolCount {
+            pairs.append(("Tools advertised", "\(tools)"))
+        }
+        if let principal = host.principalID {
+            pairs.append(("Principal", principal))
+        }
+        for (index, pair) in pairs.enumerated() {
+            panel.addArrangedSubview(definitionRow(pair.0, pair.1))
+            if index < pairs.count - 1 { panel.addArrangedSubview(hairline()) }
+        }
+        if let level {
+            let qualifier = NSTextField(wrappingLabelWithString: level.explanation)
+            qualifier.font = OvFont.sans(11.5)
+            qualifier.textColor = Ov.textTertiary
+            qualifier.preferredMaxLayoutWidth = 480
+            panel.addArrangedSubview(ovSpacer(8))
+            panel.addArrangedSubview(qualifier)
+        }
+
+        // `.cs-app-acts`
+        let actions = NSStackView()
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.spacing = 8
+        actions.edgeInsets = NSEdgeInsets(top: 12, left: 0, bottom: 0, right: 0)
+        if level?.profile == "authoring" {
+            let demote = button(
+                "Remove contribution permission",
+                style: .bordered,
+                action: #selector(demoteApplication(_:)),
+                subject: host.displayName
+            )
+            demote.identifier = NSUserInterfaceItemIdentifier(host.host)
+            demote.isEnabled = reachable && mcpBusy == nil
+            actions.addArrangedSubview(demote)
+        }
+        let revoke = button(
+            "Revoke access…",
+            style: .dangerText,
+            action: #selector(revokeApplication(_:)),
+            subject: host.displayName
+        )
+        revoke.identifier = NSUserInterfaceItemIdentifier(host.host)
+        revoke.isEnabled = reachable && mcpBusy == nil
+        actions.addArrangedSubview(revoke)
+        panel.addArrangedSubview(actions)
+
+        card.addArrangedSubview(hairline())
+        card.addArrangedSubview(panel)
+        panel.widthAnchor.constraint(equalTo: card.widthAnchor).isActive = true
+    }
+
+    /// `.ai-dl-r`: a 130pt term and its value, 9pt rows with a hairline.
+    private func definitionRow(_ term: String, _ value: String) -> NSView {
+        let line = NSStackView()
+        line.orientation = .horizontal
+        line.alignment = .top
+        line.spacing = 14
+        line.edgeInsets = NSEdgeInsets(top: 9, left: 0, bottom: 9, right: 0)
+        let name = NSTextField(labelWithString: term)
+        name.font = OvFont.sans(12.5)
+        name.textColor = Ov.textSecondary
+        name.translatesAutoresizingMaskIntoConstraints = false
+        name.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        let detail = NSTextField(wrappingLabelWithString: value)
+        detail.font = OvFont.sans(12.5)
+        detail.textColor = Ov.textPrimary
+        detail.preferredMaxLayoutWidth = 330
+        line.addArrangedSubview(name)
+        line.addArrangedSubview(detail)
+        return line
+    }
+
+    private func hairline() -> NSView {
+        let rule = NSView()
+        rule.wantsLayer = true
+        rule.layer?.backgroundColor = rule.resolved(Ov.separator)
+        rule.translatesAutoresizingMaskIntoConstraints = false
+        rule.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        return rule
     }
 
     static func mcpFailure(_ error: McpError) -> String {
         switch error {
         case .unavailable: return "The installed omnivia command could not be run from here."
-        case .timedOut: return "Reading application access took too long and was stopped. Nothing was changed."
+        case .timedOut: return "The change took too long and was stopped. Nothing was changed."
         case .unreadableOutput: return "Core answered in a form this build does not recognise. Nothing was changed."
         case .notAdministrator: return "Administering applications needs an installation administrator on this Mac."
         case .failed: return "Core refused the change. Nothing was changed."
@@ -2454,31 +2601,156 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         sheet.present(in: window, appearance: Self.targetAppearance)
     }
 
+    @objc private func toggleApplicationDetails(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue else { return }
+        openApplication = openApplication == id ? nil : id
+        render()
+    }
+
+    /// `ACT["acc-level"]`: the picker proposes, the sheet confirms. Nothing
+    /// is sent until it does, and the picker is put back if it is cancelled —
+    /// a control showing a level the service was never asked for is exactly
+    /// the kind of lie §A6 rules out.
+    @objc private func changeAccessLevel(_ sender: NSPopUpButton) {
+        guard let id = sender.identifier?.rawValue,
+              let host = mcpStatus?.hosts.first(where: { $0.host == id })
+        else { return }
+        let chosen = AccessLevel.all[min(sender.indexOfSelectedItem, AccessLevel.all.count - 1)]
+        guard chosen.profile != host.profile?.rawValue else { return }
+        if chosen.profile == "authoring" {
+            promoteApplication(host)
+        } else {
+            confirmDemotion(host)
+        }
+    }
+
+    @objc private func demoteApplication(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue,
+              let host = mcpStatus?.hosts.first(where: { $0.host == id })
+        else { return }
+        confirmDemotion(host)
+    }
+
+    /// "Allow <name> to contribute?" — what the level adds, and what it still
+    /// does not allow, which is the half worth stating.
+    private func promoteApplication(_ host: McpHostStatus) {
+        confirm(
+            title: "Allow \(host.displayName) to contribute?",
+            subtitle: "Workspace: \(workspaceName)",
+            checks: [
+                ("Keeps searching and retrieving what it can already access.", true, nil),
+                ("Can submit evidence and proposed memory for review.", true, nil),
+                (
+                    "Cannot approve its own contributions as trusted knowledge.",
+                    false,
+                    "Approval stays with you in OmniVia."
+                ),
+            ],
+            note: "Core records this authorisation. The change applies once Core "
+                + "acknowledges it.",
+            action: "Allow contributions",
+            working: "Updating \(host.displayName)…",
+            host: host,
+            profile: "authoring"
+        )
+    }
+
+    private func confirmDemotion(_ host: McpHostStatus) {
+        confirm(
+            title: "Remove contribution permission?",
+            subtitle: "\(host.displayName) returns to Read only.",
+            body: "It keeps retrieving what it is allowed to access, but can no longer "
+                + "submit evidence or proposed memory. Anything it already submitted stays "
+                + "in the workspace and keeps its current review state.",
+            action: "Remove permission",
+            working: "Updating \(host.displayName)…",
+            host: host,
+            profile: "restricted"
+        )
+    }
+
+    /// A level change is a `configure` at the other profile: the service
+    /// rotates the credential and the installation republishes its half.
+    private func confirm(
+        title: String,
+        subtitle: String,
+        body: String = "",
+        checks: [(String, Bool, String?)] = [],
+        note: String = "",
+        action: String,
+        working: String,
+        host: McpHostStatus,
+        profile: String
+    ) {
+        guard let mcp, let window else { return }
+        let workspace = coordinator.snapshot.context.workspaceRef
+        let sheet = ConfirmSheet(
+            title: title,
+            subtitle: subtitle,
+            body: body,
+            checks: checks,
+            note: note,
+            confirm: action,
+            // The picker proposed this; put it back to what the service
+            // actually holds if the change is not made.
+            onCancel: { [weak self] in self?.render() }
+        ) { [weak self] in
+            guard let self else { return }
+            self.confirmSheet?.showWorking(working)
+            self.mcpBusy = host.host
+            self.render()
+            Task { @MainActor in
+                let result = await mcp.configure(
+                    host: host.host, workspace: workspace, profile: profile
+                )
+                switch result {
+                case .success: self.confirmSheet?.close()
+                case .failure(let error): self.confirmSheet?.showFailure(Self.mcpFailure(error))
+                }
+                self.finishMcpWrite(result.map { _ in () })
+            }
+        }
+        confirmSheet = sheet
+        sheet.present(in: window, appearance: Self.targetAppearance)
+    }
+
     @objc private func revokeApplication(_ sender: NSButton) {
         guard let mcp, let window, let id = sender.identifier?.rawValue else { return }
         let name = mcpStatus?.hosts.first { $0.host == id }?.displayName ?? id
 
-        let alert = NSAlert()
-        alert.messageText = "Revoke access for \(name)?"
-        alert.informativeText = """
-        Its credential stops working immediately and its configuration file \
-        is removed from this Mac. Workspace content is not touched, and the \
-        record of what it was granted is kept.
-
-        You can add it again afterwards; that mints a new credential.
-        """
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Revoke access")
-        alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self, response == .alertFirstButtonReturn else { return }
+        let sheet = ConfirmSheet(
+            title: "Revoke access for \(name)?",
+            subtitle: "Workspace: \(workspaceName)",
+            body: "This connection loses its authority to use the workspace. Information it "
+                + "already submitted is not deleted, and work Core has already accepted is not "
+                + "cancelled. Its credential stops working immediately and the configuration "
+                + "this installation wrote for it is removed. You can add it again later; that "
+                + "mints a new credential.",
+            confirm: "Revoke access"
+        ) { [weak self] in
+            guard let self else { return }
+            self.confirmSheet?.showWorking("Revoking \(name)…")
             self.mcpBusy = id
             self.render()
             Task { @MainActor in
-                self.finishMcpWrite(await mcp.revoke(host: id))
+                let result = await mcp.revoke(host: id)
+                switch result {
+                case .success:
+                    self.openApplication = nil
+                    self.confirmSheet?.close()
+                case .failure(let error):
+                    self.confirmSheet?.showFailure(Self.mcpFailure(error))
+                }
+                self.finishMcpWrite(result)
             }
         }
+        confirmSheet = sheet
+        sheet.present(in: window, appearance: Self.targetAppearance)
     }
+
+    /// The workspace as the sheets name it. There is no name in the status
+    /// document, only the ref the window was started with.
+    private var workspaceName: String { coordinator.snapshot.context.workspaceRef }
 
     private func finishMcpWrite(_ result: Result<Void, McpError>) {
         mcpBusy = nil
@@ -2903,7 +3175,7 @@ final class DisclosureButton: NSButton {
     }
 }
 
-enum OvButtonStyle { case bordered, primary, plain }
+enum OvButtonStyle { case bordered, primary, plain, dangerText }
 
 final class OvButton: NSButton {
     private let style: OvButtonStyle
@@ -2926,7 +3198,11 @@ final class OvButton: NSButton {
         layer?.cornerRadius = 6
         // .cs-fix-a/.sw-row-c .ov-btn: height 26, 12.5px, 0 11 padding.
         font = OvFont.sans(size == .row ? 12.5 : 13, 500)
-        contentTintColor = style == .primary ? Ov.onAccent : Ov.textPrimary
+        switch style {
+        case .primary: contentTintColor = Ov.onAccent
+        case .dangerText: contentTintColor = Ov.danger
+        case .bordered, .plain: contentTintColor = Ov.textPrimary
+        }
         applyStyle()
 
         let height: CGFloat = size == .row ? 26 : 28
@@ -2961,6 +3237,12 @@ final class OvButton: NSButton {
             // `.ov-btn--plain`: no fill and no border until hovered.
             layer?.backgroundColor = NSColor.clear.cgColor
             layer?.borderWidth = 0
+        case .dangerText:
+            // `.ov-btn--danger-text`: bordered, but the border and label take
+            // the danger colour rather than the control one.
+            layer?.backgroundColor = Ov.bgElevated.cgColor
+            layer?.borderWidth = 1
+            layer?.borderColor = Ov.danger.withAlphaComponent(0.45).cgColor
         }
     }
 
@@ -2971,7 +3253,13 @@ final class OvButton: NSButton {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        layer?.backgroundColor = (style == .primary ? Ov.primaryFillHover : Ov.hoverBg).cgColor
+        let hover: NSColor
+        switch style {
+        case .primary: hover = Ov.primaryFillHover
+        case .dangerText: hover = Ov.dangerMuted
+        case .bordered, .plain: hover = Ov.hoverBg
+        }
+        layer?.backgroundColor = hover.cgColor
     }
 
     override func mouseExited(with event: NSEvent) { applyStyle() }

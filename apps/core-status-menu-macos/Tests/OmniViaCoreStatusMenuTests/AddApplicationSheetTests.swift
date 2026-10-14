@@ -1,7 +1,7 @@
 // What the Add-application sheet hands to `mcp configure`.
 //
-// The form is built without a parent window: `buildContent()` is the whole
-// of it, and `submit()` reads the same controls it would on screen.
+// The form is built without a parent window — `makeBody()` is the whole of
+// it — and `submit()` reads the same controls it would on screen.
 
 import AppKit
 import XCTest
@@ -21,7 +21,7 @@ final class AddApplicationSheetTests: XCTestCase {
             workspace: "ws-1",
             onSubmit: record
         )
-        _ = sheet.buildContent()
+        _ = sheet.makeBody()
         return sheet
     }
 
