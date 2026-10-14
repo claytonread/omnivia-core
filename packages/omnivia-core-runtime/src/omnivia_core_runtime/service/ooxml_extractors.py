@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import io
 import posixpath
 import stat
@@ -17,11 +18,29 @@ from omnivia_core_runtime.service.document_intake import ExtractedSegment
 MAX_SOURCE_BYTES: Final = 50 * 1024 * 1024
 MAX_MEMBERS: Final = 10_000
 MAX_EXPANDED_BYTES: Final = 512 * 1024 * 1024
+MAX_MEMBER_BYTES: Final = 64 * 1024 * 1024
 MAX_XML_BYTES: Final = 64 * 1024 * 1024
 MAX_MEMBER_RATIO: Final = 200
+MAX_RATIO_FLOOR: Final = 1024 * 1024
 MAX_SEGMENTS: Final = 100_000
+_CHUNK: Final = 256 * 1024
 _ALLOWED_COMPRESSION: Final = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
-_FORBIDDEN_XML: Final = (b"<!DOCTYPE", b"<!ENTITY")
+# Encrypted, strongly encrypted, and masked-local-header entries all mean the
+# directory cannot be trusted to describe what the stream holds.
+_UNSAFE_FLAGS: Final = 0x1 | 0x40 | 0x2000
+_ARCHIVE_MAGIC: Final = (
+    b"PK\x03\x04",
+    b"PK\x05\x06",
+    b"PK\x07\x08",
+    b"\x1f\x8b",
+    b"BZh",
+    b"\xfd7zXZ\x00",
+    b"7z\xbc\xaf\x27\x1c",
+    b"Rar!\x1a\x07",
+)
+_MAGIC_BYTES: Final = max(len(magic) for magic in _ARCHIVE_MAGIC)
+_FORBIDDEN_XML: Final = (b"<!DOCTYPE", b"<!ENTITY", b"<!NOTATION")
+_RELATIONSHIP_MODES: Final = frozenset({"Internal", "External"})
 
 
 class OOXMLInvalid(ValueError):
@@ -37,16 +56,34 @@ class OOXMLExtraction:
 
 
 class _Package:
+    """The one validator every OOXML reader goes through.
+
+    Every bound is settled before any part is parsed or handed out: the central
+    directory, then each member as it streams, then the inertness of the
+    content-types and relationship parts. Nothing here resolves a target on the
+    filesystem or the network, and no member is ever expanded as an archive of
+    its own.
+    """
+
     def __init__(self, content: bytes) -> None:
         if len(content) > MAX_SOURCE_BYTES:
             raise OOXMLInvalid("OOXML source exceeds the accepted bound")
+        if not content.startswith(b"PK\x03\x04"):
+            # A package behind prepended bytes is a polyglot, not a package:
+            # the directory a reader finds need not describe what a different
+            # reader sees.
+            raise OOXMLInvalid("OOXML source does not begin with a ZIP local header")
         self._buffer = io.BytesIO(content)
         try:
             self.archive = zipfile.ZipFile(self._buffer)
-        except (zipfile.BadZipFile, OSError) as error:
+        except (zipfile.BadZipFile, OSError, NotImplementedError) as error:
+            # Strong encryption and compressed-patch entries are refused by
+            # ``zipfile`` itself while it reads the directory.
             raise OOXMLInvalid("OOXML source is not a valid ZIP package") from error
-        self.names = frozenset(self.archive.namelist())
-        self.names = self._validate()
+        self.names: frozenset[str] = frozenset()
+        self.relationships: dict[str, dict[str, tuple[str, bool]]] = {}
+        self.external_relationships = 0
+        self._validate()
 
     def close(self) -> None:
         self.archive.close()
@@ -58,65 +95,25 @@ class _Package:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def _validate(self) -> frozenset[str]:
+    def _validate(self) -> None:
         infos = self.archive.infolist()
         if not infos or len(infos) > MAX_MEMBERS:
             raise OOXMLInvalid(
                 "OOXML package member count is outside the accepted bound"
             )
+        if self.archive.comment:
+            raise OOXMLInvalid("OOXML package carries a ZIP archive comment")
         identities: set[str] = set()
         names: set[str] = set()
         expanded = 0
         for info in infos:
-            name = info.filename
-            normal = unicodedata.normalize("NFC", name)
-            identity = normal.casefold()
-            parts = normal.split("/")
-            mode = info.external_attr >> 16
-            if (
-                not name
-                or "\x00" in name
-                or "\\" in name
-                or name.startswith("/")
-                or normal != name
-                or any(part in {"", ".", ".."} for part in parts)
-                or identity in identities
-                or info.flag_bits & 0x1
-                or info.compress_type not in _ALLOWED_COMPRESSION
-                or stat.S_ISLNK(mode)
-            ):
-                raise OOXMLInvalid(
-                    "OOXML package contains an unsafe or ambiguous member"
-                )
-            identities.add(identity)
-            names.add(name)
-            expanded += info.file_size
-            if expanded > MAX_EXPANDED_BYTES:
-                raise OOXMLInvalid("OOXML package expansion exceeds the accepted bound")
-            if (
-                info.file_size > 1024 * 1024
-                and info.file_size > max(info.compress_size, 1) * MAX_MEMBER_RATIO
-            ):
-                raise OOXMLInvalid("OOXML package member expansion ratio is unsafe")
-            actual = 0
-            try:
-                with self.archive.open(info, "r") as member:
-                    while chunk := member.read(1024 * 1024):
-                        actual += len(chunk)
-                        if actual > info.file_size or actual > MAX_EXPANDED_BYTES:
-                            raise OOXMLInvalid(
-                                "OOXML member exceeded its declared bound"
-                            )
-            except (zipfile.BadZipFile, RuntimeError, OSError) as error:
-                raise OOXMLInvalid("OOXML member could not be validated") from error
-            if actual != info.file_size:
-                raise OOXMLInvalid(
-                    "OOXML member length does not match its directory entry"
-                )
+            self._validate_entry(info, identities)
+            names.add(info.filename)
+            expanded += self._validate_stream(info, expanded)
+        self.names = frozenset(names)
         if "[Content_Types].xml" not in names:
             raise OOXMLInvalid("OOXML content-types part is missing")
-        content_types = self.xml("[Content_Types].xml")
-        for element in content_types.iter():
+        for element in self.xml("[Content_Types].xml").iter():
             content_type = element.attrib.get("ContentType", "").casefold()
             part_name = element.attrib.get("PartName", "").casefold()
             if (
@@ -125,17 +122,132 @@ class _Package:
                 or "vbaproject" in part_name
             ):
                 raise OOXMLInvalid("macro-enabled Office packages are not supported")
-        return frozenset(names)
+        self._validate_relationships()
+
+    def _validate_entry(self, info: zipfile.ZipInfo, identities: set[str]) -> None:
+        """Refuse a directory entry whose name or metadata is unsafe."""
+        name = info.filename
+        normal = unicodedata.normalize("NFC", name)
+        # Case folding and compatibility folding together: two members that a
+        # filesystem or a consumer could confuse are one ambiguous member.
+        identity = unicodedata.normalize("NFKC", normal).casefold()
+        if (
+            not name
+            or normal != name
+            or "\x00" in name
+            or "\\" in name
+            or ":" in name
+            or name.startswith("/")
+            or any(part in {"", ".", ".."} for part in normal.split("/"))
+            or identity in identities
+        ):
+            raise OOXMLInvalid("OOXML package contains an unsafe or ambiguous member")
+        identities.add(identity)
+        stored = info.compress_type == zipfile.ZIP_STORED
+        if (
+            info.flag_bits & _UNSAFE_FLAGS
+            or info.compress_type not in _ALLOWED_COMPRESSION
+            or stat.S_IFMT(info.external_attr >> 16) not in {0, stat.S_IFREG}
+            or info.volume
+            or info.file_size > MAX_MEMBER_BYTES
+            or (stored and info.compress_size != info.file_size)
+            or (
+                info.file_size > MAX_RATIO_FLOOR
+                and info.file_size > max(info.compress_size, 1) * MAX_MEMBER_RATIO
+            )
+        ):
+            raise OOXMLInvalid("OOXML package member metadata is outside the profile")
+        year, month, day, hour, minute, second = info.date_time
+        try:
+            datetime.date(year, month, day)
+        except ValueError as error:
+            raise OOXMLInvalid("OOXML package member has invalid metadata") from error
+        if hour > 23 or minute > 59 or second > 59:
+            raise OOXMLInvalid("OOXML package member has invalid metadata")
+
+    def _validate_stream(self, info: zipfile.ZipInfo, expanded: int) -> int:
+        """Stream one member to its end, bounding what the stream produces.
+
+        The directory is a claim, not a measurement: every bound below is taken
+        against the bytes the decompressor actually yields, so a member that
+        under-declares itself is refused mid-stream rather than expanded.
+        """
+        actual = 0
+        head = b""
+        try:
+            with self.archive.open(info, "r") as member:
+                while chunk := member.read(_CHUNK):
+                    head = head or chunk[:_MAGIC_BYTES]
+                    actual += len(chunk)
+                    if (
+                        actual > info.file_size
+                        or actual > MAX_MEMBER_BYTES
+                        or expanded + actual > MAX_EXPANDED_BYTES
+                        or (
+                            actual > MAX_RATIO_FLOOR
+                            and actual > max(info.compress_size, 1) * MAX_MEMBER_RATIO
+                        )
+                    ):
+                        raise OOXMLInvalid("OOXML member exceeded a streamed bound")
+        except (zipfile.BadZipFile, RuntimeError, OSError, EOFError) as error:
+            raise OOXMLInvalid("OOXML member could not be validated") from error
+        if actual != info.file_size:
+            raise OOXMLInvalid("OOXML member length does not match its directory entry")
+        if head.startswith(_ARCHIVE_MAGIC):
+            raise OOXMLInvalid("OOXML package member is itself an archive")
+        return actual
+
+    def _validate_relationships(self) -> None:
+        """Resolve internal relationship targets and inventory external ones."""
+        for name in sorted(name for name in self.names if name.endswith(".rels")):
+            if posixpath.basename(posixpath.dirname(name)) != "_rels":
+                raise OOXMLInvalid("OOXML relationship part is outside a _rels folder")
+            base = posixpath.dirname(posixpath.dirname(name))
+            entries: dict[str, tuple[str, bool]] = {}
+            for relation in self.xml(name).iter():
+                if _local(relation.tag) != "Relationship":
+                    continue
+                relation_id = relation.attrib.get("Id")
+                target = relation.attrib.get("Target")
+                mode = relation.attrib.get("TargetMode", "Internal")
+                if (
+                    not relation_id
+                    or not target
+                    or mode not in _RELATIONSHIP_MODES
+                    or relation_id in entries
+                ):
+                    raise OOXMLInvalid("OOXML relationship is malformed")
+                if mode == "External":
+                    # Recorded verbatim. Nothing opens, fetches or normalises it.
+                    self.external_relationships += 1
+                    entries[relation_id] = (target, True)
+                    continue
+                joined = posixpath.normpath(
+                    target[1:]
+                    if target.startswith("/")
+                    else posixpath.join(base, target)
+                )
+                if (
+                    joined.startswith(("../", "/"))
+                    or joined == ".."
+                    or joined not in self.names
+                ):
+                    raise OOXMLInvalid(
+                        "OOXML relationship escapes or misses the package"
+                    )
+                entries[relation_id] = (joined, False)
+            self.relationships[name] = entries
 
     def bytes(self, name: str, *, limit: int = MAX_XML_BYTES) -> bytes:
-        if name not in self.names and name != "[Content_Types].xml":
+        if name not in self.names:
             raise OOXMLInvalid("OOXML relationship names a missing package part")
         info = self.archive.getinfo(name)
         if info.file_size > limit:
             raise OOXMLInvalid("OOXML XML member exceeds the accepted bound")
-        data = self.archive.read(info)
-        if len(data) != info.file_size:
-            raise OOXMLInvalid("OOXML member changed during validation")
+        with self.archive.open(info, "r") as member:
+            data = member.read(limit + 1)
+        if len(data) > limit:
+            raise OOXMLInvalid("OOXML XML member exceeds the accepted bound")
         return data
 
     def xml(self, name: str) -> ElementTree.Element:
@@ -214,7 +326,7 @@ def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
             blocks,
             {
                 "packageMembers": len(package.names),
-                "externalReferences": _external_relationships(package),
+                "externalReferences": package.external_relationships,
             },
         )
 
@@ -296,7 +408,7 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
             {
                 "sheets": len(sheets),
                 "packageMembers": len(package.names),
-                "externalReferences": _external_relationships(package),
+                "externalReferences": package.external_relationships,
             },
         )
 
@@ -361,61 +473,13 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
             len(slides),
             {
                 "packageMembers": len(package.names),
-                "externalReferences": _external_relationships(package),
+                "externalReferences": package.external_relationships,
             },
         )
 
 
-def _relationships(
-    package: _Package, name: str, base: str
-) -> dict[str, tuple[str, bool]]:
-    if name not in package.names:
-        return {}
-    result: dict[str, tuple[str, bool]] = {}
-    for relation in package.xml(name).iter():
-        if _local(relation.tag) != "Relationship":
-            continue
-        relation_id = relation.attrib.get("Id")
-        target = relation.attrib.get("Target")
-        external = relation.attrib.get("TargetMode") == "External"
-        if not relation_id or target is None:
-            raise OOXMLInvalid("OOXML relationship is malformed")
-        if external:
-            result[relation_id] = (target, True)
-            continue
-        joined = posixpath.normpath(posixpath.join(base, target))
-        if joined.startswith(("../", "/")) or joined not in package.names:
-            raise OOXMLInvalid("OOXML relationship escapes or misses the package")
-        result[relation_id] = (joined, False)
-    return result
-
-
-def _external_relationships(package: _Package) -> int:
-    total = 0
-    for name in package.names:
-        if not name.endswith(".rels"):
-            continue
-        data = package.bytes(name)
-        upper = data.upper()
-        if any(marker in upper for marker in _FORBIDDEN_XML):
-            raise OOXMLInvalid(
-                "OOXML relationship XML contains a forbidden declaration"
-            )
-        try:
-            root = ElementTree.fromstring(data)
-        except ElementTree.ParseError as error:
-            raise OOXMLInvalid("OOXML relationship XML is malformed") from error
-        total += sum(
-            1
-            for relation in root.iter()
-            if _local(relation.tag) == "Relationship"
-            and relation.attrib.get("TargetMode") == "External"
-        )
-    return total
-
-
 def _xlsx_sheets(package: _Package) -> list[tuple[str, str, str, bool]]:
-    relations = _relationships(package, "xl/_rels/workbook.xml.rels", "xl")
+    relations = package.relationships.get("xl/_rels/workbook.xml.rels", {})
     result: list[tuple[str, str, str, bool]] = []
     for sheet in package.xml("xl/workbook.xml").iter():
         if _local(sheet.tag) != "sheet":
@@ -438,7 +502,7 @@ def _xlsx_sheets(package: _Package) -> list[tuple[str, str, str, bool]]:
 
 
 def _pptx_slides(package: _Package) -> list[tuple[str, str, bool]]:
-    relations = _relationships(package, "ppt/_rels/presentation.xml.rels", "ppt")
+    relations = package.relationships.get("ppt/_rels/presentation.xml.rels", {})
     result: list[tuple[str, str, bool]] = []
     for slide in package.xml("ppt/presentation.xml").iter():
         if _local(slide.tag) != "sldId":
