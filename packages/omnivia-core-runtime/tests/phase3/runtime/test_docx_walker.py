@@ -246,7 +246,7 @@ def revisions(content: bytes) -> list[tuple[str, str, str, str, object]]:
     ]
 
 
-def test_revisions_split_current_text_from_deleted_annotations() -> None:
+def test_revisions_split_inserted_prose_from_current_and_deleted_text() -> None:
     body = (
         "<w:p>"
         + run("Keep ")
@@ -260,10 +260,14 @@ def test_revisions_split_current_text_from_deleted_annotations() -> None:
         + p("kept")
     )
 
+    # ``w:ins`` and ``w:moveTo`` are read as the page's own prose, so they keep
+    # the paragraph's role and stay visible; only ``revision_state`` says the
+    # author added them, and the boundary splits them off the text either side.
     assert revisions(docx(body)) == [
-        ("body", "Keep added moved in ", "visible", "current", "0"),
+        ("body", "Keep ", "visible", "current", "0"),
+        ("body", "added moved in ", "visible", "inserted", "0.t1"),
         ("deleted_text", "gonemoved out", "annotation", "deleted", "0.d0"),
-        ("body", "tail", "visible", "current", "0.t1"),
+        ("body", "tail", "visible", "current", "0.t2"),
         ("deleted_text", "late", "annotation", "deleted", "0.d1"),
         ("body", "kept", "visible", "current", "1"),
     ]
@@ -312,6 +316,40 @@ def test_insertions_later_deleted_stay_deleted_and_contradictions_are_refused() 
         deep = f"<w:ins>{deep}</w:ins>"
     with pytest.raises(OOXMLInvalid, match="nested too deeply"):
         extract_docx(docx(f"<w:p>{deep}</w:p>"), capture_id=CAPTURE)
+
+
+def test_an_insertion_splits_a_cell_run_and_rides_over_what_stands_beside_it() -> None:
+    """A cell joins the prose of one revision state only, so an insertion closes
+    the unrevised run rather than being joined into one stretch the cell never
+    held, and keeps joining across the paragraphs the insertion covers. The
+    items ordered beside that prose -- an equation, a nested text box -- take the
+    same state, so an insertion reaches them exactly as a deletion does."""
+    cell = (
+        p("plain")
+        + f"<w:p>{run('kept ')}<w:ins>{run('added')}</w:ins></w:p>"
+        + f"<w:ins><w:p>{run('whole')}{MATH}{box(p('boxed'))}</w:p></w:ins>"
+    )
+
+    assert revisions(docx(f"<w:tbl><w:tr><w:tc>{cell}</w:tc></w:tr></w:tbl>")) == [
+        ("table_cell", "plain\nkept ", "visible", "current", "0.r0.c0"),
+        ("table_cell", "added\nwhole", "visible", "inserted", "0.r0.c0.t1"),
+        ("equation", "", "visible", "inserted", "0.r0.c0.2.e0"),
+        ("body", "boxed", "visible", "inserted", "0.r0.c0.2.x0.0"),
+    ]
+
+
+def test_an_insertion_over_a_whole_table_reaches_its_runs_and_its_record() -> None:
+    """A revision wrapping a table is the table's state, so the cell runs and
+    the record a cell-less table takes instead both report it."""
+    body = (
+        f"<w:ins><w:tbl><w:tr><w:tc>{p('a')}</w:tc></w:tr></w:tbl></w:ins>"
+        '<w:ins><w:tbl><w:tblGrid><w:gridCol w:w="100"/></w:tblGrid></w:tbl></w:ins>'
+    )
+
+    assert revisions(docx(body)) == [
+        ("table_cell", "a", "visible", "inserted", "0.r0.c0"),
+        ("object_inventory", "", "visible", "inserted", "1.inventory"),
+    ]
 
 
 def test_text_boxes_are_separate_blocks_read_once() -> None:
@@ -405,7 +443,7 @@ def test_hidden_runs_stay_hidden_under_content_controls_and_revisions() -> None:
 
     assert revisions(docx(body)) == [
         ("body", "seen ", "visible", "current", "0"),
-        ("hidden_content", "nested", "hidden", "current", "0.v0"),
+        ("hidden_content", "nested", "hidden", "inserted", "0.v0"),
         ("body", "mid ", "visible", "current", "0.t1"),
         ("hidden_content", "gone", "hidden", "deleted", "0.v1"),
         ("body", "tail", "visible", "current", "0.t2"),
@@ -5755,6 +5793,32 @@ def test_a_paragraph_identity_rides_with_every_stretch_read_out_of_it() -> None:
     ]
     plain = extract_docx(content, capture_id=CAPTURE).segments[-1]
     assert "paragraphId" not in plain.source_locator
+
+
+def test_an_inserted_stretch_keeps_its_paragraph_but_a_cell_run_omits_it() -> None:
+    """An insertion splits the paragraph like any other revision, and every
+    stretch it splits out was still read from that paragraph, so each names it.
+    A cell run joins paragraphs, so it names none however it was revised."""
+    inside = identified(
+        run("one "),
+        f"<w:ins>{run('two')}</w:ins>",
+        f"<w:ins>{hidden('three')}</w:ins>",
+        run("four"),
+    )
+    content = docx(inside, styles=False)
+
+    assert identities(content) == [
+        ("body", "0", PARA_ID),
+        ("body", "0.t1", PARA_ID),
+        ("hidden_content", "0.v0", PARA_ID),
+        ("body", "0.t2", PARA_ID),
+    ]
+    cell = docx(f"<w:tbl><w:tr><w:tc><w:ins>{inside}</w:ins></w:tc></w:tr></w:tbl>")
+    assert all(
+        "paragraphId" not in item.source_locator
+        for item in extract_docx(cell, capture_id=CAPTURE).segments
+        if item.semantic_role == "table_cell"
+    )
 
 
 def test_a_paragraph_identity_rides_with_the_links_and_references_it_holds() -> None:

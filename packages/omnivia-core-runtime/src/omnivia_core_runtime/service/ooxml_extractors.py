@@ -7726,11 +7726,15 @@ class _CellRun:
     runs: int = 0
     # Inventory segments wait for the run that holds their text, each beside the
     # identity of the paragraph it was read from so waiting does not lose it.
-    marks: list[tuple[str, dict[str, object], str, bool, str | None]] = field(
+    marks: list[tuple[str, dict[str, object], str, str, str | None]] = field(
         default_factory=list
     )
     # Where this cell sits in its table's grid, carried by every run it emits.
     grid: dict[str, object] | None = None
+    # The revision state the prose now waiting in ``parts`` stands in. A run
+    # joins prose of one state only, so text whose state changes closes the run
+    # it cannot belong to rather than being joined across the boundary.
+    state: str = "current"
 
 
 @dataclass(slots=True)
@@ -7886,22 +7890,22 @@ class _DocxWalker:
         parent: ElementTree.Element,
         prefix: str,
         depth: int,
-        deleted: bool = False,
+        state: str = "current",
     ) -> None:
         index = marks = 0
-        for block, removed in _blocks(parent, deleted):
+        for block, revised in _blocks(parent, state):
             tag = _local(block.tag)
             if tag in _RANGE_TAGS:
-                self._mark(block, f"{prefix}m{marks}", removed, None)
+                self._mark(block, f"{prefix}m{marks}", revised, None)
                 marks += 1
                 continue
             position = f"{prefix}{index}"
             if tag == "p":
-                self._paragraph(block, position, depth, removed)
+                self._paragraph(block, position, depth, revised)
             elif block.tag in _MATH_CONTENT:
-                self._math(block, position, removed, None)
+                self._math(block, position, revised, None)
             else:
-                self._table(block, position, depth, removed)
+                self._table(block, position, depth, revised)
             index += 1
 
     def finish(self) -> None:
@@ -7984,7 +7988,7 @@ class _DocxWalker:
         position: str,
         value: dict[str, object],
         visibility: str,
-        deleted: bool,
+        state: str,
         **extra: object,
     ) -> None:
         self._segments.append(
@@ -7993,8 +7997,8 @@ class _DocxWalker:
                 self._locator(position, **extra),
                 structured_value=value,
                 extraction_method="inventory",
-                visibility="annotation" if deleted else visibility,
-                revision_state="deleted" if deleted else "current",
+                visibility=_revised_visibility(state, visibility),
+                revision_state=state,
             )
         )
         _bounded(self._segments)
@@ -8003,7 +8007,7 @@ class _DocxWalker:
         self,
         element: ElementTree.Element,
         position: str,
-        deleted: bool,
+        state: str,
         cell: _CellRun | None,
     ) -> None:
         """Inventory one hyperlink, field or annotation marker, refusing a bad one."""
@@ -8017,9 +8021,9 @@ class _DocxWalker:
             # Only a footnote or endnote reference is visible in the page.
             visibility = "annotation" if value["annotation"] == "comment" else "visible"
         if cell is None:
-            self._inventory(position, value, visibility, deleted)
+            self._inventory(position, value, visibility, state)
         else:
-            cell.marks.append((position, value, visibility, deleted, self._para_id))
+            cell.marks.append((position, value, visibility, state, self._para_id))
 
     def _hyperlink(self, element: ElementTree.Element) -> dict[str, object]:
         ids = [(key, val) for key, val in element.attrib.items() if _local(key) == "id"]
@@ -8083,18 +8087,21 @@ class _DocxWalker:
         role: str,
         position: str,
         text: str,
-        deleted: bool,
+        state: str,
         hidden: bool = False,
         extra: dict[str, object] | None = None,
     ) -> None:
         if hidden:
             # Hidden text keeps its own role and visibility in every story, so a
             # hidden note or cell is still hidden and never ordinary prose. A
-            # deletion over it is still recorded as the revision it is.
+            # revision over it is still recorded as the revision it is.
             semantic, visibility = "hidden_content", "hidden"
-        elif deleted:
+        elif state == "deleted":
             semantic, visibility = "deleted_text", "annotation"
         else:
+            # Inserted text is text the author added, so it keeps the role and
+            # the visibility the same words would have had unrevised; only its
+            # ``revision_state`` says it was inserted.
             semantic = role
             visibility = "annotation" if role in {"note", "comment"} else "visible"
         self._segments.append(
@@ -8103,7 +8110,7 @@ class _DocxWalker:
                 self._locator(position, **(extra or {})),
                 text=text,
                 visibility=visibility,
-                revision_state="deleted" if deleted else "current",
+                revision_state=state,
             )
         )
         _bounded(self._segments)
@@ -8113,7 +8120,7 @@ class _DocxWalker:
         paragraph: ElementTree.Element,
         position: str,
         depth: int,
-        deleted: bool,
+        state: str,
         cell: _CellRun | None = None,
     ) -> None:
         self.paragraphs += 1
@@ -8130,46 +8137,46 @@ class _DocxWalker:
         try:
             current = removed = boxes = links = refs = fields = concealed = 0
             maths = images = charts = diagrams = objects = legacy = 0
-            for kind, value, box_deleted in _paragraph_items(
-                paragraph, deleted, self._fields
+            for kind, value, item_state in _paragraph_items(
+                paragraph, state, self._fields
             ):
                 if kind == "e":
                     assert isinstance(value, ElementTree.Element)
                     # Math is ordered where it sits, so in a cell it closes the
                     # current run rather than trailing the prose it interrupts.
                     self._flush(cell)
-                    self._equation(value, f"{position}.e{maths}", box_deleted)
+                    self._equation(value, f"{position}.e{maths}", item_state)
                     maths += 1
                 elif kind == "g":
                     assert isinstance(value, ElementTree.Element)
                     # An image is ordered where it sits, for the reason math is.
                     self._flush(cell)
-                    self._drawing(value, f"{position}.i{images}", box_deleted)
+                    self._drawing(value, f"{position}.i{images}", item_state)
                     images += 1
                 elif kind == "k":
                     assert isinstance(value, ElementTree.Element)
                     # A chart is ordered where it sits, for the reason an image is.
                     self._flush(cell)
-                    self._chart(value, f"{position}.c{charts}", box_deleted)
+                    self._chart(value, f"{position}.c{charts}", item_state)
                     charts += 1
                 elif kind == "s":
                     assert isinstance(value, ElementTree.Element)
                     # SmartArt is ordered where it sits, for the reason a chart is.
                     self._flush(cell)
-                    self._diagram(value, f"{position}.d{diagrams}", box_deleted)
+                    self._diagram(value, f"{position}.d{diagrams}", item_state)
                     diagrams += 1
                 elif kind == "o":
                     assert isinstance(value, ElementTree.Element)
                     # An object is ordered where it sits, for the reason SmartArt is.
                     self._flush(cell)
-                    self._object(value, f"{position}.o{objects}", box_deleted)
+                    self._object(value, f"{position}.o{objects}", item_state)
                     objects += 1
                 elif kind == "p":
                     assert isinstance(value, ElementTree.Element)
                     # A legacy image is ordered where it sits, for the reason an
                     # object is.
                     self._flush(cell)
-                    self._vml_image(value, f"{position}.v{legacy}", box_deleted)
+                    self._vml_image(value, f"{position}.v{legacy}", item_state)
                     legacy += 1
                 elif kind == "m":
                     assert isinstance(value, ElementTree.Element)
@@ -8182,17 +8189,17 @@ class _DocxWalker:
                         # closes the current run rather than waiting for the end of
                         # the cell, where it would trail the result it precedes.
                         self._flush(cell)
-                        self._mark(value, f"{position}.{label}", box_deleted, None)
+                        self._mark(value, f"{position}.{label}", item_state, None)
                         continue
                     else:
                         label, refs = f"n{refs}", refs + 1
-                    self._mark(value, f"{position}.{label}", box_deleted, cell)
+                    self._mark(value, f"{position}.{label}", item_state, cell)
                 elif isinstance(value, dict):
                     label, fields = f"f{fields}", fields + 1
                     # A complex field is ordered at its own boundary, so in a cell it
                     # closes the current run for the same reason a simple field does.
                     self._flush(cell)
-                    self._inventory(f"{position}.{label}", value, "visible", box_deleted)
+                    self._inventory(f"{position}.{label}", value, "visible", item_state)
                 elif isinstance(value, ElementTree.Element):
                     self._flush(cell)
                     if depth >= _MAX_DOCX_DEPTH:
@@ -8201,7 +8208,7 @@ class _DocxWalker:
                     # close nor are closed by the ones open around it: a boundary
                     # that tries to cross the box is refused, not leaked through.
                     outer, self._fields = self._fields, []
-                    self.walk(value, f"{position}.x{boxes}.", depth + 1, box_deleted)
+                    self.walk(value, f"{position}.x{boxes}.", depth + 1, item_state)
                     self.finish()
                     self._fields = outer
                     boxes += 1
@@ -8213,23 +8220,30 @@ class _DocxWalker:
                         role,
                         f"{position}.v{concealed}",
                         value,
-                        box_deleted,
+                        item_state,
                         hidden=True,
                     )
                     concealed += 1
                 elif kind == "d":
                     self._flush(cell)
-                    self._add("body", f"{position}.d{removed}", value, True)
+                    self._add("body", f"{position}.d{removed}", value, item_state)
                     removed += 1
                 elif cell is not None:
+                    # A run joins prose of one revision state, so text the
+                    # author inserted closes the unrevised run before it rather
+                    # than being joined into one stretch the cell never held.
+                    if item_state != cell.state:
+                        self._flush(cell)
+                        cell.state = item_state
                     cell.parts.append(value)
                 else:
-                    # The first current stretch keeps the paragraph's own position.
+                    # The first stretch read as prose keeps the paragraph's own
+                    # position, whether the author wrote it or inserted it.
                     self._add(
                         role,
                         f"{position}.t{current}" if current else position,
                         value,
-                        False,
+                        item_state,
                     )
                     current += 1
         finally:
@@ -8239,7 +8253,7 @@ class _DocxWalker:
         self,
         block: ElementTree.Element,
         position: str,
-        deleted: bool,
+        state: str,
         cell: _CellRun | None,
     ) -> None:
         """Record math that stands between blocks rather than inside a paragraph.
@@ -8252,15 +8266,15 @@ class _DocxWalker:
         """
         _field_result(self._fields, "math")
         self._flush(cell)
-        self._equation(block, position, deleted)
+        self._equation(block, position, state)
 
     def _equation(
-        self, element: ElementTree.Element, position: str, deleted: bool
+        self, element: ElementTree.Element, position: str, state: str
     ) -> None:
         """Record one equation as the markup it is, unread.
 
         The math is neither interpreted nor converted, so it is kept as its own
-        segment and its text never joins the prose it interrupts. A deletion
+        segment and its text never joins the prose it interrupts. A revision
         wrapped around it is kept as the revision it is rather than dropped.
         """
         self._segments.append(
@@ -8268,14 +8282,14 @@ class _DocxWalker:
                 "equation",
                 self._locator(position),
                 structured_value=_docx_equation(element),
-                visibility="annotation" if deleted else "visible",
-                revision_state="deleted" if deleted else "current",
+                visibility=_revised_visibility(state),
+                revision_state=state,
             )
         )
         _bounded(self._segments)
 
     def _drawing(
-        self, drawing: ElementTree.Element, position: str, deleted: bool
+        self, drawing: ElementTree.Element, position: str, state: str
     ) -> None:
         """Inventory one DrawingML image, then report the alt text its author wrote.
 
@@ -8331,7 +8345,7 @@ class _DocxWalker:
                 "ocrPerformed": False,
             },
             "visible",
-            deleted,
+            state,
         )
         for name, role in _ALT_CLAIMS:
             text = claims[name]
@@ -8342,14 +8356,14 @@ class _DocxWalker:
                     "image_alt",
                     self._locator(position, altRole=role),
                     text=text,
-                    visibility="annotation" if deleted else "visible",
-                    revision_state="deleted" if deleted else "current",
+                    visibility=_revised_visibility(state),
+                    revision_state=state,
                 )
             )
             _bounded(self._segments)
 
     def _chart(
-        self, drawing: ElementTree.Element, position: str, deleted: bool
+        self, drawing: ElementTree.Element, position: str, state: str
     ) -> None:
         """Inventory one DrawingML chart, then report the values it stored.
 
@@ -8398,7 +8412,7 @@ class _DocxWalker:
                 "storedRecords": len(records),
             },
             "visible",
-            deleted,
+            state,
         )
         for place, value in records:
             self._segments.append(
@@ -8417,14 +8431,14 @@ class _DocxWalker:
                     # representation and refuses empty text.
                     text=value or None,
                     structured_value=None if value else {"value": ""},
-                    visibility="annotation" if deleted else "visible",
-                    revision_state="deleted" if deleted else "current",
+                    visibility=_revised_visibility(state),
+                    revision_state=state,
                 )
             )
             _bounded(self._segments)
 
     def _diagram(
-        self, drawing: ElementTree.Element, position: str, deleted: bool
+        self, drawing: ElementTree.Element, position: str, state: str
     ) -> None:
         """Inventory one SmartArt diagram, then report the text it stored.
 
@@ -8447,7 +8461,7 @@ class _DocxWalker:
         connection is walked, so no label, hierarchy or reading order is read
         off how the diagram would be drawn.
 
-        A deletion wrapped around the drawing is kept as the revision it is,
+        A revision wrapped around the drawing is kept as the revision it is,
         over the record and over every point and connection it carried, exactly
         as it is over an image and its claims or a chart and its values.
         """
@@ -8476,7 +8490,7 @@ class _DocxWalker:
                 "relatedVisualPartsOpened": False,
             },
             "visible",
-            deleted,
+            state,
         )
         provenance: dict[str, object] = {
             "diagramPart": part,
@@ -8488,8 +8502,8 @@ class _DocxWalker:
                     "body",
                     self._locator(position, **provenance, **place),
                     text=text,
-                    visibility="annotation" if deleted else "visible",
-                    revision_state="deleted" if deleted else "current",
+                    visibility=_revised_visibility(state),
+                    revision_state=state,
                 )
             )
             _bounded(self._segments)
@@ -8506,14 +8520,14 @@ class _DocxWalker:
                     ),
                     structured_value=connection,
                     extraction_method="inventory",
-                    visibility="annotation" if deleted else "visible",
-                    revision_state="deleted" if deleted else "current",
+                    visibility=_revised_visibility(state),
+                    revision_state=state,
                 )
             )
             _bounded(self._segments)
 
     def _object(
-        self, element: ElementTree.Element, position: str, deleted: bool
+        self, element: ElementTree.Element, position: str, state: str
     ) -> None:
         """Inventory one legacy embedded or linked object, inertly.
 
@@ -8550,7 +8564,7 @@ class _DocxWalker:
         image, because the image a story shows is the one its own ``w:pict``
         names and a stand-in for an object is not that.
 
-        A deletion wrapped around the container is kept as the revision it is,
+        A revision wrapped around the container is kept as the revision it is,
         exactly as it is over an image, a chart or a diagram.
         """
         declaration = _docx_ole_object(element)
@@ -8603,10 +8617,10 @@ class _DocxWalker:
                 self._package.resolved_type(target), _MAX_META_CHARS
             )
             record["objectBytes"] = self._package.archive.getinfo(target).file_size
-        self._inventory(position, record, "visible", deleted)
+        self._inventory(position, record, "visible", state)
 
     def _vml_image(
-        self, element: ElementTree.Element, position: str, deleted: bool
+        self, element: ElementTree.Element, position: str, state: str
     ) -> None:
         """Inventory one standalone legacy image, then report its author's claims.
 
@@ -8643,7 +8657,7 @@ class _DocxWalker:
         text is invented for an image whose author described it with none, least
         of all out of the shape's identifier.
 
-        A deletion wrapped around the container is kept as the revision it is,
+        A revision wrapped around the container is kept as the revision it is,
         over the record and over every claim it carried, exactly as it is over a
         DrawingML image and its claims.
         """
@@ -8688,7 +8702,7 @@ class _DocxWalker:
             record["imagePart"] = _clip(target, _MAX_TARGET_CHARS)
             record["contentType"] = _clip(content_type, _MAX_META_CHARS)
             record["imageBytes"] = self._package.archive.getinfo(target).file_size
-        self._inventory(position, record, "visible", deleted)
+        self._inventory(position, record, "visible", state)
         for name, role, source in _DOCX_VML_ALT_CLAIMS:
             text = claims[name]
             if not text:
@@ -8698,8 +8712,8 @@ class _DocxWalker:
                     "image_alt",
                     self._locator(position, altRole=role, altSource=source),
                     text=text,
-                    visibility="annotation" if deleted else "visible",
-                    revision_state="deleted" if deleted else "current",
+                    visibility=_revised_visibility(state),
+                    revision_state=state,
                 )
             )
             _bounded(self._segments)
@@ -8707,8 +8721,9 @@ class _DocxWalker:
     def _flush(self, cell: _CellRun | None) -> None:
         """Close the cell's joined prose and release the marks waiting under it.
 
-        The run joins the current prose of every paragraph the cell holds, so it
-        is sourced from no one of them and carries no ``paragraphId``: naming one
+        The run joins the prose of every paragraph the cell holds that stands in
+        one revision state, so it is sourced from no one of them and carries no
+        ``paragraphId``: naming one
         would claim provenance the run does not have. Each waiting mark was read
         inside a single paragraph and is emitted under that paragraph's own
         identity, which is why the identity waited beside it. A flush stands
@@ -8724,13 +8739,17 @@ class _DocxWalker:
                     f"{cell.position}.t{cell.runs}" if cell.runs else cell.position
                 )
                 self._add(
-                    "table_cell", position, "\n".join(cell.parts), False, extra=cell.grid
+                    "table_cell",
+                    position,
+                    "\n".join(cell.parts),
+                    cell.state,
+                    extra=cell.grid,
                 )
                 cell.runs += 1
                 cell.parts.clear()
-            for position, value, visibility, deleted, para_id in cell.marks:
+            for position, value, visibility, state, para_id in cell.marks:
                 self._para_id = para_id
-                self._inventory(position, value, visibility, deleted)
+                self._inventory(position, value, visibility, state)
             cell.marks.clear()
         finally:
             self._para_id = outer
@@ -8739,7 +8758,7 @@ class _DocxWalker:
         self,
         position: str,
         grid: dict[str, object] | None,
-        deleted: bool,
+        state: str,
         empty: bool,
     ) -> None:
         """Record one cell that emitted no ``table_cell`` run of its own.
@@ -8762,7 +8781,7 @@ class _DocxWalker:
             position,
             {"kind": "docxTableCell", "empty": empty, **geometry},
             "visible",
-            deleted,
+            state,
             **geometry,
         )
 
@@ -8780,7 +8799,7 @@ class _DocxWalker:
         table: ElementTree.Element,
         position: str,
         depth: int,
-        deleted: bool,
+        state: str,
     ) -> None:
         if depth > _MAX_DOCX_DEPTH:
             raise OOXMLInvalid("DOCX tables are nested too deeply")
@@ -8795,11 +8814,11 @@ class _DocxWalker:
         for row in table:
             tag = _local(row.tag)
             if tag in _RANGE_TAGS:
-                self._mark(row, f"{position}.m{marks}", deleted, None)
+                self._mark(row, f"{position}.m{marks}", state, None)
                 marks += 1
             elif tag == "tr":
                 self._row(
-                    row, f"{position}.r{row_index}", depth, deleted, row_index, located
+                    row, f"{position}.r{row_index}", depth, state, row_index, located
                 )
                 row_index += 1
         if not plan:
@@ -8817,7 +8836,7 @@ class _DocxWalker:
                     "cellCount": 0,
                 },
                 "visible",
-                deleted,
+                state,
             )
 
     def _row(
@@ -8825,7 +8844,7 @@ class _DocxWalker:
         row: ElementTree.Element,
         position: str,
         depth: int,
-        deleted: bool,
+        state: str,
         row_index: int,
         located: dict[tuple[int, int], dict[str, object]],
     ) -> None:
@@ -8833,7 +8852,7 @@ class _DocxWalker:
         for cell in row:
             tag = _local(cell.tag)
             if tag in _RANGE_TAGS:
-                self._mark(cell, f"{position}.m{marks}", deleted, None)
+                self._mark(cell, f"{position}.m{marks}", state, None)
                 marks += 1
                 continue
             if tag != "tc":
@@ -8849,25 +8868,25 @@ class _DocxWalker:
                 # The refusal above has just proved this continuation holds
                 # nothing beyond its properties and Word's placeholder
                 # paragraph, so its record is empty by construction.
-                self._cell_inventory(cell_position, grid, deleted, True)
+                self._cell_inventory(cell_position, grid, state, True)
                 continue
-            run = _CellRun(cell_position, [], grid=grid)
+            run = _CellRun(cell_position, [], grid=grid, state=state)
             index = block_marks = 0
-            for block, removed in _blocks(cell, deleted):
+            for block, revised in _blocks(cell, state):
                 block_tag = _local(block.tag)
                 if block_tag in _RANGE_TAGS:
-                    self._mark(block, f"{cell_position}.m{block_marks}", removed, run)
+                    self._mark(block, f"{cell_position}.m{block_marks}", revised, run)
                     block_marks += 1
                     continue
                 block_position = f"{cell_position}.{index}"
                 index += 1
                 if block_tag == "tbl":
                     self._flush(run)
-                    self._table(block, block_position, depth + 1, removed)
+                    self._table(block, block_position, depth + 1, revised)
                 elif block.tag in _MATH_CONTENT:
-                    self._math(block, block_position, removed, run)
+                    self._math(block, block_position, revised, run)
                 else:
-                    self._paragraph(block, block_position, depth, removed, run)
+                    self._paragraph(block, block_position, depth, revised, run)
             self._flush(run)
             if not run.runs:
                 # Emitting no run is not the same as holding nothing, so what
@@ -8877,49 +8896,64 @@ class _DocxWalker:
                 self._cell_inventory(
                     cell_position,
                     grid,
-                    deleted,
+                    state,
                     not _docx_covered_cell_has_content(cell),
                 )
 
 
-def _revised(tag: str, deleted: bool, depth: int) -> tuple[bool, int]:
-    """Return the deleted state and revision depth inside a ``tag`` element.
+def _revised(tag: str, state: str, depth: int) -> tuple[str, int]:
+    """Return the revision state and depth inside a ``tag`` element.
 
-    An insertion inside a deletion has no coherent reading, and an unbounded
-    stack of wrappers is not a document anyone wrote, so both are refused.
-    A deletion inside an insertion is how Word records inserted-then-deleted
-    text and stays deleted.
+    The state is ``current`` outside every revision, ``inserted`` under a
+    ``w:ins`` or ``w:moveTo``, and ``deleted`` under a ``w:del`` or
+    ``w:moveFrom``. An insertion inside a deletion has no coherent reading, and
+    an unbounded stack of wrappers is not a document anyone wrote, so both are
+    refused. A deletion inside an insertion is how Word records
+    inserted-then-deleted text and stays deleted.
     """
     if tag not in _INSERTED and tag not in _REMOVED:
-        return deleted, depth
-    if deleted and tag in _INSERTED:
+        return state, depth
+    if state == "deleted" and tag in _INSERTED:
         raise OOXMLInvalid("DOCX revisions contradict each other")
     if depth >= _MAX_REVISION_DEPTH:
         raise OOXMLInvalid("DOCX revisions are nested too deeply")
-    return tag in _REMOVED, depth + 1
+    return ("deleted" if tag in _REMOVED else "inserted"), depth + 1
+
+
+def _revised_visibility(state: str, visible: str = "visible") -> str:
+    """Say how content standing in revision ``state`` is read on the page.
+
+    A deletion is not the page's content, so whatever it wrapped reads as
+    annotation however the content would otherwise be read; an insertion is
+    content the author added and reads exactly as unrevised content does. Every
+    DOCX segment takes its visibility from here and its ``revision_state`` from
+    the state itself, so a feature already handed the traversal state states an
+    insertion correctly without knowing the rule.
+    """
+    return "annotation" if state == "deleted" else visible
 
 
 def _blocks(
-    parent: ElementTree.Element, deleted: bool
-) -> Iterator[tuple[ElementTree.Element, bool]]:
+    parent: ElementTree.Element, state: str
+) -> Iterator[tuple[ElementTree.Element, str]]:
     """Yield paragraphs, tables and display math below ``parent`` in document order.
 
-    Comment range markers between blocks are yielded too. Each comes with
-    whether a deletion wrapped it. Transparent wrappers
+    Comment range markers between blocks are yielded too. Each comes with the
+    revision state it stands in. Transparent wrappers
     (``body``, content controls, revisions) are entered; a yielded paragraph,
     table or equation is not entered, so nothing is seen twice. Math is a block
     of its own where it stands between blocks rather than a wrapper, so its own
     structure is never mistaken for the story's.
     """
-    stack = [(iter(parent), deleted, 0)]
+    stack = [(iter(parent), state, 0)]
     while stack:
-        children, state, depth = stack[-1]
+        children, inherited, depth = stack[-1]
         for child in children:
             tag = _local(child.tag)
             if child.tag in _MATH_CONTENT or tag in {"p", "tbl"} or tag in _RANGE_TAGS:
-                yield child, state
+                yield child, inherited
             elif tag not in _NON_BLOCK_TAGS:
-                inner, level = _revised(tag, state, depth)
+                inner, level = _revised(tag, inherited, depth)
                 stack.append((iter(child), inner, level))
                 break
         else:
@@ -9151,24 +9185,29 @@ def _docx_val(element: ElementTree.Element) -> str | None:
 
 def _paragraph_items(
     paragraph: ElementTree.Element,
-    deleted: bool,
+    state: str,
     fields: list[_FieldState],
-) -> list[tuple[str, str | ElementTree.Element | dict[str, object], bool]]:
-    """Split a paragraph into ordered ``(kind, value, deleted)`` items.
+) -> list[tuple[str, str | ElementTree.Element | dict[str, object], str]]:
+    """Split a paragraph into ordered ``(kind, value, state)`` items.
 
-    Kinds are ``t`` current text, ``d`` deleted text, ``v`` text a run's own
-    properties hide (carrying whether a deletion wrapped it), ``x`` a text box,
+    Each item carries the revision state it stands in -- ``current``,
+    ``inserted`` or ``deleted`` -- and text is one stretch only while that
+    state holds, so inserted text is never joined to the unrevised text beside
+    it any more than deleted text is.
+
+    Kinds are ``t`` text that is read as prose (current or inserted), ``d``
+    deleted text, ``v`` text a run's own properties hide (carrying the revision
+    state it stands in), ``x`` a text box,
     ``e`` an ``m:oMath`` or ``m:oMathPara`` equation, ``g`` a ``wp:inline`` or
     ``wp:anchor`` drawing object that displays an image, ``k`` one that names a
     chart, ``s`` one that names SmartArt, ``o`` a ``w:object`` declaring a
     legacy embedded or linked object, ``p`` a ``w:pict`` showing a standalone
     legacy image,
     ``m`` a hyperlink, simple field or annotation marker, and ``c`` an
-    already recorded complex field (each carrying whether a deletion wrapped
-    it).
-    Adjacent text of one kind is one stretch; tabs and breaks stay separators
-    inside it. Hidden text is a stretch of its own, so it is never joined to the
-    visible text around it.
+    already recorded complex field.
+    Adjacent text of one kind and one state is one stretch; tabs and breaks stay
+    separators inside it. Hidden text is a stretch of its own, so it is never
+    joined to the visible text around it.
 
     ``fields`` is the story's stack of complex fields a ``fldChar`` has opened,
     carried in and left as this paragraph leaves it, because a field spans the
@@ -9182,22 +9221,22 @@ def _paragraph_items(
     way, and one reached while any open field is still before its separator is
     refused rather than read or inventoried.
     """
-    items: list[tuple[str, str | ElementTree.Element | dict[str, object], bool]] = []
+    items: list[tuple[str, str | ElementTree.Element | dict[str, object], str]] = []
     pending: list[str] = []
     pending_kind = ""
-    pending_deleted = False
+    pending_state = "current"
 
     # Markers follow the stretch they sit in, so they never split the text.
-    deferred: list[tuple[str, str | ElementTree.Element | dict[str, object], bool]] = []
+    deferred: list[tuple[str, str | ElementTree.Element | dict[str, object], str]] = []
 
     def close() -> None:
         if pending:
-            items.append((pending_kind, "".join(pending), pending_deleted))
+            items.append((pending_kind, "".join(pending), pending_state))
             pending.clear()
         items.extend(deferred)
         deferred.clear()
 
-    stack = [(iter(paragraph), deleted, 0, False)]
+    stack = [(iter(paragraph), state, 0, False)]
     while stack:
         children, state, depth, hidden = stack[-1]
         for node in children:
@@ -9281,9 +9320,10 @@ def _paragraph_items(
                         raise OOXMLInvalid("OOXML extraction has too many segments")
                 continue
             if tag in _INLINE_MARKS:
-                if ("d" if state else "t", state) != (pending_kind, pending_deleted):
+                marked = "d" if state == "deleted" else "t"
+                if (marked, state) != (pending_kind, pending_state):
                     close()
-                    pending_kind, pending_deleted = "d" if state else "t", state
+                    pending_kind, pending_state = marked, state
                 deferred.append(("m", node, state))
                 if len(items) + len(deferred) > MAX_SEGMENTS:
                     raise OOXMLInvalid("OOXML extraction has too many segments")
@@ -9319,11 +9359,14 @@ def _paragraph_items(
                     # code around it: the inner record keeps the result, the
                     # prose does not, until the outer field separates too.
                     continue
-                removed = state or tag == "delText"
-                kind = "v" if hidden else "d" if removed else "t"
-                if (kind, removed) != (pending_kind, pending_deleted):
+                # ``delText`` is deleted text wherever it stands, so a run that
+                # wrote it outside a ``w:del`` is still read as the deletion it
+                # declares itself to be rather than as the state around it.
+                text_state = "deleted" if tag == "delText" else state
+                kind = "v" if hidden else "d" if text_state == "deleted" else "t"
+                if (kind, text_state) != (pending_kind, pending_state):
                     close()
-                    pending_kind, pending_deleted = kind, removed
+                    pending_kind, pending_state = kind, text_state
                     if len(items) > MAX_SEGMENTS:
                         raise OOXMLInvalid("OOXML extraction has too many segments")
                 pending.append(text)
