@@ -2269,7 +2269,15 @@ final class SidebarRowView: NSView {
     private let icon: NSImageView
 
     init(title: String, symbol: String) {
-        label = OvFont.label(title, size: 13, color: Ov.textPrimary)
+        // A plain label, not `OvFont.label`. That builds an *attributed*
+        // string carrying its own `.foregroundColor`, and on an attributed
+        // NSTextField a later `textColor =` is ignored — so the selected row
+        // kept `textPrimary`. In dark that is white and looked correct by
+        // accident; in light it is near-black on a solid brick fill, which is
+        // the unreadable label. Tracking is 0 at this size, so nothing is lost.
+        label = NSTextField(labelWithString: title)
+        label.font = OvFont.sans(13)
+        label.textColor = Ov.textPrimary
         icon = NSImageView()
         // A 16×16 glyph box (`#sw-nav .nav-row svg`); the symbol is sized 15 so
         // wide glyphs fit it without being scaled down.
