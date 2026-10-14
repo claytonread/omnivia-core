@@ -338,10 +338,24 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
 
     /// Claims the one scope that is due now, or nil when none is. User-priority work goes first,
     /// oldest signal first; background work rotates through scope keys.
-    public func claim(at now: Int64) throws -> AutomaticSchedulingClaim? {
+    ///
+    /// `allowed`, when given, is the only set of keys selection may choose from: due work for any
+    /// other scope is passed over untouched, keeping its dirty record, its generation and its
+    /// signal times exactly as they stand. A caller that owns some scopes and not others passes
+    /// its own, so it can never claim — and then have to hand back — work belonging to another
+    /// owner, which is what would spend its turn in the rotation. Within the allowed set the
+    /// priority order and the background rotation are the same ones an unrestricted claim uses,
+    /// and the choice is made under the same lock as the claim it returns.
+    ///
+    /// Omitting it selects across every tracked scope.
+    public func claim(
+        at now: Int64,
+        among allowed: Set<AutomaticSchedulingKey>? = nil
+    ) throws -> AutomaticSchedulingClaim? {
         try mutate {
             try advance(now)
             let ready: [(key: AutomaticSchedulingKey, dirty: Pending)] = entries.compactMap { key, entry in
+                guard allowed?.contains(key) ?? true else { return nil }
                 guard entry.active == nil, let dirty = entry.dirty, Self.due(dirty, at: now) else { return nil }
                 return (key, dirty)
             }

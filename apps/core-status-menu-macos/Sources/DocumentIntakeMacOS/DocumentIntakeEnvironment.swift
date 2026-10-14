@@ -20,10 +20,9 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     /// Runs the demands the schedule arms, off the main actor.
     public let folderReconciliationExecutor: FolderReconciliationExecutor
     /// Durable automatic-update scheduling: which verified scopes are dirty, what one candidate is
-    /// in flight, and where background rotation stands. It is built here so its state survives a
-    /// restart from the first process that writes it, but nothing feeds it yet — folder and file
-    /// monitoring still go straight to preparation — so it decides no production work until the
-    /// monitor and publication seams are wired to it.
+    /// in flight, and where background rotation stands. Individual file watches now decide every
+    /// automatic check through it — `fileMonitoring` signals it and reads nothing it has not
+    /// claimed. Folder monitoring still goes straight to preparation.
     public let automaticScheduling: AutomaticSchedulingStateMachine
     public let folderBulkRuns: FolderBulkRunStore
     public let folderBulkCoordinator: FolderBulkRunCoordinator
@@ -34,12 +33,23 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     /// Resolved here, once, from the real state root rather than matched by name.
     public let controlledStores: [URL]
 
+    /// Process-monotonic milliseconds, zeroed at this call, which is the clock
+    /// `AutomaticSchedulingStateMachine` measures its quiet period and maximum wait in. It is an
+    /// elapsed duration rather than a wall-clock reading, so a time change cannot move it
+    /// backwards; a test supplies its own instead.
+    public static func processUptimeMilliseconds() -> @Sendable () -> Int64 {
+        let base = ProcessInfo.processInfo.systemUptime
+        return { Int64(max(0, (ProcessInfo.processInfo.systemUptime - base) * 1000)) }
+    }
+
     public init(
         stateRoot: URL,
         bookmarkCodec: any SecurityScopedBookmarkCoding = SystemSecurityScopedBookmarkCodec(),
-        reader: any CoordinatedOriginalReading = SystemCoordinatedOriginalReader()
+        reader: any CoordinatedOriginalReading = SystemCoordinatedOriginalReader(),
+        monotonicClock: (@Sendable () -> Int64)? = nil
     ) throws {
         self.reader = reader
+        let clock = monotonicClock ?? Self.processUptimeMilliseconds()
         controlledStores = [stateRoot.resolvingSymlinksInPath().standardizedFileURL]
         // Exactly one gate for the whole process: access relink/disconnect/adopt,
         // subscription register/update, queue publication and delivery claims all
@@ -119,7 +129,9 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             preparation: preparation,
             queue: queue,
             subscriptions: fileSubscriptions,
-            reader: reader
+            reader: reader,
+            scheduling: automaticScheduling,
+            clock: clock
         )
     }
 

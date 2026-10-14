@@ -324,6 +324,63 @@ final class AutomaticSchedulingStateMachineTests: XCTestCase {
         XCTAssertEqual(machine.trackedScopes, 0)
     }
 
+    func testClaimAmongAnAllowedSetNeitherSelectsNorDisturbsAnyOtherScope() throws {
+        let machine = AutomaticSchedulingStateMachine()
+        let allowed = Self.makeKey("scope-z")
+        // Both of the reasons an unrestricted claim would take this one first: user priority, and
+        // the earlier place in the rotation order.
+        let other = Self.makeKey("scope-a")
+        try machine.signal(other, priority: .user, at: 0)
+        try machine.signal(allowed, priority: .background, at: 0)
+
+        let claim = try XCTUnwrap(machine.claim(at: 3_000, among: [allowed]))
+        XCTAssertEqual(claim.key, allowed)
+        XCTAssertEqual(claim.generation, 1)
+
+        // The passed-over scope was not claimed and then handed back: it still holds its own dirty
+        // record, generation, priority and signal times, with nothing in flight.
+        let untouched = try XCTUnwrap(machine.state(of: other))
+        XCTAssertEqual(untouched.dirtyGeneration, 1)
+        XCTAssertNil(untouched.activeGeneration)
+        XCTAssertFalse(untouched.published)
+        XCTAssertEqual(untouched.priority, .user)
+        XCTAssertEqual(untouched.firstSignalMilliseconds, 0)
+        XCTAssertEqual(untouched.latestSignalMilliseconds, 0)
+        XCTAssertFalse(untouched.restoredFromRestart)
+
+        // Nothing else is allowed, so the restricted claim is exhausted while the work it passed
+        // over is still there for the owner that may claim it.
+        XCTAssertNil(try machine.claim(at: 3_100, among: [allowed]))
+        XCTAssertEqual(try machine.claim(at: 3_200)?.key, other)
+    }
+
+    func testClaimAmongAnAllowedSetRotatesBackgroundWorkInTheSameOrder() throws {
+        let machine = AutomaticSchedulingStateMachine()
+        let keys = ["scope-a", "scope-b", "scope-c"].map { Self.makeKey($0) }
+        let allowed: Set<AutomaticSchedulingKey> = [keys[0], keys[2]]
+        for key in keys { try machine.signal(key, priority: .background, at: 0) }
+
+        var selected: [AutomaticSchedulingKey] = []
+        var now: Int64 = 3_000
+        for _ in allowed {
+            let claim = try XCTUnwrap(machine.claim(at: now, among: allowed))
+            selected.append(claim.key)
+            // Resolved before the next selection, so the rotation is what orders them rather than
+            // one claim blocking its own key.
+            try machine.markPublished(
+                claim.key, generation: claim.generation, intentRef: Self.ref, at: now + 10
+            )
+            try machine.markCompleted(claim.key, generation: claim.generation, at: now + 20)
+            now += 100
+        }
+
+        // The allowed scopes took their turns in the same scope-key order, and the one outside the
+        // set never spent a turn: its work is still there for an unrestricted claim to give out.
+        XCTAssertEqual(selected, [keys[0], keys[2]])
+        XCTAssertNil(try machine.claim(at: now, among: allowed))
+        XCTAssertEqual(try machine.claim(at: now)?.key, keys[1])
+    }
+
     // MARK: - Transition errors
 
     func testTransitionErrorsAreRefusedAndLeaveTheClaimWhereItWas() throws {
