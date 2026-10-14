@@ -1521,3 +1521,119 @@ def test_math_inside_a_field_instruction_is_refused() -> None:
 
     with pytest.raises(OOXMLInvalid, match="instruction holds math"):
         extract_docx(docx(body, styles=False), capture_id=CAPTURE)
+
+
+# One display block holding the two equations Word wrote into it.
+DISPLAY = f"<m:oMathPara>{math('x')}{math('y')}</m:oMathPara>"
+MATH_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+DISPLAY_OMML = (
+    f'<ns0:oMathPara xmlns:ns0="{MATH_NS}">'
+    "<ns0:oMath><ns0:r><ns0:t>x</ns0:t></ns0:r></ns0:oMath>"
+    "<ns0:oMath><ns0:r><ns0:t>y</ns0:t></ns0:r></ns0:oMath>"
+    "</ns0:oMathPara>"
+)
+DISPLAY_RECORD = {
+    "format": "OMML",
+    "serialization": "normalized",
+    "sourceMarkup": DISPLAY_OMML,
+    # Every ``m:t`` the container stores directly, in source order.
+    "directText": "xy",
+    "generatedReading": False,
+}
+
+
+def test_display_math_is_one_block_equation_in_the_source_order_it_stands() -> None:
+    body = f"<w:p>{run('Before')}</w:p>{DISPLAY}<w:p>{run('After')}</w:p>"
+    content = docx(body, styles=False)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("body", "Before", "0"),
+        # One equation for the whole container, in the block position it stands
+        # in: neither ``oMath`` inside it is recorded again beside it.
+        ("equation", None, "1"),
+        ("body", "After", "2"),
+    ]
+    assert [value for _, value in equations(content)] == [DISPLAY_RECORD]
+    # Display math is no paragraph, so it is counted as none.
+    assert result.expected == 2
+
+
+def test_display_math_anchored_inside_a_paragraph_is_still_one_equation() -> None:
+    body = f"<w:p>{run('Solve ')}{DISPLAY}{run(' twice')}</w:p>"
+    content = docx(body, styles=False)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("body", "Solve ", "0"),
+        ("equation", None, "0.e0"),
+        ("body", " twice", "0.t1"),
+    ]
+    assert [value for _, value in equations(content)] == [DISPLAY_RECORD]
+
+
+def test_display_math_splits_a_cell_and_keeps_a_deletion_over_it() -> None:
+    body = (
+        f"<w:tbl><w:tr><w:tc><w:p>{run('Area')}</w:p>{DISPLAY}"
+        f"<w:p>{run('as printed')}</w:p><w:del>{DISPLAY}</w:del>"
+        "</w:tc></w:tr></w:tbl>"
+    )
+    content = docx(body, styles=False)
+
+    assert [
+        (
+            i.semantic_role,
+            i.text,
+            i.source_locator["position"],
+            i.revision_state,
+            i.visibility,
+        )
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("table_cell", "Area", "0.r0.c0", "current", "visible"),
+        ("equation", None, "0.r0.c0.1", "current", "visible"),
+        # The math closed the run rather than trailing the prose it follows.
+        ("table_cell", "as printed", "0.r0.c0.t1", "current", "visible"),
+        ("equation", None, "0.r0.c0.3", "deleted", "annotation"),
+    ]
+    # The deletion changes the revision it is read as and nothing it records.
+    assert [value for _, value in equations(content)] == [DISPLAY_RECORD] * 2
+
+
+def test_display_math_is_the_saved_result_of_the_field_it_sits_under() -> None:
+    body = (
+        f"<w:p>{fld('begin')}{instr(' EQ ')}{fld('separate')}</w:p>"
+        f"{DISPLAY}<w:p>{fld('end')}</w:p>"
+    )
+    content = docx(body, styles=False)
+
+    assert [
+        (i.semantic_role, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [("object_inventory", "0.f0"), ("equation", "1")]
+    # The field stored a result even though no prose was read under it.
+    assert inventory(content)[0][1]["savedResultPresent"] is True
+
+
+def test_display_math_inside_a_field_instruction_is_refused() -> None:
+    body = (
+        f"<w:p>{fld('begin')}{instr(' EQ ')}</w:p>{DISPLAY}"
+        f"<w:p>{fld('separate')}{fld('end')}</w:p>"
+    )
+
+    with pytest.raises(OOXMLInvalid, match="instruction holds math"):
+        extract_docx(docx(body, styles=False), capture_id=CAPTURE)
+
+
+def test_a_display_container_in_another_namespace_is_no_equation() -> None:
+    other = (
+        '<z:oMathPara xmlns:z="urn:example:other">'
+        f"<w:p>{run('plain')}</w:p></z:oMathPara>"
+    )
+
+    assert read(docx(other, styles=False)) == [("body", "plain", "0")]

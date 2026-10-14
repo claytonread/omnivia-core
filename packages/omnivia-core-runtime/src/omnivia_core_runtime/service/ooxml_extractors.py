@@ -66,7 +66,12 @@ _MAX_DOCX_FIELD_DEPTH: Final = 20
 # called ``oMath`` or ``t`` in another vocabulary is not read as math.
 _MATH_NAMESPACE: Final = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 _MATH_OBJECT: Final = f"{{{_MATH_NAMESPACE}}}oMath"
+_MATH_PARA: Final = f"{{{_MATH_NAMESPACE}}}oMathPara"
 _MATH_TEXT: Final = f"{{{_MATH_NAMESPACE}}}t"
+# Either form of math is one equation kept whole: an ``oMathPara`` is the
+# display block Word wrote and holds the ``oMath`` children of that one
+# equation, which are therefore never recorded again on their own.
+_MATH_CONTENT: Final = frozenset({_MATH_OBJECT, _MATH_PARA})
 # OmniVia's own bound on one equation's markup and direct text together, well
 # under the 131072-byte stored segment value cap so JSON escaping of the markup
 # cannot push the recorded value past it.
@@ -4702,11 +4707,15 @@ class _FieldState:
 
 
 class _DocxWalker:
-    """Walks one story's paragraphs and tables in XML document order.
+    """Walks one story's paragraphs, tables and display math in XML document order.
 
     A position is the block index inside the story (or note), extended with
     row, cell and in-cell block indices for tables, so it depends only on the
-    structure of the part. Inside a paragraph, items come out in source order:
+    structure of the part. Display math standing between blocks is one such
+    block: it takes a position of its own and splits the cell prose around it,
+    and the ``oMath`` children it holds are part of that one ``equation``
+    segment rather than equations beside it. Inside a paragraph, items come out
+    in source order:
     contiguous current text (the first stretch at the paragraph position, later
     ones at ``<paragraph>.t<n>``), deleted text (``<paragraph>.d<n>``), text
     hidden by a run's own properties (``<paragraph>.v<n>``, a
@@ -4781,6 +4790,8 @@ class _DocxWalker:
             position = f"{prefix}{index}"
             if tag == "p":
                 self._paragraph(block, position, depth, removed)
+            elif block.tag in _MATH_CONTENT:
+                self._math(block, position, removed, None)
             else:
                 self._table(block, position, depth, removed)
             index += 1
@@ -5035,10 +5046,29 @@ class _DocxWalker:
                 )
                 current += 1
 
+    def _math(
+        self,
+        block: ElementTree.Element,
+        position: str,
+        deleted: bool,
+        cell: _CellRun | None,
+    ) -> None:
+        """Record math that stands between blocks rather than inside a paragraph.
+
+        It is one block of its own, so it takes the block position a paragraph
+        would have had there, and in a cell it closes the current run exactly as
+        an inline equation does rather than trailing the prose it follows. The
+        fields open around it count it as their stored result the same way too,
+        because a block is no less that result than a run is.
+        """
+        _math_result(self._fields)
+        self._flush(cell)
+        self._equation(block, position, deleted)
+
     def _equation(
         self, element: ElementTree.Element, position: str, deleted: bool
     ) -> None:
-        """Record one inline equation as the markup it is, unread.
+        """Record one equation as the markup it is, unread.
 
         The math is neither interpreted nor converted, so it is kept as its own
         segment and its text never joins the prose it interrupts. A deletion
@@ -5122,6 +5152,8 @@ class _DocxWalker:
                 if block_tag == "tbl":
                     self._flush(run)
                     self._table(block, block_position, depth + 1, removed)
+                elif block.tag in _MATH_CONTENT:
+                    self._math(block, block_position, removed, run)
                 else:
                     self._paragraph(block, block_position, depth, removed, run)
             self._flush(run)
@@ -5147,19 +5179,21 @@ def _revised(tag: str, deleted: bool, depth: int) -> tuple[bool, int]:
 def _blocks(
     parent: ElementTree.Element, deleted: bool
 ) -> Iterator[tuple[ElementTree.Element, bool]]:
-    """Yield paragraphs and tables below ``parent`` in document order.
+    """Yield paragraphs, tables and display math below ``parent`` in document order.
 
     Comment range markers between blocks are yielded too. Each comes with
     whether a deletion wrapped it. Transparent wrappers
-    (``body``, content controls, revisions) are entered; a yielded paragraph or
-    table is not entered, so nothing is seen twice.
+    (``body``, content controls, revisions) are entered; a yielded paragraph,
+    table or equation is not entered, so nothing is seen twice. Math is a block
+    of its own where it stands between blocks rather than a wrapper, so its own
+    structure is never mistaken for the story's.
     """
     stack = [(iter(parent), deleted, 0)]
     while stack:
         children, state, depth = stack[-1]
         for child in children:
             tag = _local(child.tag)
-            if tag in {"p", "tbl"} or tag in _RANGE_TAGS:
+            if child.tag in _MATH_CONTENT or tag in {"p", "tbl"} or tag in _RANGE_TAGS:
                 yield child, state
             elif tag not in _NON_BLOCK_TAGS:
                 inner, level = _revised(tag, state, depth)
@@ -5178,9 +5212,9 @@ def _paragraph_items(
 
     Kinds are ``t`` current text, ``d`` deleted text, ``v`` text a run's own
     properties hide (carrying whether a deletion wrapped it), ``x`` a text box,
-    ``e`` an inline ``m:oMath`` equation, ``m`` a hyperlink, simple field or
-    annotation marker, and ``c`` an already recorded complex field (each
-    carrying whether a deletion wrapped it).
+    ``e`` an ``m:oMath`` or ``m:oMathPara`` equation, ``m`` a hyperlink, simple
+    field or annotation marker, and ``c`` an already recorded complex field
+    (each carrying whether a deletion wrapped it).
     Adjacent text of one kind is one stretch; tabs and breaks stay separators
     inside it. Hidden text is a stretch of its own, so it is never joined to the
     visible text around it.
@@ -5224,22 +5258,14 @@ def _paragraph_items(
                 if len(items) > MAX_SEGMENTS:
                     raise OOXMLInvalid("OOXML extraction has too many segments")
                 continue
-            if node.tag == _MATH_OBJECT:
+            if node.tag in _MATH_CONTENT:
                 # Math is kept whole and never entered, so none of its stored
-                # text reaches the prose around it and no ``oMath`` inside it is
-                # seen a second time. A run's hidden properties cannot reach it,
-                # because math sits beside runs rather than inside one: hidden
-                # math and ``m:oMathPara`` wait for their own slice.
-                if any(open_field.record is None for open_field in fields):
-                    # An instruction is field code, which carries no equation of
-                    # its own, so math reached there has no one reading: it is
-                    # neither the field's code nor the document's content. It is
-                    # refused rather than dropped or read as prose.
-                    raise OOXMLInvalid("DOCX field instruction holds math")
-                for open_field in fields:
-                    # An equation under a separator is the result Word stored
-                    # there, counted by every open field exactly as text is.
-                    open_field.result = True
+                # text reaches the prose around it and no ``oMath`` inside it —
+                # including each one an ``oMathPara`` holds — is seen a second
+                # time. A run's hidden properties cannot reach it, because math
+                # sits beside runs rather than inside one: hidden math waits for
+                # its own slice.
+                _math_result(fields)
                 close()
                 items.append(("e", node, state))
                 if len(items) > MAX_SEGMENTS:
@@ -5327,8 +5353,24 @@ def _paragraph_items(
     return items
 
 
+def _math_result(fields: list[_FieldState]) -> None:
+    """Count one equation as the result of each open field, or refuse it.
+
+    An equation under a separator is the result Word stored there, counted by
+    every open field exactly as text is. An instruction is field code, which
+    carries no equation of its own, so math reached while any field is still
+    before its separator has no one reading: it is neither the field's code nor
+    the document's content, and it is refused rather than dropped or read as
+    prose.
+    """
+    if any(open_field.record is None for open_field in fields):
+        raise OOXMLInvalid("DOCX field instruction holds math")
+    for open_field in fields:
+        open_field.result = True
+
+
 def _docx_equation(element: ElementTree.Element) -> dict[str, object]:
-    """Record one ``m:oMath`` as bounded, uninterpreted OMML.
+    """Record one ``m:oMath`` or ``m:oMathPara`` as bounded, uninterpreted OMML.
 
     ``ElementTree`` writes the subtree deterministically for a given parse, so
     the same package always yields the same markup; prefixes are the writer's
@@ -5336,7 +5378,9 @@ def _docx_equation(element: ElementTree.Element) -> dict[str, object]:
     tail is left out because that is the text after the math, not part of it.
     ``directText`` is only the stored ``m:t`` text in source order, so nothing is
     read out of the structure the markup carries and no reading is generated
-    from it.
+    from it. An ``oMathPara`` is one equation, and its own ``oMath`` children are
+    part of the markup and the text recorded here rather than equations of their
+    own.
 
     The byte bound covers the markup and the direct text together, and an
     equation past it is refused: clipping either would hand on markup that no
