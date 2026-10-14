@@ -279,6 +279,86 @@ _XLSX_ANCHORS: Final = {
 # walked and before any frame below one is reached.
 # ponytail: 4096 anchors per drawing; widen only if a real workbook is refused.
 _MAX_XLSX_ANCHORS: Final = 4_096
+# The relationship and content types that together qualify the workbook's
+# connections part: the one part a workbook keeps its stored external data
+# connections in. As with every other type here, only the two URIs OOXML
+# defines qualify -- Transitional and Strict -- so nothing reaches the part by
+# ending the same way, and an external-link, query-table or pivot-cache
+# relationship reaches no connections list at all. The content type is compared
+# against ``declared_type``, which case-folds; the authored spelling is already
+# folded, and it is the same under both profiles.
+_XLSX_CONNECTIONS_RELATIONSHIPS: Final = frozenset(
+    {
+        (
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            "/connections"
+        ),
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/connections",
+    }
+)
+_XLSX_CONNECTIONS_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.connections+xml"
+)
+# The workbook's own bound: the connections one list may declare, counted
+# before any of them is read. Every string a record keeps is clipped, so the
+# count is the whole of what bounds the inventory.
+# ponytail: 4096 connections per workbook; widen only if a real workbook is
+# refused by it.
+_MAX_XLSX_CONNECTIONS: Final = 4_096
+# ``ST_CredMethod``: how the stored connection says it would authenticate if
+# anything ever opened it. Nothing here does, and no credential, password or
+# token is read, stored or resolved on account of any of these -- the mode is
+# the author's declared policy and is reported as the word they wrote.
+_XLSX_CREDENTIAL_METHODS: Final = frozenset({"integrated", "none", "stored", "prompt"})
+# The connection's free-text attributes. ``sourceFile`` and ``odcFile`` name
+# where the author said the connection came from: both are recorded verbatim as
+# the text they are, and neither is ever opened, resolved against the
+# filesystem, fetched or normalised into a path.
+_XLSX_CONNECTION_TEXT: Final = (
+    "name",
+    "description",
+    "sourceFile",
+    "odcFile",
+    "singleSignOnId",
+)
+# The connection's boolean attributes, read tri-state: SpreadsheetML defaults
+# each to false, but a default is not a declaration, and a refresh policy a
+# consumer has to reason about is clearer when it says which of the two the file
+# actually wrote. Every one is inert here -- ``refreshOnLoad`` and
+# ``background`` describe what Excel would do, not what this reader did.
+_XLSX_CONNECTION_FLAGS: Final = (
+    "keepAlive",
+    "new",
+    "deleted",
+    "onlyUseConnectionFile",
+    "background",
+    "refreshOnLoad",
+    "saveData",
+)
+# The connection's unsigned numeric attributes, each beside the bound of the
+# type the schema gives it: ``type`` and ``reconnectionMethod`` are
+# ``xsd:unsignedInt``, the two versions ``xsd:unsignedByte``.
+_XLSX_CONNECTION_NUMBERS: Final = (
+    ("type", 0xFFFF_FFFF),
+    ("reconnectionMethod", 0xFFFF_FFFF),
+    ("refreshedVersion", 0xFF),
+    ("minRefreshableVersion", 0xFF),
+)
+# The direct child property sets a connection may carry, each one the payload
+# of a kind of source: a database connection string and command, an OLAP or web
+# query's own properties, a text import's settings, the query parameters, and
+# the extension point. None of them is read. A record says which kinds were
+# declared and how many parameters the parameter list held, and nothing inside
+# any of them -- no connection string, no command text, no parameter value, no
+# extension body -- is ever copied out.
+_XLSX_CONNECTION_CHILDREN: Final = (
+    "dbPr",
+    "olapPr",
+    "webPr",
+    "textPr",
+    "parameters",
+    "extLst",
+)
 # The shape-tree children that carry an identity and a z-order position.
 # ``contentPart`` carries neither, so it is not a shape here.
 _PPTX_SHAPES: Final = frozenset({"sp", "grpSp", "graphicFrame", "cxnSp", "pic"})
@@ -1584,6 +1664,11 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         # not a sheet's, so it is resolved once and every sheet's threads cite
         # the same table.
         persons = _xlsx_persons(package)
+        # The stored data connections, likewise the workbook's own part rather
+        # than a sheet's, and resolved here for the reason the defined names
+        # are: a malformed list is refused before a package's worth of work.
+        # Nothing it names is opened and no refresh is performed.
+        connections = _xlsx_connections(package)
         segments: list[ExtractedSegment] = []
         populated = 0
         for sheet_name, sheet_id, part, state in sheets:
@@ -1830,6 +1915,23 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 )
             )
             _bounded(segments)
+        # Last, after every sheet's content and the workbook's own names: a
+        # stored connection is inert inventory, never content. It is always in
+        # sight -- it belongs to the workbook rather than to a sheet, so there
+        # is no sheet state to take visibility from, and ``deleted`` is the
+        # author's own lifecycle claim in the record rather than a reason to
+        # hide one. Nothing it names was opened and nothing was refreshed.
+        for provenance, connection in connections:
+            segments.append(
+                ExtractedSegment(
+                    "object_inventory",
+                    _locator(capture_id, **provenance),
+                    structured_value=connection,
+                    extraction_method="inventory",
+                    visibility="visible",
+                )
+            )
+            _bounded(segments)
         return OOXMLExtraction(
             tuple(segments),
             "workbook_cell",
@@ -1837,6 +1939,7 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
             {
                 "sheets": len(sheets),
                 "definedNames": len(defined_names),
+                "connections": len(connections),
                 "packageMembers": len(package.names),
                 "externalReferences": package.external_relationships,
             },
@@ -2076,6 +2179,206 @@ def _xlsx_defined_names(
             }
         )
     return records
+
+
+def _xlsx_connections(
+    package: _Package,
+) -> list[tuple[dict[str, object], dict[str, object]]]:
+    """Inventory the workbook's stored data connections without opening one.
+
+    The connections list is the workbook's own part, reached only through the
+    workbook's own relationships: one of the two URIs OOXML defines for the
+    type, internal, and resolving to a part the package declares with the
+    connections content type. No path is derived from the workbook's name, so a
+    member that merely looks like the list is never read, and two qualifying
+    relationships leave which list is meant ambiguous, so the workbook is
+    refused rather than read from whichever sorts first. The root is then held
+    to ``connections`` in one of the two SpreadsheetML namespaces, as the one
+    remaining check that the part holds the vocabulary its declaration
+    promised.
+
+    A connection counts only where it is a direct child of that root and
+    qualified in the root's own namespace. An unqualified, foreign or further
+    nested lookalike declares nothing and stays transparent, exactly as it does
+    on the defined-name and table routes, so a list that wrote no namespace
+    reports no connections rather than being read for whatever spells the same
+    local name. A list that declared none is the empty list it is, which stays
+    distinguishable from a workbook that relates no part at all.
+
+    What comes back is the authored metadata needed to understand what the
+    workbook stored and what it says would happen on a refresh: the identity,
+    the author's own words, the files the author named as the source, the
+    declared credential mode, and the refresh and lifecycle flags. Nothing
+    inside a property set is copied -- no connection string, command, parameter
+    value, password, token or extension body -- only which kinds were declared
+    and how many parameters the parameter list held.
+
+    Nothing here performs a refresh or any external access, and every record
+    says so outright. No ``sourceFile`` or ``odcFile`` is opened, resolved or
+    fetched, no query is run, no network or filesystem target is reached past
+    the package's own members, and nothing is recalculated.
+    """
+    resolved = _related_part(
+        package,
+        "xl/workbook.xml",
+        _XLSX_CONNECTIONS_RELATIONSHIPS,
+        _XLSX_CONNECTIONS_CONTENT_TYPE,
+        "connections",
+        owner="workbook",
+        label="XLSX",
+    )
+    if resolved is None:
+        return []
+    relation_id, connections_part = resolved
+    root = package.xml(connections_part)
+    namespace, _, local = root.tag.rpartition("}")
+    namespace = namespace.lstrip("{")
+    if namespace not in _SPREADSHEETML:
+        raise OOXMLInvalid("XLSX connections part uses an unsupported namespace")
+    if local != "connections":
+        raise OOXMLInvalid("XLSX connections part is not rooted at its own list")
+    # Counted before the first connection is read: a workbook's declarations
+    # are the work it asks for whether or not any of them is usable.
+    entries = [node for node in root if node.tag == f"{{{namespace}}}connection"]
+    if len(entries) > _MAX_XLSX_CONNECTIONS:
+        raise OOXMLInvalid("XLSX workbook declares too many connections")
+    records: list[tuple[dict[str, object], dict[str, object]]] = []
+    seen: set[int] = set()
+    for index, entry in enumerate(entries):
+        # The id is the connection's identity: a query table or a pivot cache
+        # cites it, so a missing one names nothing and a repeated one names two
+        # connections. It is numeric, so the value rather than the spelling is
+        # the identity and no two spellings of one number are two connections.
+        raw = entry.attrib.get("id")
+        if raw is None or _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
+            raise OOXMLInvalid("XLSX connection id is missing or malformed")
+        identity = int(raw)
+        if identity in seen:
+            raise OOXMLInvalid("XLSX connection id is repeated")
+        seen.add(identity)
+        # Closed, so a mode outside the type is refused rather than read as
+        # whichever of the four it resembles.
+        credentials = entry.attrib.get("credentials")
+        if credentials is not None and credentials not in _XLSX_CREDENTIAL_METHODS:
+            raise OOXMLInvalid("XLSX connection credentials mode is not a defined value")
+        name = entry.attrib.get("name")
+        records.append(
+            (
+                {
+                    "part": "xl/workbook.xml",
+                    "connectionsPart": connections_part,
+                    "connectionsRelationshipId": relation_id,
+                    "connectionIndex": index,
+                    "connectionId": identity,
+                    **(
+                        {}
+                        if name is None
+                        else {"connection": _clip(name, _MAX_META_CHARS)}
+                    ),
+                },
+                {
+                    "kind": "connection",
+                    "id": identity,
+                    "credentials": credentials,
+                    # Stated outright on every record: this reader read a
+                    # stored declaration and did nothing it describes.
+                    "refreshPerformed": False,
+                    "externalAccessPerformed": False,
+                    # Free text, clipped rather than refused: none of it is an
+                    # identity, and nothing here reads any of it as anything
+                    # but the text it is. A field written empty stays the empty
+                    # claim the file made rather than becoming an absent one.
+                    **{
+                        key: None
+                        if (value := entry.attrib.get(key)) is None
+                        else _clip(value, _MAX_META_CHARS)
+                        for key in _XLSX_CONNECTION_TEXT
+                    },
+                    **{
+                        key: _xlsx_connection_flag(entry, key)
+                        for key in _XLSX_CONNECTION_FLAGS
+                    },
+                    **{
+                        key: _xlsx_connection_number(entry, key, bound)
+                        for key, bound in _XLSX_CONNECTION_NUMBERS
+                    },
+                    **_xlsx_connection_payloads(entry, namespace),
+                },
+            )
+        )
+    return records
+
+
+def _xlsx_connection_flag(entry: ElementTree.Element, name: str) -> bool | None:
+    """Read one connection's boolean attribute, or None where absent.
+
+    ``None`` says the file declared nothing, which is not the same as a
+    declared false, and no default is invented for it. The value is closed, so
+    one outside the type is refused rather than read as whichever of the two it
+    resembles.
+    """
+    value = entry.attrib.get(name)
+    if value is None:
+        return None
+    if value in _TRUE_FLAGS:
+        return True
+    if value in _FALSE_FLAGS:
+        return False
+    raise OOXMLInvalid("XLSX connection flag is malformed")
+
+
+def _xlsx_connection_number(
+    entry: ElementTree.Element, name: str, bound: int
+) -> int | None:
+    """Read one connection's unsigned numeric attribute, or None where absent.
+
+    Absent stays absent: nothing invents the schema's default, because a
+    version the file never wrote is not a version it claimed. The value is
+    unsigned and bounded by its own type, so a negative or oversized one is not
+    a value the type has and is refused rather than clamped into one.
+    """
+    raw = entry.attrib.get(name)
+    if raw is None:
+        return None
+    if _INDEX.fullmatch(raw) is None or int(raw) > bound:
+        raise OOXMLInvalid("XLSX connection numeric attribute is malformed")
+    return int(raw)
+
+
+def _xlsx_connection_payloads(
+    entry: ElementTree.Element, namespace: str
+) -> dict[str, object]:
+    """Report which property sets one connection declared, and nothing in them.
+
+    Each set is matched as a direct child qualified in the list's own namespace,
+    so a lookalike in a foreign vocabulary, one stripped of its prefix and one
+    nested deeper all declare nothing. The schema gives a connection one of each
+    set, so a second leaves two sets of properties at one position and nothing
+    here picks between them: it is refused rather than read from whichever was
+    written first.
+
+    Only presence comes out, plus how many parameters the parameter list held.
+    The sets themselves are left closed -- which is what makes a second one a
+    refusal rather than more of the same -- so no connection string, command,
+    query, parameter value, credential or extension body is ever copied out.
+    """
+    held = {
+        kind: [node for node in entry if node.tag == f"{{{namespace}}}{kind}"]
+        for kind in _XLSX_CONNECTION_CHILDREN
+    }
+    if any(len(nodes) > 1 for nodes in held.values()):
+        raise OOXMLInvalid("XLSX connection declares a property set twice")
+    parameters = held["parameters"]
+    return {
+        **{f"{kind}Declared": bool(nodes) for kind, nodes in held.items()},
+        # Counted, never read: a parameter's own value is exactly the kind of
+        # payload this route does not copy.
+        "parameterCount": None
+        if not parameters
+        else sum(
+            1 for node in parameters[0] if node.tag == f"{{{namespace}}}parameter"
+        ),
+    }
 
 
 def _xlsx_cells(
