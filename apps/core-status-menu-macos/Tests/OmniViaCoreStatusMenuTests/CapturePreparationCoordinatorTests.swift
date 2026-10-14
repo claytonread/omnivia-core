@@ -797,6 +797,300 @@ final class CapturePreparationCoordinatorTests: XCTestCase {
         XCTAssertEqual(payloadFiles(root), ["payload-item-1.payload", "payload-item-2.payload"])
     }
 
+    // MARK: - Under-gate publication completion
+
+    /// One shared gate and the four owners an automatic publication touches.
+    private func automaticFixture(_ root: URL) throws -> (
+        gate: PublicationGate,
+        accessStore: NativeAccessStore,
+        queue: CaptureIntentQueue,
+        subscriptions: FileSubscriptionStore,
+        scheduling: AutomaticSchedulingStateMachine
+    ) {
+        let gate = PublicationGate()
+        let accessStore = try NativeAccessStore(
+            stateDirectory: root.appendingPathComponent("access"),
+            codec: PreparationBookmarkCodec(),
+            gate: gate
+        )
+        return (
+            gate: gate,
+            accessStore: accessStore,
+            queue: try CaptureIntentQueue(root: root.appendingPathComponent("queue"), gate: gate),
+            subscriptions: try FileSubscriptionStore(
+                stateDirectory: root.appendingPathComponent("file-subscriptions"),
+                gate: gate
+            ),
+            scheduling: try AutomaticSchedulingStateMachine(
+                stateDirectory: root.appendingPathComponent("automatic-scheduling"),
+                gate: gate
+            )
+        )
+    }
+
+    private var schedulingKey: AutomaticSchedulingKey {
+        AutomaticSchedulingKey(
+            source: AutomaticSchedulingSource(workspaceRef: "workspace-1", sourceRef: "source-item-1"),
+            scopeKey: "scope-1"
+        )
+    }
+
+    /// Signals and claims the one scope, so there is an in-flight generation a
+    /// publication may be recorded against.
+    @discardableResult
+    private func claimScope(
+        _ scheduling: AutomaticSchedulingStateMachine
+    ) throws -> AutomaticSchedulingClaim {
+        try scheduling.signal(schedulingKey, priority: .user, at: 0)
+        let claim = try scheduling.claim(at: AutomaticSchedulingStateMachine.quietPeriodMilliseconds)
+        return try XCTUnwrap(claim)
+    }
+
+    private func automaticItem(
+        subscription: String = "subscription-1",
+        epoch: UInt64 = 1
+    ) -> CapturePreparationItem {
+        CapturePreparationItem(
+            access: NativeAccessExpectation(accessRef: "access-1", generation: 1),
+            seed: automaticSeed(item: "item-1", access: "access-1", subscription: subscription),
+            observedDirtyEpoch: epoch
+        )
+    }
+
+    /// The scheduler obligation is recorded in the same critical section as the
+    /// queue commit: the completion sees a published queue and still holds the
+    /// gate that every other owner has to wait for.
+    func testCompletionRunsAfterPublicationWithTheGateStillHeld() async throws {
+        let root = try temporaryRoot()
+        let fixture = try automaticFixture(root)
+        try adoptFile(fixture.accessStore, root: root, item: "item-1", access: "access-1")
+        try fixture.subscriptions.register(
+            fileSubscription(item: "item-1", access: "access-1", subscription: "subscription-1")
+        )
+        let claim = try claimScope(fixture.scheduling)
+        let coordinator = CapturePreparationCoordinator(
+            accessStore: fixture.accessStore,
+            queue: fixture.queue,
+            reader: TestOriginalReader { try Data(contentsOf: $0) },
+            fileSubscriptions: fixture.subscriptions,
+            gate: fixture.gate
+        )
+        let started = DispatchSemaphore(value: 0)
+        let read = DispatchSemaphore(value: 0)
+        let observed = OutcomeBox()
+
+        let published = try await coordinator.prepareAndPublish(
+            [automaticItem()],
+            binding: publicationBinding
+        ) { entries in
+            // Already committed: the candidate was renamed into the published
+            // namespace and the entry is in the queue.
+            observed.entry = entries.first
+            XCTAssertEqual(entries.map { $0.intent.itemId }, ["item-1"])
+            XCTAssertEqual(fixture.queue.allEntries().map { $0.intent.itemId }, ["item-1"])
+            XCTAssertEqual(self.queueNames(root, in: "published").count, 1)
+            XCTAssertTrue(self.queueNames(root, in: "candidates").isEmpty)
+            // And still under the gate, so no other owner can read between the
+            // commit and this update.
+            Thread.detachNewThread {
+                started.signal()
+                _ = fixture.queue.allEntries()
+                read.signal()
+            }
+            started.wait()
+            XCTAssertEqual(
+                read.wait(timeout: .now() + 0.5),
+                .timedOut,
+                "the completion must still hold the publication gate"
+            )
+            try fixture.scheduling.markPublished(
+                self.schedulingKey,
+                generation: claim.generation,
+                intentRef: entries[0].intent.itemId,
+                at: AutomaticSchedulingStateMachine.quietPeriodMilliseconds
+            )
+        }
+
+        XCTAssertEqual(published.map { $0.intent.itemId }, ["item-1"])
+        XCTAssertEqual(observed.entry?.state, .pending)
+        XCTAssertEqual(read.wait(timeout: .now() + 5), .success)
+        let state = try XCTUnwrap(fixture.scheduling.state(of: schedulingKey))
+        XCTAssertTrue(state.published)
+        XCTAssertEqual(state.intentRef, "item-1")
+        XCTAssertEqual(state.activeGeneration, claim.generation)
+    }
+
+    /// The whole window is one critical section: a pause raised after consent was
+    /// revalidated lands neither before the rename nor before the completion.
+    func testPauseCannotInterleaveBetweenValidationRenameAndCompletion() async throws {
+        let root = try temporaryRoot()
+        let fixture = try automaticFixture(root)
+        try adoptFile(fixture.accessStore, root: root, item: "item-1", access: "access-1")
+        try fixture.subscriptions.register(
+            fileSubscription(item: "item-1", access: "access-1", subscription: "subscription-1")
+        )
+        let claim = try claimScope(fixture.scheduling)
+        let coordinator = CapturePreparationCoordinator(
+            accessStore: fixture.accessStore,
+            queue: fixture.queue,
+            reader: TestOriginalReader { try Data(contentsOf: $0) },
+            fileSubscriptions: fixture.subscriptions,
+            gate: fixture.gate
+        )
+        let started = DispatchSemaphore(value: 0)
+        let paused = DispatchSemaphore(value: 0)
+        let subscriptions = fixture.subscriptions
+        coordinator.afterConsentValidation = {
+            Thread.detachNewThread {
+                started.signal()
+                _ = try? subscriptions.update(id: "subscription-1") { $0.state = .paused }
+                paused.signal()
+            }
+            started.wait()
+            XCTAssertEqual(
+                paused.wait(timeout: .now() + 0.5),
+                .timedOut,
+                "the pause must block on the publication gate"
+            )
+        }
+
+        let published = try await coordinator.prepareAndPublish(
+            [automaticItem()],
+            binding: publicationBinding
+        ) { entries in
+            // The pause is still waiting: the consent this batch was validated
+            // against, the rename and this update are one section.
+            XCTAssertEqual(paused.wait(timeout: .now() + 0.5), .timedOut)
+            XCTAssertEqual(subscriptions.all().first?.state, .active)
+            XCTAssertEqual(fixture.queue.allEntries().count, 1)
+            try fixture.scheduling.markPublished(
+                self.schedulingKey,
+                generation: claim.generation,
+                intentRef: entries[0].intent.itemId,
+                at: AutomaticSchedulingStateMachine.quietPeriodMilliseconds
+            )
+        }
+
+        XCTAssertEqual(published.map { $0.intent.itemId }, ["item-1"])
+        XCTAssertEqual(paused.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(subscriptions.all().first?.state, .paused)
+        XCTAssertTrue(try XCTUnwrap(fixture.scheduling.state(of: schedulingKey)).published)
+    }
+
+    /// Queue publication is the filesystem commit point. A scheduler persistence
+    /// failure after it leaves the entry published and recoverable — it is not
+    /// unpublished and not deleted — and the exact replay that records the
+    /// obligation reconciles to the same batch instead of queueing a second one.
+    func testCompletionFailureLeavesThePublishedEntryRecoverableAndReplayDoesNotDuplicate() async throws {
+        let root = try temporaryRoot()
+        let fixture = try automaticFixture(root)
+        try adoptFile(fixture.accessStore, root: root, item: "item-1", access: "access-1")
+        try fixture.subscriptions.register(
+            fileSubscription(item: "item-1", access: "access-1", subscription: "subscription-1")
+        )
+        let coordinator = CapturePreparationCoordinator(
+            accessStore: fixture.accessStore,
+            queue: fixture.queue,
+            reader: TestOriginalReader { try Data(contentsOf: $0) },
+            fileSubscriptions: fixture.subscriptions,
+            gate: fixture.gate
+        )
+
+        // Nothing is claimed yet, so recording the publication is refused: a real
+        // scheduler failure in the window after the queue committed.
+        do {
+            _ = try await coordinator.prepareAndPublish(
+                [automaticItem()],
+                binding: publicationBinding
+            ) { entries in
+                try fixture.scheduling.markPublished(
+                    self.schedulingKey,
+                    generation: 1,
+                    intentRef: entries[0].intent.itemId,
+                    at: 0
+                )
+            }
+            XCTFail("Expected the completion failure to surface")
+        } catch let failure as CapturePublicationIncomplete {
+            XCTAssertEqual(failure.published.map { $0.intent.itemId }, ["item-1"])
+            XCTAssertEqual(failure.cause as? AutomaticSchedulingError, .notClaimed)
+        }
+
+        // Published, and recoverable: the entry, its private bytes and the closed
+        // batch a fresh process rebuilds its index from are all still there.
+        XCTAssertEqual(fixture.queue.allEntries().map { $0.state }, [.pending])
+        XCTAssertEqual(
+            try Data(contentsOf: fixture.queue.payloadURL(for: "item-1")),
+            Data("body-item-1".utf8)
+        )
+        XCTAssertEqual(queueNames(root, in: "published").count, 1)
+        XCTAssertTrue(queueNames(root, in: "candidates").isEmpty)
+        let reopened = try CaptureIntentQueue(root: root.appendingPathComponent("queue"))
+        XCTAssertEqual(reopened.allEntries().map { $0.intent.itemId }, ["item-1"])
+        // The obligation is the only thing missing.
+        XCTAssertNil(fixture.scheduling.state(of: schedulingKey))
+
+        let claim = try claimScope(fixture.scheduling)
+        let replayed = try await coordinator.prepareAndPublish(
+            [automaticItem()],
+            binding: publicationBinding
+        ) { entries in
+            try fixture.scheduling.markPublished(
+                self.schedulingKey,
+                generation: claim.generation,
+                intentRef: entries[0].intent.itemId,
+                at: AutomaticSchedulingStateMachine.quietPeriodMilliseconds
+            )
+        }
+
+        // Reconciled to the batch already published: same entry, one batch, one
+        // set of payload bytes.
+        XCTAssertEqual(replayed, fixture.queue.allEntries())
+        XCTAssertEqual(replayed.map { $0.intent.itemId }, ["item-1"])
+        XCTAssertEqual(queueNames(root, in: "published").count, 1)
+        XCTAssertEqual(payloadFiles(root), ["payload-item-1.payload"])
+        let state = try XCTUnwrap(fixture.scheduling.state(of: schedulingKey))
+        XCTAssertTrue(state.published)
+        XCTAssertEqual(state.intentRef, "item-1")
+    }
+
+    /// Manual publication passes no completion and gains no obligation: it
+    /// publishes exactly as it did, and the scheduler is left untouched.
+    func testManualPublicationWithoutACompletionIsUnchanged() async throws {
+        let root = try temporaryRoot()
+        let fixture = try automaticFixture(root)
+        var items: [CapturePreparationItem] = []
+        for index in 1...2 {
+            let item = "item-\(index)"
+            let access = "access-\(index)"
+            try adoptFile(fixture.accessStore, root: root, item: item, access: access)
+            items.append(
+                CapturePreparationItem(
+                    access: NativeAccessExpectation(accessRef: access, generation: 1),
+                    seed: seed(item: item, access: access)
+                )
+            )
+        }
+        let coordinator = CapturePreparationCoordinator(
+            accessStore: fixture.accessStore,
+            queue: fixture.queue,
+            reader: TestOriginalReader { try Data(contentsOf: $0) },
+            gate: fixture.gate
+        )
+
+        let published = try await coordinator.prepareAndPublish(items, binding: publicationBinding)
+
+        XCTAssertEqual(published.map { $0.intent.itemId }, ["item-1", "item-2"])
+        XCTAssertEqual(
+            try Data(contentsOf: fixture.queue.payloadURL(for: "item-2")),
+            Data("body-item-2".utf8)
+        )
+        XCTAssertEqual(fixture.queue.allEntries().count, 2)
+        XCTAssertEqual(queueNames(root, in: "published").count, 1)
+        XCTAssertEqual(payloadFiles(root), ["payload-item-1.payload", "payload-item-2.payload"])
+        XCTAssertEqual(fixture.scheduling.trackedScopes, 0)
+    }
+
     /// Guards the production wiring itself: every owner the publication
     /// boundary reaches has to have been built with the environment's one gate.
     func testProductionEnvironmentSharesOneGateAcrossEveryPublicationOwner() throws {
