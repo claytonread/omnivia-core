@@ -226,16 +226,40 @@ public actor FileMonitoringCoordinator {
     /// finished — see `.resolved`, which `applyReceipts` completes once the receipt is applied.
     private func publicationEvidence(for value: FileSubscription) -> PublicationEvidence {
         let entries = queue.allEntries()
-        guard let scheduled = scheduling.state(of: Self.schedulingKey(for: value)),
-              scheduled.published
-        else {
+        let scheduled = scheduling.state(of: Self.schedulingKey(for: value))
+        guard let scheduled, scheduled.published else {
             // No publication is on record, so an unresolved intent naming this subscription is one
             // the record cannot account for — a publication whose scheduling write did not survive,
             // say — and it still holds this scope's one candidate.
-            return entries.contains { entry in
-                entry.intent.consent?.subscriptionId == value.subscriptionID
-                    && [.pending, .staging, .unknownOutcome].contains(entry.state)
-            } ? .unresolved : .clear
+            // Only a candidate a restart recovered can be reconciled against the queue. Anything
+            // else in flight belongs to a caller that is still carrying it, so an intent the
+            // record cannot account for is held exactly as it was before.
+            guard scheduled?.restoredCandidate == true else {
+                let unresolved = entries.filter { entry in
+                    entry.intent.consent?.subscriptionId == value.subscriptionID
+                        && [.pending, .staging, .unknownOutcome].contains(entry.state)
+                }
+                return unresolved.isEmpty ? .clear : .unresolved
+            }
+            // A recovered candidate is reconciled against everything the queue holds for this
+            // subscription, in flight or not: a terminal entry is evidence too, and one that
+            // reached an outcome a candidate still claimed to be about to publish is exactly the
+            // kind of thing this owner must not resolve by itself.
+            let mine = entries.filter { $0.intent.consent?.subscriptionId == value.subscriptionID }
+            switch mine.count {
+            // The candidate committed no intent, so the work it was claimed for is still owed and
+            // is handed back: see `releaseRestoredCandidate`.
+            case 0: return releaseRestoredCandidate(of: value, restored: scheduled)
+            // Exactly one still-unresolved intent, against exactly the candidate that was about to
+            // publish it, is the one shape that can be accounted for: see
+            // `adoptRestoredPublication`, which refuses anything that is not this candidate's own.
+            case 1 where [.pending, .staging, .unknownOutcome].contains(mine[0].state):
+                return adoptRestoredPublication(mine[0], of: value, restored: scheduled)
+            // A terminal entry, a second entry, or one intent that is not this candidate's own: the
+            // scheduler and the queue are left exactly as they stand and the subscription goes to
+            // review, because which of them the candidate published is not a guess to make here.
+            default: return .unverifiable
+            }
         }
         // A publication recovered from a document written before refs existed carries none, so the
         // subscription's own last queued item is the only evidence there is. Nothing else falls
@@ -251,6 +275,111 @@ public actor FileMonitoringCoordinator {
         // Published, so the machine's own validation guarantees the generation that published it.
         guard let generation = scheduled.activeGeneration else { return .unverifiable }
         return .resolved(generation: generation)
+    }
+
+    /// Accounts for the one unresolved intent a restart found without a publication on record, by
+    /// attaching it to the recovered candidate that committed it.
+    ///
+    /// This is the other half of the window `check`'s own repair covers: there the queue commit
+    /// survived inside one process and only this owner's writes were missing, here the process
+    /// itself stopped between the commit and those writes, so the candidate came back as this
+    /// scope's active, unpublished claim with its intent still sitting in the queue. Reading and
+    /// publishing that generation again would put a second intent in the queue for it, so the one
+    /// that committed is adopted instead — nothing is read, nothing is republished, and no
+    /// identifier is minted.
+    ///
+    /// The subscription's own observation goes first and the scheduler's publication second, in the
+    /// order and on the gate `check`'s repair already uses, and both are absolute values derived
+    /// from that intent: a crash between them leaves the next call replaying exactly this.
+    ///
+    /// Evidence that is not exactly this candidate's own intent is never adopted by guessing — it
+    /// is unverifiable, and the subscription goes to review. A repair that was refused rather than
+    /// mismatched is simply still owed, and stays this scope's one unresolved candidate until a
+    /// later call attaches it.
+    private func adoptRestoredPublication(
+        _ entry: CaptureQueueEntry,
+        of value: FileSubscription,
+        restored: AutomaticSchedulingState?
+    ) -> PublicationEvidence {
+        guard let restored, restored.restoredCandidate,
+              let generation = restored.activeGeneration,
+              let epoch = entry.intent.consent?.dirtyEpoch,
+              Self.isAdoptableCapture(entry, of: value)
+        else { return .unverifiable }
+        var observed = value
+        observed.dirtyEpoch = epoch
+        do {
+            try recordPublication(entry, of: observed, checkedAt: entry.intent.createdAt)
+            // Refuses every scheduling state that is not the recovered candidate this intent was
+            // proved against, including one a signal has since moved the generation on.
+            try scheduling.attachRestoredPublication(
+                Self.schedulingKey(for: value),
+                generation: generation,
+                intentRef: entry.intent.itemId,
+                at: clock()
+            )
+        } catch {
+            return .unresolved
+        }
+        return .unresolved
+    }
+
+    /// Hands a recovered candidate back as dirty work because the queue holds no intent for it at
+    /// all, which is what proves it never published.
+    ///
+    /// The counterpart to `adoptRestoredPublication` on the same evidence. The candidate blocks a
+    /// duplicate claim, so without this the generation a stopped process was reading for would
+    /// stay in flight for a check that is never going to finish; handing it back makes the scope
+    /// checkable again, and the work is immediately due.
+    ///
+    /// The scheduler's own guard is what keeps this to exactly that shape: an ordinary claim this
+    /// process made itself is refused rather than cancelled, because its owner is still carrying
+    /// it. A release that was refused is still owed and keeps this scope unresolved, so a later
+    /// call releases it then rather than this one reporting a scope as checkable that is not.
+    private func releaseRestoredCandidate(
+        of value: FileSubscription,
+        restored: AutomaticSchedulingState?
+    ) -> PublicationEvidence {
+        guard let restored, restored.restoredCandidate,
+              let generation = restored.activeGeneration
+        else { return .unresolved }
+        do {
+            try scheduling.releaseRestoredCandidateWithoutPublication(
+                Self.schedulingKey(for: value),
+                generation: generation,
+                at: clock()
+            )
+        } catch {
+            return .unresolved
+        }
+        return .clear
+    }
+
+    /// Whether this unresolved intent is the automatic capture the scope's recovered candidate was
+    /// about to publish, in one of exactly the two states a stop between the queue commit and this
+    /// owner's two writes can leave behind:
+    ///
+    /// - neither write survived, so the subscription still stands at the epoch the intent was
+    ///   prepared *from* and the intent carries exactly the next one;
+    /// - the observation survived and the scheduling publication did not, so the subscription
+    ///   already records this very item at this intent's own epoch, and adopting it is a replay.
+    ///
+    /// Every other epoch is a mismatch: one this subscription has since moved past, or one further
+    /// ahead than a single check could have produced, did not come from this candidate. Apart from
+    /// the epoch the identity check is `isAutomaticCapture`'s, unchanged.
+    private static func isAdoptableCapture(
+        _ entry: CaptureQueueEntry,
+        of value: FileSubscription
+    ) -> Bool {
+        guard let epoch = entry.intent.consent?.dirtyEpoch else { return false }
+        let replay = epoch == value.dirtyEpoch && value.lastQueuedItemID == entry.intent.itemId
+        // A subscription already at the maximum epoch has no next one, so there is nothing for an
+        // intent to match rather than an addition to wrap around.
+        let prepared = value.dirtyEpoch < .max && epoch == value.dirtyEpoch + 1
+        guard replay || prepared else { return false }
+        var observed = value
+        observed.dirtyEpoch = epoch
+        return isAutomaticCapture(entry.intent, of: observed)
     }
 
     /// Whether this intent is the automatic capture this subscription would itself have published:

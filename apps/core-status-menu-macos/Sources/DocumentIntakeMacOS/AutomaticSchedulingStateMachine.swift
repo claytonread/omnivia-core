@@ -13,6 +13,9 @@ public enum AutomaticSchedulingError: Error, Equatable {
     case tooManyScopes
     /// There is no claim in flight for this key, so there is nothing to publish, complete or cancel.
     case notClaimed
+    /// The claim in flight is not one a restart recovered unpublished, so there is nothing a
+    /// previous process left behind for a publication to be attached to or handed back.
+    case notRestored
     /// A claim is in flight, but for a different generation than the caller is reporting on.
     case staleGeneration
     case alreadyPublished
@@ -105,6 +108,12 @@ public struct AutomaticSchedulingState: Equatable, Sendable {
     /// This entry was recovered from the durable store. Its signal times are zero, and any dirty
     /// work it holds is due now.
     public let restoredFromRestart: Bool
+    /// The active generation is a candidate a previous process claimed and never published, which
+    /// this one recovered as its own unpublished claim. Its intent may already be in the queue, so
+    /// it is resolved by reconciliation — `attachRestoredPublication` when that intent is there,
+    /// `releaseRestoredCandidateWithoutPublication` when it is not — rather than read and published
+    /// a second time.
+    public let restoredCandidate: Bool
 }
 
 /// The three opaque refs that name one scheduling unit on disk. Nothing else about the source is
@@ -193,11 +202,18 @@ private struct AutomaticSchedulingHeader: Codable {
 /// later than it would have before the restart, never later — and the 3-second quiet period and
 /// 30-second maximum wait continue to govern every signal raised within one process.
 ///
-/// Recovery also resolves each in-flight claim by what it reached. An unpublished candidate has no
-/// process carrying it, so it returns to dirty — same generation if nothing accumulated behind it,
-/// the later one if something did — and is immediately eligible rather than stranded. A published
-/// one is the scope's one unresolved intent: it stays active and published, still blocking a
-/// duplicate claim, until the queue reports its outcome. It also carries across the opaque ref
+/// Recovery also carries each in-flight claim across as what it reached. An unpublished candidate
+/// may have committed its intent to the queue without the publication write that names it
+/// surviving, so it stays this scope's active, unpublished claim, flagged as a recovered candidate
+/// and holding exactly the generation it was claimed for. Any later dirty generation that
+/// accumulated behind it stays separate and untouched, so attaching the intent that committed
+/// publishes the generation it was prepared for and never consumes the signal behind it. The
+/// candidate blocks a duplicate claim until reconciliation resolves it: `attachRestoredPublication`
+/// when its intent is in the queue, or `releaseRestoredCandidateWithoutPublication`, which hands it
+/// back to dirty exactly as a cancellation would, when there is none.
+///
+/// A published claim is the scope's one unresolved intent: it stays active and published, still
+/// blocking a duplicate claim, until the queue reports its outcome. It also carries across the ref
 /// `markPublished` attached, which is what lets the next process find that intent in
 /// `CaptureIntentQueue` rather than guess at it. A publication recovered from a document written
 /// before the ref existed has none, so it is recovered as an explicitly legacy unresolved intent:
@@ -232,6 +248,18 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
         /// monotonic epoch. Never persisted — everything loaded is recovered — and sticky until the
         /// work is claimed, so recovered work is never made to wait out a period it already served.
         var restoredDue = false
+        /// This active record is a candidate a previous process had claimed and not yet published.
+        /// That is the one shape whose intent may have committed to the queue without the
+        /// scheduling write naming it surviving, so it is the one shape
+        /// `attachRestoredPublication` will attach an intent to and the one shape
+        /// `releaseRestoredCandidateWithoutPublication` will hand back.
+        ///
+        /// Deliberately separate from `restoredDue`, which every recovered record carries:
+        /// recovered work that was only ever dirty had no candidate in flight, so there is no
+        /// committed intent of its own for it to adopt. Never persisted — "active and not
+        /// published" is the durable shape it is derived from — and it belongs to this record
+        /// alone, so returning it to dirty ends it and no dirty generation ever inherits it.
+        var restoredCandidate = false
     }
 
     private struct Entry {
@@ -298,7 +326,8 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
                     published: $0.published,
                     intentRef: $0.intentRef,
                     legacyUnresolvedIntent: $0.isLegacyPublication,
-                    restoredFromRestart: $0.dirty?.restoredDue ?? $0.active?.restoredDue ?? false
+                    restoredFromRestart: $0.dirty?.restoredDue ?? $0.active?.restoredDue ?? false,
+                    restoredCandidate: $0.active?.restoredCandidate ?? false
                 )
             }
         }
@@ -410,6 +439,87 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
         }
     }
 
+    /// Attaches an intent a previous process already committed to the recovered candidate that was
+    /// about to publish it: that candidate becomes published, named by the supplied ref, and
+    /// nothing else about the entry moves.
+    ///
+    /// This is the one crash window a publication's two durable writes can be split across in the
+    /// other direction from `markPublished`'s own: the queue commit survived and the scheduling
+    /// write that should have followed it did not, so the restart recovered this generation as an
+    /// active, unpublished candidate while its intent sits unresolved in the queue. Reading and
+    /// publishing it again would put a second intent in the queue for it; attaching the one that
+    /// exists resolves it without reading, republishing or minting anything.
+    ///
+    /// Any later dirty generation behind the candidate is left exactly where it is: it was
+    /// signalled after the read this intent came from, so it is still owed and is exposed for the
+    /// next claim by the completion that resolves this publication.
+    ///
+    /// Nothing here identifies the intent: the caller has already proved that this ref names
+    /// exactly that candidate's own committed intent, and this refuses every state that is not the
+    /// one that caller proved it against — a scope with no claim in flight, one already published,
+    /// one whose claim this process made itself rather than recovered, and one whose claim is for a
+    /// different generation than the caller proved its evidence against.
+    public func attachRestoredPublication(
+        _ key: AutomaticSchedulingKey,
+        generation: UInt64,
+        intentRef: String,
+        at now: Int64
+    ) throws {
+        guard Self.validRef(intentRef) else { throw AutomaticSchedulingError.malformedIntentRef }
+        try mutate {
+            try advance(now)
+            var entry = try restoredCandidate(key, generation).entry
+            entry.published = true
+            entry.intentRef = intentRef
+            entries[key] = entry
+        }
+    }
+
+    /// Hands a recovered candidate back as dirty work because the queue holds no intent for it, and
+    /// returns the generation of the dirty work that is now pending again.
+    ///
+    /// The counterpart to `attachRestoredPublication` on the same evidence: the caller has proved
+    /// there is no committed intent to attach, so the candidate never published and the work it was
+    /// claimed for is still owed. It is merged back exactly as `cancel` would — any later dirty
+    /// generation keeps its number, the candidate's signal times and priority survive, and it stays
+    /// immediately due — and the candidate's proof is cleared with it, so no second owner can
+    /// afterwards adopt an intent against work this one has handed back.
+    ///
+    /// Restricted to exactly that shape. An ordinary claim this process made itself is refused
+    /// rather than cancelled: its owner is still carrying it, and only that owner decides whether
+    /// its generation goes back to dirty.
+    @discardableResult
+    public func releaseRestoredCandidateWithoutPublication(
+        _ key: AutomaticSchedulingKey,
+        generation: UInt64,
+        at now: Int64
+    ) throws -> UInt64 {
+        try mutate {
+            try advance(now)
+            let (entry, active) = try restoredCandidate(key, generation)
+            return merge(active, backInto: entry, at: key)
+        }
+    }
+
+    /// The one active, unpublished candidate a restart recovered for this key, or a throw naming
+    /// why the state is not that. `restoredCandidate`, not `restoredDue`: only a candidate a
+    /// previous process had claimed and not published can have left a committed intent behind, or
+    /// be owed a hand-back it is not itself carrying. See `Pending`.
+    private func restoredCandidate(
+        _ key: AutomaticSchedulingKey,
+        _ generation: UInt64
+    ) throws -> (entry: Entry, active: Pending) {
+        guard let entry = entries[key], let active = entry.active else {
+            throw AutomaticSchedulingError.notClaimed
+        }
+        guard active.restoredCandidate else { throw AutomaticSchedulingError.notRestored }
+        guard !entry.published else { throw AutomaticSchedulingError.alreadyPublished }
+        // A signal raised since recovery is a later generation, which the caller's evidence was
+        // never gathered against: that evidence is stale and the candidate stays as it stands.
+        guard active.generation == generation else { throw AutomaticSchedulingError.staleGeneration }
+        return (entry, active)
+    }
+
     /// The published intent reached a terminal outcome. Its generation is resolved and dropped; any
     /// later dirty generation is left exposed for the next claim.
     public func markCompleted(_ key: AutomaticSchedulingKey, generation: UInt64, at now: Int64) throws {
@@ -454,26 +564,42 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
     public func cancel(_ key: AutomaticSchedulingKey, generation: UInt64, at now: Int64) throws -> UInt64 {
         try mutate {
             try advance(now)
-            var (entry, active) = try claimed(key, generation)
-            // Unfinished work goes back to dirty. A generation that accumulated behind it is the
-            // later one and keeps its number, but the cancelled generation's signal times survive,
-            // so the work stays as due as it already was instead of waiting out a fresh debounce.
-            var dirty = entry.dirty ?? active
-            dirty.firstSignal = min(dirty.firstSignal, active.firstSignal)
-            dirty.latestSignal = max(dirty.latestSignal, active.latestSignal)
-            dirty.priority = max(dirty.priority, active.priority)
-            // Recovered work that was claimed and then cancelled is still recovered work: it keeps
-            // being immediately due rather than silently acquiring this process's clock.
-            dirty.restoredDue = dirty.restoredDue || active.restoredDue
-            entry.dirty = dirty
-            entry.active = nil
-            // The abandoned intent is no longer this scope's unresolved one, so its ref goes with
-            // it: the caller that cancelled owns whatever the queue still holds under it.
-            entry.published = false
-            entry.intentRef = nil
-            entries[key] = entry
-            return dirty.generation
+            let (entry, active) = try claimed(key, generation)
+            return merge(active, backInto: entry, at: key)
         }
+    }
+
+    /// Returns an unfinished in-flight generation to dirty work and reports the generation that is
+    /// pending again. Shared by `cancel` and `releaseRestoredCandidateWithoutPublication`, which
+    /// differ only in what they will accept.
+    private func merge(
+        _ active: Pending,
+        backInto entry: Entry,
+        at key: AutomaticSchedulingKey
+    ) -> UInt64 {
+        var entry = entry
+        // A generation that accumulated behind the claim is the later one and keeps its number, but
+        // the released generation's signal times survive, so the work stays as due as it already
+        // was instead of waiting out a fresh debounce.
+        var dirty = entry.dirty ?? active
+        dirty.firstSignal = min(dirty.firstSignal, active.firstSignal)
+        dirty.latestSignal = max(dirty.latestSignal, active.latestSignal)
+        dirty.priority = max(dirty.priority, active.priority)
+        // Recovered work that was claimed and then released is still recovered work: it keeps being
+        // immediately due rather than silently acquiring this process's clock.
+        dirty.restoredDue = dirty.restoredDue || active.restoredDue
+        // The caller that released it owns whatever the queue still holds under the abandoned
+        // intent, so no recovered candidate's proof survives either: a second owner must not be
+        // able to adopt an intent this one has taken responsibility for.
+        dirty.restoredCandidate = false
+        entry.dirty = dirty
+        entry.active = nil
+        // Whatever intent was abandoned is no longer this scope's unresolved one, so the
+        // publication marker and its ref go with it.
+        entry.published = false
+        entry.intentRef = nil
+        entries[key] = entry
+        return dirty.generation
     }
 
     private func claimed(
@@ -605,13 +731,19 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
                     entry.published = true
                     entry.intentRef = record.intentRef
                 } else {
-                    // No process is carrying this candidate any more, so it goes back to dirty
-                    // exactly as `cancel` would: the later generation if one accumulated behind
-                    // it, its own otherwise, and the merged priority.
-                    var dirty = entry.dirty ?? active
-                    dirty.priority = max(dirty.priority, active.priority)
-                    dirty.restoredDue = true
-                    entry.dirty = dirty
+                    // This candidate may have committed its intent to the queue without the
+                    // publication write naming it surviving, so it is carried across as this
+                    // scope's active, unpublished claim rather than collapsed back into dirty:
+                    // it holds exactly the generation it was claimed for, and the flag says it is
+                    // the one shape an intent may be attached to. Recovered work that was never
+                    // claimed does not get the flag, and nothing persists it.
+                    //
+                    // Any later dirty generation that accumulated behind it stays separate and
+                    // exactly as it was loaded, so attaching the intent that committed publishes
+                    // the generation it was prepared for and never consumes the signal behind it.
+                    var active = active
+                    active.restoredCandidate = true
+                    entry.active = active
                 }
             }
             entries[record.key.key] = entry

@@ -114,7 +114,7 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         XCTAssertNotNil(try second.claim(at: 30_000))
     }
 
-    func testAnUnpublishedCandidateIsReturnedToDirtyByARestart() throws {
+    func testAnUnpublishedCandidateSurvivesARestartAsARecoveredCandidate() throws {
         let first = try machine()
         let generation = try first.signal(Self.key, priority: .user, at: 0)
         XCTAssertEqual(try first.claim(at: 3_000)?.generation, generation)
@@ -122,16 +122,28 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
 
         let second = try machine()
         let state = try XCTUnwrap(second.state(of: Self.key))
-        XCTAssertEqual(state.dirtyGeneration, generation)
-        XCTAssertEqual(state.priority, .user)
-        XCTAssertNil(state.activeGeneration)
+        // Its intent may already have committed to the queue, so it is not collapsed back into
+        // dirty and read a second time: it stays this scope's active, unpublished claim, holding
+        // exactly the generation it was claimed for, until reconciliation says which way it went.
+        XCTAssertEqual(state.activeGeneration, generation)
         XCTAssertFalse(state.published)
+        XCTAssertTrue(state.restoredCandidate)
         XCTAssertTrue(state.restoredFromRestart)
-        // Eligible, not stranded behind a claim no process is carrying.
-        XCTAssertEqual(try second.claim(at: 0)?.generation, generation)
+        XCTAssertNil(state.intentRef)
+        XCTAssertFalse(state.legacyUnresolvedIntent)
+        // No dirty record at all, so there is no time from the previous process's clock either.
+        XCTAssertNil(state.dirtyGeneration)
+        XCTAssertNil(state.priority)
+        XCTAssertNil(state.firstSignalMilliseconds)
+        XCTAssertNil(state.latestSignalMilliseconds)
+        // It blocks a duplicate claim exactly as an unresolved publication does.
+        XCTAssertNil(try second.claim(at: 0))
+        XCTAssertNil(try second.claim(at: 60_000))
+        // Recovery minted no generation of its own: a signal behind it is simply the next one.
+        XCTAssertEqual(try second.signal(Self.key, priority: .background, at: 60_000), generation + 1)
     }
 
-    func testAnUnpublishedCandidateWithWorkBehindItKeepsTheLaterGeneration() throws {
+    func testAnUnpublishedCandidateWithWorkBehindItKeepsBothGenerations() throws {
         let first = try machine()
         let claimed = try first.signal(Self.key, priority: .user, at: 0)
         XCTAssertEqual(try first.claim(at: 3_000)?.generation, claimed)
@@ -139,13 +151,137 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
 
         let second = try machine()
         let state = try XCTUnwrap(second.state(of: Self.key))
+        // The candidate and the signal that accumulated behind it stay separate, so attaching the
+        // intent the candidate committed publishes `claimed` and never consumes `later`.
+        XCTAssertEqual(state.activeGeneration, claimed)
+        XCTAssertTrue(state.restoredCandidate)
+        XCTAssertFalse(state.published)
         XCTAssertEqual(state.dirtyGeneration, later)
-        // The abandoned candidate's user priority was merged into it, not dropped with it.
-        XCTAssertEqual(state.priority, .user)
-        XCTAssertNil(state.activeGeneration)
-        XCTAssertEqual(try second.claim(at: 0)?.generation, later)
-        // Recovery minted no generation of its own: the next signal is simply the one after.
+        // The later record keeps its own background priority: nothing of the candidate is merged
+        // into it while the candidate is still in flight.
+        XCTAssertEqual(state.priority, .background)
+        XCTAssertEqual(state.firstSignalMilliseconds, 0)
+        XCTAssertEqual(state.latestSignalMilliseconds, 0)
+        XCTAssertTrue(state.restoredFromRestart)
+        // Nothing behind the candidate is claimable, and recovery minted no generation of its own.
+        XCTAssertNil(try second.claim(at: 0))
         XCTAssertEqual(try second.signal(Self.key, priority: .background, at: 1), later + 1)
+    }
+
+    // MARK: - Reconciling a recovered candidate
+
+    func testAttachingARestoredPublicationPublishesTheCandidateAndKeepsTheWorkBehindIt() throws {
+        let first = try machine()
+        let claimed = try first.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, claimed)
+        let later = try first.signal(Self.key, priority: .background, at: 4_000)
+
+        // The queue holds the intent that candidate committed, so it is attached rather than read
+        // and published a second time.
+        let second = try machine()
+        try second.attachRestoredPublication(Self.key, generation: claimed, intentRef: Self.ref, at: 0)
+        let state = try XCTUnwrap(second.state(of: Self.key))
+        XCTAssertEqual(state.activeGeneration, claimed)
+        XCTAssertTrue(state.published)
+        XCTAssertEqual(state.intentRef, Self.ref)
+        XCTAssertEqual(state.dirtyGeneration, later)
+        XCTAssertNil(try second.claim(at: 0))
+        // Published once: the ref cannot be attached twice, by either route.
+        XCTAssertThrowsError(
+            try second.attachRestoredPublication(Self.key, generation: claimed, intentRef: "intent-b", at: 0)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .alreadyPublished) }
+
+        // Durable, so a further restart finds an ordinary unresolved publication: there is no
+        // candidate left for a second owner to adopt an intent against.
+        let third = try machine()
+        let recovered = try XCTUnwrap(third.state(of: Self.key))
+        XCTAssertTrue(recovered.published)
+        XCTAssertEqual(recovered.intentRef, Self.ref)
+        XCTAssertFalse(recovered.restoredCandidate)
+
+        // And the queue's outcome resolves the generation that was prepared, exposing the signal
+        // raised behind it with its own priority rather than the candidate's.
+        try third.markCompleted(Self.key, generation: claimed, at: 0)
+        let claim = try XCTUnwrap(third.claim(at: 0))
+        XCTAssertEqual(claim.generation, later)
+        XCTAssertEqual(claim.priority, .background)
+        XCTAssertTrue(claim.restoredFromRestart)
+    }
+
+    func testReleasingARestoredCandidateWithNoIntentReturnsItToDirtyWithTheWorkBehindIt() throws {
+        let first = try machine()
+        let claimed = try first.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, claimed)
+        let later = try first.signal(Self.key, priority: .background, at: 4_000)
+
+        // The queue holds no intent for it, so the work it was claimed for is still owed.
+        let second = try machine()
+        let pending = try second.releaseRestoredCandidateWithoutPublication(
+            Self.key, generation: claimed, at: 0
+        )
+        XCTAssertEqual(pending, later)
+        let state = try XCTUnwrap(second.state(of: Self.key))
+        XCTAssertNil(state.activeGeneration)
+        XCTAssertFalse(state.published)
+        // Merged exactly as a cancellation: the later generation keeps its number and the released
+        // candidate's user priority comes back with it.
+        XCTAssertEqual(state.dirtyGeneration, later)
+        XCTAssertEqual(state.priority, .user)
+        XCTAssertTrue(state.restoredFromRestart)
+        // The candidate's proof is gone with it, so no second owner can adopt an intent against
+        // work this one has taken responsibility for.
+        XCTAssertFalse(state.restoredCandidate)
+        XCTAssertThrowsError(
+            try second.releaseRestoredCandidateWithoutPublication(Self.key, generation: later, at: 0)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .notClaimed) }
+
+        // Still immediately due: the work is pending again rather than waiting out a fresh
+        // debounce on this process's clock.
+        let claim = try XCTUnwrap(second.claim(at: 0))
+        XCTAssertEqual(claim.generation, later)
+        XCTAssertEqual(claim.priority, .user)
+        XCTAssertTrue(claim.restoredFromRestart)
+        // An ordinary claim this process made itself is not a candidate to hand back.
+        XCTAssertThrowsError(
+            try second.releaseRestoredCandidateWithoutPublication(Self.key, generation: later, at: 0)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .notRestored) }
+    }
+
+    func testAFailedWriteRollsBackBothCandidateReconciliations() throws {
+        let first = try machine()
+        let claimed = try first.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, claimed)
+
+        let second = try machine()
+        let before = try XCTUnwrap(second.state(of: Self.key))
+        XCTAssertTrue(before.restoredCandidate)
+        let bytes = try Data(contentsOf: stateFile)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: stateDirectory.path
+        )
+
+        // Neither reconciliation may half-apply: a candidate that is still durably a candidate is
+        // one the retry can resolve, where a half-applied one is work duplicated or lost.
+        XCTAssertThrowsError(
+            try second.attachRestoredPublication(Self.key, generation: claimed, intentRef: Self.ref, at: 0)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .stateUnavailable) }
+        XCTAssertEqual(second.state(of: Self.key), before)
+        XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
+
+        XCTAssertThrowsError(
+            try second.releaseRestoredCandidateWithoutPublication(Self.key, generation: claimed, at: 0)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .stateUnavailable) }
+        XCTAssertEqual(second.state(of: Self.key), before)
+        XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: stateDirectory.path
+        )
+        // The candidate never stopped being one, so the retry attaches and this time it is durable.
+        try second.attachRestoredPublication(Self.key, generation: claimed, intentRef: Self.ref, at: 0)
+        let reopened = try XCTUnwrap(self.machine().state(of: Self.key))
+        XCTAssertTrue(reopened.published)
+        XCTAssertEqual(reopened.intentRef, Self.ref)
     }
 
     func testAPublishedGenerationStaysActiveAndBlocksADuplicateClaim() throws {
@@ -439,7 +575,12 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         // from the signal that was accepted rather than from the one that failed.
         XCTAssertNil(try machine.claim(at: 2_999))
         XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
-        XCTAssertEqual(try self.machine().state(of: Self.key)?.dirtyGeneration, generation)
+        // Only the accepted signal and the claim it reached are durable, so the next process finds
+        // that claim as its recovered candidate — nothing of the refused signal is there.
+        let reopened = try XCTUnwrap(self.machine().state(of: Self.key))
+        XCTAssertEqual(reopened.activeGeneration, generation)
+        XCTAssertTrue(reopened.restoredCandidate)
+        XCTAssertNil(reopened.dirtyGeneration)
     }
 
     func testAFailedWriteWhilePublishingLeavesNothingPublishedAndNoRefAttached() throws {
