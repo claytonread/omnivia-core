@@ -12,6 +12,11 @@ final class AcceptedBox {
     var batches: [[ManualCaptureCandidate]] = []
 }
 
+/// How many times the Share extension's chooser continuation reached review.
+final class ChooserBox {
+    var opens = 0
+}
+
 /// A bookmark codec whose first `failures` grants cannot be created.
 final class StubBookmarkCodec: SecurityScopedBookmarkCoding, @unchecked Sendable {
     private let lock = NSLock()
@@ -51,6 +56,11 @@ struct Companion {
     let candidates: NativeIntakeCandidateStore
     let snapshots: OwnedSnapshotStore
     let accepted: AcceptedBox
+    /// The durable, snapshot-only Share spool in the App Group, and the
+    /// companion side that adopts from it.
+    let shareInbox: ShareInboxStore
+    let shareAdopter: ShareInboxAdopter
+    let chooser: ChooserBox
 
     /// Access references whose grant is currently connected.
     var connectedAccessRefs: [String] {
@@ -70,7 +80,8 @@ class NativeHandoffTestCase: XCTestCase {
         root: URL,
         accepted: AcceptedBox = AcceptedBox(),
         bookmarkFailures: Int = 0,
-        withPanel: Bool = false
+        withPanel: Bool = false,
+        chooser: ChooserBox = ChooserBox()
     ) throws -> Companion {
         let intake = root.appendingPathComponent("native-intake", isDirectory: true)
         let environment = try DocumentIntakeEnvironment(
@@ -108,6 +119,16 @@ class NativeHandoffTestCase: XCTestCase {
                 panel?.addIncomingAdopted(batch)
             }
         )
+        let inbox = try shareInbox(root)
+        let adopter = ShareInboxAdopter(
+            inbox: inbox,
+            snapshotStore: snapshots,
+            openChooser: { chooser.opens += 1 },
+            accept: { batch in
+                accepted.batches.append(batch)
+                return panel?.addIncomingAdopted(batch) ?? true
+            }
+        )
         return Companion(
             receiver: receiver,
             panel: panel,
@@ -116,8 +137,80 @@ class NativeHandoffTestCase: XCTestCase {
             mailbox: mailbox,
             candidates: candidates,
             snapshots: snapshots,
-            accepted: accepted
+            accepted: accepted,
+            shareInbox: inbox,
+            shareAdopter: adopter,
+            chooser: chooser
         )
+    }
+
+    func shareInbox(_ root: URL) throws -> ShareInboxStore {
+        try ShareInboxStore(
+            root: root.appendingPathComponent("app-group", isDirectory: true)
+                .appendingPathComponent(ShareInboxStore.directoryName, isDirectory: true)
+        )
+    }
+
+    /// Exactly what the Share extension does: stage every item's bytes into a
+    /// request directory, then publish the complete envelope in one step.
+    @discardableResult
+    func publishShare(
+        _ inbox: ShareInboxStore,
+        _ contents: [(name: String, text: String)],
+        kind: ShareSnapshotKind = .file
+    ) throws -> String {
+        let request = try stageShare(inbox, contents)
+        try inbox.publish(ShareInboxEnvelopeV1(
+            requestID: request.id,
+            senderBundleID: NativeHandoffMailbox.shareBundleID,
+            createdAt: Date(),
+            items: request.items.map {
+                ShareInboxItemV1(
+                    slotID: $0.slotID,
+                    displayName: $0.displayName,
+                    relativePath: $0.relativePath,
+                    kind: kind,
+                    byteLength: $0.byteLength,
+                    digest: $0.digest
+                )
+            }
+        ))
+        return request.id
+    }
+
+    /// The staged-but-unpublished half of the above: what a share that crashed
+    /// before the atomic publish leaves behind.
+    func stageShare(
+        _ inbox: ShareInboxStore,
+        _ contents: [(name: String, text: String)]
+    ) throws -> (id: String, directory: URL, items: [ShareInboxItemV1]) {
+        let request = try inbox.beginRequest()
+        var items: [ShareInboxItemV1] = []
+        for (index, entry) in contents.enumerated() {
+            let relativePath = ShareInboxStore.payloadName(index: index)
+            let bytes = Data(entry.text.utf8)
+            try bytes.write(to: try inbox.payloadDestination(request, relativePath: relativePath))
+            items.append(ShareInboxItemV1(
+                slotID: newID(),
+                displayName: entry.name,
+                relativePath: relativePath,
+                kind: .file,
+                byteLength: UInt64(bytes.count),
+                digest: ShareInboxStore.digest(of: bytes)
+            ))
+        }
+        return (request.requestID, request.directory, items)
+    }
+
+    func inboxRoot(_ root: URL) -> URL {
+        root.appendingPathComponent("app-group", isDirectory: true)
+            .appendingPathComponent(ShareInboxStore.directoryName, isDirectory: true)
+    }
+
+    func pendingDirectory(_ root: URL, requestID: String) -> URL {
+        inboxRoot(root)
+            .appendingPathComponent("pending", isDirectory: true)
+            .appendingPathComponent(requestID, isDirectory: true)
     }
 
     func appGroup(_ root: URL) throws -> NativeHandoffMailbox {

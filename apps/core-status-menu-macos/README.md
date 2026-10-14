@@ -40,11 +40,18 @@ xcrun swiftc -O -target arm64-apple-macos13.0 -application-extension \
   apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeHandoffMailbox.swift \
   apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerRequirement.swift \
   apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerSocket.swift \
+  apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/OwnedSnapshotStore.swift \
+  apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareRepresentationPolicy.swift \
+  apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareInboxStore.swift \
   apps/core-status-menu-macos/Extensions/Shared/ExtensionSupport.swift \
   apps/core-status-menu-macos/Extensions/Share/ShareViewController.swift \
   -o /absolute/path/to/OmniViaShare -framework AppKit -framework Security \
   -Xlinker -e -Xlinker _NSExtensionMain
 ```
+
+The extension sources are not Swift Package targets, so `swift build` does not
+cover them. Replace `-emit-executable -o …` with `-typecheck` to check them
+without linking; both extensions must typecheck under `-application-extension`.
 
 Package a deterministic qualification bundle from those three executables:
 
@@ -154,6 +161,9 @@ it declares. The bytes are judged at the callback, not at the drop:
 - **Finder Quick Action** — a viewer Action extension. It returns the same
   `NSExtensionItem` objects it was given, unmodified, and completes only after
   the companion acknowledges adopting every offered slot.
+- **Share extension** — captures copies, durably, without needing the
+  companion to be open. See *Shared content* below.
+- **Shortcuts** — exactly two review-first App Intents. See *Shortcuts* below.
 
 ### Selected folders
 
@@ -193,6 +203,98 @@ One selection is bounded by what one review draft holds
 activation rule carries the same bound. An item that is not a supported document
 stays listed as refused until it is removed, and nothing is published while one
 is listed.
+
+### Shared content
+
+Share is captured content by default, and only captured content. There is no
+path by which a share becomes a durable original: `inPlace` is never requested,
+a provider's file URL is copied rather than bookmarked, and nothing a share
+delivers is ever monitored. Linking an original is a separate action — *Link an
+original…* — which asks the companion to open its own reviewed chooser and says
+so, rather than reporting a success it does not have.
+
+`ShareRepresentationPolicy` chooses one representation per logical slot from a
+fixed order — a file URL, then an image, then a web link, then plain text, then
+any other data — and keeps, within one extension item, only the attachments of
+that item's best kind. So a host that sends one logical share as alternative
+representations (a link and its title text) becomes one slot, while a multi-file
+share stays one slot per file in the order it was given. An item this build
+cannot capture refuses the whole selection: a partly captured selection is not
+what the person shared.
+
+A shared link is captured as the text of the link. Only `http`/`https` links
+with a host, at note length, are admitted, and nothing is ever requested from
+one. That is structural rather than a promise: the Share extension is sandboxed
+with no network entitlement at all (`Packaging/Share.entitlements`).
+
+Per-item and per-selection bounds (`50 MiB`, `200 MiB`, 10 items) are enforced
+while copying, and each provider's temporary file is checked with `lstat` first
+— a regular file, never a symlink. Every byte is written owner-only into a
+directory this extension owns. A provider that does not answer within 30
+seconds is abandoned as one whole selection; a late callback cannot revive it.
+
+### The durable Share spool
+
+`ShareInboxStore` is a second, snapshot-only area of the App Group, separate
+from the grant-bearing handoff mailbox. It exists so a share works while the
+companion is closed, so it deliberately does **not** reuse or extend that
+mailbox's 120-second transfer window, carries no bookmark, grant or access
+reference, and claims no authentication. It names no destination, workspace or
+caller either.
+
+- A request is written into `staging/<id>/` and becomes visible only when that
+  whole directory is renamed to `pending/<id>/` — one atomic step, taken after
+  every byte and the manifest are closed and validated. A crash before it
+  leaves nothing to adopt; startup reconciliation clears staging directories no
+  live share can still be writing.
+- Ids are opaque, the schema is closed and versioned, and a manifest carrying a
+  schema or a field this build does not know is left **byte for byte** as it is
+  so a newer companion can still adopt it. It still counts against the bounds.
+- Total unsent native-owned content is bounded by count and by bytes. Nothing
+  already durable is dropped to make room; a new share is refused instead.
+  Staging writers reserve their worst-case size, and an in-process plus
+  cross-process lock makes concurrent quota decisions exact.
+- The extension may attempt one fixed companion activation. Whether the
+  companion comes forward or not, the request stands, and the wording is
+  *Queued on this Mac. Open OmniVia Core to send.* — never *Added*, and never
+  naming a destination.
+- Cancelling before the publish drops the bytes. Completion or host dismissal
+  after it does not: the request is the person's now.
+
+Payloads, manifest and publication directories are flushed before the atomic
+rename is acknowledged. The companion adopts a request by copying every one of its bytes into its own
+owned-copy storage, proving each copy against the manifest's length and digest,
+handing the copies to the same review coordinator every other intake surface
+uses, and only then dropping the request. That drop is the acknowledgement, so a
+lost one re-copies the same bytes onto the same candidate key review already
+holds rather than producing a second candidate, and a crash before it re-adopts
+on the next start. Bytes that do not match what the manifest bound are never
+shown and the request is dropped rather than retried forever. Nothing is queued,
+delivered or watched by an adoption.
+
+If review and its bounded waiting list are full, that is not an
+acknowledgement: the temporary companion copy is rolled back and the durable
+inbox request remains for a later reconciliation pass.
+
+### Shortcuts
+
+Exactly two App Intents, both review-first:
+
+- **Open Add to Core** opens the capture panel and nothing else. It reads no
+  file, no clipboard and no Finder selection.
+- **Review Files in OmniVia Core** owns a copy of every supplied `IntentFile`
+  representation before `perform` returns — a data representation and a file URL
+  alike, with any security scope balanced — under the same item, selection and
+  count bounds as every other captured copy, in the order supplied. It reads no
+  path string, clipboard or Finder selection, never adds or watches anything,
+  and reports *Ready to review*, never *Added*.
+
+Both declare `openAppWhenRun`, which is what macOS 13 and 14 understand, and
+`supportedModes = .foreground(.immediate)` where the SDK has it. Neither raises
+the package's macOS 13 minimum.
+
+A second run is a second selection: it enters the existing waiting-selection
+behavior behind the one being reviewed rather than merging into it.
 
 ## Lifecycle adapter version 2
 

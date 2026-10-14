@@ -67,33 +67,54 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Opens review and the reviewed file chooser.
+    ///
+    /// This is the Share extension's "Link an original…" continuation. The
+    /// original is chosen here, through the same fixed `CapturePickerPolicy`
+    /// every other pick uses — never from the copy a share sheet handed over,
+    /// which is not an original and is never monitored.
+    public func openOriginalChooser() {
+        guard opensWindow else { return }
+        openOrFocus()
+        chooseFilesAction()
+    }
+
     public func addIncoming(_ urls: [URL], surface: CaptureSurface = .manual) {
-        addIncoming(urls, surface: surface, source: .original)
+        _ = addIncoming(urls, surface: surface, source: .original)
     }
 
     public func addIncomingSnapshots(_ urls: [URL], surface: CaptureSurface) {
-        addIncoming(urls, surface: surface, source: .capturedSnapshot)
+        _ = addIncoming(urls, surface: surface, source: .capturedSnapshot)
     }
 
+    @discardableResult
     private func addIncoming(
         _ urls: [URL],
         surface: CaptureSurface,
         source: ManualCaptureCandidate.Source
-    ) {
+    ) -> Bool {
         let candidates = urls.map {
             ManualCaptureCandidate(url: $0, surface: surface, source: source)
         }
-        addIncoming(candidates)
+        return addIncoming(candidates)
     }
 
-    public func addIncomingAdopted(_ candidates: [ManualCaptureCandidate]) {
-        addIncoming(candidates)
+    /// True only when review owns this batch (or already owns the same stable
+    /// candidates). Durable inbox callers use the result as their
+    /// acknowledgement boundary and retain their request when review is full.
+    @discardableResult
+    public func addIncomingAdopted(_ candidates: [ManualCaptureCandidate]) -> Bool {
+        addIncoming(candidates, discardOnRefusal: false)
     }
 
     /// Every candidate handed in ends up in exactly one place: in review, waiting
     /// behind the current selection, or released. Nothing is dropped holding a
     /// grant or owned bytes.
-    private func addIncoming(_ candidates: [ManualCaptureCandidate]) {
+    @discardableResult
+    private func addIncoming(
+        _ candidates: [ManualCaptureCandidate],
+        discardOnRefusal: Bool = true
+    ) -> Bool {
         // A native candidate already in review or waiting is the same candidate
         // arriving again. Leave it, and the resources it names, untouched:
         // releasing the repeat would release the live candidate's grant.
@@ -102,18 +123,21 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         let incoming = candidates.filter { candidate in
             candidate.native.map { !live.contains($0.candidateRef) } ?? true
         }
-        guard !incoming.isEmpty else { return }
+        guard !incoming.isEmpty else { return true }
         openOrFocus()
         if draft.items.isEmpty {
             add(incoming)
+            return true
         } else if waitingSelections.count < 10,
                   waitingSelections.reduce(0, { $0 + $1.count }) + incoming.count <= 100
         {
             waitingSelections.append(incoming)
             statusLabel.stringValue = "New selection waiting · \(incoming.count) item(s). Finish the current selection first."
+            return true
         } else {
-            submitter.discardUnsubmitted(incoming)
+            if discardOnRefusal { submitter.discardUnsubmitted(incoming) }
             statusLabel.stringValue = "Incoming selection limit reached. Finish a selection and try again."
+            return false
         }
     }
 
@@ -515,6 +539,9 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
 
     var reviewItemCount: Int { draft.items.count }
     var waitingSelectionCount: Int { waitingSelections.count }
+    /// False while review holds a captured copy: a copy has no original to
+    /// follow, so it can never be kept updated.
+    var reviewAllowsKeepUpdated: Bool { !draft.containsSnapshots }
 
     @objc private func reviewSelectedFolder() {
         let row = table.selectedRow

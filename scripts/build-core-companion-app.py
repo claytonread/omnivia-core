@@ -43,6 +43,19 @@ FINDER_EXTENSION_ACTIVATION_RULE: Final = (
     f" AND $extensionItem.attachments.@count <= {FINDER_EXTENSION_MAX_ITEMS}"
     ").@count == 1"
 )
+SHARE_EXTENSION_MAX_ITEMS: Final = 10
+# A bounded dictionary rule, never TRUEPREDICATE. The Share extension captures
+# copies of four things and declares exactly those: files, images, plain text,
+# and web (http/https) links. Every count is the handoff slot bound, so the
+# share sheet cannot offer a selection the extension would refuse. A web URL is
+# captured as the text of the link: the extension has no network entitlement
+# and resolves nothing.
+SHARE_EXTENSION_ACTIVATION_RULE: Final = {
+    "NSExtensionActivationSupportsFileWithMaxCount": SHARE_EXTENSION_MAX_ITEMS,
+    "NSExtensionActivationSupportsImageWithMaxCount": SHARE_EXTENSION_MAX_ITEMS,
+    "NSExtensionActivationSupportsText": True,
+    "NSExtensionActivationSupportsWebURLWithMaxCount": SHARE_EXTENSION_MAX_ITEMS,
+}
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
 
@@ -192,10 +205,7 @@ def build_companion_app(
                 "NSExtensionPointIdentifier": "com.apple.share-services",
                 "NSExtensionPrincipalClass": "ShareViewController",
                 "NSExtensionAttributes": {
-                    "NSExtensionActivationRule": {
-                        "NSExtensionActivationSupportsFileWithMaxCount": 10,
-                        "NSExtensionActivationSupportsImageWithMaxCount": 10,
-                    },
+                    "NSExtensionActivationRule": SHARE_EXTENSION_ACTIVATION_RULE,
                 },
             },
         )

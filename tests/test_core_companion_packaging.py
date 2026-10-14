@@ -152,6 +152,17 @@ def test_companion_embeds_real_finder_and_share_extension_bundles(tmp_path: Path
     assert share_plist["NSExtension"]["NSExtensionAttributes"]["NSExtensionActivationRule"] == {
         "NSExtensionActivationSupportsFileWithMaxCount": 10,
         "NSExtensionActivationSupportsImageWithMaxCount": 10,
+        "NSExtensionActivationSupportsText": True,
+        "NSExtensionActivationSupportsWebURLWithMaxCount": 10,
+    }
+    assert module.SHARE_EXTENSION_MAX_ITEMS == module.FINDER_EXTENSION_MAX_ITEMS == 10
+    # No attachment or movie activation: this extension captures files, images,
+    # plain text and web links, and declares exactly those.
+    assert set(module.SHARE_EXTENSION_ACTIVATION_RULE) == {
+        "NSExtensionActivationSupportsFileWithMaxCount",
+        "NSExtensionActivationSupportsImageWithMaxCount",
+        "NSExtensionActivationSupportsText",
+        "NSExtensionActivationSupportsWebURLWithMaxCount",
     }
 
     manifest = json.loads((output / "companion-manifest.json").read_text(encoding="ascii"))
@@ -173,3 +184,27 @@ def test_companion_refuses_partial_extension_pair(tmp_path: Path) -> None:
             version="0.6.5",
             finder_extension_executable=finder,
         )
+
+
+def test_share_extension_entitlements_cannot_reach_the_network() -> None:
+    """A shared link is captured as the text of the link.
+
+    Nothing resolves or fetches it, and the entitlements are what makes that
+    structural rather than a promise: the Share extension is sandboxed with no
+    network client or server entitlement at all.
+    """
+    entitlements = plistlib.loads(
+        (
+            ROOT
+            / "apps"
+            / "core-status-menu-macos"
+            / "Packaging"
+            / "Share.entitlements"
+        ).read_bytes()
+    )
+    assert entitlements["com.apple.security.app-sandbox"] is True
+    assert not any(key.startswith("com.apple.security.network") for key in entitlements)
+    # And it reaches the companion only through the App Group it shares.
+    assert entitlements["com.apple.security.application-groups"] == [
+        "group.com.omnivia.core"
+    ]

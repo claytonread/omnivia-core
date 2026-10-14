@@ -6,6 +6,7 @@ enum OmniViaExtensionError: Error {
     case invalidInput
     case companionUnavailable
     case acknowledgementTimeout
+    case providerTimeout
     case itemTooLarge
     case selectionTooLarge
 }
@@ -106,53 +107,4 @@ func loadFileURL(from provider: NSItemProvider) async throws -> URL {
             }
         }
     }
-}
-
-func copyProviderFile(
-    from provider: NSItemProvider,
-    typeIdentifier: String,
-    destination: URL,
-    maximumBytes: UInt64
-) async throws -> UInt64 {
-    try await withCheckedThrowingContinuation { continuation in
-        provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { temporaryURL, error in
-            do {
-                if let error { throw error }
-                guard let temporaryURL else { throw OmniViaExtensionError.invalidInput }
-                FileManager.default.createFile(atPath: destination.path, contents: nil)
-                let input = try FileHandle(forReadingFrom: temporaryURL)
-                let output = try FileHandle(forWritingTo: destination)
-                defer {
-                    try? input.close()
-                    try? output.close()
-                }
-                var copied: UInt64 = 0
-                while true {
-                    let chunk = try input.read(upToCount: 1_024 * 1_024) ?? Data()
-                    if chunk.isEmpty { break }
-                    copied += UInt64(chunk.count)
-                    guard copied <= maximumBytes else { throw OmniViaExtensionError.itemTooLarge }
-                    try output.write(contentsOf: chunk)
-                }
-                try FileManager.default.setAttributes(
-                    [.posixPermissions: 0o600],
-                    ofItemAtPath: destination.path
-                )
-                continuation.resume(returning: copied)
-            } catch {
-                try? FileManager.default.removeItem(at: destination)
-                continuation.resume(throwing: error)
-            }
-        }
-    }
-}
-
-func safeProviderFilename(_ proposed: String, index: Int) throws -> String {
-    let leaf = (proposed as NSString).lastPathComponent
-        .replacingOccurrences(of: "\0", with: "")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !leaf.isEmpty, leaf != ".", leaf != "..", !leaf.contains("/") else {
-        throw OmniViaExtensionError.invalidInput
-    }
-    return "\(index + 1)-\(UUID().uuidString.lowercased())-\(leaf)"
 }

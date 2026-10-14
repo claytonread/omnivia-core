@@ -29,7 +29,15 @@ struct OpenAddToCoreIntent: AppIntent {
     static let description = IntentDescription(
         "Opens OmniVia Core's capture panel without reading the clipboard or Finder selection."
     )
+    // Both surfaces are declared. `openAppWhenRun` is what macOS 13 and 14
+    // understand; `supportedModes` states the same intent precisely where the
+    // SDK has it. Neither raises this package's macOS 13 minimum.
     static let openAppWhenRun = true
+
+    #if compiler(>=6.2)
+    @available(macOS 26.0, *)
+    static var supportedModes: IntentModes { .foreground(.immediate) }
+    #endif
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         await MainActor.run { ShortcutIntakeRuntime.open() }
@@ -43,6 +51,11 @@ struct ReviewFilesInOmniViaCoreIntent: AppIntent {
         "Copies up to 10 supplied files into protected temporary storage and opens them for review. Nothing is added until you confirm in OmniVia Core."
     )
     static let openAppWhenRun = true
+
+    #if compiler(>=6.2)
+    @available(macOS 26.0, *)
+    static var supportedModes: IntentModes { .foreground(.immediate) }
+    #endif
 
     @Parameter(title: "Files", description: "Files to copy and review")
     var files: [IntentFile]

@@ -103,6 +103,10 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private var snapshotStore: OwnedSnapshotStore?
     private var nativeHandoffReceiver: NativeHandoffReceiver?
     private var nativeHandoffPeerServer: NativeHandoffPeerServer?
+    /// Adopts durable Share requests that were queued while this companion was
+    /// closed. Separate from the grant-bearing handoff above: it carries only
+    /// captured copies and has no transfer window.
+    private var shareInboxAdopter: ShareInboxAdopter?
 
     init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
         self.configuration = configuration
@@ -190,6 +194,18 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                     self?.capturePanelController?.addIncomingSnapshots(urls, surface: .shortcut)
                 }
             )
+            if let inbox = try? ShareInboxStore.appGroupInbox() {
+                shareInboxAdopter = ShareInboxAdopter(
+                    inbox: inbox,
+                    snapshotStore: snapshotStore,
+                    openChooser: { [weak self] in
+                        self?.capturePanelController?.openOriginalChooser()
+                    },
+                    accept: { [weak self] candidates in
+                        self?.capturePanelController?.addIncomingAdopted(candidates) ?? false
+                    }
+                )
+            }
             if let resources = try? NativeHandoffMailbox.appGroupMailbox(),
                let mailbox = try? NativeHandoffMailbox(
                    root: intakeRoot.appendingPathComponent(
@@ -239,6 +255,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         deliverPendingCaptures()
         reconcileWatchedFolders()
         nativeHandoffReceiver?.reconcile()
+        shareInboxAdopter?.reconcile()
 
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -254,7 +271,10 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         RunLoop.main.add(monitoringTimer, forMode: .common)
         self.monitoringTimer = monitoringTimer
         let handoffTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.nativeHandoffReceiver?.reconcile() }
+            Task { @MainActor [weak self] in
+                self?.nativeHandoffReceiver?.reconcile()
+                self?.shareInboxAdopter?.reconcile()
+            }
         }
         RunLoop.main.add(handoffTimer, forMode: .common)
         self.handoffTimer = handoffTimer
@@ -304,6 +324,9 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         // owner. The panel releases what it holds; the receiver then stops
         // taking requests and releases whatever never reached review.
         capturePanelController?.discardUnsubmittedCandidates()
+        // A durable Share request that has not been adopted stays durable: it
+        // is better left in the spool than owned by a process that is ending.
+        shareInboxAdopter?.companionWillTerminate()
         nativeHandoffReceiver?.companionWillTerminate()
         coordinator.companionWillTerminate()
         singleton.close()
