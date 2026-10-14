@@ -341,6 +341,79 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         XCTAssertFalse(state.legacyUnresolvedIntent)
     }
 
+    // MARK: - Durable completion without a publication
+
+    func testACandidateWithNothingNewToPublishLeavesNoDurableRecord() throws {
+        let first = try machine()
+        let generation = try first.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, generation)
+        try first.markCompletedWithoutPublication(Self.key, generation: generation, at: 3_100)
+        XCTAssertEqual(try entries().count, 0)
+
+        // The claim is resolved durably, so the restart does not find an unpublished candidate to
+        // return to dirty and repeat the read for.
+        let second = try machine()
+        XCTAssertNil(second.state(of: Self.key))
+        XCTAssertEqual(second.trackedScopes, 0)
+        XCTAssertNil(try second.claim(at: 0))
+        // Untracked, so its next signal is a first signal serving the full quiet period.
+        XCTAssertEqual(try second.signal(Self.key, priority: .user, at: 0), 1)
+        XCTAssertNil(try second.claim(at: 2_999))
+        XCTAssertEqual(try second.claim(at: 3_000)?.restoredFromRestart, false)
+    }
+
+    func testALaterDirtyGenerationSurvivesACompletionWithoutAPublicationAndARestart() throws {
+        let first = try machine()
+        let claimed = try first.signal(Self.key, priority: .background, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, claimed)
+        let later = try first.signal(Self.key, priority: .user, at: 4_000)
+        try first.markCompletedWithoutPublication(Self.key, generation: claimed, at: 5_000)
+
+        let written = try XCTUnwrap(entries().first)
+        XCTAssertEqual((written["dirtyGeneration"] as? NSNumber)?.uint64Value, later)
+        XCTAssertEqual(written["dirtyPriority"] as? String, "user")
+        XCTAssertNil(written["activeGeneration"])
+        XCTAssertEqual(written["published"] as? Bool, false)
+        XCTAssertNil(written["intentRef"])
+
+        let second = try machine()
+        let state = try XCTUnwrap(second.state(of: Self.key))
+        XCTAssertEqual(state.dirtyGeneration, later)
+        XCTAssertEqual(state.priority, .user)
+        XCTAssertNil(state.activeGeneration)
+        XCTAssertFalse(state.published)
+        XCTAssertTrue(state.restoredFromRestart)
+        // Recovered dirty work is immediately due, and no generation was minted on either side of
+        // the restart.
+        XCTAssertEqual(try second.claim(at: 0)?.generation, later)
+        XCTAssertEqual(try second.signal(Self.key, priority: .background, at: 1), later + 1)
+    }
+
+    func testAFailedWriteWhileCompletingWithoutAPublicationLeavesTheClaimInFlight() throws {
+        let machine = try machine()
+        let generation = try machine.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
+        let before = try XCTUnwrap(machine.state(of: Self.key))
+        let bytes = try Data(contentsOf: stateFile)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: stateDirectory.path
+        )
+
+        XCTAssertThrowsError(
+            try machine.markCompletedWithoutPublication(Self.key, generation: generation, at: 3_100)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .stateUnavailable) }
+        XCTAssertEqual(machine.state(of: Self.key), before)
+        XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: stateDirectory.path
+        )
+        // The claim never left the in-flight slot, so the retry resolves it rather than tripping
+        // over a half-applied completion — and this time it is durable.
+        try machine.markCompletedWithoutPublication(Self.key, generation: generation, at: 3_200)
+        XCTAssertNil(try self.machine().state(of: Self.key))
+    }
+
     // MARK: - Write failures
 
     func testAFailedWriteLeavesThePriorDurableAndInMemoryStateUnchanged() throws {

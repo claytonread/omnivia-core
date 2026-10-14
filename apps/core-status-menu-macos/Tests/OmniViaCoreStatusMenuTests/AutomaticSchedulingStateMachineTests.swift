@@ -109,6 +109,91 @@ final class AutomaticSchedulingStateMachineTests: XCTestCase {
         XCTAssertEqual(try machine.signal(Self.key, priority: .background, at: 7_000), later + 1)
     }
 
+    // MARK: - Completion without a publication
+
+    func testACandidateWithNothingNewToPublishIsResolvedAndStopsBeingTracked() throws {
+        let machine = AutomaticSchedulingStateMachine()
+        let generation = try machine.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
+
+        // The read completed and found no new bytes, so the generation is finished rather than
+        // returned to dirty: nothing is reclaimed and the clean scope stops being tracked.
+        try machine.markCompletedWithoutPublication(Self.key, generation: generation, at: 3_100)
+        XCTAssertNil(machine.state(of: Self.key))
+        XCTAssertEqual(machine.trackedScopes, 0)
+        XCTAssertNil(try machine.claim(at: 10_000))
+        // Untracked, so the next signal is a first signal again and serves the full quiet period.
+        XCTAssertEqual(try machine.signal(Self.key, priority: .user, at: 10_000), 1)
+        XCTAssertNil(try machine.claim(at: 12_999))
+        XCTAssertEqual(try machine.claim(at: 13_000)?.generation, 1)
+    }
+
+    func testCompletingWithoutAPublicationKeepsTheLaterDirtyGenerationAndItsOwnPriority() throws {
+        let machine = AutomaticSchedulingStateMachine()
+        let claimed = try machine.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try machine.claim(at: 3_000)?.priority, .user)
+
+        let later = try machine.signal(Self.key, priority: .background, at: 4_000)
+        XCTAssertEqual(later, claimed + 1)
+        try machine.markCompletedWithoutPublication(Self.key, generation: claimed, at: 5_000)
+
+        let state = try XCTUnwrap(machine.state(of: Self.key))
+        XCTAssertEqual(state.dirtyGeneration, later)
+        XCTAssertNil(state.activeGeneration)
+        XCTAssertFalse(state.published)
+        // Unlike a cancel, nothing of the resolved claim is merged into the work behind it: the
+        // later signal keeps its own background priority and its own times.
+        XCTAssertEqual(state.priority, .background)
+        XCTAssertEqual(state.firstSignalMilliseconds, 4_000)
+        XCTAssertEqual(state.latestSignalMilliseconds, 4_000)
+
+        XCTAssertNil(try machine.claim(at: 6_999))
+        let claim = try XCTUnwrap(machine.claim(at: 7_000))
+        XCTAssertEqual(claim.generation, later)
+        XCTAssertEqual(claim.priority, .background)
+        // No generation was minted by the completion.
+        XCTAssertEqual(try machine.signal(Self.key, priority: .background, at: 7_000), later + 1)
+    }
+
+    func testCompletingWithoutAPublicationIsRefusedWhenStaleUnclaimedOrPublished() throws {
+        let machine = AutomaticSchedulingStateMachine()
+        let key = Self.makeKey("scope-a")
+
+        assertThrows(.notClaimed) {
+            try machine.markCompletedWithoutPublication(key, generation: 1, at: 0)
+        }
+        let generation = try machine.signal(key, priority: .background, at: 0)
+        // Dirty but unclaimed: there is no candidate whose read could have found nothing.
+        assertThrows(.notClaimed) {
+            try machine.markCompletedWithoutPublication(key, generation: generation, at: 1_000)
+        }
+
+        XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
+        for stale in [generation + 1, generation - 1] {
+            assertThrows(.staleGeneration) {
+                try machine.markCompletedWithoutPublication(key, generation: stale, at: 3_100)
+            }
+        }
+        XCTAssertEqual(machine.state(of: key)?.activeGeneration, generation)
+
+        // Once an intent exists, only the queue's outcome resolves it.
+        try machine.markPublished(key, generation: generation, intentRef: Self.ref, at: 3_200)
+        assertThrows(.alreadyPublished) {
+            try machine.markCompletedWithoutPublication(key, generation: generation, at: 3_300)
+        }
+        let state = try XCTUnwrap(machine.state(of: key))
+        XCTAssertEqual(state.activeGeneration, generation)
+        XCTAssertTrue(state.published)
+        XCTAssertEqual(state.intentRef, Self.ref)
+
+        // And the resolved generation is gone afterwards, so reporting it twice is a report about
+        // nothing rather than a stale report.
+        try machine.markCompleted(key, generation: generation, at: 3_400)
+        assertThrows(.notClaimed) {
+            try machine.markCompletedWithoutPublication(key, generation: generation, at: 3_500)
+        }
+    }
+
     // MARK: - The published intent ref
 
     func testPublishingAttachesTheIntentRefAndResolvingTheIntentTakesItAway() throws {

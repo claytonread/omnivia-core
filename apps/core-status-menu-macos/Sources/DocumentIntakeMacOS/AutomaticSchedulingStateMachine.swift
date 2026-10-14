@@ -168,7 +168,9 @@ private struct AutomaticSchedulingHeader: Codable {
 /// (the quiet period is measured from it). A claim moves that dirty record to the single in-flight
 /// slot, so a scope with a claim in flight is never selected again; signals arriving meanwhile
 /// accumulate as one later dirty generation. Terminal completion clears the in-flight slot and
-/// exposes that later generation; cancellation returns the unfinished work to it.
+/// exposes that later generation — whether the candidate reached a published intent that the queue
+/// then resolved, or its read established there was nothing new to publish at all; cancellation,
+/// which is the one non-terminal outcome, returns the unfinished work to it.
 ///
 /// No coordinator is called: the caller drives it and owns the clock, which it supplies as integer
 /// monotonic milliseconds. A fully clean scope stops being tracked, which returns its place in the
@@ -404,6 +406,30 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
             entry.active = nil
             entry.published = false
             entry.intentRef = nil
+            entries[key] = entry.isClean ? nil : entry
+        }
+    }
+
+    /// The candidate's consistent read completed and found nothing new to publish, so this
+    /// generation is finished without ever reaching an intent.
+    ///
+    /// This is a terminal outcome, *not* a cancellation: the read did happen and it is what
+    /// established there were no new bytes, so the generation is resolved and dropped rather than
+    /// returned to dirty for another attempt. Nothing of the resolved claim is merged into any
+    /// later dirty generation — that work was signalled after this read and stands on its own
+    /// times and priority. A caller that did not get that far wants `cancel` instead.
+    ///
+    /// Refused for a published claim: once an intent exists, only the queue's outcome resolves it.
+    public func markCompletedWithoutPublication(
+        _ key: AutomaticSchedulingKey,
+        generation: UInt64,
+        at now: Int64
+    ) throws {
+        try mutate {
+            try advance(now)
+            var entry = try claimed(key, generation).entry
+            guard !entry.published else { throw AutomaticSchedulingError.alreadyPublished }
+            entry.active = nil
             entries[key] = entry.isClean ? nil : entry
         }
     }
