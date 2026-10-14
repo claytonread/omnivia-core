@@ -27,6 +27,23 @@ try MainActor.assumeIsolated {
         application.applicationIconImage = icon
     }
 
+    // Optional, so the preview can exercise a real installation:
+    //   --cli <path to omnivia> --installation-state <path>
+    // Without them the window opens against a synthetic context and the
+    // Access pane says it has no route to the CLI, which is the truth.
+    func argument(_ name: String) -> String? {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }
+    var mcp: McpAdministering?
+    if let cli = argument("--cli"), let state = argument("--installation-state") {
+        mcp = McpCommandRunner(
+            executable: URL(fileURLWithPath: cli),
+            installationState: URL(fileURLWithPath: state)
+        )
+    }
+
     let coordinator = ReadinessCoordinator(
         context: ReadinessContext(
             installationRevision: "preview-install",
@@ -36,7 +53,7 @@ try MainActor.assumeIsolated {
             configurationRevision: "1"
         )
     )
-    let controller = SettingsWindowController(coordinator: coordinator)
+    let controller = SettingsWindowController(coordinator: coordinator, mcp: mcp)
     controller.openOrFocus()
     application.run()
 }

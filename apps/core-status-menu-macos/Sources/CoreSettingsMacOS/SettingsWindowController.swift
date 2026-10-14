@@ -326,6 +326,13 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var cancellables: Set<AnyCancellable> = []
     private var appearanceObserver: NSKeyValueObservation?
 
+    // MARK: Installed MCP (the Access pane's applications)
+    private let mcp: McpAdministering?
+    private var mcpStatus: McpStatus?
+    private var mcpError: McpError?
+    private var mcpBusy: String?        // the host a write is in flight for
+    private var mcpLoaded = false
+
     // Pane selection
     /// Order and labels follow `NAV` in the design's `core-settings.js`. That
     /// list is seven items: the readiness and Local Decisions amendments both
@@ -398,10 +405,15 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     public init(
         coordinator: ReadinessCoordinator,
         navigator: SettingsNavigator = SettingsNavigator(componentName: "OmniVia Core"),
-        notificationCenter: UNUserNotificationCenter? = nil
+        notificationCenter: UNUserNotificationCenter? = nil,
+        mcp: McpAdministering? = nil
     ) {
         self.coordinator = coordinator
         self.navigator = navigator
+        // Injected rather than resolved here: finding the installed `omnivia`
+        // executable is the companion's job and its resolver lives in the
+        // companion target. Nil means the pane says so instead of guessing.
+        self.mcp = mcp
         // Resolve lazily and bundle-guarded: UNUserNotificationCenter.current()
         // raises when the process has no bundle identity (§13.2 honest states).
         if let notificationCenter {
@@ -441,6 +453,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         coordinator.scheduleRefresh(.windowOpened)
+        loadMcpStatus()
     }
 
     // MARK: Window controls
@@ -1880,24 +1893,120 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// as a row instead.
     private func renderAccess(_ content: NSStackView) {
         let apps = card(content, header: "Connected applications")
-        notBuiltRow(
-            into: apps,
-            title: "No configured applications",
-            detail: "Applications that may use this workspace are listed here with their access level. Per-application access is granted by a store this build does not have.",
-            status: "None configured",
-            tone: .neutral
-        )
-        notBuiltRow(
-            into: apps,
-            title: "Add application…",
-            detail: "New applications start as Read only and are raised to Read and contribute explicitly.",
-            status: "Not in this build"
-        )
-        content.addArrangedSubview(
-            note("Configured access is not a live connection. macOS permissions and Core’s own workspace authority stay separate facts.")
-        )
-        content.addArrangedSubview(ovSpacer(18))
 
+        guard let status = mcpStatus else {
+            notBuiltRow(
+                into: apps,
+                title: mcp == nil ? "No configured applications" : "Reading application access…",
+                detail: mcp == nil
+                    ? "Applications that may use this workspace are listed here with their access level. This window was opened without a route to the installed CLI, so it cannot read them."
+                    : "Reading the installation's MCP hosts.",
+                status: mcp == nil ? "Not available here" : "Checking…",
+                tone: mcp == nil ? .neutral : .checking
+            )
+            if let mcpError { accessErrorNote(mcpError, into: content) }
+            accessConnectionDetails(content)
+            return
+        }
+
+        for host in status.hosts { accessRow(host, into: apps, reachable: status.serviceReachable) }
+
+        // "Add application…" is really "configure one of the two hosts this
+        // installation knows", so it only appears while one is unconfigured.
+        let unconfigured = status.hosts.filter { $0.grant != .active }
+        if !unconfigured.isEmpty {
+            let add = button(
+                "Add application…",
+                style: .primary,
+                action: #selector(addApplication),
+                subject: "MCP host"
+            )
+            add.isEnabled = status.serviceReachable && mcpBusy == nil
+            row(
+                into: apps,
+                title: "Add application…",
+                detail: status.serviceReachable
+                    ? "Gives one of this installation's known hosts a dedicated principal bound to this workspace."
+                    : "Core must be running before an application can be added — configuring one provisions a credential through the service.",
+                trailing: add
+            )
+        }
+
+        content.addArrangedSubview(
+            note("Configured access is not a live connection. macOS permissions and Core’s own workspace authority stay separate facts. Core does not record when an application last used this workspace, so no last-activity time is shown.")
+        )
+        if let mcpError { accessErrorNote(mcpError, into: content) }
+        accessConnectionDetails(content)
+    }
+
+    /// One MCP host, as the design's application row.
+    private func accessRow(_ host: McpHostStatus, into card: NSStackView, reachable: Bool) {
+        let configured = host.grant == .active
+        let level = host.profile?.accessLevel
+        let detail: String
+        switch host.grant {
+        case .active:
+            detail = "MCP client · \(level ?? "Access level not reported")"
+                + (host.workspaceID.map { " · Workspace: \($0)" } ?? "")
+        case .revoked:
+            detail = "MCP client · Access was revoked. Add it again to restore it."
+        case .absent:
+            detail = "MCP client · Not configured for this installation."
+        case .unknown:
+            // Core unreachable: the on-disk half is still read, so say which
+            // part is unknown rather than implying the host is unconfigured.
+            detail = host.configuration == .present
+                ? "MCP client · Configured on this Mac. Its grant can't be confirmed while Core isn't running."
+                : "MCP client · Not configured on this Mac. Its grant can't be confirmed while Core isn't running."
+        }
+
+        var trailing: NSView?
+        if configured {
+            let revoke = button(
+                "Revoke access…",
+                style: .bordered,
+                action: #selector(revokeApplication(_:)),
+                subject: host.displayName
+            )
+            revoke.identifier = NSUserInterfaceItemIdentifier(host.host)
+            revoke.isEnabled = reachable && mcpBusy == nil
+            trailing = revoke
+        }
+
+        let body = row(into: card, title: host.displayName, detail: detail, trailing: trailing)
+        body.addArrangedSubview(ovSpacer(1))
+
+        if mcpBusy == host.host {
+            body.addArrangedSubview(chip("Working…", tone: .checking))
+            return
+        }
+        switch host.grant {
+        case .active:
+            let tools = host.advertisedToolCount.map { " · \($0) tools" } ?? ""
+            body.addArrangedSubview(chip("Access granted\(tools)", tone: .ok))
+        case .revoked: body.addArrangedSubview(chip("Revoked", tone: .off))
+        case .absent: body.addArrangedSubview(chip("Not configured", tone: .neutral))
+        case .unknown: body.addArrangedSubview(chip("Core not running", tone: .unknown))
+        }
+    }
+
+    private func accessErrorNote(_ error: McpError, into content: NSStackView) {
+        let text: String
+        switch error {
+        case .unavailable: text = "The installed omnivia command could not be run from here."
+        case .timedOut: text = "Reading application access took too long and was stopped. Nothing was changed."
+        case .unreadableOutput: text = "Core answered in a form this build does not recognise. Nothing was changed."
+        case .notAdministrator: text = "Administering applications needs an installation administrator on this Mac."
+        case .failed: text = "Core refused the change. Nothing was changed."
+        }
+        content.addArrangedSubview(note(text, symbol: .alertTriangle, attn: true))
+    }
+
+    /// Transport and socket. Its own function so the early return above —
+    /// when the roster has not been read yet — still renders the pane's lower
+    /// half rather than dropping it.
+    private func accessConnectionDetails(_ content: NSStackView) {
+        content.addArrangedSubview(ovSpacer(18))
         let connectionBody = NSStackView()
         connectionBody.orientation = .vertical
         connectionBody.alignment = .leading
@@ -2143,7 +2252,109 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         positionWindowControls()
     }
 
+    // MARK: Installed MCP actions
+
+    /// Read the host roster. Passive: `mcp status` starts nothing, which is
+    /// why it is safe to run on window open (§A2).
+    private func loadMcpStatus() {
+        guard let mcp, !mcpLoaded else { return }
+        mcpLoaded = true
+        Task { @MainActor in
+            switch await mcp.status() {
+            case .success(let status):
+                self.mcpStatus = status
+                self.mcpError = nil
+            case .failure(let error):
+                self.mcpError = error
+            }
+            self.render()
+        }
+    }
+
+    private func reloadMcpStatus() {
+        mcpLoaded = false
+        loadMcpStatus()
+    }
+
+    @objc private func addApplication() {
+        guard let mcp, let status = mcpStatus, let window else { return }
+        let choices = status.hosts.filter { $0.grant != .active }
+        guard let host = choices.first else { return }
+        let workspace = coordinator.snapshot.context.workspaceRef
+
+        // Which host and which level, then a plain statement of what the
+        // change does. Configuring mints a credential and writes a config
+        // file for that host; §A8 wants the consequence stated before a
+        // disruptive change, not after.
+        let alert = NSAlert()
+        alert.messageText = "Add \(host.displayName)?"
+        alert.informativeText = """
+        \(host.displayName) will get its own credential for the workspace \
+        \(workspace), and a configuration file written for it on this Mac.
+
+        Read only lets it search and retrieve. Read and contribute also lets \
+        it submit evidence and proposed memory; it cannot approve its own \
+        contributions as trusted knowledge.
+        """
+        alert.addButton(withTitle: "Read only")
+        alert.addButton(withTitle: "Read and contribute")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            let profile: String
+            switch response {
+            case .alertFirstButtonReturn: profile = "restricted"
+            case .alertSecondButtonReturn: profile = "authoring"
+            default: return
+            }
+            self.mcpBusy = host.host
+            self.render()
+            Task { @MainActor in
+                let result = await mcp.configure(
+                    host: host.host, workspace: workspace, profile: profile
+                )
+                self.finishMcpWrite(result)
+            }
+        }
+    }
+
+    @objc private func revokeApplication(_ sender: NSButton) {
+        guard let mcp, let window, let id = sender.identifier?.rawValue else { return }
+        let name = mcpStatus?.hosts.first { $0.host == id }?.displayName ?? id
+
+        let alert = NSAlert()
+        alert.messageText = "Revoke access for \(name)?"
+        alert.informativeText = """
+        Its credential stops working immediately and its configuration file \
+        is removed from this Mac. Workspace content is not touched, and the \
+        record of what it was granted is kept.
+
+        You can add it again afterwards; that mints a new credential.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Revoke access")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            self.mcpBusy = id
+            self.render()
+            Task { @MainActor in
+                self.finishMcpWrite(await mcp.revoke(host: id))
+            }
+        }
+    }
+
+    private func finishMcpWrite(_ result: Result<Void, McpError>) {
+        mcpBusy = nil
+        if case .failure(let error) = result { mcpError = error } else { mcpError = nil }
+        // Re-read rather than assume the write landed as asked: a configure
+        // that found an equivalent setup returns it unrotated, and a failed
+        // one compensates by revoking. Only a fresh read is the truth.
+        reloadMcpStatus()
+    }
+
     @objc private func refreshStatus() {
+        reloadMcpStatus()
         coordinator.scheduleRefresh(.explicitRefresh)
     }
 

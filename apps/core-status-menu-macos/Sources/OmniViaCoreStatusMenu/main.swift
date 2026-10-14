@@ -21,11 +21,16 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     /// One owned Settings window (MR-001). Created on first open; closing it
     /// never touches Core lifecycle.
     private var settingsWindowController: SettingsWindowController?
+    /// The same resolved `omnivia` the lifecycle runner uses. Held so the
+    /// Settings window can administer installed MCP hosts through it; nil when
+    /// the CLI could not be found, which the Access pane then states.
+    private let mcp: McpAdministering?
 
     init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
         self.configuration = configuration
         self.singleton = singleton
         let runner: LifecycleRunning
+        var mcp: McpAdministering?
         do {
             let executable = try CLIResolver().resolve(override: configuration.cliOverride)
             runner = CLICommandRunner(
@@ -33,9 +38,16 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 installationState: configuration.installationState,
                 workspaceID: configuration.workspaceID
             )
+            // `mcp` commands take no workspace id — a host's setup names its
+            // own workspace — so this needs only the installation state.
+            mcp = McpCommandRunner(
+                executable: executable,
+                installationState: configuration.installationState
+            )
         } catch {
             runner = UnavailableLifecycleRunner()
         }
+        self.mcp = mcp
         coordinator = LifecycleCoordinator(runner: runner)
         super.init()
     }
@@ -132,7 +144,10 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 workspaceRef: configuration.workspaceID,
                 configurationRevision: "1"
             )
-            settingsWindowController = SettingsWindowController(coordinator: ReadinessCoordinator(context: context))
+            settingsWindowController = SettingsWindowController(
+                coordinator: ReadinessCoordinator(context: context),
+                mcp: mcp
+            )
         }
         settingsWindowController?.openOrFocus()
     }
