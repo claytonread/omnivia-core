@@ -50,6 +50,8 @@ final class StubBookmarkCodec: SecurityScopedBookmarkCoding, @unchecked Sendable
 struct Companion {
     let receiver: NativeHandoffReceiver
     let panel: CapturePanelController?
+    /// The folder submitter the panel was given, when the launch asked for one.
+    let folders: FolderCaptureSubmission?
     let environment: DocumentIntakeEnvironment
     let submitter: ManualCaptureSubmission
     let mailbox: NativeHandoffMailbox
@@ -81,6 +83,7 @@ class NativeHandoffTestCase: XCTestCase {
         accepted: AcceptedBox = AcceptedBox(),
         bookmarkFailures: Int = 0,
         withPanel: Bool = false,
+        withFolders: Bool = false,
         chooser: ChooserBox = ChooserBox()
     ) throws -> Companion {
         let intake = root.appendingPathComponent("native-intake", isDirectory: true)
@@ -99,11 +102,14 @@ class NativeHandoffTestCase: XCTestCase {
             snapshotStore: snapshots,
             candidates: candidates
         )
+        let folders = withFolders
+            ? FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+            : nil
         let panel = withPanel
             ? CapturePanelController(
                 workspaceName: "workspace-1",
                 submitter: submitter,
-                folderSubmitter: nil,
+                folderSubmitter: folders,
                 onQueued: nil,
                 opensWindow: false
             )
@@ -132,6 +138,7 @@ class NativeHandoffTestCase: XCTestCase {
         return Companion(
             receiver: receiver,
             panel: panel,
+            folders: folders,
             environment: environment,
             submitter: submitter,
             mailbox: mailbox,

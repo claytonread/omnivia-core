@@ -166,9 +166,21 @@ public struct CaptureDraft: Equatable {
     public var containsFolders: Bool { items.contains { $0.kind == .folder } }
     public var containsUnsupported: Bool { items.contains { $0.kind == .unsupported } }
     public var containsSnapshots: Bool { items.contains { $0.source.isSnapshot } }
-    /// A folder needs its own scope review and a refused item needs removing,
-    /// so neither is published alongside the ordinary files.
+    /// The ordinary-file group is confirmed on its own. A folder row never
+    /// blocks it and is never published with it — each folder is its own group
+    /// with its own scope review — but a refused item still needs removing.
     public var canSubmitFiles: Bool {
-        !fileCandidates.isEmpty && !containsFolders && !containsUnsupported
+        !fileCandidates.isEmpty && !containsUnsupported
+    }
+
+    /// Takes the ordinary files that were just published out of review and
+    /// leaves every other row, in its place and order. Rows are matched by
+    /// path, so a file added while publication was in flight stays.
+    public mutating func removeSubmitted(_ candidates: [ManualCaptureCandidate]) {
+        let published = Set(candidates.map { $0.url.standardizedFileURL })
+        items.removeAll {
+            guard case .file = $0.kind else { return false }
+            return published.contains($0.url.standardizedFileURL)
+        }
     }
 }

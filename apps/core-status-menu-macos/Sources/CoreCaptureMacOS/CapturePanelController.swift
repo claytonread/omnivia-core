@@ -18,7 +18,17 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         target: nil,
         action: nil
     )
+    private let receiptsLabel = NSTextField(wrappingLabelWithString: "")
     private var waitingSelections: [[ManualCaptureCandidate]] = []
+    /// One receipt per confirmed or declined group, oldest first. Groups never
+    /// share a receipt: the files, each import-once folder and each
+    /// keep-updated folder report only for themselves.
+    private(set) var receipts: [CaptureGroupReceipt] = []
+    /// A group's confirmation is in flight until its receipt is recorded, so a
+    /// second activation cannot publish the same group twice. Other groups are
+    /// unaffected.
+    private var fileGroupInFlight = false
+    private var foldersInFlight: Set<URL> = []
     /// False only for lifecycle tests, which drive the draft without a window.
     private let opensWindow: Bool
 
@@ -221,6 +231,12 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         statusLabel.maximumNumberOfLines = 2
         root.addArrangedSubview(statusLabel)
 
+        receiptsLabel.textColor = .secondaryLabelColor
+        receiptsLabel.font = .systemFont(ofSize: 11)
+        receiptsLabel.maximumNumberOfLines = 6
+        root.addArrangedSubview(receiptsLabel)
+        receiptsLabel.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(closeAction))
@@ -303,8 +319,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         alert.accessoryView = options
         alert.addButton(withTitle: "Review files")
         alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
+        let confirmed = alert.runModal() == .alertFirstButtonReturn
         let policy = FolderCapturePolicy(
             mode: mode.indexOfSelectedItem == 1 ? .keepUpdated : .importOnce,
             recursive: recursive.state == .on,
@@ -312,9 +327,19 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
             watchInitialContent: existing.indexOfSelectedItem == 1
                 ? .onlyNewAndChanged : .includeExisting
         )
-        statusLabel.stringValue = "Reviewing folder scope…"
-        primaryButton.isEnabled = false
+        guard confirmed else {
+            declineFolder(root, mode: policy.mode)
+            return
+        }
+        let key = root.standardizedFileURL
+        guard foldersInFlight.insert(key).inserted else {
+            statusLabel.stringValue = "\(root.lastPathComponent): already being reviewed."
+            return
+        }
+        let title = root.lastPathComponent
+        statusLabel.stringValue = "\(title): Reviewing folder scope…"
         Task {
+            defer { foldersInFlight.remove(key) }
             do {
                 let plan = try await Task.detached(priority: .userInitiated) {
                     try folderSubmitter.plan(root: root, policy: policy)
@@ -331,8 +356,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                         """
                     refusal.addButton(withTitle: "OK")
                     refusal.runModal()
-                    statusLabel.stringValue = coverage
-                    refresh()
+                    record(Self.folderReceipt(title: title, mode: policy.mode, outcome: .failed, detail: coverage))
                     return
                 }
                 // A scan that hit a bound keeps the draft and enrols nothing.
@@ -346,8 +370,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                         """
                     refusal.addButton(withTitle: "OK")
                     refusal.runModal()
-                    statusLabel.stringValue = limit.reviewDetail
-                    refresh()
+                    record(Self.folderReceipt(title: title, mode: policy.mode, outcome: .failed, detail: limit.reviewDetail))
                     return
                 }
                 let confirmation = NSAlert()
@@ -373,66 +396,149 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 )
                 confirmation.addButton(withTitle: "Cancel")
                 guard confirmation.runModal() == .alertFirstButtonReturn else {
-                    statusLabel.stringValue = "Folder review cancelled. Nothing was added."
-                    refresh()
+                    declineFolder(root, mode: policy.mode)
                     return
                 }
-                statusLabel.stringValue = policy.mode == .keepUpdated
+                statusLabel.stringValue = "\(title): " + (policy.mode == .keepUpdated
                     && policy.watchInitialContent == .onlyNewAndChanged
                     ? "Setting baseline… Core checks existing files to recognise later changes without adding them."
-                    : "Preparing current folder versions…"
-                let entries = try await folderSubmitter.submit(plan)
-                // The folder is queued now, and the work that queued it adopted
-                // its own root grant under its own owner. So the row leaves
-                // review and the provisional candidate it held is released —
-                // its root owner and its durable record — which never touches
-                // the grant the submitted work holds.
-                if removeFromDraft,
-                   let index = draft.items.firstIndex(where: {
-                       $0.url.standardizedFileURL == root.standardizedFileURL
-                   }),
-                   let removed = draft.remove(at: index)
+                    : "Preparing current folder versions…")
+                if await confirmFolder(plan, removingReviewRow: removeFromDraft ? root : nil).outcome
+                    != .failed
                 {
-                    if let owned = removed.ownedCandidate {
-                        submitter.discardUnsubmitted([owned])
-                    }
+                    onQueued?()
                 }
-                let excludedBaseline = policy.mode == .keepUpdated
-                    && policy.watchInitialContent == .onlyNewAndChanged
-                // Folder addition queued, never all files added: the manifest
-                // is frozen and each child reports its own outcome.
-                let progress = "Folder addition queued · \(plan.members.count) files frozen · "
-                    + "\(entries.count) queued on this Mac · the rest continue in bounded batches."
-                statusLabel.stringValue = excludedBaseline
-                    ? "Setting baseline… Existing files will not be added."
-                    : policy.mode == .keepUpdated
-                    ? "\(progress) Watching starts after every baseline file is confirmed by Core."
-                    : progress
-                refresh()
-                onQueued?()
-            } catch FolderCaptureSubmissionError.emptyScope {
-                statusLabel.stringValue = "No supported documents were found in that scope."
-                refresh()
-            } catch FolderCaptureSubmissionError.coverageIncomplete {
-                statusLabel.stringValue = "Part of this folder could not be read, so it is not the whole folder. Check access to it and try again. No files were added."
-                refresh()
-            } catch FolderCaptureSubmissionError.scanLimitExceeded {
-                statusLabel.stringValue = "This folder exceeds a reviewed limit. Choose a smaller scope or add exclusions. No files were added."
-                refresh()
-            } catch FolderCaptureSubmissionError.unsafeRoot {
-                statusLabel.stringValue = "Choose a narrower document folder, not a filesystem or home folder."
-                refresh()
-            } catch FolderCaptureSubmissionError.duplicateWatch {
-                statusLabel.stringValue = "This folder is already watched for this destination."
-                refresh()
-            } catch FolderCaptureSubmissionError.watchLimitExceeded {
-                statusLabel.stringValue = "This Mac already has 20 active watched folders. Stop one before adding another."
-                refresh()
             } catch {
-                statusLabel.stringValue = "Couldn’t queue this folder. Check access, scope, and size limits."
-                refresh()
+                record(Self.folderReceipt(
+                    title: title,
+                    mode: policy.mode,
+                    outcome: .failed,
+                    detail: Self.folderFailureDetail(error)
+                ))
             }
         }
+    }
+
+    /// Publishes one reviewed folder plan as its own group and reports only for
+    /// it. Nothing else in review is read, published or released: a pending
+    /// ordinary-file group and every other folder row are left exactly as they
+    /// were, and a failure keeps this folder's own row in review to retry.
+    func confirmFolder(
+        _ plan: FolderCapturePlan,
+        removingReviewRow root: URL? = nil
+    ) async -> CaptureGroupReceipt {
+        let title = plan.rootDisplayName
+        let mode = plan.policy.mode
+        guard let folderSubmitter else {
+            return record(Self.folderReceipt(
+                title: title, mode: mode, outcome: .failed,
+                detail: "Folder import isn’t available in this build."
+            ))
+        }
+        do {
+            let result = try await folderSubmitter.submitWithReceipt(plan)
+            // The folder is queued now, and the work that queued it adopted
+            // its own root grant under its own owner. So the row leaves
+            // review and the provisional candidate it held is released —
+            // its root owner and its durable record — which never touches
+            // the grant the submitted work holds.
+            if let root,
+               let index = draft.items.firstIndex(where: {
+                   $0.url.standardizedFileURL == root.standardizedFileURL
+               }),
+               let removed = draft.remove(at: index)
+            {
+                if let owned = removed.ownedCandidate {
+                    submitter.discardUnsubmitted([owned])
+                }
+            }
+            let excludedBaseline = mode == .keepUpdated
+                && plan.policy.watchInitialContent == .onlyNewAndChanged
+            // Folder addition queued, never all files added: the manifest
+            // is frozen and each child reports its own outcome.
+            let progress = "Folder addition queued · \(plan.members.count) files frozen · "
+                + "\(result.entries.count) queued on this Mac · the rest continue in bounded batches."
+            return record(Self.folderReceipt(
+                title: title,
+                mode: mode,
+                submissionID: result.submissionID,
+                outcome: .queued(queued: result.entries.count),
+                detail: excludedBaseline
+                    ? "Setting baseline… Existing files will not be added."
+                    : mode == .keepUpdated
+                    ? "\(progress) Watching starts after every baseline file is confirmed by Core."
+                    : progress
+            ))
+        } catch {
+            return record(Self.folderReceipt(
+                title: title,
+                mode: mode,
+                outcome: .failed,
+                detail: Self.folderFailureDetail(error)
+            ))
+        }
+    }
+
+    /// The person declined this folder at its own dialog. Only this group's
+    /// receipt says so, and its row stays in review for a later decision.
+    func declineFolder(_ root: URL, mode: FolderCaptureMode) {
+        record(Self.folderReceipt(
+            title: root.lastPathComponent,
+            mode: mode,
+            outcome: .cancelled,
+            detail: "Folder review cancelled. Nothing was added."
+        ))
+    }
+
+    private static func folderReceipt(
+        title: String,
+        mode: FolderCaptureMode,
+        submissionID: String? = nil,
+        outcome: CaptureGroupReceipt.Outcome,
+        detail: String
+    ) -> CaptureGroupReceipt {
+        CaptureGroupReceipt(
+            id: CaptureGroupReceipt.newID(),
+            kind: mode == .keepUpdated ? .folderKeepUpdated : .folderImportOnce,
+            title: title,
+            submissionID: submissionID,
+            outcome: outcome,
+            detail: detail
+        )
+    }
+
+    private static func folderFailureDetail(_ error: Error) -> String {
+        switch error as? FolderCaptureSubmissionError {
+        case .emptyScope?:
+            return "No supported documents were found in that scope."
+        case .coverageIncomplete?:
+            return "Part of this folder could not be read, so it is not the whole folder. Check access to it and try again. No files were added."
+        case .scanLimitExceeded?:
+            return "This folder exceeds a reviewed limit. Choose a smaller scope or add exclusions. No files were added."
+        case .unsafeRoot?:
+            return "Choose a narrower document folder, not a filesystem or home folder."
+        case .duplicateWatch?:
+            return "This folder is already watched for this destination."
+        case .watchLimitExceeded?:
+            return "This Mac already has 20 active watched folders. Stop one before adding another."
+        default:
+            return "Couldn’t queue this folder. Check access, scope, and size limits."
+        }
+    }
+
+    /// Appends a group's receipt, shows it, and returns it. The status line
+    /// always names the group it reports on.
+    @discardableResult
+    private func record(_ receipt: CaptureGroupReceipt) -> CaptureGroupReceipt {
+        receipts.append(receipt)
+        if receipts.count > 20 { receipts.removeFirst(receipts.count - 20) }
+        statusLabel.stringValue = receipt.summary
+        receiptsLabel.stringValue = receipts.suffix(4).reversed().map(\.summary).joined(separator: "\n")
+        receiptsLabel.toolTip = receipts.suffix(4).reversed()
+            .map { "\($0.id) · \($0.submissionID ?? "no submission")" }
+            .joined(separator: "\n")
+        refresh()
+        return receipt
     }
 
     /// Names the actual reasons items were left out, with their counts, rather
@@ -497,7 +603,9 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
             keepUpdated.state = .off
             statusLabel.stringValue = "Captured copies are ready for review. They are not linked to temporary source files."
         } else if draft.containsFolders {
-            statusLabel.stringValue = "Double-click a folder to review its scope before adding it."
+            statusLabel.stringValue = draft.canSubmitFiles
+                ? "Files and each folder are added separately. Add the files, or double-click a folder to review its scope."
+                : "Double-click a folder to review its scope before adding it."
         } else {
             statusLabel.stringValue = "Ready to add."
         }
@@ -532,40 +640,67 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     /// cannot start a second publication.
     @discardableResult
     func beginSubmit() -> Task<Void, Never>? {
-        guard draft.canSubmitFiles else { return nil }
+        guard draft.canSubmitFiles, !fileGroupInFlight else { return nil }
+        fileGroupInFlight = true
         draft.note = note.string
-        primaryButton.isEnabled = false
-        statusLabel.stringValue = "Preparing current file versions…"
         let candidates = draft.fileCandidates(keepUpdated: keepUpdated.state == .on)
+        let title = candidates.count == 1 ? candidates[0].displayName : "\(candidates.count) files"
+        statusLabel.stringValue = "\(title): Preparing current file versions…"
+        refresh()
         return Task {
+            defer {
+                fileGroupInFlight = false
+                refresh()
+            }
             do {
                 // Publication releases the candidates' durable records itself;
                 // the grants they name now belong to the queued captures.
                 let entries = try await submitter.submit(candidates)
-                statusLabel.stringValue = entries.count == 1
-                    ? "Queued on this Mac."
-                    : "\(entries.count) items queued on this Mac."
-                draft = CaptureDraft()
+                // Only the rows just published leave review. A folder row, or a
+                // file added while this was in flight, is not part of this group.
+                draft.removeSubmitted(candidates)
                 note.string = ""
                 keepUpdated.state = .off
+                record(Self.fileReceipt(
+                    title: title,
+                    submissionID: entries.first?.intent.submissionId,
+                    outcome: .queued(queued: entries.count),
+                    detail: entries.count == 1 ? "Queued on this Mac." : "\(entries.count) items queued on this Mac."
+                ))
                 promoteWaitingSelection()
                 refresh()
                 onQueued?()
-            } catch ManualCaptureSubmissionError.duplicateAutomaticSource {
-                statusLabel.stringValue = "One of these files is already kept updated for this destination."
-                primaryButton.isEnabled = true
-            } catch ManualCaptureSubmissionError.automaticSourceLimitExceeded {
-                statusLabel.stringValue = "This Mac already has the maximum number of individually updated files."
-                primaryButton.isEnabled = true
-            } catch ManualCaptureSubmissionError.snapshotCannotBeMonitored {
-                keepUpdated.state = .off
-                statusLabel.stringValue = "Captured copies cannot be kept updated. Add them as snapshots instead."
-                primaryButton.isEnabled = true
             } catch {
-                statusLabel.stringValue = "Couldn’t queue this selection. Check access and try again."
-                primaryButton.isEnabled = true
+                var detail = "Couldn’t queue this selection. Check access and try again."
+                switch error as? ManualCaptureSubmissionError {
+                case .duplicateAutomaticSource?:
+                    detail = "One of these files is already kept updated for this destination."
+                case .automaticSourceLimitExceeded?:
+                    detail = "This Mac already has the maximum number of individually updated files."
+                case .snapshotCannotBeMonitored?:
+                    keepUpdated.state = .off
+                    detail = "Captured copies cannot be kept updated. Add them as snapshots instead."
+                default: break
+                }
+                record(Self.fileReceipt(title: title, submissionID: nil, outcome: .failed, detail: detail))
             }
         }
+    }
+
+    private static func fileReceipt(
+        title: String,
+        submissionID: String?,
+        outcome: CaptureGroupReceipt.Outcome,
+        detail: String
+    ) -> CaptureGroupReceipt {
+        CaptureGroupReceipt(
+            id: CaptureGroupReceipt.newID(),
+            kind: .ordinaryFiles,
+            title: title,
+            submissionID: submissionID,
+            outcome: outcome,
+            detail: detail
+        )
     }
 
     /// Closing the window keeps the draft, so the draft — not the window — owns
@@ -603,6 +738,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     }
 
     var reviewItemCount: Int { draft.items.count }
+    var reviewItemNames: [String] { draft.items.map(\.displayName) }
     var waitingSelectionCount: Int { waitingSelections.count }
     /// False while review holds a captured copy: a copy has no original to
     /// follow, so it can never be kept updated.
@@ -621,7 +757,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         table.reloadData()
         keepUpdated.isEnabled = !draft.containsSnapshots
         if draft.containsSnapshots { keepUpdated.state = .off }
-        primaryButton.isEnabled = draft.canSubmitFiles
+        primaryButton.isEnabled = draft.canSubmitFiles && !fileGroupInFlight
         if draft.items.isEmpty && statusLabel.stringValue.isEmpty {
             statusLabel.stringValue = "Choose files to begin."
         }

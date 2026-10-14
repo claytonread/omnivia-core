@@ -102,6 +102,14 @@ public enum FolderCaptureSubmissionError: Error, Equatable {
     case establishmentConflict
 }
 
+/// What one folder submission durably became: the submission identity every
+/// queued child carries, and the children published so far. The identity is nil
+/// only when nothing durable was created (an import-once scope with no member).
+public struct FolderCaptureReceipt: Equatable, Sendable {
+    public let submissionID: String?
+    public let entries: [CaptureQueueEntry]
+}
+
 /// Reviews and freezes one selected folder without traversing symlinks or packages.
 /// Import-once and the initial Keep Updated baseline share the durable v3 queue;
 /// subsequent observations use the separately persisted subscription scanner.
@@ -258,6 +266,12 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
     /// there is no silent partial enrolment of whichever subset was scanned
     /// first.
     public func submit(_ plan: FolderCapturePlan) async throws -> [CaptureQueueEntry] {
+        try await submitWithReceipt(plan).entries
+    }
+
+    /// `submit`, plus the identity of the submission it created, so the caller
+    /// can name this folder's own receipt.
+    public func submitWithReceipt(_ plan: FolderCapturePlan) async throws -> FolderCaptureReceipt {
         // Same rule for a scope that could not be read as for one that hit a
         // bound: whatever subset was visible is not the folder, so it enrols
         // nothing and no watch is established over it.
@@ -297,7 +311,9 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         let importsExisting = !keepsUpdated
             || plan.policy.watchInitialContent != .onlyNewAndChanged
         let hasBulkRun = importsExisting && !plan.members.isEmpty
-        if !keepsUpdated && !hasBulkRun { return [] }
+        if !keepsUpdated && !hasBulkRun {
+            return FolderCaptureReceipt(submissionID: nil, entries: [])
+        }
         // Every identity this submission will ever use is minted here, once,
         // and frozen into the intent before any authority exists. A retry or a
         // restart reconciles that same intent: it never mints a replacement.
@@ -336,7 +352,8 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
                 )
             }
         )
-        return try await establish(intent, selectedRoot: plan.root)
+        let entries = try await establish(intent, selectedRoot: plan.root)
+        return FolderCaptureReceipt(submissionID: intent.submissionID, entries: entries)
     }
 
     /// Finishes every establishment a crash or a failed submission left pending,

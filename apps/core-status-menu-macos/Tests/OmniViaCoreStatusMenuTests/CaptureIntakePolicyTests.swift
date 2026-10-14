@@ -131,7 +131,7 @@ final class CaptureIntakePolicyTests: XCTestCase {
         XCTAssertTrue(draft.items.isEmpty)
     }
 
-    func testAFolderIsNeverSubmittedAlongsideOrdinaryFiles() throws {
+    func testAFolderIsNeverPublishedWithOrBlockingOrdinaryFiles() throws {
         let root = try temporaryDirectory()
         let folder = root.appendingPathComponent("records", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -141,9 +141,13 @@ final class CaptureIntakePolicyTests: XCTestCase {
 
         try draft.add([note, folder])
 
-        XCTAssertFalse(draft.canSubmitFiles)
-        draft.remove(at: 1)
+        // The files are their own group: the folder neither blocks them nor is
+        // published with them.
         XCTAssertTrue(draft.canSubmitFiles)
+        XCTAssertEqual(draft.fileCandidates.map(\.displayName), ["note.txt"])
+        draft.removeSubmitted(draft.fileCandidates)
+        XCTAssertEqual(draft.items.map(\.displayName), ["records"])
+        XCTAssertFalse(draft.canSubmitFiles)
     }
 
     func testEveryNativeSurfaceKeepsItsOwnProvenanceThroughReview() throws {

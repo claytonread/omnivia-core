@@ -51,7 +51,7 @@ final class CaptureDraftTests: XCTestCase {
         // holds the grant that ownership cleanup has to release.
         XCTAssertEqual(draft.items.map(\.kind), [.folder, .file(.pdf)])
         XCTAssertEqual(draft.fileCandidates.map(\.displayName), ["brief.pdf"])
-        XCTAssertFalse(draft.canSubmitFiles)
+        XCTAssertTrue(draft.canSubmitFiles)
         XCTAssertEqual(draft.ownedCandidates.map(\.displayName), ["Briefs"])
         XCTAssertEqual(draft.ownedCandidates.map(\.native), [native])
         XCTAssertEqual(
