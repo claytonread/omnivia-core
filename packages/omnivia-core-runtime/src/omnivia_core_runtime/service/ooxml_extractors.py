@@ -501,6 +501,71 @@ _DOCX_GRAPHICS: Final[dict[str, str]] = {
     "k": "a chart",
     "s": "SmartArt",
 }
+# The legacy object container, in the two WordprocessingML main namespaces OOXML
+# defines -- Transitional and Strict. The rest of the DOCX reader matches local
+# names, because a story's own vocabulary is settled by the part it was reached
+# through; an object container is admitted on its qualified name alone, so an
+# element merely called ``object`` in another vocabulary declares nothing.
+_DOCX_OBJECTS: Final = frozenset(
+    f"{{{namespace}}}object"
+    for namespace in (
+        "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+        "http://purl.oclc.org/ooxml/wordprocessingml/main",
+    )
+)
+# The one element inside that container which declares the embedded or linked
+# object. It is an Office drawing extension rather than part of either OOXML
+# profile, so it has a single namespace and no Strict spelling: the same local
+# name anywhere else is another vocabulary's element and declares no object.
+_DOCX_OLE_OBJECT: Final = "{urn:schemas-microsoft-com:office:office}OLEObject"
+# The VML shape a legacy object carries its on-page stand-in as. It is a picture
+# *of* the object, not the object: it is recorded as declared and is never
+# opened, decoded, resolved or inventoried as an image of its own. Standalone
+# VML images wait for their own slice.
+_DOCX_OLE_PREVIEW: Final = "{urn:schemas-microsoft-com:vml}shape"
+# ``OLEObject/@Type``, the only thing that says whether the object is embedded
+# or linked, mapped to the mode its record reports. The value is closed and
+# case-sensitive, so one differing in case is not that value: the relationship
+# does not say which it is, and neither does the target's name or the ``ProgID``.
+_DOCX_OLE_MODES: Final[dict[str, str]] = {"Embed": "embed", "Link": "link"}
+# The object's own unqualified claims, each paired with the field its record
+# keeps it in. All five are text Word wrote and none is interpreted: a
+# ``ProgID`` is Word's own name for the server that would open the object and
+# nothing here looks one up, resolves it or launches anything; a ``ShapeID`` and
+# an ``ObjectID`` are identifiers the legacy drawing layer knew the shape by and
+# neither is resolved against anything; a ``DrawAspect`` and an ``UpdateMode``
+# say how Word would render and refresh the object, and nothing here renders or
+# refreshes one.
+_DOCX_OLE_CLAIMS: Final = (
+    ("ProgID", "progId"),
+    ("ShapeID", "shapeId"),
+    ("DrawAspect", "drawAspect"),
+    ("ObjectID", "objectId"),
+    ("UpdateMode", "updateMode"),
+)
+# What a legacy object's record carries, defaulted so an embedded part and an
+# external link are shaped alike. ``scheme`` is the scheme a linked target's own
+# text names; the three part fields describe a member the package holds, and the
+# byte length is the figure the package measured while validating it. Reporting
+# any of it opens nothing: no object is ever parsed, decoded, executed, launched
+# or fetched, and an object never contributes text.
+_DOCX_OLE_RECORD: Final[dict[str, object]] = {
+    "mode": None,
+    "relationshipId": None,
+    "relationshipType": None,
+    "target": None,
+    "external": None,
+    "scheme": None,
+    "objectPart": None,
+    "contentType": None,
+    "objectBytes": None,
+    "progId": None,
+    "shapeId": None,
+    "drawAspect": None,
+    "objectId": None,
+    "updateMode": None,
+    "previewDeclared": None,
+}
 # The DrawingML picture element, in the two picture namespaces OOXML defines.
 # It is the one shape that declares a displayed image, so a chart, a diagram or
 # an embedded object under the same ``a:graphicData`` is not reached through it.
@@ -608,11 +673,13 @@ _PPTX_OLE_PREVIEW: Final = frozenset(
     f"{{{namespace}}}pic" for namespace in _PRESENTATIONML
 )
 # The relationship types that qualify what an object names: a single OLE object,
-# or a whole package embedded as one. As with every other type here only the
-# URIs OOXML defines qualify -- Transitional and Strict for each -- so nothing
-# reaches an object by ending the same way, and an image, a media or a hyperlink
-# relationship reaches no object at all.
-_PPTX_OLE_RELATIONSHIPS: Final = frozenset(
+# or a whole package embedded as one. The pair is the same wherever an object is
+# declared, so a slide's ``p:oleObj`` and a story's ``o:OLEObject`` qualify
+# against one set. As with every other type here only the URIs OOXML defines
+# qualify -- Transitional and Strict for each -- so nothing reaches an object by
+# ending the same way, and an image, a media or a hyperlink relationship reaches
+# no object at all.
+_OLE_RELATIONSHIPS: Final = frozenset(
     {
         (
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -2908,7 +2975,7 @@ def _pptx_frame_object(
     if entry is None:
         raise OOXMLInvalid("PPTX embedded object names a missing relationship")
     kind = package.relationship_types.get(rels, {}).get(ids[0], "")
-    if not _is_defined_relationship(kind, _PPTX_OLE_RELATIONSHIPS):
+    if not _is_defined_relationship(kind, _OLE_RELATIONSHIPS):
         raise OOXMLInvalid("PPTX embedded object names a relationship of another type")
     mode, declaration = modes[0]
     target, external = entry
@@ -2929,7 +2996,7 @@ def _pptx_frame_object(
                 for name, field in _PPTX_OLE_EXTENTS
             },
             **{
-                field: _pptx_ole_claim(node, name)
+                field: _ole_claim(node, name)
                 for name, field in _PPTX_OLE_CLAIMS
             },
         }
@@ -2945,13 +3012,14 @@ def _pptx_frame_object(
     return record
 
 
-def _pptx_ole_claim(element: ElementTree.Element, name: str) -> str | None:
+def _ole_claim(element: ElementTree.Element, name: str) -> str | None:
     """Return one of an object's unqualified text claims, clipped, or None.
 
     Read unqualified, as the schema writes it: the same local name carried in
     some other vocabulary's namespace is that vocabulary's extension and claims
     nothing about this object. A claim written empty stays the empty claim the
-    file made rather than becoming an absent one.
+    file made rather than becoming an absent one. Nothing here interprets a
+    claim, so this reads a slide's object and a story's object alike.
     """
     value = element.attrib.get(name)
     return None if value is None else _clip(value, _MAX_META_CHARS)
@@ -5082,7 +5150,7 @@ class _DocxWalker:
         self.paragraphs += 1
         role = "table_cell" if cell else self._role(paragraph)
         current = removed = boxes = links = refs = fields = concealed = 0
-        maths = images = charts = diagrams = 0
+        maths = images = charts = diagrams = objects = 0
         for kind, value, box_deleted in _paragraph_items(
             paragraph, deleted, self._fields
         ):
@@ -5111,6 +5179,12 @@ class _DocxWalker:
                 self._flush(cell)
                 self._diagram(value, f"{position}.d{diagrams}", box_deleted)
                 diagrams += 1
+            elif kind == "o":
+                assert isinstance(value, ElementTree.Element)
+                # An object is ordered where it sits, for the reason SmartArt is.
+                self._flush(cell)
+                self._object(value, f"{position}.o{objects}", box_deleted)
+                objects += 1
             elif kind == "m":
                 assert isinstance(value, ElementTree.Element)
                 item = _local(value.tag)
@@ -5450,6 +5524,98 @@ class _DocxWalker:
             )
             _bounded(self._segments)
 
+    def _object(
+        self, element: ElementTree.Element, position: str, deleted: bool
+    ) -> None:
+        """Inventory one legacy embedded or linked object, inertly.
+
+        One record is emitted for every object the story anchors, where the XML
+        placed it, and an object contributes no text: its payload is never
+        opened, parsed, decoded, executed, launched or fetched, whatever the
+        ``ProgID`` beside it names.
+
+        Which kind of object it is comes from the declaration's own ``Type`` and
+        from nowhere else -- not from the relationship, not from the target's
+        name, not from the ``ProgID``. A ``Type`` the schema does not define
+        leaves that undeclared, so the object is refused rather than read as
+        whichever of the two it resembles.
+
+        The single relationship-namespaced ``r:id`` on the declaration is the one
+        reference read; an id written in no namespace, or in two of the
+        namespaces that carry it, names no one relationship. It resolves only
+        through the holding story part's own relationships, so containment, path
+        safety and existence were all settled when the package validated them --
+        which is why an embedded target is a member the archive holds and nothing
+        re-checks it here -- and it has to carry one of the types OOXML defines
+        for an object. The declaration and the relationship then have to agree:
+        an embedded object is a part inside the package and a linked one is a
+        reference out of it, so an ``Embed`` naming an external target, or a
+        ``Link`` naming an internal part, is refused rather than reported as the
+        other.
+
+        An embedded object contributes its safe part name, the type the package
+        declares for it and the byte length the package already measured while
+        validating the member; a linked one is carried exactly as the
+        relationship holds it, beside the scheme its own text names. The VML
+        shape standing in for the object on the page is recorded as declared and
+        no more: it is never opened, decoded, resolved or inventoried as an
+        image, which waits for its own slice.
+
+        A deletion wrapped around the container is kept as the revision it is,
+        exactly as it is over an image, a chart or a diagram.
+        """
+        declaration = _docx_ole_object(element)
+        assert declaration is not None
+        mode = _DOCX_OLE_MODES.get(declaration.attrib.get("Type", ""))
+        if mode is None:
+            raise OOXMLInvalid("DOCX embedded object does not declare embed or link")
+        ids = _namespaced_ids(declaration, "id")
+        if len(ids) > 1:
+            raise OOXMLInvalid("DOCX embedded object names more than one relationship")
+        if not ids:
+            raise OOXMLInvalid("DOCX embedded object names no relationship")
+        entry = self._relations.get(ids[0])
+        if entry is None:
+            raise OOXMLInvalid("DOCX embedded object names a missing relationship")
+        kind = self._relation_types.get(ids[0], "")
+        if not _is_defined_relationship(kind, _OLE_RELATIONSHIPS):
+            raise OOXMLInvalid(
+                "DOCX embedded object names a relationship of another type"
+            )
+        target, external = entry
+        if external != (mode == "link"):
+            raise OOXMLInvalid(
+                "DOCX embedded object contradicts the relationship it names"
+            )
+        record = dict(_DOCX_OLE_RECORD)
+        record.update(
+            {
+                "kind": "oleObject",
+                "mode": mode,
+                "relationshipId": _clip(ids[0], _MAX_META_CHARS),
+                "relationshipType": _clip(kind, _MAX_TARGET_CHARS),
+                "target": _clip(target, _MAX_TARGET_CHARS),
+                "external": external,
+                "previewDeclared": any(
+                    node.tag == _DOCX_OLE_PREVIEW for node in element
+                ),
+                **{
+                    field: _ole_claim(declaration, name)
+                    for name, field in _DOCX_OLE_CLAIMS
+                },
+            }
+        )
+        if external:
+            match = _SCHEME.match(target)
+            record["scheme"] = match.group(1).casefold() if match else None
+        else:
+            record["objectPart"] = _clip(target, _MAX_TARGET_CHARS)
+            record["contentType"] = _clip(
+                self._package.resolved_type(target), _MAX_META_CHARS
+            )
+            record["objectBytes"] = self._package.archive.getinfo(target).file_size
+        self._inventory(position, record, "visible", deleted)
+
     def _flush(self, cell: _CellRun | None) -> None:
         if cell is None:
             return
@@ -5652,6 +5818,19 @@ def _paragraph_items(
                 _field_result(fields, _DOCX_GRAPHICS[declared])
                 close()
                 items.append((declared, node, state))
+                if len(items) > MAX_SEGMENTS:
+                    raise OOXMLInvalid("OOXML extraction has too many segments")
+                continue
+            if node.tag in _DOCX_OBJECTS and _docx_ole_object(node) is not None:
+                # A legacy object is recorded where it sits and holds no prose of
+                # its own in the story, so it is not entered: its payload is
+                # never opened and the VML shape standing in for it on the page
+                # is recorded as declared rather than read. A ``w:object``
+                # declaring no object is the transparent wrapper it is today and
+                # is walked for whatever content it carries.
+                _field_result(fields, "an embedded object")
+                close()
+                items.append(("o", node, state))
                 if len(items) > MAX_SEGMENTS:
                     raise OOXMLInvalid("OOXML extraction has too many segments")
                 continue
@@ -5895,6 +6074,27 @@ def _docx_drawing_object(drawing: ElementTree.Element) -> str | None:
             "DOCX drawing declares both "
             f"{_DOCX_GRAPHICS[declared[0]]} and {_DOCX_GRAPHICS[declared[1]]}"
         )
+    return declared[0] if declared else None
+
+
+def _docx_ole_object(element: ElementTree.Element) -> ElementTree.Element | None:
+    """Return the object one ``w:object`` declares, or None where it declares none.
+
+    The route in is one hop and no deeper: the ``o:OLEObject`` directly below
+    the container. A declaration reached anywhere else is not this container's
+    own -- one nested inside the VML shape standing in for the object, one
+    carried in an alternate-content fallback, one below another object hung
+    along, and one written in a vocabulary that merely shares the local name are
+    all passed over -- so a container declaring no object is reported as
+    declaring none rather than as declaring something found elsewhere, and stays
+    the transparent wrapper it is today.
+
+    A container holds one object, so two declarations leave which object it
+    shows ambiguous and nothing here chooses between them.
+    """
+    declared = [node for node in element if node.tag == _DOCX_OLE_OBJECT]
+    if len(declared) > 1:
+        raise OOXMLInvalid("DOCX object declares more than one embedded object")
     return declared[0] if declared else None
 
 

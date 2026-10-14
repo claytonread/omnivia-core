@@ -9,6 +9,7 @@ import pytest
 from omnivia_core_runtime.service.ooxml_extractors import (
     _MAX_DOCX_EQUATION_BYTES,
     _MAX_DOCX_FIELD_DEPTH,
+    _MAX_META_CHARS,
     _MAX_TARGET_CHARS,
     OOXMLInvalid,
     _FieldState,
@@ -3557,3 +3558,665 @@ def test_the_rest_of_the_diagram_set_stays_shut() -> None:
         ("object_inventory", None),
     ]
     assert inventory(content) == [("0.d0", SMART_RECORD), ("0.d0", SMART_CONNECTION)]
+
+
+# The legacy object container, in the markup Word actually writes: the VML
+# shape standing in for the object on the page, then the ``o:OLEObject``
+# directly below the container naming the part or the link. ``o:`` is bound on
+# the declaration itself because nothing else in this file needs it.
+OFFICE = 'xmlns:o="urn:schemas-microsoft-com:office:office"'
+# Bytes at the embedded targets that are not an OLE stream, not a package, and
+# -- for the package target -- not an archive either, which the package would
+# refuse outright. The proof that this slice never reaches an object is that
+# these are never opened: only the length the package measured is reported.
+OBJECT_MEMBERS = {
+    "word/embeddings/oleObject1.bin": b"not an OLE compound stream",
+    "word/embeddings/Workbook1.xlsx": b"not a package and not an archive",
+}
+OBJECT_DEFAULTS = (
+    '<Default Extension="bin" '
+    'ContentType="application/vnd.openxmlformats-officedocument.oleObject"/>'
+    '<Default Extension="xlsx" ContentType="application/vnd.openxmlformats-'
+    'officedocument.spreadsheetml.sheet"/>'
+)
+OBJECT_RELATION = ("rId9", "embeddings/oleObject1.bin", False, "oleObject")
+PACKAGE_RELATION = ("rId9", "embeddings/Workbook1.xlsx", False, "package")
+LINK_RELATION = ("rId9", "HTTPS://files.example/Budget.XLSX", True, "oleObject")
+# The object's own claims, as Word writes them on an embedded object. None is
+# interpreted: the ``ProgID`` names the server that would open the object and
+# nothing here looks one up, and the two identifiers are the legacy drawing
+# layer's own and are resolved against nothing.
+CLAIMS = (
+    ' ProgID="Excel.Sheet.12" ShapeID="_x0000_i1025" DrawAspect="Content"'
+    ' ObjectID="_1543581977"'
+)
+# The one claim Word writes only on a link: how it would refresh the object,
+# which nothing here refreshes.
+LINK_CLAIMS = CLAIMS + ' UpdateMode="Always"'
+
+
+def ole(mode: str = "Embed", *, claims: str = CLAIMS) -> str:
+    """One ``w:object``, inside the run that anchors it."""
+    return (
+        f'<w:r><w:object><v:shape id="_x0000_i1025" style="width:96pt;height:72pt"/>'
+        f'<o:OLEObject {OFFICE} Type="{mode}" r:id="rId9"{claims}/>'
+        "</w:object></w:r>"
+    )
+
+
+def objected(body: str, relation: tuple[str, str, bool, str] = OBJECT_RELATION) -> bytes:
+    """A document whose one object names ``relation``."""
+    return linked(
+        body, relation, content_types=OBJECT_DEFAULTS, members=OBJECT_MEMBERS
+    )
+
+
+# What the default fixture's record says about the object part it embeds. The
+# content type is the folded form of what the package declared, as it is for an
+# image, and the byte length is the figure the package already measured.
+EMBEDDED: dict[str, object] = {
+    "kind": "oleObject",
+    "mode": "embed",
+    "relationshipId": "rId9",
+    "relationshipType": REL + "oleObject",
+    "target": "word/embeddings/oleObject1.bin",
+    "external": False,
+    "scheme": None,
+    "objectPart": "word/embeddings/oleObject1.bin",
+    "contentType": "application/vnd.openxmlformats-officedocument.oleobject",
+    "objectBytes": len(OBJECT_MEMBERS["word/embeddings/oleObject1.bin"]),
+    "progId": "Excel.Sheet.12",
+    "shapeId": "_x0000_i1025",
+    "drawAspect": "Content",
+    "objectId": "_1543581977",
+    "updateMode": None,
+    "previewDeclared": True,
+}
+# What a record says about the package embedded as one object, and about a
+# target outside the package: the reference itself, and nothing invented for it.
+PACKAGED: dict[str, object] = {
+    "relationshipType": REL + "package",
+    "target": "word/embeddings/Workbook1.xlsx",
+    "objectPart": "word/embeddings/Workbook1.xlsx",
+    "contentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "objectBytes": len(OBJECT_MEMBERS["word/embeddings/Workbook1.xlsx"]),
+}
+OUTSIDE: dict[str, object] = {
+    "objectPart": None,
+    "contentType": None,
+    "objectBytes": None,
+}
+
+
+def test_an_embedded_object_is_inventoried_where_it_sits_and_holds_no_text() -> None:
+    """One record, where the story anchors the object, carrying the declaration's
+    own claims, the VML stand-in as declared, and what the package already knows
+    about the part it names. Nothing is read out of the object: the record is the
+    paragraph's only segment, and the ``.bin`` behind it is never opened."""
+    content = objected(f"<w:p>{ole()}</w:p>")
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [(i.semantic_role, i.text) for i in result.segments] == [
+        ("object_inventory", None)
+    ]
+    assert inventory(content) == [("0.o0", EMBEDDED)]
+
+
+def test_a_package_embedded_as_one_object_reports_what_the_package_measured() -> None:
+    """A ``package`` relationship qualifies as an object exactly as an
+    ``oleObject`` one does, and the member behind it is not an archive at all --
+    so the record can only be reporting the name, the declared type and the
+    length the package already had, rather than anything read by opening it."""
+    content = objected(f"<w:p>{ole()}</w:p>", PACKAGE_RELATION)
+
+    assert inventory(content) == [("0.o0", EMBEDDED | PACKAGED)]
+
+
+def test_a_linked_object_carries_its_target_and_scheme_without_part_metadata() -> None:
+    """``Type="Link"`` says the object is a reference out of the package, and the
+    reference is inventory: it is carried exactly as the relationship holds it,
+    beside the scheme its own text names, and nothing fetches, probes or
+    normalises it. There is no part inside the package, so the three part fields
+    stay absent rather than being invented for it."""
+    content = objected(
+        f"<w:p>{ole('Link', claims=LINK_CLAIMS)}</w:p>",
+        LINK_RELATION,
+    )
+
+    assert inventory(content) == [
+        (
+            "0.o0",
+            EMBEDDED
+            | OUTSIDE
+            | {
+                "mode": "link",
+                "target": "HTTPS://files.example/Budget.XLSX",
+                "external": True,
+                "scheme": "https",
+                "updateMode": "Always",
+            },
+        )
+    ]
+
+
+def test_objects_keep_cell_order_and_a_deletion_over_one_is_preserved() -> None:
+    """An object closes the cell's current run where it sits, so the prose
+    before it and the prose after it stay separate cell runs rather than joining
+    across it, and the record carries its own ``.o0`` between them. A deletion
+    wrapped around a container is kept as the revision it is."""
+    body = (
+        "<w:tbl><w:tr><w:tc>"
+        f"<w:p>{run('Attached ')}{ole()}{run(' see above')}</w:p>"
+        f"<w:p><w:del>{ole()}</w:del></w:p>"
+        "</w:tc></w:tr></w:tbl>"
+    )
+    content = objected(body)
+
+    assert [
+        (
+            i.semantic_role,
+            i.text,
+            i.source_locator["position"],
+            i.revision_state,
+            i.visibility,
+        )
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("table_cell", "Attached ", "0.r0.c0", "current", "visible"),
+        ("object_inventory", None, "0.r0.c0.0.o0", "current", "visible"),
+        ("table_cell", " see above", "0.r0.c0.t1", "current", "visible"),
+        ("object_inventory", None, "0.r0.c0.1.o0", "deleted", "annotation"),
+    ]
+
+
+def test_two_objects_in_one_paragraph_are_numbered_in_the_order_they_stand() -> None:
+    """The counter is the paragraph's own, so each container gets its own
+    locator in source order rather than both landing on the same one."""
+    content = objected(f"<w:p>{ole()}{run(' and ')}{ole()}</w:p>")
+
+    assert [position for position, _ in inventory(content)] == ["0.o0", "0.o1"]
+
+
+def test_an_object_is_the_saved_result_of_the_field_it_sits_under() -> None:
+    """A field whose stored result is an object alone stored a result, exactly as
+    one whose result is an image did."""
+    body = (
+        f"<w:p>{fld('begin')}{instr(' EMBED Excel.Sheet.12 ')}{fld('separate')}"
+        f"{ole()}{fld('end')}</w:p>"
+    )
+    content = objected(body)
+
+    assert [
+        (i.semantic_role, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [("object_inventory", "0.f0"), ("object_inventory", "0.o0")]
+    assert inventory(content)[0][1]["savedResultPresent"] is True
+
+
+def test_an_object_inside_a_field_instruction_is_refused() -> None:
+    """An instruction is field code, which carries no object of its own, so one
+    reached before the separator is refused rather than inventoried."""
+    body = (
+        f"<w:p>{fld('begin')}{instr(' EMBED ')}{ole()}"
+        f"{fld('separate')}{fld('end')}</w:p>"
+    )
+
+    with pytest.raises(OOXMLInvalid, match="instruction holds an embedded object"):
+        extract_docx(objected(body), capture_id=CAPTURE)
+
+
+def test_an_object_claim_longer_than_the_bound_is_clipped() -> None:
+    """The claims ride in a bounded JSON record, so each is clipped rather than
+    carried at whatever length the file wrote it."""
+    long = "P" * (_MAX_META_CHARS + 144)
+    content = objected(f"""<w:p>{ole(claims=f' ProgID="{long}"')}</w:p>""")
+
+    assert inventory(content)[0][1]["progId"] == "P" * _MAX_META_CHARS
+
+
+def test_an_object_without_a_stand_in_declares_no_preview() -> None:
+    """The VML shape is optional markup, and its absence is reported as the
+    absence it is rather than left unsaid."""
+    content = objected(
+        f'<w:p><w:r><w:object><o:OLEObject {OFFICE} Type="Embed" r:id="rId9"'
+        f"{CLAIMS}/></w:object></w:r></w:p>"
+    )
+
+    assert inventory(content) == [("0.o0", EMBEDDED | {"previewDeclared": False})]
+
+
+# The Strict spelling of the container's own namespace, the WordprocessingML
+# main one. ``o:OLEObject`` has no counterpart here: it is an Office drawing
+# extension outside both OOXML profiles, so the one Office namespace carries it
+# in a Strict package exactly as in a Transitional one.
+STRICT_MAIN_NS = "http://purl.oclc.org/ooxml/wordprocessingml/main"
+OTHER = 'xmlns:z="urn:example:other"'
+# Prose sitting beside a declaration that was not admitted. A container that
+# declared no object is the transparent wrapper it has always been, so this is
+# still read -- which is what says the declaration beside it was passed over
+# rather than quietly turned into a record.
+CAPTION = "<w:t>stand-in caption</w:t>"
+
+
+def holder(inside: str, name: str = "w:object", attrs: str = "") -> str:
+    """One container of the given qualified name, inside the run anchoring it."""
+    return f"<w:r><{name}{attrs}>{inside}</{name}></w:r>"
+
+
+def oleobj(
+    name: str = f"o:OLEObject {OFFICE}",
+    *,
+    kind: str = ' Type="Embed"',
+    ident: str = ' r:id="rId9"',
+) -> str:
+    """One self-closing declaration, with each piece that admits it open."""
+    return f"<{name}{kind}{ident}{CLAIMS}/>"
+
+
+def test_only_the_two_wordprocessing_namespaces_admit_an_object_container() -> None:
+    """The container is admitted on its qualified name alone, unlike the local
+    names the rest of the story is read by. An element merely called ``object``
+    in another vocabulary declares nothing whatever it holds: it stays the
+    transparent wrapper every unrecognised element is, so the prose inside it is
+    still read and no record is taken from the declaration it carries."""
+    content = objected(
+        "<w:p>" + holder(oleobj() + CAPTION, "z:object", " " + OTHER) + "</w:p>"
+    )
+
+    assert read(content) == [("body", "stand-in caption", "0")]
+    assert inventory(content) == []
+
+
+def test_the_strict_container_and_a_strict_relationship_id_reach_the_same_record() -> (
+    None
+):
+    """Strict is the same declaration at every step that has a Strict spelling:
+    the container in the Strict WordprocessingML main namespace, and the id in
+    the Strict relationships namespace. The declaration itself keeps its one
+    Office namespace either way, and the record is the Transitional one
+    exactly."""
+    strict_id = ' r2:id="rId9" xmlns:r2="' + STRICT_REL_NS + '"'
+    inside = '<v:shape id="_x0000_i1025"/>' + oleobj(ident=strict_id)
+    content = objected(
+        "<w:p>"
+        + holder(inside, "ws:object", ' xmlns:ws="' + STRICT_MAIN_NS + '"')
+        + "</w:p>"
+    )
+
+    assert inventory(content) == [("0.o0", EMBEDDED)]
+
+
+def test_only_a_direct_office_namespaced_declaration_declares_an_object() -> None:
+    """The route in is one hop and no deeper, and the Office namespace is the one
+    that carries the declaration. A declaration nested inside the VML shape
+    standing in for the object, one carried under an alternate-content choice,
+    one sharing the local name in another vocabulary, one in the VML namespace
+    the stand-in shape uses, and one in the Strict spelling of the Office
+    namespace that OOXML never defines are each passed over -- so the container
+    reports no object rather than one found elsewhere, and stays the transparent
+    wrapper it is today, prose and all."""
+    for inside in (
+        f'<v:shape id="_x0000_i1025">{oleobj()}</v:shape>',
+        "<mc:AlternateContent><mc:Choice>"
+        + oleobj()
+        + "</mc:Choice></mc:AlternateContent>",
+        oleobj("z:OLEObject " + OTHER),
+        oleobj("v:OLEObject"),
+        oleobj('q:OLEObject xmlns:q="http://purl.oclc.org/ooxml/office/office"'),
+    ):
+        content = objected("<w:p>" + holder(inside + CAPTION) + "</w:p>")
+
+        assert read(content) == [("body", "stand-in caption", "0")]
+        assert inventory(content) == []
+
+
+def test_a_container_declaring_two_objects_is_refused() -> None:
+    """A container shows one object, so two declarations directly below it leave
+    which one it shows unanswerable, and nothing here chooses between them even
+    where both spell out the same object."""
+    content = objected("<w:p>" + holder(oleobj() + oleobj()) + "</w:p>")
+
+    with pytest.raises(OOXMLInvalid, match="declares more than one embedded object"):
+        extract_docx(content, capture_id=CAPTURE)
+
+
+def test_the_declared_type_is_required_and_is_exactly_embed_or_link() -> None:
+    """``Type`` is the only thing that says which of the two kinds the object is,
+    and the value is closed and case-sensitive: one missing, one differing in
+    case, one that merely begins the same way, and one padded with space are each
+    refused rather than read as whichever kind they resemble. The attribute is
+    unqualified, so the same name in another vocabulary is that vocabulary's
+    extension and declares nothing here either."""
+    for kind in (
+        "",
+        ' Type="embed"',
+        ' Type="EMBED"',
+        ' Type="Embedded"',
+        ' Type="Embed "',
+        ' Type="link"',
+        ' Type="Linked"',
+        " " + OTHER + ' z:Type="Embed"',
+    ):
+        content = objected("<w:p>" + holder(oleobj(kind=kind)) + "</w:p>")
+
+        with pytest.raises(
+            OOXMLInvalid, match="embedded object does not declare embed or link"
+        ):
+            extract_docx(content, capture_id=CAPTURE)
+
+
+def test_the_relationship_id_must_be_one_relationship_namespaced_attribute() -> None:
+    """The id is defined in the relationships namespace, so one written in no
+    namespace at all, or in a vocabulary that defines no such attribute, names no
+    relationship whatever the package would resolve the text to. One written in
+    each of the two namespaces that do carry it is two ids rather than a repeat,
+    even where both spell out the same relationship."""
+    for ident, reason in (
+        ("", "names no relationship"),
+        (' id="rId9"', "names no relationship"),
+        (" " + OTHER + ' z:id="rId9"', "names no relationship"),
+        (
+            ' r:id="rId9" r2:id="rId9" xmlns:r2="' + STRICT_REL_NS + '"',
+            "names more than one relationship",
+        ),
+    ):
+        content = objected("<w:p>" + holder(oleobj(ident=ident)) + "</w:p>")
+
+        with pytest.raises(OOXMLInvalid, match="embedded object " + reason):
+            extract_docx(content, capture_id=CAPTURE)
+
+
+# The package boundary the object's one reference crosses, and everything that
+# is ever read across it: a name, the type the package declares for it and the
+# length the package measured while validating the member. Nothing on the far
+# side is opened, parsed, decoded, executed, launched or fetched, which is why
+# every fixture below puts bytes no server would open behind the reference.
+def qualified(
+    kind: str,
+    target: str = "embeddings/oleObject1.bin",
+    *,
+    external: bool = False,
+    mode: str = "Embed",
+) -> bytes:
+    """The default object document, whose one relationship is exactly ``kind``.
+
+    ``rels`` names the types OOXML defines by their last segment; a type is
+    admitted or refused on the whole URI it was written as, so these are spelled
+    out in full instead.
+    """
+    return docx(
+        f"<w:p>{ole(mode)}</w:p>",
+        {
+            "word/_rels/document.xml.rels": (
+                f'<Relationships><Relationship Id="rId9" Type="{kind}" '
+                f'Target="{target}"'
+                + (' TargetMode="External"' if external else "")
+                + "/></Relationships>"
+            )
+        },
+        styles=False,
+        content_types=OBJECT_DEFAULTS,
+        members=OBJECT_MEMBERS,
+    )
+
+
+# A target outside the package written as a relative reference. It names no
+# scheme, and nothing here invents one, resolves it against the package or the
+# document's own location, or goes looking for what it points at.
+RELATIVE_LINK = ("rId9", "../../books/Budget.xlsx", True, "oleObject")
+# Bytes at an embedded target that announce themselves as an OLE compound
+# stream, are not one, and hold readable prose nobody authored into the story.
+# The prose is the proof: it never reaches a segment and never reaches a record.
+PAYLOAD = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1 PAYLOAD PROSE \x00 not a stream at all"
+# The five claims, as the schema spells them -- unqualified, so the same local
+# name carried in another vocabulary is that vocabulary's extension.
+CLAIM_NAMES = ("ProgID", "ShapeID", "DrawAspect", "ObjectID", "UpdateMode")
+CLAIM_FIELDS = ("progId", "shapeId", "drawAspect", "objectId", "updateMode")
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        REL + "oleObject",
+        STRICT_REL_NS + "/oleObject",
+        REL + "package",
+        STRICT_REL_NS + "/package",
+    ],
+)
+def test_both_profiles_of_both_object_relationship_types_qualify(kind: str) -> None:
+    """A single OLE object and a whole package embedded as one are the two types
+    OOXML defines for an object, each in a Transitional and a Strict spelling,
+    and all four reach the same record. The type is reported as the file wrote
+    it rather than folded into one of them."""
+    assert inventory(qualified(kind)) == [
+        ("0.o0", EMBEDDED | {"relationshipType": kind})
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "mode", "target", "external"),
+    [
+        # Another type entirely reaches no object at all, inside the package or
+        # out of it, whatever the target behind it holds.
+        (REL + "image", "Embed", "embeddings/oleObject1.bin", False),
+        (REL + "hyperlink", "Link", "https://files.example/Budget.XLSX", True),
+        (REL + "externalLink", "Link", "https://files.example/Budget.XLSX", True),
+        # A type that merely ends the same way is not one OOXML defines: the
+        # last segment is not the type, the whole URI is.
+        ("http://example.invalid/relationships/oleObject", "Embed", "", False),
+        ("http://example.invalid/relationships/package", "Embed", "", False),
+        # The defined URI under another scheme is another URI. Scheme and host
+        # fold under RFC 3986 and the path does not, so a path differing in case
+        # is a different type rather than the same one spelled loudly.
+        (
+            (
+                "https://schemas.openxmlformats.org/officeDocument/2006"
+                "/relationships/oleObject"
+            ),
+            "Embed",
+            "",
+            False,
+        ),
+        (REL + "OLEObject", "Embed", "", False),
+        # Ending in the defined last segment with no authority at all.
+        ("urn:schemas-microsoft-com:office:oleObject", "Embed", "", False),
+    ],
+)
+def test_a_relationship_of_another_type_names_no_object(
+    kind: str, mode: str, target: str, external: bool
+) -> None:
+    """The relationship has to be one OOXML defines for an object. Nothing
+    reaches an object by ending the same way, and an image, a hyperlink or an
+    external-link relationship reaches no object at all -- the object is refused
+    rather than read through a reference that qualifies it as something else."""
+    content = qualified(
+        kind,
+        target or "embeddings/oleObject1.bin",
+        external=external,
+        mode=mode,
+    )
+
+    with pytest.raises(
+        OOXMLInvalid, match="embedded object names a relationship of another type"
+    ):
+        extract_docx(content, capture_id=CAPTURE)
+
+
+def test_an_object_names_its_relationship_by_id_and_never_by_target() -> None:
+    """The id is the whole reference. A package holding the very part the object
+    would embed, under another id, holds no relationship the object names:
+    nothing searches the story's relationships by target, content type or
+    resemblance, so the object is refused rather than resolved to the match
+    sitting beside it."""
+    content = objected(
+        f"<w:p>{ole()}</w:p>", ("rId3", "embeddings/oleObject1.bin", False, "oleObject")
+    )
+
+    with pytest.raises(
+        OOXMLInvalid, match="embedded object names a missing relationship"
+    ):
+        extract_docx(content, capture_id=CAPTURE)
+
+
+@pytest.mark.parametrize(
+    ("mode", "claims", "relation"),
+    [
+        # An embedded object is a part inside the package.
+        ("Embed", CLAIMS, LINK_RELATION),
+        # A linked one is a reference out of it.
+        ("Link", LINK_CLAIMS, OBJECT_RELATION),
+    ],
+)
+def test_the_declaration_and_the_relationship_have_to_agree(
+    mode: str, claims: str, relation: tuple[str, str, bool, str]
+) -> None:
+    """``Type`` says which kind of object it is and the relationship says which
+    side of the package boundary the reference lands on. Where the two
+    contradict each other the object is refused rather than reported as whichever
+    one of them is believed: neither is read as correcting the other."""
+    content = objected(f"<w:p>{ole(mode, claims=claims)}</w:p>", relation)
+
+    with pytest.raises(
+        OOXMLInvalid, match="embedded object contradicts the relationship it names"
+    ):
+        extract_docx(content, capture_id=CAPTURE)
+
+
+def test_an_embedded_target_is_a_member_before_this_slice_sees_it() -> None:
+    """Containment, path safety and existence are all settled while the package
+    is validated, which is why nothing re-checks them here: an object can never
+    reach a part the archive does not hold, so the reference is refused at the
+    package boundary rather than reported with a length nothing measured."""
+    content = objected(
+        f"<w:p>{ole()}</w:p>", ("rId9", "embeddings/absent.bin", False, "oleObject")
+    )
+
+    with pytest.raises(OOXMLInvalid, match="escapes or misses the package"):
+        extract_docx(content, capture_id=CAPTURE)
+
+
+def test_a_relative_external_target_names_no_scheme_and_is_never_fetched() -> None:
+    """A link out of the package is carried exactly as the relationship holds
+    it. A relative reference names no scheme, so the record says none rather
+    than inventing one, and it is not resolved against the package, the member
+    it sits beside or the document's own location. It is counted as the external
+    reference it is, which is the whole of what happens to it: nothing fetches,
+    probes or normalises it, and there is no part inside the package, so the
+    three part fields stay absent rather than being invented for it."""
+    content = objected(f"<w:p>{ole('Link', claims=LINK_CLAIMS)}</w:p>", RELATIVE_LINK)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [(i.semantic_role, i.text) for i in result.segments] == [
+        ("object_inventory", None)
+    ]
+    assert inventory(content) == [
+        (
+            "0.o0",
+            EMBEDDED
+            | OUTSIDE
+            | {
+                "mode": "link",
+                "target": "../../books/Budget.xlsx",
+                "external": True,
+                "scheme": None,
+                "updateMode": "Always",
+            },
+        )
+    ]
+    assert result.limitations["externalReferences"] == 1
+
+
+def test_malformed_object_bytes_are_measured_and_never_opened() -> None:
+    """The member behind the reference is not the stream its first bytes claim,
+    and holds prose besides. Only the name, the type the package declares and
+    the length it already measured are reported: nothing parses, decodes or
+    executes the payload, so the prose inside it reaches neither a segment nor
+    the record, and the malformed stream refuses nothing."""
+    content = linked(
+        f"<w:p>{ole()}</w:p>",
+        OBJECT_RELATION,
+        content_types=OBJECT_DEFAULTS,
+        members=OBJECT_MEMBERS | {"word/embeddings/oleObject1.bin": PAYLOAD},
+    )
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [(i.semantic_role, i.text) for i in result.segments] == [
+        ("object_inventory", None)
+    ]
+    assert inventory(content) == [("0.o0", EMBEDDED | {"objectBytes": len(PAYLOAD)})]
+    assert "PAYLOAD" not in repr(inventory(content))
+
+
+def test_no_text_from_either_payload_ever_becomes_a_segment() -> None:
+    """Both embedded targets hold readable prose, one reached as a single OLE
+    object and one as a whole package. The story's own text is the only text
+    there is: each object contributes a record carrying no text, and neither
+    member is opened for what it holds."""
+    body = (
+        f"<w:p>{run('Attached ')}{ole()}"
+        + holder(oleobj(ident=' r:id="rId8"'))
+        + "</w:p>"
+    )
+    content = linked(
+        body,
+        OBJECT_RELATION,
+        ("rId8", "embeddings/Workbook1.xlsx", False, "package"),
+        content_types=OBJECT_DEFAULTS,
+        members=dict.fromkeys(OBJECT_MEMBERS, PAYLOAD),
+    )
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("body", "Attached ", "0"),
+        ("object_inventory", None, "0.o0"),
+        ("object_inventory", None, "0.o1"),
+    ]
+    assert "PAYLOAD" not in repr([i.structured_value for i in result.segments])
+
+
+def test_every_claim_is_clipped_into_the_bounded_record_and_kept_as_written() -> None:
+    """All five claims ride in the one bounded JSON record, so each is clipped
+    rather than carried at whatever length the file wrote it, and each is kept
+    apart from the others rather than joined. A claim written empty stays the
+    empty claim the file made rather than becoming an absent one."""
+    long = "C" * (_MAX_META_CHARS + 144)
+    content = objected(
+        f"""<w:p>{ole(claims=(
+            f' ProgID="{long}" ShapeID="" DrawAspect="{long}"'
+            f' ObjectID="" UpdateMode="{long}"'
+        ))}</w:p>"""
+    )
+
+    assert inventory(content) == [
+        (
+            "0.o0",
+            EMBEDDED
+            | {
+                "progId": "C" * _MAX_META_CHARS,
+                "shapeId": "",
+                "drawAspect": "C" * _MAX_META_CHARS,
+                "objectId": "",
+                "updateMode": "C" * _MAX_META_CHARS,
+            },
+        )
+    ]
+
+
+def test_a_claim_in_another_vocabulary_claims_nothing_about_this_object() -> None:
+    """The claims are unqualified, as the schema writes them, so the same local
+    name carried in another vocabulary is that vocabulary's extension and says
+    nothing here. Each field is reported absent rather than filled from the
+    foreign attribute sitting beside it, and the object itself still resolves:
+    an extension nobody here reads refuses nothing."""
+    foreign = " " + OTHER + "".join(f' z:{name}="claimed"' for name in CLAIM_NAMES)
+    content = objected(f"<w:p>{ole(claims=foreign)}</w:p>")
+
+    assert inventory(content) == [
+        ("0.o0", EMBEDDED | dict.fromkeys(CLAIM_FIELDS, None))
+    ]
