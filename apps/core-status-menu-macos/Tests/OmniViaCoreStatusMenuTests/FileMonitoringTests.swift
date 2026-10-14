@@ -418,6 +418,216 @@ final class FileMonitoringTests: XCTestCase {
         )
     }
 
+    func testPublishedIntentBlocksTheNextCheckByItsOwnRef() async throws {
+        let context = try await activeWatch()
+        try Data("changed".utf8).write(to: context.original)
+        await context.environment.fileMonitoring.markDirty(subscriptionIDs: [context.subscriptionID])
+        context.clock.advance(3_000)
+        _ = await context.environment.fileMonitoring.reconcileAll()
+        let published = try XCTUnwrap(
+            context.environment.queue.allEntries().first { $0.intent.surface == .automaticFile }
+        )
+        // The subscription's own note of what it queued is gone, so the durable ref is the only
+        // thing that can still name this scope's one unresolved intent.
+        _ = try context.environment.fileSubscriptions.update(id: context.subscriptionID) {
+            $0.lastQueuedItemID = nil
+        }
+        let readsAfterPublication = context.reader.count
+
+        try Data("changed again".utf8).write(to: context.original)
+        await context.environment.fileMonitoring.markDirty(subscriptionIDs: [context.subscriptionID])
+        context.clock.advance(3_000)
+        let reports = await context.environment.fileMonitoring.reconcileAll()
+
+        XCTAssertEqual(reports.map(\.state), [.active])
+        XCTAssertEqual(reports.map(\.queued), [false])
+        XCTAssertEqual(context.reader.count, readsAfterPublication)
+        XCTAssertEqual(
+            context.environment.queue.allEntries().filter { $0.intent.surface == .automaticFile }.count,
+            1
+        )
+        let scheduled = try XCTUnwrap(context.environment.automaticScheduling.state(of: context.key))
+        XCTAssertEqual(scheduled.intentRef, published.intent.itemId)
+        XCTAssertEqual(scheduled.dirtyGeneration, 2)
+    }
+
+    func testPublishedIntentThatIsNotInTheQueueSendsTheSubscriptionToReview() async throws {
+        let context = try await activeWatch()
+        let scheduling = context.environment.automaticScheduling
+        try scheduling.signal(context.key, priority: .background, at: context.clock.milliseconds)
+        context.clock.advance(3_000)
+        let claim = try XCTUnwrap(
+            scheduling.claim(at: context.clock.milliseconds, among: [context.key])
+        )
+        try scheduling.markPublished(
+            context.key,
+            generation: claim.generation,
+            intentRef: "item-vanished",
+            at: context.clock.milliseconds
+        )
+        try Data("changed".utf8).write(to: context.original)
+
+        let reports = await context.environment.fileMonitoring.reconcileAll()
+
+        XCTAssertEqual(reports.map(\.state), [.reviewRequired])
+        XCTAssertEqual(context.environment.fileSubscriptions.all().map(\.state), [.reviewRequired])
+        XCTAssertEqual(context.reader.count, context.baselineReads)
+        XCTAssertTrue(context.environment.queue.allEntries().allSatisfy { $0.intent.surface != .automaticFile })
+        // Nothing of the unaccountable publication is rewritten: resolving it is a decision this
+        // owner cannot make, so it is left exactly as it stands for review.
+        let scheduled = try XCTUnwrap(scheduling.state(of: context.key))
+        XCTAssertEqual(scheduled.activeGeneration, 1)
+        XCTAssertTrue(scheduled.published)
+        XCTAssertEqual(scheduled.intentRef, "item-vanished")
+    }
+
+    func testPublishedIntentBelongingToAnotherSubscriptionSendsThisOneToReview() async throws {
+        let root = try temporaryDirectory()
+        let theirOriginal = root.appendingPathComponent("first.txt")
+        let myOriginal = root.appendingPathComponent("second.txt")
+        let paths = [theirOriginal, myOriginal]
+        for path in paths { try Data("baseline".utf8).write(to: path) }
+        let clock = TestClock()
+        let reader = CountingReader()
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec(),
+            reader: reader,
+            monotonicClock: clock.reader
+        )
+        let baseline = try await ManualCaptureSubmission(
+            environment: environment,
+            workspaceRef: "workspace-1"
+        ).submit(paths.map { ManualCaptureCandidate(url: $0, keepUpdated: true) })
+        for (index, entry) in baseline.enumerated() {
+            try admit(
+                entry,
+                captureID: "dcap-" + String(repeating: "\(index)", count: 64),
+                queue: environment.queue
+            )
+        }
+        _ = await environment.fileMonitoring.reconcileReceipts()
+        // The store orders by subscription ID, which is a fresh UUID, so neither watch can be
+        // taken by position: each is identified by the original it was registered for.
+        let watches = environment.fileSubscriptions.all()
+        XCTAssertEqual(watches.map(\.state), [.active, .active])
+        let theirWatch = try XCTUnwrap(
+            watches.first { $0.displayName == theirOriginal.lastPathComponent }
+        )
+        let myWatch = try XCTUnwrap(
+            watches.first { $0.displayName == myOriginal.lastPathComponent }
+        )
+        XCTAssertNotEqual(theirWatch.subscriptionID, myWatch.subscriptionID)
+
+        try Data("changed".utf8).write(to: theirOriginal)
+        await environment.fileMonitoring.markDirty(subscriptionIDs: [theirWatch.subscriptionID])
+        clock.advance(3_000)
+        _ = await environment.fileMonitoring.reconcileAll()
+        let theirs = try XCTUnwrap(
+            environment.queue.allEntries().first { $0.intent.surface == .automaticFile }
+        )
+        XCTAssertEqual(theirs.intent.consent?.subscriptionId, theirWatch.subscriptionID)
+
+        // The other watch's published intent, named as this one's. It is a real automatic capture
+        // in the queue, so only its identity distinguishes it from this scope's own work.
+        let key = FileMonitoringCoordinator.schedulingKey(for: myWatch)
+        try environment.automaticScheduling.signal(key, priority: .background, at: clock.milliseconds)
+        clock.advance(3_000)
+        let claim = try XCTUnwrap(environment.automaticScheduling.claim(at: clock.milliseconds, among: [key]))
+        try environment.automaticScheduling.markPublished(
+            key,
+            generation: claim.generation,
+            intentRef: theirs.intent.itemId,
+            at: clock.milliseconds
+        )
+        try Data("changed".utf8).write(to: myOriginal)
+
+        let reports = await environment.fileMonitoring.reconcile(
+            subscriptionIDs: [myWatch.subscriptionID]
+        )
+
+        XCTAssertEqual(reports.map(\.subscriptionID), [myWatch.subscriptionID])
+        XCTAssertEqual(reports.map(\.state), [.reviewRequired])
+        XCTAssertEqual(
+            environment.queue.allEntries().filter { $0.intent.surface == .automaticFile }.count,
+            1
+        )
+        XCTAssertEqual(
+            environment.fileSubscriptions.all()
+                .first { $0.subscriptionID == theirWatch.subscriptionID }?.state,
+            .active
+        )
+    }
+
+    func testPublishedIntentPreparedForAnEarlierDirtyEpochSendsTheSubscriptionToReview() async throws {
+        let context = try await activeWatch()
+        try Data("changed".utf8).write(to: context.original)
+        await context.environment.fileMonitoring.markDirty(subscriptionIDs: [context.subscriptionID])
+        context.clock.advance(3_000)
+        _ = await context.environment.fileMonitoring.reconcileAll()
+        let readsAfterPublication = context.reader.count
+        // The consent binding the intent carries is now one the subscription never issued.
+        _ = try context.environment.fileSubscriptions.update(id: context.subscriptionID) {
+            $0.dirtyEpoch += 1
+        }
+
+        let reports = await context.environment.fileMonitoring.reconcileAll()
+
+        XCTAssertEqual(reports.map(\.state), [.reviewRequired])
+        XCTAssertEqual(context.reader.count, readsAfterPublication)
+        XCTAssertEqual(
+            context.environment.queue.allEntries().filter { $0.intent.surface == .automaticFile }.count,
+            1
+        )
+        XCTAssertEqual(context.environment.automaticScheduling.state(of: context.key)?.published, true)
+    }
+
+    func testLegacyPublicationResolvesItsIntentThroughTheLastQueuedItem() async throws {
+        let context = try await activeWatch()
+        try Data("changed".utf8).write(to: context.original)
+        await context.environment.fileMonitoring.markDirty(subscriptionIDs: [context.subscriptionID])
+        context.clock.advance(3_000)
+        _ = await context.environment.fileMonitoring.reconcileAll()
+        let published = try XCTUnwrap(
+            context.environment.queue.allEntries().first { $0.intent.surface == .automaticFile }
+        )
+        // A document written before publications carried a ref: the publication stands, but there
+        // is nothing in it to reconcile by.
+        try dropPublishedIntentRefs(stateRoot: context.stateRoot)
+
+        let clock = TestClock()
+        let reader = CountingReader()
+        let reopened = try DocumentIntakeEnvironment(
+            stateRoot: context.stateRoot,
+            bookmarkCodec: BookmarkCodec(),
+            reader: reader,
+            monotonicClock: clock.reader
+        )
+        let recovered = try XCTUnwrap(reopened.automaticScheduling.state(of: context.key))
+        XCTAssertTrue(recovered.legacyUnresolvedIntent)
+        XCTAssertNil(recovered.intentRef)
+        XCTAssertEqual(
+            reopened.fileSubscriptions.all().first?.lastQueuedItemID,
+            published.intent.itemId
+        )
+
+        try Data("changed again".utf8).write(to: context.original)
+        let subscriptionID = try XCTUnwrap(reopened.fileSubscriptions.all().first?.subscriptionID)
+        await reopened.fileMonitoring.markDirty(subscriptionIDs: [subscriptionID])
+        clock.advance(3_000)
+        let reports = await reopened.fileMonitoring.reconcileAll()
+
+        // The last queued item identified the still-pending intent, so the scope is held rather
+        // than sent to review, and no second version is published behind it.
+        XCTAssertEqual(reports.map(\.state), [.active])
+        XCTAssertEqual(reports.map(\.queued), [false])
+        XCTAssertEqual(reader.count, 0)
+        XCTAssertEqual(
+            reopened.queue.allEntries().filter { $0.intent.surface == .automaticFile }.count,
+            1
+        )
+    }
+
     // MARK: - Support
 
     private struct WatchContext {
@@ -425,10 +635,31 @@ final class FileMonitoringTests: XCTestCase {
         let clock: TestClock
         let reader: CountingReader
         let original: URL
+        let stateRoot: URL
         let subscriptionID: String
         let key: AutomaticSchedulingKey
         /// Reads the baseline submission already spent, so a test can say "nothing was read".
         let baselineReads: Int
+    }
+
+    /// Rewrites the durable scheduling document as a build that never wrote publication refs would
+    /// have left it, so reopening it recovers a legacy unresolved intent.
+    private func dropPublishedIntentRefs(stateRoot: URL) throws {
+        let file = stateRoot
+            .appendingPathComponent("automatic-scheduling", isDirectory: true)
+            .appendingPathComponent("automatic-scheduling-v1.json")
+        var document = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try Data(contentsOf: file)) as? [String: Any]
+        )
+        let entries = try XCTUnwrap(document["entries"] as? [[String: Any]])
+        document["entries"] = entries.map { entry in
+            var entry = entry
+            entry.removeValue(forKey: "intentRef")
+            return entry
+        }
+        try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+            .write(to: file, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 
     /// One admitted baseline watch on an unchanged original, with nothing signalled yet.
@@ -438,8 +669,9 @@ final class FileMonitoringTests: XCTestCase {
         try Data("baseline".utf8).write(to: original)
         let clock = TestClock()
         let reader = CountingReader()
+        let stateRoot = root.appendingPathComponent("state", isDirectory: true)
         let environment = try DocumentIntakeEnvironment(
-            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            stateRoot: stateRoot,
             bookmarkCodec: BookmarkCodec(),
             reader: reader,
             monotonicClock: clock.reader
@@ -461,6 +693,7 @@ final class FileMonitoringTests: XCTestCase {
             clock: clock,
             reader: reader,
             original: original,
+            stateRoot: stateRoot,
             subscriptionID: value.subscriptionID,
             key: FileMonitoringCoordinator.schedulingKey(for: value),
             baselineReads: reader.count

@@ -110,18 +110,27 @@ public actor FileMonitoringCoordinator {
         var checkable: [AutomaticSchedulingKey: (value: FileSubscription, report: Int)] = [:]
         for persisted in subscriptions.all() {
             if let subscriptionIDs, !subscriptionIDs.contains(persisted.subscriptionID) { continue }
-            guard let value = try? reconcileReceipts(persisted) else { continue }
+            guard var value = try? reconcileReceipts(persisted) else { continue }
+            // Whatever this scope already published is identified before anything else is decided
+            // about it. Evidence that does not name exactly one intent belonging to this
+            // subscription is not something a replacement publication may be built on top of.
+            var evidence: PublicationEvidence = .clear
+            if value.state == .active {
+                evidence = publicationEvidence(for: value)
+                if evidence == .unverifiable,
+                   let reviewed = try? subscriptions.update(
+                       id: value.subscriptionID, { $0.state = .reviewRequired }
+                   )
+                {
+                    value = reviewed
+                }
+            }
             reports.append(FileMonitoringReport(
                 subscriptionID: value.subscriptionID,
                 state: value.state,
                 queued: false
             ))
-            guard value.state == .active else { continue }
-            let unresolved = queue.allEntries().contains { entry in
-                entry.intent.consent?.subscriptionId == value.subscriptionID
-                    && [.pending, .staging, .unknownOutcome].contains(entry.state)
-            }
-            if unresolved { continue }
+            guard value.state == .active, evidence == .clear else { continue }
             checkable[Self.schedulingKey(for: value)] = (value, reports.count - 1)
         }
         for claim in claimDueWork(among: Set(checkable.keys)) {
@@ -129,6 +138,70 @@ public actor FileMonitoringCoordinator {
             reports[candidate.report] = await check(candidate.value, claim: claim)
         }
         return reports
+    }
+
+    /// What this scope's publication record says about whether another check may run.
+    private enum PublicationEvidence: Equatable {
+        /// The published intent has not reached a terminal outcome, so the scope's one candidate
+        /// still stands and nothing new is read for it.
+        case unresolved
+        /// The record does not identify exactly one intent that belongs to this subscription, so
+        /// this owner cannot tell a duplicate publication from a legitimate one.
+        case unverifiable
+        case clear
+    }
+
+    /// Resolves the scope's published intent, if it has one, and checks it really is this
+    /// subscription's automatic capture before anything is allowed to replace it.
+    ///
+    /// The scheduling machine's ref names that intent exactly, which is what makes the check an
+    /// identity check rather than a search for anything that looks close enough. Missing, duplicated
+    /// or mismatched evidence is never resolved by guessing: the subscription goes to review and no
+    /// replacement is published. Terminal admission and refusal are still the queue receipt's
+    /// business, so a resolved intent only stops blocking here.
+    private func publicationEvidence(for value: FileSubscription) -> PublicationEvidence {
+        let entries = queue.allEntries()
+        guard let scheduled = scheduling.state(of: Self.schedulingKey(for: value)),
+              scheduled.published
+        else {
+            // No publication is on record, so an unresolved intent naming this subscription is one
+            // the record cannot account for — a publication whose scheduling write did not survive,
+            // say — and it still holds this scope's one candidate.
+            return entries.contains { entry in
+                entry.intent.consent?.subscriptionId == value.subscriptionID
+                    && [.pending, .staging, .unknownOutcome].contains(entry.state)
+            } ? .unresolved : .clear
+        }
+        // A publication recovered from a document written before refs existed carries none, so the
+        // subscription's own last queued item is the only evidence there is. Nothing else falls
+        // back to it: a publication that should name its intent and does not is unverifiable.
+        guard let ref = scheduled.intentRef
+            ?? (scheduled.legacyUnresolvedIntent ? value.lastQueuedItemID : nil)
+        else { return .unverifiable }
+        let matches = entries.filter { $0.intent.itemId == ref }
+        guard matches.count == 1, Self.isAutomaticCapture(matches[0].intent, of: value) else {
+            return .unverifiable
+        }
+        return [.pending, .staging, .unknownOutcome].contains(matches[0].state) ? .unresolved : .clear
+    }
+
+    /// Whether this intent is the automatic capture this subscription would itself have published:
+    /// the same surface and kind, the same delivery binding, the same original, and the same consent
+    /// binding down to the dirty epoch it was prepared for.
+    private static func isAutomaticCapture(_ intent: CaptureIntentV3, of value: FileSubscription) -> Bool {
+        intent.surface == .automaticFile
+            && intent.intentKind == .automaticCapture
+            && intent.workspaceRef == value.workspaceRef
+            && intent.targetRef == value.targetRef
+            && intent.targetBindingRevision == value.targetBindingRevision
+            && intent.requestedSourceIdentity == value.requestedSourceIdentity
+            && intent.callerContextBinding == value.callerContextBinding
+            && intent.consent == ConsentBinding(
+                subscriptionId: value.subscriptionID,
+                consentGeneration: value.consentGeneration,
+                configGeneration: value.configGeneration,
+                dirtyEpoch: value.dirtyEpoch
+            )
     }
 
     /// Claims the due scopes this call will check, and only those. A scope this call is not
@@ -323,7 +396,14 @@ public actor FileMonitoringCoordinator {
     }
 
     private func reconcileReceipts(_ persisted: FileSubscription) throws -> FileSubscription {
-        let entries = Dictionary(uniqueKeysWithValues: queue.allEntries().map { ($0.intent.itemId, $0) })
+        // An item ID resolves only when exactly one entry carries it, which is the same rule
+        // `publicationEvidence` applies to the published ref: an ID this owner cannot tell apart
+        // names nothing, so a receipt is left unreconciled rather than read off an arbitrary one.
+        // `CaptureIntentQueue` keys its entries by item ID and refuses a batch whose items repeat
+        // one, so a duplicate is unreachable through its API — this is a trap removed, not a case
+        // reached today, and it is why the branch has no test of its own.
+        let entries = Dictionary(grouping: queue.allEntries(), by: \.intent.itemId)
+            .compactMapValues { $0.count == 1 ? $0[0] : nil }
         return try subscriptions.update(id: persisted.subscriptionID) { value in
             if let baseline = entries[value.baselineItemID] {
                 if baseline.state == .admitted, let captureID = baseline.admittedCaptureID {
