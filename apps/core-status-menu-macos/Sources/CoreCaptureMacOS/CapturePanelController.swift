@@ -275,22 +275,31 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
             return
         }
         let mode = NSPopUpButton()
-        mode.addItems(withTitles: ["Import once", "Keep updated"])
+        mode.addItems(withTitles: ["Add current files", "Watch folder"])
         let existing = NSPopUpButton()
         existing.addItems(withTitles: ["Include existing files", "Only new and changed files"])
-        existing.toolTip = "Applies when Keep updated is selected."
+        existing.toolTip = "Applies when Watch folder is selected."
         let recursive = NSButton(checkboxWithTitle: "Include subfolders", target: nil, action: nil)
         recursive.state = .on
         let hidden = NSButton(checkboxWithTitle: "Include hidden files", target: nil, action: nil)
         hidden.state = .off
-        let options = NSStackView(views: [mode, existing, recursive, hidden])
+        let destination = NSTextField(
+            labelWithString: "Destination: \(folderSubmitter.destinationWorkspaceRef)"
+        )
+        let options = NSStackView(views: [destination, mode, existing, recursive, hidden])
         options.orientation = .vertical
         options.alignment = .leading
         options.spacing = 8
-        options.frame = NSRect(x: 0, y: 0, width: 300, height: 116)
+        options.frame = NSRect(x: 0, y: 0, width: 300, height: 140)
         let alert = NSAlert()
-        alert.messageText = "Choose folder scope"
-        alert.informativeText = "Core will read supported documents only. Symlinks and package contents are excluded."
+        alert.messageText = "Add folder to Core"
+        alert.informativeText = """
+            \(root.lastPathComponent) · supported formats only.
+            Excluded: hidden items, symbolic links and Finder aliases, packages, \
+            other mounted volumes, temporary and lock files, dependency and \
+            cache folders, and Core's own stores.
+            Original files stay in their current folders. Core keeps captured versions.
+            """
         alert.accessoryView = options
         alert.addButton(withTitle: "Review files")
         alert.addButton(withTitle: "Cancel")
@@ -310,19 +319,61 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 let plan = try await Task.detached(priority: .userInitiated) {
                     try folderSubmitter.plan(root: root, policy: policy)
                 }.value
+                // A scope the scan could not fully read keeps the draft and
+                // enrols nothing, the same as a scan that hit a bound.
+                if let coverage = plan.coverageDetail {
+                    let refusal = NSAlert()
+                    refusal.messageText = "Add folder to Core"
+                    refusal.informativeText = """
+                        \(coverage)
+                        Read so far: \(plan.scopeDetail).
+                        No files have been added.
+                        """
+                    refusal.addButton(withTitle: "OK")
+                    refusal.runModal()
+                    statusLabel.stringValue = coverage
+                    refresh()
+                    return
+                }
+                // A scan that hit a bound keeps the draft and enrols nothing.
+                if let limit = plan.limit {
+                    let refusal = NSAlert()
+                    refusal.messageText = "Add folder to Core"
+                    refusal.informativeText = """
+                        \(limit.reviewDetail)
+                        Reviewed so far: \(plan.scopeDetail).
+                        No files have been added.
+                        """
+                    refusal.addButton(withTitle: "OK")
+                    refusal.runModal()
+                    statusLabel.stringValue = limit.reviewDetail
+                    refresh()
+                    return
+                }
                 let confirmation = NSAlert()
                 confirmation.messageText = policy.mode == .keepUpdated
-                    ? "Keep this folder updated?"
-                    : "Import this folder once?"
-                let size = ByteCountFormatter.string(
-                    fromByteCount: Int64(plan.totalBytes),
-                    countStyle: .file
+                    ? "Watch this folder?"
+                    : "Add the current files in this folder?"
+                let promise = policy.mode == .keepUpdated
+                    ? policy.watchInitialContent == .onlyNewAndChanged
+                        ? "Existing files are checked to recognise later changes. Their contents are not added until a later change is detected."
+                        : "Core will add new and changed supported files while OmniVia Core is running."
+                    : "Captured files remain linked for manual refresh. New files will not be added automatically."
+                confirmation.informativeText = """
+                    \(plan.rootDisplayName) · destination \(plan.destinationWorkspaceRef) · \
+                    subfolders \(policy.recursive ? "included" : "excluded")
+                    \(plan.scopeDetail), from \(plan.examinedEntries) examined items.
+                    \(Self.exclusionDetail(plan))
+                    Original files stay in their current folders. Core keeps captured versions.
+                    \(promise)
+                    Files are captured as they are read. This is not a backup of the folder at one instant.
+                    """
+                confirmation.addButton(
+                    withTitle: policy.mode == .keepUpdated ? "Watch folder" : "Add current files"
                 )
-                confirmation.informativeText = "\(plan.members.count) supported file(s), \(size), from \(plan.examinedEntries) examined entries. \(plan.skippedUnsupported) unsupported, \(plan.skippedHidden) hidden, \(plan.skippedExcluded) temporary/cache, and \(plan.skippedUnavailable) unavailable item(s) will be skipped. Files are captured as they are read; this is not a backup of the folder at one instant."
-                confirmation.addButton(withTitle: policy.mode == .keepUpdated ? "Keep updated" : "Import")
                 confirmation.addButton(withTitle: "Cancel")
                 guard confirmation.runModal() == .alertFirstButtonReturn else {
-                    statusLabel.stringValue = "Folder import cancelled."
+                    statusLabel.stringValue = "Folder review cancelled. Nothing was added."
                     refresh()
                     return
                 }
@@ -348,11 +399,12 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 }
                 let excludedBaseline = policy.mode == .keepUpdated
                     && policy.watchInitialContent == .onlyNewAndChanged
-                let progress = plan.members.count > entries.count && !excludedBaseline
-                    ? "\(plan.members.count) files frozen; \(entries.count) prepared now and the rest will continue in bounded batches."
-                    : "\(entries.count) folder files queued on this Mac."
+                // Folder addition queued, never all files added: the manifest
+                // is frozen and each child reports its own outcome.
+                let progress = "Folder addition queued · \(plan.members.count) files frozen · "
+                    + "\(entries.count) queued on this Mac · the rest continue in bounded batches."
                 statusLabel.stringValue = excludedBaseline
-                    ? "Baseline set for \(plan.members.count) existing files. Only later new and changed files will be added."
+                    ? "Setting baseline… Existing files will not be added."
                     : policy.mode == .keepUpdated
                     ? "\(progress) Watching starts after every baseline file is confirmed by Core."
                     : progress
@@ -361,8 +413,11 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
             } catch FolderCaptureSubmissionError.emptyScope {
                 statusLabel.stringValue = "No supported documents were found in that scope."
                 refresh()
+            } catch FolderCaptureSubmissionError.coverageIncomplete {
+                statusLabel.stringValue = "Part of this folder could not be read, so it is not the whole folder. Check access to it and try again. No files were added."
+                refresh()
             } catch FolderCaptureSubmissionError.scanLimitExceeded {
-                statusLabel.stringValue = "This folder exceeds the review limit. Choose a narrower folder or add exclusions."
+                statusLabel.stringValue = "This folder exceeds a reviewed limit. Choose a smaller scope or add exclusions. No files were added."
                 refresh()
             } catch FolderCaptureSubmissionError.unsafeRoot {
                 statusLabel.stringValue = "Choose a narrower document folder, not a filesystem or home folder."
@@ -378,6 +433,16 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                 refresh()
             }
         }
+    }
+
+    /// Names the actual reasons items were left out, with their counts, rather
+    /// than one undifferentiated skipped total.
+    private static func exclusionDetail(_ plan: FolderCapturePlan) -> String {
+        let reasons = plan.exclusionCounts
+            .filter { $0.value > 0 }
+            .sorted { $0.key.rawValue < $1.key.rawValue }
+            .map { "\($0.key.reviewDetail): \($0.value)" }
+        return reasons.isEmpty ? "Nothing was excluded." : reasons.joined(separator: " · ")
     }
 
     @objc private func chooseFolderAction() {

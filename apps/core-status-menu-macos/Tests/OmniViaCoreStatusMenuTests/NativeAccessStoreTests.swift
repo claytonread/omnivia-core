@@ -32,6 +32,10 @@ private final class TestBookmarkCodec: SecurityScopedBookmarkCoding, @unchecked 
 }
 
 final class NativeAccessStoreTests: XCTestCase {
+    private static let binding = NativeRootAccessBinding(
+        .companion(workspaceRef: "workspace-1")
+    )
+
     private func temporaryDirectory(_ name: String = "state") throws -> URL {
         let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
             .appendingPathComponent("omnivia-native-access-(UUID().uuidString)", isDirectory: true)
@@ -114,7 +118,8 @@ final class NativeAccessStoreTests: XCTestCase {
         let rootGrant = try store.adoptRoot(
             rootRef: "root-a",
             ownerRef: "run-a",
-            selectedURL: root
+            selectedURL: root,
+            binding: Self.binding
         )
         _ = try store.adoptRootMember(
             accessRef: "owner-a",
@@ -160,7 +165,8 @@ final class NativeAccessStoreTests: XCTestCase {
         let rootGrant = try store.adoptRoot(
             rootRef: "root-a",
             ownerRef: "run-a",
-            selectedURL: root
+            selectedURL: root,
+            binding: Self.binding
         )
         _ = try store.adoptRootMember(
             accessRef: "owner-a",
@@ -192,12 +198,15 @@ final class NativeAccessStoreTests: XCTestCase {
         let runGrant = try store.adoptRoot(
             rootRef: "root-a",
             ownerRef: "run-a",
-            selectedURL: root
+            selectedURL: root,
+            binding: Self.binding
         )
         let subscriptionGrant = try store.adoptRoot(
             rootRef: "root-a",
             ownerRef: "subscription-a",
-            selectedURL: root
+            selectedURL: root,
+            binding: Self.binding,
+            authority: .watchAndMembers
         )
         let first = try store.adoptRootMember(
             accessRef: "access-a",
@@ -235,13 +244,15 @@ final class NativeAccessStoreTests: XCTestCase {
         XCTAssertTrue(records.allSatisfy { $0["bookmark"] == nil })
         XCTAssertEqual(roots.filter { $0["bookmark"] != nil }.count, 1)
 
+        // Releasing an owner is not a diagnosis: the grant keeps the state it
+        // was in while any route still holds it.
         XCTAssertEqual(
             try store.releaseRoot(rootRef: "root-a", ownerRef: "run-a").state,
-            .connected
+            .provisional
         )
         XCTAssertEqual(
             try store.releaseRoot(rootRef: "root-a", ownerRef: "subscription-a").state,
-            .connected
+            .provisional
         )
         _ = try store.disconnect(accessRef: first.accessRef)
         XCTAssertEqual(try store.disconnect(accessRef: second.accessRef).state, .disconnected)
@@ -255,7 +266,13 @@ final class NativeAccessStoreTests: XCTestCase {
         let grant = try NativeAccessStore(
             stateDirectory: state,
             codec: TestBookmarkCodec()
-        ).adoptRoot(rootRef: "root-empty", ownerRef: "subscription-empty", selectedURL: root)
+        ).adoptRoot(
+            rootRef: "root-empty",
+            ownerRef: "subscription-empty",
+            selectedURL: root,
+            binding: Self.binding,
+            authority: .watchAndMembers
+        )
 
         let reopened = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
         XCTAssertEqual(reopened.rootDescriptors(), [grant])
@@ -302,10 +319,27 @@ final class NativeAccessStoreTests: XCTestCase {
         let migrated = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
         XCTAssertEqual(migrated.rootDescriptors().count, 1)
         XCTAssertEqual(Set(migrated.descriptors().compactMap(\.rootBindingGeneration)), [1])
+        // An upgrade keeps exactly the members it already had and gains no
+        // right to discover anything new.
+        let group = try XCTUnwrap(migrated.rootDescriptors().first)
+        XCTAssertEqual(group.authority, .frozenMembersOnly)
+        XCTAssertTrue(group.membersFrozen)
+        XCTAssertEqual(group.memberRefs, ["member-a", "member-b"])
+        XCTAssertNil(group.binding)
+        XCTAssertThrowsError(
+            try migrated.adoptRootMember(
+                accessRef: "access-c",
+                linkedDocumentID: "doc-c",
+                rootRef: "root-a",
+                memberRef: "member-c",
+                relativeComponents: ["c.txt"],
+                expectedRootGeneration: group.generation
+            )
+        ) { XCTAssertEqual($0 as? NativeAccessError, .membershipFrozen) }
         let rewritten = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: stateFile)) as? [String: Any]
         )
-        XCTAssertEqual(rewritten["schema"] as? String, "omnivia.native-access.v2")
+        XCTAssertEqual(rewritten["schema"] as? String, "omnivia.native-access.v3")
         XCTAssertTrue(
             try XCTUnwrap(rewritten["records"] as? [[String: Any]])
                 .allSatisfy { $0["bookmark"] == nil }
@@ -339,6 +373,268 @@ final class NativeAccessStoreTests: XCTestCase {
 
         XCTAssertThrowsError(
             try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        ) { XCTAssertEqual($0 as? NativeAccessError, .invalidState) }
+    }
+
+    func testRootAuthorityIsProvisionalUntilItsDurableOwnerIsEstablished() throws {
+        let state = try temporaryDirectory()
+        let root = state.deletingLastPathComponent().appendingPathComponent("root", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+
+        let grant = try store.adoptRoot(
+            rootRef: "root-a",
+            ownerRef: "subscription-a",
+            selectedURL: root,
+            binding: Self.binding,
+            authority: .watchAndMembers
+        )
+
+        // Bound to its destination and readable for the scope it was selected
+        // for, but no durable record owns it yet — so it cannot enumerate.
+        XCTAssertEqual(grant.state, .provisional)
+        XCTAssertNoThrow(
+            try store.withRootReadAccess(
+                rootRef: "root-a",
+                expectedGeneration: grant.generation
+            ) { _ in () }
+        )
+        XCTAssertThrowsError(
+            try store.withRootReadAccess(
+                rootRef: "root-a",
+                expectedGeneration: grant.generation,
+                purpose: .memberDiscovery
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .discoveryNotPermitted) }
+        XCTAssertThrowsError(
+            try store.activateRoot(rootRef: "root-a", expectedGeneration: grant.generation + 1)
+        ) { XCTAssertEqual($0 as? NativeAccessError, .generationMismatch) }
+
+        let active = try store.activateRoot(rootRef: "root-a", expectedGeneration: grant.generation)
+        XCTAssertEqual(active.state, .active)
+        XCTAssertEqual(active.generation, grant.generation)
+        XCTAssertEqual(
+            try store.activateRoot(rootRef: "root-a", expectedGeneration: grant.generation).state,
+            .active
+        )
+        XCTAssertNoThrow(
+            try store.withRootReadAccess(
+                rootRef: "root-a",
+                expectedGeneration: grant.generation,
+                purpose: .memberDiscovery
+            ) { _ in () }
+        )
+
+        let reopened = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        XCTAssertEqual(reopened.rootDescriptors().first?.state, .active)
+        // Only an explicit release with nothing left routing through it
+        // disconnects, and a disconnected root is not activated again.
+        XCTAssertEqual(
+            try reopened.releaseRoot(rootRef: "root-a", ownerRef: "subscription-a").state,
+            .disconnected
+        )
+        XCTAssertThrowsError(
+            try reopened.activateRoot(rootRef: "root-a", expectedGeneration: grant.generation)
+        ) { XCTAssertEqual($0 as? NativeAccessError, .disconnected) }
+    }
+
+    func testStaleRootAccessBecomesRepairableAndIsRepairedInPlace() throws {
+        let state = try temporaryDirectory()
+        let root = state.deletingLastPathComponent().appendingPathComponent("root", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("a".utf8).write(to: root.appendingPathComponent("a.txt"))
+        let codec = TestBookmarkCodec()
+        let store = try NativeAccessStore(stateDirectory: state, codec: codec)
+        let grant = try store.adoptRoot(
+            rootRef: "root-a",
+            ownerRef: "run-a",
+            selectedURL: root,
+            binding: Self.binding
+        )
+        try store.activateRoot(rootRef: "root-a", expectedGeneration: grant.generation)
+        let member = try store.adoptRootMember(
+            accessRef: "access-a",
+            linkedDocumentID: "doc-a",
+            rootRef: "root-a",
+            memberRef: "member-a",
+            relativeComponents: ["a.txt"],
+            expectedRootGeneration: grant.generation
+        )
+
+        codec.stale = true
+        XCTAssertThrowsError(
+            try store.withReadAccess(
+                accessRef: member.accessRef,
+                expectedGeneration: member.generation,
+                expectedRootBindingGeneration: grant.generation
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .staleBookmark) }
+
+        // A member resolves through the root's bookmark, so the condition is
+        // recorded against the group — and the route it is bound to is kept.
+        XCTAssertEqual(store.rootDescriptors().first?.state, .needsAccess)
+        let roots = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: try Data(contentsOf: state.appendingPathComponent("native-access-v1.json"))
+            ) as? [String: Any]
+        )["roots"] as? [[String: Any]]
+        XCTAssertEqual(try XCTUnwrap(roots).filter { $0["bookmark"] != nil }.count, 1)
+
+        // From here reads are refused by the recorded condition rather than by
+        // resolving again, and a restart does not collapse it into a state that
+        // can no longer be repaired.
+        codec.stale = false
+        let starts = codec.starts
+        XCTAssertThrowsError(
+            try store.withRootReadAccess(
+                rootRef: "root-a",
+                expectedGeneration: grant.generation
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .staleBookmark) }
+        XCTAssertEqual(codec.starts, starts)
+        let reopened = try NativeAccessStore(stateDirectory: state, codec: codec)
+        XCTAssertEqual(reopened.rootDescriptors().first?.state, .needsAccess)
+
+        // Re-granting the same root repairs it in place: the grant identity and
+        // its enrolled members survive, so every bound member route still reads.
+        let repaired = try reopened.adoptRoot(
+            rootRef: "root-a",
+            ownerRef: "run-a",
+            selectedURL: root,
+            binding: Self.binding
+        )
+        XCTAssertEqual(repaired.generation, grant.generation)
+        XCTAssertEqual(repaired.state, .active)
+        XCTAssertEqual(repaired.ownerRefs, ["run-a"])
+        XCTAssertEqual(repaired.memberRefs, ["member-a"])
+        XCTAssertEqual(
+            try reopened.withReadAccess(
+                accessRef: member.accessRef,
+                expectedGeneration: member.generation,
+                expectedRootBindingGeneration: grant.generation
+            ) { try String(contentsOf: $0, encoding: .utf8) },
+            "a"
+        )
+    }
+
+    func testRootThatCannotBeAccessedRightNowRefusesReadsUntilItIsRepaired() throws {
+        let state = try temporaryDirectory()
+        let root = state.deletingLastPathComponent().appendingPathComponent("root", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let codec = TestBookmarkCodec()
+        let store = try NativeAccessStore(stateDirectory: state, codec: codec)
+        let grant = try store.adoptRoot(
+            rootRef: "root-a",
+            ownerRef: "subscription-a",
+            selectedURL: root,
+            binding: Self.binding,
+            authority: .watchAndMembers
+        )
+        try store.activateRoot(rootRef: "root-a", expectedGeneration: grant.generation)
+
+        codec.permitsAccess = false
+        XCTAssertThrowsError(
+            try store.withRootReadAccess(
+                rootRef: "root-a",
+                expectedGeneration: grant.generation
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .accessDenied) }
+        XCTAssertEqual(store.rootDescriptors().first?.state, .unavailable)
+
+        codec.permitsAccess = true
+        let starts = codec.starts
+        XCTAssertThrowsError(
+            try store.withRootReadAccess(
+                rootRef: "root-a",
+                expectedGeneration: grant.generation,
+                purpose: .memberDiscovery
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .accessDenied) }
+        XCTAssertEqual(codec.starts, starts)
+
+        let repaired = try store.adoptRoot(
+            rootRef: "root-a",
+            ownerRef: "subscription-a",
+            selectedURL: root,
+            binding: Self.binding,
+            authority: .watchAndMembers
+        )
+        XCTAssertEqual(repaired.state, .active)
+        XCTAssertEqual(repaired.generation, grant.generation)
+        XCTAssertNoThrow(
+            try store.withRootReadAccess(
+                rootRef: "root-a",
+                expectedGeneration: grant.generation,
+                purpose: .memberDiscovery
+            ) { _ in () }
+        )
+    }
+
+    func testPersistedConnectedRootMigratesToActiveAndInvariantsStayEnforced() throws {
+        let state = try temporaryDirectory()
+        let root = state.deletingLastPathComponent().appendingPathComponent("root", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("a".utf8).write(to: root.appendingPathComponent("a.txt"))
+        let stateFile = state.appendingPathComponent("native-access-v1.json")
+        let legacy: [String: Any] = [
+            "schema": "omnivia.native-access.v2",
+            "records": [
+                [
+                    "accessRef": "access-a", "linkedDocumentID": "doc-a", "generation": 1,
+                    "rootBindingGeneration": 1, "state": "connected",
+                    "route": [
+                        "kind": "root_member", "rootRef": "root-a", "memberRef": "member-a",
+                        "relativeComponents": ["a.txt"],
+                    ],
+                ],
+            ],
+            "roots": [
+                [
+                    "rootRef": "root-a", "generation": 1, "state": "connected",
+                    "ownerRefs": ["subscription-a"],
+                    "bookmark": Data(root.path.utf8).base64EncodedString(),
+                ],
+            ],
+        ]
+        try JSONSerialization.data(withJSONObject: legacy).write(to: stateFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
+
+        // A root persisted under the file grant's two states was established
+        // work, so it comes back as `active` and keeps serving its members.
+        let migrated = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        let group = try XCTUnwrap(migrated.rootDescriptors().first)
+        XCTAssertEqual(group.state, .active)
+        XCTAssertEqual(group.generation, 1)
+        XCTAssertEqual(
+            try migrated.withReadAccess(
+                accessRef: "access-a",
+                expectedGeneration: 1,
+                expectedRootBindingGeneration: 1
+            ) { try String(contentsOf: $0, encoding: .utf8) },
+            "a"
+        )
+
+        // The invariant is the route, not the label: a repairable state without
+        // the bookmark it is meant to repair is refused.
+        let broken = try temporaryDirectory("broken")
+        let brokenFile = broken.appendingPathComponent("native-access-v1.json")
+        try JSONSerialization.data(withJSONObject: [
+            "schema": "omnivia.native-access.v3",
+            "records": [[String: Any]](),
+            "roots": [
+                [
+                    "rootRef": "root-a", "generation": 1, "state": "needs_access",
+                    "ownerRefs": ["subscription-a"], "authority": "import_plan",
+                    "memberRefs": [String](), "membersFrozen": false,
+                ],
+            ],
+        ]).write(to: brokenFile)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: brokenFile.path
+        )
+        XCTAssertThrowsError(
+            try NativeAccessStore(stateDirectory: broken, codec: TestBookmarkCodec())
         ) { XCTAssertEqual($0 as? NativeAccessError, .invalidState) }
     }
 

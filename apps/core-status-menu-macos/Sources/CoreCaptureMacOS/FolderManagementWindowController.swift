@@ -107,9 +107,12 @@ public final class FolderManagementWindowController: NSWindowController,
                 ?? folder.lastCompletedMetadataScanAt
                 ?? "Not yet"
         case ("checked", let .bulkRun(run)):
-            text = run.attentionCount > 0
-                ? "\(run.attentionCount) need attention"
-                : "\(run.plannedCount) remaining"
+            // Separate per-file facts, never one whole-folder success.
+            text = "\(run.admittedCount) added · \(run.publishedCount) in progress · "
+                + "\(run.plannedCount) waiting · \(run.stoppedCount) stopped · "
+                + "\(run.attentionCount) needs attention"
+                + (Self.isTerminal(run.state)
+                    ? " · links retained for manual refresh" : "")
         default: text = ""
         }
         let field = NSTextField(labelWithString: text)
@@ -208,10 +211,13 @@ public final class FolderManagementWindowController: NSWindowController,
         }
         switch selected {
         case let .bulkRun(run):
-            pauseResumeButton.title = run.state == .paused || run.state == .needsAttention
-                ? "Resume" : "Pause"
+            // Resuming is not retrying: a member that already failed keeps its
+            // own outcome until Retry unavailable files is chosen for it.
+            pauseResumeButton.title = run.state == .paused
+                ? "Resume"
+                : run.attentionCount > 0 ? "Retry unavailable files" : "Pause"
             pauseResumeButton.isEnabled = [.adding, .paused, .needsAttention].contains(run.state)
-            stopButton.title = "Stop remaining"
+            stopButton.title = "Stop adding remaining files"
             stopButton.isEnabled = run.plannedCount > 0
             checkButton.isEnabled = run.state == .adding
         case .file, .folder:
@@ -253,8 +259,12 @@ public final class FolderManagementWindowController: NSWindowController,
                     _ = try? await fileMonitoring.pause(subscriptionID: value.subscriptionID)
                 }
             case let .bulkRun(value):
-                if value.state == .paused || value.state == .needsAttention {
+                if value.state == .paused {
                     _ = try? await bulkCoordinator.resume(runID: value.runID)
+                    _ = await bulkCoordinator.advance(runID: value.runID)
+                } else if value.attentionCount > 0 {
+                    // Acts on the same frozen membership; discovers nothing.
+                    _ = try? await bulkCoordinator.retryUnavailable(runID: value.runID)
                     _ = await bulkCoordinator.advance(runID: value.runID)
                 } else {
                     _ = try? await bulkCoordinator.pause(runID: value.runID)
@@ -271,21 +281,30 @@ public final class FolderManagementWindowController: NSWindowController,
             ? "Stop adding remaining files from \(selected.displayName)?"
             : "Stop updating \(selected.displayName)?"
         alert.informativeText = selected.subscriptionState == nil
-            ? "Already published files continue. Only files that have not started will be stopped."
-            : "Captured content remains in Core. Future changes will no longer be added automatically."
-        alert.addButton(withTitle: selected.subscriptionState == nil ? "Stop remaining" : "Stop updating")
+            ? "Already published files continue and already added files stay in Core. Only files that have not started will be stopped. Files already captured remain linked for manual refresh."
+            : "Core will stop adding new changes. Existing files will remain linked for manual refresh, and additions already queued will continue."
+        alert.addButton(
+            withTitle: selected.subscriptionState == nil
+                ? "Stop adding remaining files" : "Stop updating"
+        )
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task {
+            var outcome: String?
             switch selected {
             case let .folder(value):
                 _ = try? await folderMonitoring.stop(subscriptionID: value.subscriptionID)
             case let .file(value):
                 _ = try? await fileMonitoring.stop(subscriptionID: value.subscriptionID)
             case let .bulkRun(value):
-                _ = try? await bulkCoordinator.stopRemaining(runID: value.runID)
+                // The exact stopped count, read back from the durable ledger.
+                let run = try? await bulkCoordinator.stopRemaining(runID: value.runID)
+                outcome = "Stopped \(run?.stoppedCount ?? value.plannedCount) of "
+                    + "\(value.members.count) files. Already added files remain in Core "
+                    + "and stay linked for manual refresh."
             }
             reload()
+            if let outcome { statusLabel.stringValue = outcome }
         }
     }
 
@@ -314,6 +333,10 @@ public final class FolderManagementWindowController: NSWindowController,
         case .needsAccess: "Needs access"
         case .stopped: "Stopped"
         }
+    }
+
+    private static func isTerminal(_ state: FolderBulkRunState) -> Bool {
+        state == .complete || state == .stopped
     }
 
     private static func label(_ state: FolderBulkRunState) -> String {

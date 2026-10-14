@@ -359,10 +359,15 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         rootRef: String,
         ownerRef: String
     ) throws -> ManualCaptureCandidate {
+        // A draft's root group supports its own bounded scope preview and
+        // nothing else: it enrols no member, so it conveys no capture or
+        // discovery authority until a reviewed plan is submitted.
         let root = try accessStore.adoptRoot(
             rootRef: rootRef,
             ownerRef: ownerRef,
-            selectedURL: url
+            selectedURL: url,
+            binding: NativeRootAccessBinding(binding),
+            authority: .importPlan
         )
         return ManualCaptureCandidate(
             url: url,
@@ -392,7 +397,9 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
     ) throws -> ManualCaptureCandidate? {
         guard let root = accessStore.rootDescriptors().first(where: { candidate in
             candidate.rootRef == rootRef
-                && candidate.state == .connected
+                // A draft's root stays prepared until a reviewed plan is
+                // submitted, so its own replay resolves it in that state.
+                && candidate.state.permitsResolution
                 && candidate.ownerRefs.contains(ownerRef)
                 && (generation == nil || candidate.generation == generation)
         }) else { return nil }
@@ -507,20 +514,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
     }
 
     public static func contentKind(for url: URL) -> CaptureContentKind? {
-        switch url.pathExtension.lowercased() {
-        case "pdf": .pdf
-        case "docx": .docx
-        case "xlsx": .xlsx
-        case "pptx": .pptx
-        case "csv": .csv
-        case "tsv": .tsv
-        case "rtf": .rtf
-        case "html", "htm": .html
-        case "md", "markdown": .markdown
-        case "txt": .text
-        case "png", "jpg", "jpeg", "heic", "tif", "tiff", "webp": .image
-        default: nil
-        }
+        CaptureContentKind.approvedFolderFormat(forName: url.lastPathComponent)
     }
 
     private static func identifier(prefix: String) -> String {

@@ -94,6 +94,9 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private var capturePanelController: CapturePanelController?
     private var folderManagementWindowController: FolderManagementWindowController?
     private var captureDeliveryCoordinator: CaptureDeliveryCoordinator?
+    /// Kept so startup can finish any folder establishment an earlier process
+    /// left pending, before monitoring reads a watched scope.
+    private var intakeEnvironment: DocumentIntakeEnvironment?
     private var folderMonitoringCoordinator: FolderMonitoringCoordinator?
     private var folderBulkRunCoordinator: FolderBulkRunCoordinator?
     private var fileMonitoringCoordinator: FileMonitoringCoordinator?
@@ -146,6 +149,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 _ = snapshotStore.removeExpired(keeping: Set(live))
             }
             self.snapshotStore = snapshotStore
+            intakeEnvironment = environment
             folderMonitoringCoordinator = environment.folderMonitoring
             folderBulkRunCoordinator = environment.folderBulkCoordinator
             fileMonitoringCoordinator = environment.fileMonitoring
@@ -517,7 +521,12 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         let delivery = captureDeliveryCoordinator
         let fileMonitoring = fileMonitoringCoordinator
         let bulkRuns = folderBulkRunCoordinator
+        let environment = intakeEnvironment
         Task {
+            // An establishment an earlier process left pending holds a root
+            // grant nothing can discover through yet. Finish it before anything
+            // reads a watched scope.
+            _ = await environment?.reconcilePendingFolderEstablishment()
             _ = await bulkRuns?.reconcileReceipts()
             _ = await bulkRuns?.advanceAll()
             _ = await folderMonitoringCoordinator.reconcileAll()

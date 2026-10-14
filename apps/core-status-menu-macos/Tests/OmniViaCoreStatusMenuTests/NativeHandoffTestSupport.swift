@@ -67,10 +67,10 @@ struct Companion {
         environment.accessStore.descriptors().filter { $0.state == .connected }.map(\.accessRef)
     }
 
-    /// The folder root grants that are currently connected, each naming the
-    /// owners holding it.
+    /// The folder root grants that still hold their route — a draft's prepared
+    /// grant included — each naming the owners holding it.
     var connectedRoots: [NativeRootAccessDescriptor] {
-        environment.accessStore.rootDescriptors().filter { $0.state == .connected }
+        environment.accessStore.rootDescriptors().filter { $0.state.retainsRoute }
     }
 }
 

@@ -46,6 +46,11 @@ public struct FolderBulkRun: Codable, Equatable, Sendable {
     public let workspaceRef: String
     public let targetBindingRevision: String
     public let callerContextBinding: CallerContextBinding
+    /// The exact versioned format and exclusion policies reviewed at consent. A
+    /// later app version cannot widen this run's scope by changing its own
+    /// defaults.
+    public var approvedFormatPolicyRef: String = FolderScopePolicy.approvedFormatPolicyRef
+    public var exclusionsPolicyRef: String = FolderScopePolicy.exclusionsPolicyRef
     public let createdAt: String
     public var state: FolderBulkRunState
     public var members: [FolderBulkRunMember]
@@ -54,6 +59,7 @@ public struct FolderBulkRun: Codable, Equatable, Sendable {
     public var publishedCount: Int { members.filter { $0.state == .published }.count }
     public var admittedCount: Int { members.filter { $0.state == .admitted }.count }
     public var attentionCount: Int { members.filter { $0.state == .needsAttention }.count }
+    public var stoppedCount: Int { members.filter { $0.state == .stopped }.count }
 }
 
 public enum FolderBulkRunStoreError: Error, Equatable {
@@ -94,7 +100,13 @@ public final class FolderBulkRunStore: @unchecked Sendable {
     @discardableResult
     public func register(_ run: FolderBulkRun) throws -> FolderBulkRun {
         try lock.withLock {
-            guard runs[run.runID] == nil else { throw FolderBulkRunStoreError.duplicateRun }
+            if let existing = runs[run.runID] {
+                // Replaying an establishment whose write landed is a retry and
+                // returns what is already durable. Anything other than the same
+                // content under the same identity fails closed.
+                guard existing == run else { throw FolderBulkRunStoreError.duplicateRun }
+                return existing
+            }
             try Self.validate(run)
             var replacement = runs
             replacement[run.runID] = run
@@ -110,13 +122,19 @@ public final class FolderBulkRunStore: @unchecked Sendable {
         _ change: (inout FolderBulkRun) throws -> Void
     ) throws -> FolderBulkRun {
         try lock.withLock {
-            guard var value = runs[id] else { throw FolderBulkRunStoreError.unknownRun }
-            let frozenRootBindingGeneration = value.rootBindingGeneration
+            guard let frozen = runs[id] else { throw FolderBulkRunStoreError.unknownRun }
+            var value = frozen
             try change(&value)
-            // The adopted root grant generation is frozen for the life of the run.
-            guard value.rootBindingGeneration == frozenRootBindingGeneration else {
-                throw FolderBulkRunStoreError.invalidState
-            }
+            // The plan manifest is immutable: progress updates a member's own
+            // state, and nothing adds, drops, reorders or rebinds a member, so
+            // a run can never silently expand its reviewed membership.
+            guard value.rootBindingGeneration == frozen.rootBindingGeneration,
+                  value.manifestRevision == frozen.manifestRevision,
+                  value.approvedFormatPolicyRef == frozen.approvedFormatPolicyRef,
+                  value.exclusionsPolicyRef == frozen.exclusionsPolicyRef,
+                  value.members.map(\.memberID) == frozen.members.map(\.memberID),
+                  zip(value.members, frozen.members).allSatisfy(Self.sameIdentity)
+            else { throw FolderBulkRunStoreError.invalidState }
             try Self.validate(value)
             var replacement = runs
             replacement[id] = value
@@ -199,6 +217,7 @@ public final class FolderBulkRunStore: @unchecked Sendable {
         let identifiers = [
             run.runID, run.manifestRevision, run.submissionID, run.rootRef,
             run.targetRef, run.workspaceRef, run.targetBindingRevision,
+            run.approvedFormatPolicyRef, run.exclusionsPolicyRef,
         ] + (run.subscriptionID.map { [$0] } ?? [])
         guard identifiers.allSatisfy(validIdentifier),
               !run.rootDisplayName.isEmpty,
@@ -222,17 +241,39 @@ public final class FolderBulkRunStore: @unchecked Sendable {
         else { throw FolderBulkRunStoreError.invalidState }
     }
 
+    /// Only the member's own progress may change between two revisions of an
+    /// immutable manifest.
+    private static func sameIdentity(
+        _ updated: FolderBulkRunMember,
+        _ frozen: FolderBulkRunMember
+    ) -> Bool {
+        var rebased = updated
+        rebased.state = frozen.state
+        rebased.failureCode = frozen.failureCode
+        return rebased == frozen
+    }
+
+    /// Fills fields a ledger written by an older version never recorded. Their
+    /// values are the behaviour that version actually had, so an update neither
+    /// invents a new scope nor rejects durable work.
     private static func addLegacyRootBindingGeneration(
         to data: Data,
         collectionKey: String
     ) throws -> Data {
+        let defaults: [String: Any] = [
+            "rootBindingGeneration": 1,
+            "approvedFormatPolicyRef": FolderScopePolicy.approvedFormatPolicyRef,
+            "exclusionsPolicyRef": FolderScopePolicy.exclusionsPolicyRef,
+        ]
         guard var document = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               var values = document[collectionKey] as? [[String: Any]]
         else { throw FolderBulkRunStoreError.invalidState }
         var changed = false
-        for index in values.indices where values[index]["rootBindingGeneration"] == nil {
-            values[index]["rootBindingGeneration"] = 1
-            changed = true
+        for index in values.indices {
+            for (key, value) in defaults where values[index][key] == nil {
+                values[index][key] = value
+                changed = true
+            }
         }
         guard changed else { return data }
         document[collectionKey] = values

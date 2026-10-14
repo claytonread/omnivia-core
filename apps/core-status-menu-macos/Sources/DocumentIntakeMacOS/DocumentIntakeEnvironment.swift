@@ -16,6 +16,10 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     public let folderBulkCoordinator: FolderBulkRunCoordinator
     public let fileSubscriptions: FileSubscriptionStore
     public let fileMonitoring: FileMonitoringCoordinator
+    /// The canonical native/Core-owned stores every folder scope excludes, so a
+    /// scan can never ingest the companion's own bookmarks, queue or receipts.
+    /// Resolved here, once, from the real state root rather than matched by name.
+    public let controlledStores: [URL]
 
     public init(
         stateRoot: URL,
@@ -23,6 +27,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
         reader: any CoordinatedOriginalReading = SystemCoordinatedOriginalReader()
     ) throws {
         self.reader = reader
+        controlledStores = [stateRoot.resolvingSymlinksInPath().standardizedFileURL]
         // Exactly one gate for the whole process: access relink/disconnect/adopt,
         // subscription register/update, queue publication and delivery claims all
         // serialise against the final validation+commit. See `PublicationGate`.
@@ -60,7 +65,8 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             preparation: preparation,
             queue: queue,
             subscriptions: folderSubscriptions,
-            reader: reader
+            reader: reader,
+            controlledStores: controlledStores
         )
         folderBulkRuns = try FolderBulkRunStore(
             stateDirectory: stateRoot.appendingPathComponent("folder-bulk-runs", isDirectory: true)
@@ -78,5 +84,18 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             subscriptions: fileSubscriptions,
             reader: reader
         )
+    }
+
+    /// Finishes any folder establishment an earlier process left pending, and
+    /// returns the submissions that are now established.
+    ///
+    /// Startup calls this before folder monitoring runs or a folder is
+    /// submitted. Until it does, a pending establishment's root group stays
+    /// `provisional`: nothing can discover through it, monitoring leaves its
+    /// subscription alone, and a new submission would miscount the watches that
+    /// already exist.
+    @discardableResult
+    public func reconcilePendingFolderEstablishment() async -> [String] {
+        await FolderCaptureSubmission.reconcilePending(environment: self)
     }
 }

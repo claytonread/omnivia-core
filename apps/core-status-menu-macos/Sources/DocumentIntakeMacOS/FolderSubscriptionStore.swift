@@ -100,8 +100,14 @@ public final class FolderSubscriptionStore: @unchecked Sendable {
     @discardableResult
     public func register(_ subscription: FolderSubscription) throws -> FolderSubscription {
         try gate.withLock {
-            guard subscriptions[subscription.subscriptionID] == nil else {
-                throw FolderSubscriptionStoreError.duplicateSubscription
+            if let existing = subscriptions[subscription.subscriptionID] {
+                // Replaying an establishment whose write landed is a retry and
+                // returns what is already durable. Anything other than the same
+                // content under the same identity fails closed.
+                guard existing == subscription else {
+                    throw FolderSubscriptionStoreError.duplicateSubscription
+                }
+                return existing
             }
             try Self.validate(subscription)
             var replacement = subscriptions

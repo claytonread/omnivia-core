@@ -7,7 +7,16 @@ public struct FolderBulkRunReport: Equatable, Sendable {
     public let published: Int
     public let admitted: Int
     public let needsAttention: Int
+    public let stopped: Int
+    public let total: Int
     public let newlyPublished: [CaptureQueueEntry]
+
+    /// Exact per-file progress. A saved manifest is never reported as every
+    /// file added.
+    public var progressDetail: String {
+        "\(admitted) added · \(published) in progress · \(planned) waiting · "
+            + "\(stopped) stopped · \(needsAttention) needs attention · of \(total)"
+    }
 }
 
 /// Progresses frozen folder plans in ordinary bounded queue batches. The durable run ledger is the
@@ -38,7 +47,7 @@ public actor FolderBulkRunCoordinator {
         var reports: [FolderBulkRunReport] = []
         for run in runs.all() {
             if Self.isTerminal(run.state) {
-                _ = try? releaseRootOwner(for: run)
+                try? finishRoot(for: run)
             } else if [.adding, .needsAttention].contains(run.state) {
                 reports.append(await advance(runID: run.runID))
             }
@@ -56,12 +65,14 @@ public actor FolderBulkRunCoordinator {
                 published: 0,
                 admitted: 0,
                 needsAttention: 1,
+                stopped: 0,
+                total: 0,
                 newlyPublished: []
             )
         }
         run = (try? reconcile(run)) ?? run
         if Self.isTerminal(run.state) {
-            _ = try? releaseRootOwner(for: run)
+            try? finishRoot(for: run)
         }
         guard run.state == .adding else { return report(run, newlyPublished: []) }
 
@@ -134,7 +145,7 @@ public actor FolderBulkRunCoordinator {
             run = runs.run(id: run.runID) ?? run
         }
         if Self.isTerminal(run.state) {
-            _ = try? releaseRootOwner(for: run)
+            try? finishRoot(for: run)
         }
         return report(run, newlyPublished: published)
     }
@@ -144,7 +155,7 @@ public actor FolderBulkRunCoordinator {
         runs.all().compactMap { run in
             guard let reconciled = try? reconcile(run) else { return nil }
             if Self.isTerminal(reconciled.state) {
-                _ = try? releaseRootOwner(for: reconciled)
+                try? finishRoot(for: reconciled)
             }
             return reconciled
         }
@@ -158,27 +169,44 @@ public actor FolderBulkRunCoordinator {
         }
     }
 
+    /// Resumes member reads. An item that already failed keeps its own outcome;
+    /// retrying those is the separate, explicit **Retry unavailable files**.
     @discardableResult
     public func resume(runID: String) throws -> FolderBulkRun {
         try runs.update(id: runID) { value in
-            guard value.state == .paused || value.state == .needsAttention else { return }
+            guard value.state == .paused else { return }
+            value.state = Self.derivedState(value.members)
+        }
+    }
+
+    /// Acts on the same remaining frozen membership after legitimate access
+    /// recovery. It discovers nothing: a member that was never in the manifest
+    /// cannot appear here.
+    @discardableResult
+    public func retryUnavailable(runID: String) throws -> FolderBulkRun {
+        try runs.update(id: runID) { value in
             for index in value.members.indices where value.members[index].state == .needsAttention {
                 value.members[index].state = .planned
                 value.members[index].failureCode = nil
             }
-            value.state = .adding
+            if value.state != .paused { value.state = Self.derivedState(value.members) }
         }
     }
 
+    /// Cancels every remaining unpublished member — both the unstarted ones and
+    /// the ones awaiting attention, which are equally unpublished. An already
+    /// published or admitted child keeps its canonical outcome, and nothing
+    /// already in Core is removed.
     @discardableResult
     public func stopRemaining(runID: String) throws -> FolderBulkRun {
         let run = try runs.update(id: runID) { value in
-            for index in value.members.indices where value.members[index].state == .planned {
+            for index in value.members.indices
+            where [.planned, .needsAttention].contains(value.members[index].state) {
                 value.members[index].state = .stopped
             }
             value.state = Self.derivedState(value.members)
         }
-        if Self.isTerminal(run.state) { _ = try releaseRootOwner(for: run) }
+        if Self.isTerminal(run.state) { try finishRoot(for: run) }
         return run
     }
 
@@ -284,6 +312,8 @@ public actor FolderBulkRunCoordinator {
             published: run.publishedCount,
             admitted: run.admittedCount,
             needsAttention: run.attentionCount,
+            stopped: run.stoppedCount,
+            total: run.members.count,
             newlyPublished: newlyPublished
         )
     }
@@ -299,8 +329,21 @@ public actor FolderBulkRunCoordinator {
         state == .complete || state == .stopped
     }
 
-    @discardableResult
-    private func releaseRootOwner(for run: FolderBulkRun) throws -> NativeRootAccessDescriptor {
-        try accessStore.releaseRoot(rootRef: run.rootRef, ownerRef: run.runID)
+    /// The plan is over. Its root group narrows to `frozen_members_only`, so it
+    /// keeps serving manual Refresh/Open/Reveal for the children that were
+    /// actually enrolled and can neither discover nor add another member. The
+    /// grant itself is only released when the last owned route is gone, which
+    /// `releaseRoot` decides — a watcher or another approved import that still
+    /// owns it keeps it alive.
+    private func finishRoot(for run: FolderBulkRun) throws {
+        // A watch on the same root still owns discovery; only its own stop
+        // narrows the group.
+        if run.subscriptionID == nil {
+            _ = try? accessStore.narrowRootAuthority(
+                rootRef: run.rootRef,
+                to: .frozenMembersOnly
+            )
+        }
+        _ = try accessStore.releaseRoot(rootRef: run.rootRef, ownerRef: run.runID)
     }
 }

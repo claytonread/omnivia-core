@@ -38,6 +38,17 @@ public struct CaptureDeliveryBinding: Equatable, Sendable {
         self.callerContextBinding = callerContextBinding
     }
 
+    /// The binding a durable root group recorded, so work resumed from it is
+    /// bound to exactly the destination it was approved for.
+    public init(_ binding: NativeRootAccessBinding) {
+        self.init(
+            targetRef: binding.targetRef,
+            workspaceRef: binding.workspaceRef,
+            targetBindingRevision: binding.targetBindingRevision,
+            callerContextBinding: binding.callerContextBinding
+        )
+    }
+
     /// The single binding every native companion submission and the companion's
     /// own transport are built from.
     public static func companion(

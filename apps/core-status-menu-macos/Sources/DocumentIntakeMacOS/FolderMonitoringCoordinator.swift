@@ -14,6 +14,7 @@ public enum FolderMonitoringError: Error, Equatable {
     case subscriptionNotActive
     case scopeUnavailable
     case scopeLimitExceeded
+    case scopeCoverageIncomplete
 }
 
 private struct MonitoredCandidate: Sendable {
@@ -33,19 +34,23 @@ public actor FolderMonitoringCoordinator {
     private let queue: CaptureIntentQueue
     private let subscriptions: FolderSubscriptionStore
     private let reader: any CoordinatedOriginalReading
+    /// Core/native-owned stores every scan excludes; see `DocumentIntakeEnvironment`.
+    private let controlledStores: [URL]
 
     init(
         accessStore: NativeAccessStore,
         preparation: CapturePreparationCoordinator,
         queue: CaptureIntentQueue,
         subscriptions: FolderSubscriptionStore,
-        reader: any CoordinatedOriginalReading
+        reader: any CoordinatedOriginalReading,
+        controlledStores: [URL] = []
     ) {
         self.accessStore = accessStore
         self.preparation = preparation
         self.queue = queue
         self.subscriptions = subscriptions
         self.reader = reader
+        self.controlledStores = controlledStores
     }
 
     /// Reconciles durable queue receipts first. A watch cannot become active until every reviewed
@@ -74,11 +79,25 @@ public actor FolderMonitoringCoordinator {
             guard subscription.state == .active else { return nil }
             return try? accessStore.withRootReadAccess(
                 rootRef: subscription.rootRef,
-                expectedGeneration: subscription.rootBindingGeneration
+                expectedGeneration: subscription.rootBindingGeneration,
+                purpose: .memberDiscovery
             ) { root in
                 FolderObservationRoot(subscriptionID: subscription.subscriptionID, url: root)
             }
         }
+    }
+
+    /// True once the subscription's own root group is established work. A
+    /// repairable or unavailable root is still established: only one that never
+    /// finished being established is not.
+    private static func isEstablished(
+        _ subscription: FolderSubscription,
+        in accessStore: NativeAccessStore
+    ) -> Bool {
+        guard let root = accessStore.rootDescriptors()
+            .first(where: { $0.rootRef == subscription.rootRef })
+        else { return false }
+        return root.state != .provisional
     }
 
     private func reconcile(subscriptionIDs: Set<String>?) async -> [FolderMonitoringReport] {
@@ -86,6 +105,24 @@ public actor FolderMonitoringCoordinator {
         for persisted in subscriptions.all() {
             if let subscriptionIDs, !subscriptionIDs.contains(persisted.subscriptionID) { continue }
             guard let subscription = try? reconcileAdmissions(persisted) else { continue }
+            // A subscription whose root group is still only prepared belongs to
+            // an establishment that has not finished. Its grant is not lost, so
+            // it is reported as it stands and left for
+            // `reconcilePendingFolderEstablishment` to finish rather than
+            // scanned and marked as needing access.
+            guard Self.isEstablished(subscription, in: accessStore) else {
+                reports.append(
+                    FolderMonitoringReport(
+                        subscriptionID: subscription.subscriptionID,
+                        state: subscription.state,
+                        examined: 0,
+                        queued: 0,
+                        unchanged: 0,
+                        absent: 0
+                    )
+                )
+                continue
+            }
             guard subscription.state == .active else {
                 reports.append(
                     FolderMonitoringReport(
@@ -160,6 +197,13 @@ public actor FolderMonitoringCoordinator {
             value.state = .stopped
             value.needsFullReconciliation = false
         }
+        // Stop watching keeps the same restricted manual member routes and ends
+        // discovery: the group narrows before its owner is released, so no scan
+        // can slip through in between.
+        _ = try? accessStore.narrowRootAuthority(
+            rootRef: subscription.rootRef,
+            to: .frozenMembersOnly
+        )
         _ = try accessStore.releaseRoot(
             rootRef: subscription.rootRef,
             ownerRef: subscription.subscriptionID
@@ -227,12 +271,14 @@ public actor FolderMonitoringCoordinator {
         let expectedGeneration = subscription.rootBindingGeneration
         let candidates = try accessStore.withRootReadAccess(
             rootRef: subscription.rootRef,
-            expectedGeneration: expectedGeneration
+            expectedGeneration: expectedGeneration,
+            purpose: .memberDiscovery
         ) { root in
             try Self.scan(
                 root: root,
                 recursive: subscription.recursive,
-                includeHidden: subscription.includeHidden
+                includeHidden: subscription.includeHidden,
+                controlledStores: self.controlledStores
             )
         }
         guard candidates.count <= FolderCaptureSubmission.maximumMembers else {
@@ -533,94 +579,41 @@ public actor FolderMonitoringCoordinator {
         )
     }
 
+    /// Delegates to the one shared bounded traversal, so a watched root's
+    /// actual membership is exactly what the reviewed preview showed.
     private static func scan(
         root: URL,
         recursive: Bool,
-        includeHidden: Bool
+        includeHidden: Bool,
+        controlledStores: [URL]
     ) throws -> [MonitoredCandidate] {
-        let keys: Set<URLResourceKey> = [
-            .isRegularFileKey,
-            .isDirectoryKey,
-            .isSymbolicLinkKey,
-            .isHiddenKey,
-            .isPackageKey,
-            .fileSizeKey,
-        ]
-        guard let enumerator = FileManager.default.enumerator(
-            at: root,
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsPackageDescendants],
-            errorHandler: { _, _ in true }
-        ) else { throw FolderMonitoringError.scopeUnavailable }
-        var result: [MonitoredCandidate] = []
-        var examined = 0
-        for case let candidate as URL in enumerator {
-            examined += 1
-            guard examined <= 100_000 else { throw FolderMonitoringError.scopeLimitExceeded }
-            let values = try candidate.resourceValues(forKeys: keys)
-            if values.isSymbolicLink == true {
-                if values.isDirectory == true { enumerator.skipDescendants() }
-                continue
-            }
-            let relative = try relativeComponents(root: root, member: candidate)
-            guard relative.count <= 32 else {
-                if values.isDirectory == true { enumerator.skipDescendants() }
-                continue
-            }
-            if !recursive, relative.count > 1 {
-                if values.isDirectory == true { enumerator.skipDescendants() }
-                continue
-            }
-            if !includeHidden, values.isHidden == true {
-                if values.isDirectory == true { enumerator.skipDescendants() }
-                continue
-            }
-            if values.isDirectory == true {
-                if Self.excludedDirectoryNames.contains(candidate.lastPathComponent) {
-                    enumerator.skipDescendants()
-                }
-                continue
-            }
-            guard values.isRegularFile == true,
-                  let byteLength = values.fileSize,
-                  byteLength > 0,
-                  !Self.excludedFile(candidate.lastPathComponent),
-                  let kind = ManualCaptureSubmission.contentKind(for: candidate)
-            else { continue }
-            result.append(
-                MonitoredCandidate(
-                    url: candidate,
-                    relativeComponents: relative,
-                    displayName: relative.joined(separator: "/"),
-                    contentKind: kind,
-                    byteLength: UInt64(byteLength)
-                )
+        let scan: FolderScopeScan
+        do {
+            scan = try FolderScopePolicy.scan(
+                root: root,
+                recursive: recursive,
+                includeHidden: includeHidden,
+                controlledStores: controlledStores
             )
-        }
-        return result.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
-    }
-
-    private static let excludedDirectoryNames: Set<String> = [
-        ".git", ".venv", "node_modules", "__pycache__", "DerivedData",
-    ]
-
-    private static func excludedFile(_ name: String) -> Bool {
-        if name == ".DS_Store" || name.hasPrefix("~$") { return true }
-        let lower = name.lowercased()
-        return [".swp", ".swo", ".tmp", ".part", ".crdownload"].contains { lower.hasSuffix($0) }
-    }
-
-    private static func relativeComponents(root: URL, member: URL) throws -> [String] {
-        let rootComponents = root.pathComponents
-        let memberComponents = member.standardizedFileURL.pathComponents
-        guard memberComponents.count > rootComponents.count,
-              Array(memberComponents.prefix(rootComponents.count)) == rootComponents
-        else { throw FolderMonitoringError.scopeUnavailable }
-        let relative = Array(memberComponents.dropFirst(rootComponents.count))
-        guard relative.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+        } catch {
             throw FolderMonitoringError.scopeUnavailable
         }
-        return relative
+        // An incomplete scope is never reported as complete coverage. A part of
+        // the folder the scan could not read would otherwise look exactly like
+        // a part the user deleted, so the subscription needs attention instead.
+        guard scan.coverageFailures.isEmpty else {
+            throw FolderMonitoringError.scopeCoverageIncomplete
+        }
+        guard scan.limit == nil else { throw FolderMonitoringError.scopeLimitExceeded }
+        return scan.members.map {
+            MonitoredCandidate(
+                url: $0.url,
+                relativeComponents: $0.relativeComponents,
+                displayName: $0.displayName,
+                contentKind: $0.contentKind,
+                byteLength: $0.byteLength
+            )
+        }
     }
 
     private static func replace(_ member: FolderSubscriptionMember, in members: inout [FolderSubscriptionMember]) {

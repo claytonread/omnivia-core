@@ -136,7 +136,7 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         let grant = try XCTUnwrap(environment.accessStore.rootDescriptors().first)
         XCTAssertEqual(grant.rootRef, subscription.rootRef)
         XCTAssertEqual(grant.ownerRefs, [subscription.subscriptionID])
-        XCTAssertEqual(grant.state, .connected)
+        XCTAssertEqual(grant.state, .active)
         XCTAssertNoThrow(
             try environment.accessStore.withRootReadAccess(
                 rootRef: grant.rootRef,
@@ -184,7 +184,7 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         _ = try await environment.folderMonitoring.stop(subscriptionID: subscription.subscriptionID)
         var grant = try XCTUnwrap(environment.accessStore.rootDescriptors().first)
         XCTAssertEqual(grant.ownerRefs, [run.runID])
-        XCTAssertEqual(grant.state, .connected)
+        XCTAssertEqual(grant.state, .active)
 
         try admit(
             try XCTUnwrap(entries.first),
@@ -194,7 +194,7 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         _ = await environment.folderBulkCoordinator.reconcileReceipts()
         grant = try XCTUnwrap(environment.accessStore.rootDescriptors().first)
         XCTAssertTrue(grant.ownerRefs.isEmpty)
-        XCTAssertEqual(grant.state, .connected)
+        XCTAssertEqual(grant.state, .active)
         let text = try environment.accessStore.withReadAccess(
             accessRef: member.accessRef,
             expectedGeneration: member.bindingGeneration,

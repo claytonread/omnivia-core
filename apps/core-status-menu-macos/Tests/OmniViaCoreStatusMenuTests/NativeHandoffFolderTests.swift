@@ -456,7 +456,8 @@ final class NativeHandoffFolderTests: NativeHandoffTestCase {
         _ = try companion.environment.accessStore.adoptRoot(
             rootRef: rootRef,
             ownerRef: "bulk-submitted",
-            selectedURL: folder
+            selectedURL: folder,
+            binding: NativeRootAccessBinding(.companion(workspaceRef: "workspace-1"))
         )
 
         companion.submitter.discardUnsubmitted(
