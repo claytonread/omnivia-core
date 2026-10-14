@@ -3160,7 +3160,17 @@ def _xlsx_charts(
     opened: neither the chart part's own relationships nor the workbook a chart
     may embed.
     """
-    named = [node for node in root if _local(node.tag) == "drawing"]
+    # As with the table-part route: the rest of the sheet reader matches local
+    # names, because a sheet's vocabulary is settled by the part it was reached
+    # through. This route opens another part, so the declaration is held to the
+    # sheet's own namespace and that namespace has to be SpreadsheetML -- an
+    # unqualified or foreign lookalike declares nothing and stays transparent,
+    # exactly as a nested one does.
+    namespace, _, _ = root.tag.rpartition("}")
+    namespace = namespace.lstrip("{")
+    if namespace not in _SPREADSHEETML:
+        return []
+    named = [node for node in root if node.tag == f"{{{namespace}}}drawing"]
     if not named:
         return []
     if len(named) > 1:

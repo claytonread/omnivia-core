@@ -95,9 +95,24 @@ DRAWING = (
     f'<xdr:wsDr xmlns:xdr="{SHEET_DRAWING_NS}" xmlns:a="{DRAWING_NS}">'
     f"{ANCHOR}</xdr:wsDr>"
 )
+SHEET = (
+    f'<worksheet xmlns="{MAIN}" xmlns:r="{RELNS}">'
+    '<sheetData><row r="1">'
+    '<c r="B1" t="inlineStr"><is><t>Revenue</t></is></c>'
+    "</row></sheetData>"
+    '<drawing r:id="rIdD"/></worksheet>'
+)
 
 
-def xlsx() -> bytes:
+def archive(members: dict[str, str]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as package:
+        for name, content in members.items():
+            package.writestr(name, content)
+    return buffer.getvalue()
+
+
+def xlsx(sheet: str = SHEET) -> bytes:
     """One sheet relating one drawing, anchoring one chart, over one series.
 
     The chart relates an embedded workbook whose member is not an archive at
@@ -122,13 +137,7 @@ def xlsx() -> bytes:
             f' Type="{RELNS}/worksheet"/>'
             "</Relationships>"
         ),
-        SHEET_PART: (
-            f'<worksheet xmlns="{MAIN}" xmlns:r="{RELNS}">'
-            '<sheetData><row r="1">'
-            '<c r="B1" t="inlineStr"><is><t>Revenue</t></is></c>'
-            "</row></sheetData>"
-            '<drawing r:id="rIdD"/></worksheet>'
-        ),
+        SHEET_PART: sheet,
         "xl/worksheets/_rels/sheet1.xml.rels": (
             "<Relationships>"
             '<Relationship Id="rIdD" Target="../drawings/drawing1.xml"'
@@ -151,11 +160,7 @@ def xlsx() -> bytes:
         ),
         EMBEDDED_PART: "not a workbook",
     }
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name, content in members.items():
-            archive.writestr(name, content)
-    return buffer.getvalue()
+    return archive(members)
 
 
 def records(content: bytes) -> list[tuple[str | None, dict[str, object]]]:
@@ -259,3 +264,23 @@ def test_a_worksheet_chart_reports_its_stored_title_and_cached_points() -> None:
         for item in extract_xlsx(content, capture_id=CAPTURE).segments
         if item.semantic_role == "chart"
     ] == ["visible"] * 6
+
+
+def test_only_a_qualified_direct_drawing_child_reaches_a_chart() -> None:
+    """A drawing reference is read for its name *and* its place, not either.
+
+    Two near misses carry the fixture's own relationship id, so each would
+    reach the same chart if the route were taken: one is a ``drawing``
+    element in a foreign vocabulary, the other is correctly qualified
+    SpreadsheetML but hangs under another worksheet child rather than beside
+    it. Neither is the reference a worksheet declares, so neither emits.
+    """
+    head = f'<worksheet xmlns="{MAIN}" xmlns:r="{RELNS}">'
+    foreign = (
+        f'{head}<x:drawing xmlns:x="urn:not-spreadsheetml" r:id="rIdD"/>'
+        "</worksheet>"
+    )
+    nested = f'{head}<oleObjects><drawing r:id="rIdD"/></oleObjects></worksheet>'
+
+    for sheet in (foreign, nested):
+        assert records(xlsx(sheet)) == []
