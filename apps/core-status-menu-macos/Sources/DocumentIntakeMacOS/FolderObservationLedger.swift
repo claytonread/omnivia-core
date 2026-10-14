@@ -55,6 +55,11 @@ public enum FolderObservationReason: String, Codable, CaseIterable, Comparable, 
     case streamChanged = "stream_changed"
     case subscriptionAdded = "subscription_added"
     case configChanged = "config_changed"
+    // Raised by `FolderReconciliationScheduler`.
+    /// A due interval elapsed.
+    case scheduled
+    /// An immediate trigger: startup, wake, remount, Resume, recovered access, lost observation.
+    case immediate
 
     var reportedByEvents: Bool {
         switch self {
@@ -396,6 +401,32 @@ public final class FolderObservationLedger: @unchecked Sendable {
             Self.normalize(&stream)
             document.streams[index] = stream
             return previousID
+        }
+    }
+
+    /// Merges a full reconciliation the scheduler decided this subscription owes, in one durable
+    /// write, and leaves the stream's covered event ID exactly where it was: a schedule is never
+    /// evidence that an event was covered. The obligation takes a new, higher revision, so nothing
+    /// merged before or after it is erased.
+    ///
+    /// Throws `unknownSubscription` when no stream observes it yet; `beginStream` will owe the full
+    /// reconciliation itself, so there is nothing to merge into.
+    public func requestFullReconciliation(
+        subscriptionID: String,
+        reason: FolderObservationReason
+    ) throws {
+        try mutate { document in
+            guard !reason.reportedByEvents else { throw FolderObservationLedgerError.invalidReason }
+            guard let index = document.streams.firstIndex(where: {
+                      $0.subscriptions.contains { $0.subscriptionID == subscriptionID }
+                  }),
+                  let applicable = document.streams[index].subscriptions
+                      .first(where: { $0.subscriptionID == subscriptionID })
+            else { throw FolderObservationLedgerError.unknownSubscription }
+            var stream = document.streams[index]
+            try Self.mergeFull(reason, applicable, into: &stream)
+            Self.normalize(&stream)
+            document.streams[index] = stream
         }
     }
 

@@ -14,6 +14,8 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     public let folderMonitoring: FolderMonitoringCoordinator
     /// Durable event-stream cursor and dirty obligations. Fed by `FolderEventBridge`; reconciliation does not acknowledge it yet.
     public let folderObservation: FolderObservationLedger
+    /// Durable periodic schedule and coverage truth for active folder subscriptions.
+    public let folderReconciliation: FolderReconciliationScheduler
     public let folderBulkRuns: FolderBulkRunStore
     public let folderBulkCoordinator: FolderBulkRunCoordinator
     public let fileSubscriptions: FileSubscriptionStore
@@ -51,6 +53,12 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
         folderObservation = try FolderObservationLedger(
             stateDirectory: stateRoot.appendingPathComponent("folder-observation", isDirectory: true),
             subscriptions: folderSubscriptions,
+            gate: gate
+        )
+        folderReconciliation = try FolderReconciliationScheduler(
+            stateDirectory: stateRoot.appendingPathComponent("folder-reconciliation", isDirectory: true),
+            subscriptions: folderSubscriptions,
+            observation: folderObservation,
             gate: gate
         )
         fileSubscriptions = try FileSubscriptionStore(
