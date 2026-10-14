@@ -513,6 +513,86 @@ _PPTX_PICTURE_MEDIA: Final[dict[str, object]] = {
     "mediaContentType": None,
     "mediaBytes": None,
 }
+# The one element an embedded or linked object is declared by, in the two
+# PresentationML main namespaces OOXML defines -- Transitional and Strict. An
+# ``oleObj`` written in any other vocabulary shares a local name and nothing
+# else, and declares no object.
+_PPTX_OLE_OBJECT: Final = frozenset(
+    f"{{{namespace}}}oleObj" for namespace in _PRESENTATIONML
+)
+# The two direct children that say which kind of object it is, each mapped to
+# the mode its record reports. An object is embedded or it is linked: the
+# element is the only thing that says which, and the relationship then has to
+# agree with it.
+_PPTX_OLE_MODES: Final[dict[str, str]] = {
+    f"{{{namespace}}}{element}": element
+    for element in ("embed", "link")
+    for namespace in _PRESENTATIONML
+}
+# The preview a declared object may carry. It is a picture *of* the object, not
+# the object and not a picture of the slide's own: it is recorded as declared
+# and never opened, decoded, resolved or inventoried as a picture.
+_PPTX_OLE_PREVIEW: Final = frozenset(
+    f"{{{namespace}}}pic" for namespace in _PRESENTATIONML
+)
+# The relationship types that qualify what an object names: a single OLE object,
+# or a whole package embedded as one. As with every other type here only the
+# URIs OOXML defines qualify -- Transitional and Strict for each -- so nothing
+# reaches an object by ending the same way, and an image, a media or a hyperlink
+# relationship reaches no object at all.
+_PPTX_OLE_RELATIONSHIPS: Final = frozenset(
+    {
+        (
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            "/oleObject"
+        ),
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/oleObject",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/package",
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/package",
+    }
+)
+# The object's own unqualified claims, each paired with the field its record
+# keeps it in. All three are text the authoring application wrote and none is
+# interpreted: a ``progId`` is the application's own name for the server that
+# would open the object, and nothing here looks one up, resolves it or launches
+# anything, while ``spid`` is the identifier the legacy drawing layer knew the
+# shape by and is not resolved against anything either.
+_PPTX_OLE_CLAIMS: Final = (
+    ("name", "oleName"),
+    ("progId", "oleProgId"),
+    ("spid", "oleShapeId"),
+)
+# The two extents the object declares for the image standing in for it, each
+# ``ST_PositiveCoordinate32``: unsigned, and bounded by the 32-bit signed
+# maximum the type is derived from.
+_PPTX_OLE_EXTENTS: Final = (("imgW", "oleImageWidth"), ("imgH", "oleImageHeight"))
+_MAX_PPTX_OLE_COORDINATE: Final = 0x7FFF_FFFF
+# What an object's record carries, defaulted so an embedded part and an external
+# link are shaped alike. ``oleScheme`` is the scheme a linked target's own text
+# names and ``oleUpdateAutomatic`` is a link's own flag; the three part fields
+# describe a member the package holds, and the byte length is the figure the
+# package measured while validating it. Reporting any of it opens nothing: no
+# object is ever parsed, decoded, executed, launched or fetched, and an object
+# never contributes text.
+_PPTX_OLE_RECORD: Final[dict[str, object]] = {
+    "oleMode": None,
+    "oleRelationshipId": None,
+    "oleRelationshipType": None,
+    "oleTarget": None,
+    "oleExternal": None,
+    "oleScheme": None,
+    "oleUpdateAutomatic": None,
+    "olePart": None,
+    "oleContentType": None,
+    "oleBytes": None,
+    "oleName": None,
+    "oleProgId": None,
+    "oleShapeId": None,
+    "oleShowAsIcon": None,
+    "oleImageWidth": None,
+    "oleImageHeight": None,
+    "olePreviewDeclared": None,
+}
 # The relationship and content types that together qualify the two parts a
 # slide's inherited text lives in: the layout the slide itself names, and the
 # master that layout itself names. As with the notes and comment types, only
@@ -2657,6 +2737,171 @@ def _pptx_frame_diagram(frame: ElementTree.Element) -> str | None:
     return ids[0]
 
 
+def _pptx_frame_object(
+    package: _Package, part: str, frame: ElementTree.Element
+) -> dict[str, object] | None:
+    """Inventory the embedded or linked object a graphic frame holds, inertly.
+
+    The route in is the schema's own and every hop is direct: the ``a:graphic``
+    below the frame, the ``a:graphicData`` below that -- both in the DrawingML
+    main namespace, Transitional or Strict -- and a ``p:oleObj`` directly below
+    that, in a PresentationML main namespace. An ``oleObj`` anywhere else is not
+    this frame's declaration and declares nothing: one nested deeper, one inside
+    an alternate-content fallback or another frame's graphic carried along, one
+    below the preview picture, and one written in a vocabulary that merely shares
+    the local name are all passed over, so a frame holding no object is reported
+    as holding none rather than as holding something found elsewhere.
+
+    A frame holds one graphic object, so two qualifying declarations leave which
+    object the frame shows ambiguous and nothing here chooses between them.
+
+    Which kind of object it is comes from one direct ``p:embed`` or ``p:link``
+    and from nowhere else -- not from the relationship, not from the target's
+    name, not from the ``progId``. Neither child, or both, or two of one, leaves
+    that undeclared or contradicted, so the frame is refused rather than read as
+    whichever was written first. The ``p:pic`` beside them is the preview image
+    standing in for the object on the slide: it is recorded as declared and is
+    never opened, decoded, resolved or mistaken for the object itself.
+
+    The single relationship-namespaced ``r:id`` on the object element is the one
+    reference read; an id written in no namespace, or in two of the namespaces
+    that carry it, names no one relationship. It resolves only through the
+    holding part's own relationships, so containment, path safety and existence
+    were all settled when the package validated them -- which is why an embedded
+    target is a member the archive holds and nothing re-checks it here -- and it
+    has to carry one of the types OOXML defines for an object. The declaration
+    and the relationship then have to agree: an embedded object is a part inside
+    the package and a linked one is a reference out of it, so an embed naming an
+    external target, or a link naming an internal part, is refused rather than
+    reported as the other.
+
+    Nothing here parses, decodes, executes, launches or fetches an object: an
+    embedded one contributes its safe part name, the type the package declares
+    for it and the already-measured byte length, a linked one is carried exactly
+    as the relationship holds it beside the scheme its own text names, and the
+    object's own bounded claims are reported as written and never interpreted.
+    """
+    declared = [
+        node
+        for graphic in frame
+        if graphic.tag in _DRAWING_GRAPHIC
+        for data in graphic
+        if data.tag in _DRAWING_GRAPHIC_DATA
+        for node in data
+        if node.tag in _PPTX_OLE_OBJECT
+    ]
+    if not declared:
+        return None
+    if len(declared) > 1:
+        raise OOXMLInvalid("PPTX graphic frame holds more than one embedded object")
+    node = declared[0]
+    modes = [
+        (_PPTX_OLE_MODES[child.tag], child)
+        for child in node
+        if child.tag in _PPTX_OLE_MODES
+    ]
+    if len(modes) != 1:
+        raise OOXMLInvalid(
+            "PPTX embedded object does not declare exactly one of embed and link"
+        )
+    previews = [child for child in node if child.tag in _PPTX_OLE_PREVIEW]
+    if len(previews) > 1:
+        raise OOXMLInvalid("PPTX embedded object declares more than one preview")
+    ids = _pptx_relationship_ids(node, "id")
+    if len(ids) > 1:
+        raise OOXMLInvalid("PPTX embedded object names more than one relationship")
+    if not ids:
+        raise OOXMLInvalid("PPTX embedded object names no relationship")
+    rels = posixpath.join(
+        posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels"
+    )
+    entry = package.relationships.get(rels, {}).get(ids[0])
+    if entry is None:
+        raise OOXMLInvalid("PPTX embedded object names a missing relationship")
+    kind = package.relationship_types.get(rels, {}).get(ids[0], "")
+    if not _is_defined_relationship(kind, _PPTX_OLE_RELATIONSHIPS):
+        raise OOXMLInvalid("PPTX embedded object names a relationship of another type")
+    mode, declaration = modes[0]
+    target, external = entry
+    if external != (mode == "link"):
+        raise OOXMLInvalid("PPTX embedded object contradicts the relationship it names")
+    record = dict(_PPTX_OLE_RECORD)
+    record.update(
+        {
+            "oleMode": mode,
+            "oleRelationshipId": _clip(ids[0], _MAX_META_CHARS),
+            "oleRelationshipType": _clip(kind, _MAX_TARGET_CHARS),
+            "oleTarget": _clip(target, _MAX_TARGET_CHARS),
+            "oleExternal": external,
+            "oleShowAsIcon": _pptx_ole_flag(node, "showAsIcon"),
+            "olePreviewDeclared": bool(previews),
+            **{
+                field: _pptx_ole_extent(node, name)
+                for name, field in _PPTX_OLE_EXTENTS
+            },
+            **{
+                field: _pptx_ole_claim(node, name)
+                for name, field in _PPTX_OLE_CLAIMS
+            },
+        }
+    )
+    if mode == "link":
+        match = _SCHEME.match(target)
+        record["oleScheme"] = match.group(1).casefold() if match else None
+        record["oleUpdateAutomatic"] = _pptx_ole_flag(declaration, "updateAutomatic")
+        return record
+    record["olePart"] = _clip(target, _MAX_TARGET_CHARS)
+    record["oleContentType"] = _clip(package.resolved_type(target), _MAX_META_CHARS)
+    record["oleBytes"] = package.archive.getinfo(target).file_size
+    return record
+
+
+def _pptx_ole_claim(element: ElementTree.Element, name: str) -> str | None:
+    """Return one of an object's unqualified text claims, clipped, or None.
+
+    Read unqualified, as the schema writes it: the same local name carried in
+    some other vocabulary's namespace is that vocabulary's extension and claims
+    nothing about this object. A claim written empty stays the empty claim the
+    file made rather than becoming an absent one.
+    """
+    value = element.attrib.get(name)
+    return None if value is None else _clip(value, _MAX_META_CHARS)
+
+
+def _pptx_ole_flag(element: ElementTree.Element, name: str) -> bool | None:
+    """Read one of an object's boolean attributes, or None where absent.
+
+    ``None`` says the file declared nothing, which is not the same as a declared
+    false, and no default is invented for it. The value is closed, so one
+    outside the type is refused rather than read as whichever of the two it
+    resembles.
+    """
+    value = element.attrib.get(name)
+    if value is None:
+        return None
+    if value in _TRUE_FLAGS:
+        return True
+    if value in _FALSE_FLAGS:
+        return False
+    raise OOXMLInvalid("PPTX embedded object flag is malformed")
+
+
+def _pptx_ole_extent(element: ElementTree.Element, name: str) -> int | None:
+    """Read one of an object's image extents, or None where absent.
+
+    The extent is kept exactly as written, in EMU, and is never scaled against
+    the frame's own transform or anything else. It is unsigned, so a negative
+    width or height is not a value the type has, and the range is the one the
+    type is derived from.
+    """
+    raw = element.attrib.get(name)
+    if raw is None:
+        return None
+    if _EMU_EXTENT.fullmatch(raw) is None or int(raw) > _MAX_PPTX_OLE_COORDINATE:
+        raise OOXMLInvalid("PPTX embedded object image extent is malformed")
+    return int(raw)
+
+
 def _pptx_diagram_root(
     package: _Package, part: str
 ) -> tuple[ElementTree.Element, str]:
@@ -3218,7 +3463,10 @@ class _PptxWalker:
             table = _pptx_frame_table(child) if frame else None
             chart = _pptx_frame_chart(child) if frame else None
             diagram = _pptx_frame_diagram(child) if frame else None
-            if sum(held is not None for held in (table, chart, diagram)) > 1:
+            ole = (
+                _pptx_frame_object(self._package, self._part, child) if frame else None
+            )
+            if sum(held is not None for held in (table, chart, diagram, ole)) > 1:
                 raise OOXMLInvalid("PPTX graphic frame holds more than one graphic")
             if chart is not None:
                 self._chart(chart, where)
@@ -3226,6 +3474,8 @@ class _PptxWalker:
                 self._diagram(diagram, where)
             elif table is not None:
                 self._table(table, where)
+            elif ole is not None:
+                self._object(ole, where)
             elif kind == "pic":
                 self._picture(child, where)
             elif kind in _PPTX_TEXT_SHAPES:
@@ -3589,6 +3839,32 @@ class _PptxWalker:
                 )
             )
             _bounded(self._segments)
+
+    def _object(self, record: dict[str, object], where: dict[str, object]) -> None:
+        """Inventory one embedded or linked object, without ever opening it.
+
+        One record, at the frame's own place: the slide, the frame's identifier,
+        the groups above it, its index at every level and the transform it
+        encodes. Its ``kind`` is ``oleObject``, which is what tells it from the
+        picture and diagram records already inventoried under the same role.
+
+        What the record holds is the frame's own declaration and what the
+        package already knows about the part or target it names. Nothing is
+        parsed out of the object, no server is resolved or launched for its
+        ``progId``, no linked target is fetched or probed, and the preview image
+        is reported as declared rather than opened -- so an object never
+        contributes text and nothing about it is read by executing it.
+        """
+        self._segments.append(
+            ExtractedSegment(
+                "object_inventory",
+                _locator(self._capture_id, **where),
+                structured_value={"kind": "oleObject", **record},
+                extraction_method="inventory",
+                visibility="hidden" if self._hidden else "visible",
+            )
+        )
+        _bounded(self._segments)
 
     def _picture(self, pic: ElementTree.Element, where: dict[str, object]) -> None:
         """Inventory one picture, then report the alt text its author wrote.
