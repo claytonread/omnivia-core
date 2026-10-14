@@ -12,6 +12,8 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     public let queue: CaptureIntentQueue
     public let folderSubscriptions: FolderSubscriptionStore
     public let folderMonitoring: FolderMonitoringCoordinator
+    /// Durable event-stream cursor and dirty obligations. Not yet fed by the native observer.
+    public let folderObservation: FolderObservationLedger
     public let folderBulkRuns: FolderBulkRunStore
     public let folderBulkCoordinator: FolderBulkRunCoordinator
     public let fileSubscriptions: FileSubscriptionStore
@@ -44,6 +46,11 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
         )
         folderSubscriptions = try FolderSubscriptionStore(
             stateDirectory: stateRoot.appendingPathComponent("folder-subscriptions", isDirectory: true),
+            gate: gate
+        )
+        folderObservation = try FolderObservationLedger(
+            stateDirectory: stateRoot.appendingPathComponent("folder-observation", isDirectory: true),
+            subscriptions: folderSubscriptions,
             gate: gate
         )
         fileSubscriptions = try FileSubscriptionStore(
