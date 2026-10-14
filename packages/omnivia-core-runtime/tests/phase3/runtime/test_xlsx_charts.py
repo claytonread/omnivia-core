@@ -29,16 +29,18 @@ from __future__ import annotations
 import io
 import zipfile
 
-from omnivia_core_runtime.service.ooxml_extractors import extract_xlsx
+import pytest
+from omnivia_core_runtime.service.ooxml_extractors import (
+    OOXMLInvalid,
+    extract_xlsx,
+)
 
 CAPTURE = "dcap-" + "a" * 64
 MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 RELNS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 # The spreadsheet-drawing vocabulary a worksheet's drawing part is rooted in,
 # and the DrawingML chart vocabulary the chart part itself is written in.
-SHEET_DRAWING_NS = (
-    "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
-)
+SHEET_DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
 DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 CHART_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart"
 DRAWING_CT = "application/vnd.openxmlformats-officedocument.drawing+xml"
@@ -277,8 +279,7 @@ def test_only_a_qualified_direct_drawing_child_reaches_a_chart() -> None:
     """
     head = f'<worksheet xmlns="{MAIN}" xmlns:r="{RELNS}">'
     foreign = (
-        f'{head}<x:drawing xmlns:x="urn:not-spreadsheetml" r:id="rIdD"/>'
-        "</worksheet>"
+        f'{head}<x:drawing xmlns:x="urn:not-spreadsheetml" r:id="rIdD"/></worksheet>'
     )
     nested = f'{head}<oleObjects><drawing r:id="rIdD"/></oleObjects></worksheet>'
 
@@ -310,6 +311,31 @@ def test_only_qualified_direct_anchor_and_frame_elements_are_read() -> None:
             f"{variant}</xdr:wsDr>"
         )
         assert records(xlsx(drawing=drawing)) == []
+
+
+def test_an_anchor_corner_and_its_coordinates_are_read_by_name_and_vocabulary() -> None:
+    """A corner and a coordinate are spreadsheet-drawing names, not any names.
+
+    Each variant renames exactly one element into a foreign vocabulary and
+    leaves everything under it as the valid fixture wrote it: the direct
+    ``xdr:from`` corner, and the first ``xdr:col`` under a corner that is
+    itself correctly qualified. Neither renamed element is the one the grammar
+    declares, so the anchor no longer names that corner or that coordinate.
+    """
+    foreign = ' xmlns:f="urn:not-spreadsheetdrawing"'
+    corner = DRAWING.replace("<xdr:from>", f"<f:from{foreign}>", 1).replace(
+        "</xdr:from>", "</f:from>", 1
+    )
+    coordinate = DRAWING.replace(
+        "<xdr:col>0</xdr:col>", f"<f:col{foreign}>0</f:col>", 1
+    )
+
+    for variant, diagnostic in (
+        (corner, "does not name exactly one of its corners"),
+        (coordinate, "corner is malformed"),
+    ):
+        with pytest.raises(OOXMLInvalid, match=diagnostic):
+            records(xlsx(drawing=variant))
 
 
 # The Strict profile's spelling of each base URI: the ``purl.oclc.org`` name

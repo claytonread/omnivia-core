@@ -3256,37 +3256,46 @@ def _xlsx_anchor_range(anchor: ElementTree.Element) -> str:
     drawn to. A corner pair whose end precedes its start describes no rectangle,
     so it is refused rather than reordered into the one it was probably meant to
     be, as a cell range already is.
+
+    The anchor's own qualified name was already held to the drawing's validated
+    namespace, so that namespace settles the vocabulary its corners and their
+    coordinates are read in: an unqualified or foreign lookalike declares
+    nothing the grammar names and is transparent here too.
     """
-    first = _xlsx_anchor_corner(anchor, "from")
-    last = _xlsx_anchor_corner(anchor, "to")
+    namespace, _, _ = anchor.tag.rpartition("}")
+    first = _xlsx_anchor_corner(anchor, f"{namespace}}}from")
+    last = _xlsx_anchor_corner(anchor, f"{namespace}}}to")
     if last[0] < first[0] or last[1] < first[1]:
         raise OOXMLInvalid("XLSX anchor range is malformed")
     return f"{_column_name(first[0])}{first[1]}:{_column_name(last[0])}{last[1]}"
 
 
-def _xlsx_anchor_corner(anchor: ElementTree.Element, name: str) -> tuple[int, int]:
+def _xlsx_anchor_corner(anchor: ElementTree.Element, tag: str) -> tuple[int, int]:
     """Return the one-based (column, row) one anchor corner names, or refuse it.
 
-    An anchor positions a frame by exactly two corners, so a corner written
-    twice -- or not at all -- leaves where the frame sits unanswerable.
+    ``tag`` is the corner's qualified name in the drawing's own namespace. An
+    anchor positions a frame by exactly two corners, so a corner written twice
+    -- or not at all -- leaves where the frame sits unanswerable.
     """
-    corners = [node for node in anchor if _local(node.tag) == name]
+    namespace, _, _ = tag.rpartition("}")
+    corners = [node for node in anchor if node.tag == tag]
     if len(corners) != 1:
         raise OOXMLInvalid("XLSX anchor does not name exactly one of its corners")
     return (
-        _xlsx_anchor_coordinate(corners[0], "col", _MAX_COLUMN),
-        _xlsx_anchor_coordinate(corners[0], "row", _MAX_ROW),
+        _xlsx_anchor_coordinate(corners[0], f"{namespace}}}col", _MAX_COLUMN),
+        _xlsx_anchor_coordinate(corners[0], f"{namespace}}}row", _MAX_ROW),
     )
 
 
-def _xlsx_anchor_coordinate(corner: ElementTree.Element, name: str, bound: int) -> int:
+def _xlsx_anchor_coordinate(corner: ElementTree.Element, tag: str, bound: int) -> int:
     """Read one zero-based coordinate as the one-based position it names.
 
+    ``tag`` is the coordinate's qualified name in the drawing's own namespace.
     The value is held to the grid SpreadsheetML itself accepts, so a coordinate
     beyond the sheet names no cell and is refused rather than reported as an
     anchor over one.
     """
-    nodes = [node for node in corner if _local(node.tag) == name]
+    nodes = [node for node in corner if node.tag == tag]
     if len(nodes) != 1:
         raise OOXMLInvalid("XLSX anchor corner is malformed")
     raw = (nodes[0].text or "").strip()
