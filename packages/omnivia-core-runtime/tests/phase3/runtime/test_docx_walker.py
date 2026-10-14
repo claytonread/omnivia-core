@@ -22,6 +22,9 @@ W = (
     'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
     'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
     'xmlns:v="urn:schemas-microsoft-com:vml" '
+    'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+    'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" '
     'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
 )
 STYLES_REL = (
@@ -47,13 +50,19 @@ def p(text: str, ppr: str = "") -> str:
 
 
 def docx(
-    body: str, parts: dict[str, str] | None = None, *, styles: bool = True
+    body: str,
+    parts: dict[str, str] | None = None,
+    *,
+    styles: bool = True,
+    content_types: str = "",
+    members: dict[str, bytes] | None = None,
 ) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
             "[Content_Types].xml",
-            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            f"{content_types}</Types>",
         )
         archive.writestr(
             "word/document.xml", f"<w:document {W}><w:body>{body}</w:body></w:document>"
@@ -63,6 +72,8 @@ def docx(
             archive.writestr("word/styles.xml", STYLES)
         for name, content in (parts or {}).items():
             archive.writestr(name, content)
+        for name, raw in (members or {}).items():
+            archive.writestr(name, raw)
     return buffer.getvalue()
 
 
@@ -554,11 +565,19 @@ def inventory(content: bytes) -> list[tuple[object, dict[str, object]]]:
     ]
 
 
-def linked(body: str, *relations: tuple[str, str, bool, str], **parts: str) -> bytes:
+def linked(
+    body: str,
+    *relations: tuple[str, str, bool, str],
+    content_types: str = "",
+    members: dict[str, bytes] | None = None,
+    **parts: str,
+) -> bytes:
     return docx(
         body,
         {"word/_rels/document.xml.rels": rels(*relations), **parts},
         styles=False,
+        content_types=content_types,
+        members=members,
     )
 
 
@@ -1637,3 +1656,498 @@ def test_a_display_container_in_another_namespace_is_no_equation() -> None:
     )
 
     assert read(docx(other, styles=False)) == [("body", "plain", "0")]
+
+
+# A member that is declared an image and is not one: nothing here decodes a
+# byte of it, so a package holding this still reads exactly as one holding a
+# real picture would.
+IMAGE_MEMBER = {"word/media/image1.png": b"\x89PNG\r\n\x1a\nnot really an image"}
+PNG_DEFAULT = '<Default Extension="png" ContentType="image/png"/>'
+IMAGE_RELATION = ("rId9", "media/image1.png", False, "image")
+STRICT_REL_NS = "http://purl.oclc.org/ooxml/officeDocument/relationships"
+DOC_PR = ' id="7" name="Picture 7"'
+
+
+def blip(embed: str | None = "rId9", target: str | None = None, extra: str = "") -> str:
+    ids = "".join(
+        f' r:{attribute}="{value}"'
+        for attribute, value in (("embed", embed), ("link", target))
+        if value is not None
+    )
+    return f"<a:blip{ids}{extra}/>"
+
+
+def picture(fill: str) -> str:
+    return f"<pic:pic><pic:blipFill>{fill}</pic:blipFill></pic:pic>"
+
+
+def drawing(
+    placement: str = "inline",
+    *,
+    doc_pr: str | None = DOC_PR,
+    graphic: str | None = None,
+) -> str:
+    body = (
+        f"<a:graphic><a:graphicData>{picture(blip())}</a:graphicData></a:graphic>"
+        if graphic is None
+        else graphic
+    )
+    properties = "" if doc_pr is None else f"<wp:docPr{doc_pr}/>"
+    return (
+        f"<w:r><w:drawing><wp:{placement}>{properties}{body}"
+        f"</wp:{placement}></w:drawing></w:r>"
+    )
+
+
+def imaged(body: str, *relations: tuple[str, str, bool, str], **parts: str) -> bytes:
+    return linked(
+        body,
+        *(relations or (IMAGE_RELATION,)),
+        content_types=PNG_DEFAULT,
+        members=IMAGE_MEMBER,
+        **parts,
+    )
+
+
+def test_an_embedded_image_is_inventoried_where_it_sits_with_the_alt_text_after() -> (
+    None
+):
+    """The record comes first and the author's own claims follow it, each under
+    the attribute that supplied it."""
+    body = (
+        f"<w:p>{run('Before ')}"
+        + drawing(doc_pr=f'{DOC_PR} title="Logo" descr="The company logo"')
+        + f"{run(' after')}</w:p>"
+    )
+    content = imaged(body)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("body", "Before ", "0"),
+        ("object_inventory", None, "0.i0"),
+        ("image_alt", "Logo", "0.i0"),
+        ("image_alt", "The company logo", "0.i0"),
+        # The image closed the stretch it interrupted rather than joining it.
+        ("body", " after", "0.t1"),
+    ]
+    assert [i.source_locator.get("altRole") for i in result.segments] == [
+        None,
+        None,
+        "title",
+        "description",
+        None,
+    ]
+    assert inventory(content) == [
+        (
+            "0.i0",
+            {
+                "kind": "drawingImage",
+                "placement": "inline",
+                "docPrId": "7",
+                # An autogenerated object name is not a description, so it is
+                # recorded and never reported as text the author wrote.
+                "shapeName": "Picture 7",
+                "altTitle": "Logo",
+                "altDescription": "The company logo",
+                "imageEmbedRelationshipId": "rId9",
+                "imageEmbedRelationshipType": REL + "image",
+                "imagePart": "word/media/image1.png",
+                "imageContentType": "image/png",
+                "imageBytes": len(IMAGE_MEMBER["word/media/image1.png"]),
+                "imageLinkRelationshipId": None,
+                "imageLinkRelationshipType": None,
+                "imageLinkTarget": None,
+                "imageLinkScheme": None,
+                "imageLinkExternal": None,
+                "imageDecoded": False,
+                "ocrPerformed": False,
+            },
+        )
+    ]
+    assert [i.extraction_method for i in result.segments[1:2]] == ["inventory"]
+
+
+def test_an_anchored_image_and_a_linked_one_are_each_recorded_as_declared() -> None:
+    """Placement is the element's own, and a link is carried verbatim rather
+    than resolved: no target is fetched and no local path is inspected."""
+    body = (
+        f"<w:p>{drawing('anchor')}</w:p>"
+        + "<w:p><w:r><w:drawing><wp:anchor>"
+        + f"<wp:docPr{DOC_PR}/><a:graphic><a:graphicData>"
+        + picture(blip(embed=None, target="rId8"))
+        + "</a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"
+    )
+    content = imaged(
+        body,
+        IMAGE_RELATION,
+        ("rId8", "file:///C:/Users/someone/Pictures/Chart.PNG", True, "image"),
+    )
+
+    placements = [
+        (
+            position,
+            value["placement"],
+            value["imagePart"],
+            value["imageLinkTarget"],
+            value["imageLinkScheme"],
+            value["imageLinkExternal"],
+            value["imageLinkRelationshipId"],
+        )
+        for position, value in inventory(content)
+    ]
+    assert placements == [
+        ("0.i0", "anchor", "word/media/image1.png", None, None, None, None),
+        (
+            "1.i0",
+            "anchor",
+            None,
+            "file:///C:/Users/someone/Pictures/Chart.PNG",
+            "file",
+            True,
+            "rId8",
+        ),
+    ]
+    assert extract_docx(content, capture_id=CAPTURE).limitations[
+        "externalReferences"
+    ] == 1
+
+
+def test_an_image_whose_author_described_it_with_nothing_is_still_inventoried() -> None:
+    """A claim nothing wrote and a claim written empty are different facts, and
+    neither invents text -- least of all out of the object's name."""
+    empty = drawing(doc_pr=DOC_PR + ' title="" descr=""')
+    body = (
+        f"<w:p>{drawing()}</w:p><w:p>{empty}</w:p>"
+        f"<w:p>{drawing(doc_pr=None)}</w:p>"
+    )
+    content = imaged(body)
+
+    assert [
+        (i.semantic_role, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("object_inventory", "0.i0"),
+        ("object_inventory", "1.i0"),
+        ("object_inventory", "2.i0"),
+    ]
+    assert [
+        (value["docPrId"], value["shapeName"], value["altTitle"], value["altDescription"])
+        for _, value in inventory(content)
+    ] == [
+        ("7", "Picture 7", None, None),
+        ("7", "Picture 7", "", ""),
+        (None, None, None, None),
+    ]
+
+
+def test_images_keep_cell_order_and_a_deletion_over_one_is_preserved() -> None:
+    sales = drawing(doc_pr=DOC_PR + ' descr="Sales"')
+    gone = drawing(doc_pr=DOC_PR + ' descr="Gone"')
+    body = (
+        "<w:tbl><w:tr><w:tc>"
+        f"<w:p>{run('Figure')}</w:p>"
+        f"<w:p>{sales}{run(' caption')}</w:p>"
+        f"<w:p><w:del>{gone}</w:del></w:p>"
+        "</w:tc></w:tr></w:tbl>"
+    )
+    content = imaged(body)
+
+    assert [
+        (
+            i.semantic_role,
+            i.text,
+            i.source_locator["position"],
+            i.revision_state,
+            i.visibility,
+        )
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("table_cell", "Figure", "0.r0.c0", "current", "visible"),
+        # The image closed the cell's run rather than trailing the prose it
+        # precedes, exactly as an equation does.
+        ("object_inventory", None, "0.r0.c0.1.i0", "current", "visible"),
+        ("image_alt", "Sales", "0.r0.c0.1.i0", "current", "visible"),
+        ("table_cell", " caption", "0.r0.c0.t1", "current", "visible"),
+        ("object_inventory", None, "0.r0.c0.2.i0", "deleted", "annotation"),
+        # The deletion is kept over the claim as well as over the record.
+        ("image_alt", "Gone", "0.r0.c0.2.i0", "deleted", "annotation"),
+    ]
+
+
+def test_images_are_inventoried_in_every_story_the_walker_reaches() -> None:
+    """Headers, notes, content controls and revisions all go through the common
+    walker, and each part resolves only its own relationships."""
+    body = (
+        "<w:sdt><w:sdtContent>"
+        + f"<w:p><w:ins>{drawing()}</w:ins></w:p>"
+        + "</w:sdtContent></w:sdt>"
+    )
+    header = f"<w:hdr {W}><w:p>{drawing()}</w:p></w:hdr>"
+    note = (
+        f'<w:footnotes {W}><w:footnote w:id="2"><w:p>{drawing()}</w:p>'
+        "</w:footnote></w:footnotes>"
+    )
+    content = imaged(
+        body,
+        IMAGE_RELATION,
+        **{
+            "word/header1.xml": header,
+            "word/_rels/header1.xml.rels": rels(IMAGE_RELATION),
+            "word/footnotes.xml": note,
+            "word/_rels/footnotes.xml.rels": rels(IMAGE_RELATION),
+        },
+    )
+
+    assert [
+        (i.semantic_role, i.source_locator["part"], i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("object_inventory", "word/document.xml", "0.i0"),
+        ("object_inventory", "word/footnotes.xml", "0.i0"),
+        ("object_inventory", "word/header1.xml", "0.i0"),
+    ]
+
+
+def test_a_part_resolves_only_its_own_relationships() -> None:
+    """The main document relating to the image says nothing about a header that
+    does not: the id names no relationship there and nothing reaches past it."""
+    header = f"<w:hdr {W}><w:p>{drawing()}</w:p></w:hdr>"
+
+    with pytest.raises(OOXMLInvalid, match="names a missing image relationship"):
+        extract_docx(
+            imaged("", IMAGE_RELATION, **{"word/header1.xml": header}),
+            capture_id=CAPTURE,
+        )
+
+
+def test_a_drawing_that_displays_no_image_is_left_for_its_own_slice() -> None:
+    """A chart, a diagram or an embedded object under the same anchor is not a
+    picture, a picture fill elsewhere below the anchor is not the displayed
+    image, and a text box is still the wrapper it has always been."""
+    chart = (
+        '<a:graphic><a:graphicData uri="http://example.test/chart">'
+        '<c:chart xmlns:c="http://example.test/chart" r:id="rId9"/>'
+        "</a:graphicData></a:graphic>"
+    )
+    # A text box shape whose own shape properties carry a picture fill: the
+    # fill is not what the anchor displays, and the box still yields its prose.
+    shape = (
+        "<a:graphic><a:graphicData><wps:wsp>"
+        f"<wps:spPr><a:blipFill>{blip()}</a:blipFill></wps:spPr>"
+        f"<wps:txbx><w:txbxContent><w:p>{run('inside')}</w:p></w:txbxContent></wps:txbx>"
+        "</wps:wsp></a:graphicData></a:graphic>"
+    )
+    body = (
+        f"<w:p>{drawing(graphic=chart)}</w:p>"
+        + "<w:p><w:r><w:drawing><wp:anchor>"
+        + f"<wp:docPr{DOC_PR}/>{shape}</wp:anchor></w:drawing></w:r></w:p>"
+    )
+
+    assert read(imaged(body)) == [("body", "inside", "1.x0.0")]
+
+
+def test_only_the_schema_qualified_route_reaches_an_image() -> None:
+    """An element that shares a local name and nothing else declares nothing,
+    whether it stands where the anchor, the graphic, the graphic data, the
+    picture or the blip would."""
+    other = 'xmlns:z="urn:example:other"'
+    lookalikes = (
+        (
+            f"<z:inline {other}><a:graphic><a:graphicData>"
+            f"{picture(blip())}</a:graphicData></a:graphic></z:inline>"
+        ),
+        (
+            f"<wp:inline><wp:docPr{DOC_PR}/><z:graphic {other}><a:graphicData>"
+            f"{picture(blip())}</a:graphicData></z:graphic></wp:inline>"
+        ),
+        (
+            f"<wp:inline><wp:docPr{DOC_PR}/><a:graphic><z:graphicData {other}>"
+            f"{picture(blip())}</z:graphicData></a:graphic></wp:inline>"
+        ),
+        (
+            f"<wp:inline><wp:docPr{DOC_PR}/><a:graphic><a:graphicData>"
+            f"<z:pic {other}><pic:blipFill>{blip()}</pic:blipFill></z:pic>"
+            "</a:graphicData></a:graphic></wp:inline>"
+        ),
+        (
+            f"<wp:inline><wp:docPr{DOC_PR}/><a:graphic><a:graphicData><pic:pic>"
+            f'<pic:blipFill><z:blip {other} r:embed="rId9"/></pic:blipFill>'
+            "</pic:pic></a:graphicData></a:graphic></wp:inline>"
+        ),
+    )
+
+    for anchor in lookalikes:
+        body = f"<w:p><w:r><w:drawing>{anchor}</w:drawing></w:r></w:p>"
+        assert inventory(imaged(body)) == []
+
+    # A ``docPr`` lookalike beside the real route claims nothing either, and is
+    # no second declaration of the properties the drawing never wrote.
+    claimed = (
+        f'<wp:inline><z:docPr {other} id="8" descr="Invented"/><a:graphic>'
+        f"<a:graphicData>{picture(blip())}</a:graphicData></a:graphic></wp:inline>"
+    )
+    content = imaged(f"<w:p><w:r><w:drawing>{claimed}</w:drawing></w:r></w:p>")
+    assert [
+        (value["docPrId"], value["altDescription"]) for _, value in inventory(content)
+    ] == [(None, None)]
+
+
+def test_no_image_byte_is_decoded_and_no_ocr_is_run() -> None:
+    """The member is declared an image and holds nothing that decodes as one.
+    The record still reports the length the package measured when it validated
+    the member, and says outright that it read no further."""
+    content = imaged(f"<w:p>{drawing()}</w:p>")
+
+    _, value = inventory(content)[0]
+    assert (value["imageDecoded"], value["ocrPerformed"]) == (False, False)
+    assert value["imageBytes"] == len(IMAGE_MEMBER["word/media/image1.png"])
+    # Nothing was read out of the bytes: no width, no text, no reading of any
+    # kind, and the alt text is the author's claim alone.
+    assert set(value) == {
+        "kind",
+        "placement",
+        "docPrId",
+        "shapeName",
+        "altTitle",
+        "altDescription",
+        "imageEmbedRelationshipId",
+        "imageEmbedRelationshipType",
+        "imagePart",
+        "imageContentType",
+        "imageBytes",
+        "imageLinkRelationshipId",
+        "imageLinkRelationshipType",
+        "imageLinkTarget",
+        "imageLinkScheme",
+        "imageLinkExternal",
+        "imageDecoded",
+        "ocrPerformed",
+    }
+
+
+def test_an_image_is_the_saved_result_of_the_field_it_sits_under() -> None:
+    """A field whose stored result is an image alone stored a result, exactly as
+    one whose result is an equation did."""
+    body = (
+        f"<w:p>{fld('begin')}{instr(' INCLUDEPICTURE ')}{fld('separate')}"
+        f"{drawing()}{fld('end')}</w:p>"
+    )
+    content = imaged(body)
+
+    assert [
+        (i.semantic_role, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [("object_inventory", "0.f0"), ("object_inventory", "0.i0")]
+    # The field stored a result even though no prose was read under it.
+    assert inventory(content)[0][1]["savedResultPresent"] is True
+
+
+def test_an_image_inside_a_field_instruction_is_refused() -> None:
+    """An instruction is field code, which carries no image of its own, so one
+    reached before the separator is refused rather than inventoried."""
+    body = (
+        f"<w:p>{fld('begin')}{instr(' INCLUDEPICTURE ')}{drawing()}"
+        f"{fld('separate')}{fld('end')}</w:p>"
+    )
+
+    with pytest.raises(OOXMLInvalid, match="instruction holds an image"):
+        extract_docx(imaged(body), capture_id=CAPTURE)
+
+
+def test_a_reference_that_names_no_one_image_is_refused() -> None:
+    """Each of these leaves which image the drawing displays, or whether it
+    displays one at all, unanswerable -- and nothing here guesses."""
+    strict = f' xmlns:s="{STRICT_REL_NS}" s:embed="rId9"'
+    cases = (
+        # An id the holding part relates to nothing names no image at all.
+        (drawing(graphic=None).replace('r:embed="rId9"', 'r:embed="rId1"'),
+         (IMAGE_RELATION,),
+         "names a missing image relationship"),
+        # A relationship of another type names something that is not an image.
+        (drawing(), (("rId9", "media/image1.png", False, "oleObject"),),
+         "image relationship of another type"),
+        # Nor does a type reach an image by ending the same way as one.
+        (drawing(), (("rId9", "media/image1.png", False, "x/image"),),
+         "image relationship of another type"),
+        # ``r:embed`` names a part of the package, so an external relationship
+        # is not an embed and is not quietly recorded as a link.
+        (drawing(), (("rId9", "https://example.invalid/logo.png", True, "image"),),
+         "embedded image relationship is external"),
+        # A drawing displays one image, so a second blip below it is ambiguous.
+        (
+            (
+                f"<w:r><w:drawing><wp:inline><wp:docPr{DOC_PR}/><a:graphic>"
+                f"<a:graphicData><pic:pic><pic:blipFill>{blip()}{blip()}"
+                "</pic:blipFill></pic:pic></a:graphicData></a:graphic>"
+                "</wp:inline></w:drawing></w:r>"
+            ),
+            (IMAGE_RELATION,),
+            "declares more than one image reference",
+        ),
+        # So is one attribute written in both relationships namespaces at once.
+        (
+            (
+                f"<w:r><w:drawing><wp:inline><wp:docPr{DOC_PR}/><a:graphic>"
+                f"<a:graphicData>{picture(blip(extra=strict))}</a:graphicData>"
+                "</a:graphic></wp:inline></w:drawing></w:r>"
+            ),
+            (IMAGE_RELATION,),
+            "names more than one image relationship",
+        ),
+        # A blip declaring neither attribute identifies no image.
+        (
+            (
+                f"<w:r><w:drawing><wp:inline><wp:docPr{DOC_PR}/><a:graphic>"
+                f"<a:graphicData>{picture(blip(embed=None))}</a:graphicData>"
+                "</a:graphic></wp:inline></w:drawing></w:r>"
+            ),
+            (IMAGE_RELATION,),
+            "names no image relationship",
+        ),
+        # Two ``wp:docPr`` leave the object's identity and its alt text
+        # ambiguous, so nothing picks one of them.
+        (
+            (
+                f"<w:r><w:drawing><wp:inline><wp:docPr{DOC_PR}/>"
+                f'<wp:docPr id="8" name="Picture 8" descr="Other"/><a:graphic>'
+                f"<a:graphicData>{picture(blip())}</a:graphicData></a:graphic>"
+                "</wp:inline></w:drawing></w:r>"
+            ),
+            (IMAGE_RELATION,),
+            "declares its properties twice",
+        ),
+    )
+
+    for body, relations, message in cases:
+        with pytest.raises(OOXMLInvalid, match=message):
+            extract_docx(imaged(f"<w:p>{body}</w:p>", *relations), capture_id=CAPTURE)
+
+
+def test_an_embedded_part_the_package_does_not_declare_an_image_is_refused() -> None:
+    with pytest.raises(OOXMLInvalid, match="not declared an image"):
+        extract_docx(
+            linked(
+                f"<w:p>{drawing()}</w:p>",
+                IMAGE_RELATION,
+                content_types='<Default Extension="png" ContentType="text/plain"/>',
+                members=IMAGE_MEMBER,
+            ),
+            capture_id=CAPTURE,
+        )
+
+
+def test_an_internal_image_target_the_package_does_not_hold_is_refused() -> None:
+    """Containment and existence are settled when the package validates its
+    relationships, so an image part that is not there never reaches a record."""
+    with pytest.raises(OOXMLInvalid, match="escapes or misses the package"):
+        extract_docx(
+            linked(
+                f"<w:p>{drawing()}</w:p>",
+                IMAGE_RELATION,
+                content_types=PNG_DEFAULT,
+            ),
+            capture_id=CAPTURE,
+        )
