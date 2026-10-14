@@ -72,11 +72,24 @@ final class CapturePreparationCoordinatorTests: XCTestCase {
         try CaptureIntentQueue(root: root.appendingPathComponent("queue"))
     }
 
-    /// Payload bytes a rejected publication must never leave behind.
+    /// Payload bytes a rejected publication must never leave behind, wherever
+    /// they could be: the legacy payload directory, an unpublished candidate or
+    /// a published batch.
     private func payloadFiles(_ root: URL) -> [String] {
-        let payloads = root.appendingPathComponent("queue", isDirectory: true)
-            .appendingPathComponent("payloads", isDirectory: true)
-        return (try? FileManager.default.contentsOfDirectory(atPath: payloads.path)) ?? []
+        let queue = root.appendingPathComponent("queue", isDirectory: true)
+        guard let children = FileManager.default.enumerator(at: queue, includingPropertiesForKeys: nil)
+        else { return [] }
+        return (children.allObjects as? [URL] ?? [])
+            .filter { $0.pathExtension == "payload" }
+            .map(\.lastPathComponent)
+            .sorted()
+    }
+
+    private func queueNames(_ root: URL, in directory: String) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(
+            atPath: root.appendingPathComponent("queue", isDirectory: true)
+                .appendingPathComponent(directory, isDirectory: true).path
+        )) ?? []).sorted()
     }
 
     @discardableResult
@@ -737,6 +750,51 @@ final class CapturePreparationCoordinatorTests: XCTestCase {
         XCTAssertNil(outcome.failure)
         XCTAssertEqual(outcome.entry?.state, .staging)
         XCTAssertEqual(outcome.entry?.attemptGeneration, 1)
+    }
+
+    /// The payload bytes of a two-item selection are complete on disk before the
+    /// final authority lock, and publication inside it is only the rename.
+    func testEveryPayloadByteIsWrittenBeforeTheFinalCriticalSection() async throws {
+        let root = try temporaryRoot()
+        let gate = PublicationGate()
+        let accessStore = try NativeAccessStore(
+            stateDirectory: root.appendingPathComponent("access"),
+            codec: PreparationBookmarkCodec(),
+            gate: gate
+        )
+        let queue = try CaptureIntentQueue(root: root.appendingPathComponent("queue"), gate: gate)
+        var items: [CapturePreparationItem] = []
+        for index in 1...2 {
+            let item = "item-\(index)"
+            let access = "access-\(index)"
+            try adoptFile(accessStore, root: root, item: item, access: access)
+            items.append(
+                CapturePreparationItem(
+                    access: NativeAccessExpectation(accessRef: access, generation: 1),
+                    seed: seed(item: item, access: access)
+                )
+            )
+        }
+        let coordinator = CapturePreparationCoordinator(
+            accessStore: accessStore,
+            queue: queue,
+            reader: TestOriginalReader { try Data(contentsOf: $0) },
+            gate: gate
+        )
+        coordinator.afterConsentValidation = {
+            // Inside the critical section: the bytes are already durable in one
+            // candidate directory and nothing is published yet.
+            XCTAssertEqual(self.queueNames(root, in: "candidates").count, 1)
+            XCTAssertEqual(self.payloadFiles(root), ["payload-item-1.payload", "payload-item-2.payload"])
+            XCTAssertTrue(self.queueNames(root, in: "published").isEmpty)
+        }
+
+        let published = try await coordinator.prepareAndPublish(items, binding: publicationBinding)
+
+        XCTAssertEqual(published.map { $0.intent.itemId }, ["item-1", "item-2"])
+        XCTAssertEqual(queueNames(root, in: "published").count, 1)
+        XCTAssertTrue(queueNames(root, in: "candidates").isEmpty)
+        XCTAssertEqual(payloadFiles(root), ["payload-item-1.payload", "payload-item-2.payload"])
     }
 
     /// Guards the production wiring itself: every owner the publication

@@ -225,13 +225,16 @@ public struct SystemCoordinatedOriginalReader: CoordinatedOriginalReading {
 /// Prepares original bytes away from the caller thread, then revalidates the complete batch while
 /// atomically publishing it to the durable queue.
 ///
-/// Publication is one critical section on the shared `PublicationGate`, the same gate every owner
-/// relink, disconnect, adopt, subscription register/update and delivery claim holds. Inside it
-/// every item is rechecked together — its access generations, its frozen caller binding, its
-/// subscription facts, its preparation token and the submission's cancellation — and only then
-/// does the queue commit, still under the same gate. Nothing is written for a rejected batch, so
-/// no mutation can interleave between the final validation and the commit, and no delivery claim
-/// observes a half-completed publication.
+/// Preparation and publication are separate phases. Off the gate, the originals are read and the
+/// whole batch is written and verified as one queue candidate directory. Publication is then one
+/// critical section on the shared `PublicationGate`, the same gate every owner relink, disconnect,
+/// adopt, subscription register/update and delivery claim holds. Inside it every item is rechecked
+/// together — its access generations, its frozen caller binding, its subscription facts, its
+/// preparation token and the submission's cancellation — and only then is the prepared candidate
+/// renamed into the published namespace, still under the same gate. No payload byte is copied and
+/// nothing remote is called inside that section. A rejected batch publishes nothing and its
+/// candidate is discarded, so no mutation can interleave between the final validation and the
+/// commit, and no delivery claim observes a half-completed publication.
 public final class CapturePreparationCoordinator: @unchecked Sendable {
     private let accessStore: NativeAccessStore
     private let queue: CaptureIntentQueue
@@ -346,6 +349,10 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
                 }
                 prepared.append((try item.seed.freeze(payload: payload), payload))
             }
+            // Every payload byte is written and verified here, before any
+            // authority is locked. Publication below is a directory rename.
+            let candidate = try self.queue.prepareCandidate(prepared)
+            defer { self.queue.discard(candidate) }
             return try self.accessStore.withValidatedGenerations(items.map(\.access)) {
                 try self.consume(submissionId: submissionId, tokens: tokens)
                 for (item, frozen) in zip(items, prepared) {
@@ -358,7 +365,7 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
                     )
                 }
                 self.afterConsentValidation?()
-                return try self.queue.enqueueBatch(prepared)
+                return try self.queue.publish(candidate)
             }
         }.value
     }
