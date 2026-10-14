@@ -19,6 +19,12 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     public let folderReconciliation: FolderReconciliationScheduler
     /// Runs the demands the schedule arms, off the main actor.
     public let folderReconciliationExecutor: FolderReconciliationExecutor
+    /// Durable automatic-update scheduling: which verified scopes are dirty, what one candidate is
+    /// in flight, and where background rotation stands. It is built here so its state survives a
+    /// restart from the first process that writes it, but nothing feeds it yet — folder and file
+    /// monitoring still go straight to preparation — so it decides no production work until the
+    /// monitor and publication seams are wired to it.
+    public let automaticScheduling: AutomaticSchedulingStateMachine
     public let folderBulkRuns: FolderBulkRunStore
     public let folderBulkCoordinator: FolderBulkRunCoordinator
     public let fileSubscriptions: FileSubscriptionStore
@@ -62,6 +68,10 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             stateDirectory: stateRoot.appendingPathComponent("folder-reconciliation", isDirectory: true),
             subscriptions: folderSubscriptions,
             observation: folderObservation,
+            gate: gate
+        )
+        automaticScheduling = try AutomaticSchedulingStateMachine(
+            stateDirectory: stateRoot.appendingPathComponent("automatic-scheduling", isDirectory: true),
             gate: gate
         )
         fileSubscriptions = try FileSubscriptionStore(

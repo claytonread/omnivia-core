@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum AutomaticSchedulingError: Error, Equatable {
@@ -14,10 +15,19 @@ public enum AutomaticSchedulingError: Error, Equatable {
     case staleGeneration
     case alreadyPublished
     case notPublished
+    /// The durable document is malformed, tampered with, over a bound, or describes a combination
+    /// this machine cannot hold. Nothing is rewritten: the file is left exactly as it was found.
+    case invalidState
+    /// A newer build wrote the document. It is refused before its shape is judged, and left alone.
+    case unsupportedSchema
+    case stateUnavailable
+    case tooLarge
+    /// The scope has issued every generation one entry may hold.
+    case generationExhausted
 }
 
 /// Which queue a signal belongs to. `user` is always selected ahead of `background`.
-public enum AutomaticSchedulingPriority: String, Comparable, Sendable {
+public enum AutomaticSchedulingPriority: String, Codable, Comparable, Sendable {
     case background
     case user
 
@@ -66,6 +76,10 @@ public struct AutomaticSchedulingClaim: Equatable, Sendable {
     public let firstSignalMilliseconds: Int64
     public let latestSignalMilliseconds: Int64
     public let claimedMilliseconds: Int64
+    /// This work was recovered from the durable store, so the two signal times above are zero
+    /// rather than instants in this process's clock: no age may be computed from them. See
+    /// `AutomaticSchedulingStateMachine`'s note on restart timing.
+    public let restoredFromRestart: Bool
 }
 
 public struct AutomaticSchedulingState: Equatable, Sendable {
@@ -78,6 +92,55 @@ public struct AutomaticSchedulingState: Equatable, Sendable {
     /// The generation a claim is in flight for, published or not.
     public let activeGeneration: UInt64?
     public let published: Bool
+    /// This entry was recovered from the durable store. Its signal times are zero, and any dirty
+    /// work it holds is due now.
+    public let restoredFromRestart: Bool
+}
+
+/// The three opaque refs that name one scheduling unit on disk. Nothing else about the source is
+/// persisted, because nothing else is held.
+private struct AutomaticSchedulingKeyRecord: Codable, Equatable {
+    var workspaceRef: String
+    var sourceRef: String
+    var scopeKey: String
+
+    init(_ key: AutomaticSchedulingKey) {
+        workspaceRef = key.source.workspaceRef
+        sourceRef = key.source.sourceRef
+        scopeKey = key.scopeKey
+    }
+
+    var key: AutomaticSchedulingKey {
+        AutomaticSchedulingKey(
+            source: AutomaticSchedulingSource(workspaceRef: workspaceRef, sourceRef: sourceRef),
+            scopeKey: scopeKey
+        )
+    }
+}
+
+/// One tracked scope's durable scheduling truth. No time is persisted: see the restart note on
+/// `AutomaticSchedulingStateMachine`.
+private struct AutomaticSchedulingEntryRecord: Codable, Equatable {
+    var key: AutomaticSchedulingKeyRecord
+    /// Unclaimed work. Generation and priority are present together or not at all.
+    var dirtyGeneration: UInt64?
+    var dirtyPriority: AutomaticSchedulingPriority?
+    /// The one claim in flight, published or not. Required when `published`.
+    var activeGeneration: UInt64?
+    var activePriority: AutomaticSchedulingPriority?
+    var published: Bool
+}
+
+private struct AutomaticSchedulingDocument: Codable, Equatable {
+    var schema: String
+    var entries: [AutomaticSchedulingEntryRecord]
+    /// Where background rotation stands. It need not name a tracked scope: the entry it names may
+    /// since have gone clean, and rotation simply resumes after whatever it names.
+    var backgroundCursor: AutomaticSchedulingKeyRecord?
+}
+
+private struct AutomaticSchedulingHeader: Codable {
+    let schema: String
 }
 
 /// Decides, in memory only, when a verified source's scope is due for an automatic update.
@@ -89,21 +152,62 @@ public struct AutomaticSchedulingState: Equatable, Sendable {
 /// accumulate as one later dirty generation. Terminal completion clears the in-flight slot and
 /// exposes that later generation; cancellation returns the unfinished work to it.
 ///
-/// Nothing here is persisted and no coordinator is called: the caller drives it and owns the clock,
-/// which it supplies as integer monotonic milliseconds. A fully clean scope stops being tracked,
-/// which returns its place in the bounds; a later signal for it is a first signal again.
+/// No coordinator is called: the caller drives it and owns the clock, which it supplies as integer
+/// monotonic milliseconds. A fully clean scope stops being tracked, which returns its place in the
+/// bounds; a later signal for it is a first signal again.
+///
+/// ## Durability and the clock
+///
+/// Built with a state directory, every tracked entry's generations, priorities, one active claim,
+/// published marker and the background rotation cursor are written to an owner-only versioned JSON
+/// document after each accepted transition, so no automatic work is dropped or duplicated by a
+/// restart. The in-memory initializer persists nothing.
+///
+/// **No time is persisted.** The clock the caller supplies is process-monotonic milliseconds, whose
+/// zero is this process's start; a time written by a previous process names an instant in an epoch
+/// that no longer exists, and comparing the two would be meaningless arithmetic rather than an
+/// age. So instead of persisting incomparable instants, recovered dirty work is restored as
+/// *immediately due*: it is selected the first time the new process looks, whatever `now` it
+/// supplies. Its signal times read as zero and `restoredFromRestart` is set, so no caller mistakes
+/// them for instants. That is conservative in the only safe direction — recovered work runs no
+/// later than it would have before the restart, never later — and the 3-second quiet period and
+/// 30-second maximum wait continue to govern every signal raised within one process.
+///
+/// Recovery also resolves each in-flight claim by what it reached. An unpublished candidate has no
+/// process carrying it, so it returns to dirty — same generation if nothing accumulated behind it,
+/// the later one if something did — and is immediately eligible rather than stranded. A published
+/// one is the scope's one unresolved intent: it stays active and published, still blocking a
+/// duplicate claim, until the queue reports its outcome.
+///
+/// Each transition rewrites the whole document. Mutations are debounced and the table is bounded,
+/// so this is bounded work; switch to an append-and-compact log if a profile ever shows the
+/// rewrite mattering.
 public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
     public static let quietPeriodMilliseconds: Int64 = 3_000
     public static let maximumWaitMilliseconds: Int64 = 30_000
     public static let maximumTrackedSources = 256
     public static let maximumScopesPerSource = 64
     public static let maximumRefBytes = 128
+    /// Beyond any plausible number of signals for one scope, and the largest integer every JSON
+    /// reader round-trips exactly. Bounding it is what keeps a tampered generation from overflowing
+    /// the next one.
+    public static let maximumGeneration: UInt64 = 1 << 53
+
+    static let schema = "omnivia.automatic-scheduling.v1"
+    /// Comfortably above the worst case the bounds allow: `maximumTrackedSources *
+    /// maximumScopesPerSource` records, each with three maximum-length refs and two maximum
+    /// generations, encode to well under 512 bytes apiece.
+    static let maximumStateBytes = maximumTrackedSources * maximumScopesPerSource * 512 + 1024
 
     private struct Pending {
         var generation: UInt64
         var priority: AutomaticSchedulingPriority
         var firstSignal: Int64
         var latestSignal: Int64
+        /// Recovered from the durable store, so the two times above belong to a previous process's
+        /// monotonic epoch. Never persisted — everything loaded is recovered — and sticky until the
+        /// work is claimed, so recovered work is never made to wait out a period it already served.
+        var restoredDue = false
     }
 
     private struct Entry {
@@ -116,18 +220,45 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
         var isClean: Bool { dirty == nil && active == nil }
     }
 
-    private let lock = NSLock()
+    private let gate: PublicationGate
+    private let directory: URL?
+    private let stateFile: URL?
+    /// What is on disk right now, so an unchanged transition writes nothing. Nil in memory only.
+    private var persisted: AutomaticSchedulingDocument?
     private var entries: [AutomaticSchedulingKey: Entry] = [:]
     private var lastObserved: Int64 = 0
     private var lastBackgroundKey: AutomaticSchedulingKey?
 
-    public init() {}
+    /// In memory only: nothing is loaded and nothing is written.
+    public init() {
+        gate = PublicationGate()
+        directory = nil
+        stateFile = nil
+        persisted = nil
+    }
 
-    public var trackedSources: Int { lock.withLock { Set(entries.keys.map(\.source)).count } }
-    public var trackedScopes: Int { lock.withLock { entries.count } }
+    /// Durable: owner-only state under `stateDirectory`, recovered on open.
+    ///
+    /// Recovery reads and never writes, so a state directory that cannot be written still opens
+    /// with its work intact; the first accepted transition is what persists the recovered shape.
+    /// Recovery is idempotent, so a crash before that loses nothing.
+    public init(stateDirectory: URL, gate: PublicationGate = .processShared) throws {
+        self.gate = gate
+        directory = stateDirectory
+        let file = stateDirectory.appendingPathComponent("automatic-scheduling-v1.json")
+        stateFile = file
+        try Self.prepareDirectory(stateDirectory)
+        let document = try Self.load(file)
+            ?? AutomaticSchedulingDocument(schema: Self.schema, entries: [], backgroundCursor: nil)
+        persisted = document
+        (entries, lastBackgroundKey) = Self.restore(document)
+    }
+
+    public var trackedSources: Int { gate.withLock { Set(entries.keys.map(\.source)).count } }
+    public var trackedScopes: Int { gate.withLock { entries.count } }
 
     public func state(of key: AutomaticSchedulingKey) -> AutomaticSchedulingState? {
-        lock.withLock {
+        gate.withLock {
             entries[key].map {
                 AutomaticSchedulingState(
                     dirtyGeneration: $0.dirty?.generation,
@@ -135,7 +266,8 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
                     firstSignalMilliseconds: $0.dirty?.firstSignal,
                     latestSignalMilliseconds: $0.dirty?.latestSignal,
                     activeGeneration: $0.active?.generation,
-                    published: $0.published
+                    published: $0.published,
+                    restoredFromRestart: $0.dirty?.restoredDue ?? $0.active?.restoredDue ?? false
                 )
             }
         }
@@ -149,11 +281,14 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
         at now: Int64
     ) throws -> UInt64 {
         try Self.validate(key)
-        return try lock.withLock {
+        return try mutate {
             try advance(now)
             if entries[key] == nil { try admit(key) }
             var entry = entries[key] ?? Entry()
             let generation = entry.lastGeneration + 1
+            guard generation <= Self.maximumGeneration else {
+                throw AutomaticSchedulingError.generationExhausted
+            }
             if var dirty = entry.dirty {
                 dirty.generation = generation
                 dirty.latestSignal = now
@@ -173,7 +308,7 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
     /// Claims the one scope that is due now, or nil when none is. User-priority work goes first,
     /// oldest signal first; background work rotates through scope keys.
     public func claim(at now: Int64) throws -> AutomaticSchedulingClaim? {
-        try lock.withLock {
+        try mutate {
             try advance(now)
             let ready: [(key: AutomaticSchedulingKey, dirty: Pending)] = entries.compactMap { key, entry in
                 guard entry.active == nil, let dirty = entry.dirty, Self.due(dirty, at: now) else { return nil }
@@ -201,14 +336,15 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
                 priority: chosen.dirty.priority,
                 firstSignalMilliseconds: chosen.dirty.firstSignal,
                 latestSignalMilliseconds: chosen.dirty.latestSignal,
-                claimedMilliseconds: now
+                claimedMilliseconds: now,
+                restoredFromRestart: chosen.dirty.restoredDue
             )
         }
     }
 
     /// The candidate reached a published intent, which is now the scope's one unresolved intent.
     public func markPublished(_ key: AutomaticSchedulingKey, generation: UInt64, at now: Int64) throws {
-        try lock.withLock {
+        try mutate {
             try advance(now)
             var entry = try claimed(key, generation).entry
             guard !entry.published else { throw AutomaticSchedulingError.alreadyPublished }
@@ -220,7 +356,7 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
     /// The published intent reached a terminal outcome. Its generation is resolved and dropped; any
     /// later dirty generation is left exposed for the next claim.
     public func markCompleted(_ key: AutomaticSchedulingKey, generation: UInt64, at now: Int64) throws {
-        try lock.withLock {
+        try mutate {
             try advance(now)
             var entry = try claimed(key, generation).entry
             guard entry.published else { throw AutomaticSchedulingError.notPublished }
@@ -234,7 +370,7 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
     /// work that is now pending again.
     @discardableResult
     public func cancel(_ key: AutomaticSchedulingKey, generation: UInt64, at now: Int64) throws -> UInt64 {
-        try lock.withLock {
+        try mutate {
             try advance(now)
             var (entry, active) = try claimed(key, generation)
             // Unfinished work goes back to dirty. A generation that accumulated behind it is the
@@ -244,6 +380,9 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
             dirty.firstSignal = min(dirty.firstSignal, active.firstSignal)
             dirty.latestSignal = max(dirty.latestSignal, active.latestSignal)
             dirty.priority = max(dirty.priority, active.priority)
+            // Recovered work that was claimed and then cancelled is still recovered work: it keeps
+            // being immediately due rather than silently acquiring this process's clock.
+            dirty.restoredDue = dirty.restoredDue || active.restoredDue
             entry.dirty = dirty
             entry.active = nil
             entry.published = false
@@ -264,7 +403,10 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
     }
 
     private static func due(_ dirty: Pending, at now: Int64) -> Bool {
-        now - dirty.latestSignal >= quietPeriodMilliseconds
+        // Recovered work carries no time comparable with this process's clock, so neither period
+        // can be measured for it and it is due the first time anything looks. See `restoredDue`.
+        dirty.restoredDue
+            || now - dirty.latestSignal >= quietPeriodMilliseconds
             || now - dirty.firstSignal >= maximumWaitMilliseconds
     }
 
@@ -295,5 +437,227 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
     private static func validRef(_ value: String) -> Bool {
         guard !value.isEmpty, value.utf8.count <= maximumRefBytes else { return false }
         return !value.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F || $0 == "/" }
+    }
+
+    // MARK: - Durability
+
+    /// Applies one transition and persists the result, or leaves both the durable document and
+    /// every byte of in-memory state exactly as they were. The clock cursor rolls back too, so a
+    /// refused call never moves the machine on.
+    private func mutate<T>(_ change: () throws -> T) throws -> T {
+        try gate.withLock {
+            let entriesBefore = entries
+            let observedBefore = lastObserved
+            let cursorBefore = lastBackgroundKey
+            do {
+                let result = try change()
+                try persist()
+                return result
+            } catch {
+                entries = entriesBefore
+                lastObserved = observedBefore
+                lastBackgroundKey = cursorBefore
+                throw error
+            }
+        }
+    }
+
+    private func persist() throws {
+        guard let stateFile, let directory, let current = persisted else { return }
+        let document = snapshot()
+        // An unchanged transition — a claim that found nothing due, most often — writes nothing.
+        guard document != current else { return }
+        try Self.validate(document)
+        try Self.write(document, to: stateFile, directory: directory)
+        persisted = document
+    }
+
+    private func snapshot() -> AutomaticSchedulingDocument {
+        AutomaticSchedulingDocument(
+            schema: Self.schema,
+            entries: entries.keys.sorted().map { key in
+                let entry = entries[key]
+                return AutomaticSchedulingEntryRecord(
+                    key: AutomaticSchedulingKeyRecord(key),
+                    dirtyGeneration: entry?.dirty?.generation,
+                    dirtyPriority: entry?.dirty?.priority,
+                    activeGeneration: entry?.active?.generation,
+                    activePriority: entry?.active?.priority,
+                    published: entry?.published ?? false
+                )
+            },
+            backgroundCursor: lastBackgroundKey.map { AutomaticSchedulingKeyRecord($0) }
+        )
+    }
+
+    /// Rebuilds the in-memory table from a validated document, resolving each in-flight claim by
+    /// what it reached. See the restart note on the type.
+    private static func restore(
+        _ document: AutomaticSchedulingDocument
+    ) -> ([AutomaticSchedulingKey: Entry], AutomaticSchedulingKey?) {
+        var entries: [AutomaticSchedulingKey: Entry] = [:]
+        for record in document.entries {
+            var entry = Entry()
+            if let generation = record.dirtyGeneration, let priority = record.dirtyPriority {
+                entry.dirty = Pending(
+                    generation: generation, priority: priority,
+                    firstSignal: 0, latestSignal: 0, restoredDue: true
+                )
+            }
+            if let generation = record.activeGeneration, let priority = record.activePriority {
+                let active = Pending(
+                    generation: generation, priority: priority,
+                    firstSignal: 0, latestSignal: 0, restoredDue: true
+                )
+                if record.published {
+                    // The scope's one unresolved intent, wherever it got to. It keeps blocking a
+                    // duplicate claim until the queue reports its outcome.
+                    entry.active = active
+                    entry.published = true
+                } else {
+                    // No process is carrying this candidate any more, so it goes back to dirty
+                    // exactly as `cancel` would: the later generation if one accumulated behind
+                    // it, its own otherwise, and the merged priority.
+                    var dirty = entry.dirty ?? active
+                    dirty.priority = max(dirty.priority, active.priority)
+                    dirty.restoredDue = true
+                    entry.dirty = dirty
+                }
+            }
+            entries[record.key.key] = entry
+        }
+        return (entries, document.backgroundCursor?.key)
+    }
+
+    // MARK: - Durable validation
+
+    /// Every rule the in-memory machine upholds, re-checked on the way in and on the way out. A
+    /// document that breaks one is refused rather than repaired: this owner cannot tell a tampered
+    /// generation from a real one, and guessing would be the thing that duplicates work.
+    private static func validate(_ document: AutomaticSchedulingDocument) throws {
+        guard document.schema == schema,
+              document.entries.count <= maximumTrackedSources * maximumScopesPerSource,
+              document.backgroundCursor.map(validKey) ?? true
+        else { throw AutomaticSchedulingError.invalidState }
+        var scopesPerSource: [AutomaticSchedulingSource: Int] = [:]
+        var seen = Set<AutomaticSchedulingKey>()
+        for record in document.entries {
+            let key = record.key.key
+            guard validKey(record.key), seen.insert(key).inserted,
+                  (record.dirtyGeneration == nil) == (record.dirtyPriority == nil),
+                  (record.activeGeneration == nil) == (record.activePriority == nil),
+                  // A clean scope is not tracked at all, so a record for one is not a state this
+                  // machine can hold — and keeping it would spend a place in the bounds.
+                  record.dirtyGeneration != nil || record.activeGeneration != nil,
+                  // Nothing is published without a claim in flight that published it.
+                  !record.published || record.activeGeneration != nil,
+                  [record.dirtyGeneration, record.activeGeneration]
+                      .allSatisfy({ $0.map(validGeneration) ?? true })
+            else { throw AutomaticSchedulingError.invalidState }
+            // Dirty work accumulated behind the claim, so it is strictly the later generation.
+            if let dirty = record.dirtyGeneration, let active = record.activeGeneration,
+               dirty <= active {
+                throw AutomaticSchedulingError.invalidState
+            }
+            scopesPerSource[key.source, default: 0] += 1
+        }
+        guard scopesPerSource.count <= maximumTrackedSources,
+              scopesPerSource.values.allSatisfy({ $0 <= maximumScopesPerSource }),
+              // One canonical order on disk, so what this owner writes round-trips byte for byte.
+              document.entries.indices.dropFirst()
+                  .allSatisfy({ document.entries[$0 - 1].key.key < document.entries[$0].key.key })
+        else { throw AutomaticSchedulingError.invalidState }
+    }
+
+    private static func validKey(_ record: AutomaticSchedulingKeyRecord) -> Bool {
+        validRef(record.workspaceRef) && validRef(record.sourceRef) && validRef(record.scopeKey)
+    }
+
+    /// Generations start at one and are bounded; see `maximumGeneration`.
+    private static func validGeneration(_ value: UInt64) -> Bool {
+        value >= 1 && value <= maximumGeneration
+    }
+
+    // MARK: - Durable persistence
+
+    private static func load(_ stateFile: URL) throws -> AutomaticSchedulingDocument? {
+        guard FileManager.default.fileExists(atPath: stateFile.path) else { return nil }
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: stateFile.path)
+            guard (attributes[.type] as? FileAttributeType) == .typeRegular,
+                  let size = attributes[.size] as? NSNumber,
+                  size.uint64Value <= UInt64(maximumStateBytes),
+                  let owner = attributes[.ownerAccountID] as? NSNumber,
+                  owner.uint32Value == Darwin.getuid(),
+                  let permissions = attributes[.posixPermissions] as? NSNumber,
+                  permissions.intValue & 0o077 == 0
+            else { throw AutomaticSchedulingError.invalidState }
+            let data = try Data(contentsOf: stateFile)
+            // A newer build's document is refused by schema before its shape is judged.
+            let header = try JSONDecoder().decode(AutomaticSchedulingHeader.self, from: data)
+            guard header.schema == schema else { throw AutomaticSchedulingError.unsupportedSchema }
+            let document = try JSONDecoder().decode(AutomaticSchedulingDocument.self, from: data)
+            try validate(document)
+            return document
+        } catch let error as AutomaticSchedulingError {
+            throw error
+        } catch {
+            throw AutomaticSchedulingError.invalidState
+        }
+    }
+
+    private static func write(
+        _ document: AutomaticSchedulingDocument,
+        to stateFile: URL,
+        directory: URL
+    ) throws {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            let data = try encoder.encode(document)
+            guard data.count <= maximumStateBytes else { throw AutomaticSchedulingError.tooLarge }
+            let temporary = directory.appendingPathComponent(".automatic-scheduling-\(UUID().uuidString).tmp")
+            try data.write(to: temporary, options: [.atomic])
+            // Owner-only before publication, so nothing that can throw is left to do after it: the
+            // replace or move is the commit point, and `mutate` rolls in-memory state back on a
+            // throw. New metadata only, so the published file carries the mode set here.
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+            if FileManager.default.fileExists(atPath: stateFile.path) {
+                _ = try FileManager.default.replaceItemAt(
+                    stateFile, withItemAt: temporary, options: [.usingNewMetadataOnly]
+                )
+            } else {
+                try FileManager.default.moveItem(at: temporary, to: stateFile)
+            }
+            // Non-throwing on purpose: a durable document is already published at this point.
+            let descriptor = Darwin.open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+            if descriptor >= 0 {
+                _ = Darwin.fsync(descriptor)
+                Darwin.close(descriptor)
+            }
+        } catch let error as AutomaticSchedulingError {
+            throw error
+        } catch {
+            throw AutomaticSchedulingError.stateUnavailable
+        }
+    }
+
+    private static func prepareDirectory(_ directory: URL) throws {
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else {
+                throw AutomaticSchedulingError.stateUnavailable
+            }
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        } catch let error as AutomaticSchedulingError {
+            throw error
+        } catch {
+            throw AutomaticSchedulingError.stateUnavailable
+        }
     }
 }
