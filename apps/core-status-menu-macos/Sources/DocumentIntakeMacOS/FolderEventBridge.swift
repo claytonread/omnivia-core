@@ -240,6 +240,11 @@ public enum FolderObservationAttention: Equatable, Sendable {
     case storage(deviceID: Int64)
     /// A root could not be located, or its event stream could not start.
     case streamUnavailable(deviceID: Int64?)
+    /// The reconciliation schedule refused or failed to arm the full work a signal owes. What the
+    /// batch persisted stands: the observation obligation is not withdrawn and nothing was
+    /// signalled as covered. Only the schedule's own arming is missing, so these subscriptions owe
+    /// work no periodic tick has been told about yet.
+    case schedule(subscriptionIDs: Set<String>)
 }
 
 /// Feeds native FSEvents batches into `FolderObservationLedger`. Per device it starts from the
@@ -279,6 +284,9 @@ public final class FolderEventBridge: @unchecked Sendable {
     }
 
     private let ledger: FolderObservationLedger
+    /// Hears every signal before the handler does, so a signal that lost observation is durably
+    /// owed as full work and not only as this process's in-memory dirty set.
+    private let reconciliation: FolderReconciliationScheduler?
     private let handler: @Sendable (FolderEventSignal) -> Void
     private let onAttention: @Sendable (FolderObservationAttention) -> Void
     private let lock = NSLock()
@@ -293,12 +301,13 @@ public final class FolderEventBridge: @unchecked Sendable {
         roots: [FolderObservationRoot],
         ledger: FolderObservationLedger,
         subscriptions: FolderSubscriptionStore,
+        reconciliation: FolderReconciliationScheduler? = nil,
         onAttention: @escaping @Sendable (FolderObservationAttention) -> Void = { _ in },
         handler: @escaping @Sendable (FolderEventSignal) -> Void
     ) {
         self.init(
             roots: roots, ledger: ledger, subscriptions: subscriptions, platform: .system,
-            onAttention: onAttention, handler: handler
+            reconciliation: reconciliation, onAttention: onAttention, handler: handler
         )
     }
 
@@ -307,11 +316,13 @@ public final class FolderEventBridge: @unchecked Sendable {
         ledger: FolderObservationLedger,
         subscriptions: FolderSubscriptionStore,
         platform: FolderEventPlatform,
+        reconciliation: FolderReconciliationScheduler? = nil,
         onAttention: @escaping @Sendable (FolderObservationAttention) -> Void = { _ in },
         handler: @escaping @Sendable (FolderEventSignal) -> Void
     ) {
         guard !roots.isEmpty else { return nil }
         self.ledger = ledger
+        self.reconciliation = reconciliation
         self.handler = handler
         self.onAttention = onAttention
         var byDevice: [Int64: [FolderEventBinding]] = [:]
@@ -387,7 +398,7 @@ public final class FolderEventBridge: @unchecked Sendable {
             ledger.obligation(subscriptionID: binding.subscriptionID).map { (binding.subscriptionID, $0.fullRevision != nil) }
         }
         if !owed.isEmpty {
-            handler(FolderEventSignal(subscriptionIDs: Set(owed.map(\.0)), requiresFullReconciliation: owed.contains { $0.1 }))
+            dispatch(FolderEventSignal(subscriptionIDs: Set(owed.map(\.0)), requiresFullReconciliation: owed.contains { $0.1 }))
         }
     }
 
@@ -433,7 +444,22 @@ public final class FolderEventBridge: @unchecked Sendable {
             )
         }
         if failed { report(.storage(deviceID: device)) }
-        if let signal { handler(signal) }
+        if let signal { dispatch(signal) }
+    }
+
+    /// Schedule first, handler second, with no bridge or group lock held: the scheduler takes the
+    /// shared publication gate the ledger writes above also take, and the handler reconciles.
+    /// A schedule that fails still reaches the handler — this process's reconciliation is the one
+    /// thing that can still act on the persisted obligation — but it is reported, never swallowed.
+    private func dispatch(_ signal: FolderEventSignal) {
+        if let reconciliation {
+            do {
+                try reconciliation.observe(signal)
+            } catch {
+                report(.schedule(subscriptionIDs: signal.subscriptionIDs))
+            }
+        }
+        handler(signal)
     }
 
     private func report(_ value: FolderObservationAttention) {

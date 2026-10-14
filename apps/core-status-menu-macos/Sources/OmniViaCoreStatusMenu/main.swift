@@ -567,11 +567,13 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             roots: folderRoots,
             ledger: environment.folderObservation,
             subscriptions: environment.folderSubscriptions,
+            reconciliation: environment.folderReconciliation,
             onAttention: { [weak self] value in
                 Task { @MainActor [weak self] in self?.folderObservationAttention.append(value) }
             }
         ) { [weak self] signal in
-            // The bridge has already persisted what produced this signal.
+            // The bridge has already persisted what produced this signal and the
+            // reconciliation schedule has already heard it unprefixed.
             let prefixed = FolderEventSignal(
                 subscriptionIDs: Set(signal.subscriptionIDs.map { "folder::\($0)" }),
                 requiresFullReconciliation: signal.requiresFullReconciliation

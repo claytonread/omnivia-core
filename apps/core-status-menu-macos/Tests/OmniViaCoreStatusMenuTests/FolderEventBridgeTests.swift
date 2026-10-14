@@ -65,6 +65,9 @@ final class FolderEventBridgeTests: XCTestCase {
             let full: Bool
             /// What the ledger already held when the handler ran.
             let persistedScopes: [String: [[String]]]
+            /// What the schedule already owed when the handler ran, per subscription, in
+            /// `FolderReconciliationKind.allCases` order. Empty when no scheduler is wired.
+            let armed: [String: [FolderReconciliationTrigger]]
         }
 
         private let lock = NSLock()
@@ -77,9 +80,11 @@ final class FolderEventBridgeTests: XCTestCase {
         let directory: URL
         let store: FolderSubscriptionStore
         let ledger: FolderObservationLedger
+        let scheduler: FolderReconciliationScheduler
         let signals = Signals()
         let fake = Fake()
         var stateFile: URL { directory.appendingPathComponent("observation/folder-observation-v1.json") }
+        var scheduleDirectory: URL { directory.appendingPathComponent("reconciliation") }
     }
 
     private func lane() throws -> Lane {
@@ -87,10 +92,12 @@ final class FolderEventBridgeTests: XCTestCase {
             .appendingPathComponent("omnivia-bridge-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         addTeardownBlock {
-            try? FileManager.default.setAttributes(
-                [.posixPermissions: 0o700],
-                ofItemAtPath: directory.appendingPathComponent("observation").path
-            )
+            for name in ["observation", "reconciliation"] {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700],
+                    ofItemAtPath: directory.appendingPathComponent(name).path
+                )
+            }
             try? FileManager.default.removeItem(at: directory)
         }
         let gate = PublicationGate()
@@ -103,7 +110,11 @@ final class FolderEventBridgeTests: XCTestCase {
         let ledger = try FolderObservationLedger(
             stateDirectory: directory.appendingPathComponent("observation"), subscriptions: store, gate: gate
         )
-        return Lane(directory: directory, store: store, ledger: ledger)
+        let scheduler = try FolderReconciliationScheduler(
+            stateDirectory: directory.appendingPathComponent("reconciliation"),
+            subscriptions: store, observation: ledger, gate: gate
+        )
+        return Lane(directory: directory, store: store, ledger: ledger, scheduler: scheduler)
     }
 
     private static func subscription(_ id: String, recursive: Bool) -> FolderSubscription {
@@ -125,9 +136,12 @@ final class FolderEventBridgeTests: XCTestCase {
         return FolderObservationRoot(subscriptionID: id, url: URL(fileURLWithPath: path, isDirectory: true))
     }
 
+    /// `reconciliation` is left out unless a test is about the schedule, so every other test keeps
+    /// the bridge's ledger-only behaviour.
     private func bridge(
         _ lane: Lane,
         _ ids: [String] = ["sub-a", "sub-b"],
+        reconciliation: FolderReconciliationScheduler? = nil,
         onAttention: @escaping @Sendable (FolderObservationAttention) -> Void = { _ in }
     ) throws -> FolderEventBridge {
         let ledger = lane.ledger
@@ -135,14 +149,19 @@ final class FolderEventBridgeTests: XCTestCase {
         return try XCTUnwrap(
             FolderEventBridge(
                 roots: ids.map(Self.root), ledger: ledger, subscriptions: lane.store,
-                platform: lane.fake.platform, onAttention: onAttention
+                platform: lane.fake.platform, reconciliation: reconciliation, onAttention: onAttention
             ) { signal in
                 var scopes: [String: [[String]]] = [:]
+                var armed: [String: [FolderReconciliationTrigger]] = [:]
                 for id in signal.subscriptionIDs {
                     scopes[id] = ledger.obligation(subscriptionID: id)?.scopes.map(\.scope.components) ?? []
+                    if let reconciliation {
+                        armed[id] = reconciliation.coverage(subscriptionID: id).compactMap(\.pendingTrigger)
+                    }
                 }
                 signals.record(.init(
-                    ids: signal.subscriptionIDs, full: signal.requiresFullReconciliation, persistedScopes: scopes
+                    ids: signal.subscriptionIDs, full: signal.requiresFullReconciliation,
+                    persistedScopes: scopes, armed: armed
                 ))
             }
         )
@@ -161,6 +180,22 @@ final class FolderEventBridgeTests: XCTestCase {
                 completion: .full(throughRevision: UInt64.max - 1)
             )
         }
+    }
+
+    /// Reports a finished pass for everything the startup signal armed, so a test can see only what
+    /// a later batch schedules.
+    private func settleSchedule(_ lane: Lane, _ ids: [String] = ["sub-a", "sub-b"]) throws {
+        for id in ids {
+            for kind in FolderReconciliationKind.allCases {
+                _ = try lane.scheduler.complete(
+                    subscriptionID: id, kind: kind, result: FolderReconciliationResult(examined: 1)
+                )
+            }
+        }
+    }
+
+    private func pending(_ lane: Lane, _ id: String) -> [FolderReconciliationTrigger?] {
+        lane.scheduler.coverage(subscriptionID: id).map(\.pendingTrigger)
     }
 
     // MARK: - Translation
@@ -432,6 +467,81 @@ final class FolderEventBridgeTests: XCTestCase {
         XCTAssertEqual(attention.values, [.streamUnavailable(deviceID: 1)])
         XCTAssertTrue(lane.signals.all.isEmpty)
         withExtendedLifetime(bridge) {}
+    }
+
+    // MARK: - Reconciliation schedule
+
+    func testFullSignalArmsBothKindsAsObservationLostBeforeTheHandlerRuns() throws {
+        let lane = try lane()
+        let bridge = try bridge(lane, reconciliation: lane.scheduler)
+        // The fresh epoch's own owed full reconciliation is a signal too, and it arms.
+        XCTAssertEqual(pending(lane, "sub-a"), [.observationLost, .observationLost])
+        XCTAssertEqual(pending(lane, "sub-b"), [.observationLost, .observationLost])
+        try settle(lane)
+        try settleSchedule(lane)
+        XCTAssertEqual(pending(lane, "sub-a"), [nil, nil])
+
+        lane.fake.starts[0].deliver([
+            event(150, "\(Self.base)/a/deep", UInt32(kFSEventStreamEventFlagMustScanSubDirs)),
+        ])
+        withExtendedLifetime(bridge) {}
+        let seen = try XCTUnwrap(lane.signals.all.last)
+        XCTAssertEqual(seen.ids, ["sub-a"])
+        XCTAssertTrue(seen.full)
+        // Durably armed before the handler was told anything.
+        XCTAssertEqual(seen.armed["sub-a"], [.observationLost, .observationLost])
+        XCTAssertEqual(pending(lane, "sub-a"), [.observationLost, .observationLost])
+        // Only the subscription the event named.
+        XCTAssertEqual(pending(lane, "sub-b"), [nil, nil])
+        XCTAssertNotNil(lane.ledger.obligation(subscriptionID: "sub-a")?.fullRevision)
+    }
+
+    func testScopedSignalAddsNoFullScheduledWork() throws {
+        let lane = try lane()
+        let bridge = try bridge(lane, reconciliation: lane.scheduler)
+        try settle(lane)
+        try settleSchedule(lane)
+
+        lane.fake.starts[0].deliver([event(150, "\(Self.base)/a/docs/report.txt")])
+        withExtendedLifetime(bridge) {}
+        let seen = try XCTUnwrap(lane.signals.all.last)
+        XCTAssertFalse(seen.full)
+        XCTAssertEqual(seen.persistedScopes["sub-a"], [["docs", "report.txt"]])
+        XCTAssertEqual(seen.armed["sub-a"], [])
+        XCTAssertEqual(pending(lane, "sub-a"), [nil, nil])
+        XCTAssertEqual(pending(lane, "sub-b"), [nil, nil])
+        // The scope obligation is the work; nothing widened it to a full reconciliation.
+        XCTAssertNil(lane.ledger.obligation(subscriptionID: "sub-a")?.fullRevision)
+    }
+
+    func testScheduleFailureIsReportedAndLeavesThePersistedObligationStanding() throws {
+        let lane = try lane()
+        let attention = AttentionLog()
+        let bridge = try bridge(lane, reconciliation: lane.scheduler, onAttention: attention.record)
+        try settle(lane)
+        try settleSchedule(lane)
+        let signals = lane.signals.all.count
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: lane.scheduleDirectory.path
+        )
+
+        lane.fake.starts[0].deliver([
+            event(150, "\(Self.base)/a/deep", UInt32(kFSEventStreamEventFlagMustScanSubDirs)),
+        ])
+        withExtendedLifetime(bridge) {}
+        XCTAssertEqual(attention.values, [.schedule(subscriptionIDs: ["sub-a"])])
+        XCTAssertEqual(bridge.attention, [.schedule(subscriptionIDs: ["sub-a"])])
+        // The observation obligation the batch persisted stands, and the cursor still covers it.
+        XCTAssertNotNil(lane.ledger.obligation(subscriptionID: "sub-a")?.fullRevision)
+        XCTAssertEqual(lane.ledger.stream(deviceID: 1)?.lastCoveredEventID, 150)
+        // Nothing claims the schedule armed, and the observer keeps running.
+        XCTAssertEqual(pending(lane, "sub-a"), [nil, nil])
+        XCTAssertEqual(lane.fake.starts[0].handle.stops.count, 0)
+        // Reported before the handler, which still ran so this process reconciles the obligation.
+        let seen = try XCTUnwrap(lane.signals.all.last)
+        XCTAssertEqual(lane.signals.all.count, signals + 1)
+        XCTAssertEqual(seen.ids, ["sub-a"])
+        XCTAssertEqual(seen.armed["sub-a"], [])
     }
 
     private final class AttentionLog: @unchecked Sendable {
