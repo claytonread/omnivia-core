@@ -266,10 +266,15 @@ _XLSX_DRAWING_NAMESPACES: Final = frozenset(
         "http://purl.oclc.org/ooxml/drawingml/spreadsheetDrawing",
     }
 )
-# The three kinds of anchor a drawing positions a frame with. All three are
-# counted, so an anchor's reported index is its position among the anchors the
-# drawing wrote rather than among the ones read.
-_XLSX_ANCHORS: Final = frozenset({"twoCellAnchor", "oneCellAnchor", "absoluteAnchor"})
+# The three kinds of anchor a drawing positions a frame with, each beside the
+# placement name a record reports it as. All three are counted, so an anchor's
+# reported index is its position among the anchors the drawing wrote rather than
+# among the ones read.
+_XLSX_ANCHORS: Final = {
+    "twoCellAnchor": "twoCell",
+    "oneCellAnchor": "oneCell",
+    "absoluteAnchor": "absolute",
+}
 # One drawing's own bound: the anchors it may declare, counted as they are
 # walked and before any frame below one is reached.
 # ponytail: 4096 anchors per drawing; widen only if a real workbook is refused.
@@ -3154,7 +3159,9 @@ def _xlsx_charts(
     ambiguous and nothing here picks between them.
 
     Anchors are walked in source order and each record names the anchor showing
-    it and the cells that anchor covers. What is read at the end of the route is
+    it, its kind, and where that kind places the frame: the cells it covers for
+    the two cell-anchored kinds, and the stored geometry the sized kinds are
+    placed by. What is read at the end of the route is
     the shared chart reader already serving PPTX frames and DOCX drawings, so
     the record vocabulary is theirs unchanged, and nothing behind the values is
     opened: neither the chart part's own relationships nor the workbook a chart
@@ -3204,11 +3211,6 @@ def _xlsx_charts(
     ):
         if index >= _MAX_XLSX_ANCHORS:
             raise OOXMLInvalid("XLSX drawing has too many anchors")
-        # ponytail: two-cell anchors only; the single-cell and absolute kinds
-        # are passed over until a unit asks for the ranges they name, each of
-        # which is derived from an extent rather than written as a corner.
-        if anchor.tag != f"{{{drawing_namespace}}}twoCellAnchor":
-            continue
         frames = [
             node
             for node in anchor
@@ -3234,8 +3236,7 @@ def _xlsx_charts(
             "drawingPart": drawing_part,
             "drawingRelationshipId": relation_id,
             "anchorIndex": index,
-            "anchorType": "twoCell",
-            "anchorRange": _xlsx_anchor_range(anchor),
+            **_xlsx_anchor_placement(anchor),
             "chartPart": chart_part,
             "relationshipId": chart_id,
         }
@@ -3244,6 +3245,78 @@ def _xlsx_charts(
             for place, value in _chart_records(package, chart_part, "XLSX")
         )
     return result
+
+
+def _xlsx_anchor_placement(anchor: ElementTree.Element) -> dict[str, object]:
+    """Return the placement keys one anchor's own kind reports it by.
+
+    The three kinds place a frame in three different ways, so each reports what
+    it actually names and nothing it does not. A two-cell anchor names two
+    corners, so it reports the cells between them and no geometry at all. A
+    one-cell anchor names one corner and a size, so it reports that single cell
+    and the stored extent. An absolute anchor is placed on the sheet rather than
+    in its grid, so it covers no cells and reports a position beside its extent.
+
+    Geometry is kept verbatim in EMU and never divided into cells: an extent is
+    a size, and resolving one against column widths and row heights the sheet
+    may not even declare would report a range the drawing never wrote.
+
+    The anchor's own qualified name was already held to the drawing's validated
+    namespace, so that namespace settles the vocabulary everything beneath it is
+    read in, here as in the corner reader.
+    """
+    namespace, _, local = anchor.tag.rpartition("}")
+    kind = _XLSX_ANCHORS[local]
+    if kind == "twoCell":
+        return {"anchorType": kind, "anchorRange": _xlsx_anchor_range(anchor)}
+    extent = _xlsx_anchor_emu(
+        anchor, f"{namespace}}}ext", ("cx", "cy"), _EMU_EXTENT, "extent"
+    )
+    if kind == "oneCell":
+        column, row = _xlsx_anchor_corner(anchor, f"{namespace}}}from")
+        return {
+            "anchorType": kind,
+            "anchorRange": f"{_column_name(column)}{row}",
+            "anchorGeometry": extent,
+        }
+    position = _xlsx_anchor_emu(
+        anchor, f"{namespace}}}pos", ("x", "y"), _EMU_OFFSET, "position"
+    )
+    return {
+        "anchorType": kind,
+        "anchorRange": None,
+        "anchorGeometry": {**position, **extent},
+    }
+
+
+def _xlsx_anchor_emu(
+    anchor: ElementTree.Element,
+    tag: str,
+    names: tuple[str, str],
+    pattern: re.Pattern[str],
+    label: str,
+) -> dict[str, int]:
+    """Read the EMU pair one anchor element carries, or refuse it.
+
+    ``tag`` is the element's qualified name in the drawing's own namespace, so
+    an unqualified or foreign lookalike names nothing the grammar declares and
+    is as absent here as it is elsewhere on this route. A sized anchor carries
+    exactly one of these, so one written twice -- or not at all -- leaves where
+    the frame sits unanswerable. ``pattern`` is the attributes' own type: a
+    position is signed, so a frame placed off the sheet keeps its negative
+    coordinate, while an extent has no signed form and both values are
+    required, so an absent one is its own refusal rather than a zero.
+    """
+    nodes = [node for node in anchor if node.tag == tag]
+    if len(nodes) != 1:
+        raise OOXMLInvalid(f"XLSX anchor does not name exactly one {label}")
+    values: dict[str, int] = {}
+    for name in names:
+        raw = nodes[0].attrib.get(name)
+        if raw is None or pattern.fullmatch(raw) is None:
+            raise OOXMLInvalid(f"XLSX anchor {label} is malformed")
+        values[name] = int(raw)
+    return values
 
 
 def _xlsx_anchor_range(anchor: ElementTree.Element) -> str:

@@ -371,6 +371,80 @@ def strict_profile(content: bytes) -> bytes:
     return archive(members)
 
 
+# The whole of the valid fixture's anchor from the frame onwards -- graphic
+# frame, graphic data, ``c:chart`` reference and client data -- so the other
+# two anchor kinds reach the chart over the route the valid one proved.
+FRAME = ANCHOR[ANCHOR.index("<xdr:graphicFrame") : ANCHOR.index("</xdr:twoCellAnchor>")]
+# The extent both sized anchors carry: one inch by half an inch in EMUs.
+EXT = '<xdr:ext cx="914400" cy="457200"/>'
+# ``xdr:from`` is zero-based, so column 2 row 3 is the single cell ``C4``.
+ONE_CELL_ANCHOR = (
+    "<xdr:oneCellAnchor>"
+    "<xdr:from><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff>"
+    "<xdr:row>3</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>"
+    f"{EXT}{FRAME}</xdr:oneCellAnchor>"
+)
+# An absolute anchor is placed on the sheet, not in its grid, so it covers no
+# cells at all -- and a negative offset is a position like any other.
+ABSOLUTE_ANCHOR = (
+    f'<xdr:absoluteAnchor><xdr:pos x="-100" y="200"/>{EXT}{FRAME}</xdr:absoluteAnchor>'
+)
+
+
+def anchored(anchor: str) -> bytes:
+    return xlsx(
+        drawing=(
+            f'<xdr:wsDr xmlns:xdr="{SHEET_DRAWING_NS}" xmlns:a="{DRAWING_NS}">'
+            f"{anchor}</xdr:wsDr>"
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("anchor", "anchor_type", "anchor_range", "geometry"),
+    [
+        (
+            ONE_CELL_ANCHOR,
+            "oneCell",
+            "C4",
+            {"cx": 914400, "cy": 457200},
+        ),
+        (
+            ABSOLUTE_ANCHOR,
+            "absolute",
+            None,
+            {"x": -100, "y": 200, "cx": 914400, "cy": 457200},
+        ),
+    ],
+    ids=["oneCell", "absolute"],
+)
+def test_a_sized_or_placed_anchor_reports_the_same_chart_records(
+    anchor: str,
+    anchor_type: str,
+    anchor_range: str | None,
+    geometry: dict[str, int],
+) -> None:
+    """The anchor kind changes where the chart sits, not what it reports.
+
+    Each variant anchors the valid fixture's own frame, so every record is the
+    two-cell record with only its placement rewritten: the anchor kind, the
+    cells it covers -- a single cell for ``oneCellAnchor``, none at all for
+    ``absoluteAnchor`` -- and the stored geometry that placement is made of.
+    """
+    assert records(anchored(anchor)) == [
+        (
+            text,
+            locator
+            | {
+                "anchorType": anchor_type,
+                "anchorRange": anchor_range,
+                "anchorGeometry": geometry,
+            },
+        )
+        for text, locator in records(xlsx())
+    ]
+
+
 def test_the_strict_spelling_of_the_fixture_reports_the_same_records() -> None:
     """Respelling the whole route changes nothing that comes out of it.
 
@@ -380,3 +454,130 @@ def test_the_strict_spelling_of_the_fixture_reports_the_same_records() -> None:
     names carry the route end to end and reach the same cached chart output.
     """
     assert records(strict_profile(xlsx())) == records(xlsx()) != []
+
+
+@pytest.mark.parametrize(
+    "anchor", [ONE_CELL_ANCHOR, ABSOLUTE_ANCHOR], ids=["oneCell", "absolute"]
+)
+def test_the_strict_spelling_of_a_sized_anchor_reports_the_same_records(
+    anchor: str,
+) -> None:
+    """The sized kinds' own elements are respelt by the profile too.
+
+    A sized anchor reads two more spreadsheet-drawing names than a two-cell one
+    -- ``xdr:ext``, and ``xdr:pos`` for the absolute kind -- so each is held to
+    the drawing's namespace and each has a Strict spelling of its own. Rewriting
+    the whole package reaches the same records, placement included.
+    """
+    assert records(strict_profile(anchored(anchor))) == records(anchored(anchor)) != []
+
+
+# ``xdr:pos`` as the valid absolute anchor writes it, so a variant can be put in
+# its place the way one can in ``EXT``'s.
+POS = '<xdr:pos x="-100" y="200"/>'
+FOREIGN = ' xmlns:f="urn:not-spreadsheetdrawing"'
+
+
+def lookalikes(element: str) -> dict[str, str]:
+    """The four ways an anchor stops naming exactly one of ``element``.
+
+    Each is written in the valid element's place: gone altogether, written
+    twice, stripped of its prefix so nothing qualifies it, and renamed into a
+    foreign vocabulary. Only the first spelling is the one the drawing's
+    grammar declares, so the last two name as little as the first.
+    """
+    head, _, attributes = element.partition(" ")
+    local = head.removeprefix("<xdr:")
+    return {
+        "missing": "",
+        "duplicate": element * 2,
+        "unqualified": f"<{local} {attributes}",
+        "foreign": f"<f:{local}{FOREIGN} {attributes}",
+    }
+
+
+# Every way a sized anchor leaves its own placement unanswerable, by the element
+# it is written on: the extent both sized kinds carry, and the position only the
+# absolute kind does. An extent is a size and has no signed form, so a negative
+# one names none, while the valid absolute anchor's own negative ``x`` is a
+# coordinate like any other and is read as it stands.
+REFUSED: dict[str, tuple[str, str]] = {
+    **{
+        f"extent-{case}": (
+            ONE_CELL_ANCHOR.replace(EXT, variant, 1),
+            "does not name exactly one extent",
+        )
+        for case, variant in lookalikes(EXT).items()
+    },
+    **{
+        f"position-{case}": (
+            ABSOLUTE_ANCHOR.replace(POS, variant, 1),
+            "does not name exactly one position",
+        )
+        for case, variant in lookalikes(POS).items()
+    },
+    "extent-without-cy": (
+        ONE_CELL_ANCHOR.replace(EXT, '<xdr:ext cx="914400"/>', 1),
+        "extent is malformed",
+    ),
+    "extent-not-a-number": (
+        ONE_CELL_ANCHOR.replace(EXT, '<xdr:ext cx="wide" cy="457200"/>', 1),
+        "extent is malformed",
+    ),
+    "extent-negative": (
+        ONE_CELL_ANCHOR.replace(EXT, '<xdr:ext cx="-914400" cy="457200"/>', 1),
+        "extent is malformed",
+    ),
+    "position-without-y": (
+        ABSOLUTE_ANCHOR.replace(POS, '<xdr:pos x="-100"/>', 1),
+        "position is malformed",
+    ),
+    "position-not-a-number": (
+        ABSOLUTE_ANCHOR.replace(POS, '<xdr:pos x="left" y="200"/>', 1),
+        "position is malformed",
+    ),
+}
+
+
+@pytest.mark.parametrize(("anchor", "diagnostic"), REFUSED.values(), ids=list(REFUSED))
+def test_a_sized_anchor_without_one_well_formed_placement_is_refused(
+    anchor: str, diagnostic: str
+) -> None:
+    """Where a sized frame sits is read or refused, never guessed."""
+    with pytest.raises(OOXMLInvalid, match=diagnostic):
+        records(anchored(anchor))
+
+
+def test_an_absolute_position_keeps_both_its_signed_coordinates() -> None:
+    """A frame placed off the top-left of the sheet keeps the sign it was given.
+
+    Both coordinates are negative here, so neither is clamped nor read as the
+    unsigned value an extent would be held to.
+    """
+    anchor = ABSOLUTE_ANCHOR.replace(POS, '<xdr:pos x="-100" y="-200"/>', 1)
+
+    assert [locator["anchorGeometry"] for _, locator in records(anchored(anchor))] == [
+        {"x": -100, "y": -200, "cx": 914400, "cy": 457200}
+    ] * len(records(xlsx()))
+
+
+@pytest.mark.parametrize(
+    ("anchor", "element", "other"),
+    [
+        (ONE_CELL_ANCHOR, EXT, '<xdr:ext cx="1" cy="2"/>'),
+        (ABSOLUTE_ANCHOR, POS, '<xdr:pos x="3" y="4"/>'),
+    ],
+    ids=["extent", "position"],
+)
+def test_a_foreign_lookalike_beside_one_valid_placement_is_transparent(
+    anchor: str, element: str, other: str
+) -> None:
+    """A lookalike is neither a second placement nor the one that is read.
+
+    The foreign element carries different numbers from the valid one it sits
+    beside, so an anchor counting placements by shape would refuse this as
+    naming two, and one reading them by shape could report the lookalike's.
+    """
+    variant = anchor.replace(element, f"{element}{lookalikes(other)['foreign']}", 1)
+
+    assert records(anchored(variant)) == records(anchored(anchor)) != []
