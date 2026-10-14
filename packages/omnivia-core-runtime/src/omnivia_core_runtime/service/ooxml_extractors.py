@@ -53,6 +53,9 @@ _NON_BLOCK_TAGS: Final = frozenset(
 # Run properties may carry an empty ``ins``/``del`` for the paragraph mark;
 # text boxes are read as blocks of their own, never as part of their anchor.
 _NON_RUN_TAGS: Final = frozenset({"pPr", "rPr", "Fallback"})
+# The two run properties that hide a run's text: from the page and from the
+# web view. Either one hides the run, so neither is read as visible text.
+_HIDDEN_RUN_PROPERTIES: Final = frozenset({"vanish", "webHidden"})
 _INSERTED: Final = frozenset({"ins", "moveTo"})
 _REMOVED: Final = frozenset({"del", "moveFrom"})
 _MAX_REVISION_DEPTH: Final = 4
@@ -4669,11 +4672,13 @@ class _DocxWalker:
     row, cell and in-cell block indices for tables, so it depends only on the
     structure of the part. Inside a paragraph, items come out in source order:
     contiguous current text (the first stretch at the paragraph position, later
-    ones at ``<paragraph>.t<n>``), deleted text (``<paragraph>.d<n>``) and text
-    boxes (``<paragraph>.x<n>.<block>``) where they are anchored, and current
-    text is never joined across one of them. A table cell reads its current
-    paragraphs as one ``table_cell`` run, closed by any deletion, text box or
-    nested table, and later runs sit at ``<cell>.t<n>``.
+    ones at ``<paragraph>.t<n>``), deleted text (``<paragraph>.d<n>``), text
+    hidden by a run's own properties (``<paragraph>.v<n>``, a
+    ``hidden_content`` segment) and text boxes (``<paragraph>.x<n>.<block>``)
+    where they are anchored, and current text is never joined across one of
+    them. A table cell reads its current paragraphs as one ``table_cell`` run,
+    closed by any deletion, hidden stretch, text box or nested table, and later
+    runs sit at ``<cell>.t<n>``.
 
     Hyperlinks and annotation references stay out of the text: each becomes an
     inert ``object_inventory`` segment right after the stretch it sits in, at
@@ -4864,14 +4869,25 @@ class _DocxWalker:
             values["noteId"] = self._note_id
         return _locator(self._capture_id, **values)
 
-    def _add(self, role: str, position: str, text: str, deleted: bool) -> None:
-        annotation = deleted or role in {"note", "comment"}
+    def _add(
+        self, role: str, position: str, text: str, deleted: bool, hidden: bool = False
+    ) -> None:
+        if hidden:
+            # Hidden text keeps its own role and visibility in every story, so a
+            # hidden note or cell is still hidden and never ordinary prose. A
+            # deletion over it is still recorded as the revision it is.
+            semantic, visibility = "hidden_content", "hidden"
+        elif deleted:
+            semantic, visibility = "deleted_text", "annotation"
+        else:
+            semantic = role
+            visibility = "annotation" if role in {"note", "comment"} else "visible"
         self._segments.append(
             ExtractedSegment(
-                "deleted_text" if deleted else role,
+                semantic,
                 self._locator(position),
                 text=text,
-                visibility="annotation" if annotation else "visible",
+                visibility=visibility,
                 revision_state="deleted" if deleted else "current",
             )
         )
@@ -4887,7 +4903,7 @@ class _DocxWalker:
     ) -> None:
         self.paragraphs += 1
         role = "table_cell" if cell else self._role(paragraph)
-        current = removed = boxes = links = refs = 0
+        current = removed = boxes = links = refs = concealed = 0
         for kind, value, box_deleted in _paragraph_items(paragraph, deleted):
             if kind == "m":
                 assert isinstance(value, ElementTree.Element)
@@ -4902,6 +4918,18 @@ class _DocxWalker:
                     raise OOXMLInvalid("DOCX text boxes are nested too deeply")
                 self.walk(value, f"{position}.x{boxes}.", depth + 1, box_deleted)
                 boxes += 1
+            elif kind == "v":
+                # A hidden stretch closes the cell's current text, exactly as a
+                # deletion does, so hidden text never joins the cell's prose.
+                self._flush(cell)
+                self._add(
+                    role,
+                    f"{position}.v{concealed}",
+                    value,
+                    box_deleted,
+                    hidden=True,
+                )
+                concealed += 1
             elif kind == "d":
                 self._flush(cell)
                 self._add("body", f"{position}.d{removed}", value, True)
@@ -5037,27 +5065,31 @@ def _paragraph_items(
 ) -> list[tuple[str, str | ElementTree.Element, bool]]:
     """Split a paragraph into ordered ``(kind, value, deleted)`` items.
 
-    Kinds are ``t`` current text, ``d`` deleted text, ``x`` a text box and ``m``
-    a hyperlink or annotation marker (with whether a deletion wrapped it). Adjacent text of one kind is one stretch;
-    tabs and breaks stay as separators inside it.
+    Kinds are ``t`` current text, ``d`` deleted text, ``v`` text a run's own
+    properties hide (carrying whether a deletion wrapped it), ``x`` a text box
+    and ``m`` a hyperlink or annotation marker (with whether a deletion wrapped
+    it). Adjacent text of one kind is one stretch; tabs and breaks stay as
+    separators inside it. Hidden text is a stretch of its own, so it is never
+    joined to the visible text around it.
     """
     items: list[tuple[str, str | ElementTree.Element, bool]] = []
     pending: list[str] = []
     pending_kind = ""
+    pending_deleted = False
 
     # Markers follow the stretch they sit in, so they never split the text.
     deferred: list[tuple[str, str | ElementTree.Element, bool]] = []
 
     def close() -> None:
         if pending:
-            items.append((pending_kind, "".join(pending), False))
+            items.append((pending_kind, "".join(pending), pending_deleted))
             pending.clear()
         items.extend(deferred)
         deferred.clear()
 
-    stack = [(iter(paragraph), deleted, 0)]
+    stack = [(iter(paragraph), deleted, 0, False)]
     while stack:
-        children, state, depth = stack[-1]
+        children, state, depth, hidden = stack[-1]
         for node in children:
             tag = _local(node.tag)
             if tag in _NON_RUN_TAGS:
@@ -5069,9 +5101,9 @@ def _paragraph_items(
                     raise OOXMLInvalid("OOXML extraction has too many segments")
                 continue
             if tag in _INLINE_MARKS:
-                if ("d" if state else "t") != pending_kind:
+                if ("d" if state else "t", state) != (pending_kind, pending_deleted):
                     close()
-                    pending_kind = "d" if state else "t"
+                    pending_kind, pending_deleted = "d" if state else "t", state
                 deferred.append(("m", node, state))
                 if len(items) + len(deferred) > MAX_SEGMENTS:
                     raise OOXMLInvalid("OOXML extraction has too many segments")
@@ -5083,16 +5115,26 @@ def _paragraph_items(
             if tag in {"t", "delText", "tab", "br", "cr"}:
                 if not text:
                     continue
-                kind = "d" if state or tag == "delText" else "t"
-                if kind != pending_kind:
+                removed = state or tag == "delText"
+                kind = "v" if hidden else "d" if removed else "t"
+                if (kind, removed) != (pending_kind, pending_deleted):
                     close()
-                    pending_kind = kind
+                    pending_kind, pending_deleted = kind, removed
                     if len(items) > MAX_SEGMENTS:
                         raise OOXMLInvalid("OOXML extraction has too many segments")
                 pending.append(text)
                 continue
             inner, level = _revised(tag, state, depth)
-            stack.append((iter(node), inner, level))
+            # Hidden state belongs to the run that declares it, and runs do not
+            # nest, so it never leaks past the run it was read from.
+            stack.append(
+                (
+                    iter(node),
+                    inner,
+                    level,
+                    _docx_run_hidden(node) if tag == "r" else hidden,
+                )
+            )
             break
         else:
             stack.pop()
@@ -5133,6 +5175,43 @@ def _docx_styles(package: _Package) -> dict[str, tuple[str, str | None, bool, bo
                 outline, numbered = _paragraph_properties(child)
         styles[style_id] = (name, based_on, outline, numbered)
     return styles
+
+
+def _docx_on_off(element: ElementTree.Element) -> bool:
+    """Read one WordprocessingML on/off property, refusing an unreadable value.
+
+    An absent ``val`` means the property is on, which is how Word writes the
+    plain switch. The type is closed, so a value outside it is refused rather
+    than read as whichever of the two it resembles.
+    """
+    value = _attr(element, "val")
+    if value is None or value in _TRUE_FLAGS:
+        return True
+    if value in _FALSE_FLAGS:
+        return False
+    raise OOXMLInvalid("DOCX on/off property is malformed")
+
+
+def _docx_run_hidden(run: ElementTree.Element) -> bool:
+    """Whether a run's own properties hide its text.
+
+    Only ``vanish``/``webHidden`` written directly on this run count. Hidden
+    state inherited from a character, paragraph, table or document-default
+    style is deliberately not resolved here: ``vanish`` is a toggle property,
+    so an accurate answer would have to apply the toggle rules across the whole
+    style hierarchy -- document defaults, table style conditional formatting,
+    the paragraph style, numbering and the character style -- and a partial
+    resolution would mislabel text either way. A style-hidden run therefore
+    reads as ordinary visible text, as it does today. ``rPrChange`` holds the
+    *previous* run properties, so a ``vanish`` inside it hides nothing now.
+    """
+    properties = next((item for item in run if _local(item.tag) == "rPr"), None)
+    if properties is None:
+        return False
+    return any(
+        _local(item.tag) in _HIDDEN_RUN_PROPERTIES and _docx_on_off(item)
+        for item in properties
+    )
 
 
 def _paragraph_properties(properties: ElementTree.Element) -> tuple[bool, bool]:

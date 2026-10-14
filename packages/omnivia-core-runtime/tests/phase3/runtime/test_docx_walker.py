@@ -321,6 +321,76 @@ def test_text_boxes_are_separate_blocks_read_once() -> None:
     assert first.expected == 7
 
 
+def hidden(text: str, properties: str = "<w:vanish/>") -> str:
+    return f"<w:r><w:rPr>{properties}</w:rPr><w:t>{text}</w:t></w:r>"
+
+
+def test_hidden_runs_split_visible_text_in_source_order() -> None:
+    body = (
+        "<w:p>"
+        + run("visible ")
+        + hidden("gone")
+        + run("mid ")
+        + hidden("web", "<w:webHidden/>")
+        + hidden("shown", '<w:vanish w:val="false"/>')
+        + run("tail")
+        + "</w:p>"
+    )
+
+    segments = revisions(docx(body))
+
+    assert segments == [
+        ("body", "visible ", "visible", "current", "0"),
+        ("hidden_content", "gone", "hidden", "current", "0.v0"),
+        ("body", "mid ", "visible", "current", "0.t1"),
+        ("hidden_content", "web", "hidden", "current", "0.v1"),
+        ("body", "showntail", "visible", "current", "0.t2"),
+    ]
+    assert "gone" not in "".join(
+        text for _, text, visibility, _, _ in segments if visibility == "visible"
+    )
+
+
+def test_hidden_runs_split_a_table_cell_without_joining_its_text() -> None:
+    cell = p("a") + f"<w:p>{run('b ')}{hidden('x')}{run(' c')}</w:p>" + p("d")
+
+    assert revisions(docx(f"<w:tbl><w:tr><w:tc>{cell}</w:tc></w:tr></w:tbl>")) == [
+        ("table_cell", "a\nb ", "visible", "current", "0.r0.c0"),
+        ("hidden_content", "x", "hidden", "current", "0.r0.c0.1.v0"),
+        ("table_cell", " c\nd", "visible", "current", "0.r0.c0.t1"),
+    ]
+
+
+def test_hidden_runs_inside_a_text_box_stay_hidden_in_the_box_block() -> None:
+    boxed = "<w:p>" + run("seen") + hidden("boxed") + "</w:p>"
+    body = f"<w:p>{box(boxed)}</w:p>"
+
+    assert revisions(docx(body)) == [
+        ("body", "seen", "visible", "current", "0.x0.0"),
+        ("hidden_content", "boxed", "hidden", "current", "0.x0.0.v0"),
+    ]
+
+
+def test_hidden_runs_stay_hidden_under_content_controls_and_revisions() -> None:
+    body = (
+        "<w:p>"
+        + run("seen ")
+        + f"<w:sdt><w:sdtContent><w:ins>{hidden('nested')}</w:ins></w:sdtContent></w:sdt>"
+        + run("mid ")
+        + f"<w:del>{hidden('gone')}</w:del>"
+        + run("tail")
+        + "</w:p>"
+    )
+
+    assert revisions(docx(body)) == [
+        ("body", "seen ", "visible", "current", "0"),
+        ("hidden_content", "nested", "hidden", "current", "0.v0"),
+        ("body", "mid ", "visible", "current", "0.t1"),
+        ("hidden_content", "gone", "hidden", "deleted", "0.v1"),
+        ("body", "tail", "visible", "current", "0.t2"),
+    ]
+
+
 def order(content: bytes) -> list[tuple[str, str, str, object]]:
     return [
         (item.semantic_role, item.text or "", item.revision_state, pos)
