@@ -69,10 +69,10 @@ MAX_FIELD_BYTES: Final = 1_048_576
 MAX_FIELDS: Final = 1_000_000
 MAX_DELIMITED_CHARS: Final = 64 * 1_048_576
 #: HTML walk bounds: start tags read, open nesting depth, attributes on one
-#: element, characters accumulated for one element's own text, characters of one
-#: link or image target or one table attribute, and emitted segments. Every one
-#: of them refuses the source when it is breached; none of them truncates prose
-#: to fit.
+#: element, characters accumulated for one element's own text or held by one
+#: comment, characters of one link or image target or one table attribute, and
+#: emitted segments. Every one of them refuses the source when it is breached;
+#: none of them truncates prose to fit.
 MAX_HTML_ELEMENTS: Final = 100_000
 MAX_HTML_DEPTH: Final = 64
 MAX_HTML_ATTRIBUTES: Final = 256
@@ -143,7 +143,9 @@ _HTML_VOID: Final = frozenset(
         "wbr",
     }
 )
-#: Elements whose text is never document body, whatever it contains.
+#: Elements whose text is never document body, whatever it contains: the two
+#: that hold code rather than prose, and the one whose content is a fragment the
+#: document has not placed.
 _HTML_HIDDEN: Final = frozenset({"script", "style", "template"})
 #: Elements that cannot be their own direct child, so a repeat implies an end.
 _HTML_PEER_CLOSING: Final = frozenset({"li", "p", "td", "th"})
@@ -162,6 +164,21 @@ _HTML_TABLE_SCOPES: Final = frozenset({"row", "col", "rowgroup", "colgroup"})
 #: five characters only, so an id holding a non-breaking space is one token here
 #: as it is there, rather than two.
 _ASCII_WHITESPACE: Final = re.compile(r"[ \t\n\f\r]+")
+#: An inline ``display``/``visibility`` declaration in an element's own ``style``
+#: attribute. The match must start at the attribute's start or just after a
+#: ``;``, so a vendor-prefixed or otherwise longer property name is not read as
+#: one of these two, and the value runs to the next ``;``.
+_INLINE_STYLE_DECLARATION: Final = re.compile(
+    r"(?i)(?:^|;)\s*(display|visibility)\s*:([^;]*)"
+)
+#: The priority suffix a declaration may carry, which changes what wins a
+#: cascade and not what the declaration says.
+_STYLE_PRIORITY: Final = re.compile(r"(?i)!\s*important\s*$")
+#: The property/value pairs this walk reads as the element's own hidden claim,
+#: in the order a claim reports them. Nothing here parses a stylesheet, resolves
+#: a selector or computes visibility: only these exact declarations, written in
+#: the element's own ``style`` attribute, are claimed.
+_HIDDEN_STYLE_CLAIMS: Final = (("display", "none"), ("visibility", "hidden"))
 #: A ``headers`` attribute anywhere in the source, which is what decides whether
 #: the header-id prescan is worth a second walk. The attribute name cannot be
 #: spelled with a character reference, so a source with no literal occurrence of
@@ -460,6 +477,10 @@ class _OpenElement:
     element_id: str | None
     #: Element children opened so far, which is the next child's sibling index.
     children: int = 0
+    #: Comment children read so far, counted in their own namespace so that a
+    #: comment never takes an element's sibling index: adding or removing one
+    #: must not move the locator of any element beside it.
+    comments: int = 0
     #: Text runs already emitted for this element. A block that encloses another
     #: block emits its own words in more than one run, and the run index is what
     #: keeps those segments' locators distinct and ordered.
@@ -486,6 +507,15 @@ class _InertHTMLParser(HTMLParser):
     target is recorded as inert inventory text and is never opened, fetched or
     resolved. Every bound is a refusal: prose is never silently truncated to
     fit one.
+
+    Text the document does not present as body prose is located in source order
+    beside the prose, in a role the default retrieval roles exclude, rather than
+    being dropped unread: a comment takes the ``comment`` role with annotation
+    visibility, and script, style and template content, text under the
+    ``hidden`` attribute and text under an inline ``display:none`` or
+    ``visibility:hidden`` declaration take ``hidden_content`` with hidden
+    visibility. A script body, an event-handler attribute and a resource URL are
+    all inert text here: nothing is ever executed, opened, fetched or resolved.
 
     A table cell additionally keeps its place in its own table's grid: the
     table's ordinal in the source, the row and the column it really falls in,
@@ -586,11 +616,21 @@ class _InertHTMLParser(HTMLParser):
             # far end here: emitting them now is what keeps the ancestor's
             # before-text ahead of this block's text in the segment order.
             self._flush_run()
-        attributes = {key: value or "" for key, value in attrs}
+        # A repeated attribute keeps its first value, which is how HTML reads
+        # one, so a duplicate cannot override what the element already declared.
+        attributes: dict[str, str] = {}
+        for key, value in attrs:
+            attributes.setdefault(key, value or "")
         parent = self.stack[-1]
         parent.children += 1
         path = f"{parent.path}/{parent.children}:{tag}"
-        hidden = parent.hidden or tag in _HTML_HIDDEN or "hidden" in attributes
+        style_claims = _hidden_style(attributes.get("style"))
+        hidden = (
+            parent.hidden
+            or tag in _HTML_HIDDEN
+            or "hidden" in attributes
+            or bool(style_claims)
+        )
         grid: _OpenTable | None = None
         if tag == "table":
             self.tables += 1
@@ -598,13 +638,20 @@ class _InertHTMLParser(HTMLParser):
             placement = {"table": grid.ordinal}
         else:
             placement = self._place(tag, path, attributes)
+        if style_claims:
+            # The claim rides in the locator beside the hidden role, so a
+            # consumer can tell a segment this walk read as hidden from an
+            # inline declaration from one the ``hidden`` attribute hid.
+            placement = {**placement, "hiddenStyle": style_claims}
         if tag == "img":
             alt = attributes.get("alt")
             if alt:
                 self._emit(
                     ExtractedSegment(
                         "hidden_content" if hidden else "image_alt",
-                        self._locator(tag, path, attributes.get("id")),
+                        self._locator(
+                            tag, path, attributes.get("id"), placement=placement
+                        ),
                         text=alt,
                         visibility="hidden" if hidden else "visible",
                     )
@@ -864,6 +911,40 @@ class _InertHTMLParser(HTMLParser):
                 )
             return
 
+    def handle_comment(self, data: str) -> None:
+        """Locate one HTML comment as its own non-body segment, in source order.
+
+        A comment is never document body, whatever it holds, so it takes the
+        ``comment`` role and annotation visibility and is excluded from the
+        default retrieval roles rather than being dropped unread. It ends the
+        enclosing block's pending text run exactly as a nested block does, which
+        is what keeps the words written before the comment ahead of it and the
+        words written after it behind it.
+
+        The comment takes an index of its own among its parent's comments, so
+        the elements beside it keep the locators they had before it was written.
+        """
+        if len(data) > MAX_HTML_SEGMENT_CHARS:
+            raise DocumentExtractionInvalid("HTML comment exceeds the accepted bound")
+        if not data.strip():
+            return
+        self._flush_run()
+        parent = self.stack[-1]
+        parent.comments += 1
+        # ``#comment`` is the DOM's own name for the node, and no element can be
+        # spelled with a ``#``, so a comment's path can never collide with the
+        # path of an element named ``comment``.
+        self._emit(
+            ExtractedSegment(
+                "comment",
+                self._locator(
+                    "#comment", f"{parent.path}/{parent.comments}:#comment", None
+                ),
+                text=data,
+                visibility="annotation",
+            )
+        )
+
     def handle_endtag(self, tag: str) -> None:
         index = next(
             (i for i in range(len(self.stack) - 1, 0, -1) if self.stack[i].tag == tag),
@@ -1028,6 +1109,34 @@ def _table_scope(value: str | None) -> tuple[str | None, str | None]:
     declared = _table_attribute(value)
     keyword = declared.lower() if declared.isascii() else declared
     return (keyword, None) if keyword in _HTML_TABLE_SCOPES else (None, declared)
+
+
+def _hidden_style(value: str | None) -> list[str]:
+    """The hidden claims one element's own ``style`` attribute makes.
+
+    Only the two declarations in ``_HIDDEN_STYLE_CLAIMS`` are read, and only
+    from the element's own attribute: no stylesheet is parsed, no selector is
+    resolved, no inherited or computed visibility is claimed, and an element
+    whose attribute says nothing about these two properties makes no claim at
+    all. The result is therefore what the element itself declares, which is
+    weaker evidence than the ``hidden`` attribute and is published as such.
+
+    A property declared more than once keeps its last declaration, because that
+    is the one that would win among the element's own declarations, and a
+    ``!important`` priority is ignored, because it changes which declaration
+    wins a cascade this walk does not compute and not what one says.
+    """
+    if not value:
+        return []
+    declared = {
+        match.group(1).lower(): _STYLE_PRIORITY.sub("", match.group(2)).strip().lower()
+        for match in _INLINE_STYLE_DECLARATION.finditer(value)
+    }
+    return [
+        f"{name}:{keyword}"
+        for name, keyword in _HIDDEN_STYLE_CLAIMS
+        if declared.get(name) == keyword
+    ]
 
 
 def _header_ids(text: str) -> dict[tuple[int, str], str | None]:

@@ -17,6 +17,7 @@ from typing import Any, Final
 import pytest
 from omnivia_core_runtime.service import document_extractors
 from omnivia_core_runtime.service.document_extractors import (
+    MAX_HTML_SEGMENT_CHARS,
     MAX_HTML_SOURCE_BYTES,
     MAX_TEXT_BYTES,
     XHTML_MEDIA_TYPE,
@@ -260,14 +261,16 @@ def padded_markup(size: int) -> bytes:
 
     The padding is comments, so the source reaches the byte bound without
     reaching the per-element text bound that would refuse it for another reason.
-    It is spread over several of them because libxml2 refuses any single node
-    over 10 MB while ``huge_tree`` is off, which is a node ceiling under the
-    source bound rather than the source bound itself.
+    It is spread over several of them because a comment is a located segment in
+    its own right and so carries the same per-segment character bound as an
+    element's text, and because libxml2 refuses any single node over 10 MB while
+    ``huge_tree`` is off; both are ceilings under the source bound rather than
+    the source bound itself.
     """
     head = b"<p>body</p>"
     remaining, parts = size - len(head), []
     while remaining:
-        take = min(remaining, 1_000_000)
+        take = min(remaining, MAX_HTML_SEGMENT_CHARS)
         parts.append(b"<!--" + b"x" * (take - 7) + b"-->")
         remaining -= take
     return head + b"".join(parts)
