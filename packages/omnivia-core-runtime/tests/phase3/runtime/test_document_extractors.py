@@ -40,9 +40,11 @@ def local_ocr(tmp_path_factory: pytest.TempPathFactory) -> ExtractionSettings:
     return local_ocr_settings(catalogue=catalogue_over(directory, "eng", "osd"))
 
 
-def office_package(parts: dict[str, bytes]) -> bytes:
+def office_package(parts: dict[str, bytes], *, overrides: bytes = b"") -> bytes:
     content_types = (
-        b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'
+        b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        + overrides
+        + b"</Types>"
     )
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -160,21 +162,47 @@ def test_xlsx_preserves_formula_and_saved_cache_as_distinct_values() -> None:
     }
 
 
-def test_pptx_extracts_slide_text_and_notes_without_rendering() -> None:
+def test_pptx_extracts_slide_text_tables_and_related_notes_without_rendering() -> None:
+    frame = b'<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="3"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tblGrid><a:gridCol w="100"/><a:gridCol w="100"/></a:tblGrid><a:tr><a:tc><a:txBody><a:p><a:r><a:t>Region</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>Revenue</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame>'
     package = office_package(
         {
             "ppt/presentation.xml": b'<p:presentation xmlns:p="urn:p" xmlns:r="urn:r"><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>',
             "ppt/_rels/presentation.xml.rels": b'<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/></Relationships>',
-            "ppt/slides/slide1.xml": b'<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/></p:nvSpPr><p:txBody><a:p><a:r><a:t>Quarterly plan</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>',
+            "ppt/slides/slide1.xml": b'<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/></p:nvSpPr><p:txBody><a:p><a:r><a:t>Quarterly plan</a:t></a:r></a:p></p:txBody></p:sp>'
+            + frame
+            + b"</p:spTree></p:cSld></p:sld>",
+            "ppt/slides/_rels/slide1.xml.rels": b'<Relationships><Relationship Id="rId2" Target="../notesSlides/notesSlide1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide"/></Relationships>',
             "ppt/notesSlides/notesSlide1.xml": b'<p:notes xmlns:p="urn:p" xmlns:a="urn:a"><a:t>Speaker detail</a:t></p:notes>',
-        }
+        },
+        overrides=b'<Override PartName="/ppt/notesSlides/notesSlide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>',
     )
 
     result = extract_document(package, media_type=PPTX_MEDIA_TYPE, capture_id=CAPTURE)
 
     assert [(item.semantic_role, item.text) for item in result.segments] == [
         ("body", "Quarterly plan"),
+        ("table_cell", "Region"),
+        ("table_cell", "Revenue"),
         ("note", "Speaker detail"),
+    ]
+
+
+def test_pptx_ignores_a_notes_part_the_slide_does_not_relate_to() -> None:
+    """A notes-looking member reached only by name substitution is never read."""
+    package = office_package(
+        {
+            "ppt/presentation.xml": b'<p:presentation xmlns:p="urn:p" xmlns:r="urn:r"><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>',
+            "ppt/_rels/presentation.xml.rels": b'<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/></Relationships>',
+            "ppt/slides/slide1.xml": b'<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="2"/></p:nvSpPr><p:txBody><a:p><a:r><a:t>Quarterly plan</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>',
+            "ppt/notesSlides/notesSlide1.xml": b'<p:notes xmlns:p="urn:p" xmlns:a="urn:a"><a:t>Not this slide\'s notes</a:t></p:notes>',
+        },
+        overrides=b'<Override PartName="/ppt/notesSlides/notesSlide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>',
+    )
+
+    result = extract_document(package, media_type=PPTX_MEDIA_TYPE, capture_id=CAPTURE)
+
+    assert [(item.semantic_role, item.text) for item in result.segments] == [
+        ("body", "Quarterly plan")
     ]
 
 

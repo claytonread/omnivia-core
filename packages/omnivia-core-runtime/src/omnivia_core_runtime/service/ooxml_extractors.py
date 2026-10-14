@@ -106,6 +106,27 @@ _MAX_PPTX_GROUP_DEPTH: Final = 16
 _MAX_PPTX_PARAGRAPHS: Final = 20_000
 _MAX_PPTX_RUNS: Final = 100_000
 _SHAPE_ID: Final = re.compile(r"[0-9]{1,10}")
+# A table's grid is the work it asks for whether or not a cell holds text, so
+# the area is bounded before any cell is read. Counted across the slide, for the
+# same reason the paragraph and run bounds are.
+_MAX_PPTX_TABLE_ROWS: Final = 4_000
+_MAX_PPTX_TABLE_COLUMNS: Final = 1_024
+_MAX_PPTX_TABLE_CELLS: Final = 200_000
+_SPAN: Final = re.compile(r"[0-9]{1,4}")
+# The relationship type and the content type that together qualify a part as a
+# notes slide. Only the two URIs OOXML itself defines for the type qualify --
+# Transitional and Strict -- so no other namespace reaches a notes part by
+# ending the same way. The content type is identical under both.
+_NOTES_RELATIONSHIPS: Final = frozenset(
+    {
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide",
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/notesSlide",
+    }
+)
+_NOTES_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.presentationml.notesslide+xml"
+)
+_MAX_PPTX_NOTE_RUNS: Final = 20_000
 # ST_Coordinate is a signed EMU count; an offset may be negative, so the sign is
 # accepted here and the value is kept exactly as the shape wrote it.
 _EMU_OFFSET: Final = re.compile(r"-?[0-9]{1,20}")
@@ -156,6 +177,8 @@ class _Package:
         # (source part, relationship id, type, target): recorded verbatim, inert.
         self.external_targets: list[tuple[str, str, str, str]] = []
         self.external_relationships = 0
+        # Case-folded part name -> the content type an ``Override`` declares.
+        self.content_types: dict[str, str] = {}
         self._validate()
 
     def close(self) -> None:
@@ -195,6 +218,15 @@ class _Package:
                 or "vbaproject" in part_name
             ):
                 raise OOXMLInvalid("macro-enabled Office packages are not supported")
+            if _local(element.tag) != "Override" or not part_name:
+                continue
+            # OPC requires each ``PartName`` to be declared at most once. A
+            # repeated declaration is a malformed content-types part whether or
+            # not the two agree, so nothing downstream reconciles or picks one.
+            part_name = part_name.lstrip("/")
+            if part_name in self.content_types:
+                raise OOXMLInvalid("OOXML content-types part declares a part twice")
+            self.content_types[part_name] = content_type
         self._validate_relationships()
 
     def _validate_entry(self, info: zipfile.ZipInfo, identities: set[str]) -> None:
@@ -318,6 +350,15 @@ class _Package:
                 types[relation_id] = relation.attrib.get("Type", "")
             self.relationships[name] = entries
             self.relationship_types[name] = types
+
+    def declared_type(self, name: str) -> str:
+        """Return the content type the package declares for one part, if any.
+
+        Only an explicit ``Override`` counts. A default taken from the member's
+        extension says what every ``.xml`` member is, which qualifies no part as
+        anything in particular.
+        """
+        return self.content_types.get(name.casefold(), "")
 
     def bytes(self, name: str, *, limit: int = MAX_XML_BYTES) -> bytes:
         if name not in self.names:
@@ -592,25 +633,29 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         for ordinal, (slide_id, part, hidden) in enumerate(slides, start=1):
             walker = _PptxWalker(capture_id, part, slide_id, ordinal, hidden, segments)
             walker.walk(_pptx_tree(package.xml(part)), (), (), 0)
-            notes = part.replace("slides/slide", "notesSlides/notesSlide")
-            if notes in package.names:
-                note_text = "".join(
-                    node.text or ""
-                    for node in package.xml(notes).iter()
-                    if _local(node.tag) == "t"
-                )
-                if note_text:
-                    segments.append(
-                        ExtractedSegment(
-                            "note",
-                            _locator(
-                                capture_id, part=notes, slideId=slide_id, slide=ordinal
-                            ),
-                            text=note_text,
-                            visibility="annotation",
-                        )
+            notes = _pptx_notes(package, part)
+            if notes is None:
+                continue
+            relation_id, notes_part = notes
+            note_text = _pptx_note_text(package, notes_part)
+            if note_text:
+                segments.append(
+                    ExtractedSegment(
+                        "note",
+                        _locator(
+                            capture_id,
+                            part=notes_part,
+                            relationshipId=relation_id,
+                            slidePart=part,
+                            slideId=slide_id,
+                            slide=ordinal,
+                            slideHidden=hidden,
+                        ),
+                        text=note_text,
+                        visibility="annotation",
                     )
-                    _bounded(segments)
+                )
+                _bounded(segments)
         return OOXMLExtraction(
             tuple(segments),
             "slide",
@@ -869,6 +914,71 @@ def _pptx_slides(package: _Package) -> list[tuple[str, str, bool]]:
     return result
 
 
+def _is_notes_relationship(kind: str) -> bool:
+    """Say whether one relationship type is the OOXML notes-slide type.
+
+    Scheme and host are case-insensitive under RFC 3986 and the path is not, so
+    only those two are folded, and only in ASCII: both defined URIs are ASCII,
+    so a type carrying any other character is not one of them and no non-ASCII
+    character can case-fold its way into a match.
+    """
+    if not kind.isascii():
+        return False
+    scheme, separator, rest = kind.partition("://")
+    if not separator:
+        return False
+    host, slash, path = rest.partition("/")
+    return f"{scheme.lower()}://{host.lower()}{slash}{path}" in _NOTES_RELATIONSHIPS
+
+
+def _pptx_notes(package: _Package, slide: str) -> tuple[str, str] | None:
+    """Return the (relationship id, part) of one slide's own notes slide.
+
+    The notes part is only ever reached through the slide's own relationships.
+    No path is derived by substituting into the slide's file name, so a
+    notes-looking member that nothing relates to is not this slide's notes and
+    is never read; and nothing here asks a convenience API for a notes slide,
+    which would materialise one the package does not hold.
+
+    The relationship has to be internal, has to carry the notes-slide type, and
+    has to resolve to a part the package declares with the notes-slide content
+    type. Two notes relationships leave which part holds the notes ambiguous,
+    so the slide is refused rather than read from whichever sorts first.
+    """
+    rels = posixpath.join(
+        posixpath.dirname(slide), "_rels", posixpath.basename(slide) + ".rels"
+    )
+    named = sorted(
+        relation_id
+        for relation_id, kind in package.relationship_types.get(rels, {}).items()
+        if _is_notes_relationship(kind)
+    )
+    if not named:
+        return None
+    if len(named) > 1:
+        raise OOXMLInvalid("PPTX slide names more than one notes relationship")
+    target, external = package.relationships[rels][named[0]]
+    if external:
+        raise OOXMLInvalid("PPTX notes relationship is external")
+    if package.declared_type(target) != _NOTES_CONTENT_TYPE:
+        raise OOXMLInvalid("PPTX notes relationship does not name a notes part")
+    return named[0], target
+
+
+def _pptx_note_text(package: _Package, part: str) -> str:
+    """Join the notes part's own text, bounding the runs it asks to be read."""
+    runs = 0
+    pieces: list[str] = []
+    for node in package.xml(part).iter():
+        if _local(node.tag) != "t":
+            continue
+        runs += 1
+        if runs > _MAX_PPTX_NOTE_RUNS:
+            raise OOXMLInvalid("PPTX notes slide has too many runs")
+        pieces.append(node.text or "")
+    return "".join(pieces)
+
+
 def _pptx_tree(root: ElementTree.Element) -> ElementTree.Element:
     """Return the slide's shape tree, refusing a slide that declares none.
 
@@ -882,6 +992,117 @@ def _pptx_tree(root: ElementTree.Element) -> ElementTree.Element:
     return tree
 
 
+@dataclass(frozen=True, slots=True)
+class _PptxTable:
+    """One validated table: its grid, its cells in source order, and its merges.
+
+    ``merges`` holds every grid position, mapping it to the row span and column
+    span the cell there declares and, when another cell's merge covers it, the
+    (row, column) of that anchor. An unmerged cell spans one by one and is
+    covered by nothing.
+    """
+
+    columns: int
+    rows: list[list[ElementTree.Element]]
+    merges: dict[tuple[int, int], tuple[int, int, tuple[int, int] | None]]
+
+
+def _pptx_frame_table(frame: ElementTree.Element) -> _PptxTable | None:
+    """Return the validated table a graphic frame holds, or None for no table.
+
+    A frame holds one graphic object, so two tables below one frame is not a
+    frame anyone authored and nothing here chooses between them.
+    """
+    tables = [node for node in frame.iter() if _local(node.tag) == "tbl"]
+    if not tables:
+        return None
+    if len(tables) > 1:
+        raise OOXMLInvalid("PPTX graphic frame holds more than one table")
+    return _pptx_table(tables[0])
+
+
+def _pptx_table(table: ElementTree.Element) -> _PptxTable:
+    """Validate one table's grid and merges before any cell text is read.
+
+    A DrawingML table writes a cell for every grid position, including the ones
+    a merge covers, so a row that does not fill the declared grid describes no
+    grid at all. Spans and continuation flags are then checked against each
+    other: a span may not run past the grid, a cell may not both anchor and
+    continue a merge on one axis, two merges may not claim one position, a
+    covered position must declare the continuation its anchor implies, and a
+    continuation flag that nothing anchors is refused rather than reported as a
+    merge that is not there.
+    """
+    grid = next((node for node in table if _local(node.tag) == "tblGrid"), None)
+    if grid is None:
+        raise OOXMLInvalid("PPTX table declares no column grid")
+    columns = sum(1 for node in grid if _local(node.tag) == "gridCol")
+    rows = [
+        [cell for cell in row if _local(cell.tag) == "tc"]
+        for row in table
+        if _local(row.tag) == "tr"
+    ]
+    if not 1 <= columns <= _MAX_PPTX_TABLE_COLUMNS:
+        raise OOXMLInvalid("PPTX table column count is outside the accepted bound")
+    if not 1 <= len(rows) <= _MAX_PPTX_TABLE_ROWS:
+        raise OOXMLInvalid("PPTX table row count is outside the accepted bound")
+    if any(len(row) != columns for row in rows):
+        raise OOXMLInvalid("PPTX table row does not fill its declared grid")
+    spans: dict[tuple[int, int], tuple[int, int]] = {}
+    declared: dict[tuple[int, int], tuple[bool, bool]] = {}
+    for row_index, row in enumerate(rows):
+        for column_index, cell in enumerate(row):
+            row_span = _pptx_span(cell, "rowSpan")
+            column_span = _pptx_span(cell, "gridSpan")
+            flags = (_pptx_merged(cell, "hMerge"), _pptx_merged(cell, "vMerge"))
+            if (flags[0] and column_span > 1) or (flags[1] and row_span > 1):
+                raise OOXMLInvalid("PPTX table cell both anchors and continues a merge")
+            if column_index + column_span > columns or row_index + row_span > len(rows):
+                raise OOXMLInvalid("PPTX table merge runs past the grid")
+            spans[(row_index, column_index)] = (row_span, column_span)
+            declared[(row_index, column_index)] = flags
+    covered: dict[tuple[int, int], tuple[int, int]] = {}
+    for (row_index, column_index), (row_span, column_span) in spans.items():
+        for down in range(row_span):
+            for across in range(column_span):
+                if not down and not across:
+                    continue
+                position = (row_index + down, column_index + across)
+                if spans[position] != (1, 1) or covered.setdefault(
+                    position, (row_index, column_index)
+                ) != (row_index, column_index):
+                    raise OOXMLInvalid("PPTX table merges overlap")
+                if declared[position] != (across > 0, down > 0):
+                    raise OOXMLInvalid("PPTX table merge is not declared by its cell")
+    merges: dict[tuple[int, int], tuple[int, int, tuple[int, int] | None]] = {}
+    for position, (row_span, column_span) in spans.items():
+        anchor = covered.get(position)
+        if anchor is None and declared[position] != (False, False):
+            raise OOXMLInvalid("PPTX table cell continues a merge that nothing anchors")
+        merges[position] = (row_span, column_span, anchor)
+    return _PptxTable(columns, rows, merges)
+
+
+def _pptx_span(cell: ElementTree.Element, name: str) -> int:
+    """Read one merge span, refusing a value that is not a count of cells."""
+    raw = cell.attrib.get(name)
+    if raw is None:
+        return 1
+    if _SPAN.fullmatch(raw) is None or int(raw) < 1:
+        raise OOXMLInvalid("PPTX table merge span is malformed")
+    return int(raw)
+
+
+def _pptx_merged(cell: ElementTree.Element, name: str) -> bool:
+    """Read one merge-continuation flag, refusing an unreadable value."""
+    value = cell.attrib.get(name)
+    if value is None or value in _FALSE_FLAGS:
+        return False
+    if value in _TRUE_FLAGS:
+        return True
+    raise OOXMLInvalid("PPTX table merge flag is malformed")
+
+
 class _PptxWalker:
     """Walks one slide's shape tree in declared order, entering group shapes.
 
@@ -893,7 +1114,9 @@ class _PptxWalker:
     nothing is reported twice.
 
     Each run of each paragraph becomes one segment, in source order, carrying
-    its paragraph and run index inside the shape it belongs to. Geometry and
+    its paragraph and run index inside the shape it belongs to. A graphic frame
+    holding a table reports its cells as table cells instead, each at its own
+    row and column in the declared grid. Geometry and
     the placeholder reference are recorded exactly as the shape encodes them;
     nothing is inherited from a layout or master, and no group child-space
     mapping is applied, so a shape that encodes no transform carries none.
@@ -922,6 +1145,7 @@ class _PptxWalker:
         self.shapes = 0
         self.paragraphs = 0
         self.runs = 0
+        self.cells = 0
 
     def walk(
         self,
@@ -948,8 +1172,13 @@ class _PptxWalker:
                 if depth >= _MAX_PPTX_GROUP_DEPTH:
                     raise OOXMLInvalid("PPTX group shapes are nested too deeply")
                 self.walk(child, (*path, shape_id), here, depth + 1)
+                continue
+            where = self._where(child, kind, shape_id, path, here, geometry)
+            table = _pptx_frame_table(child) if kind == "graphicFrame" else None
+            if table is not None:
+                self._table(table, where)
             elif kind in _PPTX_TEXT_SHAPES:
-                self._text(child, kind, shape_id, path, here, geometry)
+                self._emit(child, "body", where)
 
     def _identity(self, shape: ElementTree.Element) -> str:
         """Return the shape's identifier, refusing a missing or repeated one."""
@@ -971,7 +1200,7 @@ class _PptxWalker:
         self._ids.add(shape_id)
         return shape_id
 
-    def _text(
+    def _where(
         self,
         shape: ElementTree.Element,
         kind: str,
@@ -979,9 +1208,59 @@ class _PptxWalker:
         path: tuple[str, ...],
         z_path: tuple[int, ...],
         geometry: dict[str, int] | None,
-    ) -> None:
+    ) -> dict[str, object]:
+        """Return the slide and shape identity every segment of a shape carries."""
         placeholder_type, placeholder_index = _pptx_placeholder(shape)
-        for paragraph_index, paragraph in enumerate(_pptx_paragraphs(shape)):
+        return {
+            "part": self._part,
+            "slideId": self._slide_id,
+            "slide": self._ordinal,
+            "slideHidden": self._hidden,
+            "shapeId": shape_id,
+            "shapeKind": kind,
+            "groupPath": list(path),
+            "zOrder": z_path[-1],
+            "zPath": list(z_path),
+            "geometry": geometry,
+            "placeholderType": placeholder_type,
+            "placeholderIndex": placeholder_index,
+        }
+
+    def _table(self, table: _PptxTable, where: dict[str, object]) -> None:
+        """Emit each table cell's text at its own source row and column.
+
+        Positions are the cell's own place in the declared grid, because a
+        DrawingML table writes every covered cell out rather than omitting it.
+        A merge's text is reported once, wherever the package wrote it: an
+        anchor carries its spans, a covered cell cites the anchor covering it,
+        and no text is copied from one to the other.
+        """
+        self.cells += len(table.rows) * table.columns
+        if self.cells > _MAX_PPTX_TABLE_CELLS:
+            raise OOXMLInvalid("PPTX slide has too many table cells")
+        for row_index, row in enumerate(table.rows):
+            for column_index, cell in enumerate(row):
+                row_span, column_span, anchor = table.merges[(row_index, column_index)]
+                self._emit(
+                    cell,
+                    "table_cell",
+                    {
+                        **where,
+                        "tableRow": row_index,
+                        "tableColumn": column_index,
+                        "tableRows": len(table.rows),
+                        "tableColumns": table.columns,
+                        "rowSpan": row_span,
+                        "columnSpan": column_span,
+                        "mergeAnchor": None if anchor is None else list(anchor),
+                    },
+                )
+
+    def _emit(
+        self, holder: ElementTree.Element, role: str, where: dict[str, object]
+    ) -> None:
+        """Emit one segment per non-empty run of ``holder``'s own paragraphs."""
+        for paragraph_index, paragraph in enumerate(_pptx_paragraphs(holder)):
             self.paragraphs += 1
             if self.paragraphs > _MAX_PPTX_PARAGRAPHS:
                 raise OOXMLInvalid("PPTX slide has too many paragraphs")
@@ -996,21 +1275,10 @@ class _PptxWalker:
                     continue
                 self._segments.append(
                     ExtractedSegment(
-                        "body",
+                        role,
                         _locator(
                             self._capture_id,
-                            part=self._part,
-                            slideId=self._slide_id,
-                            slide=self._ordinal,
-                            slideHidden=self._hidden,
-                            shapeId=shape_id,
-                            shapeKind=kind,
-                            groupPath=list(path),
-                            zOrder=z_path[-1],
-                            zPath=list(z_path),
-                            geometry=geometry,
-                            placeholderType=placeholder_type,
-                            placeholderIndex=placeholder_index,
+                            **where,
                             paragraph=paragraph_index,
                             run=run_index,
                         ),
