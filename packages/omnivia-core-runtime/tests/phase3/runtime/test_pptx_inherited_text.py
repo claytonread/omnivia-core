@@ -10,8 +10,9 @@ PresentationML namespace.
 
 Only a ``sp`` or ``cxnSp`` directly below each part's own ``cSld``/``spTree`` is
 read, and only when it holds no placeholder reference: what text a slide
-inherits *into* a placeholder is placeholder applicability, which is not
-implemented here. ``showMasterSp`` is honoured where each part writes it, and an
+inherits *into* a placeholder is placeholder applicability, which
+``test_pptx_placeholder_applicability`` covers as the pass of its own that it
+is. ``showMasterSp`` is honoured where each part writes it, and an
 exact visual duplicate -- same role, same normalised text, same encoded
 transform -- of something the slide already showed is not reported twice.
 """
@@ -552,7 +553,12 @@ def test_a_malformed_inherited_shapes_flag_is_refused() -> None:
 
 
 def test_a_placeholder_shape_is_never_reported_from_an_inherited_part() -> None:
-    """What a slide inherits into a placeholder is applicability, not this."""
+    """A placeholder describes a slot, so it is not this part's own text.
+
+    What a slide shows in that slot is applicability, which resolves against
+    the slide's own placeholders rather than reporting the prompt behind every
+    slot a slide never fills. No slide here holds one, so nothing applies.
+    """
     for reference in ('', ' type="title"', ' type="body" idx="1"', ' idx="4"'):
         content = pptx(
             layout=part(

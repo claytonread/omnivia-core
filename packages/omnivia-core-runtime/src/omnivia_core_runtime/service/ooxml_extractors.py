@@ -418,6 +418,33 @@ _MASTER_CONTENT_TYPE: Final = (
 # place rather than material the slide shows, so an inherited frame is left
 # alone -- as every picture and group already is.
 _PPTX_INHERITED_SHAPES: Final = frozenset({"sp", "cxnSp"})
+# ST_PlaceholderType in full. The type names which slot a placeholder is, so an
+# unlisted one names no slot at all: it would match nothing on a layout and
+# nothing on a master, and silently inheriting nothing is indistinguishable
+# from a slot a part legitimately leaves empty. It is refused instead.
+_PPTX_PLACEHOLDER_TYPES: Final = frozenset(
+    {
+        "title",
+        "body",
+        "ctrTitle",
+        "subTitle",
+        "dt",
+        "ftr",
+        "sldNum",
+        "sldImg",
+        "hdr",
+        "obj",
+        "chart",
+        "tbl",
+        "clipArt",
+        "dgm",
+        "media",
+        "pic",
+    }
+)
+# ST_Index's own default, which is the index every placeholder written without
+# an ``idx`` sits at -- a title among them.
+_PPTX_DEFAULT_PLACEHOLDER_INDEX: Final = 0
 # The two roots the inherited parts declare themselves at, in the PresentationML
 # namespaces every other PresentationML part here is held to.
 _LAYOUT_ROOT: Final = "sldLayout"
@@ -2010,6 +2037,30 @@ def _pptx_shows_master(element: ElementTree.Element) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
+class _PptxPrompt:
+    """One placeholder shape on a layout or master, kept for applicability.
+
+    ``slot`` is what its reference names, matched on by
+    :func:`_pptx_applicable`; ``where`` is the provenance a segment sourced at
+    this shape carries, exactly as the inherited pass built it; ``shape`` is the
+    element itself, because what text the slot saved is read from it only if a
+    slide's own placeholder applies to it.
+
+    ``holds_text`` is whether it saved any text at all, which decides whether
+    the slot falls through to the part behind this one. It is read once, where
+    the shape was met, rather than again for each slot that resolves to it: the
+    runs a prompt holds are never counted against the slide's own bounds unless
+    they are emitted, so re-reading them per slot would let one part's size be
+    multiplied by the number of placeholders a slide writes.
+    """
+
+    slot: tuple[str, int]
+    where: dict[str, object]
+    shape: ElementTree.Element
+    holds_text: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _PptxTable:
     """One validated table: its grid, its cells in source order, and its merges.
 
@@ -2693,7 +2744,10 @@ class _PptxWalker:
     behind it, as text in its own right at the part that holds it. It is a
     pass of its own rather than part of the walk above, because what it reads
     is another part's shape tree and what suppresses a repeat is everything
-    the walk already reported.
+    the walk already reported. It finishes by resolving the slide's own
+    placeholders against those two parts: a slot the slide left empty shows the
+    text the applicable placeholder saved, reported at the shape that saved it
+    and at the slide shape applying it.
 
     Shapes, paragraphs and runs are counted across the whole slide, because the
     walker is the slide's scope: the indexes in a locator are local to the shape
@@ -2722,6 +2776,11 @@ class _PptxWalker:
         # form ``_visual`` builds. The inherited pass consults it; the slide's
         # own pass only adds to it.
         self._shown: set[tuple[str, str, tuple[tuple[str, int], ...] | None]] = set()
+        # The slot each of the slide's own placeholders names, paired with the
+        # slide shape naming it, for the ones that saved no text of their own.
+        # Collected by the walk in its order and resolved once both inherited
+        # parts are known.
+        self._applying: list[tuple[tuple[str, int], dict[str, object]]] = []
         self.shapes = 0
         self.paragraphs = 0
         self.runs = 0
@@ -2767,7 +2826,41 @@ class _PptxWalker:
             elif table is not None:
                 self._table(table, where)
             elif kind in _PPTX_TEXT_SHAPES:
-                self._emit(child, "body", where)
+                saved = self._emit(child, "body", where)
+                # A slot the slide shows nothing of its own in is the one that
+                # shows what the layout or master saved for it, so what the
+                # shape itself just reported is what decides that.
+                if kind in _PPTX_INHERITED_SHAPES and not saved:
+                    self._applies(child, where)
+
+    def _applies(
+        self, shape: ElementTree.Element, where: dict[str, object]
+    ) -> None:
+        """Record an empty slide placeholder, and the slide shape naming it.
+
+        Only a shape that is a placeholder at all: a shape holding no reference
+        inherits into nothing. The slide shape is named alongside the slot
+        because the text that applies here is the inherited part's, shown at a
+        position and in a frame the slide's own shape supplies.
+        """
+        placeholder = _pptx_placeholder(shape)
+        if placeholder is None:
+            return
+        self._applying.append(
+            (
+                _pptx_placeholder_slot(placeholder),
+                {
+                    "placeholderType": where["placeholderType"],
+                    "placeholderIndex": where["placeholderIndex"],
+                    "slideShapeId": where["shapeId"],
+                    "slideShapeKind": where["shapeKind"],
+                    "slideGroupPath": where["groupPath"],
+                    "slideZOrder": where["zOrder"],
+                    "slideZPath": where["zPath"],
+                    "slideGeometry": where["geometry"],
+                },
+            )
+        )
 
     def inherited(self, slide_root: ElementTree.Element) -> None:
         """Emit the authored text the slide's layout and master show behind it.
@@ -2785,9 +2878,12 @@ class _PptxWalker:
 
         ``showMasterSp`` is honoured where each part writes it. A slide that
         turns inherited shapes off shows neither its layout's nor its master's,
-        so neither part is opened; a layout that turns them off shows its own
-        but not the master's. The attribute is only ever written to turn them
-        off, so an absent one shows them.
+        so neither part is opened -- and with neither open there is nothing for
+        the slide's placeholders to resolve against either, so nothing is
+        inherited into them. A layout that turns them off shows its own but not
+        the master's, and a slot its own placeholder leaves empty therefore
+        falls through to nothing rather than to the master. The attribute is
+        only ever written to turn them off, so an absent one shows them.
         """
         if not _pptx_shows_master(slide_root):
             return
@@ -2802,26 +2898,66 @@ class _PptxWalker:
             return
         layout_id, layout_part = layout
         layout_root = _pptx_inherited_root(self._package, layout_part, _LAYOUT_ROOT)
-        self._inherited(layout_part, layout_id, layout_root, "layout")
-        if not _pptx_shows_master(layout_root):
-            return
-        master = _related_part(
-            self._package,
-            layout_part,
-            _MASTER_RELATIONSHIPS,
-            _MASTER_CONTENT_TYPE,
-            "slide master",
-            owner="slide layout",
+        prompts = self._inherited(layout_part, layout_id, layout_root, "layout")
+        master = (
+            _related_part(
+                self._package,
+                layout_part,
+                _MASTER_RELATIONSHIPS,
+                _MASTER_CONTENT_TYPE,
+                "slide master",
+                owner="slide layout",
+            )
+            if _pptx_shows_master(layout_root)
+            else None
         )
-        if master is None:
-            return
-        master_id, master_part = master
-        self._inherited(
-            master_part,
-            master_id,
-            _pptx_inherited_root(self._package, master_part, _MASTER_ROOT),
-            "master",
-        )
+        beneath: list[_PptxPrompt] = []
+        if master is not None:
+            master_id, master_part = master
+            beneath = self._inherited(
+                master_part,
+                master_id,
+                _pptx_inherited_root(self._package, master_part, _MASTER_ROOT),
+                "master",
+            )
+        self._applicable(prompts, beneath)
+
+    def _applicable(
+        self, layout: list[_PptxPrompt], master: list[_PptxPrompt]
+    ) -> None:
+        """Emit the saved placeholder text each empty slide slot shows.
+
+        One hop at a time, as the routing to the parts themselves was: the
+        slide's placeholder resolves to the applicable one on its layout, and
+        that one's own slot resolves on to the master only when the layout
+        saved no text for it. A layout that saved some is what the slide shows,
+        so the master's prompt for the same slot is not reported behind it.
+        Carrying the slide's slot on to the master is the same lookup as
+        carrying the layout's: a stated index matched on the index alone, and
+        the default one matched on a type the two already had to agree on.
+
+        A slot no placeholder on the layout names inherits nothing. It is not
+        looked up on the master either -- the chain to the master runs through
+        the layout -- and it is never reported as text some non-matching
+        placeholder happens to hold, because that is text authored for another
+        slot and the slide shows none of it.
+
+        Each record is emitted in the order the walk met the slide shape that
+        applies it, after both inherited parts have reported their own
+        non-placeholder text, and carries the provenance of the shape that
+        saved the text together with the slide shape showing it. Suppression is
+        the inherited pass's own: a prompt whose role, normalised text and
+        encoded transform the slide already showed is not shown again.
+        """
+        for slot, applied in self._applying:
+            prompt = _pptx_applicable(slot, layout, "layout")
+            if prompt is not None and not prompt.holds_text:
+                prompt = _pptx_applicable(slot, master, "master")
+            if prompt is None:
+                continue
+            self._emit(
+                prompt.shape, "body", {**prompt.where, **applied}, suppress=True
+            )
 
     def _inherited(
         self,
@@ -2829,7 +2965,7 @@ class _PptxWalker:
         relation_id: str,
         root: ElementTree.Element,
         level: str,
-    ) -> None:
+    ) -> list[_PptxPrompt]:
         """Emit one inherited part's own authored text, in its declared order.
 
         Only a shape directly below that part's shape tree is read: a group is
@@ -2839,11 +2975,11 @@ class _PptxWalker:
         the z-order and has its identity validated, exactly as on a slide, so
         skipping one never shifts another's position.
 
-        A shape holding a placeholder reference is skipped whatever it holds.
-        What text a slide inherits into a placeholder is placeholder
-        applicability -- which frame on which part supplies it, and whether the
-        slide has already filled it -- and that is not implemented here, so no
-        placeholder's text is reported rather than reported in the wrong place.
+        A shape holding a placeholder reference is not reported as this part's
+        own text whatever it holds: it describes a slot, and whether the slide
+        shows what it saved there is placeholder applicability, which
+        ``_applicable`` settles against both parts once each has been read.
+        Each one is returned for that, in the order the tree declared it.
 
         An exact visual duplicate of something already shown is not shown
         twice. That is decided on the whole of what a run puts on the slide --
@@ -2854,6 +2990,7 @@ class _PptxWalker:
         same place are the one thing seen twice. Suppression never moves an
         index, so each locator names where its run actually sits.
         """
+        prompts: list[_PptxPrompt] = []
         seen: set[str] = set()
         position = 0
         for child in _pptx_children(_pptx_inherited_tree(root, level)):
@@ -2872,26 +3009,32 @@ class _PptxWalker:
             position += 1
             if kind not in _PPTX_INHERITED_SHAPES:
                 continue
-            if _pptx_placeholder(child) != (None, None):
+            where: dict[str, object] = {
+                "part": part,
+                "relationshipId": relation_id,
+                "inheritedFrom": level,
+                "slidePart": self._part,
+                "slideId": self._slide_id,
+                "slide": self._ordinal,
+                "slideHidden": self._hidden,
+                "shapeId": shape_id,
+                "shapeKind": kind,
+                "zOrder": here,
+                "geometry": geometry,
+            }
+            placeholder = _pptx_placeholder(child)
+            if placeholder is not None:
+                prompts.append(
+                    _PptxPrompt(
+                        _pptx_placeholder_slot(placeholder),
+                        where,
+                        child,
+                        _pptx_holds_text(child),
+                    )
+                )
                 continue
-            self._emit(
-                child,
-                "body",
-                {
-                    "part": part,
-                    "relationshipId": relation_id,
-                    "inheritedFrom": level,
-                    "slidePart": self._part,
-                    "slideId": self._slide_id,
-                    "slide": self._ordinal,
-                    "slideHidden": self._hidden,
-                    "shapeId": shape_id,
-                    "shapeKind": kind,
-                    "zOrder": here,
-                    "geometry": geometry,
-                },
-                suppress=True,
-            )
+            self._emit(child, "body", where, suppress=True)
+        return prompts
 
     def _where(
         self,
@@ -2903,7 +3046,8 @@ class _PptxWalker:
         geometry: dict[str, int] | None,
     ) -> dict[str, object]:
         """Return the slide and shape identity every segment of a shape carries."""
-        placeholder_type, placeholder_index = _pptx_placeholder(shape)
+        placeholder = _pptx_placeholder(shape)
+        placeholder_type, placeholder_index = placeholder or (None, None)
         return {
             "part": self._part,
             "slideId": self._slide_id,
@@ -3074,7 +3218,7 @@ class _PptxWalker:
         where: dict[str, object],
         *,
         suppress: bool = False,
-    ) -> None:
+    ) -> bool:
         """Emit one segment per non-empty run of ``holder``'s own paragraphs.
 
         Every run emitted records its visual identity on the walker, so a later
@@ -3083,7 +3227,12 @@ class _PptxWalker:
         asks for that, the slide's own pass does not, so a slide's own text is
         always reported. Indexes are unaffected, so a suppressed run leaves the
         ones around it where they are.
+
+        Returns whether anything was emitted. Nothing was when the shape wrote
+        no text of its own, which on the slide's own pass -- where nothing is
+        suppressed -- is what makes a placeholder an empty slot.
         """
+        emitted = False
         for paragraph_index, paragraph in enumerate(_pptx_paragraphs(holder)):
             self.paragraphs += 1
             if self.paragraphs > _MAX_PPTX_PARAGRAPHS:
@@ -3114,7 +3263,9 @@ class _PptxWalker:
                         visibility="hidden" if self._hidden else "visible",
                     )
                 )
+                emitted = True
                 _bounded(self._segments)
+        return emitted
 
 
 def _pptx_children(parent: ElementTree.Element) -> Iterator[ElementTree.Element]:
@@ -3227,11 +3378,16 @@ def _emu(
 
 def _pptx_placeholder(
     shape: ElementTree.Element,
-) -> tuple[str | None, str | None]:
+) -> tuple[str, str | None] | None:
     """Return the (type, index) one shape's placeholder reference names.
 
-    The reference is recorded, never followed: nothing here reads the layout or
-    master it points at. DrawingML defaults an unstated type to ``body``.
+    ``None`` when the shape holds no reference at all. The index is returned
+    exactly as written, because a locator records the value the file gave and
+    never a renumbering of it; applicability compares it as the number it is.
+    An unstated type is ST_PlaceholderType's own default of ``body``, and both
+    halves are checked against their types here -- the one place the reference
+    is read -- so a slot named by a value neither the slide nor an inherited
+    part could mean is refused rather than resolved against.
     """
     for holder in shape:
         if not _local(holder.tag).startswith("nv"):
@@ -3240,9 +3396,72 @@ def _pptx_placeholder(
             if _local(properties.tag) != "nvPr":
                 continue
             for node in properties:
-                if _local(node.tag) == "ph":
-                    return node.attrib.get("type", "body"), node.attrib.get("idx")
-    return None, None
+                if _local(node.tag) != "ph":
+                    continue
+                kind = node.attrib.get("type", "body")
+                if kind not in _PPTX_PLACEHOLDER_TYPES:
+                    raise OOXMLInvalid("PPTX placeholder type is malformed")
+                index = node.attrib.get("idx")
+                if index is not None and (
+                    _INDEX.fullmatch(index) is None or int(index) > _MAX_INDEX
+                ):
+                    raise OOXMLInvalid("PPTX placeholder index is malformed")
+                return kind, index
+    return None
+
+
+def _pptx_placeholder_slot(
+    placeholder: tuple[str, str | None],
+) -> tuple[str, int]:
+    """Return the slot one placeholder reference names, as it is matched on.
+
+    The index is the number it stands for, so the same slot is the same slot
+    however it is spelled, and an absent one is ST_Index's own default.
+    """
+    kind, index = placeholder
+    return kind, _PPTX_DEFAULT_PLACEHOLDER_INDEX if index is None else int(index)
+
+
+def _pptx_applicable(
+    slot: tuple[str, int], prompts: list[_PptxPrompt], level: str
+) -> _PptxPrompt | None:
+    """Return the one placeholder on an inherited part a slide's own applies to.
+
+    OOXML links a slide's placeholder to the one behind it by ``idx``: the index
+    *is* the slot, so a stated one identifies the placeholder on its own and the
+    type the two ends give that slot need not agree. Only at the default index
+    -- where every placeholder a part writes without an ``idx`` sits, a title
+    among them -- is the type what tells one from another, and there the two
+    ends have to name the same one. A bare ``p:ph`` is therefore the body at the
+    default index, which is what each of the two attributes defaults to.
+
+    Nothing applies when no placeholder on the part matches, and more than one
+    leaves which one is meant ambiguous, so the part is refused rather than read
+    from whichever its tree happens to write first.
+    """
+    kind, index = slot
+    matched = [
+        prompt
+        for prompt in prompts
+        if prompt.slot[1] == index
+        and (index != _PPTX_DEFAULT_PLACEHOLDER_INDEX or prompt.slot[0] == kind)
+    ]
+    if len(matched) > 1:
+        raise OOXMLInvalid(
+            f"PPTX slide {level} holds more than one applicable placeholder"
+        )
+    return matched[0] if matched else None
+
+
+def _pptx_holds_text(shape: ElementTree.Element) -> bool:
+    """Whether one shape saved any text of its own.
+
+    A shape whose paragraphs are all empty saved none: an empty run is a run
+    the file wrote, not text it holds.
+    """
+    return any(
+        text for paragraph in _pptx_paragraphs(shape) for text in _pptx_runs(paragraph)
+    )
 
 
 def _shared_strings(package: _Package) -> list[str]:
