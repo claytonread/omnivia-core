@@ -929,6 +929,62 @@ _DOCX_HDR_FTR_CONTENT_TYPES: Final[dict[str, str]] = {
 # taken before any reference is resolved.
 # ponytail: 10,000 sections per document; raise it if a real source needs more.
 _MAX_DOCX_SECTIONS: Final = 10_000
+# The classic comments story's own root, in both WordprocessingML profiles. A
+# member is that story only where it is rooted here: Word names its
+# ``commentsExtended`` and ``commentsIds`` parts ``comments...`` as well, and
+# each holds another vocabulary entirely, so the file name qualifies nothing and
+# none of their content is read as a comment.
+_DOCX_COMMENTS: Final = frozenset(
+    f"{{{namespace}}}comments" for namespace in _WORDPROCESSINGML
+)
+# Word's own extended-comment part, the one place a comment says whether it is a
+# reply, which comment it replies to, and whether the thread was marked done. It
+# is a Microsoft extension rather than part of either OOXML profile, so the
+# relationship type, the content type and the vocabulary each have a single
+# spelling and no Strict variant; the classic story they annotate stays
+# Transitional-or-Strict and is read exactly as before.
+#
+# The part is reached only through the document's own relationships, by that one
+# relationship type and the content type Word declares for it, so a member that
+# merely looks like the part, an external target, and a part declared as
+# anything else all reach nothing.
+_DOCX_COMMENTS_EX_RELATIONSHIPS: Final = frozenset(
+    {"http://schemas.microsoft.com/office/2011/relationships/commentsExtended"}
+)
+# Word declares the part as ``application/vnd.ms-word.commentsExtended+xml``.
+# It is written folded here because a package's own declaration is folded when
+# the content-types part is read, as every other content type in this module is.
+_DOCX_COMMENTS_EX_CONTENT_TYPE: Final = "application/vnd.ms-word.commentsextended+xml"
+_DOCX_W15: Final = "http://schemas.microsoft.com/office/word/2012/wordml"
+_DOCX_COMMENTS_EX: Final = f"{{{_DOCX_W15}}}commentsEx"
+_DOCX_COMMENT_EX: Final = f"{{{_DOCX_W15}}}commentEx"
+_DOCX_COMMENT_EX_PARA_ID: Final = f"{{{_DOCX_W15}}}paraId"
+_DOCX_COMMENT_EX_PARENT: Final = f"{{{_DOCX_W15}}}paraIdParent"
+_DOCX_COMMENT_EX_DONE: Final = f"{{{_DOCX_W15}}}done"
+# Every claim a record may make, each qualified. ``CT_CommentEx`` is an empty
+# element carrying nothing but these three, so anything else written on one or
+# below it is a claim this build cannot read rather than one it may ignore, and
+# the record is refused instead of reported from the part of it that parsed.
+# Namespace declarations are not attributes once the part is parsed, so a record
+# carrying its own is held to the same three.
+_DOCX_COMMENT_EX_ATTRIBUTES: Final = frozenset(
+    {_DOCX_COMMENT_EX_PARA_ID, _DOCX_COMMENT_EX_PARENT, _DOCX_COMMENT_EX_DONE}
+)
+# The paragraph identity an extended record joins on. Word writes it on the
+# paragraph itself, in the 2010 extension namespace rather than either OOXML
+# profile, so an attribute merely called ``paraId`` identifies no paragraph.
+_DOCX_PARA_ID: Final = "{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
+# ``ST_LongHexNumber`` is four bytes written as eight hex digits, and MS-DOCX
+# restricts a paragraph identity to ``0x00000001``..``0x7FFFFFFF``: zero and the
+# high half are reserved, so neither identifies a paragraph and a value in
+# either is refused rather than joined on.
+_DOCX_PARA_ID_HEX: Final = re.compile(r"[0-9A-Fa-f]{8}")
+_DOCX_PARA_ID_LIMIT: Final = 0x8000_0000
+# OmniVia's own practical bound on the extended-comment list, and on how many
+# paragraph identities one package's comments may declare, taken before any
+# record is joined to a comment.
+# ponytail: 10,000 of each; raise both together if a real source needs more.
+_MAX_DOCX_COMMENT_EXTENSIONS: Final = 10_000
 # The one element inside that container which declares the embedded or linked
 # object. It is an Office drawing extension rather than part of either OOXML
 # profile, so it has a single namespace and no Strict spelling: the same local
@@ -1676,15 +1732,29 @@ def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
             )
         }
         stories.update({part: story for part, (story, _) in furniture.items()})
-        parts = ["word/document.xml", *sorted(stories)]
-        stories["word/document.xml"] = "body"
-        styles = _docx_styles(package)
         # Annotation parts are read first so every reference in any story can
         # be checked against the notes and comments that actually exist.
         roots = {
-            part: package.xml(part) for part in parts if stories[part] in _NOTE_TAGS
+            part: package.xml(part)
+            for part in sorted(stories)
+            if stories[part] in _NOTE_TAGS
         }
+        # A member named like the comments story holds it only where it is rooted
+        # at the story's own element, so Word's own ``commentsExtended`` and
+        # ``commentsIds`` parts are not read as classic comments and contribute
+        # no prose, no annotation targets and no paragraph counts.
+        for name in [
+            part
+            for part, root in roots.items()
+            if stories[part] == "comment" and root.tag not in _DOCX_COMMENTS
+        ]:
+            del roots[name]
+            del stories[name]
+        parts = ["word/document.xml", *sorted(stories)]
+        stories["word/document.xml"] = "body"
+        styles = _docx_styles(package)
         notes = _annotation_index(roots)
+        extensions = _docx_comment_extensions(package, roots)
         roots["word/document.xml"] = document
         seen: dict[tuple[str, str, str], int] = {}
         segments: list[ExtractedSegment] = []
@@ -1714,6 +1784,7 @@ def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                     package,
                     notes,
                     seen,
+                    extensions,
                 )
                 if walker.inventory_note(container):
                     continue
@@ -1765,6 +1836,227 @@ def _annotation_index(
             if note_id is not None and (story == "comment" or note_type == "normal"):
                 index[(story, note_id)] = part
     return index
+
+
+def _docx_para_id(
+    value: str | None, label: str, owner: str = "DOCX comment"
+) -> str | None:
+    """Validate one paragraph identity, keeping it exactly as written.
+
+    A written value is held to ``ST_LongHexNumber`` and to the range MS-DOCX
+    reserves for a paragraph identity, and is then kept as written -- never
+    recased or renumbered -- so an identity stays the one the file declared and a
+    reference to one stays the reference the file wrote. Joins compare case
+    insensitively, because the digits are hex and the case of a hex digit is not
+    part of the number.
+    """
+    if value is None:
+        return None
+    if (
+        _DOCX_PARA_ID_HEX.fullmatch(value) is None
+        or not 0 < int(value, 16) < _DOCX_PARA_ID_LIMIT
+    ):
+        raise OOXMLInvalid(f"{owner} {label} is malformed")
+    return value
+
+
+def _docx_comment_paragraphs(roots: dict[str, ElementTree.Element]) -> dict[str, str]:
+    """Index every classic comment's paragraph identities by the id each claims.
+
+    This is the join an extended record uses: Word identifies the comment a
+    record annotates by the identity of one of the comment's own paragraphs, not
+    by the comment's ``w:id`` and not by position in either list. Only
+    paragraphs inside a classic comment are indexed, so a body, header, footnote
+    or endnote paragraph carrying the same identity joins nothing.
+
+    One identity claimed twice leaves every record naming it ambiguous, so the
+    package is refused rather than joined under whichever comment came first. A
+    comment without an id can be no target -- the walker has no identity to
+    report it under -- so its paragraphs are indexed under no comment at all,
+    though the work of reading them is work all the same: the bound counts every
+    identity read, not just the ones an identified comment keeps.
+    """
+    owners: dict[str, str] = {}
+    read = 0
+    for part, root in roots.items():
+        if _docx_story(part) != "comment":
+            continue
+        for entry in root:
+            if _local(entry.tag) != "comment":
+                continue
+            note_id = _attr(entry, "id")
+            for node in entry.iter():
+                if node.tag not in _DOCX_P:
+                    continue
+                para_id = _docx_para_id(
+                    node.attrib.get(_DOCX_PARA_ID), "paragraph identity"
+                )
+                if para_id is None:
+                    continue
+                if read >= _MAX_DOCX_COMMENT_EXTENSIONS:
+                    raise OOXMLInvalid(
+                        "DOCX comments declare too many paragraph identities"
+                    )
+                read += 1
+                if para_id.casefold() in owners:
+                    raise OOXMLInvalid("DOCX comment paragraph identity is repeated")
+                if note_id is not None:
+                    owners[para_id.casefold()] = note_id
+    return owners
+
+
+def _docx_comment_extensions(
+    package: _Package, roots: dict[str, ElementTree.Element]
+) -> dict[str, dict[str, object]]:
+    """Return each classic comment's extended claims, by the comment's own id.
+
+    The part is reached only through the document's own relationships, by the one
+    relationship type Word defines for it and the content type it declares for
+    the part, and it is read only where it is rooted at ``w15:commentsEx`` and
+    holds nothing but ``w15:commentEx``. A member named ``commentsExtended.xml``
+    that nothing relates to, a relationship of another type, a part declared as
+    another content type and a part rooted at anything else therefore all
+    contribute no metadata at all.
+
+    Every record is a claim the file makes about its own comments. Nothing here
+    invents a user, a thread root or a resolution: a record naming no parent is
+    the thread root it says it is, a parent identity no comment claims is kept as
+    the claim it is and resolved to nobody, and a thread the file never marked
+    stays unmarked rather than folding into an unresolved one.
+
+    A record has to name exactly one comment, so a record whose own identity no
+    comment claims is refused rather than reported against a guess, as are two
+    records for one comment -- whose parent claims nothing here can reconcile --
+    a record parented to itself, and a chain of records that closes into a cycle.
+    """
+    related = _related_part(
+        package,
+        "word/document.xml",
+        _DOCX_COMMENTS_EX_RELATIONSHIPS,
+        _DOCX_COMMENTS_EX_CONTENT_TYPE,
+        "extended comments",
+        owner="document",
+        label="DOCX",
+    )
+    if related is None:
+        return {}
+    _relation_id, part = related
+    root = package.xml(part)
+    if root.tag != _DOCX_COMMENTS_EX:
+        raise OOXMLInvalid("DOCX extended comments part is not rooted at its own list")
+    owners = _docx_comment_paragraphs(roots)
+    # Every record by the folded identity it claims, each carrying the comment it
+    # joined, its own identity as written, its parent claim and its done mark.
+    claims: dict[str, tuple[str, str, str | None, bool | None]] = {}
+    # The comments already annotated, so a second record for one of them is
+    # refused before it is held rather than after one has already been kept.
+    annotated: set[str] = set()
+    for index, entry in enumerate(root):
+        if entry.tag != _DOCX_COMMENT_EX:
+            raise OOXMLInvalid(
+                "DOCX extended comments part holds an unsupported element"
+            )
+        if not _DOCX_COMMENT_EX_ATTRIBUTES.issuperset(entry.attrib):
+            raise OOXMLInvalid("DOCX extended comment holds an unsupported attribute")
+        # The element is empty in the schema, so only the whitespace a pretty
+        # printer leaves between records is content the record does not claim.
+        if len(entry) or (entry.text or "").strip() or (entry.tail or "").strip():
+            raise OOXMLInvalid("DOCX extended comment holds unsupported content")
+        if index >= _MAX_DOCX_COMMENT_EXTENSIONS:
+            raise OOXMLInvalid("DOCX declares too many extended comment records")
+        para_id = _docx_para_id(
+            entry.attrib.get(_DOCX_COMMENT_EX_PARA_ID),
+            "paragraph identity",
+            "DOCX extended comment",
+        )
+        if para_id is None:
+            raise OOXMLInvalid("DOCX extended comment names no comment paragraph")
+        note_id = owners.get(para_id.casefold())
+        if note_id is None:
+            raise OOXMLInvalid("DOCX extended comment names no comment")
+        if para_id.casefold() in claims:
+            raise OOXMLInvalid("DOCX extended comment paragraph identity is repeated")
+        # One comment may claim several paragraph identities, so two records can
+        # name one comment without repeating an identity. Their parent and done
+        # claims are then two answers to one question, which nothing here can
+        # reconcile, so the package is refused rather than annotated from one.
+        if note_id in annotated:
+            raise OOXMLInvalid("DOCX comment is annotated by more than one record")
+        annotated.add(note_id)
+        parent = _docx_para_id(
+            entry.attrib.get(_DOCX_COMMENT_EX_PARENT),
+            "parent paragraph identity",
+            "DOCX extended comment",
+        )
+        if parent is not None and parent.casefold() == para_id.casefold():
+            raise OOXMLInvalid("DOCX extended comment replies to itself")
+        claims[para_id.casefold()] = (
+            note_id,
+            para_id,
+            parent,
+            _docx_comment_done(entry),
+        )
+    _docx_comment_threads(claims)
+    records: dict[str, dict[str, object]] = {}
+    for note_id, para_id, parent, done in claims.values():
+        # Every key is written whatever the record claimed, so a reader never
+        # has to tell a claim the file omitted from one this build left out:
+        # ``None`` is the absence, and a thread the file marked unresolved stays
+        # the ``False`` it was marked. The parent is reported as an identity
+        # only where a comment claims it -- a record may outlive the comment it
+        # replied to, and naming a comment that is not there would invent a
+        # thread root -- while the parent paragraph stays the claim as written.
+        records[note_id] = {
+            "commentParaId": para_id,
+            "isReply": parent is not None,
+            "parentParaId": parent,
+            "parentNoteId": None if parent is None else owners.get(parent.casefold()),
+            "resolved": done,
+        }
+    return records
+
+
+def _docx_comment_done(entry: ElementTree.Element) -> bool | None:
+    """Whether a thread was marked done, or ``None`` where it says nothing.
+
+    The mark is a tri-state claim rather than a boolean: a thread the file never
+    marked is not the same claim as one the file marked unresolved, so an absent
+    attribute stays absent rather than folding into a false. ``ST_OnOff`` is
+    closed, so a value outside it is refused rather than read as whichever of the
+    two it resembles.
+    """
+    value = entry.attrib.get(_DOCX_COMMENT_EX_DONE)
+    if value is None:
+        return None
+    if value in _TRUE_FLAGS:
+        return True
+    if value in _FALSE_FLAGS:
+        return False
+    raise OOXMLInvalid("DOCX extended comment resolution mark is malformed")
+
+
+def _docx_comment_threads(
+    claims: dict[str, tuple[str, str, str | None, bool | None]],
+) -> None:
+    """Refuse a reply chain that closes into a cycle.
+
+    The walk is bounded by the records on it: each step moves to a parent the
+    list declares, and a parent no record declares ends the walk, so nothing
+    runs past the records the package holds. A chain that reaches a record it has
+    already crossed has no root, and a thread without a root is one nothing can
+    read an order from, so the package is refused rather than reported with an
+    invented root.
+    """
+    for start in sorted(claims):
+        crossed = {start}
+        walk = start
+        while (parent := claims[walk][2]) is not None:
+            walk = parent.casefold()
+            if walk not in claims:
+                break
+            if walk in crossed:
+                raise OOXMLInvalid("DOCX extended comment replies form a cycle")
+            crossed.add(walk)
 
 
 def _docx_sections(root: ElementTree.Element) -> list[ElementTree.Element]:
@@ -7523,6 +7815,7 @@ class _DocxWalker:
         package: _Package,
         notes: dict[tuple[str, str], str],
         seen: dict[tuple[str, str, str], int],
+        extensions: dict[str, dict[str, object]],
     ) -> None:
         self._capture_id = capture_id
         self._part = part
@@ -7533,6 +7826,7 @@ class _DocxWalker:
         self._package = package
         self._notes = notes
         self._seen = seen
+        self._extensions = extensions
         # Relationships resolve against the part that holds the reference, and
         # no other: a part without a relationships part has none to name.
         rels = posixpath.join(
@@ -7583,7 +7877,10 @@ class _DocxWalker:
 
         Separator entries hold Word's own rule and notice, not text the author
         wrote, so they are recorded and never read. A comment's author, date
-        and initials are kept as clipped strings and never resolved to anyone.
+        and initials are kept as clipped strings and never resolved to anyone,
+        and whatever the package's extended-comment part claimed about this
+        comment -- its thread position and resolution -- is reported beside
+        them, in the one record rather than a second one to correlate.
         """
         if self._story in {"footnote", "endnote"}:
             note_type = _attr(entry, "type") or "normal"
@@ -7606,10 +7903,18 @@ class _DocxWalker:
             for key in ("author", "date", "initials")
             if (value := _attr(entry, key))
         }
-        if metadata:
+        extension = (
+            {} if self._note_id is None else self._extensions.get(self._note_id, {})
+        )
+        if metadata or extension:
             self._inventory(
                 "inventory",
-                {"kind": "commentMetadata", "noteId": self._note_id, **metadata},
+                {
+                    "kind": "commentMetadata",
+                    "noteId": self._note_id,
+                    **metadata,
+                    **extension,
+                },
                 "annotation",
                 False,
             )
