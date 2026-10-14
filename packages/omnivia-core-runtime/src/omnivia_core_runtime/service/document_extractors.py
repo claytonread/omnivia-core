@@ -19,6 +19,12 @@ from omnivia_core_runtime.service.document_intake import (
     ExtractedSegment,
     ExtractionOutcome,
 )
+from omnivia_core_runtime.service.ocr_resources import (
+    REASON_NEEDS_LANGUAGE,
+    RESOURCE_STATE_UNAVAILABLE,
+    ExtractionSettings,
+    local_ocr_settings,
+)
 from omnivia_core_runtime.service.ooxml_extractors import (
     OOXMLInvalid,
     extract_docx,
@@ -26,6 +32,10 @@ from omnivia_core_runtime.service.ooxml_extractors import (
     extract_xlsx,
 )
 from omnivia_core_runtime.service.raster_extractors import (
+    WORKER_BUILD as RASTER_BUILD,
+)
+from omnivia_core_runtime.service.raster_extractors import (
+    RasterExtraction,
     RasterExtractionInvalid,
     extract_image,
     extract_pdf,
@@ -33,6 +43,12 @@ from omnivia_core_runtime.service.raster_extractors import (
 from omnivia_core_runtime.service.rtf_extractor import RTFExtractionInvalid, extract_rtf
 
 WORKER_BUILD: Final = "core-portable-text-1"
+#: The raster/OCR worker reports its own build, so a retried unit's result is
+#: only reused when the build that produced it matches.
+RASTER_WORKER_BUILD: Final = RASTER_BUILD
+#: The document-level outcome of a source whose combined methods found no useful
+#: searchable text: **Source captured; no reliable text found**.
+DOCUMENT_NO_RELIABLE_TEXT: Final = "no_reliable_text_found"
 MAX_TEXT_BYTES: Final = 1_048_576
 MAX_RECORDS: Final = 100_000
 MAX_FIELDS: Final = 1_000_000
@@ -61,9 +77,19 @@ class DocumentExtractionInvalid(ValueError):
 
 
 def extract_document(
-    content: bytes, *, media_type: str, capture_id: str
+    content: bytes,
+    *,
+    media_type: str,
+    capture_id: str,
+    settings: ExtractionSettings | None = None,
 ) -> ExtractionOutcome:
-    """Extract one admitted source with the deterministic adapter for ``media_type``."""
+    """Extract one admitted source with the deterministic adapter for ``media_type``.
+
+    ``settings`` carries the trusted processing mode and, for a local-OCR
+    profile, the pinned engine/model/language identity. It defaults to the
+    packaged Text-and-local-OCR profile for PDF and image sources; nothing in it
+    is ever derived from the document.
+    """
     if media_type in {"text/plain", "text/markdown"}:
         text = _decode_utf8(content)
         role = "body"
@@ -100,41 +126,23 @@ def extract_document(
             limitations=office_extraction.limitations,
         )
     if media_type == PDF_MEDIA_TYPE or media_type in IMAGE_MEDIA_TYPES:
+        # Text and local OCR is the default for PDF and image sources; a
+        # text-only profile is an explicit trusted choice, never a fallback.
+        raster_settings = settings or local_ocr_settings()
         try:
             raster_extraction = (
-                extract_pdf(content, capture_id=capture_id)
+                extract_pdf(content, capture_id=capture_id, settings=raster_settings)
                 if media_type == PDF_MEDIA_TYPE
-                else extract_image(content, capture_id=capture_id)
+                else extract_image(
+                    content,
+                    capture_id=capture_id,
+                    media_type=media_type,
+                    settings=raster_settings,
+                )
             )
         except RasterExtractionInvalid as error:
             raise DocumentExtractionInvalid(str(error)) from error
-        no_reliable_text = max(
-            0,
-            raster_extraction.expected
-            - raster_extraction.useful_units
-            - raster_extraction.failed_units,
-        )
-        failed = raster_extraction.failed_units + no_reliable_text
-        state = (
-            "succeeded"
-            if failed == 0
-            else "partial"
-            if raster_extraction.segments
-            else "failed"
-        )
-        limitations = {
-            **raster_extraction.limitations,
-            "noReliableTextUnits": no_reliable_text,
-        }
-        return _outcome(
-            raster_extraction.segments,
-            unit_type=raster_extraction.unit_type,
-            expected=raster_extraction.expected,
-            useful=raster_extraction.useful_units,
-            failed=failed,
-            state=state,
-            limitations=limitations,
-        )
+        return _raster_outcome(raster_extraction)
     if media_type in RTF_MEDIA_TYPES:
         try:
             rtf_extraction = extract_rtf(content, capture_id=capture_id)
@@ -324,6 +332,100 @@ def _locator(capture_id: str, **values: Any) -> dict[str, Any]:
     }
 
 
+def _segments_digest(segments: tuple[ExtractedSegment, ...]) -> str:
+    """The output identity of one revision's segments.
+
+    Every identity-bearing field of a segment is covered, including the three
+    that distinguish one OCR observation from another over the same region: the
+    method that read it, the language claimed for it and its confidence. Two
+    results that differ in any of those are two different outputs.
+    """
+    identity = [
+        {
+            "role": segment.semantic_role,
+            "locator": dict(segment.source_locator),
+            "text": segment.text,
+            "value": segment.structured_value,
+            "visibility": segment.visibility,
+            "method": segment.extraction_method,
+            "language": segment.language,
+            "confidence": segment.confidence,
+        }
+        for segment in segments
+    ]
+    return (
+        "sha256:"
+        + hashlib.sha256(to_canonical_json({"segments": identity}).encode()).hexdigest()
+    )
+
+
+def _raster_outcome(extraction: RasterExtraction) -> ExtractionOutcome:
+    """Map exact per-unit raster/OCR counts onto one truthful terminal outcome.
+
+    A limit breach or a failed unit is a partial outcome with the remaining
+    coverage stated, never a silent truncation: a breach on the only unit is
+    still a breach, so it can never be rounded up into a success. OCR resources
+    that were not available are reported as the recoverable condition they are,
+    with any embedded text the source did yield still published. A source whose
+    combined methods produced no useful searchable text is reported as such
+    instead of as a success that implies a searchable body.
+    """
+    limitations = dict(extraction.limitations)
+    breached = limitations.get("limitBreach")
+    unavailable_ocr = limitations.get("ocrResourceState") == RESOURCE_STATE_UNAVAILABLE
+    complete = (
+        extraction.failed_units == 0
+        and extraction.unknown_remaining == 0
+        and breached is None
+        and not unavailable_ocr
+    )
+    if extraction.visited and extraction.failed_units == extraction.visited:
+        state, document_outcome = "failed", "processing_failed"
+    elif unavailable_ocr:
+        # The requested recognition never ran, so a source whose embedded text
+        # carried nothing is not a source that was read and found empty.
+        state = "partial" if extraction.useful_units else "failed"
+        document_outcome = str(limitations.get("code", REASON_NEEDS_LANGUAGE))
+    elif breached is not None:
+        state, document_outcome = "partial", "coverage_truncated_by_limit"
+    elif extraction.useful_units == 0:
+        state, document_outcome = "partial", DOCUMENT_NO_RELIABLE_TEXT
+    elif complete:
+        state, document_outcome = "succeeded", None
+    else:
+        state, document_outcome = "partial", "partial_coverage"
+    if document_outcome is not None:
+        limitations["documentOutcome"] = document_outcome
+    # A non-publishable outcome may not carry segments; a wholly failed source
+    # has none to carry.
+    segments = () if state == "failed" else extraction.segments
+    coverage = {
+        "schema": "omnivia.extraction-coverage.v2",
+        "units": [
+            {
+                "unitType": extraction.unit_type,
+                "expected": extraction.expected,
+                "visited": extraction.visited,
+                "usefulText": extraction.useful_units,
+                "knownEmpty": extraction.known_empty_units,
+                "excludedByProfile": extraction.excluded_units,
+                "unsupported": extraction.unsupported_units,
+                "failed": extraction.failed_units,
+                "unknownRemaining": extraction.unknown_remaining,
+            }
+        ],
+        "roleCoverage": dict(Counter(segment.semantic_role for segment in segments)),
+    }
+    return ExtractionOutcome(
+        state=state,
+        output_digest=None if state == "failed" else _segments_digest(segments),
+        coverage=coverage,
+        limitations=limitations,
+        worker_build=RASTER_WORKER_BUILD,
+        segments=segments,
+    )
+
+
 def _outcome(
     segments: tuple[ExtractedSegment, ...],
     *,
@@ -358,23 +460,9 @@ def _outcome(
         ],
         "roleCoverage": roles,
     }
-    identity = [
-        {
-            "role": segment.semantic_role,
-            "locator": dict(segment.source_locator),
-            "text": segment.text,
-            "value": segment.structured_value,
-            "visibility": segment.visibility,
-        }
-        for segment in segments
-    ]
-    digest = (
-        "sha256:"
-        + hashlib.sha256(to_canonical_json({"segments": identity}).encode()).hexdigest()
-    )
     return ExtractionOutcome(
         state=state,
-        output_digest=digest,
+        output_digest=_segments_digest(segments),
         coverage=coverage,
         limitations=limitations or {},
         worker_build=WORKER_BUILD,

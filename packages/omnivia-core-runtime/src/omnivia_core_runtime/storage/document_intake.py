@@ -35,6 +35,11 @@ CAPTURE_PREFIX: Final = "dcap-"
 REVISION_PREFIX: Final = "dext-"
 PROFILE_SCHEMA: Final = "omnivia.extraction-profile.v1"
 PROCESSING_MODES: Final = frozenset({"text_only", "text_and_local_ocr"})
+#: The optional `ocr.resourceState` member. It is absent when the pinned models were verified, which keeps every
+#: previously written profile byte-identical, and present only to state that the selected resources were not served.
+#: A local-OCR profile that says so keeps its mode and its requested ordered languages while pinning no model hash,
+#: because claiming a digest the invocation never used would be the dishonest encoding.
+OCR_RESOURCE_STATES: Final = frozenset({"verified", "unavailable"})
 MAX_PROFILE_BYTES: Final = 65536
 MAX_SEGMENT_JSON_BYTES: Final = 131072
 MAX_SEGMENTS_PER_REVISION: Final = 100000
@@ -244,13 +249,16 @@ def canonical_profile(profile: dict[str, Any]) -> str:
 
 
 def _validate_ocr_profile(value: Any, *, processing_mode: str) -> None:
-    if not isinstance(value, dict) or frozenset(value) != {
+    if not isinstance(value, dict) or frozenset(value) - {"resourceState"} != {
         "engine",
         "engineRevision",
         "modelHashes",
         "languages",
     }:
         raise DocumentIntakeInvalid("extraction profile OCR fields are not the closed v1 shape")
+    resource_state = value.get("resourceState")
+    if resource_state is not None and resource_state not in OCR_RESOURCE_STATES:
+        raise DocumentIntakeInvalid("extraction profile has an unknown OCR resource state")
     engine = value.get("engine")
     revision = value.get("engineRevision")
     hashes = value.get("modelHashes")
@@ -279,10 +287,17 @@ def _validate_ocr_profile(value: Any, *, processing_mode: str) -> None:
         or len(set(languages)) != len(languages)
     ):
         raise DocumentIntakeInvalid("extraction profile OCR languages are invalid")
-    if processing_mode == "text_only" and (engine != "none" or hashes or languages):
+    if processing_mode == "text_only" and (
+        engine != "none" or hashes or languages or resource_state is not None
+    ):
         raise DocumentIntakeInvalid("a text-only profile cannot select OCR resources")
-    if processing_mode == "text_and_local_ocr" and (engine == "none" or not hashes or not languages):
+    unavailable = resource_state == "unavailable"
+    if processing_mode == "text_and_local_ocr" and (
+        engine == "none" or not languages or (not hashes and not unavailable)
+    ):
         raise DocumentIntakeInvalid("a local-OCR profile must pin its engine, models and languages")
+    if unavailable and hashes:
+        raise DocumentIntakeInvalid("an unavailable OCR selection cannot pin model hashes")
 
 
 def _validate_text_decision(value: Any, *, kind: str, allowed_fields: set[str]) -> None:

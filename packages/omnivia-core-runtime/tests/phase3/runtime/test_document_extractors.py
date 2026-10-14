@@ -5,6 +5,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from _trusted_ocr import catalogue_over, host_models
 from omnivia_core_runtime.service.document_extractors import (
     DOCX_MEDIA_TYPE,
     PDF_MEDIA_TYPE,
@@ -14,9 +15,29 @@ from omnivia_core_runtime.service.document_extractors import (
     DocumentExtractionUnsupported,
     extract_document,
 )
+from omnivia_core_runtime.service.ocr_resources import (
+    ExtractionSettings,
+    local_ocr_settings,
+)
 from PIL import Image, ImageDraw, ImageFont
 
 CAPTURE = "dcap-" + "a" * 64
+
+
+@pytest.fixture(scope="module")
+def local_ocr(tmp_path_factory: pytest.TempPathFactory) -> ExtractionSettings:
+    """Local OCR over a trusted model directory this test owns.
+
+    Production names no model directory and installs no model, so recognition
+    cannot run until an installation configures one: the default here would fail
+    closed. The host's installed models are copied into a directory the test
+    owns and pinned by their real SHA-256, which is the explicit trusted path an
+    installation takes - never an ambient ``TESSDATA_PREFIX``.
+    """
+    directory = host_models(tmp_path_factory.mktemp("tessdata"), "eng", "osd")
+    if directory is None:  # pragma: no cover - host dependent
+        pytest.skip("no local OCR engine with the English and orientation models")
+    return local_ocr_settings(catalogue=catalogue_over(directory, "eng", "osd"))
 
 
 def office_package(parts: dict[str, bytes]) -> bytes:
@@ -180,12 +201,22 @@ def test_pdf_extracts_native_page_text_with_page_provenance() -> None:
         for item in result.segments
         if item.source_locator.get("method") == "native_text"
     ]
-    assert len(native) == 1
     assert "Test PDF Document" in (native[0].text or "")
-    assert native[0].source_locator["page"] == 1
+    assert all(item.source_locator["page"] == 1 for item in native)
+    assert all(item.extraction_method == "direct" for item in native)
+    # Directly decoded text never claims an engine confidence.
+    assert all(item.confidence is None for item in native)
+    assert all(
+        item.source_locator["space"] == "cropbox_points_top_left_rotated_v1"
+        and item.source_locator["cropBox"] == [0.0, 0.0, 595.0, 842.0]
+        and item.source_locator["rotation"] == 0
+        for item in native
+    )
 
 
-def test_png_runs_local_ocr_with_geometry_and_confidence() -> None:
+def test_png_runs_local_ocr_with_geometry_and_confidence(
+    local_ocr: ExtractionSettings,
+) -> None:
     image = Image.new("RGB", (1000, 240), "white")
     draw = ImageDraw.Draw(image)
     draw.text(
@@ -198,7 +229,10 @@ def test_png_runs_local_ocr_with_geometry_and_confidence() -> None:
     image.save(encoded, format="PNG")
 
     result = extract_document(
-        encoded.getvalue(), media_type="image/png", capture_id=CAPTURE
+        encoded.getvalue(),
+        media_type="image/png",
+        capture_id=CAPTURE,
+        settings=local_ocr,
     )
 
     assert result.state == "succeeded"

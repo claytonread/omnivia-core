@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import time
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
@@ -14,6 +15,31 @@ from omnivia_core_runtime.service.document_extractors import (
     DocumentExtractionInvalid,
     DocumentExtractionUnsupported,
     extract_document,
+)
+from omnivia_core_runtime.service.ocr_resources import (
+    MODE_TEXT_AND_LOCAL_OCR,
+    MODE_TEXT_ONLY,
+    OCR_SECONDS_PER_DOCUMENT,
+    PACKAGED_OCR_CATALOGUE,
+    REASON_NEEDS_LANGUAGE,
+    ExtractionSettings,
+    OcrSelectionInvalid,
+    TrustedOcrCatalogue,
+)
+from omnivia_core_runtime.service.raster_extractors import (
+    DEDUPLICATION_VERSION,
+    IMAGE_DECODER_BUILD,
+    MAX_FRAME_PIXELS,
+    MAX_SOURCE_BYTES,
+    MAX_WORKING_PIXELS,
+    PDF_DECODER_BUILD,
+    READING_ORDER_VERSION,
+)
+from omnivia_core_runtime.service.raster_extractors import (
+    MAX_DECODE_SECONDS as RASTER_DECODE_SECONDS,
+)
+from omnivia_core_runtime.service.raster_extractors import (
+    MAX_TEXT_BYTES as RASTER_TEXT_BYTES,
 )
 from omnivia_core_runtime.service.runner import ServiceRunner
 from omnivia_core_runtime.storage import document_intake as store
@@ -31,10 +57,12 @@ OCR_MEDIA_TYPES = frozenset(
         "image/webp",
     }
 )
-TESSERACT_MODEL_HASHES = [
-    "sha256:7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
-    "sha256:9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff",
-]
+#: The profile reference that selects the explicit faster Text-only profile.
+TEXT_ONLY_PROFILE_REF = "text-only"
+#: Bumped with the raster/OCR adapter's geometry, dedup and coverage contract.
+_ADAPTER_VERSION = "2"
+#: The limitation code a Needs OCR language outcome carries.
+NEEDS_OCR_LANGUAGE = REASON_NEEDS_LANGUAGE
 
 
 @dataclass
@@ -48,6 +76,11 @@ class DocumentProcessingExecutor:
 
     runner: ServiceRunner
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
+    #: What the signed installation installed, and the configured ordered
+    #: recognition languages. Both are trusted configuration, never document
+    #: input. ``None`` reads the packaged catalogue at use time.
+    ocr_catalogue: TrustedOcrCatalogue | None = None
+    ocr_languages: Sequence[str] = field(default_factory=tuple)
     _next_poll: float = 0.0
 
     def run_pending(
@@ -63,17 +96,52 @@ class DocumentProcessingExecutor:
             return []
         self._next_poll = now + max(self.poll_interval_seconds, 0.0)
         try:
-            return process_capture_outbox(self.runner, limit=budget)
+            return process_capture_outbox(
+                self.runner,
+                limit=budget,
+                ocr_catalogue=self.ocr_catalogue,
+                ocr_languages=self.ocr_languages,
+            )
         except sqlite3.Error:
             # SQLite contention and lost ownership leave the durable outbox intact.
             # A later bounded pass replays the same operation key.
             return []
 
 
+def resolve_settings(
+    *,
+    media_type: str,
+    profile_ref: str,
+    catalogue: TrustedOcrCatalogue | None = None,
+    languages: Sequence[str] = (),
+) -> ExtractionSettings:
+    """The trusted processing decisions for one capture.
+
+    Nothing here reads the document. The mode comes from the configured profile
+    reference, and the ordered recognition languages from the installation's
+    configured selection, checked against what the signed installation actually
+    installed and verified. A missing or unverified model does not change the
+    selected mode and never quietly becomes English: the returned settings keep
+    the Text-and-local-OCR identity and the requested order, and say that the
+    resources were not served. A malformed selection is a configuration fault
+    and is raised.
+    """
+    if media_type not in OCR_MEDIA_TYPES or profile_ref == TEXT_ONLY_PROFILE_REF:
+        return ExtractionSettings(processing_mode=MODE_TEXT_ONLY)
+    catalogue = catalogue if catalogue is not None else PACKAGED_OCR_CATALOGUE
+    return ExtractionSettings(
+        processing_mode=MODE_TEXT_AND_LOCAL_OCR, ocr=catalogue.resolve(languages)
+    )
+
+
 def portable_profile(
-    *, media_type: str, profile_ref: str, revision: str
+    *,
+    media_type: str,
+    profile_ref: str,
+    revision: str,
+    settings: ExtractionSettings | None = None,
 ) -> dict[str, Any]:
-    """The immutable profile for the portable direct-text worker."""
+    """The immutable profile for the portable direct-text and local-OCR worker."""
     adapter = {
         "text/plain": "plain-text",
         "text/markdown": "markdown-text",
@@ -93,20 +161,37 @@ def portable_profile(
         "application/rtf": "pandoc-rtf-json",
         "text/rtf": "pandoc-rtf-json",
     }.get(media_type, "unsupported")
-    uses_ocr = media_type in OCR_MEDIA_TYPES
+    settings = settings or resolve_settings(
+        media_type=media_type, profile_ref=profile_ref
+    )
+    is_pdf = media_type == "application/pdf"
+    is_image = media_type in OCR_MEDIA_TYPES and not is_pdf
+    uses_ocr = settings.runs_ocr
+    if is_pdf:
+        decoder = PDF_DECODER_BUILD
+    elif is_image:
+        decoder = IMAGE_DECODER_BUILD
+    else:
+        decoder = f"{adapter}-{_ADAPTER_VERSION}"
     return {
         "schema": store.PROFILE_SCHEMA,
         "adapter": adapter,
-        "adapterVersion": "1",
-        "decoderBuild": f"{profile_ref}:{revision}",
-        "processingMode": "text_and_local_ocr" if uses_ocr else "text_only",
-        "ocr": {
-            "engine": "tesseract" if uses_ocr else "none",
-            "engineRevision": "5.5.3" if uses_ocr else "none",
-            "modelHashes": TESSERACT_MODEL_HASHES if uses_ocr else [],
-            "languages": ["eng"] if uses_ocr else [],
-        },
-        "embeddedImageOcr": False,
+        "adapterVersion": _ADAPTER_VERSION,
+        # The caller's trusted profile reference plus the exact decoder build and
+        # native binary identity the result was produced by.
+        "decoderBuild": f"{profile_ref}:{revision}:{decoder}",
+        "processingMode": settings.processing_mode,
+        "ocr": (
+            settings.ocr.to_profile()
+            if settings.ocr is not None
+            else {
+                "engine": "none",
+                "engineRevision": "none",
+                "modelHashes": [],
+                "languages": [],
+            }
+        ),
+        "embeddedImageOcr": settings.embedded_image_ocr,
         "revisionView": "current_text_with_separate_annotations",
         "secondaryContentPolicy": "preserve_role_and_visibility",
         "formulaPolicy": "expression_and_saved_cache_without_calculation",
@@ -116,34 +201,72 @@ def portable_profile(
             "delimiter": "media_default",
             "quote": '"',
         },
-        "limits": {
-            "sourceBytes": 50 * 1024 * 1024,
-            "decodedPixels": 1,
-            "containerEntries": 10_000,
-            "expandedBytes": 512 * 1024 * 1024,
-            "outputTextBytes": 32 * 1024 * 1024,
-            "outputStructuredBytes": 32 * 1024 * 1024,
-            "memoryBytes": 256 * 1024 * 1024,
-            "timeMs": 30_000,
-            "temporaryBytes": 64 * 1024 * 1024,
-        },
-        "readingOrderVersion": "source-order-1",
-        "deduplicationVersion": "none-1",
+        "limits": _profile_limits(
+            media_type=media_type, is_pdf=is_pdf, is_image=is_image, uses_ocr=uses_ocr
+        ),
+        "readingOrderVersion": (
+            READING_ORDER_VERSION if (is_pdf or is_image) else "source-order-1"
+        ),
+        "deduplicationVersion": DEDUPLICATION_VERSION if uses_ocr else "none-1",
         "parserFeatures": sorted(
-            [
+            {
                 "direct_text",
                 "inert_references",
                 "located_segments",
-                *(["local_ocr", "pdf_raster"] if uses_ocr else []),
-            ]
+                *(["page_geometry", "pdf_raster"] if is_pdf else []),
+                *(["frame_orientation", "frame_inventory"] if is_image else []),
+                *(
+                    [
+                        "local_ocr",
+                        "raw_confidence_observations",
+                        "spatial_deduplication",
+                    ]
+                    if uses_ocr
+                    else []
+                ),
+            }
         ),
         "unknownFeaturePolicy": "partial",
         "completenessPolicy": "explicit_unit_coverage",
     }
 
 
+def _profile_limits(
+    *, media_type: str, is_pdf: bool, is_image: bool, uses_ocr: bool
+) -> dict[str, int]:
+    """The ceilings this profile was produced under, as actually enforced."""
+    if media_type in {"text/plain", "text/markdown"}:
+        source_bytes = 1024 * 1024
+    elif media_type in {"application/rtf", "text/rtf", "text/html"}:
+        source_bytes = 20 * 1024 * 1024
+    else:
+        source_bytes = MAX_SOURCE_BYTES
+    if is_image:
+        decoded_pixels = MAX_FRAME_PIXELS
+    elif is_pdf:
+        decoded_pixels = MAX_WORKING_PIXELS
+    else:
+        decoded_pixels = 1
+    return {
+        "sourceBytes": source_bytes,
+        "decodedPixels": decoded_pixels,
+        "containerEntries": 10_000,
+        "expandedBytes": 512 * 1024 * 1024,
+        "outputTextBytes": RASTER_TEXT_BYTES,
+        "outputStructuredBytes": 128 * 1024 * 1024,
+        "memoryBytes": 1024 * 1024 * 1024,
+        "timeMs": (OCR_SECONDS_PER_DOCUMENT if uses_ocr else RASTER_DECODE_SECONDS)
+        * 1000,
+        "temporaryBytes": 2 * 1024 * 1024 * 1024,
+    }
+
+
 def process_capture_outbox(
-    runner: ServiceRunner, *, limit: int = 16
+    runner: ServiceRunner,
+    *,
+    limit: int = 16,
+    ocr_catalogue: TrustedOcrCatalogue | None = None,
+    ocr_languages: Sequence[str] = (),
 ) -> list[store.StoredResult]:
     """Process the oldest capture obligations, settling each terminal result."""
     assert runner.connection is not None and runner.workspace_id is not None
@@ -162,10 +285,25 @@ def process_capture_outbox(
             )
         if capture is None:
             continue
+        selection_invalid = False
+        try:
+            settings = resolve_settings(
+                media_type=capture.media_type,
+                profile_ref=capture.processing_profile_ref,
+                catalogue=ocr_catalogue,
+                languages=ocr_languages,
+            )
+        except OcrSelectionInvalid:
+            # The configured selection is not a selection at all, so there is no
+            # requested local-OCR profile to keep: the revision is admitted under
+            # the one profile that pins no OCR resources and settles as failed.
+            selection_invalid = True
+            settings = ExtractionSettings(processing_mode=MODE_TEXT_ONLY)
         profile = portable_profile(
             media_type=capture.media_type,
             profile_ref=capture.processing_profile_ref,
             revision=capture.processing_profile_revision,
+            settings=settings,
         )
         with runner.sqlite_gate:
             profile_digest = document_intake.register_profile(runner, profile)
@@ -189,18 +327,26 @@ def process_capture_outbox(
                 expected_base_extraction_id=head.current_extraction_id,
                 operation_key=operation_key,
             )
-        try:
-            with runner.sqlite_gate:
-                content = document_intake.read_retained_source(
-                    runner, capture_id=capture.capture_id
+        if selection_invalid:
+            outcome = _terminal_without_segments("failed", "ocr_selection_invalid")
+        else:
+            try:
+                with runner.sqlite_gate:
+                    content = document_intake.read_retained_source(
+                        runner, capture_id=capture.capture_id
+                    )
+                outcome = extract_document(
+                    content,
+                    media_type=capture.media_type,
+                    capture_id=capture.capture_id,
+                    settings=settings,
                 )
-            outcome = extract_document(
-                content, media_type=capture.media_type, capture_id=capture.capture_id
-            )
-        except DocumentExtractionUnsupported:
-            outcome = _terminal_without_segments("unsupported", "format_not_qualified")
-        except (DocumentExtractionInvalid, document_intake.DocumentIntakeRefused):
-            outcome = _terminal_without_segments("failed", "source_invalid")
+            except DocumentExtractionUnsupported:
+                outcome = _terminal_without_segments(
+                    "unsupported", "format_not_qualified"
+                )
+            except (DocumentExtractionInvalid, document_intake.DocumentIntakeRefused):
+                outcome = _terminal_without_segments("failed", "source_invalid")
         with runner.sqlite_gate:
             result = document_intake.complete_extraction(
                 runner,
