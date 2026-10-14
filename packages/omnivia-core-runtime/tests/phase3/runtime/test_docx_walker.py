@@ -9,8 +9,11 @@ import pytest
 from omnivia_core_runtime.service.ooxml_extractors import (
     _MAX_DOCX_EQUATION_BYTES,
     _MAX_DOCX_FIELD_DEPTH,
+    _MAX_DOCX_TABLE_COLUMNS,
+    _MAX_DOCX_TABLE_ROWS,
     _MAX_META_CHARS,
     _MAX_TARGET_CHARS,
+    MAX_SEGMENTS,
     OOXMLInvalid,
     _FieldState,
     extract_docx,
@@ -4874,3 +4877,493 @@ def test_a_shape_declaring_two_different_positions_is_refused() -> None:
     assert placements(imaged(f"<w:p>{pict(style=repeated)}</w:p>")) == [
         ("0.v0", "anchor", repeated)
     ]
+
+
+# A table's grid is the table's own claim: the declared ``tblGrid``, each row's
+# ``gridSpan`` and each cell's ``vMerge``. The helpers below write exactly those
+# three and nothing else, so what a test varies is the geometry under test.
+STRICT_W = "http://purl.oclc.org/ooxml/wordprocessingml/main"
+RESTART = '<w:vMerge w:val="restart"/>'
+CONTINUE = '<w:vMerge w:val="continue"/>'
+GRID_KEYS = (
+    "tablePath",
+    "tableColumns",
+    "tableGridWidths",
+    "sourceRow",
+    "sourceCell",
+    "gridRow",
+    "gridColumn",
+    "rowSpan",
+    "columnSpan",
+    "mergeState",
+    "mergeAnchor",
+)
+
+
+def span(columns: int | str) -> str:
+    return f'<w:gridSpan w:val="{columns}"/>'
+
+
+def tc(text: str | None = None, properties: str = "") -> str:
+    """One cell: its declared properties, then its prose, or no prose at all."""
+    body = "<w:p/>" if text is None else p(text)
+    declared = f"<w:tcPr>{properties}</w:tcPr>" if properties else ""
+    return f"<w:tc>{declared}{body}</w:tc>"
+
+
+def tr(*cells: str) -> str:
+    return f"<w:tr>{''.join(cells)}</w:tr>"
+
+
+def tbl(*rows: str, columns: int | None = None, grid: str | None = None) -> str:
+    declared = grid if grid is not None else _declared(columns)
+    return f"<w:tbl>{declared}{''.join(rows)}</w:tbl>"
+
+
+def _declared(columns: int | None) -> str:
+    if columns is None:
+        return ""
+    return f"<w:tblGrid>{'<w:gridCol/>' * columns}</w:tblGrid>"
+
+
+def cells(content: bytes) -> list[tuple[str, object, dict[str, object]]]:
+    """Each table-cell run as its text, its position and the grid it carries."""
+    return [
+        (
+            item.text or "",
+            item.source_locator["position"],
+            {key: item.source_locator[key] for key in GRID_KEYS},
+        )
+        for item in extract_docx(content, capture_id=CAPTURE).segments
+        if item.semantic_role == "table_cell"
+    ]
+
+
+def at(
+    row: int,
+    cell: int,
+    column: int,
+    *,
+    columns: int | None,
+    spans: tuple[int, int] = (1, 1),
+    state: str = "none",
+    anchor: tuple[int, int] | None = None,
+    path: str = "0",
+    widths: tuple[int | None, ...] | None = None,
+) -> dict[str, object]:
+    """The grid a cell at these coordinates is expected to carry."""
+    anchored = anchor if anchor is not None else (row, cell)
+    return {
+        "tablePath": path,
+        "tableColumns": columns,
+        "tableGridWidths": (
+            widths
+            if widths is not None
+            else None
+            if columns is None
+            else (None,) * columns
+        ),
+        "sourceRow": row,
+        "sourceCell": cell,
+        "gridRow": row,
+        "gridColumn": column,
+        "rowSpan": spans[0],
+        "columnSpan": spans[1],
+        "mergeState": state,
+        "mergeAnchor": f"{path}.r{anchored[0]}.c{anchored[1]}",
+    }
+
+
+def test_a_declared_grid_gives_every_cell_source_and_logical_coordinates() -> None:
+    """With nothing merged, the logical column follows the source cell, and each
+    cell is its own segment carrying the column count the table declared. The
+    locator keys are exactly these: no cell is flattened into a row, and the
+    first row claims no header role the table never declared."""
+    body = tbl(tr(tc("a"), tc("b")), tr(tc("c"), tc("d")), columns=2)
+
+    result = extract_docx(docx(body), capture_id=CAPTURE)
+
+    assert cells(docx(body)) == [
+        ("a", "0.r0.c0", at(0, 0, 0, columns=2)),
+        ("b", "0.r0.c1", at(0, 1, 1, columns=2)),
+        ("c", "0.r1.c0", at(1, 0, 0, columns=2)),
+        ("d", "0.r1.c1", at(1, 1, 1, columns=2)),
+    ]
+    assert set(result.segments[0].source_locator) == {
+        "captureId",
+        "part",
+        "story",
+        "position",
+        *GRID_KEYS,
+    }
+
+
+def test_an_undeclared_grid_leaves_the_column_count_unclaimed() -> None:
+    """A table without a ``tblGrid`` declares no width, so none is reported and
+    none is inferred from the widest row. The cells still have their own grid
+    coordinates, because those come from the spans the rows declare."""
+    body = tbl(tr(tc("a"), tc("b")), tr(tc("c")))
+
+    assert cells(docx(body)) == [
+        ("a", "0.r0.c0", at(0, 0, 0, columns=None)),
+        ("b", "0.r0.c1", at(0, 1, 1, columns=None)),
+        ("c", "0.r1.c0", at(1, 0, 0, columns=None)),
+    ]
+
+
+def test_a_horizontal_merge_is_one_cell_over_two_grid_columns() -> None:
+    """A ``gridSpan`` cell is emitted once, as the anchor of a merge two columns
+    wide, and the next cell in its row starts past it. The text is not repeated
+    at the covered column, and the row below is unaffected."""
+    body = tbl(
+        tr(tc("wide", span(2)), tc("right")),
+        tr(tc("a"), tc("b"), tc("c")),
+        columns=3,
+    )
+
+    assert cells(docx(body)) == [
+        ("wide", "0.r0.c0", at(0, 0, 0, columns=3, spans=(1, 2), state="anchor")),
+        ("right", "0.r0.c1", at(0, 1, 2, columns=3)),
+        ("a", "0.r1.c0", at(1, 0, 0, columns=3)),
+        ("b", "0.r1.c1", at(1, 1, 1, columns=3)),
+        ("c", "0.r1.c2", at(1, 2, 2, columns=3)),
+    ]
+
+
+def test_a_vertical_merge_emits_its_text_once_at_the_restart() -> None:
+    """The continuation holds no prose of its own, so the merged text appears
+    once, at the cell that restarted the merge, and that cell reports the two
+    rows the merge spans. Nothing is emitted at the covered coordinate."""
+    body = tbl(
+        tr(tc("tall", RESTART), tc("top")),
+        tr(tc(None, CONTINUE), tc("bottom")),
+        columns=2,
+    )
+
+    assert cells(docx(body)) == [
+        ("tall", "0.r0.c0", at(0, 0, 0, columns=2, spans=(2, 1), state="anchor")),
+        ("top", "0.r0.c1", at(0, 1, 1, columns=2)),
+        ("bottom", "0.r1.c1", at(1, 1, 1, columns=2)),
+    ]
+
+
+def test_an_omitted_merge_value_continues_the_merge_above_it() -> None:
+    """``vMerge`` defaults to continuing, which is how Word writes the covered
+    rows of a vertical merge, so the bare element reads as the continuation it
+    is rather than as a merge restarting at every row."""
+    bare = tbl(
+        tr(tc("tall", RESTART)), tr(tc(None, "<w:vMerge/>")), tr(tc(None, CONTINUE))
+    )
+
+    assert cells(docx(bare)) == [
+        ("tall", "0.r0.c0", at(0, 0, 0, columns=None, spans=(3, 1), state="anchor"))
+    ]
+
+
+def test_empty_continuation_paragraph_properties_are_not_content() -> None:
+    empty = (
+        '<w:tc><w:tcPr><w:vMerge/></w:tcPr>'
+        '<w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:rPr/></w:r></w:p>'
+        "</w:tc>"
+    )
+    body = tbl(tr(tc("tall", RESTART)), tr(empty), columns=1)
+    assert cells(docx(body)) == [
+        ("tall", "0.r0.c0", at(0, 0, 0, columns=1, spans=(2, 1), state="anchor"))
+    ]
+
+
+def test_text_in_a_vertical_continuation_is_refused() -> None:
+    """Covered content cannot be emitted twice or silently discarded."""
+    body = tbl(
+        tr(tc("tall", RESTART), tc("top")),
+        tr(tc("stray", CONTINUE), tc("bottom")),
+        columns=2,
+    )
+
+    with pytest.raises(OOXMLInvalid, match="continuation contains content"):
+        extract_docx(docx(body), capture_id=CAPTURE)
+
+
+def test_declared_grid_widths_are_retained_without_invention() -> None:
+    body = tbl(
+        tr(tc("a"), tc("b")),
+        grid='<w:tblGrid><w:gridCol w:w="1440"/><w:gridCol/></w:tblGrid>',
+    )
+    assert cells(docx(body)) == [
+        ("a", "0.r0.c0", at(0, 0, 0, columns=2, widths=(1440, None))),
+        ("b", "0.r0.c1", at(0, 1, 1, columns=2, widths=(1440, None))),
+    ]
+
+
+@pytest.mark.parametrize("width", ["-1", "1.5", "wide", "1000001"])
+def test_malformed_grid_width_is_refused(width: str) -> None:
+    body = tbl(
+        tr(tc("a")),
+        grid=f'<w:tblGrid><w:gridCol w:w="{width}"/></w:tblGrid>',
+    )
+    with pytest.raises(OOXMLInvalid, match="column width is malformed"):
+        extract_docx(docx(body), capture_id=CAPTURE)
+
+
+def test_a_rectangular_merge_carries_both_spans_at_one_anchor() -> None:
+    """A merge that is both wide and tall is one anchor over a rectangle: its
+    text is emitted once, with the two spans the geometry declares, and the
+    three covered coordinates repeat none of it."""
+    body = tbl(
+        tr(tc("block", RESTART + span(2)), tc("side")),
+        tr(tc(None, CONTINUE + span(2)), tc("under")),
+        tr(tc("a"), tc("b"), tc("c")),
+        columns=3,
+    )
+
+    assert cells(docx(body)) == [
+        ("block", "0.r0.c0", at(0, 0, 0, columns=3, spans=(2, 2), state="anchor")),
+        ("side", "0.r0.c1", at(0, 1, 2, columns=3)),
+        ("under", "0.r1.c1", at(1, 1, 2, columns=3)),
+        ("a", "0.r2.c0", at(2, 0, 0, columns=3)),
+        ("b", "0.r2.c1", at(2, 1, 1, columns=3)),
+        ("c", "0.r2.c2", at(2, 2, 2, columns=3)),
+    ]
+
+
+def test_a_merge_ends_where_the_column_stops_continuing_it() -> None:
+    """A column that holds an ordinary cell closes the merge above it, so the
+    merge spans only the contiguous rows that continued it and the ordinary cell
+    is a cell of its own rather than part of the region."""
+    body = tbl(
+        tr(tc("tall", RESTART)),
+        tr(tc(None, CONTINUE)),
+        tr(tc("own")),
+        columns=1,
+    )
+
+    assert cells(docx(body)) == [
+        ("tall", "0.r0.c0", at(0, 0, 0, columns=1, spans=(2, 1), state="anchor")),
+        ("own", "0.r2.c0", at(2, 0, 0, columns=1)),
+    ]
+
+
+def test_a_nested_table_keeps_its_own_grid_under_its_cell_path() -> None:
+    """The inner table's geometry is its own: its path is the block path of the
+    cell it hangs under, so its anchor citations name its own cells and never
+    the outer table's, and the outer merge is unaffected by what a cell holds."""
+    inner = tbl(
+        tr(tc("in", RESTART), tc("beside")),
+        tr(tc(None, CONTINUE), tc("below")),
+        columns=2,
+    )
+    body = tbl(
+        tr(tc("outer", span(2)), f"<w:tc>{p('holder')}{inner}</w:tc>"),
+        columns=3,
+    )
+
+    assert cells(docx(body)) == [
+        ("outer", "0.r0.c0", at(0, 0, 0, columns=3, spans=(1, 2), state="anchor")),
+        ("holder", "0.r0.c1", at(0, 1, 2, columns=3)),
+        (
+            "in",
+            "0.r0.c1.1.r0.c0",
+            at(0, 0, 0, columns=2, spans=(2, 1), state="anchor", path="0.r0.c1.1"),
+        ),
+        ("beside", "0.r0.c1.1.r0.c1", at(0, 1, 1, columns=2, path="0.r0.c1.1")),
+        ("below", "0.r0.c1.1.r1.c1", at(1, 1, 1, columns=2, path="0.r0.c1.1")),
+    ]
+
+
+def test_a_strict_table_declares_the_same_grid_as_a_transitional_one() -> None:
+    """The grid, the spans and the merge are read by qualified name in both
+    WordprocessingML profiles, so a table written in the Strict vocabulary
+    reaches exactly the geometry the Transitional one does."""
+    rows = (
+        tr(tc("block", RESTART + span(2)), tc("side")),
+        tr(tc(None, CONTINUE + span(2)), tc("under")),
+    )
+    transitional = tbl(*rows, columns=3)
+    strict = transitional.replace("<w:tbl>", f'<w:tbl xmlns:w="{STRICT_W}">', 1)
+
+    assert cells(docx(strict)) == cells(docx(transitional))
+    assert cells(docx(strict)) == [
+        ("block", "0.r0.c0", at(0, 0, 0, columns=3, spans=(2, 2), state="anchor")),
+        ("side", "0.r0.c1", at(0, 1, 2, columns=3)),
+        ("under", "0.r1.c1", at(1, 1, 2, columns=3)),
+    ]
+
+
+def test_a_lookalike_grid_span_or_merge_declares_no_geometry() -> None:
+    """Geometry is a structural claim about the table, so it is read by qualified
+    name alone. An element merely called ``tblGrid``, ``gridSpan`` or ``vMerge``
+    in another vocabulary declares nothing: the column count stays unclaimed,
+    the span stays one, and the lookalike merge opens none -- so it is not even
+    refused as the orphan continuation a real one would be."""
+    foreign = 'xmlns:x="urn:omnivia-test:lookalike"'
+    body = (
+        f"<w:tbl {foreign}>"
+        "<x:tblGrid><x:gridCol/><x:gridCol/><x:gridCol/></x:tblGrid>"
+        + tr(
+            f'<w:tc><w:tcPr><x:gridSpan x:val="2"/></w:tcPr>{p("a")}</w:tc>',
+            f"<w:tc><w:tcPr><x:vMerge/></w:tcPr>{p('b')}</w:tc>",
+        )
+        + "</w:tbl>"
+    )
+
+    assert cells(docx(body)) == [
+        ("a", "0.r0.c0", at(0, 0, 0, columns=None)),
+        ("b", "0.r0.c1", at(0, 1, 1, columns=None)),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("properties", "message"),
+    [
+        ("<w:gridSpan/>", "horizontal cell span is malformed"),
+        (span(0), "horizontal cell span is malformed"),
+        (span(-1), "horizontal cell span is malformed"),
+        (span("two"), "horizontal cell span is malformed"),
+        (span(""), "horizontal cell span is malformed"),
+        ('<w:gridSpan val="2"/>', "horizontal cell span is malformed"),
+        (span(_MAX_DOCX_TABLE_COLUMNS + 1), "horizontal cell span is too wide"),
+        ('<w:vMerge w:val="merge"/>', "vertical cell merge is malformed"),
+        ('<w:vMerge w:val=""/>', "vertical cell merge is malformed"),
+        (span(2) + span(2), "declares its span twice"),
+        (RESTART + RESTART, "declares its merge twice"),
+    ],
+)
+def test_a_malformed_span_or_merge_is_refused(properties: str, message: str) -> None:
+    """A span that states no readable count and a merge that states no defined
+    state are each refused rather than guessed at, defaulted to one, or taken
+    from whichever declaration came last. The ``val`` is read by qualified name,
+    so an unqualified one carries no count at all."""
+    with pytest.raises(OOXMLInvalid, match=message):
+        extract_docx(docx(tbl(tr(tc("a", properties)))), capture_id=CAPTURE)
+
+
+def test_a_geometry_value_declared_in_both_profiles_is_refused() -> None:
+    """One ``gridSpan`` carrying a Transitional and a Strict ``val`` states two
+    counts, and nothing here chooses between them or takes whichever came
+    last."""
+    both = f'<w:gridSpan xmlns:s="{STRICT_W}" w:val="2" s:val="3"/>'
+
+    with pytest.raises(OOXMLInvalid, match="declares two values"):
+        extract_docx(docx(tbl(tr(tc("a", both)))), capture_id=CAPTURE)
+
+
+def test_a_geometry_value_from_the_other_profile_is_refused() -> None:
+    mismatched = f'<w:gridSpan xmlns:s="{STRICT_W}" s:val="2"/>'
+    with pytest.raises(OOXMLInvalid, match="value uses another profile"):
+        extract_docx(docx(tbl(tr(tc("a", mismatched)))), capture_id=CAPTURE)
+
+
+def test_a_cell_or_table_declaring_its_geometry_twice_is_refused() -> None:
+    """Two ``tcPr`` leave a cell with no single geometry and two ``tblGrid``
+    leave a table with no single declared width; neither is resolved by order."""
+    twice = f"<w:tc><w:tcPr>{span(2)}</w:tcPr><w:tcPr/>{p('a')}</w:tc>"
+    with pytest.raises(OOXMLInvalid, match="declares its properties twice"):
+        extract_docx(docx(tbl(tr(twice))), capture_id=CAPTURE)
+
+    grids = _declared(2) + _declared(3)
+    with pytest.raises(OOXMLInvalid, match="declares more than one grid"):
+        extract_docx(docx(tbl(tr(tc("a")), grid=grids)), capture_id=CAPTURE)
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        # A continuation in the first row continues nothing at all.
+        (tr(tc(None, CONTINUE)),),
+        # The cell above is an ordinary cell, so it opened no merge.
+        (tr(tc("a")), tr(tc(None, CONTINUE))),
+        # The merge the first row opened was closed by the row between.
+        (tr(tc("a", RESTART)), tr(tc("b")), tr(tc(None, CONTINUE))),
+        # The anchor above starts at column 0, so column 1 continues nothing.
+        (tr(tc("a", RESTART + span(2))), tr(tc("b"), tc(None, CONTINUE))),
+        # The anchor above is one column wide and this continuation is two.
+        (tr(tc("a", RESTART)), tr(tc(None, CONTINUE + span(2)))),
+        # The anchor above is two columns wide and this continuation is one.
+        (tr(tc("a", RESTART + span(2))), tr(tc(None, CONTINUE))),
+    ],
+)
+def test_a_continuation_without_a_matching_anchor_is_refused(
+    rows: tuple[str, ...],
+) -> None:
+    """A vertical merge continues a merge the same column opened in the row
+    directly above, at the same width, or it continues nothing. An orphan and an
+    inconsistent overlap are both refused rather than anchored at whatever cell
+    happens to be nearby."""
+    with pytest.raises(OOXMLInvalid, match="vertical cell merge continues nothing"):
+        extract_docx(docx(tbl(*rows, columns=3)), capture_id=CAPTURE)
+
+
+def test_a_row_reaching_past_the_declared_grid_is_refused() -> None:
+    """The declared ``tblGrid`` is the table's own statement of its width, so a
+    row whose spans reach past it is inconsistent geometry rather than a wider
+    grid to infer. A row that exactly fills the grid is not."""
+    over = tbl(tr(tc("a"), tc("b", span(2))), columns=2)
+    with pytest.raises(OOXMLInvalid, match="row is wider than its grid"):
+        extract_docx(docx(over), capture_id=CAPTURE)
+
+    exact = tbl(tr(tc("a"), tc("b", span(2))), columns=3)
+    assert [text for text, _, _ in cells(docx(exact))] == ["a", "b"]
+
+
+def test_table_geometry_is_bounded() -> None:
+    """A table wider or longer than OmniVia reads is refused before any of its
+    cells is read, and an undeclared grid is bounded the same way rather than
+    left to grow with the rows."""
+    wide = _declared(_MAX_DOCX_TABLE_COLUMNS + 1)
+    with pytest.raises(OOXMLInvalid, match="declares too many columns"):
+        extract_docx(docx(tbl(tr(tc("a")), grid=wide)), capture_id=CAPTURE)
+
+    long = tbl(*("<w:tr/>",) * (_MAX_DOCX_TABLE_ROWS + 1))
+    with pytest.raises(OOXMLInvalid, match="declares too many rows"):
+        extract_docx(docx(long), capture_id=CAPTURE)
+
+    undeclared = tbl(tr(tc("a", span(_MAX_DOCX_TABLE_COLUMNS)), tc("b")))
+    with pytest.raises(OOXMLInvalid, match="row is wider than its grid"):
+        extract_docx(docx(undeclared), capture_id=CAPTURE)
+
+
+def test_a_table_holding_more_cells_than_the_segment_cap_is_refused() -> None:
+    """The whole grid is planned before a cell is read, so the plan is bounded by
+    what the extraction could emit from it. Cells holding no prose emit no
+    segments at all, which is exactly why the plan cannot be left to the segment
+    cap to stop, and the empty cells here are what makes that reachable."""
+    row = tr(*("<w:tc/>",) * _MAX_DOCX_TABLE_COLUMNS)
+    rows = MAX_SEGMENTS // _MAX_DOCX_TABLE_COLUMNS + 1
+
+    with pytest.raises(OOXMLInvalid, match="DOCX table declares too many cells"):
+        extract_docx(docx(tbl(*(row,) * rows)), capture_id=CAPTURE)
+
+
+def test_a_merged_cell_keeps_its_grid_across_every_run_it_emits() -> None:
+    """A merge's geometry belongs to the cell, not to one stretch of its prose,
+    so every run the cell emits carries the same grid even where a deletion, a
+    hidden stretch and an inventoried hyperlink split it. The interrupting
+    segments keep their own locators and claim no grid of their own."""
+    interrupted = (
+        p("first") + f"<w:p>{run('kept ')}<w:del>{run('gone', 'delText')}</w:del>"
+        f"{hidden('secret')}{run(' tail')}</w:p>"
+    )
+    body = tbl(
+        tr(f"<w:tc><w:tcPr>{RESTART + span(2)}</w:tcPr>{interrupted}</w:tc>"),
+        tr(tc(None, CONTINUE + span(2))),
+        columns=2,
+    )
+    anchor = at(0, 0, 0, columns=2, spans=(2, 2), state="anchor")
+
+    result = extract_docx(docx(body), capture_id=CAPTURE)
+
+    assert cells(docx(body)) == [
+        ("first\nkept ", "0.r0.c0", anchor),
+        (" tail", "0.r0.c0.t1", anchor),
+    ]
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("table_cell", "first\nkept ", "0.r0.c0"),
+        ("deleted_text", "gone", "0.r0.c0.1.d0"),
+        ("hidden_content", "secret", "0.r0.c0.1.v0"),
+        ("table_cell", " tail", "0.r0.c0.t1"),
+    ]
+    assert [
+        sorted(set(i.source_locator) & set(GRID_KEYS)) for i in result.segments[1:3]
+    ] == [[], []]

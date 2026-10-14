@@ -822,6 +822,38 @@ _DOCX_OBJECTS: Final = frozenset(
 _DOCX_PICTURES: Final = frozenset(
     f"{{{namespace}}}pict" for namespace in _WORDPROCESSINGML
 )
+# The table-geometry elements, and the ``val`` that carries their one value,
+# each by its qualified name in both profiles. A grid or a span is a structural
+# claim about the table, so an element merely called ``tblGrid``, ``gridSpan``
+# or ``vMerge`` in another vocabulary declares none of it, an unqualified or
+# foreign ``val`` carries no value, and nothing is read off either.
+_DOCX_TBL_GRID: Final = frozenset(
+    f"{{{namespace}}}tblGrid" for namespace in _WORDPROCESSINGML
+)
+_DOCX_GRID_COL: Final = frozenset(
+    f"{{{namespace}}}gridCol" for namespace in _WORDPROCESSINGML
+)
+_DOCX_TC_PR: Final = frozenset(
+    f"{{{namespace}}}tcPr" for namespace in _WORDPROCESSINGML
+)
+_DOCX_GRID_SPAN: Final = frozenset(
+    f"{{{namespace}}}gridSpan" for namespace in _WORDPROCESSINGML
+)
+_DOCX_V_MERGE: Final = frozenset(
+    f"{{{namespace}}}vMerge" for namespace in _WORDPROCESSINGML
+)
+_DOCX_VAL: Final = tuple(f"{{{namespace}}}val" for namespace in _WORDPROCESSINGML)
+_DOCX_WIDTH: Final = tuple(f"{{{namespace}}}w" for namespace in _WORDPROCESSINGML)
+# ST_Merge: a vertical merge either restarts at this cell or continues the one
+# the column above opened, and the element's own default is to continue.
+_DOCX_MERGE_VALUES: Final = frozenset({"restart", "continue"})
+# OmniVia's own practical bounds on one table's geometry, taken before any of
+# its cells is read, so no single file drives an unbounded grid.
+# ponytail: 256 columns and 10,000 rows per table; raise both together if a
+# real source needs more.
+_MAX_DOCX_TABLE_COLUMNS: Final = 256
+_MAX_DOCX_TABLE_ROWS: Final = 10_000
+_MAX_DOCX_COLUMN_TWIPS: Final = 1_000_000
 # The one element inside that container which declares the embedded or linked
 # object. It is an Office drawing extension rather than part of either OOXML
 # profile, so it has a single namespace and no Strict spelling: the same local
@@ -7188,6 +7220,8 @@ class _CellRun:
     runs: int = 0
     # Inventory segments wait for the run that holds their text.
     marks: list[tuple[str, dict[str, object], str, bool]] = field(default_factory=list)
+    # Where this cell sits in its table's grid, carried by every run it emits.
+    grid: dict[str, object] | None = None
 
 
 @dataclass(slots=True)
@@ -7239,6 +7273,15 @@ class _DocxWalker:
     them. A table cell reads its current paragraphs as one ``table_cell`` run,
     closed by any deletion, hidden stretch, equation, image, chart, diagram,
     text box, field or nested table, and later runs sit at ``<cell>.t<n>``.
+
+    Every ``table_cell`` run also carries the grid its own table declared: the
+    table's path in the story, the declared ``tblGrid`` column count, the cell's
+    source row and cell ordinals, its logical grid coordinates, the merge's
+    ``rowSpan`` and ``columnSpan``, whether the cell anchors that merge or is
+    covered by one, and the path of the cell the merge is anchored at. The grid
+    is planned before any cell is read, so a merged cell's text is emitted once
+    at its anchor and no covered coordinate repeats it; a table is never
+    flattened and no row is read as a header.
 
     Hyperlinks, fields and annotation references stay out of the text: each
     becomes an inert ``object_inventory`` segment at ``<paragraph>.h<n>``
@@ -7455,7 +7498,13 @@ class _DocxWalker:
         return _locator(self._capture_id, **values, **extra)
 
     def _add(
-        self, role: str, position: str, text: str, deleted: bool, hidden: bool = False
+        self,
+        role: str,
+        position: str,
+        text: str,
+        deleted: bool,
+        hidden: bool = False,
+        extra: dict[str, object] | None = None,
     ) -> None:
         if hidden:
             # Hidden text keeps its own role and visibility in every story, so a
@@ -7470,7 +7519,7 @@ class _DocxWalker:
         self._segments.append(
             ExtractedSegment(
                 semantic,
-                self._locator(position),
+                self._locator(position, **(extra or {})),
                 text=text,
                 visibility=visibility,
                 revision_state="deleted" if deleted else "current",
@@ -8067,7 +8116,9 @@ class _DocxWalker:
             return
         if cell.parts:
             position = f"{cell.position}.t{cell.runs}" if cell.runs else cell.position
-            self._add("table_cell", position, "\n".join(cell.parts), False)
+            self._add(
+                "table_cell", position, "\n".join(cell.parts), False, extra=cell.grid
+            )
             cell.runs += 1
             cell.parts.clear()
         for mark in cell.marks:
@@ -8092,6 +8143,13 @@ class _DocxWalker:
     ) -> None:
         if depth > _MAX_DOCX_DEPTH:
             raise OOXMLInvalid("DOCX tables are nested too deeply")
+        # The whole grid is planned, and refused if it is inconsistent, before
+        # any of this table's text is read: a merge's extent is the plan's to
+        # state, never something a cell infers from what has been seen so far.
+        # ``position`` is the table's own path in the story, so a nested table
+        # is identified by the cell path it hangs under and never by its shape.
+        grid, plan = _docx_grid(table)
+        located = {key: entry.located(position, grid) for key, entry in plan.items()}
         row_index = marks = 0
         for row in table:
             tag = _local(row.tag)
@@ -8099,11 +8157,19 @@ class _DocxWalker:
                 self._mark(row, f"{position}.m{marks}", deleted, None)
                 marks += 1
             elif tag == "tr":
-                self._row(row, f"{position}.r{row_index}", depth, deleted)
+                self._row(
+                    row, f"{position}.r{row_index}", depth, deleted, row_index, located
+                )
                 row_index += 1
 
     def _row(
-        self, row: ElementTree.Element, position: str, depth: int, deleted: bool
+        self,
+        row: ElementTree.Element,
+        position: str,
+        depth: int,
+        deleted: bool,
+        row_index: int,
+        located: dict[tuple[int, int], dict[str, object]],
     ) -> None:
         cell_index = marks = 0
         for cell in row:
@@ -8115,8 +8181,15 @@ class _DocxWalker:
             if tag != "tc":
                 continue
             cell_position = f"{position}.c{cell_index}"
+            grid = located.get((row_index, cell_index))
             cell_index += 1
-            run = _CellRun(cell_position, [])
+            if grid is not None and grid["mergeState"] == "covered":
+                if _docx_covered_cell_has_content(cell):
+                    raise OOXMLInvalid(
+                        "DOCX vertical merge continuation contains content"
+                    )
+                continue
+            run = _CellRun(cell_position, [], grid=grid)
             index = block_marks = 0
             for block, removed in _blocks(cell, deleted):
                 block_tag = _local(block.tag)
@@ -8178,6 +8251,221 @@ def _blocks(
                 break
         else:
             stack.pop()
+
+
+@dataclass(slots=True)
+class _DocxCell:
+    """One cell's place in its table's grid, as the table itself declares it.
+
+    ``row`` and ``cell`` are the cell's own source ordinals, the ones its
+    position is built from; ``column`` is where the declared spans put it in the
+    grid. ``anchor`` is the source ordinal pair of the cell a merge is anchored
+    at -- its own, unless a vertical continuation put it under another -- so a
+    covered coordinate cites the one cell whose text stands for the merge
+    instead of repeating it.
+    """
+
+    row: int
+    cell: int
+    column: int
+    column_span: int
+    row_span: int
+    anchor: tuple[int, int]
+
+    def located(
+        self, path: str, grid: tuple[int | None, ...] | None
+    ) -> dict[str, object]:
+        """Say where this cell sits, in source and in grid coordinates."""
+        covered = self.anchor != (self.row, self.cell)
+        merged = self.row_span > 1 or self.column_span > 1
+        return {
+            "tablePath": path,
+            "tableColumns": None if grid is None else len(grid),
+            "tableGridWidths": grid,
+            "sourceRow": self.row,
+            "sourceCell": self.cell,
+            "gridRow": self.row,
+            "gridColumn": self.column,
+            "rowSpan": self.row_span,
+            "columnSpan": self.column_span,
+            "mergeState": "covered" if covered else "anchor" if merged else "none",
+            "mergeAnchor": f"{path}.r{self.anchor[0]}.c{self.anchor[1]}",
+        }
+
+
+def _docx_grid(
+    table: ElementTree.Element,
+) -> tuple[tuple[int | None, ...] | None, dict[tuple[int, int], _DocxCell]]:
+    """Plan one table's grid before any of its cells is read.
+
+    The declared ``tblGrid`` settles how wide the table says it is, and each
+    row's own ``gridSpan`` and ``vMerge`` settle where its cells sit in that
+    grid. Nothing is inferred: a vertical continuation must continue a merge the
+    same column opened in the row directly above, at the same width, and no row
+    may reach past the grid the table declared. The plan is finished before a
+    cell is emitted, so a merge's extent is known at its anchor and no covered
+    coordinate ever repeats the anchor's text.
+
+    Rows and cells are counted exactly as the walk counts them, so every
+    ``tc`` the walk reaches is planned and nothing a row holds beside its cells
+    shifts a coordinate.
+    """
+    declared = _docx_table_grid(table)
+    bound = _MAX_DOCX_TABLE_COLUMNS if declared is None else len(declared)
+    plan: dict[tuple[int, int], _DocxCell] = {}
+    above: dict[int, _DocxCell] = {}
+    row_index = 0
+    for row in table:
+        if _local(row.tag) != "tr":
+            continue
+        if row_index >= _MAX_DOCX_TABLE_ROWS:
+            raise OOXMLInvalid("DOCX table declares too many rows")
+        opened: dict[int, _DocxCell] = {}
+        column = cell_index = 0
+        for cell in row:
+            if _local(cell.tag) != "tc":
+                continue
+            # The plan is held whole, so it is bounded by what the extraction
+            # could emit from it: a table with more cells than the segment cap
+            # is refused here rather than planned and then refused on emission.
+            if len(plan) >= MAX_SEGMENTS:
+                raise OOXMLInvalid("DOCX table declares too many cells")
+            span, merge = _docx_cell_span(cell)
+            if column + span > bound:
+                raise OOXMLInvalid("DOCX table row is wider than its grid")
+            if merge == "continue":
+                anchor = above.get(column)
+                if anchor is None or anchor.column_span != span:
+                    raise OOXMLInvalid("DOCX vertical cell merge continues nothing")
+                anchor.row_span += 1
+                entry = _DocxCell(row_index, cell_index, column, span, 1, anchor.anchor)
+                opened[column] = anchor
+            else:
+                entry = _DocxCell(
+                    row_index, cell_index, column, span, 1, (row_index, cell_index)
+                )
+                if merge == "restart":
+                    opened[column] = entry
+            plan[row_index, cell_index] = entry
+            column += span
+            cell_index += 1
+        above = opened
+        row_index += 1
+    # The anchor's extent is the merge's, so every covered coordinate reports
+    # the region it belongs to rather than the one row it occupies.
+    for entry in plan.values():
+        entry.row_span = plan[entry.anchor].row_span
+    return declared, plan
+
+
+def _docx_table_grid(table: ElementTree.Element) -> tuple[int | None, ...] | None:
+    """Return the qualified column-width claims in this table's own grid."""
+    grids = [node for node in table if node.tag in _DOCX_TBL_GRID]
+    if len(grids) > 1:
+        raise OOXMLInvalid("DOCX table declares more than one grid")
+    if not grids:
+        return None
+    columns = [node for node in grids[0] if node.tag in _DOCX_GRID_COL]
+    if len(columns) > _MAX_DOCX_TABLE_COLUMNS:
+        raise OOXMLInvalid("DOCX table declares too many columns")
+    widths: list[int | None] = []
+    for column in columns:
+        values = [(name, column.attrib[name]) for name in _DOCX_WIDTH if name in column.attrib]
+        if len(values) > 1:
+            raise OOXMLInvalid("DOCX table column declares two widths")
+        if not values:
+            widths.append(None)
+            continue
+        namespace = column.tag.partition("}")[0].lstrip("{")
+        if values[0][0] != f"{{{namespace}}}w":
+            raise OOXMLInvalid("DOCX table column width uses another profile")
+        raw = values[0][1]
+        if _DIGITS.fullmatch(raw) is None or int(raw) > _MAX_DOCX_COLUMN_TWIPS:
+            raise OOXMLInvalid("DOCX table column width is malformed")
+        widths.append(int(raw))
+    return tuple(widths)
+
+
+def _docx_covered_cell_has_content(cell: ElementTree.Element) -> bool:
+    """Whether a vertical continuation stores anything beyond an empty paragraph.
+
+    Word normally writes one empty paragraph in a covered continuation.  That
+    placeholder is accepted; text, fields, annotations, drawings, math, nested
+    tables, or any other authored block would otherwise be silently discarded,
+    so the package is refused instead.
+    """
+    for child in cell:
+        if child.tag in _DOCX_TC_PR:
+            continue
+        if _local(child.tag) != "p":
+            return True
+        if child.text:
+            return True
+        for node in child:
+            local = _local(node.tag)
+            if local == "pPr":
+                continue
+            if local != "r" or node.text:
+                return True
+            if any(_local(item.tag) != "rPr" for item in node):
+                return True
+    return False
+
+
+def _docx_cell_span(cell: ElementTree.Element) -> tuple[int, str | None]:
+    """Read one cell's declared horizontal span and vertical merge state.
+
+    Both are read off the cell's own properties and nowhere else, and a cell
+    that declares either of them twice has no single geometry to read.
+    """
+    properties = [node for node in cell if node.tag in _DOCX_TC_PR]
+    if len(properties) > 1:
+        raise OOXMLInvalid("DOCX table cell declares its properties twice")
+    span: int | None = None
+    merge: str | None = None
+    for node in properties[0] if properties else ():
+        if node.tag in _DOCX_GRID_SPAN:
+            if span is not None:
+                raise OOXMLInvalid("DOCX table cell declares its span twice")
+            span = _docx_span_value(node)
+        elif node.tag in _DOCX_V_MERGE:
+            if merge is not None:
+                raise OOXMLInvalid("DOCX table cell declares its merge twice")
+            merge = _docx_merge_value(node)
+    return span if span is not None else 1, merge
+
+
+def _docx_span_value(element: ElementTree.Element) -> int:
+    """Read a ``gridSpan``, which the schema requires to carry its own count."""
+    value = _docx_val(element)
+    if value is None or _DIGITS.fullmatch(value) is None or int(value) < 1:
+        raise OOXMLInvalid("DOCX horizontal cell span is malformed")
+    if int(value) > _MAX_DOCX_TABLE_COLUMNS:
+        raise OOXMLInvalid("DOCX horizontal cell span is too wide")
+    return int(value)
+
+
+def _docx_merge_value(element: ElementTree.Element) -> str:
+    """Read a ``vMerge``, whose own default is to continue the merge above."""
+    value = _docx_val(element)
+    if value is None:
+        return "continue"
+    if value not in _DOCX_MERGE_VALUES:
+        raise OOXMLInvalid("DOCX vertical cell merge is malformed")
+    return value
+
+
+def _docx_val(element: ElementTree.Element) -> str | None:
+    """Read a ``w:val`` written in either profile, refusing one written twice."""
+    values = [element.attrib[name] for name in _DOCX_VAL if name in element.attrib]
+    if len(values) > 1:
+        raise OOXMLInvalid("DOCX table property declares two values")
+    if not values:
+        return None
+    namespace = element.tag.partition("}")[0].lstrip("{")
+    if f"{{{namespace}}}val" not in element.attrib:
+        raise OOXMLInvalid("DOCX table property value uses another profile")
+    return values[0]
 
 
 def _paragraph_items(
