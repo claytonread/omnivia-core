@@ -78,6 +78,25 @@ MAX_HTML_ATTRIBUTES: Final = 256
 MAX_HTML_SEGMENT_CHARS: Final = 100_000
 MAX_HTML_REFERENCE_CHARS: Final = 2048
 MAX_HTML_SEGMENTS: Final = 50_000
+#: Columns one table row may reach, counting the columns a cell covers with
+#: ``colspan`` and the ones a cell from an earlier row still occupies. The
+#: element bound already limits how many rows and cells a source may hold, but
+#: nothing in it limits the column a span can reach, so the grid needs its own
+#: bound; together the two bound the whole traversal.
+MAX_HTML_TABLE_COLUMNS: Final = 1024
+#: The largest ``rowspan``/``colspan`` a cell may declare, which is the bound
+#: HTML itself puts on ``colspan``. A document cell never spans this far, so the
+#: bound exists to keep one attribute from describing a grid nothing wrote.
+MAX_HTML_TABLE_SPAN: Final = 1000
+#: Grid slots one source may charge across every table in it, counting each
+#: column a cell's placement scan examines, each column it then claims, and each
+#: carried span a row start reconsiders. The column and span bounds hold one
+#: cell, and the element bound holds the cell count, but their product is a
+#: hundred million slots — so a source of many wide cells over a sparse carried
+#: grid is bounded by this aggregate rather than by either of them. It is set a
+#: hundredfold below that product: a real table of a thousand rows by twenty
+#: columns charges tens of thousands of slots, not millions.
+MAX_HTML_TABLE_GRID_SLOTS: Final = 1_000_000
 #: Distinct libxml2 conditions reported from one admission parse. A warning list
 #: is diagnostics, not prose, so this one is a cap rather than a refusal.
 MAX_HTML_PARSER_WARNINGS: Final = 32
@@ -122,6 +141,12 @@ _HTML_VOID: Final = frozenset(
 _HTML_HIDDEN: Final = frozenset({"script", "style", "template"})
 #: Elements that cannot be their own direct child, so a repeat implies an end.
 _HTML_PEER_CLOSING: Final = frozenset({"li", "p", "td", "th"})
+#: Row groups, which name the section a row sits in. A row outside all of them
+#: sits directly in its table.
+_HTML_TABLE_SECTIONS: Final = frozenset({"thead", "tbody", "tfoot"})
+#: A span attribute's whole accepted syntax: an unsigned ASCII decimal, short
+#: enough that the value is read before its magnitude is judged.
+_SPAN_VALUE: Final = re.compile(r"[0-9]{1,4}")
 _REFERENCE_SCHEME: Final = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]{1,31}):")
 #: An XML declaration at the head of the source declares the same thing, so
 #: XML-declared XHTML served as ``text/html`` is still read as XML.
@@ -373,6 +398,34 @@ def _extract_delimited(
 
 
 @dataclass(slots=True)
+class _OpenTable:
+    """One open table's own cell grid, which no table nested in it shares.
+
+    The grid belongs to the ``table`` element that opened it, so it is popped
+    with that element and an inner table's rows and cells advance only the inner
+    grid's counters.
+    """
+
+    #: The table's ordinal among the tables of the whole source, in source
+    #: order, which is what a cell and its caption are associated by.
+    ordinal: int
+    rows: int = 0
+    #: The rightmost column the current row has filled, so the next cell of that
+    #: row starts after it.
+    column: int = 0
+    #: Column -> rows a cell spanning down from an earlier row still occupies,
+    #: so a later row's cell is placed in the column it really falls in rather
+    #: than in its own position among its siblings.
+    occupied: dict[int, int] = field(default_factory=dict)
+    #: Column -> DOM path of the first ``th`` to occupy it, which heads that
+    #: column for every row after it.
+    column_headers: dict[int, str] = field(default_factory=dict)
+    #: DOM path -> rows still covered, for a ``th`` that starts a body row and
+    #: so heads the cells to its right.
+    row_headers: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class _OpenElement:
     """One open element's walk state: where it is, and what text is its own."""
 
@@ -393,6 +446,12 @@ class _OpenElement:
     runs: int = 0
     chunks: list[str] = field(default_factory=list)
     length: int = 0
+    #: The cell grid this element owns, set only on a ``table`` element.
+    table: _OpenTable | None = None
+    #: The element's frozen place in its table, merged into every locator it
+    #: emits. It is fixed at the start tag, so a table nested between this
+    #: element's start and end cannot move the element that encloses it.
+    placement: dict[str, Any] = field(default_factory=dict)
 
 
 class _InertHTMLParser(HTMLParser):
@@ -407,6 +466,13 @@ class _InertHTMLParser(HTMLParser):
     target is recorded as inert inventory text and is never opened, fetched or
     resolved. Every bound is a refusal: prose is never silently truncated to
     fit one.
+
+    A table cell additionally keeps its place in its own table's grid: the
+    table's ordinal in the source, the row and the column it really falls in,
+    the row group it sits in, whether it is a header or a data cell, its
+    validated spans, and the header cells that govern it. A caption keeps the
+    ordinal of the table it captions. Each table owns its grid, so a table
+    nested inside a cell advances none of the enclosing table's counters.
     """
 
     #: Blocks whose own text is a segment, including the structural containers,
@@ -454,6 +520,10 @@ class _InertHTMLParser(HTMLParser):
         self.stack: list[_OpenElement] = [_OpenElement("", "", None, False, None)]
         self.segments: list[ExtractedSegment] = []
         self.elements = 0
+        #: Tables opened so far, which is the next table's ordinal.
+        self.tables = 0
+        #: Grid slots charged by every table in this source so far.
+        self.grid_slots = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.elements += 1
@@ -479,6 +549,13 @@ class _InertHTMLParser(HTMLParser):
         parent.children += 1
         path = f"{parent.path}/{parent.children}:{tag}"
         hidden = parent.hidden or tag in _HTML_HIDDEN or "hidden" in attributes
+        grid: _OpenTable | None = None
+        if tag == "table":
+            self.tables += 1
+            grid = _OpenTable(self.tables)
+            placement = {"table": grid.ordinal}
+        else:
+            placement = self._place(tag, path, attributes)
         if tag == "img":
             alt = attributes.get("alt")
             if alt:
@@ -497,7 +574,159 @@ class _InertHTMLParser(HTMLParser):
             return
         if len(self.stack) > MAX_HTML_DEPTH:
             raise DocumentExtractionInvalid("HTML nesting exceeds the accepted bound")
-        self.stack.append(_OpenElement(tag, path, role, hidden, attributes.get("id")))
+        self.stack.append(
+            _OpenElement(
+                tag,
+                path,
+                role,
+                hidden,
+                attributes.get("id"),
+                table=grid,
+                placement=placement,
+            )
+        )
+
+    def _enclosing_table(self) -> tuple[_OpenTable | None, str]:
+        """The innermost open table's grid and the row group the walk is inside.
+
+        The grid is read off the open stack rather than from a stack of its own,
+        so it is always the one the current element really sits in and it cannot
+        drift out of step with an element the source left unclosed.
+        """
+        section: str | None = None
+        for element in reversed(self.stack):
+            if element.table is not None:
+                return element.table, section or "direct"
+            if section is None and element.tag in _HTML_TABLE_SECTIONS:
+                section = element.tag
+        return None, "direct"
+
+    def _charge(self, slots: int) -> None:
+        """Charge the source's shared grid budget, or refuse the source.
+
+        Every column a placement examines or claims is one slot, so the work the
+        whole source asks of the grid is bounded in aggregate and not only one
+        cell at a time. Breaching it refuses the source: a truncated grid would
+        publish cells in columns the source never put them in.
+        """
+        self.grid_slots += slots
+        if self.grid_slots > MAX_HTML_TABLE_GRID_SLOTS:
+            raise DocumentExtractionInvalid(
+                "HTML table grid exceeds the accepted work bound"
+            )
+
+    def _free_run(self, table: _OpenTable, start: int, span: int) -> int:
+        """The first column of the first free run of ``span`` columns from ``start``.
+
+        A cell covers contiguous columns, so a run interrupted by a column a
+        cell from an earlier row still occupies cannot hold it: the search moves
+        past the occupied column rather than writing over it. A run that would
+        reach past the column bound refuses the source rather than overlapping a
+        neighbour or being trimmed to fit.
+        """
+        first = start
+        while True:
+            if first + span - 1 > MAX_HTML_TABLE_COLUMNS:
+                raise DocumentExtractionInvalid("HTML table row has too many columns")
+            self._charge(span)
+            # The rightmost occupied column in the run is what the next
+            # candidate run must clear, so one scan rules out every earlier
+            # start as well.
+            blocked = max(
+                (
+                    column
+                    for column in range(first, first + span)
+                    if column in table.occupied
+                ),
+                default=None,
+            )
+            if blocked is None:
+                return first
+            first = blocked + 1
+
+    def _place(self, tag: str, path: str, attributes: dict[str, str]) -> dict[str, Any]:
+        """Fix one table element's place in the grid of the table it sits in.
+
+        A row takes the next ordinal of its own table and restarts that table's
+        column cursor; a cell takes the first run of free columns wide enough to
+        hold it, where free means no cell spanning down from an earlier row
+        still occupies it. A cell outside any table keeps no place, because
+        there is no grid for it to have one in.
+        """
+        if tag not in {"caption", "tr", "th", "td"}:
+            return {}
+        table, section = self._enclosing_table()
+        if table is None:
+            return {}
+        if tag == "caption":
+            return {"table": table.ordinal}
+        if tag == "tr":
+            table.rows += 1
+            table.column = 0
+            # A span is consumed by the row it reaches, so every carried span
+            # loses one row here and the exhausted ones stop occupying anything.
+            self._charge(len(table.occupied) + len(table.row_headers))
+            table.occupied = {
+                column: rows - 1 for column, rows in table.occupied.items() if rows > 1
+            }
+            table.row_headers = {
+                header: rows - 1
+                for header, rows in table.row_headers.items()
+                if rows > 1
+            }
+            return {"table": table.ordinal, "row": table.rows}
+        if table.rows == 0:
+            # A cell the source put outside any row still falls in a row; one
+            # is opened for it rather than reporting it in row zero.
+            table.rows = 1
+        row_span = _table_span(attributes.get("rowspan"))
+        column_span = _table_span(attributes.get("colspan"))
+        first = self._free_run(table, table.column + 1, column_span)
+        last = first + column_span - 1
+        table.column = last
+        columns = range(first, last + 1)
+        # The header reads and the span registration below each walk the claimed
+        # columns, so the claim is charged once for all of them.
+        self._charge(column_span)
+        # The governing headers are read before this cell registers itself, so a
+        # header cell is never its own header.
+        headers = dict.fromkeys(
+            header
+            for header in (table.column_headers.get(column) for column in columns)
+            if header is not None
+        )
+        if tag == "td":
+            # A row's leading header heads that row's data, not the other
+            # headers beside it: without this, the second ``th`` of a header row
+            # in a table with no ``thead`` would read as headed by the first.
+            headers.update(dict.fromkeys(table.row_headers))
+        if tag == "th":
+            for column in columns:
+                table.column_headers.setdefault(column, path)
+            # ponytail: a header's reach is read from its position alone — the
+            # first `th` in a column heads that column, and a `th` starting a
+            # body row heads that row. `scope`, `headers` and `abbr` are not
+            # read, so a multi-level header hierarchy is reported as the flat
+            # nearest-header relation; honouring those attributes belongs with
+            # the rest of the HTML table scope.
+            if first == 1 and section != "thead":
+                table.row_headers[path] = row_span
+        if row_span > 1:
+            for column in columns:
+                table.occupied[column] = row_span
+        return {
+            "table": table.ordinal,
+            "row": table.rows,
+            "column": first,
+            "section": section,
+            # The element is already named by the locator's ``element``; the
+            # kind is stated again so a consumer reading the grid need not know
+            # that the two always agree for a cell.
+            "cellKind": tag,
+            "rowSpan": row_span,
+            "colSpan": column_span,
+            "headers": list(headers),
+        }
 
     def handle_data(self, data: str) -> None:
         for element in reversed(self.stack):
@@ -549,7 +778,11 @@ class _InertHTMLParser(HTMLParser):
             ExtractedSegment(
                 "hidden_content" if element.hidden else element.role,
                 self._locator(
-                    element.tag, element.path, element.element_id, element.runs
+                    element.tag,
+                    element.path,
+                    element.element_id,
+                    element.runs,
+                    element.placement,
                 ),
                 text=text,
                 visibility="hidden" if element.hidden else "visible",
@@ -583,7 +816,12 @@ class _InertHTMLParser(HTMLParser):
             raise DocumentExtractionInvalid("HTML extraction has too many segments")
 
     def _locator(
-        self, tag: str, path: str, element_id: str | None, run: int | None = None
+        self,
+        tag: str,
+        path: str,
+        element_id: str | None,
+        run: int | None = None,
+        placement: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return _locator(
             self.capture_id,
@@ -592,7 +830,28 @@ class _InertHTMLParser(HTMLParser):
             path=path,
             run=run,
             elementId=element_id,
+            **(placement or {}),
         )
+
+
+def _table_span(value: str | None) -> int:
+    """Read one validated ``rowspan``/``colspan``, or refuse the source.
+
+    A span is an unsigned ASCII decimal from one to ``MAX_HTML_TABLE_SPAN``, and
+    an absent attribute is one. A zero, a negative, a fraction, a non-ASCII
+    digit, padding and an over-bound value are all refused rather than clamped
+    or ignored: clamping is how a cell comes to cover a region the source never
+    described, and HTML's own reading of ``rowspan="0"`` as *to the end of the
+    section* is exactly the silent reach this adapter must not invent.
+    """
+    if value is None:
+        return 1
+    if _SPAN_VALUE.fullmatch(value) is None:
+        raise DocumentExtractionInvalid("HTML table span is not a positive decimal")
+    span = int(value)
+    if not 1 <= span <= MAX_HTML_TABLE_SPAN:
+        raise DocumentExtractionInvalid("HTML table span is outside the accepted bound")
+    return span
 
 
 def _reference_scheme(target: str) -> str:

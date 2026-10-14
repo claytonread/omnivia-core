@@ -82,6 +82,16 @@ def test_html_locates_text_by_dom_path_and_sibling_index() -> None:
             "element": "td",
             "path": "/1:div/4:table/1:tr/1:td",
             "run": 1,
+            # A cell also keeps its place in its table's grid; that place is
+            # checkpointed in full by ``test_html_table_structure.py``.
+            "table": 1,
+            "row": 1,
+            "column": 1,
+            "section": "direct",
+            "cellKind": "td",
+            "rowSpan": 1,
+            "colSpan": 1,
+            "headers": [],
         },
     ]
     # The same bytes locate the same text on every run, so the output digest a
@@ -141,9 +151,7 @@ def test_nested_block_text_is_never_repeated_in_an_ancestor() -> None:
     ],
 )
 def test_structural_containers_bound_text_attribution(container: str) -> None:
-    source = (
-        f"<p>before<{container}><p>within</p></{container}>after</p>".encode()
-    )
+    source = f"<p>before<{container}><p>within</p></{container}>after</p>".encode()
 
     result = html(source)
 
