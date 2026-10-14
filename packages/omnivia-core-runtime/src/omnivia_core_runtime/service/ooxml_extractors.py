@@ -24,6 +24,7 @@ MAX_XML_BYTES: Final = 64 * 1024 * 1024
 MAX_MEMBER_RATIO: Final = 200
 MAX_RATIO_FLOOR: Final = 1024 * 1024
 MAX_SEGMENTS: Final = 100_000
+MAX_MERGED_CELLS: Final = 200_000
 _CHUNK: Final = 256 * 1024
 _ALLOWED_COMPRESSION: Final = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
 # Encrypted, strongly encrypted, and masked-local-header entries all mean the
@@ -82,6 +83,14 @@ _FORMULA_KINDS: Final = {
     "array": "array",
     "dataTable": "dataTable",
 }
+_SHEET_STATES: Final = frozenset({"visible", "hidden", "veryHidden"})
+# The grid SpreadsheetML itself accepts; a reference beyond it names no cell.
+_MAX_COLUMN: Final = 16_384
+_MAX_ROW: Final = 1_048_576
+_CELL_REF: Final = re.compile(r"([A-Z]{1,3})([0-9]{1,7})")
+_DIGITS: Final = re.compile(r"[0-9]{1,7}")
+_TRUE_FLAGS: Final = frozenset({"1", "true", "on"})
+_FALSE_FLAGS: Final = frozenset({"0", "false", "off"})
 
 
 class OOXMLInvalid(ValueError):
@@ -443,13 +452,17 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         sheets = _xlsx_sheets(package)
         segments: list[ExtractedSegment] = []
         populated = 0
-        for sheet_name, sheet_id, part, hidden in sheets:
+        for sheet_name, sheet_id, part, state in sheets:
             root = package.xml(part)
             masters = _shared_masters(root)
-            for cell in (item for item in root.iter() if _local(item.tag) == "c"):
+            merged = _merged_ranges(root)
+            hidden_columns = _hidden_columns(root)
+            sheet_hidden = state != "visible"
+            for cell, row_hidden in _xlsx_cells(root):
                 coordinate = cell.attrib.get("r")
                 if not coordinate:
                     raise OOXMLInvalid("XLSX cell has no coordinate")
+                position = _cell_index(coordinate)
                 formula = next((node for node in cell if _local(node.tag) == "f"), None)
                 value = next(
                     (node.text or "" for node in cell if _local(node.tag) == "v"), None
@@ -460,14 +473,25 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 if formula is None and value is None and not inline:
                     continue
                 populated += 1
+                column_hidden = position[0] in hidden_columns
                 locator = _locator(
                     capture_id,
                     part=part,
                     sheetId=sheet_id,
                     sheet=sheet_name,
                     cell=coordinate,
+                    sheetState=state,
+                    rowHidden=row_hidden,
+                    columnHidden=column_hidden,
                 )
-                visibility = "hidden" if hidden else "visible"
+                membership = merged.get(position)
+                if membership is not None:
+                    locator["mergedRange"], locator["mergedAnchor"] = membership
+                visibility = (
+                    "hidden"
+                    if sheet_hidden or row_hidden or column_hidden
+                    else "visible"
+                )
                 cell_type = cell.attrib.get("t")
                 if formula is not None:
                     segments.append(
@@ -508,6 +532,24 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                             visibility=visibility,
                         )
                     )
+                _bounded(segments)
+            for reference, link in _xlsx_hyperlinks(package, part, root):
+                segments.append(
+                    ExtractedSegment(
+                        "object_inventory",
+                        _locator(
+                            capture_id,
+                            part=part,
+                            sheetId=sheet_id,
+                            sheet=sheet_name,
+                            cell=reference,
+                            sheetState=state,
+                        ),
+                        structured_value=link,
+                        extraction_method="inventory",
+                        visibility="hidden" if sheet_hidden else "visible",
+                    )
+                )
                 _bounded(segments)
         return OOXMLExtraction(
             tuple(segments),
@@ -586,9 +628,15 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         )
 
 
-def _xlsx_sheets(package: _Package) -> list[tuple[str, str, str, bool]]:
+def _xlsx_sheets(package: _Package) -> list[tuple[str, str, str, str]]:
+    """List (name, sheetId, part, visibility state) for each declared sheet.
+
+    The state is kept as the workbook wrote it, so a very hidden sheet stays
+    distinguishable from one a reader can unhide. The vocabulary is closed, so
+    anything else is refused rather than read as one of them.
+    """
     relations = package.relationships.get("xl/_rels/workbook.xml.rels", {})
-    result: list[tuple[str, str, str, bool]] = []
+    result: list[tuple[str, str, str, str]] = []
     for sheet in package.xml("xl/workbook.xml").iter():
         if _local(sheet.tag) != "sheet":
             continue
@@ -596,17 +644,218 @@ def _xlsx_sheets(package: _Package) -> list[tuple[str, str, str, bool]]:
         relation = relations.get(relation_id)
         if relation is None or relation[1]:
             raise OOXMLInvalid("XLSX sheet relationship is missing or external")
+        state = sheet.attrib.get("state", "visible")
+        if state not in _SHEET_STATES:
+            raise OOXMLInvalid("XLSX sheet has an unknown visibility state")
         result.append(
             (
                 sheet.attrib.get("name", ""),
                 sheet.attrib.get("sheetId", ""),
                 relation[0],
-                sheet.attrib.get("state", "visible") != "visible",
+                state,
             )
         )
     if len(result) > 100:
         raise OOXMLInvalid("XLSX has too many sheets")
     return result
+
+
+def _xlsx_cells(
+    root: ElementTree.Element,
+) -> Iterator[tuple[ElementTree.Element, bool]]:
+    """Yield each written cell with whether the row holding it is hidden.
+
+    Only cells inside ``sheetData`` rows are read, and only where one is
+    written: ``dimension`` is a claim about extent rather than content, so
+    nothing here consults it and no absent cell is materialised.
+    """
+    for row in next((node for node in root if _local(node.tag) == "sheetData"), ()):
+        if _local(row.tag) != "row":
+            continue
+        hidden = _flag(row, "hidden")
+        for cell in row:
+            if _local(cell.tag) == "c":
+                yield cell, hidden
+
+
+def _hidden_columns(root: ElementTree.Element) -> frozenset[int]:
+    """Collect the column indices one sheet marks hidden.
+
+    A span is only read when it is hidden, and is bounded by the grid itself,
+    so the set can hold no more entries than there are columns.
+    """
+    hidden: set[int] = set()
+    for node in root.iter():
+        if _local(node.tag) != "col" or not _flag(node, "hidden"):
+            continue
+        first, last = _column_span(node)
+        hidden.update(range(first, last + 1))
+    return frozenset(hidden)
+
+
+def _merged_ranges(
+    root: ElementTree.Element,
+) -> dict[tuple[int, int], tuple[str, bool]]:
+    """Map each merged position to (the range that covers it, is it the anchor).
+
+    Membership is indexed, never materialised as cells: a position the sheet
+    never writes a cell for yields nothing at all. Two ranges over one position
+    leave that cell in two merges, so the sheet is refused rather than read
+    under one of them.
+    """
+    # ponytail: positions indexed directly, bounded; an interval index only if
+    # whole-column merges have to be accepted.
+    members: dict[tuple[int, int], tuple[str, bool]] = {}
+    for node in root.iter():
+        if _local(node.tag) != "mergeCell":
+            continue
+        reference = node.attrib.get("ref")
+        if not reference:
+            raise OOXMLInvalid("XLSX merged range has no reference")
+        first_column, first_row, last_column, last_row = _cell_range(reference)
+        area = (last_column - first_column + 1) * (last_row - first_row + 1)
+        if len(members) + area > MAX_MERGED_CELLS:
+            raise OOXMLInvalid("XLSX merged ranges exceed the accepted bound")
+        for column in range(first_column, last_column + 1):
+            for row in range(first_row, last_row + 1):
+                anchor = (column, row) == (first_column, first_row)
+                if members.setdefault((column, row), (reference, anchor)) != (
+                    reference,
+                    anchor,
+                ):
+                    raise OOXMLInvalid("XLSX merged ranges overlap")
+    return members
+
+
+def _xlsx_hyperlinks(
+    package: _Package, part: str, root: ElementTree.Element
+) -> list[tuple[str, dict[str, object]]]:
+    """Inventory one sheet's hyperlinks without resolving any of them.
+
+    Each is recorded against the coordinate or range it sits on. An internal
+    jump names only a location inside the workbook; an external one carries its
+    relationship target verbatim. Nothing is opened, fetched or normalised, and
+    a link that names neither leaves nothing to record, so it is refused.
+    """
+    rels = posixpath.join(
+        posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels"
+    )
+    relations = package.relationships.get(rels, {})
+    types = package.relationship_types.get(rels, {})
+    result: list[tuple[str, dict[str, object]]] = []
+    for node in root.iter():
+        if _local(node.tag) != "hyperlink":
+            continue
+        reference = node.attrib.get("ref")
+        if not reference:
+            raise OOXMLInvalid("XLSX hyperlink has no reference")
+        # Validated as a coordinate or range, then kept exactly as written.
+        _cell_range(reference)
+        relation_id = _relationship_id(node.attrib)
+        location = node.attrib.get("location")
+        value: dict[str, object] = {
+            "kind": "hyperlink",
+            "cell": reference,
+            "relationshipId": None,
+            "relationshipType": None,
+            "target": None,
+            "external": False,
+            "scheme": None,
+            "resolved": False,
+            "targetTruncated": False,
+            "location": _clip(location, _MAX_TARGET_CHARS) if location else None,
+        }
+        if not relation_id and not location:
+            raise OOXMLInvalid("XLSX hyperlink names no relationship or location")
+        if relation_id:
+            relation, external = _hyperlink_relation(
+                relations, types, relation_id, "XLSX"
+            )
+            value.update(relation, external=external)
+        result.append((reference, value))
+    return result
+
+
+def _hyperlink_relation(
+    relations: dict[str, tuple[str, bool]],
+    types: dict[str, str],
+    relation_id: str,
+    label: str,
+) -> tuple[dict[str, object], bool]:
+    """Describe one hyperlink relationship inertly, refusing a bad one.
+
+    An external target is recorded verbatim beside the scheme its own text
+    names; nothing opens, fetches or normalises it. A relationship of another
+    type would make the link name something that is not a hyperlink at all.
+    """
+    entry = relations.get(relation_id)
+    if entry is None:
+        raise OOXMLInvalid(f"{label} hyperlink names a missing relationship")
+    relation_type = types.get(relation_id, "")
+    if not relation_type.endswith("/hyperlink"):
+        raise OOXMLInvalid(f"{label} hyperlink names a relationship of another type")
+    target, external = entry
+    match = _SCHEME.match(target)
+    return {
+        "relationshipId": _clip(relation_id, _MAX_META_CHARS),
+        "relationshipType": _clip(relation_type, _MAX_TARGET_CHARS),
+        "target": _clip(target, _MAX_TARGET_CHARS),
+        "targetTruncated": len(target) > _MAX_TARGET_CHARS,
+        "scheme": (match.group(1).casefold() if match else "") if external else None,
+        "resolved": not external,
+    }, external
+
+
+def _cell_index(coordinate: str) -> tuple[int, int]:
+    """Return the (column, row) one A1 coordinate names, or refuse it."""
+    match = _CELL_REF.fullmatch(coordinate)
+    if match is None:
+        raise OOXMLInvalid("XLSX cell coordinate is malformed")
+    column = 0
+    for letter in match.group(1):
+        column = column * 26 + ord(letter) - 64
+    row = int(match.group(2))
+    if not 1 <= column <= _MAX_COLUMN or not 1 <= row <= _MAX_ROW:
+        raise OOXMLInvalid("XLSX cell coordinate is outside the sheet")
+    return column, row
+
+
+def _cell_range(reference: str) -> tuple[int, int, int, int]:
+    """Return the (column, row) bounds of ``A1`` or ``A1:B2``, or refuse it.
+
+    A range whose end precedes its start describes no rectangle, so it is
+    refused rather than reordered into the one it was probably meant to be.
+    """
+    start, _, end = reference.partition(":")
+    first_column, first_row = _cell_index(start)
+    last_column, last_row = _cell_index(end) if end else (first_column, first_row)
+    if last_column < first_column or last_row < first_row:
+        raise OOXMLInvalid("XLSX cell range is malformed")
+    return first_column, first_row, last_column, last_row
+
+
+def _column_span(element: ElementTree.Element) -> tuple[int, int]:
+    """Return the inclusive column span one ``col`` names, or refuse it."""
+    first, last = element.attrib.get("min"), element.attrib.get("max")
+    if (
+        first is None
+        or last is None
+        or _DIGITS.fullmatch(first) is None
+        or _DIGITS.fullmatch(last) is None
+        or not 1 <= int(first) <= int(last) <= _MAX_COLUMN
+    ):
+        raise OOXMLInvalid("XLSX column span is malformed")
+    return int(first), int(last)
+
+
+def _flag(element: ElementTree.Element, name: str) -> bool:
+    """Read one SpreadsheetML boolean attribute, refusing an unreadable value."""
+    value = element.attrib.get(name)
+    if value is None or value in _FALSE_FLAGS:
+        return False
+    if value in _TRUE_FLAGS:
+        return True
+    raise OOXMLInvalid("XLSX boolean attribute is malformed")
 
 
 def _pptx_slides(package: _Package) -> list[tuple[str, str, bool]]:
@@ -880,26 +1129,10 @@ class _DocxWalker:
         }
         if not ids:
             return value
-        relation_id = ids[0][1]
-        entry = self._relations.get(relation_id)
-        if entry is None:
-            raise OOXMLInvalid("DOCX hyperlink names a missing relationship")
-        relation_type = self._relation_types.get(relation_id, "")
-        if not relation_type.endswith("/hyperlink"):
-            raise OOXMLInvalid("DOCX hyperlink names a relationship of another type")
-        target, external = entry
-        value.update(
-            relationshipId=_clip(relation_id, _MAX_META_CHARS),
-            relationshipType=_clip(relation_type, _MAX_TARGET_CHARS),
-            target=_clip(target, _MAX_TARGET_CHARS),
-            targetTruncated=len(target) > _MAX_TARGET_CHARS,
+        relation, _external = _hyperlink_relation(
+            self._relations, self._relation_types, ids[0][1], "DOCX"
         )
-        if external:
-            # Verbatim and inert: never fetched, opened or normalised.
-            match = _SCHEME.match(target)
-            value["scheme"] = match.group(1).casefold() if match else ""
-        else:
-            value["resolved"] = True
+        value.update(relation)
         return value
 
     def _annotation_reference(self, element: ElementTree.Element) -> dict[str, object]:
