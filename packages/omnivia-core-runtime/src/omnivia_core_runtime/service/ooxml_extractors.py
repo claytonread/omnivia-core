@@ -5,10 +5,11 @@ from __future__ import annotations
 import datetime
 import io
 import posixpath
+import re
 import stat
 import unicodedata
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Final, Self
 from xml.etree import ElementTree
@@ -41,6 +42,20 @@ _ARCHIVE_MAGIC: Final = (
 _MAGIC_BYTES: Final = max(len(magic) for magic in _ARCHIVE_MAGIC)
 _FORBIDDEN_XML: Final = (b"<!DOCTYPE", b"<!ENTITY", b"<!NOTATION")
 _RELATIONSHIP_MODES: Final = frozenset({"Internal", "External"})
+_MAX_DOCX_DEPTH: Final = 64
+_NOTE_TAGS: Final = frozenset({"footnote", "endnote", "comment"})
+# Block-level properties, and the compatibility fallback that repeats the
+# choice branch, never hold blocks of their own.
+_NON_BLOCK_TAGS: Final = frozenset(
+    {"pPr", "tblPr", "tblGrid", "trPr", "tcPr", "sectPr", "Fallback"}
+)
+# Run properties may carry an empty ``ins``/``del`` for the paragraph mark;
+# text boxes are read as blocks of their own, never as part of their anchor.
+_NON_RUN_TAGS: Final = frozenset({"pPr", "rPr", "Fallback"})
+_INSERTED: Final = frozenset({"ins", "moveTo"})
+_REMOVED: Final = frozenset({"del", "moveFrom"})
+_MAX_REVISION_DEPTH: Final = 4
+_HEADING_STYLE: Final = re.compile(r"title|heading[1-9]")
 
 
 class OOXMLInvalid(ValueError):
@@ -312,49 +327,25 @@ def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 )
             )
         )
+        styles = _docx_styles(package)
         segments: list[ExtractedSegment] = []
         blocks = 0
         for part in parts:
             root = package.xml(part)
             story = _docx_story(part)
-            for element in root.iter():
-                if _local(element.tag) != "p":
-                    continue
-                blocks += 1
-                text = "".join(
-                    node.text or ""
-                    for node in element.iter()
-                    if _local(node.tag) in {"t", "tab", "br"}
-                )
-                if not text:
-                    continue
-                deleted = any(
-                    _local(node.tag) in {"del", "delText", "moveFrom"}
-                    for node in element.iter()
-                )
-                role = (
-                    "deleted_text"
-                    if deleted
-                    else (
-                        "note"
-                        if story in {"footnote", "endnote"}
-                        else "comment"
-                        if story == "comment"
-                        else "body"
-                    )
-                )
-                segments.append(
-                    ExtractedSegment(
-                        role,
-                        _locator(capture_id, part=part, story=story, block=blocks),
-                        text=text,
-                        visibility="annotation"
-                        if role in {"deleted_text", "note", "comment"}
-                        else "visible",
-                        revision_state="deleted" if deleted else "current",
-                    )
-                )
-                _bounded(segments)
+            containers = (
+                [
+                    (_attr(item, "id"), item)
+                    for item in root
+                    if _local(item.tag) in _NOTE_TAGS
+                ]
+                if story in {"footnote", "endnote", "comment"}
+                else []
+            ) or [(None, root)]
+            for note_id, container in containers:
+                walker = _DocxWalker(capture_id, part, story, note_id, styles, segments)
+                walker.walk(container, "", 0)
+                blocks += walker.paragraphs
         return OOXMLExtraction(
             tuple(segments),
             "document_block",
@@ -576,6 +567,346 @@ def _xlsx_value(
     if kind == "b":
         return raw == "1"
     return raw
+
+
+@dataclass(slots=True)
+class _CellRun:
+    position: str
+    parts: list[str]
+    runs: int = 0
+
+
+class _DocxWalker:
+    """Walks one story's paragraphs and tables in XML document order.
+
+    A position is the block index inside the story (or note), extended with
+    row, cell and in-cell block indices for tables, so it depends only on the
+    structure of the part. Inside a paragraph, items come out in source order:
+    contiguous current text (the first stretch at the paragraph position, later
+    ones at ``<paragraph>.t<n>``), deleted text (``<paragraph>.d<n>``) and text
+    boxes (``<paragraph>.x<n>.<block>``) where they are anchored, and current
+    text is never joined across one of them. A table cell reads its current
+    paragraphs as one ``table_cell`` run, closed by any deletion, text box or
+    nested table, and later runs sit at ``<cell>.t<n>``.
+    """
+
+    def __init__(
+        self,
+        capture_id: str,
+        part: str,
+        story: str,
+        note_id: str | None,
+        styles: dict[str, tuple[str, str | None, bool, bool]],
+        segments: list[ExtractedSegment],
+    ) -> None:
+        self._capture_id = capture_id
+        self._part = part
+        self._story = story
+        self._note_id = note_id
+        self._styles = styles
+        self._segments = segments
+        self.paragraphs = 0
+
+    def walk(
+        self,
+        parent: ElementTree.Element,
+        prefix: str,
+        depth: int,
+        deleted: bool = False,
+    ) -> None:
+        for index, (block, removed) in enumerate(_blocks(parent, deleted)):
+            position = f"{prefix}{index}"
+            if _local(block.tag) == "p":
+                self._paragraph(block, position, depth, removed)
+            else:
+                self._table(block, position, depth, removed)
+
+    def _locator(self, position: str) -> dict[str, object]:
+        values: dict[str, object] = {
+            "part": self._part,
+            "story": self._story,
+            "position": position,
+        }
+        if self._note_id is not None:
+            values["noteId"] = self._note_id
+        return _locator(self._capture_id, **values)
+
+    def _add(self, role: str, position: str, text: str, deleted: bool) -> None:
+        annotation = deleted or role in {"note", "comment"}
+        self._segments.append(
+            ExtractedSegment(
+                "deleted_text" if deleted else role,
+                self._locator(position),
+                text=text,
+                visibility="annotation" if annotation else "visible",
+                revision_state="deleted" if deleted else "current",
+            )
+        )
+        _bounded(self._segments)
+
+    def _paragraph(
+        self,
+        paragraph: ElementTree.Element,
+        position: str,
+        depth: int,
+        deleted: bool,
+        cell: _CellRun | None = None,
+    ) -> None:
+        self.paragraphs += 1
+        role = "table_cell" if cell else self._role(paragraph)
+        current = removed = boxes = 0
+        for kind, value, box_deleted in _paragraph_items(paragraph, deleted):
+            if isinstance(value, ElementTree.Element):
+                self._flush(cell)
+                if depth >= _MAX_DOCX_DEPTH:
+                    raise OOXMLInvalid("DOCX text boxes are nested too deeply")
+                self.walk(value, f"{position}.x{boxes}.", depth + 1, box_deleted)
+                boxes += 1
+            elif kind == "d":
+                self._flush(cell)
+                self._add("body", f"{position}.d{removed}", value, True)
+                removed += 1
+            elif cell is not None:
+                cell.parts.append(value)
+            else:
+                # The first current stretch keeps the paragraph's own position.
+                self._add(
+                    role,
+                    f"{position}.t{current}" if current else position,
+                    value,
+                    False,
+                )
+                current += 1
+
+    def _flush(self, cell: _CellRun | None) -> None:
+        if cell is None or not cell.parts:
+            return
+        position = f"{cell.position}.t{cell.runs}" if cell.runs else cell.position
+        self._add("table_cell", position, "\n".join(cell.parts), False)
+        cell.runs += 1
+        cell.parts.clear()
+
+    def _role(self, paragraph: ElementTree.Element) -> str:
+        if self._story == "footnote" or self._story == "endnote":
+            return "note"
+        if self._story == "comment":
+            return "comment"
+        if self._part == "word/document.xml":
+            return _paragraph_role(paragraph, self._styles)
+        return "body"
+
+    def _table(
+        self,
+        table: ElementTree.Element,
+        position: str,
+        depth: int,
+        deleted: bool,
+    ) -> None:
+        if depth > _MAX_DOCX_DEPTH:
+            raise OOXMLInvalid("DOCX tables are nested too deeply")
+        rows = (item for item in table if _local(item.tag) == "tr")
+        for row_index, row in enumerate(rows):
+            cells = (item for item in row if _local(item.tag) == "tc")
+            for cell_index, cell in enumerate(cells):
+                cell_position = f"{position}.r{row_index}.c{cell_index}"
+                run = _CellRun(cell_position, [])
+                for index, (block, removed) in enumerate(_blocks(cell, deleted)):
+                    block_position = f"{cell_position}.{index}"
+                    if _local(block.tag) == "tbl":
+                        self._flush(run)
+                        self._table(block, block_position, depth + 1, removed)
+                    else:
+                        self._paragraph(block, block_position, depth, removed, run)
+                self._flush(run)
+
+
+def _revised(tag: str, deleted: bool, depth: int) -> tuple[bool, int]:
+    """Return the deleted state and revision depth inside a ``tag`` element.
+
+    An insertion inside a deletion has no coherent reading, and an unbounded
+    stack of wrappers is not a document anyone wrote, so both are refused.
+    A deletion inside an insertion is how Word records inserted-then-deleted
+    text and stays deleted.
+    """
+    if tag not in _INSERTED and tag not in _REMOVED:
+        return deleted, depth
+    if deleted and tag in _INSERTED:
+        raise OOXMLInvalid("DOCX revisions contradict each other")
+    if depth >= _MAX_REVISION_DEPTH:
+        raise OOXMLInvalid("DOCX revisions are nested too deeply")
+    return tag in _REMOVED, depth + 1
+
+
+def _blocks(
+    parent: ElementTree.Element, deleted: bool
+) -> Iterator[tuple[ElementTree.Element, bool]]:
+    """Yield paragraphs and tables below ``parent`` in document order.
+
+    Each comes with whether a deletion wrapped it. Transparent wrappers
+    (``body``, content controls, revisions) are entered; a yielded paragraph or
+    table is not entered, so nothing is seen twice.
+    """
+    stack = [(iter(parent), deleted, 0)]
+    while stack:
+        children, state, depth = stack[-1]
+        for child in children:
+            tag = _local(child.tag)
+            if tag in {"p", "tbl"}:
+                yield child, state
+            elif tag not in _NON_BLOCK_TAGS:
+                inner, level = _revised(tag, state, depth)
+                stack.append((iter(child), inner, level))
+                break
+        else:
+            stack.pop()
+
+
+def _paragraph_items(
+    paragraph: ElementTree.Element, deleted: bool
+) -> list[tuple[str, str | ElementTree.Element, bool]]:
+    """Split a paragraph into ordered ``(kind, value, deleted)`` items.
+
+    Kinds are ``t`` current text, ``d`` deleted text and ``x`` a text box (with
+    whether its anchor was deleted). Adjacent text of one kind is one stretch;
+    tabs and breaks stay as separators inside it.
+    """
+    items: list[tuple[str, str | ElementTree.Element, bool]] = []
+    pending: list[str] = []
+    pending_kind = ""
+
+    def close() -> None:
+        if pending:
+            items.append((pending_kind, "".join(pending), False))
+            pending.clear()
+
+    stack = [(iter(paragraph), deleted, 0)]
+    while stack:
+        children, state, depth = stack[-1]
+        for node in children:
+            tag = _local(node.tag)
+            if tag in _NON_RUN_TAGS:
+                continue
+            if tag == "txbxContent":
+                close()
+                items.append(("x", node, state))
+                if len(items) > MAX_SEGMENTS:
+                    raise OOXMLInvalid("OOXML extraction has too many segments")
+                continue
+            text = {"t": node.text, "delText": node.text, "tab": "\t"}.get(tag)
+            if tag in {"br", "cr"}:
+                text = "\n"
+            if tag in {"t", "delText", "tab", "br", "cr"}:
+                if not text:
+                    continue
+                kind = "d" if state or tag == "delText" else "t"
+                if kind != pending_kind:
+                    close()
+                    pending_kind = kind
+                    if len(items) > MAX_SEGMENTS:
+                        raise OOXMLInvalid("OOXML extraction has too many segments")
+                pending.append(text)
+                continue
+            inner, level = _revised(tag, state, depth)
+            stack.append((iter(node), inner, level))
+            break
+        else:
+            stack.pop()
+    close()
+    return items
+
+
+def _docx_styles(package: _Package) -> dict[str, tuple[str, str | None, bool, bool]]:
+    """Map style id to (name, basedOn, outline-level heading, numbered)."""
+    part = "word/_rels/document.xml.rels"
+    types = package.relationship_types.get(part, {})
+    target = next(
+        (
+            path
+            for relation_id, (path, external) in package.relationships.get(
+                part, {}
+            ).items()
+            if not external and types.get(relation_id, "").endswith("/styles")
+        ),
+        None,
+    )
+    styles: dict[str, tuple[str, str | None, bool, bool]] = {}
+    if target is None:
+        return styles
+    for style in package.xml(target).iter():
+        style_id = _attr(style, "styleId")
+        if _local(style.tag) != "style" or not style_id:
+            continue
+        name, based_on = style_id, None
+        outline = numbered = False
+        for child in style:
+            tag = _local(child.tag)
+            if tag == "name":
+                name = _attr(child, "val") or name
+            elif tag == "basedOn":
+                based_on = _attr(child, "val")
+            elif tag == "pPr":
+                outline, numbered = _paragraph_properties(child)
+        styles[style_id] = (name, based_on, outline, numbered)
+    return styles
+
+
+def _paragraph_properties(properties: ElementTree.Element) -> tuple[bool, bool]:
+    """Return (outline-level heading, numbered) for one ``pPr``."""
+    outline = numbered = False
+    for item in properties:
+        tag = _local(item.tag)
+        if tag == "outlineLvl":
+            level = _attr(item, "val") or ""
+            outline = level.isdigit() and int(level) < 9
+        elif tag == "numPr":
+            numbered = any(
+                _local(number.tag) == "numId"
+                and _attr(number, "val") not in {None, "0"}
+                for number in item
+            )
+    return outline, numbered
+
+
+def _paragraph_role(
+    paragraph: ElementTree.Element,
+    styles: dict[str, tuple[str, str | None, bool, bool]],
+) -> str:
+    """Classify a main-document paragraph as heading, list item or body."""
+    properties = next((item for item in paragraph if _local(item.tag) == "pPr"), None)
+    if properties is None:
+        return "body"
+    outline, numbered = _paragraph_properties(properties)
+    direct_outline = any(_local(item.tag) == "outlineLvl" for item in properties)
+    style_id = next(
+        (_attr(item, "val") for item in properties if _local(item.tag) == "pStyle"),
+        None,
+    )
+    heading = outline
+    seen: set[str] = set()
+    while style_id and style_id not in seen and len(seen) < 16:
+        seen.add(style_id)
+        name, based_on, style_outline, style_numbered = styles.get(
+            style_id, (style_id, None, False, False)
+        )
+        heading = heading or (
+            not direct_outline
+            and (
+                style_outline
+                or _HEADING_STYLE.fullmatch(name.casefold().replace(" ", ""))
+                is not None
+            )
+        )
+        numbered = numbered or style_numbered
+        style_id = based_on
+    if heading:
+        return "heading"
+    return "list_item" if numbered else "body"
+
+
+def _attr(element: ElementTree.Element, name: str) -> str | None:
+    return next(
+        (value for key, value in element.attrib.items() if _local(key) == name), None
+    )
 
 
 def _docx_story(part: str) -> str:
