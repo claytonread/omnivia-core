@@ -82,12 +82,21 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private var pollTimer: Timer?
     private var monitoringTimer: Timer?
     private var handoffTimer: Timer?
+    /// Ticks the durable reconciliation schedule. It is deliberately much shorter than the
+    /// shortest interval that schedule owns: a 15-minute metadata interval plus its jitter must
+    /// come due on its own instant, not on an app timer's.
+    private var reconciliationTimer: Timer?
+    private var workspaceObservers: [NSObjectProtocol] = []
     /// File roots only: they have no durable ledger. Folder roots go through the bridge.
     private var folderEventObserver: FolderEventObserver?
     private var folderEventBridge: FolderEventBridge?
     /// Set when the observation ledger refused a write and its observer was stopped. Periodic
     /// reconciliation still covers the folder; nothing else surfaces this yet.
     private var folderObservationAttention: [FolderObservationAttention] = []
+    /// Arms the periodic schedule from this process's lifecycle. Nothing else surfaces its
+    /// attention values yet; they are kept rather than dropped.
+    private var folderReconciliationDriver: FolderReconciliationDriver?
+    private var folderReconciliationAttention: [FolderReconciliationAttention] = []
     private var folderEventObserverFingerprint = ""
     private var folderEventDebounceTimer: Timer?
     private var firstFolderEventAt: Date?
@@ -158,6 +167,15 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             folderMonitoringCoordinator = environment.folderMonitoring
             folderBulkRunCoordinator = environment.folderBulkCoordinator
             fileMonitoringCoordinator = environment.fileMonitoring
+            folderReconciliationDriver = FolderReconciliationDriver(
+                subscriptions: environment.folderSubscriptions,
+                scheduler: environment.folderReconciliation,
+                onAttention: { [weak self] value in
+                    Task { @MainActor [weak self] in
+                        self?.folderReconciliationAttention.append(value)
+                    }
+                }
+            )
             folderManagementWindowController = FolderManagementWindowController(
                 folderStore: environment.folderSubscriptions,
                 folderMonitoring: environment.folderMonitoring,
@@ -263,6 +281,9 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         coordinator.refresh()
         deliverPendingCaptures()
         reconcileWatchedFolders()
+        // Arms `.startup` and surfaces whatever the persisted schedule already owed. Scheduling
+        // reads no watched scope, so it does not wait on pending establishment above.
+        folderReconciliationDriver?.startup()
         nativeHandoffReceiver?.reconcile()
         shareInboxAdopter?.reconcile()
 
@@ -287,6 +308,34 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         }
         RunLoop.main.add(handoffTimer, forMode: .common)
         self.handoffTimer = handoffTimer
+        let reconciliationTimer = Timer(
+            timeInterval: FolderReconciliationDriver.tickInterval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.folderReconciliationDriver?.tick() }
+        }
+        RunLoop.main.add(reconciliationTimer, forMode: .common)
+        self.reconciliationTimer = reconciliationTimer
+        // Sleep stops the clock for the schedule and stops FSEvents for the stream, and a remount
+        // replaces a root this process cannot otherwise notice. Both are immediate triggers; the
+        // handlers do nothing but hand them to the driver.
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspaceObservers = [
+            workspace.addObserver(
+                forName: NSWorkspace.didWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.folderReconciliationDriver?.wake() }
+            },
+            workspace.addObserver(
+                forName: NSWorkspace.didMountNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.folderReconciliationDriver?.remount() }
+            },
+        ]
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -327,7 +376,11 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         pollTimer?.invalidate()
         monitoringTimer?.invalidate()
         handoffTimer?.invalidate()
+        reconciliationTimer?.invalidate()
         folderEventDebounceTimer?.invalidate()
+        let workspace = NSWorkspace.shared.notificationCenter
+        for observer in workspaceObservers { workspace.removeObserver(observer) }
+        workspaceObservers = []
         folderEventObserver = nil
         folderEventBridge = nil
         // Review lives in this process, so quitting ends every candidate's
