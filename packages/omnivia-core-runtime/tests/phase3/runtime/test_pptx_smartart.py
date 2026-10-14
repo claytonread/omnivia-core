@@ -846,10 +846,10 @@ def test_diagram_counts_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     many_points = pptx(
         models={DIAGRAM_PART: model(lists("".join(pt(str(n)) for n in range(4)), None))}
     )
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_DIAGRAM_POINTS", 3)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_DIAGRAM_POINTS", 3)
     with pytest.raises(OOXMLInvalid, match="too many points"):
         extract_pptx(many_points, capture_id=CAPTURE)
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_DIAGRAM_POINTS", 10_000)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_DIAGRAM_POINTS", 10_000)
 
     many_links = pptx(
         models={
@@ -858,10 +858,10 @@ def test_diagram_counts_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
             )
         }
     )
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_DIAGRAM_CONNECTIONS", 3)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_DIAGRAM_CONNECTIONS", 3)
     with pytest.raises(OOXMLInvalid, match="too many connections"):
         extract_pptx(many_links, capture_id=CAPTURE)
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_DIAGRAM_CONNECTIONS", 20_000)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_DIAGRAM_CONNECTIONS", 20_000)
 
     # Paragraphs and runs are counted across the part, not inside one point, so
     # two points of two paragraphs each cross a bound of three.
@@ -876,20 +876,20 @@ def test_diagram_counts_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
             )
         }
     )
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_DIAGRAM_PARAGRAPHS", 3)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_DIAGRAM_PARAGRAPHS", 3)
     with pytest.raises(OOXMLInvalid, match="too many paragraphs"):
         extract_pptx(wordy, capture_id=CAPTURE)
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_DIAGRAM_PARAGRAPHS", 20_000)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_DIAGRAM_PARAGRAPHS", 20_000)
 
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_DIAGRAM_RUNS", 7)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_DIAGRAM_RUNS", 7)
     with pytest.raises(OOXMLInvalid, match="too many runs"):
         extract_pptx(wordy, capture_id=CAPTURE)
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_DIAGRAM_RUNS", 100_000)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_DIAGRAM_RUNS", 100_000)
 
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_DIAGRAM_CHARS", 7)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_DIAGRAM_CHARS", 7)
     with pytest.raises(OOXMLInvalid, match="text exceeds the accepted bound"):
         extract_pptx(wordy, capture_id=CAPTURE)
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_DIAGRAM_CHARS", 100_000)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_DIAGRAM_CHARS", 100_000)
 
     monkeypatch.setattr(ooxml_extractors, "MAX_SEGMENTS", 2)
     with pytest.raises(OOXMLInvalid, match="too many segments"):

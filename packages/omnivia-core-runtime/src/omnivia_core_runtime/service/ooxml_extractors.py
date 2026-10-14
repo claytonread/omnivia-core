@@ -403,11 +403,14 @@ _DIAGRAM_CONNECTION_TYPES: Final = frozenset(
 )
 # Counted across one diagram data part, for the reason the slide-wide paragraph
 # and run bounds are: a point's own indexes are local to it and bound nothing.
-_MAX_PPTX_DIAGRAM_POINTS: Final = 10_000
-_MAX_PPTX_DIAGRAM_CONNECTIONS: Final = 20_000
-_MAX_PPTX_DIAGRAM_PARAGRAPHS: Final = 20_000
-_MAX_PPTX_DIAGRAM_RUNS: Final = 100_000
-_MAX_PPTX_DIAGRAM_CHARS: Final = 100_000
+# The bounds are the reader's own rather than any one format's: the same bounded
+# reader serves a PPTX graphic frame's SmartArt and a DOCX drawing's, so both
+# are held to these.
+_MAX_DIAGRAM_POINTS: Final = 10_000
+_MAX_DIAGRAM_CONNECTIONS: Final = 20_000
+_MAX_DIAGRAM_PARAGRAPHS: Final = 20_000
+_MAX_DIAGRAM_RUNS: Final = 100_000
+_MAX_DIAGRAM_CHARS: Final = 100_000
 # The author's own ``cNvPr`` claims about a picture, each paired with the field
 # the inventory record keeps it in. Three distinct claims, kept distinct: a
 # ``name`` is what the authoring tool called the object and is usually one it
@@ -2970,8 +2973,8 @@ def _pptx_ole_extent(element: ElementTree.Element, name: str) -> int | None:
     return int(raw)
 
 
-def _pptx_diagram_root(
-    package: _Package, part: str
+def _diagram_root(
+    package: _Package, part: str, owner: str
 ) -> tuple[ElementTree.Element, str]:
     """Parse one diagram data part, refusing a root that is not a data model.
 
@@ -2987,14 +2990,14 @@ def _pptx_diagram_root(
     namespace, _, local = root.tag.rpartition("}")
     namespace = namespace.lstrip("{")
     if namespace not in _DIAGRAM_NAMESPACES:
-        raise OOXMLInvalid("PPTX diagram part uses an unsupported namespace")
+        raise OOXMLInvalid(f"{owner} diagram part uses an unsupported namespace")
     if local != "dataModel":
-        raise OOXMLInvalid("PPTX diagram part is not rooted at its own data model")
+        raise OOXMLInvalid(f"{owner} diagram part is not rooted at its own data model")
     return root, namespace
 
 
-def _pptx_diagram_list(
-    root: ElementTree.Element, namespace: str, name: str
+def _diagram_list(
+    root: ElementTree.Element, namespace: str, name: str, owner: str
 ) -> ElementTree.Element | None:
     """Return the data model's one point or connection list, or None for none.
 
@@ -3003,12 +3006,12 @@ def _pptx_diagram_list(
     """
     found = [node for node in root if node.tag == f"{{{namespace}}}{name}"]
     if len(found) > 1:
-        raise OOXMLInvalid("PPTX diagram declares more than one of a list")
+        raise OOXMLInvalid(f"{owner} diagram declares more than one of a list")
     return found[0] if found else None
 
 
-def _pptx_diagram_model_id(
-    element: ElementTree.Element, name: str, *, required: bool = True
+def _diagram_model_id(
+    element: ElementTree.Element, name: str, owner: str, *, required: bool = True
 ) -> str | None:
     """Read one ``ST_ModelId`` verbatim, refusing a value that is not one.
 
@@ -3019,16 +3022,16 @@ def _pptx_diagram_model_id(
     raw = element.attrib.get(name)
     if raw is None:
         if required:
-            raise OOXMLInvalid("PPTX diagram model id is missing")
+            raise OOXMLInvalid(f"{owner} diagram model id is missing")
         return None
     if _GUID.fullmatch(raw) is None and (
         _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX
     ):
-        raise OOXMLInvalid("PPTX diagram model id is malformed")
+        raise OOXMLInvalid(f"{owner} diagram model id is malformed")
     return raw
 
 
-def _pptx_diagram_order(element: ElementTree.Element, name: str) -> str:
+def _diagram_order(element: ElementTree.Element, name: str, owner: str) -> str:
     """Read one connection order verbatim, refusing a value that is not one.
 
     The order is the position the connection itself encodes, kept as written and
@@ -3036,12 +3039,12 @@ def _pptx_diagram_order(element: ElementTree.Element, name: str) -> str:
     """
     raw = element.attrib.get(name)
     if raw is None or _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
-        raise OOXMLInvalid("PPTX diagram connection order is malformed")
+        raise OOXMLInvalid(f"{owner} diagram connection order is malformed")
     return raw
 
 
-def _pptx_diagram_records(
-    package: _Package, part: str
+def _diagram_records(
+    package: _Package, part: str, owner: str
 ) -> tuple[list[tuple[dict[str, object], str]], list[dict[str, object]]]:
     """Read one data model's stored point text and its encoded connections.
 
@@ -3065,27 +3068,35 @@ def _pptx_diagram_records(
     to it ambiguous, so the part is refused rather than read under one of them.
     Points and connections are separate collections, so one id in each is two
     records rather than a repeat.
+
+    A diagram data part is a data model whichever format relates it, so a
+    presentation and a document are read by this one reader under one set of
+    bounds and one set of refusals. ``owner`` is the format that related it,
+    carried through so a refusal names the file it came from and never the other
+    format.
     """
-    root, namespace = _pptx_diagram_root(package, part)
-    holder = _pptx_diagram_list(root, namespace, "ptLst")
+    root, namespace = _diagram_root(package, part, owner)
+    holder = _diagram_list(root, namespace, "ptLst", owner)
     if holder is None:
-        raise OOXMLInvalid("PPTX diagram declares no point list")
+        raise OOXMLInvalid(f"{owner} diagram declares no point list")
     points: list[tuple[dict[str, object], str]] = []
     point_ids: set[str] = set()
     paragraphs = runs = characters = 0
     for index, node in enumerate(holder):
         if node.tag != f"{{{namespace}}}pt":
-            raise OOXMLInvalid("PPTX diagram point list holds an unsupported element")
-        if index >= _MAX_PPTX_DIAGRAM_POINTS:
-            raise OOXMLInvalid("PPTX diagram has too many points")
-        model_id = _pptx_diagram_model_id(node, "modelId")
+            raise OOXMLInvalid(
+                f"{owner} diagram point list holds an unsupported element"
+            )
+        if index >= _MAX_DIAGRAM_POINTS:
+            raise OOXMLInvalid(f"{owner} diagram has too many points")
+        model_id = _diagram_model_id(node, "modelId", owner)
         assert model_id is not None
         if model_id.casefold() in point_ids:
-            raise OOXMLInvalid("PPTX diagram model id is repeated")
+            raise OOXMLInvalid(f"{owner} diagram model id is repeated")
         point_ids.add(model_id.casefold())
         point_type = node.attrib.get("type", "node")
         if point_type not in _DIAGRAM_POINT_TYPES:
-            raise OOXMLInvalid("PPTX diagram point type is not a defined kind")
+            raise OOXMLInvalid(f"{owner} diagram point type is not a defined kind")
         place: dict[str, object] = {
             "diagramRole": "point_text",
             "modelId": model_id,
@@ -3093,52 +3104,56 @@ def _pptx_diagram_records(
             "pointIndex": index,
             # ``pt/@cxnId`` is the connection a transition point encodes; it is
             # recorded as written and never followed.
-            "connectionModelId": _pptx_diagram_model_id(node, "cxnId", required=False),
+            "connectionModelId": _diagram_model_id(
+                node, "cxnId", owner, required=False
+            ),
         }
         bodies = [item for item in node if item.tag == f"{{{namespace}}}t"]
         if len(bodies) > 1:
-            raise OOXMLInvalid("PPTX diagram point declares more than one text body")
+            raise OOXMLInvalid(f"{owner} diagram point declares more than one text body")
         if not bodies:
             continue
         for paragraph_index, paragraph in enumerate(_pptx_paragraphs(bodies[0])):
             paragraphs += 1
-            if paragraphs > _MAX_PPTX_DIAGRAM_PARAGRAPHS:
-                raise OOXMLInvalid("PPTX diagram has too many paragraphs")
+            if paragraphs > _MAX_DIAGRAM_PARAGRAPHS:
+                raise OOXMLInvalid(f"{owner} diagram has too many paragraphs")
             for run_index, text in enumerate(_pptx_runs(paragraph)):
                 # Counted before the text is looked at: an empty run is work the
                 # diagram asked for even though it reports nothing.
                 runs += 1
-                if runs > _MAX_PPTX_DIAGRAM_RUNS:
-                    raise OOXMLInvalid("PPTX diagram has too many runs")
+                if runs > _MAX_DIAGRAM_RUNS:
+                    raise OOXMLInvalid(f"{owner} diagram has too many runs")
                 if not text:
                     # An empty run keeps its index; it carries no text to report.
                     continue
                 characters += len(text)
-                if characters > _MAX_PPTX_DIAGRAM_CHARS:
-                    raise OOXMLInvalid("PPTX diagram text exceeds the accepted bound")
+                if characters > _MAX_DIAGRAM_CHARS:
+                    raise OOXMLInvalid(
+                        f"{owner} diagram text exceeds the accepted bound"
+                    )
                 points.append(
                     ({**place, "paragraph": paragraph_index, "run": run_index}, text)
                 )
     connections: list[dict[str, object]] = []
     connection_ids: set[str] = set()
-    linked = _pptx_diagram_list(root, namespace, "cxnLst")
+    linked = _diagram_list(root, namespace, "cxnLst", owner)
     for index, node in enumerate(() if linked is None else linked):
         if node.tag != f"{{{namespace}}}cxn":
             raise OOXMLInvalid(
-                "PPTX diagram connection list holds an unsupported element"
+                f"{owner} diagram connection list holds an unsupported element"
             )
-        if index >= _MAX_PPTX_DIAGRAM_CONNECTIONS:
-            raise OOXMLInvalid("PPTX diagram has too many connections")
-        model_id = _pptx_diagram_model_id(node, "modelId")
+        if index >= _MAX_DIAGRAM_CONNECTIONS:
+            raise OOXMLInvalid(f"{owner} diagram has too many connections")
+        model_id = _diagram_model_id(node, "modelId", owner)
         assert model_id is not None
         if model_id.casefold() in connection_ids:
-            raise OOXMLInvalid("PPTX diagram model id is repeated")
+            raise OOXMLInvalid(f"{owner} diagram model id is repeated")
         connection_ids.add(model_id.casefold())
         kind = node.attrib.get("type", "parOf")
         if kind not in _DIAGRAM_CONNECTION_TYPES:
-            raise OOXMLInvalid("PPTX diagram connection type is not a defined kind")
-        source = _pptx_diagram_model_id(node, "srcId")
-        destination = _pptx_diagram_model_id(node, "destId")
+            raise OOXMLInvalid(f"{owner} diagram connection type is not a defined kind")
+        source = _diagram_model_id(node, "srcId", owner)
+        destination = _diagram_model_id(node, "destId", owner)
         assert source is not None and destination is not None
         connections.append(
             {
@@ -3148,13 +3163,13 @@ def _pptx_diagram_records(
                 "connectionType": kind,
                 "sourceModelId": source,
                 "destinationModelId": destination,
-                "sourceOrder": _pptx_diagram_order(node, "srcOrd"),
-                "destinationOrder": _pptx_diagram_order(node, "destOrd"),
-                "parentTransitionModelId": _pptx_diagram_model_id(
-                    node, "parTransId", required=False
+                "sourceOrder": _diagram_order(node, "srcOrd", owner),
+                "destinationOrder": _diagram_order(node, "destOrd", owner),
+                "parentTransitionModelId": _diagram_model_id(
+                    node, "parTransId", owner, required=False
                 ),
-                "siblingTransitionModelId": _pptx_diagram_model_id(
-                    node, "sibTransId", required=False
+                "siblingTransitionModelId": _diagram_model_id(
+                    node, "sibTransId", owner, required=False
                 ),
                 # Stated so no consumer reads an id above as a point that is
                 # there. Ids are compared case-folded because only a GUID's hex
@@ -3936,7 +3951,7 @@ class _PptxWalker:
             _DIAGRAM_CONTENT_TYPE,
             "diagram data",
         )
-        points, connections = _pptx_diagram_records(self._package, part)
+        points, connections = _diagram_records(self._package, part, "PPTX")
         visibility = "hidden" if self._hidden else "visible"
         provenance: dict[str, object] = {
             **where,
