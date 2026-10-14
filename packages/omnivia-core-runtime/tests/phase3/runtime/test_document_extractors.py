@@ -115,8 +115,8 @@ def test_invalid_encoding_and_unqualified_format_are_refused() -> None:
 def test_docx_extracts_body_and_keeps_comments_separate() -> None:
     package = office_package(
         {
-            "word/document.xml": b'<w:document xmlns:w="urn:w"><w:body><w:p><w:r><w:t>Body text</w:t></w:r></w:p></w:body></w:document>',
-            "word/comments.xml": b'<w:comments xmlns:w="urn:w"><w:comment><w:p><w:r><w:t>Review note</w:t></w:r></w:p></w:comment></w:comments>',
+            "word/document.xml": b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Body text</w:t></w:r></w:p></w:body></w:document>',
+            "word/comments.xml": b'<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:comment><w:p><w:r><w:t>Review note</w:t></w:r></w:p></w:comment></w:comments>',
         }
     )
 
@@ -146,6 +146,8 @@ def test_xlsx_preserves_formula_and_saved_cache_as_distinct_values() -> None:
         "formula",
         "saved_value",
     ]
+    # The package declares no styles part and no date system, so both records
+    # carry the General, 1900-epoch provenance of a cell that authored no style.
     assert result.segments[1].structured_value == {
         "expression": "SUM(B2:B3)",
         "kind": "ordinary",
@@ -153,12 +155,20 @@ def test_xlsx_preserves_formula_and_saved_cache_as_distinct_values() -> None:
         "ref": None,
         "cacheState": "present",
         "cacheFreshness": "unknown",
+        "styleIndex": None,
+        "numberFormatId": 0,
+        "numberFormatCode": None,
+        "dateSystem": "1900",
     }
     assert result.segments[2].structured_value == {
         "raw": "42",
         "cellType": None,
         "error": False,
         "freshness": "unknown",
+        "styleIndex": None,
+        "numberFormatId": 0,
+        "numberFormatCode": None,
+        "dateSystem": "1900",
     }
 
 

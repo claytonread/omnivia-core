@@ -359,6 +359,39 @@ _XLSX_CONNECTION_CHILDREN: Final = (
     "parameters",
     "extLst",
 )
+# The relationship and content types that together qualify the workbook's own
+# styles part, the one part the cell-format table lives in. As with every other
+# type here, only the two URIs OOXML defines qualify -- Transitional and Strict
+# -- and the content type is the same under both. Compared against
+# ``declared_type``, which case-folds; the authored spelling is already folded.
+_XLSX_STYLES_RELATIONSHIPS: Final = frozenset(
+    {
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles",
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/styles",
+    }
+)
+_XLSX_STYLES_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"
+)
+# The qualified spellings of the element the workbook's date system is declared
+# on. ``xl/workbook.xml`` is reached by name rather than by a declared type, so
+# there is no root check behind it and the namespace is the whole of what
+# separates the declaration from a lookalike: an unqualified or foreign
+# ``workbookPr`` declares nothing about which epoch the serials are counted
+# from, and must never override or stand in for the qualified one.
+_XLSX_WORKBOOK_PROPERTIES: Final = frozenset(
+    f"{{{namespace}}}workbookPr" for namespace in _SPREADSHEETML
+)
+# One styles part's own bounds. The cell-format list is the work the part asks
+# for whether or not any sheet cites an entry, so it is bounded as it is read;
+# a format code is the one string kept from the part, so it is bounded on its
+# own. Excel's own ceilings are about 65k cell formats, a few hundred custom
+# formats and 255 characters of format code.
+# ponytail: 65k cell formats, 4k custom formats and 256 characters of code;
+# widen only if a real workbook is refused by these.
+_MAX_XLSX_CELL_FORMATS: Final = 65_536
+_MAX_XLSX_NUMBER_FORMATS: Final = 4_096
+_MAX_XLSX_FORMAT_CODE_CHARS: Final = _MAX_META_CHARS
 # The shape-tree children that carry an identity and a z-order position.
 # ``contentPart`` carries neither, so it is not a shape here.
 _PPTX_SHAPES: Final = frozenset({"sp", "grpSp", "graphicFrame", "cxnSp", "pic"})
@@ -2207,6 +2240,12 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         # are: a malformed list is refused before a package's worth of work.
         # Nothing it names is opened and no refresh is performed.
         connections = _xlsx_connections(package)
+        # The cell-format table and the date system the workbook counts its
+        # serials from: both are the workbook's own declarations rather than a
+        # sheet's, so they are resolved once and every cell of every sheet
+        # cites the same provenance. Nothing here applies a format or decodes a
+        # serial; the record says what the file declared and no more.
+        formats = _xlsx_formats(package, workbook)
         segments: list[ExtractedSegment] = []
         populated = 0
         for sheet_name, sheet_id, part, state in sheets:
@@ -2246,6 +2285,15 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                     rowHidden=row_hidden,
                     columnHidden=column_hidden,
                 )
+                # One dict, built once for the cell and carried by the ordinary,
+                # formula and saved-cache records alike: the three describe one
+                # cell, so none of them may say a different thing about the
+                # format it authored. It rides in each record's own value
+                # because it is provenance for the value the record retains --
+                # which epoch a stored serial is counted from, and which format
+                # the author wrote over it -- and a reader holding one record
+                # has the whole of that provenance without resolving a locator.
+                provenance = formats.provenance(cell)
                 membership = merged.get(position)
                 if membership is not None:
                     locator["mergedRange"], locator["mergedAnchor"] = membership
@@ -2263,7 +2311,8 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                         ExtractedSegment(
                             "formula",
                             locator,
-                            structured_value=_xlsx_formula(formula, masters, value),
+                            structured_value=_xlsx_formula(formula, masters, value)
+                            | provenance,
                             visibility=visibility,
                         )
                     )
@@ -2279,6 +2328,7 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                                     # the last calculation, never a text value.
                                     "error": cell_type == "e",
                                     "freshness": "unknown",
+                                    **provenance,
                                 },
                                 visibility=visibility,
                             )
@@ -2293,6 +2343,7 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                                 "raw": value,
                                 "decoded": decoded,
                                 "cellType": cell_type,
+                                **provenance,
                             },
                             visibility=visibility,
                         )
@@ -2917,6 +2968,209 @@ def _xlsx_connection_payloads(
             1 for node in parameters[0] if node.tag == f"{{{namespace}}}parameter"
         ),
     }
+
+
+@dataclass(frozen=True, slots=True)
+class _XlsxFormats:
+    """One workbook's cell-format provenance, resolved once for every sheet.
+
+    ``styles`` is the number-format id each authored style index names, in the
+    order ``cellXfs`` declared them, or None where the workbook declares no
+    cell-format table at all. ``codes`` holds only the custom formats the
+    package wrote; a built-in id is reported as the id it is, because a
+    built-in's code is the consumer's own locale table rather than anything the
+    file declared.
+
+    Nothing here applies a format, converts a serial to a date, assumes a
+    timezone or claims what Excel would display: the record says which format
+    the cell authored and which epoch the workbook counts from, and leaves the
+    decoding to whoever has a locale and a calendar to do it with.
+    """
+
+    date_system: str
+    styles: tuple[int, ...] | None
+    codes: dict[int, str]
+
+    def provenance(self, cell: ElementTree.Element) -> dict[str, object]:
+        """Return one cell's format provenance, refusing a style it cannot name.
+
+        An absent ``s`` is an absent authored index, reported as the None it
+        is, and SpreadsheetML defaults it to 0, so the resolved id is the first
+        declared format's. A cell that names an index the workbook declared no
+        format for points at no format at all, so the package is refused rather
+        than read under a default the file never wrote.
+        """
+        raw = cell.attrib.get("s")
+        if raw is None:
+            index = None
+        elif _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
+            raise OOXMLInvalid("XLSX cell style index is malformed")
+        else:
+            index = int(raw)
+        if self.styles is None:
+            if index is not None:
+                raise OOXMLInvalid(
+                    "XLSX cell names a style but the workbook declares no cell formats"
+                )
+            format_id = 0
+        else:
+            resolved = 0 if index is None else index
+            if resolved >= len(self.styles):
+                raise OOXMLInvalid(
+                    "XLSX cell style index is outside the declared cell formats"
+                )
+            format_id = self.styles[resolved]
+        return {
+            "styleIndex": index,
+            "numberFormatId": format_id,
+            "numberFormatCode": self.codes.get(format_id),
+            "dateSystem": self.date_system,
+        }
+
+
+def _xlsx_formats(package: _Package, workbook: ElementTree.Element) -> _XlsxFormats:
+    """Resolve the workbook's number-format and date-system provenance.
+
+    The styles part is reached only through the workbook's own qualifying
+    styles relationship and the content type OOXML declares for it, so a member
+    that merely looks like the part is never read, an external target is
+    refused rather than fetched, and an unrelated relationship -- the shared
+    strings or a theme -- reaches nothing. Two qualifying relationships leave
+    which part is meant ambiguous, so the workbook is refused rather than read
+    from whichever sorts first.
+
+    A workbook with no styles part keeps the General, format 0 provenance that
+    a cell writing no style index has anyway.
+    """
+    date_system = _xlsx_date_system(workbook)
+    related = _related_part(
+        package,
+        "xl/workbook.xml",
+        _XLSX_STYLES_RELATIONSHIPS,
+        _XLSX_STYLES_CONTENT_TYPE,
+        "styles",
+        owner="workbook",
+        label="XLSX",
+    )
+    if related is None:
+        return _XlsxFormats(date_system, None, {})
+    root = package.xml(related[1])
+    prefix, _, local = root.tag.rpartition("}")
+    namespace = prefix.lstrip("{")
+    if namespace not in _SPREADSHEETML:
+        raise OOXMLInvalid("XLSX styles part uses an unsupported namespace")
+    if local != "styleSheet":
+        raise OOXMLInvalid("XLSX styles part is not rooted at its own style sheet")
+    # The profile the root declared is the one the part is read in. Both lists
+    # below are matched by their qualified names in that namespace, so a
+    # lookalike written in no namespace, in a foreign one, or in the other
+    # profile is not the element at all and supplies no format.
+    return _XlsxFormats(
+        date_system,
+        _xlsx_cell_formats(root, namespace),
+        _xlsx_number_formats(root, namespace),
+    )
+
+
+def _xlsx_date_system(workbook: ElementTree.Element) -> str:
+    """Say which epoch the workbook counts its date serials from.
+
+    Only a qualified ``workbookPr`` written directly on the workbook declares
+    one; SpreadsheetML defaults the flag to false, so an absent declaration is
+    the 1900 system rather than an unknown. Two direct declarations leave the
+    epoch ambiguous -- and every stored serial with it -- so the workbook is
+    refused rather than read under one of them.
+    """
+    declared = [node for node in workbook if node.tag in _XLSX_WORKBOOK_PROPERTIES]
+    if len(declared) > 1:
+        raise OOXMLInvalid("XLSX workbook declares its properties more than once")
+    return "1904" if declared and _flag(declared[0], "date1904") else "1900"
+
+
+def _xlsx_cell_formats(
+    root: ElementTree.Element, namespace: str
+) -> tuple[int, ...] | None:
+    """Read ``cellXfs`` as the number-format id each style index names.
+
+    Both the list and its entries are matched by their qualified names in the
+    namespace the root declared, so an unqualified or foreign ``cellXfs`` is
+    not the list and an unqualified or foreign ``xf`` inside the real list
+    occupies no style index: a cell's ``s`` indexes the entries the profile
+    declared, and counting something else would shift every index past it.
+
+    Only ``numFmtId`` is read. Everything else a format declares -- its font,
+    fill, border and alignment, and the named cell style it is based on -- is
+    display state resolving which would mean claiming display fidelity, so none
+    of it is read or resolved here.
+
+    An empty list names no format at all, so it reads as the absent table it
+    is: a cell citing an index into it is refused either way.
+    """
+    lists = [node for node in root if node.tag == f"{{{namespace}}}cellXfs"]
+    if len(lists) > 1:
+        raise OOXMLInvalid("XLSX styles part declares its cell formats more than once")
+    if not lists:
+        return None
+    formats: list[int] = []
+    for entry in lists[0]:
+        if entry.tag != f"{{{namespace}}}xf":
+            continue
+        if len(formats) >= _MAX_XLSX_CELL_FORMATS:
+            raise OOXMLInvalid("XLSX styles part declares too many cell formats")
+        declared = _xlsx_format_id(entry, "cell format")
+        formats.append(0 if declared is None else declared)
+    return tuple(formats) or None
+
+
+def _xlsx_number_formats(root: ElementTree.Element, namespace: str) -> dict[int, str]:
+    """Index the custom number formats a styles part declares, by their ids.
+
+    The list and its entries are matched by their qualified names in the
+    namespace the root declared, for the reason ``cellXfs`` is: a lookalike
+    written elsewhere declares nothing about how the workbook's own formats are
+    spelled, so it must never supply a code a cell is then reported under.
+
+    A format code is kept exactly as written and never parsed, applied or
+    matched against a locale. Both attributes are required, so a declaration
+    missing either declares no format; two declarations of one id leave every
+    cell citing it ambiguous, so the part is refused rather than read under one
+    of them.
+    """
+    lists = [node for node in root if node.tag == f"{{{namespace}}}numFmts"]
+    if len(lists) > 1:
+        raise OOXMLInvalid(
+            "XLSX styles part declares its number formats more than once"
+        )
+    codes: dict[int, str] = {}
+    for entry in lists[0] if lists else ():
+        if entry.tag != f"{{{namespace}}}numFmt":
+            continue
+        if len(codes) >= _MAX_XLSX_NUMBER_FORMATS:
+            raise OOXMLInvalid("XLSX styles part declares too many number formats")
+        format_id = _xlsx_format_id(entry, "number format")
+        code = entry.attrib.get("formatCode")
+        if format_id is None or code is None:
+            raise OOXMLInvalid("XLSX number format declares no id or no format code")
+        if len(code) > _MAX_XLSX_FORMAT_CODE_CHARS:
+            raise OOXMLInvalid("XLSX number format code exceeds the accepted bound")
+        if format_id in codes:
+            raise OOXMLInvalid("XLSX number format id is repeated")
+        codes[format_id] = code
+    return codes
+
+
+def _xlsx_format_id(element: ElementTree.Element, owner: str) -> int | None:
+    """Read one ``numFmtId``, or None where absent, refusing anything else.
+
+    The type is ``xsd:unsignedInt``, so a negative, signed or oversized value
+    is not a value the type has and is refused rather than clamped into one.
+    """
+    raw = element.attrib.get("numFmtId")
+    if raw is None:
+        return None
+    if _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
+        raise OOXMLInvalid(f"XLSX {owner} number-format id is malformed")
+    return int(raw)
 
 
 def _xlsx_cells(

@@ -9,6 +9,17 @@ import pytest
 from omnivia_core_runtime.service.ooxml_extractors import OOXMLInvalid, extract_xlsx
 
 CAPTURE = "dcap-" + "a" * 64
+# The cell-format provenance every record below carries: these packages declare
+# no styles part and no date system, so each cell authors no style index, keeps
+# the General format a cell without one has, and counts from the 1900 epoch.
+# Spelled once because the formula, saved-cache and ordinary records of one cell
+# all have to say the same thing about the format it authored.
+DEFAULT_FORMAT = {
+    "styleIndex": None,
+    "numberFormatId": 0,
+    "numberFormatCode": None,
+    "dateSystem": "1900",
+}
 WORKBOOK = (
     b'<workbook xmlns:r="urn:r"><sheets>'
     b'<sheet name="Budget" sheetId="7" r:id="rId1"/>'
@@ -56,11 +67,18 @@ def test_expression_and_saved_cache_stay_separate_and_uncalculated() -> None:
                 "ref": None,
                 "cacheState": "present",
                 "cacheFreshness": "unknown",
+                **DEFAULT_FORMAT,
             },
         ),
         (
             "saved_value",
-            {"raw": "7", "cellType": None, "error": False, "freshness": "unknown"},
+            {
+                "raw": "7",
+                "cellType": None,
+                "error": False,
+                "freshness": "unknown",
+                **DEFAULT_FORMAT,
+            },
         ),
     ]
 
@@ -98,6 +116,7 @@ def test_absent_cache_is_recorded_as_missing_without_a_saved_value() -> None:
                 "ref": None,
                 "cacheState": "missing",
                 "cacheFreshness": "unknown",
+                **DEFAULT_FORMAT,
             },
         ),
     ]
@@ -110,7 +129,13 @@ def test_empty_cache_element_is_present_and_not_missing() -> None:
     assert roles[0][1]["cacheState"] == "present"
     assert roles[1] == (
         "saved_value",
-        {"raw": "", "cellType": None, "error": False, "freshness": "unknown"},
+        {
+            "raw": "",
+            "cellType": None,
+            "error": False,
+            "freshness": "unknown",
+            **DEFAULT_FORMAT,
+        },
     )
 
 
@@ -122,6 +147,7 @@ def test_error_typed_cache_is_preserved_as_an_error_not_as_text() -> None:
             "cellType": "e",
             "error": True,
             "freshness": "unknown",
+            **DEFAULT_FORMAT,
         },
     )
 
