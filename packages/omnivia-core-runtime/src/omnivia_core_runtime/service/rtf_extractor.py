@@ -14,6 +14,7 @@ extracted) or unsupported/unknown. Nothing here claims complete extraction.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections import Counter
 from dataclasses import dataclass, field
@@ -36,8 +37,27 @@ MAX_PARAMETER_DIGITS: Final = 10
 MAX_INVENTORY_NAMES: Final = 64
 #: Output bound: bytes of one field instruction kept to read its leading keyword.
 MAX_FIELD_PREFIX_BYTES: Final = 64
+#: AST walk bounds: nesting depth, total nodes visited, and characters of one
+#: link or image target kept in its inventory segment.
+MAX_AST_DEPTH: Final = 64
+MAX_AST_NODES: Final = 4_000_000
+MAX_TARGET_CHARS: Final = 2048
 PANDOC_BUILD: Final = "pandoc-3.12.1-rtf-json"
 
+_SCHEME: Final = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]{1,31}):")
+_FORMATTING: Final = frozenset(
+    {
+        "Emph",
+        "Underline",
+        "Strong",
+        "Strikeout",
+        "Superscript",
+        "Subscript",
+        "SmallCaps",
+    }
+)
+#: Roles whose text is not document body, matching the OOXML extractor.
+_ANNOTATION_ROLES: Final = frozenset({"note", "comment", "deleted_text"})
 _HEX_DIGITS: Final = frozenset(b"0123456789abcdefABCDEF")
 #: Declared character sets; a code page arrives separately as ``\ansicpgN``.
 _CHARSETS: Final = frozenset({"ansi", "mac", "pc", "pca"})
@@ -180,13 +200,19 @@ def extract_rtf(content: bytes, *, capture_id: str) -> RTFExtraction:
     blocks = document.get("blocks") if isinstance(document, dict) else None
     if not isinstance(blocks, list) or len(blocks) > MAX_BLOCKS:
         raise RTFExtractionInvalid("RTF block count is outside the accepted bound")
-    segments: list[ExtractedSegment] = []
-    _walk_blocks(blocks, segments, capture_id=capture_id, path="blocks")
+    walker = _AstWalker(capture_id)
+    try:
+        walker.blocks(blocks, "blocks", "body", 0)
+    except RecursionError as error:
+        raise RTFExtractionInvalid(
+            "RTF structure exceeds the accepted bound"
+        ) from error
     return RTFExtraction(
-        tuple(segments),
+        tuple(walker.segments),
         len(blocks),
         {
             **scan,
+            **walker.limitations(),
             "readerBuild": PANDOC_BUILD,
             "astLocatorsAreDerived": True,
         },
@@ -488,103 +514,279 @@ def _close_group(group: _Group, scan: _Scan) -> None:
         scan.counts["unnamedUnknownDestinations"] += 1
 
 
-def _walk_blocks(
-    blocks: list[Any],
-    segments: list[ExtractedSegment],
-    *,
-    capture_id: str,
-    path: str,
-    role: str = "body",
-) -> None:
-    for ordinal, block in enumerate(blocks, start=1):
-        if not isinstance(block, dict):
-            continue
-        block_type = block.get("t")
-        content = block.get("c")
-        block_path = f"{path}/{ordinal}:{block_type}"
-        if block_type in {"Para", "Plain"} and isinstance(content, list):
-            _append_text(
-                segments, role, content, capture_id=capture_id, path=block_path
-            )
-        elif block_type == "Header" and isinstance(content, list) and len(content) == 3:
-            inline = content[2]
-            if isinstance(inline, list):
-                _append_text(
-                    segments, "heading", inline, capture_id=capture_id, path=block_path
-                )
-        elif block_type in {"BulletList", "OrderedList"}:
-            items = (
-                content
-                if block_type == "BulletList"
-                else content[1]
-                if isinstance(content, list) and len(content) == 2
-                else None
-            )
-            if isinstance(items, list):
-                for item_ordinal, item in enumerate(items, start=1):
-                    if isinstance(item, list):
-                        _walk_blocks(
-                            item,
-                            segments,
-                            capture_id=capture_id,
-                            path=f"{block_path}/item/{item_ordinal}",
-                            role="list_item",
-                        )
-        elif block_type == "BlockQuote" and isinstance(content, list):
-            _walk_blocks(
-                content, segments, capture_id=capture_id, path=block_path, role=role
-            )
-        if len(segments) > MAX_BLOCKS:
+def _malformed() -> RTFExtractionInvalid:
+    return RTFExtractionInvalid("RTF reader returned a malformed document structure")
+
+
+def _pair(value: Any, size: int) -> list[Any]:
+    if not isinstance(value, list) or len(value) != size:
+        raise _malformed()
+    return value
+
+
+def _scheme(target: str) -> str:
+    """Name the reference kind of a link target from its text alone."""
+    if target.startswith("#"):
+        return "fragment"
+    match = _SCHEME.match(target)
+    return match.group(1).lower() if match else "relative"
+
+
+class _AstWalker:
+    """Map one Pandoc JSON AST onto canonical segments, strictly and in order.
+
+    Every node is validated against the Pandoc 1.23 shape it must have, and an
+    unknown or misshapen node refuses the whole document rather than skipping
+    it, so a partial walk is never reported as complete. A link or image target
+    is recorded as text in an inventory segment and is never opened.
+    """
+
+    def __init__(self, capture_id: str) -> None:
+        self.capture_id = capture_id
+        self.segments: list[ExtractedSegment] = []
+        self.counts: Counter[str] = Counter()
+        self.schemes: Counter[str] = Counter()
+        self.nodes = 0
+
+    def limitations(self) -> dict[str, object]:
+        return {
+            "astInventory": dict(sorted(self.counts.items())),
+            "referenceSchemes": dict(sorted(self.schemes.items())),
+        }
+
+    def _node(self, node: Any, depth: int) -> tuple[str, Any]:
+        self.nodes += 1
+        if self.nodes > MAX_AST_NODES or depth > MAX_AST_DEPTH:
+            raise RTFExtractionInvalid("RTF structure exceeds the accepted bound")
+        if not isinstance(node, dict) or not isinstance(node.get("t"), str):
+            raise _malformed()
+        return node["t"], node.get("c")
+
+    def _emit(self, segment: ExtractedSegment) -> None:
+        self.segments.append(segment)
+        if len(self.segments) > MAX_BLOCKS:
             raise RTFExtractionInvalid("RTF extraction has too many segments")
 
+    def _locator(self, path: str) -> dict[str, str]:
+        return {"captureId": self.capture_id, "unit": "rtf_ast", "path": path}
 
-def _append_text(
-    segments: list[ExtractedSegment],
-    role: str,
-    inline: list[Any],
-    *,
-    capture_id: str,
-    path: str,
-) -> None:
-    text = _inline_text(inline).strip()
-    if text:
-        segments.append(
+    def blocks(self, blocks: Any, path: str, role: str, depth: int) -> None:
+        if not isinstance(blocks, list):
+            raise _malformed()
+        for ordinal, block in enumerate(blocks, start=1):
+            kind, content = self._node(block, depth)
+            self._block(kind, content, f"{path}/{ordinal}:{kind}", role, depth)
+
+    def _block(self, kind: str, content: Any, path: str, role: str, depth: int) -> None:
+        if kind in {"Para", "Plain"}:
+            self._text(role, content, path, depth)
+        elif kind == "Header":
+            self._text("heading", _pair(content, 3)[2], path, depth)
+        elif kind == "CodeBlock":
+            code = _pair(content, 2)[1]
+            if not isinstance(code, str):
+                raise _malformed()
+            self._text(role, [{"t": "Str", "c": code}], path, depth)
+        elif kind == "LineBlock":
+            if not isinstance(content, list):
+                raise _malformed()
+            lines: list[Any] = []
+            for line in content:
+                lines += [
+                    *(line if isinstance(line, list) else [None]),
+                    {"t": "LineBreak"},
+                ]
+            self._text(role, lines[:-1], path, depth)
+        elif kind == "BulletList":
+            self._items(content, path, depth)
+        elif kind == "OrderedList":
+            self._items(_pair(content, 2)[1], path, depth)
+        elif kind == "DefinitionList":
+            if not isinstance(content, list):
+                raise _malformed()
+            for number, entry in enumerate(content, start=1):
+                term, definitions = _pair(entry, 2)
+                self._text("list_item", term, f"{path}/term/{number}", depth + 1)
+                if not isinstance(definitions, list):
+                    raise _malformed()
+                for ordinal, definition in enumerate(definitions, start=1):
+                    self.blocks(
+                        definition,
+                        f"{path}/def/{number}.{ordinal}",
+                        "list_item",
+                        depth + 1,
+                    )
+        elif kind in {"BlockQuote", "Div"}:
+            self.blocks(
+                content if kind == "BlockQuote" else _pair(content, 2)[1],
+                path,
+                role,
+                depth + 1,
+            )
+        elif kind == "Figure":
+            _, caption, body = _pair(content, 3)
+            self.blocks(_pair(caption, 2)[1], f"{path}/caption", "body", depth + 1)
+            self.blocks(body, path, role, depth + 1)
+        elif kind == "Table":
+            self._table(content, path, depth)
+        elif kind == "RawBlock":
+            _pair(content, 2)
+            self.counts["rawBlocks"] += 1
+        elif kind == "HorizontalRule":
+            pass
+        else:
+            raise _malformed()
+
+    def _items(self, items: Any, path: str, depth: int) -> None:
+        if not isinstance(items, list):
+            raise _malformed()
+        self.counts["lists"] += 1
+        for ordinal, item in enumerate(items, start=1):
+            self.blocks(item, f"{path}/item/{ordinal}", "list_item", depth + 1)
+
+    def _table(self, content: Any, path: str, depth: int) -> None:
+        _, caption, specs, head, bodies, foot = _pair(content, 6)
+        if not isinstance(specs, list) or not isinstance(bodies, list):
+            raise _malformed()
+        self.counts["tables"] += 1
+        self.blocks(_pair(caption, 2)[1], f"{path}/caption", "body", depth + 1)
+        self._rows(_pair(head, 2)[1], f"{path}/head", depth)
+        for number, body in enumerate(bodies, start=1):
+            _, _, head_rows, body_rows = _pair(body, 4)
+            self._rows(head_rows, f"{path}/body/{number}/head", depth)
+            self._rows(body_rows, f"{path}/body/{number}", depth)
+        self._rows(_pair(foot, 2)[1], f"{path}/foot", depth)
+
+    def _rows(self, rows: Any, path: str, depth: int) -> None:
+        if not isinstance(rows, list):
+            raise _malformed()
+        for row_number, row in enumerate(rows, start=1):
+            cells = _pair(row, 2)[1]
+            if not isinstance(cells, list):
+                raise _malformed()
+            for cell_number, cell in enumerate(cells, start=1):
+                body = _pair(cell, 5)[4]
+                cell_path = f"{path}/row/{row_number}/cell/{cell_number}"
+                self.blocks(body, cell_path, "table_cell", depth + 1)
+
+    def _text(self, role: str, inline: Any, path: str, depth: int) -> None:
+        """Emit one text segment, then the side material found inside it."""
+        side: list[tuple[str, Any]] = []
+        text = self._inline(inline, depth, side).strip()
+        if text:
+            self._emit_text(role, text, path)
+        ordinals: Counter[str] = Counter()
+        for kind, payload in side:
+            ordinals[kind] += 1
+            self._side(kind, payload, f"{path}/{kind}/{ordinals[kind]}", depth + 1)
+
+    def _emit_text(self, role: str, text: str, path: str) -> None:
+        deleted = role == "deleted_text"
+        self._emit(
             ExtractedSegment(
                 role,
-                {"captureId": capture_id, "unit": "rtf_ast", "path": path},
+                self._locator(path),
                 text=text,
+                visibility="annotation" if role in _ANNOTATION_ROLES else "visible",
+                revision_state="deleted" if deleted else "current",
             )
         )
 
+    def _side(self, kind: str, payload: Any, path: str, depth: int) -> None:
+        if kind == "note":
+            self.counts["notes"] += 1
+            self.blocks(payload, path, "note", depth)
+        elif kind in {"deletion", "comment"}:
+            self._text(
+                "deleted_text" if kind == "deletion" else "comment",
+                payload,
+                path,
+                depth,
+            )
+        else:  # link or image: the target is inert inventory, never dereferenced
+            target, title = payload
+            scheme = _scheme(target)
+            self.schemes[
+                scheme
+                if len(self.schemes) < MAX_INVENTORY_NAMES or scheme in self.schemes
+                else "other"
+            ] += 1
+            self._emit(
+                ExtractedSegment(
+                    "object_inventory",
+                    self._locator(path),
+                    structured_value={
+                        "kind": kind,
+                        "scheme": scheme,
+                        "target": target[:MAX_TARGET_CHARS],
+                        "targetTruncated": len(target) > MAX_TARGET_CHARS,
+                        "title": title[:MAX_TARGET_CHARS],
+                        "resolved": False,
+                    },
+                    extraction_method="inventory",
+                    visibility="annotation",
+                )
+            )
 
-def _inline_text(inline: list[Any]) -> str:
-    chunks: list[str] = []
-    for item in inline:
-        if not isinstance(item, dict):
-            continue
-        item_type = item.get("t")
-        content = item.get("c")
-        if item_type == "Str" and isinstance(content, str):
-            chunks.append(content)
-        elif item_type in {"Space", "SoftBreak", "LineBreak"}:
-            chunks.append(" " if item_type == "Space" else "\n")
-        elif (
-            item_type in {"Code", "Math"}
-            and isinstance(content, list)
-            and len(content) == 2
-        ):
-            chunks.append(str(content[1]))
-        elif item_type in {
-            "Emph",
-            "Strong",
-            "Strikeout",
-            "Superscript",
-            "Subscript",
-            "SmallCaps",
-        } and isinstance(content, list):
-            chunks.append(_inline_text(content))
-        elif item_type == "Link" and isinstance(content, list) and len(content) >= 2:
-            label = content[1]
-            if isinstance(label, list):
-                chunks.append(_inline_text(label))
-    return "".join(chunks)
+    def _inline(self, inline: Any, depth: int, side: list[tuple[str, Any]]) -> str:
+        if not isinstance(inline, list):
+            raise _malformed()
+        chunks: list[str] = []
+        for item in inline:
+            if item is None:  # a LineBlock line placeholder for an empty line
+                continue
+            kind, content = self._node(item, depth)
+            if kind == "Str":
+                if not isinstance(content, str):
+                    raise _malformed()
+                chunks.append(content)
+            elif kind == "Space":
+                chunks.append(" ")
+            elif kind in {"SoftBreak", "LineBreak"}:
+                chunks.append("\n")
+            elif kind in {"Code", "Math"}:
+                value = _pair(content, 2)[1]
+                if not isinstance(value, str):
+                    raise _malformed()
+                chunks.append(value)
+            elif kind == "RawInline":
+                _pair(content, 2)
+                self.counts["rawInlines"] += 1
+            elif kind in _FORMATTING:
+                chunks.append(self._inline(content, depth + 1, side))
+            elif kind in {"Quoted", "Cite"}:
+                inner = self._inline(_pair(content, 2)[1], depth + 1, side)
+                if kind == "Cite":
+                    chunks.append(inner)
+                else:
+                    quote = _pair(content, 2)[0]
+                    if not isinstance(quote, dict):
+                        raise _malformed()
+                    marks = "“”" if quote.get("t") == "DoubleQuote" else "‘’"
+                    chunks.append(f"{marks[0]}{inner}{marks[1]}")
+            elif kind in {"Link", "Image"}:
+                _, label, destination = _pair(content, 3)
+                target, title = _pair(destination, 2)
+                if not isinstance(target, str) or not isinstance(title, str):
+                    raise _malformed()
+                chunks.append(self._inline(label, depth + 1, side))
+                side.append((kind.lower(), (target, title)))
+                self.counts[kind.lower() + "s"] += 1
+            elif kind == "Note":
+                side.append(("note", content))
+            elif kind == "Span":
+                attributes, inner = _pair(content, 2)
+                classes = _pair(attributes, 3)[1]
+                if not isinstance(classes, list):
+                    raise _malformed()
+                if "deletion" in classes:
+                    side.append(("deletion", inner))
+                    self.counts["deletionSpans"] += 1
+                elif "comment-start" in classes:
+                    side.append(("comment", inner))
+                    self.counts["commentSpans"] += 1
+                elif "comment-end" not in classes:
+                    chunks.append(self._inline(inner, depth + 1, side))
+            else:
+                raise _malformed()
+        return "".join(chunks)

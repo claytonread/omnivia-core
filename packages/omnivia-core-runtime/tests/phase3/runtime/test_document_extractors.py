@@ -420,8 +420,8 @@ def test_rtf_scan_inventories_notes_revisions_and_unknown_destinations() -> None
     assert result.limitations["ignorableUnknownDestinations"] == {"mydest": 1}
     assert result.limitations["ignorableDestinationGroups"] == 2
     # The three coverage classes are distinct, and nothing claims completeness:
-    # the reader extracted body text only, which is why the header, footer,
-    # footnote and annotation text below is absent from the segments.
+    # the reader exposes body text and notes only, which is why the header,
+    # footer and annotation text below is absent from the segments.
     assert result.limitations["extractedScope"] == "pandoc_body_text_only"
     assert result.limitations["coverage"] == {
         "supported": ["body_text"],
@@ -438,7 +438,16 @@ def test_rtf_scan_inventories_notes_revisions_and_unknown_destinations() -> None
     extracted = " ".join(item.text or "" for item in result.segments)
     assert "hdr" not in extracted
     assert "ftr" not in extracted
-    assert "note" not in extracted
+    # A footnote is the one inventoried feature the reader does expose, as an
+    # annotation-visibility note segment ahead of the paragraph that holds it.
+    assert [
+        (item.semantic_role, item.visibility, item.text)
+        for item in result.segments
+        if item.semantic_role == "note"
+    ] == [("note", "annotation", "note")]
+    assert "note" not in " ".join(
+        item.text or "" for item in result.segments if item.semantic_role == "body"
+    )
     assert "cmt" not in extracted
 
 
@@ -469,7 +478,19 @@ def test_rtf_scan_names_field_risks_without_resolving_or_executing_them() -> Non
     assert "payload.doc" not in recorded
     # The cached results the source already carried are extracted as text; the
     # instructions that would produce them are not run.
-    assert [item.text for item in result.segments] == ["linkcached"]
+    assert [item.text for item in result.segments if item.text] == ["linkcached"]
+    # Pandoc preserves the cached link object but does not expose the stripped
+    # field operand as its target. The resulting empty target remains inert and
+    # is classified as relative; the INCLUDETEXT path has no entry at all.
+    assert [
+        (
+            item.semantic_role,
+            item.structured_value["scheme"],
+            item.structured_value["resolved"],
+        )
+        for item in result.segments
+        if item.structured_value
+    ] == [("object_inventory", "relative", False)]
 
 
 def test_rtf_scan_inventory_is_deterministic_and_canonical() -> None:
