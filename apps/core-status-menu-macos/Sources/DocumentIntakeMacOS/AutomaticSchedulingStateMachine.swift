@@ -4,6 +4,8 @@ import Foundation
 public enum AutomaticSchedulingError: Error, Equatable {
     case malformedIdentity
     case malformedScopeKey
+    /// The intent ref a publication would carry is empty, over the bound, or shaped like a path.
+    case malformedIntentRef
     /// A monotonic clock never runs backwards, so a regression is a caller defect, not a late event.
     case timeRegressed
     case malformedTime
@@ -92,6 +94,14 @@ public struct AutomaticSchedulingState: Equatable, Sendable {
     /// The generation a claim is in flight for, published or not.
     public let activeGeneration: UInt64?
     public let published: Bool
+    /// The opaque ref naming the published intent in `CaptureIntentQueue`, so a restart can
+    /// reconcile the one unresolved intent instead of guessing. Present only while published, and
+    /// absent on a legacy publication: see `legacyUnresolvedIntent`.
+    public let intentRef: String?
+    /// This published intent comes from a document written before publications carried a ref, so
+    /// there is nothing to reconcile it against by ref. It still blocks a duplicate claim, so the
+    /// caller resolves it by its generation (complete or cancel) rather than repeating the work.
+    public let legacyUnresolvedIntent: Bool
     /// This entry was recovered from the durable store. Its signal times are zero, and any dirty
     /// work it holds is due now.
     public let restoredFromRestart: Bool
@@ -129,6 +139,14 @@ private struct AutomaticSchedulingEntryRecord: Codable, Equatable {
     var activeGeneration: UInt64?
     var activePriority: AutomaticSchedulingPriority?
     var published: Bool
+    /// The published intent's opaque queue ref. Added after v1 shipped, so it is optional in the
+    /// schema: a document written before it shows a publication with neither this nor the marker
+    /// below, and is recovered as a legacy unresolved intent.
+    var intentRef: String?
+    /// Set only on a publication this owner recovered from such a document and then rewrote, so
+    /// what it writes keeps saying "published, no ref" without that being a shape a new
+    /// publication could reach.
+    var legacyIntent: Bool?
 }
 
 private struct AutomaticSchedulingDocument: Codable, Equatable {
@@ -177,7 +195,11 @@ private struct AutomaticSchedulingHeader: Codable {
 /// process carrying it, so it returns to dirty — same generation if nothing accumulated behind it,
 /// the later one if something did — and is immediately eligible rather than stranded. A published
 /// one is the scope's one unresolved intent: it stays active and published, still blocking a
-/// duplicate claim, until the queue reports its outcome.
+/// duplicate claim, until the queue reports its outcome. It also carries across the opaque ref
+/// `markPublished` attached, which is what lets the next process find that intent in
+/// `CaptureIntentQueue` rather than guess at it. A publication recovered from a document written
+/// before the ref existed has none, so it is recovered as an explicitly legacy unresolved intent:
+/// still blocking, still resolvable by generation, but with nothing to reconcile by ref.
 ///
 /// Each transition rewrites the whole document. Mutations are debounced and the table is bounded,
 /// so this is bounded work; switch to an append-and-compact log if a profile ever shows the
@@ -195,9 +217,9 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
 
     static let schema = "omnivia.automatic-scheduling.v1"
     /// Comfortably above the worst case the bounds allow: `maximumTrackedSources *
-    /// maximumScopesPerSource` records, each with three maximum-length refs and two maximum
-    /// generations, encode to well under 512 bytes apiece.
-    static let maximumStateBytes = maximumTrackedSources * maximumScopesPerSource * 512 + 1024
+    /// maximumScopesPerSource` records, each with four maximum-length refs and two maximum
+    /// generations, encode to well under 1024 bytes apiece.
+    static let maximumStateBytes = maximumTrackedSources * maximumScopesPerSource * 1024 + 1024
 
     private struct Pending {
         var generation: UInt64
@@ -214,6 +236,11 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
         var dirty: Pending?
         var active: Pending?
         var published = false
+        /// The published intent's queue ref. Nil while published is a legacy publication, which is
+        /// the only way this pair can be published without one.
+        var intentRef: String?
+
+        var isLegacyPublication: Bool { published && intentRef == nil }
 
         /// The dirty record, when there is one, always holds the latest generation issued.
         var lastGeneration: UInt64 { dirty?.generation ?? active?.generation ?? 0 }
@@ -267,6 +294,8 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
                     latestSignalMilliseconds: $0.dirty?.latestSignal,
                     activeGeneration: $0.active?.generation,
                     published: $0.published,
+                    intentRef: $0.intentRef,
+                    legacyUnresolvedIntent: $0.isLegacyPublication,
                     restoredFromRestart: $0.dirty?.restoredDue ?? $0.active?.restoredDue ?? false
                 )
             }
@@ -329,6 +358,7 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
             entry.dirty = nil
             entry.active = chosen.dirty
             entry.published = false
+            entry.intentRef = nil
             entries[chosen.key] = entry
             return AutomaticSchedulingClaim(
                 key: chosen.key,
@@ -343,12 +373,23 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
     }
 
     /// The candidate reached a published intent, which is now the scope's one unresolved intent.
-    public func markPublished(_ key: AutomaticSchedulingKey, generation: UInt64, at now: Int64) throws {
+    ///
+    /// `intentRef` is the opaque ref that names it in `CaptureIntentQueue`, and it is attached in
+    /// the same transition that publishes: a crash leaves either a publication with its ref or no
+    /// publication at all, never one the next process cannot reconcile.
+    public func markPublished(
+        _ key: AutomaticSchedulingKey,
+        generation: UInt64,
+        intentRef: String,
+        at now: Int64
+    ) throws {
+        guard Self.validRef(intentRef) else { throw AutomaticSchedulingError.malformedIntentRef }
         try mutate {
             try advance(now)
             var entry = try claimed(key, generation).entry
             guard !entry.published else { throw AutomaticSchedulingError.alreadyPublished }
             entry.published = true
+            entry.intentRef = intentRef
             entries[key] = entry
         }
     }
@@ -362,6 +403,7 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
             guard entry.published else { throw AutomaticSchedulingError.notPublished }
             entry.active = nil
             entry.published = false
+            entry.intentRef = nil
             entries[key] = entry.isClean ? nil : entry
         }
     }
@@ -385,7 +427,10 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
             dirty.restoredDue = dirty.restoredDue || active.restoredDue
             entry.dirty = dirty
             entry.active = nil
+            // The abandoned intent is no longer this scope's unresolved one, so its ref goes with
+            // it: the caller that cancelled owns whatever the queue still holds under it.
             entry.published = false
+            entry.intentRef = nil
             entries[key] = entry
             return dirty.generation
         }
@@ -467,7 +512,7 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
         let document = snapshot()
         // An unchanged transition — a claim that found nothing due, most often — writes nothing.
         guard document != current else { return }
-        try Self.validate(document)
+        try Self.validate(document, allowingLegacyPublished: false)
         try Self.write(document, to: stateFile, directory: directory)
         persisted = document
     }
@@ -483,7 +528,9 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
                     dirtyPriority: entry?.dirty?.priority,
                     activeGeneration: entry?.active?.generation,
                     activePriority: entry?.active?.priority,
-                    published: entry?.published ?? false
+                    published: entry?.published ?? false,
+                    intentRef: entry?.intentRef,
+                    legacyIntent: entry?.isLegacyPublication == true ? true : nil
                 )
             },
             backgroundCursor: lastBackgroundKey.map { AutomaticSchedulingKeyRecord($0) }
@@ -511,9 +558,12 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
                 )
                 if record.published {
                     // The scope's one unresolved intent, wherever it got to. It keeps blocking a
-                    // duplicate claim until the queue reports its outcome.
+                    // duplicate claim until the queue reports its outcome. A nil ref here is a
+                    // publication from before the field existed: `legacyIntent` adds nothing to
+                    // recover, since the missing ref is itself what makes it legacy.
                     entry.active = active
                     entry.published = true
+                    entry.intentRef = record.intentRef
                 } else {
                     // No process is carrying this candidate any more, so it goes back to dirty
                     // exactly as `cancel` would: the later generation if one accumulated behind
@@ -534,7 +584,14 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
     /// Every rule the in-memory machine upholds, re-checked on the way in and on the way out. A
     /// document that breaks one is refused rather than repaired: this owner cannot tell a tampered
     /// generation from a real one, and guessing would be the thing that duplicates work.
-    private static func validate(_ document: AutomaticSchedulingDocument) throws {
+    ///
+    /// `allowingLegacyPublished` is set only on the way in, where a document written before
+    /// publications carried a ref shows one with neither a ref nor the legacy marker. On the way
+    /// out it is not, so no publication this owner writes can reach that shape by accident.
+    private static func validate(
+        _ document: AutomaticSchedulingDocument,
+        allowingLegacyPublished: Bool
+    ) throws {
         guard document.schema == schema,
               document.entries.count <= maximumTrackedSources * maximumScopesPerSource,
               document.backgroundCursor.map(validKey) ?? true
@@ -551,6 +608,7 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
                   record.dirtyGeneration != nil || record.activeGeneration != nil,
                   // Nothing is published without a claim in flight that published it.
                   !record.published || record.activeGeneration != nil,
+                  validPublication(record, allowingLegacy: allowingLegacyPublished),
                   [record.dirtyGeneration, record.activeGeneration]
                       .allSatisfy({ $0.map(validGeneration) ?? true })
             else { throw AutomaticSchedulingError.invalidState }
@@ -567,6 +625,22 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
               document.entries.indices.dropFirst()
                   .allSatisfy({ document.entries[$0 - 1].key.key < document.entries[$0].key.key })
         else { throw AutomaticSchedulingError.invalidState }
+    }
+
+    /// A publication names its one unresolved intent, and only a publication names one: a ref
+    /// without a publication is as refused as a publication that should have one and does not.
+    private static func validPublication(
+        _ record: AutomaticSchedulingEntryRecord,
+        allowingLegacy: Bool
+    ) -> Bool {
+        switch (record.published, record.intentRef, record.legacyIntent == true) {
+        case (false, nil, false): return true
+        case (true, let ref?, false): return validRef(ref)
+        case (true, nil, true): return true
+        // Published before the ref existed. Accepted on the way in, refused on the way out.
+        case (true, nil, false): return allowingLegacy
+        default: return false
+        }
     }
 
     private static func validKey(_ record: AutomaticSchedulingKeyRecord) -> Bool {
@@ -597,7 +671,7 @@ public final class AutomaticSchedulingStateMachine: @unchecked Sendable {
             let header = try JSONDecoder().decode(AutomaticSchedulingHeader.self, from: data)
             guard header.schema == schema else { throw AutomaticSchedulingError.unsupportedSchema }
             let document = try JSONDecoder().decode(AutomaticSchedulingDocument.self, from: data)
-            try validate(document)
+            try validate(document, allowingLegacyPublished: true)
             return document
         } catch let error as AutomaticSchedulingError {
             throw error

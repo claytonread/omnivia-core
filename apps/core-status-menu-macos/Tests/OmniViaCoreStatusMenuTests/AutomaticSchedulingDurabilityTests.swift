@@ -19,6 +19,8 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         source: AutomaticSchedulingSource(workspaceRef: "workspace-a", sourceRef: "source-a"),
         scopeKey: "scope-a"
     )
+    /// The opaque queue ref a publication carries across a restart.
+    private static let ref = "intent-a"
 
     override func setUpWithError() throws {
         root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
@@ -81,7 +83,7 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         let first = try machine()
         let resolved = try first.signal(Self.key, priority: .background, at: 0)
         XCTAssertEqual(try first.claim(at: 3_000)?.generation, resolved)
-        try first.markPublished(Self.key, generation: resolved, at: 3_100)
+        try first.markPublished(Self.key, generation: resolved, intentRef: Self.ref, at: 3_100)
         try first.markCompleted(Self.key, generation: resolved, at: 3_200)
 
         let second = try machine()
@@ -100,7 +102,7 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         let first = try machine()
         let resolved = try first.signal(Self.key, priority: .background, at: 0)
         XCTAssertEqual(try first.claim(at: 3_000)?.generation, resolved)
-        try first.markPublished(Self.key, generation: resolved, at: 3_100)
+        try first.markPublished(Self.key, generation: resolved, intentRef: Self.ref, at: 3_100)
         try first.markCompleted(Self.key, generation: resolved, at: 3_200)
 
         let second = try machine()
@@ -150,12 +152,15 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         let first = try machine()
         let published = try first.signal(Self.key, priority: .background, at: 0)
         XCTAssertEqual(try first.claim(at: 3_000)?.generation, published)
-        try first.markPublished(Self.key, generation: published, at: 3_100)
+        try first.markPublished(Self.key, generation: published, intentRef: Self.ref, at: 3_100)
 
         let second = try machine()
         let state = try XCTUnwrap(second.state(of: Self.key))
         XCTAssertEqual(state.activeGeneration, published)
         XCTAssertTrue(state.published)
+        // The ref the publication was given is what the new process reconciles it against.
+        XCTAssertEqual(state.intentRef, Self.ref)
+        XCTAssertFalse(state.legacyUnresolvedIntent)
         XCTAssertNil(state.dirtyGeneration)
         // The published intent is still the scope's one unresolved intent, so nothing duplicates it
         // — not at the new clock's zero and not long after the old periods would have elapsed.
@@ -171,7 +176,7 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         let first = try machine()
         let published = try first.signal(Self.key, priority: .background, at: 0)
         XCTAssertEqual(try first.claim(at: 3_000)?.generation, published)
-        try first.markPublished(Self.key, generation: published, at: 3_100)
+        try first.markPublished(Self.key, generation: published, intentRef: Self.ref, at: 3_100)
         let later = try first.signal(Self.key, priority: .user, at: 4_000)
 
         let second = try machine()
@@ -193,7 +198,7 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         let first = try machine()
         let published = try first.signal(Self.key, priority: .background, at: 0)
         XCTAssertEqual(try first.claim(at: 3_000)?.generation, published)
-        try first.markPublished(Self.key, generation: published, at: 3_100)
+        try first.markPublished(Self.key, generation: published, intentRef: Self.ref, at: 3_100)
 
         // The published generation is the latest one issued even though no dirty record holds it,
         // so a signal after the restart is the one after it rather than a first signal again.
@@ -244,6 +249,98 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         XCTAssertEqual(try second.claim(at: 3)?.key, keys[0])
     }
 
+    // MARK: - The published intent ref
+
+    func testAPublishedIntentRefIsWrittenToTheDocumentAndSurvivesARestart() throws {
+        let first = try machine()
+        let published = try first.signal(Self.key, priority: .background, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, published)
+        try first.markPublished(Self.key, generation: published, intentRef: Self.ref, at: 3_100)
+        let written = try XCTUnwrap(entries().first)
+        XCTAssertEqual(written["intentRef"] as? String, Self.ref)
+        // A real ref is there, so nothing says this publication predates refs.
+        XCTAssertNil(written["legacyIntent"])
+
+        let second = try machine()
+        let state = try XCTUnwrap(second.state(of: Self.key))
+        XCTAssertEqual(state.intentRef, Self.ref)
+        XCTAssertTrue(state.published)
+        XCTAssertFalse(state.legacyUnresolvedIntent)
+        // Reconciled by ref rather than repeated: the intent is not claimed a second time, and the
+        // outcome the queue reports resolves it.
+        XCTAssertNil(try second.claim(at: 0))
+        try second.markCompleted(Self.key, generation: published, at: 0)
+        XCTAssertNil(second.state(of: Self.key))
+    }
+
+    func testAPriorV1PublicationWithNoRefIsRecoveredAsALegacyUnresolvedIntent() throws {
+        var document = try base()
+        // Exactly what the shipped v1 writer produced: published, with no field for a ref at all.
+        Self.editFirstEntry(&document) { $0.removeValue(forKey: "intentRef") }
+        try write(document)
+
+        let machine = try machine()
+        let state = try XCTUnwrap(machine.state(of: Self.key))
+        XCTAssertEqual(state.activeGeneration, 1)
+        XCTAssertTrue(state.published)
+        // There is nothing to look up in the queue, and the caller is told that rather than left to
+        // read an absent ref as "nothing was published".
+        XCTAssertNil(state.intentRef)
+        XCTAssertTrue(state.legacyUnresolvedIntent)
+        // It is still the scope's one unresolved intent, so the work behind it is not duplicated.
+        XCTAssertNil(try machine.claim(at: 0))
+        XCTAssertNil(try machine.claim(at: 60_000))
+        // And it is published, so it cannot acquire a ref after the fact either.
+        XCTAssertThrowsError(
+            try machine.markPublished(Self.key, generation: 1, intentRef: Self.ref, at: 60_000)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .alreadyPublished) }
+
+        // Resolving it by its generation works exactly as it does for a publication with a ref,
+        // which is how a legacy intent leaves without any work being repeated.
+        try machine.markCompleted(Self.key, generation: 1, at: 60_000)
+        XCTAssertEqual(try machine.claim(at: 60_000)?.generation, 2)
+    }
+
+    func testALegacyPublicationIsRewrittenWithAnExplicitMarkerAndStaysLegacy() throws {
+        var document = try base()
+        Self.editFirstEntry(&document) { $0.removeValue(forKey: "intentRef") }
+        try write(document)
+
+        // Any accepted transition rewrites the whole document, carrying the legacy publication with
+        // it. Published-with-no-ref is not a shape this owner may write, so the marker says so
+        // outright and the absence of a ref stops being ambiguous.
+        let machine = try machine()
+        try machine.signal(Self.key, priority: .user, at: 0)
+        let rewritten = try XCTUnwrap(entries().first)
+        XCTAssertNil(rewritten["intentRef"])
+        XCTAssertEqual(rewritten["legacyIntent"] as? Bool, true)
+
+        // Still legacy after another restart, and still blocking: nothing promoted it.
+        let reopened = try self.machine()
+        let state = try XCTUnwrap(reopened.state(of: Self.key))
+        XCTAssertTrue(state.legacyUnresolvedIntent)
+        XCTAssertNil(state.intentRef)
+        XCTAssertNil(try reopened.claim(at: 0))
+    }
+
+    func testAPublishedRefIsGoneFromTheDocumentOnceTheIntentIsCancelled() throws {
+        let machine = try machine()
+        let generation = try machine.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
+        try machine.markPublished(Self.key, generation: generation, intentRef: Self.ref, at: 3_100)
+
+        try machine.cancel(Self.key, generation: generation, at: 3_200)
+        let written = try XCTUnwrap(entries().first)
+        XCTAssertNil(written["intentRef"])
+        XCTAssertEqual(written["published"] as? Bool, false)
+        // Nothing durable claims an unresolved intent any more, so the restart does not go looking
+        // for one — and certainly does not come back as a legacy publication.
+        let state = try XCTUnwrap(try self.machine().state(of: Self.key))
+        XCTAssertFalse(state.published)
+        XCTAssertNil(state.intentRef)
+        XCTAssertFalse(state.legacyUnresolvedIntent)
+    }
+
     // MARK: - Write failures
 
     func testAFailedWriteLeavesThePriorDurableAndInMemoryStateUnchanged() throws {
@@ -270,6 +367,33 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         XCTAssertNil(try machine.claim(at: 2_999))
         XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
         XCTAssertEqual(try self.machine().state(of: Self.key)?.dirtyGeneration, generation)
+    }
+
+    func testAFailedWriteWhilePublishingLeavesNothingPublishedAndNoRefAttached() throws {
+        let machine = try machine()
+        let generation = try machine.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
+        let before = try XCTUnwrap(machine.state(of: Self.key))
+        let bytes = try Data(contentsOf: stateFile)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: stateDirectory.path
+        )
+
+        // The publication and its ref are one transition, so neither half of it can land alone.
+        XCTAssertThrowsError(
+            try machine.markPublished(Self.key, generation: generation, intentRef: Self.ref, at: 3_100)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .stateUnavailable) }
+        XCTAssertEqual(machine.state(of: Self.key), before)
+        XCTAssertNil(machine.state(of: Self.key)?.intentRef)
+        XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: stateDirectory.path
+        )
+        // The candidate is still in flight and unpublished, so the retry publishes rather than
+        // tripping over a half-applied one.
+        try machine.markPublished(Self.key, generation: generation, intentRef: Self.ref, at: 3_200)
+        XCTAssertEqual(try self.machine().state(of: Self.key)?.intentRef, Self.ref)
     }
 
     func testAFailedWriteWhileClaimingLeavesNothingClaimed() throws {
@@ -438,6 +562,44 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
             ("a missing ref", .invalidState, {
                 Self.editFirstEntry(&$0) { $0["key"] = ["workspaceRef": "workspace-a"] }
             }),
+            ("an intent ref with nothing published", .invalidState, {
+                Self.editFirstEntry(&$0) {
+                    $0.removeValue(forKey: "activeGeneration")
+                    $0.removeValue(forKey: "activePriority")
+                    $0["published"] = false
+                }
+            }),
+            ("an intent ref shaped like a path", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["intentRef"] = "intent/a" }
+            }),
+            ("an empty intent ref", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["intentRef"] = "" }
+            }),
+            ("an over-long intent ref", .invalidState, {
+                Self.editFirstEntry(&$0) {
+                    $0["intentRef"] = String(
+                        repeating: "a", count: AutomaticSchedulingStateMachine.maximumRefBytes + 1
+                    )
+                }
+            }),
+            ("an intent ref of the wrong type", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["intentRef"] = 7 }
+            }),
+            // The legacy marker means "published before refs existed", so it is a contradiction
+            // beside a ref and meaningless without a publication.
+            ("a legacy marker beside an intent ref", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["legacyIntent"] = true }
+            }),
+            ("a legacy marker with nothing published", .invalidState, {
+                Self.editFirstEntry(&$0) {
+                    $0.removeValue(forKey: "intentRef")
+                    $0["legacyIntent"] = true
+                    $0["published"] = false
+                }
+            }),
+            ("a legacy marker of the wrong type", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["legacyIntent"] = "yes" }
+            }),
             ("a rotation cursor that is not an opaque ref", .invalidState, {
                 $0["backgroundCursor"] = [
                     "workspaceRef": "workspace-a", "sourceRef": "source-a", "scopeKey": "/etc",
@@ -551,7 +713,7 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         let machine = try machine()
         let published = try machine.signal(Self.key, priority: .background, at: 0)
         XCTAssertEqual(try machine.claim(at: 3_000)?.generation, published)
-        try machine.markPublished(Self.key, generation: published, at: 3_100)
+        try machine.markPublished(Self.key, generation: published, intentRef: Self.ref, at: 3_100)
         try machine.signal(Self.key, priority: .user, at: 4_000)
         return try document()
     }
@@ -576,6 +738,10 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         guard !entries.isEmpty else { return }
         change(&entries[0])
         document["entries"] = entries
+    }
+
+    private func entries() throws -> [[String: Any]] {
+        try XCTUnwrap(document()["entries"] as? [[String: Any]])
     }
 
     private func document() throws -> [String: Any] {

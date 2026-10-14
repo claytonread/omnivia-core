@@ -8,6 +8,8 @@ final class AutomaticSchedulingStateMachineTests: XCTestCase {
         source: AutomaticSchedulingSource(workspaceRef: "workspace-a", sourceRef: "source-a"),
         scopeKey: "scope-a"
     )
+    /// The opaque queue ref a publication carries. Never a path: see `markPublished`.
+    private static let ref = "intent-a"
 
     func testBackgroundSignalIsClaimableOnlyOnceTheQuietPeriodHasElapsed() throws {
         let machine = AutomaticSchedulingStateMachine()
@@ -44,7 +46,7 @@ final class AutomaticSchedulingStateMachineTests: XCTestCase {
         let machine = AutomaticSchedulingStateMachine()
         let published = try machine.signal(Self.key, priority: .background, at: 0)
         XCTAssertEqual(try machine.claim(at: 3_000)?.generation, published)
-        try machine.markPublished(Self.key, generation: published, at: 3_100)
+        try machine.markPublished(Self.key, generation: published, intentRef: Self.ref, at: 3_100)
 
         let later = try machine.signal(Self.key, priority: .background, at: 4_000)
         XCTAssertEqual(later, published + 1)
@@ -107,6 +109,89 @@ final class AutomaticSchedulingStateMachineTests: XCTestCase {
         XCTAssertEqual(try machine.signal(Self.key, priority: .background, at: 7_000), later + 1)
     }
 
+    // MARK: - The published intent ref
+
+    func testPublishingAttachesTheIntentRefAndResolvingTheIntentTakesItAway() throws {
+        let machine = AutomaticSchedulingStateMachine()
+        let generation = try machine.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
+        // A claimed candidate has published nothing, so there is no intent to name yet.
+        let claimed = try XCTUnwrap(machine.state(of: Self.key))
+        XCTAssertNil(claimed.intentRef)
+        XCTAssertFalse(claimed.legacyUnresolvedIntent)
+
+        try machine.markPublished(Self.key, generation: generation, intentRef: Self.ref, at: 3_100)
+        let published = try XCTUnwrap(machine.state(of: Self.key))
+        XCTAssertTrue(published.published)
+        XCTAssertEqual(published.intentRef, Self.ref)
+        // A ref is something to reconcile against, which is exactly what legacy means it lacks.
+        XCTAssertFalse(published.legacyUnresolvedIntent)
+
+        // Work accumulated behind the published intent waits for it rather than duplicating it.
+        let later = try machine.signal(Self.key, priority: .user, at: 3_200)
+        XCTAssertNil(try machine.claim(at: 10_000))
+
+        try machine.markCompleted(Self.key, generation: generation, at: 10_100)
+        let resolved = try XCTUnwrap(machine.state(of: Self.key))
+        XCTAssertFalse(resolved.published)
+        XCTAssertNil(resolved.intentRef)
+        XCTAssertEqual(try machine.claim(at: 10_200)?.generation, later)
+    }
+
+    func testCancellingAPublishedIntentTakesItsRefAwayWithIt() throws {
+        let machine = AutomaticSchedulingStateMachine()
+        let generation = try machine.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
+        try machine.markPublished(Self.key, generation: generation, intentRef: Self.ref, at: 3_100)
+
+        XCTAssertEqual(try machine.cancel(Self.key, generation: generation, at: 3_200), generation)
+        let state = try XCTUnwrap(machine.state(of: Self.key))
+        XCTAssertFalse(state.published)
+        XCTAssertNil(state.intentRef)
+        XCTAssertFalse(state.legacyUnresolvedIntent)
+
+        // The abandoned ref is not inherited: the next attempt publishes under its own.
+        XCTAssertEqual(try machine.claim(at: 3_300)?.generation, generation)
+        try machine.markPublished(Self.key, generation: generation, intentRef: "intent-b", at: 3_400)
+        XCTAssertEqual(machine.state(of: Self.key)?.intentRef, "intent-b")
+    }
+
+    func testMalformedIntentRefsAreRefusedAndPublishNothing() throws {
+        let machine = AutomaticSchedulingStateMachine()
+        let maximum = AutomaticSchedulingStateMachine.maximumRefBytes
+        let generation = try machine.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
+
+        let malformed = [
+            "",
+            // A ref shaped like a path is refused rather than stored: this machine holds no paths.
+            "intent/a",
+            "/",
+            String(repeating: "a", count: maximum + 1),
+            String(repeating: "é", count: maximum / 2 + 1),
+            "a\u{0}b",
+            "a\nb",
+            "a\u{7F}b",
+        ]
+        for value in malformed {
+            assertThrows(.malformedIntentRef) {
+                try machine.markPublished(
+                    Self.key, generation: generation, intentRef: value, at: 3_100
+                )
+            }
+        }
+        // Every one was refused before anything moved, so the candidate is still unpublished.
+        let state = try XCTUnwrap(machine.state(of: Self.key))
+        XCTAssertFalse(state.published)
+        XCTAssertNil(state.intentRef)
+
+        // The length bound is inclusive and in bytes, as it is for every other ref.
+        let atBound = String(repeating: "é", count: maximum / 2)
+        XCTAssertEqual(atBound.utf8.count, maximum)
+        try machine.markPublished(Self.key, generation: generation, intentRef: atBound, at: 3_100)
+        XCTAssertEqual(machine.state(of: Self.key)?.intentRef, atBound)
+    }
+
     // MARK: - Selection order
 
     func testUserReadyWorkIsSelectedBeforeOlderBackgroundReadyWork() throws {
@@ -140,7 +225,9 @@ final class AutomaticSchedulingStateMachineTests: XCTestCase {
                 selected.append(claim.key)
                 // Each claim finishes before the next selection, so the rotation is what orders
                 // them rather than one claim blocking its own key.
-                try machine.markPublished(claim.key, generation: claim.generation, at: now + 10)
+                try machine.markPublished(
+                    claim.key, generation: claim.generation, intentRef: Self.ref, at: now + 10
+                )
                 try machine.markCompleted(claim.key, generation: claim.generation, at: now + 20)
                 XCTAssertNil(machine.state(of: claim.key))
                 now += 100
@@ -159,19 +246,23 @@ final class AutomaticSchedulingStateMachineTests: XCTestCase {
         let key = Self.makeKey("scope-a")
 
         // Publish without a claim: first with no entry at all, then with dirty-but-unclaimed work.
-        assertThrows(.notClaimed) { try machine.markPublished(key, generation: 1, at: 0) }
+        assertThrows(.notClaimed) {
+            try machine.markPublished(key, generation: 1, intentRef: Self.ref, at: 0)
+        }
         let generation = try machine.signal(key, priority: .background, at: 0)
-        assertThrows(.notClaimed) { try machine.markPublished(key, generation: generation, at: 1_000) }
+        assertThrows(.notClaimed) {
+            try machine.markPublished(key, generation: generation, intentRef: Self.ref, at: 1_000)
+        }
 
         XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
         assertThrows(.staleGeneration) {
-            try machine.markPublished(key, generation: generation + 1, at: 3_100)
+            try machine.markPublished(key, generation: generation + 1, intentRef: Self.ref, at: 3_100)
         }
         assertThrows(.notPublished) { try machine.markCompleted(key, generation: generation, at: 3_200) }
 
-        try machine.markPublished(key, generation: generation, at: 3_300)
+        try machine.markPublished(key, generation: generation, intentRef: Self.ref, at: 3_300)
         assertThrows(.alreadyPublished) {
-            try machine.markPublished(key, generation: generation, at: 3_400)
+            try machine.markPublished(key, generation: generation, intentRef: Self.ref, at: 3_400)
         }
         assertThrows(.staleGeneration) {
             try machine.markCompleted(key, generation: generation + 1, at: 3_500)
@@ -262,7 +353,7 @@ final class AutomaticSchedulingStateMachineTests: XCTestCase {
         // Completing the last active generation of a scope drops its entry, which returns its
         // place in the bound.
         let claim = try XCTUnwrap(machine.claim(at: 3_000))
-        try machine.markPublished(claim.key, generation: claim.generation, at: 3_100)
+        try machine.markPublished(claim.key, generation: claim.generation, intentRef: Self.ref, at: 3_100)
         try machine.markCompleted(claim.key, generation: claim.generation, at: 3_200)
         XCTAssertNil(machine.state(of: claim.key))
         XCTAssertEqual(machine.trackedScopes, limit)
@@ -285,7 +376,7 @@ final class AutomaticSchedulingStateMachineTests: XCTestCase {
         assertThrows(.tooManySources) { try machine.signal(overflow, priority: .background, at: 0) }
 
         let claim = try XCTUnwrap(machine.claim(at: 3_000))
-        try machine.markPublished(claim.key, generation: claim.generation, at: 3_100)
+        try machine.markPublished(claim.key, generation: claim.generation, intentRef: Self.ref, at: 3_100)
         try machine.markCompleted(claim.key, generation: claim.generation, at: 3_200)
         XCTAssertNil(machine.state(of: claim.key))
         XCTAssertEqual(machine.trackedSources, limit - 1)
