@@ -17,6 +17,9 @@ public actor FileMonitoringCoordinator {
     private let subscriptions: FileSubscriptionStore
     private let reader: any CoordinatedOriginalReading
     private let scheduling: AutomaticSchedulingStateMachine
+    /// The same gate the queue, the subscription stores and the scheduling machine were built with,
+    /// so this owner can hold one critical section across all three. See `PublicationGate`.
+    private let publicationGate: PublicationGate
     /// Process-monotonic milliseconds, which is what the scheduling machine's periods are measured
     /// in. See `DocumentIntakeEnvironment.processUptimeMilliseconds`.
     private let clock: @Sendable () -> Int64
@@ -28,6 +31,7 @@ public actor FileMonitoringCoordinator {
         subscriptions: FileSubscriptionStore,
         reader: any CoordinatedOriginalReading,
         scheduling: AutomaticSchedulingStateMachine,
+        publicationGate: PublicationGate,
         clock: @escaping @Sendable () -> Int64
     ) {
         self.accessStore = accessStore
@@ -36,6 +40,7 @@ public actor FileMonitoringCoordinator {
         self.subscriptions = subscriptions
         self.reader = reader
         self.scheduling = scheduling
+        self.publicationGate = publicationGate
         self.clock = clock
     }
 
@@ -110,28 +115,20 @@ public actor FileMonitoringCoordinator {
         var checkable: [AutomaticSchedulingKey: (value: FileSubscription, report: Int)] = [:]
         for persisted in subscriptions.all() {
             if let subscriptionIDs, !subscriptionIDs.contains(persisted.subscriptionID) { continue }
-            guard var value = try? reconcileReceipts(persisted) else { continue }
-            // Whatever this scope already published is identified before anything else is decided
-            // about it. Evidence that does not name exactly one intent belonging to this
-            // subscription is not something a replacement publication may be built on top of.
-            var evidence: PublicationEvidence = .clear
-            if value.state == .active {
-                evidence = publicationEvidence(for: value)
-                if evidence == .unverifiable,
-                   let reviewed = try? subscriptions.update(
-                       id: value.subscriptionID, { $0.state = .reviewRequired }
-                   )
-                {
-                    value = reviewed
-                }
+            // The receipts, the identity of whatever this scope published, and the scheduler
+            // completion a terminal receipt allows are one critical section on the shared gate, so
+            // no relink, pause, reconfigure or publication interleaves between reading that
+            // evidence and acting on it.
+            guard let resolved = publicationGate.withLock({ applyReceipts(persisted) }) else {
+                continue
             }
             reports.append(FileMonitoringReport(
-                subscriptionID: value.subscriptionID,
-                state: value.state,
+                subscriptionID: resolved.value.subscriptionID,
+                state: resolved.value.state,
                 queued: false
             ))
-            guard value.state == .active, evidence == .clear else { continue }
-            checkable[Self.schedulingKey(for: value)] = (value, reports.count - 1)
+            guard resolved.value.state == .active, resolved.evidence == .clear else { continue }
+            checkable[Self.schedulingKey(for: resolved.value)] = (resolved.value, reports.count - 1)
         }
         for claim in claimDueWork(among: Set(checkable.keys)) {
             guard let candidate = checkable[claim.key] else { continue }
@@ -148,7 +145,63 @@ public actor FileMonitoringCoordinator {
         /// The record does not identify exactly one intent that belongs to this subscription, so
         /// this owner cannot tell a duplicate publication from a legitimate one.
         case unverifiable
+        /// The queue reported this scope's published intent's outcome, so the generation that
+        /// published it is finished as soon as that receipt is applied.
+        case resolved(generation: UInt64)
         case clear
+    }
+
+    /// Applies the queue's receipts to one subscription and resolves whatever its scope published:
+    /// the review transition unaccountable evidence forces, and the scheduler completion a terminal
+    /// receipt allows. Returns nil when the subscription could not be updated at all.
+    ///
+    /// Called under `publicationGate`, so the receipt effects and the completion that depends on
+    /// them are one transition as far as every other publication owner is concerned.
+    ///
+    /// The published intent is identified from the subscription as it stands *before* any receipt is
+    /// applied, because a terminal receipt clears `lastQueuedItemID` — the only ref a legacy
+    /// publication has to be found by. Nothing the receipts change takes part in the identity check.
+    ///
+    /// Replay-safe across the two durable writes: the receipt is recorded first, and if the process
+    /// stops before the completion, the next call resolves the same still-published ref against the
+    /// same terminal entry, finds the receipt effects already applied, and completes it then.
+    private func applyReceipts(
+        _ persisted: FileSubscription
+    ) -> (value: FileSubscription, evidence: PublicationEvidence)? {
+        let evidence = publicationEvidence(for: persisted)
+        guard var value = try? reconcileReceipts(persisted) else { return nil }
+        switch evidence {
+        case let .resolved(generation):
+            // Releasing the scheduler's in-flight slot is what exposes any later dirty generation
+            // for the next claim, so the completion is what makes this scope checkable again —
+            // only a completion that actually happened. A refused one (the durable write failed,
+            // say) rolls back whole, leaving the scope published; reporting that as clear would let
+            // the next claim publish a second intent for the generation this one still holds. So a
+            // refusal keeps the scope unresolved and the completion stays owed: the next call
+            // resolves the same still-published ref against the same terminal entry, finds the
+            // receipt effects already applied, and completes it then.
+            do {
+                try scheduling.markCompleted(
+                    Self.schedulingKey(for: value),
+                    generation: generation,
+                    at: clock()
+                )
+            } catch {
+                return (value, .unresolved)
+            }
+            return (value, .clear)
+        case .unverifiable:
+            if value.state == .active,
+               let reviewed = try? subscriptions.update(
+                   id: value.subscriptionID, { $0.state = .reviewRequired }
+               )
+            {
+                value = reviewed
+            }
+            return (value, .unverifiable)
+        case .unresolved, .clear:
+            return (value, evidence)
+        }
     }
 
     /// Resolves the scope's published intent, if it has one, and checks it really is this
@@ -156,9 +209,12 @@ public actor FileMonitoringCoordinator {
     ///
     /// The scheduling machine's ref names that intent exactly, which is what makes the check an
     /// identity check rather than a search for anything that looks close enough. Missing, duplicated
-    /// or mismatched evidence is never resolved by guessing: the subscription goes to review and no
-    /// replacement is published. Terminal admission and refusal are still the queue receipt's
-    /// business, so a resolved intent only stops blocking here.
+    /// or mismatched evidence is never resolved by guessing: the subscription goes to review, the
+    /// scheduler's publication is left exactly as it stands, and no replacement is published.
+    ///
+    /// A ref that does resolve to exactly this subscription's own automatic capture, and whose
+    /// entry the queue has reported a terminal outcome for, names the generation that is now
+    /// finished — see `.resolved`, which `applyReceipts` completes once the receipt is applied.
     private func publicationEvidence(for value: FileSubscription) -> PublicationEvidence {
         let entries = queue.allEntries()
         guard let scheduled = scheduling.state(of: Self.schedulingKey(for: value)),
@@ -182,7 +238,10 @@ public actor FileMonitoringCoordinator {
         guard matches.count == 1, Self.isAutomaticCapture(matches[0].intent, of: value) else {
             return .unverifiable
         }
-        return [.pending, .staging, .unknownOutcome].contains(matches[0].state) ? .unresolved : .clear
+        if [.pending, .staging, .unknownOutcome].contains(matches[0].state) { return .unresolved }
+        // Published, so the machine's own validation guarantees the generation that published it.
+        guard let generation = scheduled.activeGeneration else { return .unverifiable }
+        return .resolved(generation: generation)
     }
 
     /// Whether this intent is the automatic capture this subscription would itself have published:
@@ -360,9 +419,17 @@ public actor FileMonitoringCoordinator {
         }
     }
 
+    /// Applies the queue's receipts to every subscription without checking anything.
+    ///
+    /// The same gated flow `reconcile` runs, so a caller that only reconciles receipts still
+    /// finishes the scheduler generation a terminal receipt resolves: the terminal outcome is the
+    /// whole of what completes a published generation, and which entry point observed it is not
+    /// part of that. It claims nothing and reads no source, so nothing is published from here.
     @discardableResult
     public func reconcileReceipts() -> [FileSubscription] {
-        subscriptions.all().compactMap { try? reconcileReceipts($0) }
+        subscriptions.all().compactMap { persisted in
+            publicationGate.withLock { applyReceipts(persisted)?.value }
+        }
     }
 
     @discardableResult

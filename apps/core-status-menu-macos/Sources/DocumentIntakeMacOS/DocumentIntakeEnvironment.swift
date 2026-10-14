@@ -131,6 +131,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             subscriptions: fileSubscriptions,
             reader: reader,
             scheduling: automaticScheduling,
+            publicationGate: gate,
             clock: clock
         )
     }

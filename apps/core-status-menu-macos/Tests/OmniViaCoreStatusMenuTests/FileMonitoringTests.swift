@@ -102,7 +102,7 @@ final class FileMonitoringTests: XCTestCase {
         XCTAssertEqual(reopened.fileSubscriptions.all().map(\.state), [.active])
     }
 
-    func testRejectedAutomaticVersionPausesAndHoldsTheRetryUntilItsIntentResolves() async throws {
+    func testRejectedAutomaticVersionPausesAndCompletesTheGenerationItPublished() async throws {
         let root = try temporaryDirectory()
         let original = root.appendingPathComponent("watched.txt")
         try Data("baseline".utf8).write(to: original)
@@ -133,22 +133,187 @@ final class FileMonitoringTests: XCTestCase {
         XCTAssertEqual(paused.state, .paused)
         XCTAssertNil(paused.lastObservedDigest)
         XCTAssertNil(paused.lastQueuedItemID)
+        XCTAssertTrue(paused.needsReconciliation)
+        // The refusal is the terminal outcome of this scope's one published intent, so the
+        // generation that published it is finished and nothing is left in flight: the scope goes
+        // clean, which is what stops it being tracked at all.
+        let key = FileMonitoringCoordinator.schedulingKey(for: paused)
+        XCTAssertNil(environment.automaticScheduling.state(of: key))
 
         _ = try await environment.fileMonitoring.resume(subscriptionID: subscriptionID)
         await environment.fileMonitoring.markDirty(subscriptionIDs: [subscriptionID])
         clock.advance(3_000)
-        _ = await environment.fileMonitoring.reconcileAll()
-        // The refused intent is still this scope's one published candidate, so the retry is owed
-        // but not attempted: exactly one later dirty generation stands behind it. Resolving it
-        // from the queue's terminal receipt is the next slice.
-        let key = FileMonitoringCoordinator.schedulingKey(for: paused)
+        let reports = await environment.fileMonitoring.reconcileAll()
+
+        // The cleared digest is what makes Resume deliberately prepare a new intent instead of
+        // treating the refused version as synchronized, and exactly one is published: the refused
+        // one is terminal and is never published again.
+        XCTAssertEqual(reports.map(\.queued), [true])
+        let automatic = environment.queue.allEntries().filter { $0.intent.surface == .automaticFile }
+        XCTAssertEqual(automatic.count, 2)
+        XCTAssertEqual(automatic.filter { $0.state == .failed }.map(\.intent.itemId), [rejected.intent.itemId])
         let scheduled = try XCTUnwrap(environment.automaticScheduling.state(of: key))
-        XCTAssertEqual(scheduled.activeGeneration, 1)
         XCTAssertTrue(scheduled.published)
-        XCTAssertEqual(scheduled.intentRef, rejected.intent.itemId)
-        XCTAssertEqual(scheduled.dirtyGeneration, 2)
+        XCTAssertNotEqual(scheduled.intentRef, rejected.intent.itemId)
+        XCTAssertNil(scheduled.dirtyGeneration)
+    }
+
+    func testAdmittedAutomaticReceiptAppliesTheCaptureAndCompletesTheGeneration() async throws {
+        let context = try await activeWatch()
+        let published = try await publishOneAutomaticChange(context)
+        let readsAfterPublication = context.reader.count
+        let captureID = "dcap-" + String(repeating: "c", count: 64)
+        try admit(published, captureID: captureID, queue: context.environment.queue)
+
+        let reports = await context.environment.fileMonitoring.reconcileAll()
+
+        XCTAssertEqual(reports.map(\.state), [.active])
+        XCTAssertEqual(reports.map(\.queued), [false])
+        let value = try XCTUnwrap(context.environment.fileSubscriptions.all().first)
+        XCTAssertEqual(value.currentSuccessfulCaptureID, captureID)
+        XCTAssertNil(value.lastQueuedItemID)
+        // Terminal: the generation that published is resolved and dropped, so the scope is clean
+        // and no longer tracked. Nothing was read and nothing was published to get there.
+        XCTAssertNil(context.environment.automaticScheduling.state(of: context.key))
+        XCTAssertEqual(context.reader.count, readsAfterPublication)
         XCTAssertEqual(
-            environment.queue.allEntries().filter { $0.intent.surface == .automaticFile }.count,
+            context.environment.queue.allEntries().filter { $0.intent.surface == .automaticFile }.count,
+            1
+        )
+    }
+
+    func testReconcilingReceiptsAloneCompletesTheGenerationAndExposesTheLaterOne() async throws {
+        let context = try await activeWatch()
+        let published = try await publishOneAutomaticChange(context)
+        // One more event arrives behind the candidate in flight, so there is a later generation to
+        // survive the completion.
+        try Data("changed again".utf8).write(to: context.original)
+        await context.environment.fileMonitoring.markDirty(subscriptionIDs: [context.subscriptionID])
+        let readsAfterPublication = context.reader.count
+        try admit(
+            published,
+            captureID: "dcap-" + String(repeating: "c", count: 64),
+            queue: context.environment.queue
+        )
+
+        _ = await context.environment.fileMonitoring.reconcileReceipts()
+
+        // This entry point claims nothing and reads nothing, but it still finished the published
+        // generation, which is what leaves generation 2 owed, unclaimed and unpublished.
+        let resolved = try XCTUnwrap(context.environment.automaticScheduling.state(of: context.key))
+        XCTAssertNil(resolved.activeGeneration)
+        XCTAssertFalse(resolved.published)
+        XCTAssertNil(resolved.intentRef)
+        XCTAssertEqual(resolved.dirtyGeneration, 2)
+        XCTAssertEqual(context.reader.count, readsAfterPublication)
+        XCTAssertEqual(
+            context.environment.queue.allEntries().filter { $0.intent.surface == .automaticFile }.count,
+            1
+        )
+
+        context.clock.advance(3_000)
+        let reports = await context.environment.fileMonitoring.reconcileAll()
+
+        // Generation 2 is the next owed generation and publishes exactly one more intent: the
+        // resolved generation is not published a second time.
+        XCTAssertEqual(reports.map(\.queued), [true])
+        let scheduled = try XCTUnwrap(context.environment.automaticScheduling.state(of: context.key))
+        XCTAssertEqual(scheduled.activeGeneration, 2)
+        XCTAssertTrue(scheduled.published)
+        XCTAssertNil(scheduled.dirtyGeneration)
+        XCTAssertNotEqual(scheduled.intentRef, published.intent.itemId)
+        XCTAssertEqual(
+            context.environment.queue.allEntries().filter { $0.intent.surface == .automaticFile }.count,
+            2
+        )
+    }
+
+    func testRefusedCompletionKeepsTheScopePublishedUntilAReplayCompletesIt() async throws {
+        let context = try await activeWatch()
+        let published = try await publishOneAutomaticChange(context)
+        let readsAfterPublication = context.reader.count
+        let captureID = "dcap-" + String(repeating: "c", count: 64)
+        try admit(published, captureID: captureID, queue: context.environment.queue)
+        // The receipt is recorded before the completion, so an unwritable scheduling document is
+        // the one window the two durable writes can be split across.
+        let scheduling = context.stateRoot
+            .appendingPathComponent("automatic-scheduling", isDirectory: true)
+        try setPermissions(0o500, of: scheduling)
+        let schedulingPath = scheduling.path
+        addTeardownBlock {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: schedulingPath
+            )
+        }
+
+        let refused = await context.environment.fileMonitoring.reconcileAll()
+
+        // The receipt effects stand; the completion does not. Reporting this as resolved would let
+        // the next claim publish a second intent for a generation that is still published, so the
+        // scope stays non-checkable: nothing was read and nothing was published behind it.
+        XCTAssertEqual(refused.map(\.state), [.active])
+        XCTAssertEqual(refused.map(\.queued), [false])
+        XCTAssertEqual(context.reader.count, readsAfterPublication)
+        let applied = try XCTUnwrap(context.environment.fileSubscriptions.all().first)
+        XCTAssertEqual(applied.currentSuccessfulCaptureID, captureID)
+        XCTAssertNil(applied.lastQueuedItemID)
+        let held = try XCTUnwrap(context.environment.automaticScheduling.state(of: context.key))
+        XCTAssertEqual(held.activeGeneration, 1)
+        XCTAssertTrue(held.published)
+        XCTAssertEqual(held.intentRef, published.intent.itemId)
+
+        try setPermissions(0o700, of: scheduling)
+        _ = await context.environment.fileMonitoring.reconcileReceipts()
+
+        // The replay resolves the same still-published ref against the same terminal entry, finds
+        // the receipt effects already applied, and completes it then. Nothing is applied twice.
+        XCTAssertNil(context.environment.automaticScheduling.state(of: context.key))
+        XCTAssertEqual(context.environment.fileSubscriptions.all().first, applied)
+        XCTAssertEqual(
+            context.environment.queue.allEntries().filter { $0.intent.surface == .automaticFile }.count,
+            1
+        )
+    }
+
+    func testRestartResolvesTheTerminalReceiptThroughTheRecoveredPublicationRef() async throws {
+        let context = try await activeWatch()
+        let published = try await publishOneAutomaticChange(context)
+        let captureID = "dcap-" + String(repeating: "c", count: 64)
+        try admit(published, captureID: captureID, queue: context.environment.queue)
+
+        // A new process: the publication, its ref and the terminal entry all come off disk.
+        let reader = CountingReader()
+        let reopened = try DocumentIntakeEnvironment(
+            stateRoot: context.stateRoot,
+            bookmarkCodec: BookmarkCodec(),
+            reader: reader,
+            monotonicClock: TestClock().reader
+        )
+        let recovered = try XCTUnwrap(reopened.automaticScheduling.state(of: context.key))
+        XCTAssertTrue(recovered.published)
+        XCTAssertEqual(recovered.intentRef, published.intent.itemId)
+
+        _ = await reopened.fileMonitoring.reconcileReceipts()
+
+        XCTAssertNil(reopened.automaticScheduling.state(of: context.key))
+        let value = try XCTUnwrap(reopened.fileSubscriptions.all().first)
+        XCTAssertEqual(value.currentSuccessfulCaptureID, captureID)
+        XCTAssertEqual(reader.count, 0)
+
+        // And once more, on a third process: there is nothing left to resolve, so nothing is
+        // completed, applied or published again.
+        let again = try DocumentIntakeEnvironment(
+            stateRoot: context.stateRoot,
+            bookmarkCodec: BookmarkCodec(),
+            reader: reader,
+            monotonicClock: TestClock().reader
+        )
+        _ = await again.fileMonitoring.reconcileReceipts()
+        XCTAssertNil(again.automaticScheduling.state(of: context.key))
+        XCTAssertEqual(again.fileSubscriptions.all().first, value)
+        XCTAssertEqual(reader.count, 0)
+        XCTAssertEqual(
+            again.queue.allEntries().filter { $0.intent.surface == .automaticFile }.count,
             1
         )
     }
@@ -712,6 +877,23 @@ final class FileMonitoringTests: XCTestCase {
         clock.advance(3_000)
         _ = await environment.fileMonitoring.reconcileAll()
         return subscriptionID
+    }
+
+    /// Changes the watched original and lets one check publish it, returning that intent.
+    private func publishOneAutomaticChange(_ context: WatchContext) async throws -> CaptureQueueEntry {
+        try Data("changed".utf8).write(to: context.original)
+        await context.environment.fileMonitoring.markDirty(subscriptionIDs: [context.subscriptionID])
+        context.clock.advance(3_000)
+        _ = await context.environment.fileMonitoring.reconcileAll()
+        return try XCTUnwrap(
+            context.environment.queue.allEntries().first { $0.intent.surface == .automaticFile }
+        )
+    }
+
+    private func setPermissions(_ permissions: Int, of directory: URL) throws {
+        try FileManager.default.setAttributes(
+            [.posixPermissions: permissions], ofItemAtPath: directory.path
+        )
     }
 
     private func admit(
