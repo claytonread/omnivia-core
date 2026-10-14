@@ -311,6 +311,73 @@ _MAX_PPTX_CHART_POINTS: Final = 100_000
 # so the levels are bounded before any of them is read.
 _MAX_PPTX_CHART_CATEGORY_LEVELS: Final = 256
 _MAX_PPTX_CHART_TITLE_RUNS: Final = 20_000
+# The two DrawingML diagram namespaces SmartArt is written in. One of them is
+# what a graphic frame's ``a:graphicData/@uri`` carries to say the graphic is
+# SmartArt, and the same URI is the namespace the data model part is rooted in.
+# Namespace URIs compare as strings under the XML Namespaces specification, so
+# the match is exact and nothing reaches a diagram by resembling one.
+_DIAGRAM_NAMESPACES: Final = frozenset(
+    {
+        "http://schemas.openxmlformats.org/drawingml/2006/diagram",
+        "http://purl.oclc.org/ooxml/drawingml/diagram",
+    }
+)
+# The one route a graphic frame declares a graphic by: ``a:graphic`` directly
+# below the frame, then the ``a:graphicData`` directly below that, both in the
+# DrawingML main namespace -- Transitional or Strict. Matching the qualified
+# tags means a ``graphicData`` written in some other vocabulary, or nested
+# anywhere else below the frame (an alternate-content fallback, another frame's
+# graphic carried along, a body of text naming one), is not on the route and
+# declares nothing.
+_DRAWING_GRAPHIC: Final = frozenset(
+    f"{{{namespace}}}graphic"
+    for namespace in (
+        "http://schemas.openxmlformats.org/drawingml/2006/main",
+        "http://purl.oclc.org/ooxml/drawingml/main",
+    )
+)
+_DRAWING_GRAPHIC_DATA: Final = frozenset(
+    tag + "Data" for tag in _DRAWING_GRAPHIC
+)
+# The relationship and content types that together qualify a diagram data part:
+# the one part SmartArt keeps its points and connections in. As with the chart
+# and comment types, only the two URIs OOXML itself defines qualify --
+# Transitional and Strict -- so nothing reaches a data model by ending the same
+# way. The layout, quick-style and colour relationships a ``dgm:relIds`` names
+# beside the data are other types entirely and so reach nothing here.
+_DIAGRAM_RELATIONSHIPS: Final = frozenset(
+    {
+        (
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            "/diagramData"
+        ),
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/diagramData",
+    }
+)
+# Compared against ``declared_type``, which case-folds, so it is written folded:
+# the authored spelling is ``...drawingml.diagramData+xml``.
+_DIAGRAM_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.drawingml.diagramdata+xml"
+)
+# ``ST_PtType`` and ``ST_CxnType`` are closed enumerations, so a point or a
+# connection claims one of exactly these kinds or the file claims none and the
+# schema's own default stands. Unlike free text, a kind outside the set is
+# refused rather than carried through: anything reading a kind reads it to
+# decide what the record is, and a kind nothing defines would be answered with
+# whatever that reader defaults to.
+_DIAGRAM_POINT_TYPES: Final = frozenset(
+    {"node", "parTrans", "sibTrans", "pres", "doc", "asst"}
+)
+_DIAGRAM_CONNECTION_TYPES: Final = frozenset(
+    {"parOf", "presOf", "presParOf", "unknownRelationship"}
+)
+# Counted across one diagram data part, for the reason the slide-wide paragraph
+# and run bounds are: a point's own indexes are local to it and bound nothing.
+_MAX_PPTX_DIAGRAM_POINTS: Final = 10_000
+_MAX_PPTX_DIAGRAM_CONNECTIONS: Final = 20_000
+_MAX_PPTX_DIAGRAM_PARAGRAPHS: Final = 20_000
+_MAX_PPTX_DIAGRAM_RUNS: Final = 100_000
+_MAX_PPTX_DIAGRAM_CHARS: Final = 100_000
 _MAX_PPTX_COMMENTS: Final = 10_000
 _MAX_PPTX_COMMENT_AUTHORS: Final = 10_000
 _MAX_PPTX_COMMENT_CHARS: Final = 100_000
@@ -1489,6 +1556,23 @@ def _pptx_modern_comment_authors(package: _Package) -> dict[str, dict[str, objec
     return authors
 
 
+def _pptx_relationship_ids(element: ElementTree.Element, name: str) -> list[str]:
+    """Return every value of one relationship-namespaced attribute on ``element``.
+
+    An id written in any other namespace, or in none at all, names no
+    relationship: the attribute is defined in the relationships namespace, and
+    the two URIs OOXML defines for that namespace -- Transitional and Strict --
+    are the only ones that carry it.
+    """
+    return [
+        value
+        for key, value in element.attrib.items()
+        if _local(key) == name
+        and key.startswith("{")
+        and key.rpartition("}")[0].lstrip("{") in _RELATIONSHIP_NAMESPACES
+    ]
+
+
 def _pptx_modern_comment_extension(slide_root: ElementTree.Element) -> str | None:
     """Return the relationship id the slide names its modern comment list by.
 
@@ -1535,13 +1619,7 @@ def _pptx_modern_comment_extension(slide_root: ElementTree.Element) -> str | Non
         raise OOXMLInvalid(
             "PPTX modern comment extension does not name exactly one relationship"
         )
-    named = [
-        value
-        for key, value in related[0].attrib.items()
-        if _local(key) == "id"
-        and key.startswith("{")
-        and key.rpartition("}")[0].lstrip("{") in _RELATIONSHIP_NAMESPACES
-    ]
+    named = _pptx_relationship_ids(related[0], "id")
     if not named:
         raise OOXMLInvalid("PPTX modern comment extension names no relationship id")
     if len(named) > 1:
@@ -1916,31 +1994,290 @@ def _pptx_frame_chart(frame: ElementTree.Element) -> str | None:
     return relation_id
 
 
-def _pptx_chart_part(package: _Package, slide: str, relation_id: str) -> str:
-    """Return the chart part one frame's own relationship id names.
+def _pptx_referenced_part(
+    package: _Package,
+    slide: str,
+    relation_id: str,
+    defined: frozenset[str],
+    content_type: str,
+    what: str,
+) -> str:
+    """Return the ``what`` part one frame's own relationship id names.
 
     The id is resolved only through the slide's relationships, so containment,
     path safety and existence were all settled when that relationship was
-    resolved and no member is reached by merely looking like a chart. The
-    relationship has to be internal, has to carry one of the two URIs OOXML
-    defines for a chart, and has to resolve to a part the package declares with
-    the chart content type.
+    resolved and no member is reached by merely looking like the part. The
+    relationship has to be internal, has to carry one of the URIs OOXML defines
+    for the type, and has to resolve to a part the package declares with that
+    type's own content type.
     """
     rels = posixpath.join(
         posixpath.dirname(slide), "_rels", posixpath.basename(slide) + ".rels"
     )
     entry = package.relationships.get(rels, {}).get(relation_id)
     if entry is None:
-        raise OOXMLInvalid("PPTX chart reference names a missing relationship")
+        raise OOXMLInvalid(f"PPTX {what} reference names a missing relationship")
     kind = package.relationship_types.get(rels, {}).get(relation_id, "")
-    if not _is_defined_relationship(kind, _CHART_RELATIONSHIPS):
-        raise OOXMLInvalid("PPTX chart reference names a relationship of another type")
+    if not _is_defined_relationship(kind, defined):
+        raise OOXMLInvalid(f"PPTX {what} reference names a relationship of another type")
     target, external = entry
     if external:
-        raise OOXMLInvalid("PPTX chart relationship is external")
-    if package.declared_type(target) != _CHART_CONTENT_TYPE:
-        raise OOXMLInvalid("PPTX chart relationship does not name a chart part")
+        raise OOXMLInvalid(f"PPTX {what} relationship is external")
+    if package.declared_type(target) != content_type:
+        raise OOXMLInvalid(f"PPTX {what} relationship does not name a {what} part")
     return target
+
+
+def _pptx_frame_diagram(frame: ElementTree.Element) -> str | None:
+    """Return the relationship id the frame's SmartArt data reference names, or None.
+
+    A frame declares its graphic on exactly one route: the ``a:graphic``
+    directly below the frame and the ``a:graphicData`` directly below that, both
+    qualified in the DrawingML main namespace. Only graphic data on that route
+    declares anything, so a lookalike nested further down -- in an
+    alternate-content fallback, in a text body, inside another graphic -- or one
+    written in a foreign namespace, is not the frame's declaration and routes
+    nowhere.
+
+    Graphic data on the route says the graphic it holds is SmartArt in its own
+    ``uri``: that attribute names the vocabulary the graphic data is written in,
+    and for SmartArt it is one of the two diagram namespaces OOXML defines. It
+    is read unqualified, as the schema writes it. Graphic data carrying any
+    other URI -- or none -- is some other kind of graphic, so its paragraphs
+    stay the frame's own text and are never read as a diagram.
+
+    The reference itself is the ``dgm:relIds`` the qualified graphic data holds
+    as a direct child, written in the namespace that ``uri`` declared, and the
+    only id read off it is a relationship-namespaced ``dm``: an id written in no
+    namespace, or in another one, names no relationship, and the layout,
+    quick-style and colour relationships beside it name parts nothing here
+    opens. A frame holds one graphic object, so two qualifying graphic data
+    elements leave which diagram the frame shows ambiguous; and graphic data
+    that declares itself a diagram and then names no reference, or more than
+    one, is refused rather than read for whatever text happens to be in it. The
+    id is read from the frame itself; no diagram path is derived from the
+    slide's own name.
+    """
+    qualified = [
+        node
+        for graphic in frame
+        if graphic.tag in _DRAWING_GRAPHIC
+        for node in graphic
+        if node.tag in _DRAWING_GRAPHIC_DATA
+        and node.attrib.get("uri", "") in _DIAGRAM_NAMESPACES
+    ]
+    if not qualified:
+        return None
+    if len(qualified) > 1:
+        raise OOXMLInvalid("PPTX graphic frame holds more than one SmartArt reference")
+    namespace = qualified[0].attrib["uri"]
+    named = [node for node in qualified[0] if node.tag == f"{{{namespace}}}relIds"]
+    if len(named) != 1:
+        raise OOXMLInvalid(
+            "PPTX SmartArt graphic data does not name exactly one diagram reference"
+        )
+    ids = _pptx_relationship_ids(named[0], "dm")
+    if not ids:
+        raise OOXMLInvalid("PPTX SmartArt reference names no relationship")
+    if len(ids) > 1:
+        raise OOXMLInvalid("PPTX SmartArt reference names more than one relationship")
+    return ids[0]
+
+
+def _pptx_diagram_root(
+    package: _Package, part: str
+) -> tuple[ElementTree.Element, str]:
+    """Parse one diagram data part, refusing a root that is not a data model.
+
+    The declared content type says what the part is; the root element is where
+    the part says so itself, in one of the two namespaces OOXML defines for
+    DrawingML diagrams. Anything else is not the vocabulary the declaration
+    promised, so the part is refused rather than read for whatever happens to be
+    in it. The namespace it is rooted in is returned so every structural element
+    below it is matched in that one vocabulary: a lookalike from somewhere else
+    is another vocabulary's element that happens to share a local name.
+    """
+    root = package.xml(part)
+    namespace, _, local = root.tag.rpartition("}")
+    namespace = namespace.lstrip("{")
+    if namespace not in _DIAGRAM_NAMESPACES:
+        raise OOXMLInvalid("PPTX diagram part uses an unsupported namespace")
+    if local != "dataModel":
+        raise OOXMLInvalid("PPTX diagram part is not rooted at its own data model")
+    return root, namespace
+
+
+def _pptx_diagram_list(
+    root: ElementTree.Element, namespace: str, name: str
+) -> ElementTree.Element | None:
+    """Return the data model's one point or connection list, or None for none.
+
+    Each list is written once, so a second of either leaves the data model with
+    two of something nothing here picks between.
+    """
+    found = [node for node in root if node.tag == f"{{{namespace}}}{name}"]
+    if len(found) > 1:
+        raise OOXMLInvalid("PPTX diagram declares more than one of a list")
+    return found[0] if found else None
+
+
+def _pptx_diagram_model_id(
+    element: ElementTree.Element, name: str, *, required: bool = True
+) -> str | None:
+    """Read one ``ST_ModelId`` verbatim, refusing a value that is not one.
+
+    ``ST_ModelId`` is a union of ``ST_Guid`` and ``xsd:unsignedInt``, so either
+    form is read, and the value is kept exactly as written -- never recased,
+    rebraced or renumbered -- so an id stays the one the file cited.
+    """
+    raw = element.attrib.get(name)
+    if raw is None:
+        if required:
+            raise OOXMLInvalid("PPTX diagram model id is missing")
+        return None
+    if _GUID.fullmatch(raw) is None and (
+        _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX
+    ):
+        raise OOXMLInvalid("PPTX diagram model id is malformed")
+    return raw
+
+
+def _pptx_diagram_order(element: ElementTree.Element, name: str) -> str:
+    """Read one connection order verbatim, refusing a value that is not one.
+
+    The order is the position the connection itself encodes, kept as written and
+    never renumbered, so only its range is checked.
+    """
+    raw = element.attrib.get(name)
+    if raw is None or _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
+        raise OOXMLInvalid("PPTX diagram connection order is malformed")
+    return raw
+
+
+def _pptx_diagram_records(
+    package: _Package, part: str
+) -> tuple[list[tuple[dict[str, object], str]], list[dict[str, object]]]:
+    """Read one data model's stored point text and its encoded connections.
+
+    Only what the part already wrote is reported. Every point's own ``dgm:t`` is
+    read, in the order the point list wrote the points and the order the body
+    wrote its paragraphs and runs, and the kind the point claims rides beside
+    the text rather than deciding whether it is read: a layout point is reported
+    as the ``pres`` point it says it is. Nothing is taken from the layout,
+    quick-style or colour parts, from the drawing part a data model may ship
+    beside it, or from any rendered geometry, so no label, hierarchy or reading
+    order is inferred from how the diagram would look.
+
+    Connections come back as the identity they encode and nothing more: the
+    source and destination each connection names, the orders it claims, and the
+    transitions it cites. They are reported, never walked, so nothing here
+    assembles them into a tree or numbers anything from them. A connection
+    citing a point the list never defines is kept as the claim the file made,
+    marked unresolved, because no identity is invented to stand in for one.
+
+    Two points, or two connections, claiming one model id leave every reference
+    to it ambiguous, so the part is refused rather than read under one of them.
+    Points and connections are separate collections, so one id in each is two
+    records rather than a repeat.
+    """
+    root, namespace = _pptx_diagram_root(package, part)
+    holder = _pptx_diagram_list(root, namespace, "ptLst")
+    if holder is None:
+        raise OOXMLInvalid("PPTX diagram declares no point list")
+    points: list[tuple[dict[str, object], str]] = []
+    point_ids: set[str] = set()
+    paragraphs = runs = characters = 0
+    for index, node in enumerate(holder):
+        if node.tag != f"{{{namespace}}}pt":
+            raise OOXMLInvalid("PPTX diagram point list holds an unsupported element")
+        if index >= _MAX_PPTX_DIAGRAM_POINTS:
+            raise OOXMLInvalid("PPTX diagram has too many points")
+        model_id = _pptx_diagram_model_id(node, "modelId")
+        assert model_id is not None
+        if model_id.casefold() in point_ids:
+            raise OOXMLInvalid("PPTX diagram model id is repeated")
+        point_ids.add(model_id.casefold())
+        point_type = node.attrib.get("type", "node")
+        if point_type not in _DIAGRAM_POINT_TYPES:
+            raise OOXMLInvalid("PPTX diagram point type is not a defined kind")
+        place: dict[str, object] = {
+            "diagramRole": "point_text",
+            "modelId": model_id,
+            "pointType": point_type,
+            "pointIndex": index,
+            # ``pt/@cxnId`` is the connection a transition point encodes; it is
+            # recorded as written and never followed.
+            "connectionModelId": _pptx_diagram_model_id(node, "cxnId", required=False),
+        }
+        bodies = [item for item in node if item.tag == f"{{{namespace}}}t"]
+        if len(bodies) > 1:
+            raise OOXMLInvalid("PPTX diagram point declares more than one text body")
+        if not bodies:
+            continue
+        for paragraph_index, paragraph in enumerate(_pptx_paragraphs(bodies[0])):
+            paragraphs += 1
+            if paragraphs > _MAX_PPTX_DIAGRAM_PARAGRAPHS:
+                raise OOXMLInvalid("PPTX diagram has too many paragraphs")
+            for run_index, text in enumerate(_pptx_runs(paragraph)):
+                # Counted before the text is looked at: an empty run is work the
+                # diagram asked for even though it reports nothing.
+                runs += 1
+                if runs > _MAX_PPTX_DIAGRAM_RUNS:
+                    raise OOXMLInvalid("PPTX diagram has too many runs")
+                if not text:
+                    # An empty run keeps its index; it carries no text to report.
+                    continue
+                characters += len(text)
+                if characters > _MAX_PPTX_DIAGRAM_CHARS:
+                    raise OOXMLInvalid("PPTX diagram text exceeds the accepted bound")
+                points.append(
+                    ({**place, "paragraph": paragraph_index, "run": run_index}, text)
+                )
+    connections: list[dict[str, object]] = []
+    connection_ids: set[str] = set()
+    linked = _pptx_diagram_list(root, namespace, "cxnLst")
+    for index, node in enumerate(() if linked is None else linked):
+        if node.tag != f"{{{namespace}}}cxn":
+            raise OOXMLInvalid(
+                "PPTX diagram connection list holds an unsupported element"
+            )
+        if index >= _MAX_PPTX_DIAGRAM_CONNECTIONS:
+            raise OOXMLInvalid("PPTX diagram has too many connections")
+        model_id = _pptx_diagram_model_id(node, "modelId")
+        assert model_id is not None
+        if model_id.casefold() in connection_ids:
+            raise OOXMLInvalid("PPTX diagram model id is repeated")
+        connection_ids.add(model_id.casefold())
+        kind = node.attrib.get("type", "parOf")
+        if kind not in _DIAGRAM_CONNECTION_TYPES:
+            raise OOXMLInvalid("PPTX diagram connection type is not a defined kind")
+        source = _pptx_diagram_model_id(node, "srcId")
+        destination = _pptx_diagram_model_id(node, "destId")
+        assert source is not None and destination is not None
+        connections.append(
+            {
+                "kind": "diagramConnection",
+                "modelId": model_id,
+                "connectionIndex": index,
+                "connectionType": kind,
+                "sourceModelId": source,
+                "destinationModelId": destination,
+                "sourceOrder": _pptx_diagram_order(node, "srcOrd"),
+                "destinationOrder": _pptx_diagram_order(node, "destOrd"),
+                "parentTransitionModelId": _pptx_diagram_model_id(
+                    node, "parTransId", required=False
+                ),
+                "siblingTransitionModelId": _pptx_diagram_model_id(
+                    node, "sibTransId", required=False
+                ),
+                # Stated so no consumer reads an id above as a point that is
+                # there. Ids are compared case-folded because only a GUID's hex
+                # digits vary in case.
+                "sourceResolved": source.casefold() in point_ids,
+                "destinationResolved": destination.casefold() in point_ids,
+            }
+        )
+    return points, connections
 
 
 def _pptx_chart_root(package: _Package, part: str) -> ElementTree.Element:
@@ -2220,7 +2557,9 @@ class _PptxWalker:
     its paragraph and run index inside the shape it belongs to. A graphic frame
     holding a table reports its cells as table cells instead, each at its own
     row and column in the declared grid; one referring to a chart reports that
-    chart's stored title and stored points. Geometry and
+    chart's stored title and stored points; one whose graphic data declares
+    itself SmartArt reports that data model's stored point text and the
+    connections it encodes. Geometry and
     the placeholder reference are recorded exactly as the shape encodes them;
     nothing is inherited from a layout or master, and no group child-space
     mapping is applied, so a shape that encodes no transform carries none.
@@ -2283,10 +2622,13 @@ class _PptxWalker:
             frame = kind == "graphicFrame"
             table = _pptx_frame_table(child) if frame else None
             chart = _pptx_frame_chart(child) if frame else None
-            if table is not None and chart is not None:
+            diagram = _pptx_frame_diagram(child) if frame else None
+            if sum(held is not None for held in (table, chart, diagram)) > 1:
                 raise OOXMLInvalid("PPTX graphic frame holds more than one graphic")
             if chart is not None:
                 self._chart(chart, where)
+            elif diagram is not None:
+                self._diagram(diagram, where)
             elif table is not None:
                 self._table(table, where)
             elif kind in _PPTX_TEXT_SHAPES:
@@ -2377,7 +2719,14 @@ class _PptxWalker:
         stored, and nothing here opens the workbook behind them or recalculates
         anything, so how current they are is not knowable from the package.
         """
-        part = _pptx_chart_part(self._package, self._part, relation_id)
+        part = _pptx_referenced_part(
+            self._package,
+            self._part,
+            relation_id,
+            _CHART_RELATIONSHIPS,
+            _CHART_CONTENT_TYPE,
+            "chart",
+        )
         for place, value in _pptx_chart_records(self._package, part):
             self._segments.append(
                 ExtractedSegment(
@@ -2397,6 +2746,60 @@ class _PptxWalker:
                     text=value or None,
                     structured_value=None if value else {"value": ""},
                     visibility="hidden" if self._hidden else "visible",
+                )
+            )
+            _bounded(self._segments)
+
+    def _diagram(self, relation_id: str, where: dict[str, object]) -> None:
+        """Emit one SmartArt data model's stored text and encoded connections.
+
+        Every segment carries the data model part and the relationship id that
+        reached it, plus the slide, shape and group path of the frame showing
+        it. Point text is body text, reported run by run at the point, paragraph
+        and run that hold it; a connection is an inert inventory record of the
+        identity it encodes. Nothing here opens the layout, quick-style, colour
+        or drawing parts the diagram relates to, so no visual hierarchy, label
+        or reading order is read off how the diagram would be drawn.
+        """
+        part = _pptx_referenced_part(
+            self._package,
+            self._part,
+            relation_id,
+            _DIAGRAM_RELATIONSHIPS,
+            _DIAGRAM_CONTENT_TYPE,
+            "diagram data",
+        )
+        points, connections = _pptx_diagram_records(self._package, part)
+        visibility = "hidden" if self._hidden else "visible"
+        provenance: dict[str, object] = {
+            **where,
+            "diagramPart": part,
+            "relationshipId": relation_id,
+        }
+        for place, text in points:
+            self._segments.append(
+                ExtractedSegment(
+                    "body",
+                    _locator(self._capture_id, **provenance, **place),
+                    text=text,
+                    visibility=visibility,
+                )
+            )
+            _bounded(self._segments)
+        for connection in connections:
+            self._segments.append(
+                ExtractedSegment(
+                    "object_inventory",
+                    _locator(
+                        self._capture_id,
+                        **provenance,
+                        diagramRole="connection",
+                        modelId=connection["modelId"],
+                        connectionIndex=connection["connectionIndex"],
+                    ),
+                    structured_value=connection,
+                    extraction_method="inventory",
+                    visibility=visibility,
                 )
             )
             _bounded(self._segments)
