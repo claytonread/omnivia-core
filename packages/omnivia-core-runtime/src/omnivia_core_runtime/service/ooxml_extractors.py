@@ -62,6 +62,15 @@ _MAX_REVISION_DEPTH: Final = 4
 # OmniVia's deterministic safety bound on complex field nesting: a deeper stack
 # is refused rather than read, so one file cannot drive unbounded recursion.
 _MAX_DOCX_FIELD_DEPTH: Final = 20
+# Math is identified by namespace and never by local name, so an element merely
+# called ``oMath`` or ``t`` in another vocabulary is not read as math.
+_MATH_NAMESPACE: Final = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+_MATH_OBJECT: Final = f"{{{_MATH_NAMESPACE}}}oMath"
+_MATH_TEXT: Final = f"{{{_MATH_NAMESPACE}}}t"
+# OmniVia's own bound on one equation's markup and direct text together, well
+# under the 131072-byte stored segment value cap so JSON escaping of the markup
+# cannot push the recorded value past it.
+_MAX_DOCX_EQUATION_BYTES: Final = 32 * 1024
 _HEADING_STYLE: Final = re.compile(r"title|heading[1-9]")
 _NOTE_ID: Final = re.compile(r"-?[0-9]{1,9}")
 # At least two characters, so a drive letter such as ``C:`` stays a path.
@@ -4701,11 +4710,12 @@ class _DocxWalker:
     contiguous current text (the first stretch at the paragraph position, later
     ones at ``<paragraph>.t<n>``), deleted text (``<paragraph>.d<n>``), text
     hidden by a run's own properties (``<paragraph>.v<n>``, a
-    ``hidden_content`` segment) and text boxes (``<paragraph>.x<n>.<block>``)
+    ``hidden_content`` segment), inline equations (``<paragraph>.e<n>``, an
+    ``equation`` segment) and text boxes (``<paragraph>.x<n>.<block>``)
     where they are anchored, and current text is never joined across one of
     them. A table cell reads its current paragraphs as one ``table_cell`` run,
-    closed by any deletion, hidden stretch, text box, field or nested table,
-    and later runs sit at ``<cell>.t<n>``.
+    closed by any deletion, hidden stretch, equation, text box, field or nested
+    table, and later runs sit at ``<cell>.t<n>``.
 
     Hyperlinks, fields and annotation references stay out of the text: each
     becomes an inert ``object_inventory`` segment at ``<paragraph>.h<n>``
@@ -4952,11 +4962,18 @@ class _DocxWalker:
     ) -> None:
         self.paragraphs += 1
         role = "table_cell" if cell else self._role(paragraph)
-        current = removed = boxes = links = refs = fields = concealed = 0
+        current = removed = boxes = links = refs = fields = concealed = maths = 0
         for kind, value, box_deleted in _paragraph_items(
             paragraph, deleted, self._fields
         ):
-            if kind == "m":
+            if kind == "e":
+                assert isinstance(value, ElementTree.Element)
+                # Math is ordered where it sits, so in a cell it closes the
+                # current run rather than trailing the prose it interrupts.
+                self._flush(cell)
+                self._equation(value, f"{position}.e{maths}", box_deleted)
+                maths += 1
+            elif kind == "m":
                 assert isinstance(value, ElementTree.Element)
                 item = _local(value.tag)
                 if item == "hyperlink":
@@ -5017,6 +5034,26 @@ class _DocxWalker:
                     False,
                 )
                 current += 1
+
+    def _equation(
+        self, element: ElementTree.Element, position: str, deleted: bool
+    ) -> None:
+        """Record one inline equation as the markup it is, unread.
+
+        The math is neither interpreted nor converted, so it is kept as its own
+        segment and its text never joins the prose it interrupts. A deletion
+        wrapped around it is kept as the revision it is rather than dropped.
+        """
+        self._segments.append(
+            ExtractedSegment(
+                "equation",
+                self._locator(position),
+                structured_value=_docx_equation(element),
+                visibility="annotation" if deleted else "visible",
+                revision_state="deleted" if deleted else "current",
+            )
+        )
+        _bounded(self._segments)
 
     def _flush(self, cell: _CellRun | None) -> None:
         if cell is None:
@@ -5141,8 +5178,9 @@ def _paragraph_items(
 
     Kinds are ``t`` current text, ``d`` deleted text, ``v`` text a run's own
     properties hide (carrying whether a deletion wrapped it), ``x`` a text box,
-    ``m`` a hyperlink, simple field or annotation marker, and ``c`` an already
-    recorded complex field (each carrying whether a deletion wrapped it).
+    ``e`` an inline ``m:oMath`` equation, ``m`` a hyperlink, simple field or
+    annotation marker, and ``c`` an already recorded complex field (each
+    carrying whether a deletion wrapped it).
     Adjacent text of one kind is one stretch; tabs and breaks stay separators
     inside it. Hidden text is a stretch of its own, so it is never joined to the
     visible text around it.
@@ -5154,7 +5192,9 @@ def _paragraph_items(
     joins that field's instruction in source order and never the paragraph's
     text. Text is read as the ordinary text it is only once every open field has
     separated, so a nested field's result is recorded under its own separator and
-    still kept out of the prose while an outer instruction encloses it.
+    still kept out of the prose while an outer instruction encloses it. An
+    equation counts as that result the same way, and one reached while any open
+    field is still before its separator is refused rather than read.
     """
     items: list[tuple[str, str | ElementTree.Element | dict[str, object], bool]] = []
     pending: list[str] = []
@@ -5181,6 +5221,27 @@ def _paragraph_items(
             if tag == "txbxContent":
                 close()
                 items.append(("x", node, state))
+                if len(items) > MAX_SEGMENTS:
+                    raise OOXMLInvalid("OOXML extraction has too many segments")
+                continue
+            if node.tag == _MATH_OBJECT:
+                # Math is kept whole and never entered, so none of its stored
+                # text reaches the prose around it and no ``oMath`` inside it is
+                # seen a second time. A run's hidden properties cannot reach it,
+                # because math sits beside runs rather than inside one: hidden
+                # math and ``m:oMathPara`` wait for their own slice.
+                if any(open_field.record is None for open_field in fields):
+                    # An instruction is field code, which carries no equation of
+                    # its own, so math reached there has no one reading: it is
+                    # neither the field's code nor the document's content. It is
+                    # refused rather than dropped or read as prose.
+                    raise OOXMLInvalid("DOCX field instruction holds math")
+                for open_field in fields:
+                    # An equation under a separator is the result Word stored
+                    # there, counted by every open field exactly as text is.
+                    open_field.result = True
+                close()
+                items.append(("e", node, state))
                 if len(items) > MAX_SEGMENTS:
                     raise OOXMLInvalid("OOXML extraction has too many segments")
                 continue
@@ -5264,6 +5325,41 @@ def _paragraph_items(
             stack.pop()
     close()
     return items
+
+
+def _docx_equation(element: ElementTree.Element) -> dict[str, object]:
+    """Record one ``m:oMath`` as bounded, uninterpreted OMML.
+
+    ``ElementTree`` writes the subtree deterministically for a given parse, so
+    the same package always yields the same markup; prefixes are the writer's
+    own rather than the file's, which is what ``normalized`` says. The element's
+    tail is left out because that is the text after the math, not part of it.
+    ``directText`` is only the stored ``m:t`` text in source order, so nothing is
+    read out of the structure the markup carries and no reading is generated
+    from it.
+
+    The byte bound covers the markup and the direct text together, and an
+    equation past it is refused: clipping either would hand on markup that no
+    longer parses, or a reading the file does not carry.
+    """
+    tail, element.tail = element.tail, None
+    try:
+        markup = ElementTree.tostring(element, encoding="unicode")
+    finally:
+        element.tail = tail
+    direct = "".join(node.text for node in element.iter(_MATH_TEXT) if node.text)
+    if (
+        len(markup.encode("utf-8")) + len(direct.encode("utf-8"))
+        > _MAX_DOCX_EQUATION_BYTES
+    ):
+        raise OOXMLInvalid("DOCX equation is too large to record")
+    return {
+        "format": "OMML",
+        "serialization": "normalized",
+        "sourceMarkup": markup,
+        "directText": direct,
+        "generatedReading": False,
+    }
 
 
 def _docx_field_record(

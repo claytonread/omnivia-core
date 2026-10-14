@@ -7,6 +7,7 @@ import zipfile
 
 import pytest
 from omnivia_core_runtime.service.ooxml_extractors import (
+    _MAX_DOCX_EQUATION_BYTES,
     _MAX_DOCX_FIELD_DEPTH,
     _MAX_TARGET_CHARS,
     OOXMLInvalid,
@@ -17,6 +18,7 @@ from omnivia_core_runtime.service.ooxml_extractors import (
 CAPTURE = "dcap-" + "a" * 64
 W = (
     'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" '
     'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
     'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
     'xmlns:v="urn:schemas-microsoft-com:vml" '
@@ -1397,3 +1399,125 @@ def test_a_field_state_never_holds_more_than_the_bound() -> None:
         state.extend("a" * _MAX_TARGET_CHARS)
 
     assert (len(state.instruction), state.truncated) == (_MAX_TARGET_CHARS, True)
+
+
+MATH = "<m:oMath><m:r><m:t>x</m:t></m:r><m:r><m:t> + 1</m:t></m:r></m:oMath>"
+# The writer's own prefixes, not the file's: what ``normalized`` serialization
+# means. The subtree holds nothing outside the math namespace, so it is ``ns0``.
+OMML = (
+    '<ns0:oMath xmlns:ns0="http://schemas.openxmlformats.org/officeDocument/2006/math">'
+    "<ns0:r><ns0:t>x</ns0:t></ns0:r><ns0:r><ns0:t> + 1</ns0:t></ns0:r></ns0:oMath>"
+)
+
+
+def math(text: str) -> str:
+    return f"<m:oMath><m:r><m:t>{text}</m:t></m:r></m:oMath>"
+
+
+def equations(content: bytes) -> list[tuple[object, dict[str, object]]]:
+    return [
+        (item.source_locator["position"], item.structured_value)
+        for item in extract_docx(content, capture_id=CAPTURE).segments
+        if item.semantic_role == "equation"
+    ]
+
+
+def test_inline_math_is_recorded_whole_and_split_from_the_prose_around_it() -> None:
+    body = (
+        f"<w:p>{run('Solve ')}{MATH}{run(' today')}</w:p>"
+        f"<w:p><w:del>{MATH}</w:del></w:p>"
+    )
+    content = docx(body, styles=False)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"], i.revision_state)
+        for i in result.segments
+    ] == [
+        ("body", "Solve ", "0", "current"),
+        ("equation", None, "0.e0", "current"),
+        ("body", " today", "0.t1", "current"),
+        # A deletion over the math is kept as the revision it is.
+        ("equation", None, "1.e0", "deleted"),
+    ]
+    assert [i.visibility for i in result.segments] == [
+        "visible",
+        "visible",
+        "visible",
+        "annotation",
+    ]
+    inline, removed = (value for _, value in equations(content))
+    assert inline == {
+        "format": "OMML",
+        "serialization": "normalized",
+        "sourceMarkup": OMML,
+        # Only the stored ``m:t`` text, in source order: nothing is read out of
+        # the structure and no reading is generated from it.
+        "directText": "x + 1",
+        "generatedReading": False,
+    }
+    # The same package always serializes to the same markup.
+    assert removed == inline
+    assert all("x + 1" != item.text for item in result.segments)
+
+
+def test_math_splits_a_table_cell_rather_than_joining_its_prose() -> None:
+    body = (
+        f"<w:tbl><w:tr><w:tc><w:p>{run('Area ')}{MATH}{run(' exactly')}</w:p>"
+        f"<w:p>{run('as printed')}</w:p></w:tc></w:tr></w:tbl>"
+    )
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"])
+        for i in extract_docx(docx(body, styles=False), capture_id=CAPTURE).segments
+    ] == [
+        ("table_cell", "Area ", "0.r0.c0"),
+        ("equation", None, "0.r0.c0.0.e0"),
+        ("table_cell", " exactly\nas printed", "0.r0.c0.t1"),
+    ]
+
+
+def test_an_oversize_equation_is_refused_rather_than_partly_recorded() -> None:
+    ((_, one),) = equations(docx(f"<w:p>{math('a')}</w:p>", styles=False))
+    # The markup around one stored character, so the bound can be approached
+    # from the fixture rather than from a copy of the serializer's own shape.
+    overhead = len(str(one["sourceMarkup"]).encode()) - 1
+    fits = (_MAX_DOCX_EQUATION_BYTES - overhead) // 2
+
+    ((_, record),) = equations(docx(f"<w:p>{math('a' * fits)}</w:p>", styles=False))
+
+    assert str(record["directText"]) == "a" * fits
+    assert (
+        len(str(record["sourceMarkup"]).encode())
+        + len(str(record["directText"]).encode())
+        <= _MAX_DOCX_EQUATION_BYTES
+    )
+    with pytest.raises(OOXMLInvalid, match="too large to record"):
+        extract_docx(
+            docx(f"<w:p>{math('a' * (fits + 2))}</w:p>", styles=False),
+            capture_id=CAPTURE,
+        )
+
+
+def test_an_equation_is_the_saved_result_of_the_field_it_sits_under() -> None:
+    body = (
+        f"<w:p>{fld('begin')}{instr(' EQ ')}{fld('separate')}{MATH}{fld('end')}</w:p>"
+    )
+    content = docx(body, styles=False)
+
+    assert [
+        (i.semantic_role, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [("object_inventory", "0.f0"), ("equation", "0.e0")]
+    # The field stored a result even though no prose was read under it.
+    assert inventory(content)[0][1]["savedResultPresent"] is True
+
+
+def test_math_inside_a_field_instruction_is_refused() -> None:
+    body = (
+        f"<w:p>{fld('begin')}{instr(' EQ ')}{MATH}{fld('separate')}{fld('end')}</w:p>"
+    )
+
+    with pytest.raises(OOXMLInvalid, match="instruction holds math"):
+        extract_docx(docx(body, styles=False), capture_id=CAPTURE)
