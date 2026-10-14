@@ -7789,6 +7789,20 @@ class _DocxWalker:
     at its anchor and no covered coordinate repeats it; a table is never
     flattened and no row is read as a header.
 
+    A coordinate the grid declares is kept whether or not prose stands at it. A
+    cell that emits no ``table_cell`` run -- it holds no prose, its prose is
+    deleted or hidden, its content was never prose, or it is the covered
+    continuation of a vertical merge -- closes with one ``object_inventory``
+    segment at the cell's own position holding a ``docxTableCell`` record:
+    ``empty`` and the cell's whole geometry, in the value and in the locator
+    both. ``empty`` reports what the source cell holds, never the run count: a
+    cell whose only content is deleted, hidden, an equation, a drawing, an
+    embedded object, a field, an annotation, a text box or a nested table is
+    recorded as the authored cell it is. A table holding no cell at all has no
+    coordinate to report and takes one ``docxTable`` record at
+    ``<table>.inventory`` instead, naming its declared grid, its row count and
+    the cells it does not have; a table with cells takes no record of its own.
+
     Hyperlinks, fields and annotation references stay out of the text: each
     becomes an inert ``object_inventory`` segment at ``<paragraph>.h<n>``
     (hyperlinks), ``<paragraph>.n<n>`` (note and comment references) or
@@ -7943,11 +7957,12 @@ class _DocxWalker:
         value: dict[str, object],
         visibility: str,
         deleted: bool,
+        **extra: object,
     ) -> None:
         self._segments.append(
             ExtractedSegment(
                 "object_inventory",
-                self._locator(position),
+                self._locator(position, **extra),
                 structured_value=value,
                 extraction_method="inventory",
                 visibility="annotation" if deleted else visibility,
@@ -8661,6 +8676,37 @@ class _DocxWalker:
             self._inventory(*mark)
         cell.marks.clear()
 
+    def _cell_inventory(
+        self,
+        position: str,
+        grid: dict[str, object] | None,
+        deleted: bool,
+        empty: bool,
+    ) -> None:
+        """Record one cell that emitted no ``table_cell`` run of its own.
+
+        A cell holding no prose still has a place in the grid, and so does a
+        vertical continuation whose text stands at its anchor. Either would
+        otherwise leave no trace of a coordinate the table declared, so each
+        closes with one record carrying the same geometry a text run would. The
+        geometry rides in the locator as well, so the coordinate is addressable
+        and not only readable out of the value.
+
+        ``empty`` is a claim about the source cell, not about what the walk read
+        out of it: a cell whose prose is deleted or hidden, or whose content was
+        never prose -- an equation, a drawing, an embedded object, a field, an
+        annotation, a text box, a nested table -- emits no run either, and
+        calling that empty would report authored content as absent.
+        """
+        geometry = grid or {}
+        self._inventory(
+            position,
+            {"kind": "docxTableCell", "empty": empty, **geometry},
+            "visible",
+            deleted,
+            **geometry,
+        )
+
     def _role(self, paragraph: ElementTree.Element) -> str:
         if self._story == "footnote" or self._story == "endnote":
             return "note"
@@ -8697,6 +8743,23 @@ class _DocxWalker:
                     row, f"{position}.r{row_index}", depth, deleted, row_index, located
                 )
                 row_index += 1
+        if not plan:
+            # A table that declares a grid but holds no cell has no coordinate
+            # to report, so the table itself is recorded once instead. A table
+            # with cells reports them one by one and takes no record of its own.
+            self._inventory(
+                f"{position}.inventory",
+                {
+                    "kind": "docxTable",
+                    "tablePath": position,
+                    "tableColumns": None if grid is None else len(grid),
+                    "tableGridWidths": grid,
+                    "rowCount": row_index,
+                    "cellCount": 0,
+                },
+                "visible",
+                deleted,
+            )
 
     def _row(
         self,
@@ -8724,6 +8787,10 @@ class _DocxWalker:
                     raise OOXMLInvalid(
                         "DOCX vertical merge continuation contains content"
                     )
+                # The refusal above has just proved this continuation holds
+                # nothing beyond its properties and Word's placeholder
+                # paragraph, so its record is empty by construction.
+                self._cell_inventory(cell_position, grid, deleted, True)
                 continue
             run = _CellRun(cell_position, [], grid=grid)
             index = block_marks = 0
@@ -8743,6 +8810,17 @@ class _DocxWalker:
                 else:
                     self._paragraph(block, block_position, depth, removed, run)
             self._flush(run)
+            if not run.runs:
+                # Emitting no run is not the same as holding nothing, so what
+                # the source cell was given is read off the cell itself by the
+                # same predicate that refuses hidden content in a covered
+                # continuation.
+                self._cell_inventory(
+                    cell_position,
+                    grid,
+                    deleted,
+                    not _docx_covered_cell_has_content(cell),
+                )
 
 
 def _revised(tag: str, deleted: bool, depth: int) -> tuple[bool, int]:
@@ -8923,12 +9001,20 @@ def _docx_table_grid(table: ElementTree.Element) -> tuple[int | None, ...] | Non
 
 
 def _docx_covered_cell_has_content(cell: ElementTree.Element) -> bool:
-    """Whether a vertical continuation stores anything beyond an empty paragraph.
+    """Whether a cell stores anything beyond its properties and an empty paragraph.
 
     Word normally writes one empty paragraph in a covered continuation.  That
     placeholder is accepted; text, fields, annotations, drawings, math, nested
     tables, or any other authored block would otherwise be silently discarded,
     so the package is refused instead.
+
+    The same question decides whether a cell that emitted no ``table_cell`` run
+    is recorded as empty, which is why only the cell's own markup is read and
+    never what the walk made of it.  Anything that is not a cell property, an
+    empty paragraph or an empty run counts as content, so a transparent wrapper
+    -- a revision, a content control -- is itself content rather than something
+    this looks through: a wrapper can only ever overstate what a cell holds,
+    never hide it.
     """
     for child in cell:
         if child.tag in _DOCX_TC_PR:

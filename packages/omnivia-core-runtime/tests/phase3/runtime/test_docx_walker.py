@@ -5341,9 +5341,10 @@ def test_table_geometry_is_bounded() -> None:
 
 def test_a_table_holding_more_cells_than_the_segment_cap_is_refused() -> None:
     """The whole grid is planned before a cell is read, so the plan is bounded by
-    what the extraction could emit from it. Cells holding no prose emit no
-    segments at all, which is exactly why the plan cannot be left to the segment
-    cap to stop, and the empty cells here are what makes that reachable."""
+    what the extraction could emit from it. A cell holding no prose emits one
+    empty record rather than nothing, so the plan's own bound and the segment
+    cap now agree; the plan is still what refuses this table, before a single
+    coordinate is walked."""
     row = tr(*("<w:tc/>",) * _MAX_DOCX_TABLE_COLUMNS)
     rows = MAX_SEGMENTS // _MAX_DOCX_TABLE_COLUMNS + 1
 
@@ -5355,7 +5356,9 @@ def test_a_merged_cell_keeps_its_grid_across_every_run_it_emits() -> None:
     """A merge's geometry belongs to the cell, not to one stretch of its prose,
     so every run the cell emits carries the same grid even where a deletion, a
     hidden stretch and an inventoried hyperlink split it. The interrupting
-    segments keep their own locators and claim no grid of their own."""
+    segments keep their own locators and claim no grid of their own, and the
+    covered row the merge reaches into closes with its own empty record rather
+    than repeating any of the anchor's prose."""
     interrupted = (
         p("first") + f"<w:p>{run('kept ')}<w:del>{run('gone', 'delText')}</w:del>"
         f"{hidden('secret')}{run(' tail')}</w:p>"
@@ -5380,7 +5383,309 @@ def test_a_merged_cell_keeps_its_grid_across_every_run_it_emits() -> None:
         ("deleted_text", "gone", "0.r0.c0.1.d0"),
         ("hidden_content", "secret", "0.r0.c0.1.v0"),
         ("table_cell", " tail", "0.r0.c0.t1"),
+        ("object_inventory", None, "0.r1.c0"),
     ]
     assert [
         sorted(set(i.source_locator) & set(GRID_KEYS)) for i in result.segments[1:3]
     ] == [[], []]
+
+
+# A coordinate the grid declares is a fact about the table whether or not prose
+# stands at it. A cell emitting no run closes with one empty record, and a table
+# holding no cell at all takes one record of its own; the helper below reads
+# exactly those two records and nothing else the walk inventories.
+def structural(content: bytes) -> list[tuple[object, object]]:
+    """Each table structure record as its position and its structured value."""
+    return [
+        (item.source_locator["position"], item.structured_value)
+        for item in extract_docx(content, capture_id=CAPTURE).segments
+        if item.semantic_role == "object_inventory"
+        and item.structured_value["kind"] in {"docxTableCell", "docxTable"}
+    ]
+
+
+def cell_record(
+    row: int, cell: int, column: int, empty: bool = True, **geometry: object
+) -> dict[str, object]:
+    """The structural record expected at these coordinates."""
+    return {
+        "kind": "docxTableCell",
+        "empty": empty,
+        **at(row, cell, column, **geometry),  # type: ignore[arg-type]
+    }
+
+
+def test_an_empty_cell_among_text_cells_keeps_its_own_coordinates() -> None:
+    """A cell holding no prose used to vanish, leaving a row the grid declared
+    with no trace of one of its columns. The text cells read exactly as before
+    and the empty one is recorded beside them, in source order, at the position
+    its own text would have stood at."""
+    body = tbl(tr(tc("a"), tc(None)), tr(tc(None), tc("d")), columns=2)
+
+    result = extract_docx(docx(body), capture_id=CAPTURE)
+
+    assert [
+        (item.semantic_role, item.text, item.source_locator["position"])
+        for item in result.segments
+    ] == [
+        ("table_cell", "a", "0.r0.c0"),
+        ("object_inventory", None, "0.r0.c1"),
+        ("object_inventory", None, "0.r1.c0"),
+        ("table_cell", "d", "0.r1.c1"),
+    ]
+    assert structural(docx(body)) == [
+        ("0.r0.c1", cell_record(0, 1, 1, columns=2)),
+        ("0.r1.c0", cell_record(1, 0, 0, columns=2)),
+    ]
+
+
+def test_a_table_whose_every_cell_is_empty_reports_every_coordinate() -> None:
+    """Nothing in the table bears text, so the grid is the only thing it says --
+    and the whole of it survives, cell by cell, rather than the table
+    disappearing from the extraction. The table itself takes no record: it has
+    coordinates to report and reports them."""
+    body = tbl(tr(tc(), tc()), tr(tc(), tc()), columns=2)
+
+    assert cells(docx(body)) == []
+    assert structural(docx(body)) == [
+        ("0.r0.c0", cell_record(0, 0, 0, columns=2)),
+        ("0.r0.c1", cell_record(0, 1, 1, columns=2)),
+        ("0.r1.c0", cell_record(1, 0, 0, columns=2)),
+        ("0.r1.c1", cell_record(1, 1, 1, columns=2)),
+    ]
+
+
+def test_a_table_holding_no_cell_is_recorded_once_as_the_table_it_is() -> None:
+    """A declared grid with no row under it, and a row with no cell in it, both
+    leave no coordinate to report, so the table is recorded instead of lost. The
+    declared grid, the rows it does have and the cells it does not are all the
+    record claims."""
+    declared = '<w:tblGrid><w:gridCol w:w="1440"/><w:gridCol/></w:tblGrid>'
+
+    assert structural(docx(tbl(grid=declared))) == [
+        (
+            "0.inventory",
+            {
+                "kind": "docxTable",
+                "tablePath": "0",
+                "tableColumns": 2,
+                "tableGridWidths": (1440, None),
+                "rowCount": 0,
+                "cellCount": 0,
+            },
+        )
+    ]
+    assert structural(docx(tbl("<w:tr/>", "<w:tr/>"))) == [
+        (
+            "0.inventory",
+            {
+                "kind": "docxTable",
+                "tablePath": "0",
+                "tableColumns": None,
+                "tableGridWidths": None,
+                "rowCount": 2,
+                "cellCount": 0,
+            },
+        )
+    ]
+
+
+def test_a_covered_continuation_is_recorded_without_repeating_the_anchor() -> None:
+    """The covered rows of a vertical merge are where text must not be read
+    twice, so each is recorded as the covered coordinate it is -- carrying the
+    merge's extent and the path of the anchor whose prose stands for it -- and
+    the anchor's text is emitted exactly once."""
+    body = tbl(
+        tr(tc("tall", RESTART), tc("top")),
+        tr(tc(None, CONTINUE), tc("middle")),
+        tr(tc(None, CONTINUE), tc("bottom")),
+        columns=2,
+    )
+    spanning = {"columns": 2, "spans": (3, 1), "state": "covered", "anchor": (0, 0)}
+
+    assert cells(docx(body)) == [
+        ("tall", "0.r0.c0", at(0, 0, 0, columns=2, spans=(3, 1), state="anchor")),
+        ("top", "0.r0.c1", at(0, 1, 1, columns=2)),
+        ("middle", "0.r1.c1", at(1, 1, 1, columns=2)),
+        ("bottom", "0.r2.c1", at(2, 1, 1, columns=2)),
+    ]
+    assert structural(docx(body)) == [
+        ("0.r1.c0", cell_record(1, 0, 0, **spanning)),
+        ("0.r2.c0", cell_record(2, 0, 0, **spanning)),
+    ]
+
+
+def test_an_empty_nested_cell_names_the_table_it_hangs_under() -> None:
+    """An empty coordinate is identified the same way a text one is: by the path
+    of its own table, which for a nested table is the cell path it hangs under
+    and never its shape."""
+    inner = tbl(tr(tc(), tc("deep")), columns=2)
+    body = tbl(tr(f"<w:tc>{p('outer')}{inner}</w:tc>", tc()), columns=2)
+
+    assert structural(docx(body)) == [
+        ("0.r0.c0.1.r0.c0", cell_record(0, 0, 0, columns=2, path="0.r0.c0.1")),
+        ("0.r0.c1", cell_record(0, 1, 1, columns=2)),
+    ]
+
+
+def test_a_strict_table_records_the_same_empty_coordinates() -> None:
+    """Geometry is read by qualified name in both profiles, so an empty cell in a
+    Strict table reports exactly what a Transitional one does."""
+    transitional = tbl(tr(tc("a"), tc(None, span(2)), tc()), columns=4)
+    strict = transitional.replace("<w:tbl>", f'<w:tbl xmlns:w="{STRICT_W}">', 1)
+
+    assert structural(docx(strict)) == structural(docx(transitional))
+    assert structural(docx(strict)) == [
+        ("0.r0.c1", cell_record(0, 1, 1, columns=4, spans=(1, 2), state="anchor")),
+        ("0.r0.c2", cell_record(0, 2, 3, columns=4)),
+    ]
+
+
+def test_a_deleted_table_records_its_empty_cells_as_the_deletion_they_are() -> None:
+    """A record stands or falls with the revision that wrote it, exactly as every
+    other inventory does: the empty coordinates of a deleted table are kept, and
+    kept as deleted, so a deletion is never read as current structure. A cell
+    whose only prose is deleted emits no ``table_cell`` run either, so it is
+    recorded alongside them -- but it is not empty: the prose was authored, and
+    the record says so while the deletion stays the deletion it is."""
+    body = f"<w:del>{tbl(tr(tc('gone'), tc()), tr(tc(), tc()), columns=2)}</w:del>"
+
+    result = extract_docx(docx(body), capture_id=CAPTURE)
+
+    assert [
+        (
+            item.semantic_role,
+            item.source_locator["position"],
+            item.visibility,
+            item.revision_state,
+        )
+        for item in result.segments
+    ] == [
+        ("deleted_text", "0.r0.c0.0.d0", "annotation", "deleted"),
+        ("object_inventory", "0.r0.c0", "annotation", "deleted"),
+        ("object_inventory", "0.r0.c1", "annotation", "deleted"),
+        ("object_inventory", "0.r1.c0", "annotation", "deleted"),
+        ("object_inventory", "0.r1.c1", "annotation", "deleted"),
+    ]
+    assert structural(docx(body)) == [
+        ("0.r0.c0", cell_record(0, 0, 0, False, columns=2)),
+        ("0.r0.c1", cell_record(0, 1, 1, columns=2)),
+        ("0.r1.c0", cell_record(1, 0, 0, columns=2)),
+        ("0.r1.c1", cell_record(1, 1, 1, columns=2)),
+    ]
+
+
+def test_an_empty_record_carries_its_geometry_in_its_locator_too() -> None:
+    """The point of the record is that the coordinate stays addressable, so the
+    geometry a text cell puts in its locator is in the empty cell's locator as
+    well -- the same keys, the same values -- and every locator in the document
+    stays unique."""
+    body = tbl(tr(tc("a"), tc(None, RESTART)), tr(tc(), tc(None, CONTINUE)), columns=2)
+
+    result = extract_docx(docx(body), capture_id=CAPTURE)
+    records = [
+        item for item in result.segments if item.semantic_role == "object_inventory"
+    ]
+
+    assert [sorted(set(item.source_locator) & set(GRID_KEYS)) for item in records] == [
+        sorted(GRID_KEYS)
+    ] * 3
+    assert [
+        {key: item.source_locator[key] for key in GRID_KEYS} for item in records
+    ] == [
+        at(0, 1, 1, columns=2, spans=(2, 1), state="anchor"),
+        at(1, 0, 0, columns=2),
+        at(1, 1, 1, columns=2, spans=(2, 1), state="covered", anchor=(0, 1)),
+    ]
+    assert [
+        item.structured_value == {"kind": "docxTableCell", "empty": True, **geometry}
+        for item, geometry in zip(
+            records,
+            [{key: item.source_locator[key] for key in GRID_KEYS} for item in records],
+        )
+    ] == [True] * 3
+    locators = [tuple(sorted(item.source_locator.items())) for item in result.segments]
+    assert len(set(locators)) == len(locators)
+
+
+def test_repeating_the_extraction_reports_the_same_records() -> None:
+    """Nothing in a record comes from iteration order or from what was seen
+    before it, so the same package reports the same coordinates every time."""
+    body = tbl(tr(tc(), tc("a"), tc(None, RESTART)), tr(tc(), tc(), tc(None, CONTINUE)))
+
+    assert structural(docx(body)) == structural(docx(body))
+
+
+def test_empty_cell_records_count_against_the_segment_cap() -> None:
+    """A table's own plan is bounded by the segment cap, but a document may hold
+    more than one table. The records are ordinary segments, so the cap stops the
+    extraction where the per-table bound cannot."""
+    half = tbl(*(tr(*("<w:tc/>",) * 250),) * (MAX_SEGMENTS // 500))
+
+    with pytest.raises(OOXMLInvalid, match="too many segments"):
+        extract_docx(docx(half + half + tbl(tr("<w:tc/>"))), capture_id=CAPTURE)
+
+
+def test_a_cell_whose_prose_is_only_revised_or_hidden_is_not_empty() -> None:
+    """Emitting no ``table_cell`` run is not the same as holding nothing. Prose
+    that was deleted, and prose the author hid, are both read where they stand
+    and both leave the run count at zero -- so the coordinate is recorded, as it
+    was before, but the record no longer claims the cell was given nothing."""
+    removed = f"<w:tc><w:p><w:del>{run('gone', 'delText')}</w:del></w:p></w:tc>"
+    secret = f"<w:tc><w:p>{hidden('secret')}</w:p></w:tc>"
+    body = tbl(tr(tc(), removed, secret), columns=3)
+
+    result = extract_docx(docx(body), capture_id=CAPTURE)
+
+    assert cells(docx(body)) == []
+    assert [
+        (item.semantic_role, item.text, item.revision_state)
+        for item in result.segments
+    ] == [
+        ("object_inventory", None, "current"),
+        ("deleted_text", "gone", "deleted"),
+        ("object_inventory", None, "current"),
+        ("hidden_content", "secret", "current"),
+        ("object_inventory", None, "current"),
+    ]
+    assert structural(docx(body)) == [
+        ("0.r0.c0", cell_record(0, 0, 0, columns=3)),
+        ("0.r0.c1", cell_record(0, 1, 1, False, columns=3)),
+        ("0.r0.c2", cell_record(0, 2, 2, False, columns=3)),
+    ]
+
+
+def test_a_cell_holding_only_content_that_was_never_prose_is_not_empty() -> None:
+    """A cell is not prose or nothing. An equation, a field, a text box and a
+    nested table are each read as the thing they are rather than as cell text,
+    so a cell holding only one of them emits no run -- and is recorded as the
+    authored cell it is, geometry and all."""
+    equation = f"<w:tc>{MATH}</w:tc>"
+    field = '<w:tc><w:p><w:fldSimple w:instr=" TIME "/></w:p></w:tc>'
+    boxed = f"<w:tc><w:p>{box(p('inside'))}</w:p></w:tc>"
+    nested = f"<w:tc>{tbl(tr(tc('deep')), columns=1)}</w:tc>"
+    body = tbl(tr(equation, field, boxed, nested), columns=4)
+
+    assert cells(docx(body)) == [
+        ("deep", "0.r0.c3.0.r0.c0", at(0, 0, 0, columns=1, path="0.r0.c3.0"))
+    ]
+    assert structural(docx(body)) == [
+        ("0.r0.c0", cell_record(0, 0, 0, False, columns=4)),
+        ("0.r0.c1", cell_record(0, 1, 1, False, columns=4)),
+        ("0.r0.c2", cell_record(0, 2, 2, False, columns=4)),
+        ("0.r0.c3", cell_record(0, 3, 3, False, columns=4)),
+    ]
+
+
+def test_a_wrapper_around_a_cell_s_content_cannot_make_it_look_empty() -> None:
+    """A content control and a revision are walked through, not around, so the
+    prose under them is read -- and the cell that holds nothing but such a
+    wrapper is never mistaken for an empty one, whatever the wrapper encloses."""
+    control = f"<w:tc><w:sdt><w:sdtContent>{p('governed')}</w:sdtContent></w:sdt></w:tc>"
+    inserted = f"<w:tc><w:ins><w:p>{hidden('new')}</w:p></w:ins></w:tc>"
+    body = tbl(tr(control, inserted), columns=2)
+
+    assert cells(docx(body)) == [("governed", "0.r0.c0", at(0, 0, 0, columns=2))]
+    assert structural(docx(body)) == [
+        ("0.r0.c1", cell_record(0, 1, 1, False, columns=2))
+    ]
