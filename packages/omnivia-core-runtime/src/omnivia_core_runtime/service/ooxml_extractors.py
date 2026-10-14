@@ -111,6 +111,60 @@ _CELL_REF: Final = re.compile(r"([A-Z]{1,3})([0-9]{1,7})")
 _DIGITS: Final = re.compile(r"[0-9]{1,7}")
 _TRUE_FLAGS: Final = frozenset({"1", "true", "on"})
 _FALSE_FLAGS: Final = frozenset({"0", "false", "off"})
+# The relationship and content types that together qualify a declared-table
+# part: the one part a worksheet keeps a table's own geometry, identity and
+# column headers in. As with every other type here, only the two URIs OOXML
+# defines qualify -- Transitional and Strict -- so nothing reaches a table by
+# ending the same way, and a query table, a pivot table or a single-cell table
+# relationship reaches no declared table at all.
+_TABLE_RELATIONSHIPS: Final = frozenset(
+    {
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/table",
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/table",
+    }
+)
+# Compared against ``declared_type``, which case-folds; the authored spelling is
+# already folded. The content type is the same under both profiles.
+_TABLE_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"
+)
+# The two SpreadsheetML main namespaces OOXML defines, Transitional and Strict.
+# The rest of the XLSX reader matches local names, because a sheet's vocabulary
+# is settled by the part it was reached through; a table part is reached by its
+# declared type, so the root is held to these as the one remaining check that
+# the part holds the vocabulary the declaration promised.
+_SPREADSHEETML: Final = frozenset(
+    {
+        "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+        "http://purl.oclc.org/ooxml/spreadsheetml/main",
+    }
+)
+# A declared table's bounds are the reader's own. One sheet's tables are counted
+# before any of their parts is opened, and a table's columns are bounded by its
+# own declared count before the list is read, so a width nothing wrote is never
+# expanded. The column bound is well under the grid's own width on purpose: the
+# whole of a table's declared column metadata is reported in one inventory
+# record, and that record has to stay under the stored segment value cap.
+# ponytail: 256 columns and 16 KiB of declared metadata per table; a record per
+# column if wider declared tables have to be accepted.
+_MAX_XLSX_TABLES: Final = 256
+_MAX_XLSX_TABLE_COLUMNS: Final = 256
+_MAX_XLSX_TABLE_METADATA_CHARS: Final = 16 * 1024
+# What one declared column records, defaulted so every column carries the same
+# keys whether or not it declares a formula or a totals row. ``id`` and ``name``
+# are the table's own authoritative header for that position -- the header a
+# consumer reads instead of looking at the first row -- and the rest is declared
+# markup kept exactly as written: a calculated-column formula and a totals-row
+# formula are reported as text beside the column, never evaluated, and a
+# totals-row function is the name the file wrote rather than an applied one.
+_XLSX_TABLE_COLUMN: Final[dict[str, object]] = {
+    "id": None,
+    "name": None,
+    "totalsRowLabel": None,
+    "totalsRowFunction": None,
+    "calculatedColumnFormula": None,
+    "totalsRowFormula": None,
+}
 # The shape-tree children that carry an identity and a z-order position.
 # ``contentPart`` carries neither, so it is not a shape here.
 _PPTX_SHAPES: Final = frozenset({"sp", "grpSp", "graphicFrame", "cxnSp", "pic"})
@@ -1360,6 +1414,11 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
             masters = _shared_masters(root)
             merged = _merged_ranges(root)
             hidden_columns = _hidden_columns(root)
+            # Declared tables are resolved before any cell is read, so a cell's
+            # locator can name the table it already sits in. Nothing here
+            # materialises a cell a table's range covers but the sheet never
+            # wrote: the range is an extent, like ``dimension``, not content.
+            tables, covered = _xlsx_tables(package, part, root)
             sheet_hidden = state != "visible"
             for cell, row_hidden in _xlsx_cells(root):
                 coordinate = cell.attrib.get("r")
@@ -1390,6 +1449,9 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 membership = merged.get(position)
                 if membership is not None:
                     locator["mergedRange"], locator["mergedAnchor"] = membership
+                place = _xlsx_table_place(covered, position)
+                if place is not None:
+                    locator.update(place)
                 visibility = (
                     "hidden"
                     if sheet_hidden or row_hidden or column_hidden
@@ -1449,6 +1511,24 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                             sheetState=state,
                         ),
                         structured_value=link,
+                        extraction_method="inventory",
+                        visibility="hidden" if sheet_hidden else "visible",
+                    )
+                )
+                _bounded(segments)
+            for table in tables:
+                segments.append(
+                    ExtractedSegment(
+                        "object_inventory",
+                        _locator(
+                            capture_id,
+                            part=part,
+                            sheetId=sheet_id,
+                            sheet=sheet_name,
+                            cell=table["ref"],
+                            sheetState=state,
+                        ),
+                        structured_value=table,
                         extraction_method="inventory",
                         visibility="hidden" if sheet_hidden else "visible",
                     )
@@ -1667,6 +1747,356 @@ def _merged_ranges(
                 ):
                     raise OOXMLInvalid("XLSX merged ranges overlap")
     return members
+
+
+@dataclass(frozen=True, slots=True)
+class _XlsxTable:
+    """One validated declared table, reduced to what a cell's locator needs.
+
+    The range is held as its four bounds beside the text the sheet wrote, so a
+    position can be placed inside the table without the range being expanded.
+    ``columns`` is the table's own header for each position in range order, so a
+    cell's column identity is the one the table declares rather than whatever
+    the first row happens to hold.
+    """
+
+    part: str
+    table_id: str
+    name: str
+    display_name: str
+    ref: str
+    first_column: int
+    first_row: int
+    last_column: int
+    last_row: int
+    header_rows: int
+    totals_rows: int
+    columns: tuple[tuple[str, str], ...]
+
+    def role(self, row: int) -> str:
+        """Say what one row of this table is, from the declared counts alone.
+
+        Nothing is inferred from what a row holds: a header row is a header row
+        because the table declares one, and a row that looks like a total is
+        data unless the table says otherwise.
+        """
+        if row - self.first_row < self.header_rows:
+            return "header"
+        if self.last_row - row < self.totals_rows:
+            return "totals"
+        return "data"
+
+    def place(self, column: int, row: int) -> dict[str, object]:
+        """Describe one in-range position as the table's own coordinates."""
+        column_id, column_name = self.columns[column - self.first_column]
+        return {
+            "tablePart": self.part,
+            "tableId": self.table_id,
+            "tableName": self.name,
+            "tableDisplayName": self.display_name,
+            "tableRange": self.ref,
+            "tableRow": row - self.first_row + 1,
+            "tableColumn": column - self.first_column + 1,
+            "tableColumnId": column_id,
+            "tableColumnName": column_name,
+            "tableRole": self.role(row),
+        }
+
+
+def _xlsx_tables(
+    package: _Package, part: str, root: ElementTree.Element
+) -> tuple[list[dict[str, object]], dict[int, tuple[_XlsxTable, ...]]]:
+    """Inventory one sheet's declared tables and index what they cover.
+
+    A table is reached on the schema's own route and no other: the
+    ``tableParts`` directly below the worksheet, a ``tablePart`` directly below
+    that, both qualified in the worksheet's own SpreadsheetML namespace, and
+    that element's own relationship id. An unqualified, foreign or further
+    nested lookalike declares nothing, and no table path is derived from the
+    sheet's own name, so a member that merely looks like a table part is never
+    read.
+
+    Every table is counted before any part is opened, and each table's columns
+    are bounded by its own declared count before the list is read, so a width
+    nothing wrote is never expanded. Declared tables are rectangles over one
+    grid, so two that intersect leave a cell in two tables and the sheet is
+    refused rather than read under one of them. Identity is checked the same
+    way, per sheet: a repeated id, name or display name leaves a cell citing a
+    table that is two tables.
+
+    The lookup that comes back is sparse by column -- each table is listed under
+    the columns it covers, never expanded into positions -- so a table over a
+    whole column costs one entry rather than a million.
+    """
+    # The rest of the sheet reader matches local names, because a sheet's
+    # vocabulary is settled by the part it was reached through. This route opens
+    # another part, so it is held to the sheet's own namespace and that namespace
+    # has to be SpreadsheetML: an unqualified or foreign lookalike declares
+    # nothing and stays transparent, exactly as a nested one does.
+    namespace, _, _ = root.tag.rpartition("}")
+    namespace = namespace.lstrip("{")
+    if namespace not in _SPREADSHEETML:
+        return [], {}
+    declared = [node for node in root if node.tag == f"{{{namespace}}}tableParts"]
+    if not declared:
+        return [], {}
+    if len(declared) > 1:
+        raise OOXMLInvalid("XLSX worksheet declares more than one table-part list")
+    # Counted before the first part is opened: a sheet's declarations are the
+    # work it asks for whether or not any of them resolves.
+    member = f"{{{namespace}}}tablePart"
+    parts = [node for node in declared[0] if node.tag == member]
+    if len(parts) > _MAX_XLSX_TABLES:
+        raise OOXMLInvalid("XLSX worksheet declares too many tables")
+    records: list[dict[str, object]] = []
+    tables: list[_XlsxTable] = []
+    named: set[str] = set()
+    identities: set[tuple[str, str]] = set()
+    for node in parts:
+        relation_id = _relationship_id(node.attrib)
+        if not relation_id:
+            raise OOXMLInvalid("XLSX table part declaration names no relationship")
+        if relation_id in named:
+            raise OOXMLInvalid("XLSX table part declaration is repeated")
+        named.add(relation_id)
+        table, record = _xlsx_table(
+            package,
+            _referenced_part(
+                package,
+                part,
+                relation_id,
+                _TABLE_RELATIONSHIPS,
+                _TABLE_CONTENT_TYPE,
+                "table",
+                "XLSX",
+            ),
+            relation_id,
+        )
+        for claim in (
+            ("id", table.table_id),
+            # Folded: SpreadsheetML names a table once however it is cased, so
+            # two spellings of one name are one name.
+            ("name", table.name.casefold()),
+            ("displayName", table.display_name.casefold()),
+        ):
+            if claim in identities:
+                raise OOXMLInvalid("XLSX table identity is repeated")
+            identities.add(claim)
+        if any(
+            table.first_column <= other.last_column
+            and other.first_column <= table.last_column
+            and table.first_row <= other.last_row
+            and other.first_row <= table.last_row
+            for other in tables
+        ):
+            raise OOXMLInvalid("XLSX declared tables overlap")
+        tables.append(table)
+        records.append(record)
+    covered: dict[int, list[_XlsxTable]] = {}
+    for table in tables:
+        for column in range(table.first_column, table.last_column + 1):
+            covered.setdefault(column, []).append(table)
+    return records, {column: tuple(found) for column, found in covered.items()}
+
+
+def _xlsx_table(
+    package: _Package, part: str, relation_id: str
+) -> tuple[_XlsxTable, dict[str, object]]:
+    """Validate one table part, returning what it covers and what it declares.
+
+    Everything reported is what the part already stored: the range as written,
+    the table's own identity, the declared header and totals counts, and each
+    column's header beside whatever calculated-column or totals-row markup it
+    carries. A formula is reported as the text it is and never evaluated, a
+    totals-row function is the name the file wrote rather than an applied one,
+    and no cell is materialised for any position the range covers.
+
+    The declared column count has to match both the list below it and the width
+    of the range: a table whose header list and grid disagree declares no
+    columns anyone can place a cell in. A repeated column id or name would
+    leave two positions with one header, so the table is refused.
+    """
+    root = _xlsx_table_root(package, part)
+    ref = root.attrib.get("ref")
+    if not ref:
+        raise OOXMLInvalid("XLSX table declares no range")
+    first_column, first_row, last_column, last_row = _cell_range(ref)
+    table_id = root.attrib.get("id", "")
+    if _DIGITS.fullmatch(table_id) is None:
+        raise OOXMLInvalid("XLSX table id is malformed")
+    display_name = _xlsx_table_name(root, "displayName")
+    if display_name is None:
+        raise OOXMLInvalid("XLSX table declares no display name")
+    # The schema defaults ``name`` to the display name, so an absent one is the
+    # display name rather than a missing identity.
+    name = _xlsx_table_name(root, "name") or display_name
+    header_rows = _xlsx_table_rows(root, "headerRowCount", 1)
+    totals_rows = _xlsx_table_rows(root, "totalsRowCount", 0)
+    if header_rows + totals_rows > last_row - first_row + 1:
+        raise OOXMLInvalid("XLSX table header and totals rows exceed its range")
+    # The root carried the vocabulary check, so the list and its members are
+    # held to that same namespace: a foreign holder or member spelling the same
+    # local name declares nothing the table can be read from.
+    scope = root.tag.removesuffix("table")
+    holders = [node for node in root if node.tag == f"{scope}tableColumns"]
+    if len(holders) != 1:
+        raise OOXMLInvalid("XLSX table does not hold exactly one column list")
+    count = holders[0].attrib.get("count", "")
+    if _DIGITS.fullmatch(count) is None:
+        raise OOXMLInvalid("XLSX table column list declares no readable count")
+    if int(count) > _MAX_XLSX_TABLE_COLUMNS:
+        raise OOXMLInvalid("XLSX table has too many columns")
+    columns = [node for node in holders[0] if node.tag == f"{scope}tableColumn"]
+    if len(columns) != int(count):
+        raise OOXMLInvalid("XLSX table column count does not match its column list")
+    if len(columns) != last_column - first_column + 1:
+        raise OOXMLInvalid("XLSX table column list does not match its range")
+    entries: list[dict[str, object]] = []
+    headers: list[tuple[str, str]] = []
+    identifiers: set[str] = set()
+    names: set[str] = set()
+    metadata = 0
+    for column in columns:
+        column_id = column.attrib.get("id", "")
+        if _DIGITS.fullmatch(column_id) is None:
+            raise OOXMLInvalid("XLSX table column id is malformed")
+        column_name = _xlsx_table_name(column, "name")
+        if column_name is None:
+            raise OOXMLInvalid("XLSX table column declares no name")
+        if column_id in identifiers or column_name.casefold() in names:
+            raise OOXMLInvalid("XLSX table column id or name is repeated")
+        identifiers.add(column_id)
+        names.add(column_name.casefold())
+        entry: dict[str, object] = {
+            **_XLSX_TABLE_COLUMN,
+            "id": column_id,
+            "name": column_name,
+            "totalsRowLabel": column.attrib.get("totalsRowLabel"),
+            "totalsRowFunction": column.attrib.get("totalsRowFunction"),
+            "calculatedColumnFormula": _xlsx_table_formula(
+                column, f"{scope}calculatedColumnFormula"
+            ),
+            "totalsRowFormula": _xlsx_table_formula(column, f"{scope}totalsRowFormula"),
+        }
+        # One record carries the whole table's declared metadata, so the bound
+        # is taken across the table rather than per column: a single oversized
+        # formula and a thousand ordinary ones are both refused here.
+        metadata += sum(len(v) for v in entry.values() if isinstance(v, str))
+        if metadata > _MAX_XLSX_TABLE_METADATA_CHARS:
+            raise OOXMLInvalid("XLSX table metadata exceeds the accepted bound")
+        entries.append(entry)
+        headers.append((column_id, column_name))
+    return (
+        _XlsxTable(
+            part,
+            table_id,
+            name,
+            display_name,
+            ref,
+            first_column,
+            first_row,
+            last_column,
+            last_row,
+            header_rows,
+            totals_rows,
+            tuple(headers),
+        ),
+        {
+            "kind": "table",
+            "relationshipId": _clip(relation_id, _MAX_META_CHARS),
+            "tablePart": part,
+            "id": table_id,
+            "name": name,
+            "displayName": display_name,
+            "ref": ref,
+            "headerRowCount": header_rows,
+            "totalsRowCount": totals_rows,
+            "columnCount": len(entries),
+            "columns": entries,
+        },
+    )
+
+
+def _xlsx_table_root(package: _Package, part: str) -> ElementTree.Element:
+    """Parse one table part, refusing a root that is not a table.
+
+    The declared content type says what the part is; the root element is where
+    the part says so itself, in one of the two namespaces OOXML defines for
+    SpreadsheetML. Anything else is not the vocabulary the declaration
+    promised, so the part is refused rather than read for whatever happens to
+    be in it.
+    """
+    root = package.xml(part)
+    namespace, _, local = root.tag.rpartition("}")
+    if namespace.lstrip("{") not in _SPREADSHEETML:
+        raise OOXMLInvalid("XLSX table part uses an unsupported namespace")
+    if local != "table":
+        raise OOXMLInvalid("XLSX table part is not rooted at its own table")
+    return root
+
+
+def _xlsx_table_name(element: ElementTree.Element, attribute: str) -> str | None:
+    """Read one table or column identity attribute, or None where absent.
+
+    An identity is never clipped: two over-long names shortened to the same
+    text would be one name, so one outside the bound is refused rather than cut
+    down to fit. An empty one is no identity at all.
+    """
+    value = element.attrib.get(attribute)
+    if value is None:
+        return None
+    if not value or len(value) > _MAX_META_CHARS:
+        raise OOXMLInvalid("XLSX table name is empty or exceeds the accepted bound")
+    return value
+
+
+def _xlsx_table_rows(element: ElementTree.Element, attribute: str, default: int) -> int:
+    """Read a declared header- or totals-row count, refusing anything else.
+
+    SpreadsheetML defines both as 0 or 1, and a row's role is derived from
+    these two alone, so a count the format does not define is refused rather
+    than rounded into one it does.
+    """
+    value = element.attrib.get(attribute)
+    if value is None:
+        return default
+    if value not in {"0", "1"}:
+        raise OOXMLInvalid("XLSX table row count is not a defined value")
+    return int(value)
+
+
+def _xlsx_table_formula(column: ElementTree.Element, tag: str) -> str | None:
+    """Return the declared formula text one column holds, exactly as written.
+
+    The tag is qualified in the column's own namespace, so a foreign element
+    spelling the same local name supplies no formula. A column declares each
+    formula at most once, so two leave which one it calculates ambiguous.
+    Nothing here evaluates the text or resolves anything it names, and an empty
+    declaration stays distinguishable from none at all.
+    """
+    held = [node for node in column if node.tag == tag]
+    if len(held) > 1:
+        raise OOXMLInvalid("XLSX table column declares a formula twice")
+    return (held[0].text or "") if held else None
+
+
+def _xlsx_table_place(
+    covered: dict[int, tuple[_XlsxTable, ...]], position: tuple[int, int]
+) -> dict[str, object] | None:
+    """Return the declared-table keys one written cell's position sits under.
+
+    Only a position the sheet already wrote a cell for is ever asked about, and
+    declared tables cannot overlap, so at most one table covers it.
+    """
+    column, row = position
+    return next(
+        (
+            table.place(column, row)
+            for table in covered.get(column, ())
+            if table.first_row <= row <= table.last_row
+        ),
+        None,
+    )
 
 
 def _xlsx_hyperlinks(
