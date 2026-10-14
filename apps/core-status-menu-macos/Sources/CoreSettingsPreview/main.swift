@@ -40,8 +40,9 @@ try MainActor.assumeIsolated {
     var mcp: McpAdministering?
     // Dev-only: a roster with the service reachable, so the Access pane and
     // the Add-application sheet can be looked at on a machine with no Core
-    // running. It answers reads only — `configure` and `revoke` refuse, so
-    // nothing here can be mistaken for a working write path.
+    // running. Nothing here reaches a service: `configure` returns a snippet
+    // of the real shape over this launcher's own synthetic path, so what a
+    // screenshot shows can never be mistaken for a real installation's.
     if CommandLine.arguments.contains("--stub-mcp") {
         mcp = StubMcp()
     } else if let cli = argument("--cli"), let state = argument("--installation-state") {
@@ -94,7 +95,7 @@ try MainActor.assumeIsolated {
 }
 
 
-/// Reads answer; writes refuse. See `--stub-mcp` above.
+/// Answers without reaching a service. See `--stub-mcp` above.
 struct StubMcp: McpAdministering {
     func status() async -> Result<McpStatus, McpError> {
         .success(
@@ -117,9 +118,35 @@ struct StubMcp: McpAdministering {
         )
     }
 
-    func configure(host: String, workspace: String, profile: String) async -> Result<Void, McpError> {
-        .failure(.notAdministrator)
+    /// The shape `host_snippet` prints, over a path that is visibly this
+    /// launcher's rather than any installation's.
+    func configure(host: String, workspace: String, profile: String) async -> Result<String, McpError> {
+        let path = "/preview-installation/.installed-mcp/\(host).json"
+        if host == "codex" {
+            return .success(
+                """
+                [mcp_servers.omnivia-core]
+                command = "omnivia-core-mcp"
+                args = ["--config", "\(path)"]
+                """
+            )
+        }
+        return .success(
+            """
+            {
+              "mcpServers": {
+                "omnivia-core": {
+                  "command": "omnivia-core-mcp",
+                  "args": [
+                    "--config",
+                    "\(path)"
+                  ]
+                }
+              }
+            }
+            """
+        )
     }
 
-    func revoke(host: String) async -> Result<Void, McpError> { .failure(.notAdministrator) }
+    func revoke(host: String) async -> Result<Void, McpError> { .success(()) }
 }

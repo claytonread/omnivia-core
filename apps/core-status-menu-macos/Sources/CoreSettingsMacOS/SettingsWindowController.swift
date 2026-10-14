@@ -50,6 +50,7 @@ enum Ov {
     static let bgContent = dynamic(srgb(0xFFFFFF), srgb(0x1E1E20))
     static let bgContentSecondary = dynamic(srgb(0xFBFBFA), srgb(0x232326))
     static let bgElevated = dynamic(srgb(0xFFFFFF), srgb(0x26262E))
+    static let bgInset = dynamic(srgb(0xFFFFFF), srgb(0x16161B))
     static let bgInsetDeep = dynamic(srgb(0xEEEEF0), srgb(0x141417))
     static let textPrimary = dynamic(black(0.85), white(0.92))
     static let textSecondary = dynamic(black(0.55), white(0.58))
@@ -68,6 +69,12 @@ enum Ov {
     static let warning = dynamic(srgb(0xC8821E), srgb(0xE0A33E))
     static let onAccent = NSColor.white
 
+    /// `.ov-btn--primary`. In dark, `os/next.css` redefines it to the muted
+    /// accent with white text; in light it stays the solid accent. Dynamic,
+    /// so the button needs no appearance branch of its own.
+    static let primaryFill = dynamic(srgb(0x9E302A), srgb(0xD2756C, 0.20))
+    static let primaryFillHover = dynamic(srgb(0x631A17), srgb(0xD2756C, 0.30))
+
     // MARK: States (lib/ov-ui/tokens/ov-ui-palette.css)
 
     /// The hover and active surfaces are a warm grey, not plain black/white —
@@ -83,7 +90,7 @@ enum Ov {
     /// `--ov-accent-muted`.
     static let accentMuted = dynamic(
         NSColor(srgbRed: 158 / 255.0, green: 48 / 255.0, blue: 42 / 255.0, alpha: 0.12),
-        NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: 0.28)
+        NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: 0.20)
     )
     /// `--ov-focus-ring`.
     static let focusRing = dynamic(
@@ -2428,10 +2435,11 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                     host: host, workspace: workspace, profile: profile
                 )
                 switch result {
-                case .success:
+                case .success(let snippet):
                     self.addSheet?.showAdded(
                         name: name,
-                        level: profile == "authoring" ? "Read and contribute" : "Read only"
+                        level: profile == "authoring" ? "Read and contribute" : "Read only",
+                        snippet: snippet
                     )
                 case .failure(let error):
                     self.addSheet?.showFailure(Self.mcpFailure(error))
@@ -2439,7 +2447,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                 // The pane re-reads either way: a configure that found an
                 // equivalent setup returns it unrotated, and a failed one
                 // compensates by revoking. Only a fresh read is the truth.
-                self.finishMcpWrite(result)
+                self.finishMcpWrite(result.map { _ in () })
             }
         }
         addSheet = sheet
@@ -2895,7 +2903,7 @@ final class DisclosureButton: NSButton {
     }
 }
 
-enum OvButtonStyle { case bordered, primary }
+enum OvButtonStyle { case bordered, primary, plain }
 
 final class OvButton: NSButton {
     private let style: OvButtonStyle
@@ -2922,7 +2930,8 @@ final class OvButton: NSButton {
         applyStyle()
 
         let height: CGFloat = size == .row ? 26 : 28
-        let padding: CGFloat = size == .row ? 11 : 12
+        var padding: CGFloat = size == .row ? 11 : 12
+        if style == .plain { padding -= 2 }       // `.ov-btn--plain{padding:0 space-4}`
         heightAnchor.constraint(equalToConstant: height).isActive = true
         widthAnchor.constraint(
             greaterThanOrEqualToConstant: textWidth + padding * 2 + (icon == nil ? 0 : 19)
@@ -2940,13 +2949,18 @@ final class OvButton: NSButton {
     }
 
     private func applyStyle() {
-        if style == .primary {
-            layer?.backgroundColor = Ov.accent.cgColor
+        switch style {
+        case .primary:
+            layer?.backgroundColor = Ov.primaryFill.cgColor
             layer?.borderWidth = 0
-        } else {
+        case .bordered:
             layer?.backgroundColor = Ov.bgElevated.cgColor
             layer?.borderWidth = 1
             layer?.borderColor = Ov.borderControl.cgColor
+        case .plain:
+            // `.ov-btn--plain`: no fill and no border until hovered.
+            layer?.backgroundColor = NSColor.clear.cgColor
+            layer?.borderWidth = 0
         }
     }
 
@@ -2957,7 +2971,7 @@ final class OvButton: NSButton {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        layer?.backgroundColor = (style == .primary ? Ov.accentActive : Ov.hoverBg).cgColor
+        layer?.backgroundColor = (style == .primary ? Ov.primaryFillHover : Ov.hoverBg).cgColor
     }
 
     override func mouseExited(with event: NSEvent) { applyStyle() }

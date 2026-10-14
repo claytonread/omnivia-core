@@ -43,6 +43,11 @@ final class AddApplicationSheet: NSObject {
     private var body = NSStackView()
     private var foot = NSStackView()
     private var root: NSView?
+    /// The appearance every subview is built under. Layer colours are
+    /// snapshots: one taken outside this is the app's theme, not the sheet's,
+    /// and a body swapped in later would come back in the wrong one.
+    private var appearance = NSAppearance.currentDrawing()
+    private var lastSnippet: String?
     private var hostChooser: NSPopUpButton?
     private var profile = "restricted"
     private(set) var radios: [OvRadio] = []
@@ -61,11 +66,12 @@ final class AddApplicationSheet: NSObject {
     // MARK: Presenting
 
     func present(in parent: NSWindow, appearance: NSAppearance) {
+        self.appearance = appearance
         sheet.appearance = appearance
         sheet.titlebarAppearsTransparent = true
         sheet.titleVisibility = .hidden
         sheet.isMovableByWindowBackground = false
-        appearance.performAsCurrentDrawingAppearance { self.sheet.contentView = self.buildContent() }
+        draw { self.sheet.contentView = self.buildContent() }
         parent.beginSheet(sheet)
         // The design autofocuses the first field.
         sheet.initialFirstResponder = hostChooser
@@ -129,7 +135,7 @@ final class AddApplicationSheet: NSObject {
 
         setFoot(
             [
-                ovButton("Cancel", style: .bordered, action: #selector(cancel)),
+                ovButton("Cancel", style: .plain, action: #selector(cancel)),
                 ovButton("Add application", style: .primary, action: #selector(submit)),
             ]
         )
@@ -326,28 +332,70 @@ final class AddApplicationSheet: NSObject {
     /// The pending state: the form is replaced, so the choice cannot be
     /// changed under a write that is already running.
     func showWorking(_ message: String) {
-        setBody([paragraph(message)])
-        setFoot([])
+        draw {
+            self.setBody([self.paragraph(message)])
+            self.setFoot([])
+        }
     }
 
-    func showAdded(name: String, level: String) {
-        setBody([
-            paragraph(
-                "\(name) was added with \(level) access. Its configuration was "
-                    + "written on this Mac, so it connects to Core the next time it starts."
-            ),
-            paragraph(
-                "Configured access is not a live connection: this says what it is "
-                    + "allowed to do, not that it is using it.",
-                secondary: true
-            ),
+    private func draw(_ body: () -> Void) {
+        appearance.performAsCurrentDrawingAppearance(body)
+    }
+
+    /// The design's added state: what happened, the thing to paste, and a
+    /// note. `mcp configure` writes this installation's own configuration but
+    /// leaves the host's file alone, so the snippet is not a nicety — it is
+    /// the remaining step, and saying "it will just connect" would be false.
+    func showAdded(name: String, level: String, snippet: String) {
+        lastSnippet = snippet
+        draw {
+            self.setBody([
+                self.paragraph(
+                    "\(name) was added with \(level) access. Add this to its own configuration:"
+                ),
+                self.codeBlock(snippet),
+                self.paragraph(
+                    "Connections are local to this Mac. The snippet carries no credential — "
+                        + "that is held by this installation, not by the application.",
+                    secondary: true
+                ),
+            ])
+            self.setFoot([
+                self.ovButton("Copy", style: .bordered, action: #selector(Self.copySnippet)),
+                self.ovButton("Done", style: .primary, action: #selector(Self.cancel)),
+            ])
+        }
+    }
+
+    /// `.ai-code`: mono 11px/1.6, padding 10/12, radius 7, inset-deep.
+    private func codeBlock(_ text: String) -> NSView {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        label.textColor = Ov.textSecondary
+        label.isSelectable = true
+        label.preferredMaxLayoutWidth = 460
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        let box = NSView()
+        box.wantsLayer = true
+        box.layer?.backgroundColor = Ov.bgInsetDeep.cgColor
+        box.layer?.cornerRadius = 7
+        box.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: box.topAnchor, constant: 10),
+            label.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -10),
+            label.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 12),
+            label.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -12),
+            box.widthAnchor.constraint(equalToConstant: 484),
         ])
-        setFoot([ovButton("Done", style: .primary, action: #selector(cancel))])
+        return box
     }
 
     func showFailure(_ message: String) {
-        setBody([paragraph(message)])
-        setFoot([ovButton("Close", style: .bordered, action: #selector(cancel))])
+        draw {
+            self.setBody([self.paragraph(message)])
+            self.setFoot([self.ovButton("Close", style: .plain, action: #selector(Self.cancel))])
+        }
     }
 
     private func paragraph(_ text: String, secondary: Bool = false) -> NSView {
@@ -422,7 +470,7 @@ final class AddApplicationSheet: NSObject {
 
         let box = NSView()
         box.wantsLayer = true
-        box.layer?.backgroundColor = Ov.bgInsetDeep.cgColor
+        box.layer?.backgroundColor = Ov.bgInset.cgColor
         box.layer?.cornerRadius = 6
         box.layer?.borderWidth = 1
         box.layer?.borderColor = Ov.borderControl.cgColor
@@ -447,6 +495,12 @@ final class AddApplicationSheet: NSObject {
     }
 
     @objc private func cancel() { close() }
+
+    @objc private func copySnippet() {
+        guard let lastSnippet else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(lastSnippet, forType: .string)
+    }
 
     /// Selecting in the chooser, for the tests — on screen the popup does it.
     func chooseApplication(at index: Int) { hostChooser?.selectItem(at: index) }

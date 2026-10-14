@@ -102,7 +102,8 @@ public enum McpError: Error, Sendable, Equatable {
 
 public protocol McpAdministering: Sendable {
     func status() async -> Result<McpStatus, McpError>
-    func configure(host: String, workspace: String, profile: String) async -> Result<Void, McpError>
+    /// On success, the host-native snippet the CLI printed.
+    func configure(host: String, workspace: String, profile: String) async -> Result<String, McpError>
     func revoke(host: String) async -> Result<Void, McpError>
 }
 
@@ -138,10 +139,23 @@ public struct McpCommandRunner: McpAdministering {
 
     public func configure(
         host: String, workspace: String, profile: String
-    ) async -> Result<Void, McpError> {
-        await mutate([
+    ) async -> Result<String, McpError> {
+        let arguments = [
             "mcp", "configure", "--host", host, "--workspace", workspace, "--profile", profile,
-        ])
+        ]
+        switch await invoke(arguments, timeout: Self.mutateTimeout) {
+        case .failure(let error): return .failure(error)
+        case .success(let output):
+            switch output.code {
+            case 0:
+                let snippet = output.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                // A configure that changed nothing still prints the snippet, so
+                // an empty one means the contract was not met, not "no change".
+                return snippet.isEmpty ? .failure(.unreadableOutput) : .success(snippet)
+            case 3: return .failure(.notAdministrator)
+            default: return .failure(.failed)
+            }
+        }
     }
 
     public func revoke(host: String) async -> Result<Void, McpError> {
