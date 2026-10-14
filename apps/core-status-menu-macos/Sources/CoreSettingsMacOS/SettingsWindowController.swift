@@ -23,82 +23,151 @@ import UserNotifications
 // MARK: - OmniVia dark tokens (styles/tokens.css, dark layer)
 
 enum Ov {
-    static let bgContent = NSColor(srgbRed: 0x1E / 255.0, green: 0x1E / 255.0, blue: 0x20 / 255.0, alpha: 1)
-    static let bgContentSecondary = NSColor(srgbRed: 0x23 / 255.0, green: 0x23 / 255.0, blue: 0x26 / 255.0, alpha: 1)
-    static let bgElevated = NSColor(srgbRed: 0x26 / 255.0, green: 0x26 / 255.0, blue: 0x2e / 255.0, alpha: 1)
-    static let bgInsetDeep = NSColor(srgbRed: 0x14 / 255.0, green: 0x14 / 255.0, blue: 0x17 / 255.0, alpha: 1)
-    static let accent = NSColor(srgbRed: 0xD2 / 255.0, green: 0x75 / 255.0, blue: 0x6C / 255.0, alpha: 1)
-    static let accentActive = NSColor(srgbRed: 0xE6 / 255.0, green: 0x96 / 255.0, blue: 0x8D / 255.0, alpha: 1)
-    static let success = NSColor(srgbRed: 0x3D / 255.0, green: 0xBE / 255.0, blue: 0x83 / 255.0, alpha: 1)
-    static let warning = NSColor(srgbRed: 0xE0 / 255.0, green: 0xA3 / 255.0, blue: 0x3E / 255.0, alpha: 1)
-    static let textPrimary = NSColor.white.withAlphaComponent(0.92)
-    static let textSecondary = NSColor.white.withAlphaComponent(0.58)
-    static let textTertiary = NSColor.white.withAlphaComponent(0.40)
-    static let textQuaternary = NSColor.white.withAlphaComponent(0.26)
-    static let separator = NSColor.white.withAlphaComponent(0.10)
-    static let borderSubtle = NSColor.white.withAlphaComponent(0.08)
-    static let borderControl = NSColor.white.withAlphaComponent(0.18)
-    // The hover and active surfaces are a warm grey, not plain white — white
-    // reads cold against the brick-tinted chrome (ov-ui-palette.css).
-    static let hoverBg = NSColor(srgbRed: 185 / 255.0, green: 178 / 255.0, blue: 188 / 255.0, alpha: 0.09)
-    static let activeBg = NSColor(srgbRed: 185 / 255.0, green: 178 / 255.0, blue: 188 / 255.0, alpha: 0.18)
-    /// `--ov-accent-muted`: the selected source-list row in dark mode is the
-    /// accent at low opacity, not the solid accent fill light mode uses.
-    static let accentMuted = NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: 0.28)
+    /// A token that resolves per appearance, so the whole window follows the
+    /// system the way `[data-theme]` and `prefers-color-scheme` do in the
+    /// design. Light values come from the `:root` blocks, dark from the
+    /// `[data-theme="dark"]` blocks of the same files.
+    private static func dynamic(_ light: NSColor, _ dark: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+        }
+    }
+
+    private static func srgb(_ hex: UInt32, _ alpha: CGFloat = 1) -> NSColor {
+        NSColor(
+            srgbRed: CGFloat((hex >> 16) & 0xFF) / 255.0,
+            green: CGFloat((hex >> 8) & 0xFF) / 255.0,
+            blue: CGFloat(hex & 0xFF) / 255.0,
+            alpha: alpha
+        )
+    }
+
+    private static func black(_ a: CGFloat) -> NSColor { NSColor.black.withAlphaComponent(a) }
+    private static func white(_ a: CGFloat) -> NSColor { NSColor.white.withAlphaComponent(a) }
+
+    // MARK: Surfaces and text (styles/brick-tokens.css)
+
+    static let bgContent = dynamic(srgb(0xFFFFFF), srgb(0x1E1E20))
+    static let bgContentSecondary = dynamic(srgb(0xFBFBFA), srgb(0x232326))
+    static let bgElevated = dynamic(srgb(0xFFFFFF), srgb(0x26262E))
+    static let bgInsetDeep = dynamic(srgb(0xEEEEF0), srgb(0x141417))
+    static let textPrimary = dynamic(black(0.85), white(0.92))
+    static let textSecondary = dynamic(black(0.55), white(0.58))
+    static let textTertiary = dynamic(black(0.38), white(0.40))
+    static let textQuaternary = dynamic(black(0.24), white(0.26))
+    static let separator = dynamic(black(0.09), white(0.10))
+    static let borderSubtle = dynamic(black(0.07), white(0.08))
+    static let borderControl = dynamic(black(0.16), white(0.18))
+
+    // MARK: Accent and semantics (styles/tokens.css)
+
+    /// Brick 500 in light; lifted for contrast on dark.
+    static let accent = dynamic(srgb(0x9E302A), srgb(0xD2756C))
+    static let accentActive = dynamic(srgb(0x631A17), srgb(0xE6968D))
+    static let success = dynamic(srgb(0x2E9E6B), srgb(0x3DBE83))
+    static let warning = dynamic(srgb(0xC8821E), srgb(0xE0A33E))
     static let onAccent = NSColor.white
+
+    // MARK: States (lib/ov-ui/tokens/ov-ui-palette.css)
+
+    /// The hover and active surfaces are a warm grey, not plain black/white —
+    /// either reads cold against the brick-tinted chrome.
+    static let hoverBg = dynamic(
+        NSColor(srgbRed: 120 / 255.0, green: 114 / 255.0, blue: 120 / 255.0, alpha: 0.09),
+        NSColor(srgbRed: 185 / 255.0, green: 178 / 255.0, blue: 188 / 255.0, alpha: 0.09)
+    )
+    static let activeBg = dynamic(
+        NSColor(srgbRed: 120 / 255.0, green: 114 / 255.0, blue: 120 / 255.0, alpha: 0.17),
+        NSColor(srgbRed: 185 / 255.0, green: 178 / 255.0, blue: 188 / 255.0, alpha: 0.18)
+    )
+    /// `--ov-accent-muted`.
+    static let accentMuted = dynamic(
+        NSColor(srgbRed: 158 / 255.0, green: 48 / 255.0, blue: 42 / 255.0, alpha: 0.12),
+        NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: 0.28)
+    )
+    /// `--ov-focus-ring`.
+    static let focusRing = dynamic(
+        NSColor(srgbRed: 158 / 255.0, green: 48 / 255.0, blue: 42 / 255.0, alpha: 0.50),
+        NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: 0.60)
+    )
+
+    /// The selected source-list row. Light fills with the solid accent
+    /// (`--ov-selection-bg`) and uses white for both label and glyph; dark
+    /// overrides that to the accent at 28% with an accent-coloured glyph
+    /// (`[data-theme="dark"] #sw-nav .nav-row[aria-current="page"]`). A solid
+    /// brick block is too heavy on a dark 28pt row, and a 28% wash is too
+    /// faint on a light one — so this is a real fork, not a tint.
+    static var selectionIsSolid: Bool { !isDark }
+    static let selectionBg = dynamic(srgb(0x9E302A), accentMuted)
+    static let selectionText = dynamic(.white, .white)
+
+    static var isDark: Bool {
+        NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+    }
 
     // MARK: Materials and sheens (ov-ui-palette.css, os/overlay.css)
     //
-    // Chrome is a translucent material with a brick sheen layered over it:
-    // `background: var(--ov-…-sheen), var(--ov-material-…)`. The material is
-    // the blur, the sheen is the tint. An NSVisualEffectView gives the first;
-    // the second has to be drawn over it, which is what `SheenView` does.
+    // Chrome is a translucent material with a sheen over it:
+    // `background: var(--ov-…-sheen), var(--ov-material-…)`.
+    //
+    // `backdrop-filter` in the prototype blurs what is behind the element
+    // *inside the page*, and the page's window is opaque
+    // (`#cs-win{background:var(--ov-bg-content)}`). Blurring a flat colour
+    // returns that colour, so the chrome composites to a fixed value and the
+    // translucency never reaches the desktop. An `NSVisualEffectView` samples
+    // the wallpaper instead, which leaves the bar and the source list unable
+    // to match each other — so these are composited against the window's own
+    // background, which is both faithful and deterministic.
 
-    /// The materials as the design states them, and as this window actually
-    /// renders them.
-    ///
-    /// `backdrop-filter` in the prototype blurs what is behind the element
-    /// *inside the page*, and the page's window is opaque
-    /// (`#cs-win{background:var(--ov-bg-content)}`). Blurring a flat colour
-    /// returns that colour, so the chrome composites to a fixed value and the
-    /// translucency never reaches the desktop.
-    ///
-    /// An `NSVisualEffectView` samples the wallpaper instead. That is a
-    /// different picture: the bar and the source list each pick up a different
-    /// amount of whatever happens to be behind the window, so they stop
-    /// matching each other and both drift toward the desktop's hue. Compositing
-    /// against the window's own background is both faithful to the design and
-    /// deterministic.
-    static let materialTitlebar = NSColor(srgbRed: 30 / 255.0, green: 30 / 255.0, blue: 36 / 255.0, alpha: 0.64)
-    static let materialSidebar = NSColor(srgbRed: 22 / 255.0, green: 22 / 255.0, blue: 27 / 255.0, alpha: 0.40)
+    static let materialTitlebar = dynamic(
+        srgb(0xF6F5F7, 0.70), srgb(0x1E1E24, 0.64)
+    )
+    static let materialSidebar = dynamic(
+        srgb(0xF4F4F7, 0.46), srgb(0x16161B, 0.40)
+    )
 
-    /// `rgba(30,30,36,.64)` over `#1E1E20`.
-    static let chromeTitlebar = materialTitlebar.composited(over: bgContent)
-    /// `rgba(22,22,27,.40)` over `#1E1E20`.
-    static let chromeSidebar = materialSidebar.composited(over: bgContent)
+    static let chromeTitlebar = dynamic(
+        srgb(0xF6F5F7, 0.70).composited(over: srgb(0xFFFFFF)),
+        srgb(0x1E1E24, 0.64).composited(over: srgb(0x1E1E20))
+    )
+    static let chromeSidebar = dynamic(
+        srgb(0xF4F4F7, 0.46).composited(over: srgb(0xFFFFFF)),
+        srgb(0x16161B, 0.40).composited(over: srgb(0x1E1E20))
+    )
 
-    private static func brick(_ alpha: CGFloat) -> NSColor {
-        NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: alpha)
-    }
+    private static func brick(_ alpha: CGFloat) -> NSColor { srgb(0x9E302A, alpha) }
+    private static func brickDark(_ alpha: CGFloat) -> NSColor { srgb(0xD2756C, alpha) }
 
     /// `--ov-titlebar-sheen`: a horizontal accent wash, gone by 52%.
-    static let titlebarSheen: [(NSColor, CGFloat)] = [
-        (brick(0.13), 0.0), (brick(0.06), 0.24), (brick(0.0), 0.52), (brick(0.0), 1.0),
-    ]
+    static var titlebarSheen: [(NSColor, CGFloat)] {
+        isDark
+            ? [(brickDark(0.13), 0.0), (brickDark(0.06), 0.24), (brickDark(0), 0.52), (brickDark(0), 1.0)]
+            : [(brick(0.09), 0.0), (brick(0.045), 0.24), (brick(0), 0.52), (brick(0), 1.0)]
+    }
 
-    /// `--ov-sidebar-sheen`: accent at the head, fading out by 28%, with a
-    /// warmer earth tone returning at the foot.
-    static let sidebarSheen: [(NSColor, CGFloat)] = [
-        (brick(0.10), 0.0),
-        (brick(0.0), 0.28),
-        (NSColor(srgbRed: 150 / 255.0, green: 96 / 255.0, blue: 70 / 255.0, alpha: 0.07), 1.0),
-    ]
+    /// `--ov-sidebar-sheen`: accent at the head, gone by ~27%, with a warmer
+    /// earth tone returning at the foot.
+    static var sidebarSheen: [(NSColor, CGFloat)] {
+        isDark
+            ? [(brickDark(0.10), 0.0), (brickDark(0), 0.28), (srgb(0x966046, 0.07), 1.0)]
+            : [(brick(0.07), 0.0), (brick(0), 0.26), (srgb(0xC4A896, 0.05), 1.0)]
+    }
 
-    /// `--ov-specular-highlight`: the 1px lit top edge of a glass surface.
-    static let specularHighlight = NSColor.white.withAlphaComponent(0.10)
+    /// `--ov-specular-highlight`: the lit top edge of a glass surface.
+    static let specularHighlight = dynamic(white(0.55), white(0.10))
+}
 
-    /// `--ov-focus-ring`: the keyboard ring is brick, not the system blue.
-    static let focusRing = NSColor(srgbRed: 210 / 255.0, green: 117 / 255.0, blue: 108 / 255.0, alpha: 0.60)
+extension NSView {
+    /// A dynamic colour as a CGColor for *this* view's appearance.
+    ///
+    /// `NSColor.cgColor` resolves against whatever drawing appearance happens
+    /// to be current, which outside a draw cycle is the app's, not the
+    /// window's. A layer colour taken that way keeps the wrong theme.
+    func resolved(_ color: NSColor) -> CGColor {
+        var out = color.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance { out = color.cgColor }
+        return out
+    }
 }
 
 extension NSColor {
@@ -251,6 +320,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let navigator: SettingsNavigator
     private let notificationCenter: UNUserNotificationCenter?
     private var cancellables: Set<AnyCancellable> = []
+    private var appearanceObserver: NSKeyValueObservation?
 
     // Pane selection
     /// Order and labels follow `NAV` in the design's `core-settings.js`. That
@@ -366,6 +436,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         self.window = window
         window.delegate = self
         window.center()
+        observeSystemAppearance()
         positionWindowControls()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -441,6 +512,18 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         positionWindowControls()
     }
 
+    /// While the preference is `system`, the Mac switching theme has to carry
+    /// through to the window — which means rebuilding, because every layer
+    /// colour was resolved when it was set.
+    private func observeSystemAppearance() {
+        appearanceObserver = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
+            Task { @MainActor in
+                guard let self, Self.appearancePreference == .system else { return }
+                self.rebuildForAppearance()
+            }
+        }
+    }
+
     public func windowWillClose(_ notification: Notification) {
         // Cancel UI-owned passive work; Core is untouched (MT-001, §8.3).
         window = nil
@@ -458,7 +541,11 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.title = "Core Settings"
-        window.appearance = NSAppearance(named: .darkAqua)
+        // The design's default is `appearance: "system"`, which resolves
+        // through `prefers-color-scheme`; nil appearance is AppKit's
+        // equivalent. Forcing `.darkAqua` meant the window could never follow
+        // the Mac, and on a light Mac it was simply the wrong theme.
+        window.appearance = Self.appearancePreference.nsAppearance
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.backgroundColor = Ov.bgContent
@@ -468,7 +555,38 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         // breakpoint `core-settings.css` narrows the sidebar at; stopping
         // there keeps the pane usable without needing that rule.
         window.minSize = NSSize(width: 640, height: 420)
+        window.contentView = buildContent(appearance: Self.targetAppearance)
+        renderSidebar()
+        render()
+        return window
+    }
 
+    /// The whole view tree, built against `window`'s current appearance.
+    ///
+    /// Rebuilt wholesale when the theme changes: a layer's colour is a
+    /// snapshot taken when it was set, so there is nothing to invalidate.
+    private func buildContent(appearance: NSAppearance) -> NSView {
+        var built: NSView!
+        // Resolve every colour taken during this build against the appearance
+        // being switched *to*, passed in explicitly.
+        //
+        // Reading it back from the window does not work: setting
+        // `window.appearance` does not update `effectiveAppearance` before
+        // this returns, so the rebuild resolved layer colours against the old
+        // theme while the text fields — live dynamic colours — resolved
+        // against the new one. The result was white text on white cards.
+        appearance.performAsCurrentDrawingAppearance {
+            built = self.buildContentTree()
+        }
+        return built
+    }
+
+    /// The appearance the window should be drawn in right now.
+    private static var targetAppearance: NSAppearance {
+        appearancePreference.nsAppearance ?? NSApp.effectiveAppearance
+    }
+
+    private func buildContentTree() -> NSView {
         // ---- Branded header (60px, prototype .cs-head) ----
         let header = headerView()
 
@@ -530,7 +648,6 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         root.addArrangedSubview(header)
         root.addArrangedSubview(body)
 
-        window.contentView = root
         NSLayoutConstraint.activate([
             sidebar.widthAnchor.constraint(equalToConstant: 200),
             // A horizontal NSStackView has no "fill" alignment, so the sidebar
@@ -546,9 +663,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             body.widthAnchor.constraint(equalTo: root.widthAnchor),
             header.widthAnchor.constraint(equalTo: root.widthAnchor),
         ])
-        renderSidebar()
-        render()
-        return window
+        return root
     }
 
     /// 60px branded header: the concentric-circle mark in brick, "OmniVia"
@@ -713,6 +828,10 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     private func renderSidebar() {
+        Self.targetAppearance.performAsCurrentDrawingAppearance { self.renderSidebarBody() }
+    }
+
+    private func renderSidebarBody() {
         guard let stack = sidebarStack else { return }
         stack.views.forEach { stack.removeView($0) }
 
@@ -771,6 +890,15 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     // MARK: - Rendering
 
     private func render() {
+        // Cards and rows are built here, not in `buildContentTree`, so this
+        // needs the same appearance the shell was built in. Without it the
+        // chrome followed the theme and the pane did not — white text on
+        // white cards, because layer fills are snapshots and text colours
+        // are live.
+        Self.targetAppearance.performAsCurrentDrawingAppearance { self.renderBody() }
+    }
+
+    private func renderBody() {
         guard let content = contentStack else { return }
         content.views.forEach { content.removeView($0) }
 
@@ -1249,22 +1377,20 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         // exists in this build, so the control is shown in its finished shape
         // and marked rather than offering a switch that cannot take effect.
         let appearance = NSSegmentedControl(
-            labels: ["System", "Light", "Dark"],
+            labels: Self.AppearancePreference.allCases.map(\.label),
             trackingMode: .selectOne,
-            target: nil,
-            action: nil
+            target: self,
+            action: #selector(changeAppearance(_:))
         )
-        appearance.selectedSegment = 2
-        appearance.isEnabled = false
+        appearance.selectedSegment = Self.AppearancePreference.allCases
+            .firstIndex(of: Self.appearancePreference) ?? 0
         appearance.setAccessibilityLabel("Appearance")
-        let appearanceBody = row(
+        row(
             into: behaviour,
             title: "Appearance",
             detail: "Applies to this window and the menu bar item.",
             trailing: appearance
         )
-        appearanceBody.addArrangedSubview(ovSpacer(2))
-        appearanceBody.addArrangedSubview(chip("Dark only in this build", tone: .notBuilt))
 
         // ---- macOS access summary (one per window; §7.5 aggregation) ----
         let summary = ReadinessReducer.summarize(
@@ -1980,6 +2106,48 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     static let attentionNotificationsKey = "omnivia.core.settings.attentionNotifications"
+    static let appearanceKey = "omnivia.core.settings.appearance"
+
+    /// System / Light / Dark, as the design's Appearance control offers.
+    enum AppearancePreference: String, CaseIterable {
+        case system, light, dark
+
+        var nsAppearance: NSAppearance? {
+            switch self {
+            case .system: return nil   // follow the Mac
+            case .light: return NSAppearance(named: .aqua)
+            case .dark: return NSAppearance(named: .darkAqua)
+            }
+        }
+
+        var label: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
+    }
+
+    static var appearancePreference: AppearancePreference {
+        get {
+            UserDefaults.standard.string(forKey: appearanceKey)
+                .flatMap(AppearancePreference.init(rawValue:)) ?? .system
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: appearanceKey) }
+    }
+
+    @objc private func changeAppearance(_ sender: NSSegmentedControl) {
+        let choice = AppearancePreference.allCases[sender.selectedSegment]
+        Self.appearancePreference = choice
+        window?.appearance = choice.nsAppearance
+        rebuildForAppearance()
+    }
+
+    /// Layer-backed colours are snapshots, so a theme change cannot simply
+    /// invalidate — the chrome, the source list and the pane are rebuilt
+    /// against the new appearance.
+    private func rebuildForAppearance() {
+        guard let window else { return }
+        window.contentView = buildContent(appearance: Self.targetAppearance)
+        renderSidebar()
+        render()
+        positionWindowControls()
+    }
 
     @objc private func refreshStatus() {
         coordinator.scheduleRefresh(.explicitRefresh)
@@ -2215,16 +2383,24 @@ final class SidebarRowView: NSView {
     /// turning a 28px strip into a block of brick
     /// (`[data-theme="dark"] #sw-nav .nav-row[aria-current="page"]`).
     private func applySelection() {
-        layer?.backgroundColor = isSelected ? Ov.accentMuted.cgColor : NSColor.clear.cgColor
+        // Light fills with the solid accent; dark uses the 28% wash. See
+        // `Ov.selectionBg` — a solid brick block is too heavy on a dark row
+        // and a 28% wash is too faint on a light one.
+        layer?.backgroundColor = isSelected
+            ? resolved(Ov.selectionBg) : NSColor.clear.cgColor
         // The ring is the layer's border, not a stroke in `draw(_:)`. Drawn
         // there it never reached the screen: this view is layer-backed with a
         // background colour, and the layer's own fill is what gets composited.
         // A border paints above that fill and cannot be lost the same way.
         layer?.borderWidth = showsFocusRing ? 3 : 0
-        layer?.borderColor = showsFocusRing ? Ov.focusRing.cgColor : nil
-        label.textColor = isSelected ? Ov.onAccent : Ov.textPrimary
+        layer?.borderColor = showsFocusRing ? resolved(Ov.focusRing) : nil
+        label.textColor = isSelected ? Ov.selectionText : Ov.textPrimary
         label.font = OvFont.sans(13, isSelected ? 500 : 400)
-        icon.contentTintColor = isSelected ? Ov.accent : Ov.textSecondary
+        // On the solid light fill the glyph must be white to stay legible;
+        // on the dark wash the design tints it with the accent itself.
+        icon.contentTintColor = isSelected
+            ? (Ov.selectionIsSolid ? Ov.selectionText : Ov.accent)
+            : Ov.textSecondary
     }
 
     override func layout() {
@@ -2242,8 +2418,10 @@ final class SidebarRowView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        if !isSelected { layer?.backgroundColor = Ov.hoverBg.cgColor }
-        icon.contentTintColor = isSelected ? Ov.accent : Ov.textPrimary
+        if !isSelected { layer?.backgroundColor = resolved(Ov.hoverBg) }
+        icon.contentTintColor = isSelected
+            ? (Ov.selectionIsSolid ? Ov.selectionText : Ov.accent)
+            : Ov.textPrimary
     }
 
     override func mouseExited(with event: NSEvent) { applySelection() }
@@ -2251,7 +2429,7 @@ final class SidebarRowView: NSView {
     override func mouseDown(with event: NSEvent) {
         Self.focusCameFromKeyboard = false
         showsFocusRing = false
-        if !isSelected { layer?.backgroundColor = Ov.activeBg.cgColor }
+        if !isSelected { layer?.backgroundColor = resolved(Ov.activeBg) }
         super.mouseDown(with: event)
     }
 
