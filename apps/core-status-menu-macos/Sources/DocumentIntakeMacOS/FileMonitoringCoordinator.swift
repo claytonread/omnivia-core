@@ -23,6 +23,10 @@ public actor FileMonitoringCoordinator {
     /// Process-monotonic milliseconds, which is what the scheduling machine's periods are measured
     /// in. See `DocumentIntakeEnvironment.processUptimeMilliseconds`.
     private let clock: @Sendable () -> Int64
+    /// Test seam: makes the next check's scheduling publication write throw instead of running, so
+    /// the split publication `repairableEntry` repairs can be reached deterministically. Production
+    /// never sets it.
+    private var failNextSchedulingPublication = false
 
     init(
         accessStore: NativeAccessStore,
@@ -57,6 +61,11 @@ public actor FileMonitoringCoordinator {
             ),
             scopeKey: individualFileScopeKey
         )
+    }
+
+    /// See `failNextSchedulingPublication`.
+    func failNextSchedulingPublicationForTesting() {
+        failNextSchedulingPublication = true
     }
 
     @discardableResult
@@ -350,34 +359,66 @@ public actor FileMonitoringCoordinator {
             let clock = self.clock
             let key = claim.key
             let generation = claim.generation
-            let entries = try await preparation.prepareAndPublish(
-                [
-                    CapturePreparationItem(
-                        access: NativeAccessExpectation(
-                            accessRef: value.accessRef,
-                            generation: value.bindingGeneration
+            let injectedPublicationFailure = failNextSchedulingPublication
+            failNextSchedulingPublication = false
+            let entries: [CaptureQueueEntry]
+            do {
+                entries = try await preparation.prepareAndPublish(
+                    [
+                        CapturePreparationItem(
+                            access: NativeAccessExpectation(
+                                accessRef: value.accessRef,
+                                generation: value.bindingGeneration
+                            ),
+                            seed: seed,
+                            observedDirtyEpoch: observedDirtyEpoch
                         ),
-                        seed: seed,
-                        observedDirtyEpoch: observedDirtyEpoch
-                    ),
-                ],
-                binding: CaptureDeliveryBinding(
-                    targetRef: value.targetRef,
-                    workspaceRef: value.workspaceRef,
-                    targetBindingRevision: value.targetBindingRevision,
-                    callerContextBinding: value.callerContextBinding
-                )
-            ) { published in
-                // Inside the publication critical section, under the gate the queue commit was
-                // taken on: the scope's candidate reached an intent, named by the item ID the
-                // queue published it under. This batch is always exactly one item.
-                guard let itemID = published.first?.intent.itemId else { return }
-                try scheduling.markPublished(
-                    key,
-                    generation: generation,
-                    intentRef: itemID,
-                    at: clock()
-                )
+                    ],
+                    binding: CaptureDeliveryBinding(
+                        targetRef: value.targetRef,
+                        workspaceRef: value.workspaceRef,
+                        targetBindingRevision: value.targetBindingRevision,
+                        callerContextBinding: value.callerContextBinding
+                    )
+                ) { published in
+                    // Inside the publication critical section, under the gate the queue commit was
+                    // taken on: the scope's candidate reached an intent, named by the item ID the
+                    // queue published it under. This batch is always exactly one item.
+                    guard let itemID = published.first?.intent.itemId else { return }
+                    if injectedPublicationFailure {
+                        throw AutomaticSchedulingError.stateUnavailable
+                    }
+                    try scheduling.markPublished(
+                        key,
+                        generation: generation,
+                        intentRef: itemID,
+                        at: clock()
+                    )
+                }
+            } catch let failure as CapturePublicationIncomplete {
+                // The queue rename is the commit point, so the candidate did reach an intent and
+                // only this owner's own record of it is missing. Nothing is read, published or
+                // cancelled: the entry that committed is checked to be exactly this subscription's
+                // automatic capture for the epoch just prepared, then recorded — the observation
+                // first and the scheduler's publication second, as one critical section on the same
+                // gate the queue commit was taken on. A throw from any of it leaves the repair owed
+                // and falls to the error path below, which resolves the claim from the publication
+                // record as it stands rather than guessing at the intent.
+                return try publicationGate.withLock {
+                    let entry = try Self.repairableEntry(failure, of: value, in: queue)
+                    try recordPublication(entry, of: value, checkedAt: checkedAt)
+                    try scheduling.markPublished(
+                        key,
+                        generation: generation,
+                        intentRef: entry.intent.itemId,
+                        at: clock()
+                    )
+                    return FileMonitoringReport(
+                        subscriptionID: value.subscriptionID,
+                        state: value.state,
+                        queued: true
+                    )
+                }
             }
             guard let entry = entries.first else {
                 return FileMonitoringReport(
@@ -386,15 +427,7 @@ public actor FileMonitoringCoordinator {
                     queued: false
                 )
             }
-            _ = try subscriptions.update(id: value.subscriptionID) {
-                $0.dirtyEpoch = value.dirtyEpoch
-                $0.lastObservedDigest = entry.intent.localIntegrityDigest
-                $0.lastObservedByteLength = entry.intent.byteLength
-                $0.lastObservedAt = checkedAt
-                $0.lastCheckedAt = checkedAt
-                $0.lastQueuedItemID = entry.intent.itemId
-                $0.needsReconciliation = false
-            }
+            try recordPublication(entry, of: value, checkedAt: checkedAt)
             return FileMonitoringReport(
                 subscriptionID: value.subscriptionID,
                 state: value.state,
@@ -417,6 +450,48 @@ public actor FileMonitoringCoordinator {
                 queued: false
             )
         }
+    }
+
+    /// Records what this scope's published intent observed. Every field is set to an absolute value
+    /// derived from that intent, so applying it twice is applying it once.
+    private func recordPublication(
+        _ entry: CaptureQueueEntry,
+        of value: FileSubscription,
+        checkedAt: String
+    ) throws {
+        _ = try subscriptions.update(id: value.subscriptionID) {
+            $0.dirtyEpoch = value.dirtyEpoch
+            $0.lastObservedDigest = entry.intent.localIntegrityDigest
+            $0.lastObservedByteLength = entry.intent.byteLength
+            $0.lastObservedAt = checkedAt
+            $0.lastCheckedAt = checkedAt
+            $0.lastQueuedItemID = entry.intent.itemId
+            $0.needsReconciliation = false
+        }
+    }
+
+    /// The single entry a split publication committed, or a throw when the evidence does not say
+    /// exactly that.
+    ///
+    /// It has to be one entry, still the one intent that committed, still unresolved, and still this
+    /// subscription's own automatic capture down to the dirty epoch it was prepared for — the same
+    /// identity check `publicationEvidence` applies to a ref on record. Anything else is left to the
+    /// error path: a terminal outcome is the receipt path's to resolve, and missing, duplicated or
+    /// mismatched evidence is never repaired by guessing which intent was meant.
+    private static func repairableEntry(
+        _ failure: CapturePublicationIncomplete,
+        of value: FileSubscription,
+        in queue: CaptureIntentQueue
+    ) throws -> CaptureQueueEntry {
+        guard failure.published.count == 1 else { throw failure }
+        let entry = failure.published[0]
+        let current = queue.allEntries().filter { $0.intent.itemId == entry.intent.itemId }
+        guard current.count == 1,
+              current[0].intent == entry.intent,
+              [.pending, .staging, .unknownOutcome].contains(current[0].state),
+              Self.isAutomaticCapture(entry.intent, of: value)
+        else { throw failure }
+        return entry
     }
 
     /// Applies the queue's receipts to every subscription without checking anything.

@@ -1,4 +1,4 @@
-import DocumentIntakeMacOS
+@testable import DocumentIntakeMacOS
 import Foundation
 import XCTest
 
@@ -413,6 +413,59 @@ final class FileMonitoringTests: XCTestCase {
             context.environment.fileSubscriptions.all().first?.lastQueuedItemID,
             automatic.intent.itemId
         )
+    }
+
+    func testSplitPublicationIsRepairedFromTheEntryTheQueueAlreadyCommitted() async throws {
+        let context = try await activeWatch()
+        try Data("changed".utf8).write(to: context.original)
+        // The queue commit stands and the scheduling write that should have followed it does not,
+        // which is the one window the two durable writes of a publication can be split across.
+        await context.environment.fileMonitoring.failNextSchedulingPublicationForTesting()
+        await context.environment.fileMonitoring.markDirty(subscriptionIDs: [context.subscriptionID])
+        context.clock.advance(3_000)
+
+        let reports = await context.environment.fileMonitoring.reconcileAll()
+
+        // One check and one intent: the entry publication committed is recorded, not replaced. A
+        // publishing check reads the original twice — once for its digest and once to prepare the
+        // payload — so the repair costing nothing extra is what this count says.
+        XCTAssertEqual(reports.map(\.queued), [true])
+        XCTAssertEqual(reports.map(\.state), [.active])
+        XCTAssertEqual(context.reader.count, context.baselineReads + 2)
+        let automatic = context.environment.queue.allEntries().filter {
+            $0.intent.surface == .automaticFile
+        }
+        XCTAssertEqual(automatic.count, 1)
+        // The claim was never cancelled: the same generation is published, by the committed ref.
+        let scheduled = try XCTUnwrap(context.environment.automaticScheduling.state(of: context.key))
+        XCTAssertEqual(scheduled.activeGeneration, 1)
+        XCTAssertTrue(scheduled.published)
+        XCTAssertEqual(scheduled.intentRef, automatic[0].intent.itemId)
+        XCTAssertNil(scheduled.dirtyGeneration)
+        let value = try XCTUnwrap(context.environment.fileSubscriptions.all().first)
+        XCTAssertEqual(value.dirtyEpoch, 2)
+        XCTAssertEqual(value.lastQueuedItemID, automatic[0].intent.itemId)
+        XCTAssertEqual(value.lastObservedDigest, automatic[0].intent.localIntegrityDigest)
+        XCTAssertEqual(value.lastObservedByteLength, automatic[0].intent.byteLength)
+        XCTAssertNotNil(value.lastObservedAt)
+        XCTAssertNotNil(value.lastCheckedAt)
+        XCTAssertFalse(value.needsReconciliation)
+
+        // And the repaired record is what the next reconciliation refuses a duplicate on.
+        await context.environment.fileMonitoring.markDirty(subscriptionIDs: [context.subscriptionID])
+        context.clock.advance(3_000)
+        let again = await context.environment.fileMonitoring.reconcileAll()
+
+        XCTAssertEqual(again.map(\.queued), [false])
+        XCTAssertEqual(context.reader.count, context.baselineReads + 2)
+        XCTAssertEqual(
+            context.environment.queue.allEntries().filter { $0.intent.surface == .automaticFile }.count,
+            1
+        )
+        let held = try XCTUnwrap(context.environment.automaticScheduling.state(of: context.key))
+        XCTAssertEqual(held.activeGeneration, 1)
+        XCTAssertEqual(held.dirtyGeneration, 2)
+        XCTAssertEqual(held.intentRef, automatic[0].intent.itemId)
     }
 
     func testSignalsArrivingAfterAPublishedCheckBecomeOneDirtyObligation() async throws {
