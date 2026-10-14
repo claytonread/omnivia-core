@@ -97,12 +97,16 @@ enum Ov {
     /// (`[data-theme="dark"] #sw-nav .nav-row[aria-current="page"]`). A solid
     /// brick block is too heavy on a dark 28pt row, and a 28% wash is too
     /// faint on a light one — so this is a real fork, not a tint.
-    static var selectionIsSolid: Bool { !isDark }
     static let selectionBg = dynamic(srgb(0x9E302A), accentMuted)
     static let selectionText = dynamic(.white, .white)
 
+    /// The appearance currently being *drawn*, which is what the sheens below
+    /// are resolved against — they are built inside
+    /// `performAsCurrentDrawingAppearance`. Deliberately not
+    /// `NSApp.effectiveAppearance`: the window can be dark while the app
+    /// follows a light Mac.
     static var isDark: Bool {
-        NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        NSAppearance.currentDrawing().bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
     }
 
     // MARK: Materials and sheens (ov-ui-palette.css, os/overlay.css)
@@ -2395,9 +2399,17 @@ final class SidebarRowView: NSView {
         label.font = OvFont.sans(13, isSelected ? 500 : 400)
         // On the solid light fill the glyph must be white to stay legible;
         // on the dark wash the design tints it with the accent itself.
+        // Decided from *this view's* appearance, not the app's. The window
+        // can be dark while the app follows a light Mac, and reading the app
+        // there turned the dark selected glyph white.
         icon.contentTintColor = isSelected
-            ? (Ov.selectionIsSolid ? Ov.selectionText : Ov.accent)
+            ? (isDarkHere ? Ov.accent : Ov.selectionText)
             : Ov.textSecondary
+    }
+
+    /// Whether this view is being drawn dark, whatever the app is doing.
+    private var isDarkHere: Bool {
+        effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
     }
 
     override func layout() {
@@ -2417,7 +2429,7 @@ final class SidebarRowView: NSView {
     override func mouseEntered(with event: NSEvent) {
         if !isSelected { layer?.backgroundColor = resolved(Ov.hoverBg) }
         icon.contentTintColor = isSelected
-            ? (Ov.selectionIsSolid ? Ov.selectionText : Ov.accent)
+            ? (isDarkHere ? Ov.accent : Ov.selectionText)
             : Ov.textPrimary
     }
 
