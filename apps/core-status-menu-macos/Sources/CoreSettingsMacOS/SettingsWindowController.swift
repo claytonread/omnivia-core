@@ -939,13 +939,17 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         into card: NSStackView,
         title: String,
         detail: String?,
-        trailing: NSView? = nil
+        trailing: NSView? = nil,
+        compact: Bool = false
     ) -> NSStackView {
         let line = NSStackView()
         line.orientation = .horizontal
         line.alignment = .centerY
         line.spacing = 8
-        let t = OvFont.label(title, size: 13, cssWeight: 600, color: Ov.textPrimary)
+        // A disclosure body's rows are tighter and lighter than a pane's.
+        let t = OvFont.label(
+            title, size: 13, cssWeight: compact ? 500 : 600, color: Ov.textPrimary
+        )
         line.addArrangedSubview(t)
         if let trailing {
             let spring = NSView()
@@ -957,7 +961,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         body.orientation = .vertical
         body.alignment = .leading
         body.spacing = 3
-        body.edgeInsets = NSEdgeInsets(top: 13, left: 16, bottom: 13, right: 16)
+        let pad: CGFloat = compact ? 10 : 13
+        body.edgeInsets = NSEdgeInsets(top: pad, left: 16, bottom: pad, right: 16)
         body.addArrangedSubview(line)
         var detailLabel: NSTextField?
         if let detail {
@@ -1089,20 +1094,25 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// NSStackView collapses a hidden arranged subview, so toggling `isHidden`
     /// is the whole mechanism. Open state is keyed by `id` and survives the
     /// full re-render that every snapshot change triggers.
-    private func disclosure(id: String, label: String, body: NSView) -> NSStackView {
+    @discardableResult
+    private func disclosure(
+        into parent: NSStackView, id: String, label: String, body: NSView
+    ) -> NSStackView {
         let box = NSStackView()
         box.orientation = .vertical
         box.alignment = .leading
         box.spacing = 0
 
-        let chevron = NSImageView()
         let isOpen = openDisclosures.contains(id)
-        if let image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold)) {
-            chevron.image = image
-            chevron.contentTintColor = Ov.textTertiary
-        }
-        chevron.frameCenterRotation = isOpen ? 90 : 0
+        let chevron = NSImageView()
+        // Swap the glyph rather than rotating the view. `frameCenterRotation`
+        // on a constraint-driven image view rotates about a frame the layout
+        // then re-sizes, which rendered the open state as a stray tick.
+        chevron.image = NSImage(
+            systemSymbolName: isOpen ? "chevron.down" : "chevron.right",
+            accessibilityDescription: nil
+        )?.withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))
+        chevron.contentTintColor = Ov.textTertiary
         chevron.setContentHuggingPriority(.required, for: .horizontal)
 
         let summary = DisclosureButton(id: id)
@@ -1122,10 +1132,14 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         line.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             line.leadingAnchor.constraint(equalTo: summary.leadingAnchor),
-            line.trailingAnchor.constraint(lessThanOrEqualTo: summary.trailingAnchor),
+            line.trailingAnchor.constraint(equalTo: summary.trailingAnchor),
             line.topAnchor.constraint(equalTo: summary.topAnchor),
             line.bottomAnchor.constraint(equalTo: summary.bottomAnchor),
         ])
+        // `.cs-disc>summary` is inline-flex: it is as wide as its own label, so
+        // the hover fill is a pill around the words rather than a bar across
+        // the pane.
+        summary.setContentHuggingPriority(.required, for: .horizontal)
 
         box.edgeInsets = NSEdgeInsets(top: 10, left: 0, bottom: 0, right: 0)
         box.addArrangedSubview(summary)
@@ -1134,8 +1148,18 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         box.addArrangedSubview(body)
         body.isHidden = !isOpen
         gap.isHidden = !isOpen
-        // The rows box fills the pane like any other card.
-        body.widthAnchor.constraint(equalTo: box.widthAnchor).isActive = true
+
+        parent.addArrangedSubview(box)
+        // The box follows the pane, and the rows box fills it. Tying the body
+        // to the box alone was circular — the box sized to its content and the
+        // content to the box — so the panel settled far narrower than a card.
+        NSLayoutConstraint.activate([
+            box.widthAnchor.constraint(
+                equalTo: parent.widthAnchor,
+                constant: -(parent.edgeInsets.left + parent.edgeInsets.right)
+            ),
+            body.widthAnchor.constraint(equalTo: box.widthAnchor),
+        ])
         return box
     }
 
@@ -1150,14 +1174,15 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         title: String,
         detail: String?,
         status: String = "Not in this build",
-        tone: ChipTone = .notBuilt
+        tone: ChipTone = .notBuilt,
+        compact: Bool = false
     ) -> NSStackView {
         // Status goes in the row's supporting area, under the detail, which is
         // where the design puts it (`d: "…<br>" + status`). The trailing slot
         // holds controls; putting a chip there mixed status into the control
         // column and left General — which does follow the design — looking
         // like a different pane.
-        let body = row(into: card, title: title, detail: detail)
+        let body = row(into: card, title: title, detail: detail, compact: compact)
         body.addArrangedSubview(ovSpacer(1))
         body.addArrangedSubview(chip(status, tone: tone))
         return body
@@ -1453,11 +1478,13 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                 title: part,
                 detail: nil,
                 status: "Not reported",
-                tone: .neutral
+                tone: .neutral,
+                compact: true
             )
         }
-        content.addArrangedSubview(
-            disclosure(id: "storage-details", label: "Storage details", body: card(breakdownBody))
+        disclosure(
+            into: content, id: "storage-details", label: "Storage details",
+            body: card(breakdownBody)
         )
         content.addArrangedSubview(ovSpacer(18))
 
@@ -1484,29 +1511,31 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             into: optionsBody,
             title: "Destination",
             detail: "Where Core writes backups.",
-            status: "Not in this build"
+            status: "Not in this build",
+            compact: true
         )
         notBuiltRow(
             into: optionsBody,
             title: "Schedule",
             detail: "How often Core backs this workspace up.",
-            status: "Not in this build"
+            status: "Not in this build",
+            compact: true
         )
         notBuiltRow(
             into: optionsBody,
             title: "Keep backups for",
             detail: "How long Core keeps earlier backups before removing them.",
-            status: "Not in this build"
+            status: "Not in this build",
+            compact: true
         )
         notBuiltRow(
             into: optionsBody,
             title: "Destination access",
             detail: "A bounded test — it may create and remove a small temporary file at the destination — appears here with the backup feature. Read access and write access are separate results.",
-            status: "Not in this build"
+            status: "Not in this build",
+            compact: true
         )
-        content.addArrangedSubview(
-            disclosure(id: "backup-options", label: "Options", body: card(optionsBody))
-        )
+        disclosure(into: content, id: "backup-options", label: "Options", body: card(optionsBody))
 
         content.addArrangedSubview(
             note(
@@ -1706,11 +1735,13 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                 into: detailsBody,
                 title: dependency,
                 detail: nil,
-                status: "Not reported"
+                status: "Not reported",
+                compact: true
             )
         }
-        content.addArrangedSubview(
-            disclosure(id: "proc-details", label: "Processing details", body: card(detailsBody))
+        disclosure(
+            into: content, id: "proc-details", label: "Processing details",
+            body: card(detailsBody)
         )
         content.addArrangedSubview(
             note(
@@ -1756,24 +1787,28 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             title: "Transport",
             detail: "How applications reach Core on this Mac.",
             status: "Not reported",
-            tone: .neutral
+            tone: .neutral,
+            compact: true
         )
         notBuiltRow(
             into: connectionBody,
             title: "Reachable from",
             detail: nil,
             status: "Not reported",
-            tone: .neutral
+            tone: .neutral,
+            compact: true
         )
         notBuiltRow(
             into: connectionBody,
             title: "Socket",
             detail: "Core does not report its socket path to this window in this build.",
             status: "Not reported",
-            tone: .neutral
+            tone: .neutral,
+            compact: true
         )
-        content.addArrangedSubview(
-            disclosure(id: "conn-details", label: "Connection details", body: card(connectionBody))
+        disclosure(
+            into: content, id: "conn-details", label: "Connection details",
+            body: card(connectionBody)
         )
         content.addArrangedSubview(
             note(
@@ -1849,10 +1884,12 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             into: optionsBody,
             title: "Search indexes",
             detail: "Rebuilds the search and embedding indexes from workspace records. Records themselves are not changed or deleted.",
-            status: "Not in this build"
+            status: "Not in this build",
+            compact: true
         )
-        content.addArrangedSubview(
-            disclosure(id: "maint-options", label: "Maintenance options", body: card(optionsBody))
+        disclosure(
+            into: content, id: "maint-options", label: "Maintenance options",
+            body: card(optionsBody)
         )
 
         renderMacCheckDetails(content)
