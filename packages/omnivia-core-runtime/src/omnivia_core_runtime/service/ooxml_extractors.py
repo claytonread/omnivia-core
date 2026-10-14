@@ -4677,16 +4677,18 @@ class _DocxWalker:
     ``hidden_content`` segment) and text boxes (``<paragraph>.x<n>.<block>``)
     where they are anchored, and current text is never joined across one of
     them. A table cell reads its current paragraphs as one ``table_cell`` run,
-    closed by any deletion, hidden stretch, text box or nested table, and later
-    runs sit at ``<cell>.t<n>``.
+    closed by any deletion, hidden stretch, text box, simple field or nested
+    table, and later runs sit at ``<cell>.t<n>``.
 
-    Hyperlinks and annotation references stay out of the text: each becomes an
-    inert ``object_inventory`` segment right after the stretch it sits in, at
-    ``<paragraph>.h<n>`` (hyperlinks) or ``<paragraph>.n<n>`` (note and comment
-    references), and range markers between blocks at ``<level>m<n>``. A
-    reference names its target by (story, ``noteId``), the same identity the
-    annotation's own segments carry, so repeating one reference repeats a
-    pointer and never the annotation text.
+    Hyperlinks, simple fields and annotation references stay out of the text:
+    each becomes an inert ``object_inventory`` segment at ``<paragraph>.h<n>``
+    (hyperlinks), ``<paragraph>.n<n>`` (note and comment references) or
+    ``<paragraph>.f<n>`` (``fldSimple`` fields), and range markers between
+    blocks at ``<level>m<n>``. A link or reference follows the stretch it sits
+    in; a field is inventoried first and the result stored under it then reads
+    as the ordinary text it is. A reference names its target by (story,
+    ``noteId``), the same identity the annotation's own segments carry, so
+    repeating one reference repeats a pointer and never the annotation text.
     """
 
     def __init__(
@@ -4802,9 +4804,12 @@ class _DocxWalker:
         deleted: bool,
         cell: _CellRun | None,
     ) -> None:
-        """Inventory one hyperlink or annotation marker, refusing a bad one."""
-        if _local(element.tag) == "hyperlink":
+        """Inventory one hyperlink, field or annotation marker, refusing a bad one."""
+        tag = _local(element.tag)
+        if tag == "hyperlink":
             value, visibility = self._hyperlink(element), "visible"
+        elif tag == "fldSimple":
+            value, visibility = _docx_simple_field(element), "visible"
         else:
             value = self._annotation_reference(element)
             # Only a footnote or endnote reference is visible in the page.
@@ -4903,12 +4908,21 @@ class _DocxWalker:
     ) -> None:
         self.paragraphs += 1
         role = "table_cell" if cell else self._role(paragraph)
-        current = removed = boxes = links = refs = concealed = 0
+        current = removed = boxes = links = refs = fields = concealed = 0
         for kind, value, box_deleted in _paragraph_items(paragraph, deleted):
             if kind == "m":
                 assert isinstance(value, ElementTree.Element)
-                if _local(value.tag) == "hyperlink":
+                item = _local(value.tag)
+                if item == "hyperlink":
                     label, links = f"h{links}", links + 1
+                elif item == "fldSimple":
+                    label, fields = f"f{fields}", fields + 1
+                    # A field is inventoried where it sits, so in a cell it
+                    # closes the current run rather than waiting for the end of
+                    # the cell, where it would trail the result it precedes.
+                    self._flush(cell)
+                    self._mark(value, f"{position}.{label}", box_deleted, None)
+                    continue
                 else:
                     label, refs = f"n{refs}", refs + 1
                 self._mark(value, f"{position}.{label}", box_deleted, cell)
@@ -5067,10 +5081,10 @@ def _paragraph_items(
 
     Kinds are ``t`` current text, ``d`` deleted text, ``v`` text a run's own
     properties hide (carrying whether a deletion wrapped it), ``x`` a text box
-    and ``m`` a hyperlink or annotation marker (with whether a deletion wrapped
-    it). Adjacent text of one kind is one stretch; tabs and breaks stay as
-    separators inside it. Hidden text is a stretch of its own, so it is never
-    joined to the visible text around it.
+    and ``m`` a hyperlink, simple field or annotation marker (with whether a
+    deletion wrapped it). Adjacent text of one kind is one stretch; tabs and
+    breaks stay separators inside it. Hidden text is a stretch of its own, so
+    it is never joined to the visible text around it.
     """
     items: list[tuple[str, str | ElementTree.Element, bool]] = []
     pending: list[str] = []
@@ -5100,6 +5114,14 @@ def _paragraph_items(
                 if len(items) > MAX_SEGMENTS:
                     raise OOXMLInvalid("OOXML extraction has too many segments")
                 continue
+            if tag == "fldSimple":
+                # The field's inventory is ordered before the result Word stored
+                # under it, which then reads as the text it is: no ``continue``,
+                # so the children are walked once as a transparent wrapper.
+                close()
+                items.append(("m", node, state))
+                if len(items) > MAX_SEGMENTS:
+                    raise OOXMLInvalid("OOXML extraction has too many segments")
             if tag in _INLINE_MARKS:
                 if ("d" if state else "t", state) != (pending_kind, pending_deleted):
                     close()
@@ -5140,6 +5162,31 @@ def _paragraph_items(
             stack.pop()
     close()
     return items
+
+
+def _docx_simple_field(element: ElementTree.Element) -> dict[str, object]:
+    """Inventory one ``fldSimple``, refusing one that names no instruction.
+
+    The instruction is kept as a bounded string and never parsed, so the field
+    is not executed and nothing it names is resolved. Only whether Word left a
+    result behind is recorded: whether that result still answers the
+    instruction cannot be known from the file, so its freshness is unknown.
+    """
+    instruction = _attr(element, "instr")
+    if instruction is None:
+        raise OOXMLInvalid("DOCX simple field names no instruction")
+    return {
+        "kind": "wordField",
+        "fieldForm": "simple",
+        "instruction": _clip(instruction, _MAX_TARGET_CHARS),
+        "instructionTruncated": len(instruction) > _MAX_TARGET_CHARS,
+        "executed": False,
+        "refreshed": False,
+        "savedResultPresent": any(
+            node.text for node in element.iter() if _local(node.tag) in {"t", "delText"}
+        ),
+        "resultFreshness": "unknown",
+    }
 
 
 def _docx_styles(package: _Package) -> dict[str, tuple[str, str | None, bool, bool]]:

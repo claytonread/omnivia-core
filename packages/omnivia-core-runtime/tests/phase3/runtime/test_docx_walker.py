@@ -6,7 +6,11 @@ import io
 import zipfile
 
 import pytest
-from omnivia_core_runtime.service.ooxml_extractors import OOXMLInvalid, extract_docx
+from omnivia_core_runtime.service.ooxml_extractors import (
+    _MAX_TARGET_CHARS,
+    OOXMLInvalid,
+    extract_docx,
+)
 
 CAPTURE = "dcap-" + "a" * 64
 W = (
@@ -983,3 +987,109 @@ def test_a_lone_note_without_an_id_is_read_but_is_no_reference_target() -> None:
             ),
             capture_id=CAPTURE,
         )
+
+
+def test_simple_field_is_inventoried_before_the_result_it_stored() -> None:
+    body = (
+        f"<w:p>{run('Printed ')}"
+        '<w:fldSimple w:instr=" DATE \\@ &quot;d MMMM yyyy&quot; ">'
+        f"{run('3 May 2026')}</w:fldSimple>{run(' sharp')}</w:p>"
+    )
+    content = docx(body, styles=False)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("body", "Printed ", "0"),
+        ("object_inventory", None, "0.f0"),
+        ("body", "3 May 2026 sharp", "0.t1"),
+    ]
+    assert inventory(content) == [
+        (
+            "0.f0",
+            {
+                "kind": "wordField",
+                "fieldForm": "simple",
+                "instruction": ' DATE \\@ "d MMMM yyyy" ',
+                "instructionTruncated": False,
+                "executed": False,
+                "refreshed": False,
+                "savedResultPresent": True,
+                "resultFreshness": "unknown",
+            },
+        )
+    ]
+
+
+def test_simple_field_naming_a_file_stays_inert_and_its_result_is_only_text() -> None:
+    body = (
+        '<w:p><w:fldSimple w:instr=" INCLUDETEXT &quot;C:\\\\secret\\\\x.docx&quot; ">'
+        f"{run('Stored copy')}</w:fldSimple>"
+        '<w:fldSimple w:instr=" PAGE "/>'
+        f'<w:fldSimple w:instr=" TIME ">{run("")}</w:fldSimple></w:p>'
+    )
+    content = docx(body, styles=False)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+    include, page, time = (value for _, value in inventory(content))
+
+    # The path keeps the doubled separators Word writes: exactly as stored.
+    assert include["instruction"] == ' INCLUDETEXT "C:\\\\secret\\\\x.docx" '
+    # Nothing the instruction names is read, resolved or counted as a reference.
+    assert set(include) == set(page)
+    assert "target" not in include and "relationshipId" not in include
+    assert result.limitations["externalReferences"] == 0
+    # An empty field saved no result, whether or not it holds a result run.
+    assert [value["savedResultPresent"] for value in (include, page, time)] == [
+        True,
+        False,
+        False,
+    ]
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("object_inventory", None, "0.f0"),
+        ("body", "Stored copy", "0"),
+        ("object_inventory", None, "0.f1"),
+        ("object_inventory", None, "0.f2"),
+    ]
+    with pytest.raises(OOXMLInvalid, match="names no instruction"):
+        extract_docx(
+            docx("<w:p><w:fldSimple/></w:p>", styles=False), capture_id=CAPTURE
+        )
+
+
+def test_simple_field_in_a_cell_is_inventoried_before_the_run_it_opens() -> None:
+    body = (
+        f"<w:tbl><w:tr><w:tc><w:p>{run('Due ')}"
+        '<w:fldSimple w:instr=" DATE ">'
+        f"{run('3 May 2026')}</w:fldSimple>{run(' sharp')}</w:p>"
+        "</w:tc></w:tr></w:tbl>"
+    )
+    content = docx(body, styles=False)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("table_cell", "Due ", "0.r0.c0"),
+        ("object_inventory", None, "0.r0.c0.0.f0"),
+        ("table_cell", "3 May 2026 sharp", "0.r0.c0.t1"),
+    ]
+
+
+def test_a_simple_field_instruction_is_bounded_and_says_when_it_was_clipped() -> None:
+    at_limit = " REF " + "a" * (_MAX_TARGET_CHARS - 5)
+    body = (
+        f'<w:p><w:fldSimple w:instr="{at_limit}"/>'
+        f'<w:fldSimple w:instr="{at_limit}b"/></w:p>'
+    )
+
+    fits, clipped = (value for _, value in inventory(docx(body, styles=False)))
+
+    assert (fits["instruction"], fits["instructionTruncated"]) == (at_limit, False)
+    assert clipped["instructionTruncated"] is True
+    assert clipped["instruction"] == at_limit
+    assert len(clipped["instruction"]) == _MAX_TARGET_CHARS  # type: ignore[arg-type]
