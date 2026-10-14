@@ -85,7 +85,10 @@ final class ShareViewController: NSViewController {
             )
             status.stringValue = "Waiting for OmniVia Core…"
             let acknowledgement = try await submitAuthenticatedOffer(offer, mailbox: mailbox)
-            guard acknowledgement.adoptions.map(\.slotID) == slots.map(\.slotID) else {
+            guard NativeHandoffMailbox.adoptionSatisfiesOffer(
+                offeredSlotIDs: slots.map(\.slotID),
+                acknowledgedSlotIDs: acknowledgement.adoptions.map(\.slotID)
+            ) else {
                 throw OmniViaExtensionError.invalidInput
             }
             context.completeRequest(returningItems: [], completionHandler: nil)

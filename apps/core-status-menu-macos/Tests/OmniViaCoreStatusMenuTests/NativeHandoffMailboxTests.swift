@@ -202,6 +202,137 @@ final class NativeHandoffMailboxTests: XCTestCase {
         )
     }
 
+    func testAFolderSlotIsCarriedByBookmarkAndOnlyByTheQuickAction() throws {
+        let now = Date()
+        func offer(
+            surface: NativeHandoffSurface,
+            sender: String,
+            slot: NativeHandoffSlotV1
+        ) -> NativeHandoffOfferV1 {
+            NativeHandoffOfferV1(
+                requestNonce: UUID().uuidString.lowercased(),
+                expectedOwnerBundleID: NativeHandoffMailbox.companionBundleID,
+                senderBundleID: sender,
+                surface: surface,
+                createdAt: now,
+                expiresAt: now.addingTimeInterval(60),
+                slots: [slot]
+            )
+        }
+        let folder = NativeHandoffSlotV1(
+            slotID: UUID().uuidString.lowercased(),
+            displayName: "Briefs",
+            sourceKind: .folderBookmark,
+            bookmark: Data("bookmark".utf8)
+        )
+
+        try NativeHandoffMailbox.validate(
+            offer(surface: .finderQuickAction, sender: NativeHandoffMailbox.finderBundleID, slot: folder),
+            now: now
+        )
+        // Share offers owned bytes and nothing else, so it may not claim a folder.
+        XCTAssertThrowsError(try NativeHandoffMailbox.validate(
+            offer(surface: .share, sender: NativeHandoffMailbox.shareBundleID, slot: folder),
+            now: now
+        ))
+        // A folder claim carries one bookmark and no transfer blob.
+        for broken in [
+            NativeHandoffSlotV1(slotID: folder.slotID, displayName: "Briefs", sourceKind: .folderBookmark),
+            NativeHandoffSlotV1(slotID: folder.slotID, displayName: "Briefs", sourceKind: .folderBookmark, bookmark: Data()),
+            NativeHandoffSlotV1(
+                slotID: folder.slotID,
+                displayName: "Briefs",
+                sourceKind: .folderBookmark,
+                bookmark: Data("bookmark".utf8),
+                snapshotRelativePath: "blob-1"
+            ),
+        ] {
+            XCTAssertThrowsError(try NativeHandoffMailbox.validate(
+                offer(surface: .finderQuickAction, sender: NativeHandoffMailbox.finderBundleID, slot: broken),
+                now: now
+            ))
+        }
+    }
+
+    func testAnOfferCarryingAnUnknownSourceKindFailsClosed() throws {
+        let now = Date()
+        let mailbox = try NativeHandoffMailbox(root: try temporaryDirectory())
+        let encoded = try mailbox.encodedOffer(
+            NativeHandoffOfferV1(
+                requestNonce: UUID().uuidString.lowercased(),
+                expectedOwnerBundleID: NativeHandoffMailbox.companionBundleID,
+                senderBundleID: NativeHandoffMailbox.finderBundleID,
+                surface: .finderQuickAction,
+                createdAt: now,
+                expiresAt: now.addingTimeInterval(60),
+                slots: [NativeHandoffSlotV1(
+                    slotID: UUID().uuidString.lowercased(),
+                    displayName: "Briefs",
+                    sourceKind: .folderBookmark,
+                    bookmark: Data("bookmark".utf8)
+                )]
+            ),
+            now: now
+        )
+        let mutated = Data(
+            String(decoding: encoded, as: UTF8.self)
+                .replacingOccurrences(of: "folder_bookmark", with: "folder_alias")
+                .utf8
+        )
+
+        XCTAssertThrowsError(try mailbox.decodeOffer(mutated, now: now))
+    }
+
+    func testAnExtensionCompletesOnlyOnAdoptionOfEveryOfferedSlot() {
+        let offered = (0..<3).map { _ in UUID().uuidString.lowercased() }
+
+        XCTAssertTrue(NativeHandoffMailbox.adoptionSatisfiesOffer(
+            offeredSlotIDs: offered,
+            acknowledgedSlotIDs: offered
+        ))
+        // Partial, reordered, padded, empty and unoffered acknowledgements are
+        // not adoption: the action keeps its items and stays open for a retry.
+        XCTAssertFalse(NativeHandoffMailbox.adoptionSatisfiesOffer(
+            offeredSlotIDs: offered,
+            acknowledgedSlotIDs: Array(offered.dropLast())
+        ))
+        XCTAssertFalse(NativeHandoffMailbox.adoptionSatisfiesOffer(
+            offeredSlotIDs: offered,
+            acknowledgedSlotIDs: offered.reversed()
+        ))
+        XCTAssertFalse(NativeHandoffMailbox.adoptionSatisfiesOffer(
+            offeredSlotIDs: offered,
+            acknowledgedSlotIDs: offered + [UUID().uuidString.lowercased()]
+        ))
+        XCTAssertFalse(NativeHandoffMailbox.adoptionSatisfiesOffer(
+            offeredSlotIDs: offered,
+            acknowledgedSlotIDs: []
+        ))
+        XCTAssertFalse(NativeHandoffMailbox.adoptionSatisfiesOffer(
+            offeredSlotIDs: [],
+            acknowledgedSlotIDs: []
+        ))
+    }
+
+    func testAnOfferBeyondTheSlotBoundIsNeverSatisfied() {
+        let offered = (0...NativeHandoffMailbox.maximumSlots)
+            .map { _ in UUID().uuidString.lowercased() }
+
+        XCTAssertFalse(NativeHandoffMailbox.adoptionSatisfiesOffer(
+            offeredSlotIDs: offered,
+            acknowledgedSlotIDs: offered
+        ))
+    }
+
+    func testARepeatedSlotIsNeverSatisfied() {
+        let slot = UUID().uuidString.lowercased()
+
+        XCTAssertFalse(NativeHandoffMailbox.adoptionSatisfiesOffer(
+            offeredSlotIDs: [slot, slot],
+            acknowledgedSlotIDs: [slot, slot]
+        ))
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

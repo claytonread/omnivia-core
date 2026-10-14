@@ -56,6 +56,12 @@ struct Companion {
     var connectedAccessRefs: [String] {
         environment.accessStore.descriptors().filter { $0.state == .connected }.map(\.accessRef)
     }
+
+    /// The folder root grants that are currently connected, each naming the
+    /// owners holding it.
+    var connectedRoots: [NativeRootAccessDescriptor] {
+        environment.accessStore.rootDescriptors().filter { $0.state == .connected }
+    }
 }
 
 @MainActor
@@ -171,7 +177,9 @@ class NativeHandoffTestCase: XCTestCase {
         }
     }
 
-    /// A Finder offer: one `original_bookmark` slot per file, in order.
+    /// A Finder offer: one slot per selected item, in order, classified the way
+    /// the Quick Action classifies it — a directory as `folder_bookmark` and a
+    /// regular file as `original_bookmark`.
     func finderOffer(
         nonce: String,
         slotIDs: [String],
@@ -186,10 +194,12 @@ class NativeHandoffTestCase: XCTestCase {
             createdAt: now,
             expiresAt: now.addingTimeInterval(NativeHandoffMailbox.maximumLifetime),
             slots: try zip(slotIDs, urls).map { slotID, url in
-                NativeHandoffSlotV1(
+                let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?
+                    .isDirectory == true
+                return NativeHandoffSlotV1(
                     slotID: slotID,
                     displayName: url.lastPathComponent,
-                    sourceKind: .originalBookmark,
+                    sourceKind: isDirectory ? .folderBookmark : .originalBookmark,
                     bookmark: try url.bookmarkData(
                         options: [],
                         includingResourceValuesForKeys: nil,
@@ -198,6 +208,15 @@ class NativeHandoffTestCase: XCTestCase {
                 )
             }
         )
+    }
+
+    func makeFolder(_ root: URL, name: String, files: [String] = []) throws -> URL {
+        let url = root.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        for file in files {
+            try Data("member".utf8).write(to: url.appendingPathComponent(file))
+        }
+        return url
     }
 
     /// A Share offer whose slot `i` points at `blob-(i+1)` of the nonce's

@@ -162,7 +162,9 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         let chooseFolder = NSButton(title: "Choose folder…", target: self, action: #selector(chooseFolderAction))
         chooseFolder.keyEquivalent = "o"
         chooseFolder.keyEquivalentModifierMask = [.command, .shift]
-        let chooser = NSStackView(views: [chooseFiles, chooseFolder])
+        let remove = NSButton(title: "Remove", target: self, action: #selector(removeSelectedAction))
+        remove.toolTip = "Takes the selected item out of this selection without adding it."
+        let chooser = NSStackView(views: [chooseFiles, chooseFolder, remove])
         chooser.spacing = 8
         root.addArrangedSubview(chooser)
         keepUpdated.state = .off
@@ -225,13 +227,21 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         return window
     }
 
-    @objc private func chooseFilesAction() {
+    /// Applies one reviewed picker policy. Both native pickers are configured
+    /// here and nowhere else, so neither can drift from `CapturePickerPolicy`.
+    private static func panel(for policy: CapturePickerPolicy) -> NSOpenPanel {
         let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = true
-        panel.treatsFilePackagesAsDirectories = false
-        panel.resolvesAliases = false
+        panel.canChooseFiles = policy.canChooseFiles
+        panel.canChooseDirectories = policy.canChooseDirectories
+        panel.allowsMultipleSelection = policy.allowsMultipleSelection
+        panel.treatsFilePackagesAsDirectories = policy.treatsFilePackagesAsDirectories
+        panel.resolvesAliases = policy.resolvesAliases
+        return panel
+    }
+
+    @objc private func chooseFilesAction() {
+        let panel = Self.panel(for: .files)
+        // `panel.urls` is the order the person chose, and review keeps it.
         if panel.runModal() == .OK { add(panel.urls, surface: .manual) }
     }
 
@@ -297,12 +307,20 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                     ? "Setting baseline… Core checks existing files to recognise later changes without adding them."
                     : "Preparing current folder versions…"
                 let entries = try await folderSubmitter.submit(plan)
+                // The folder is queued now, and the work that queued it adopted
+                // its own root grant under its own owner. So the row leaves
+                // review and the provisional candidate it held is released —
+                // its root owner and its durable record — which never touches
+                // the grant the submitted work holds.
                 if removeFromDraft,
                    let index = draft.items.firstIndex(where: {
                        $0.url.standardizedFileURL == root.standardizedFileURL
-                   })
+                   }),
+                   let removed = draft.remove(at: index)
                 {
-                    draft.remove(at: index)
+                    if let owned = removed.ownedCandidate {
+                        submitter.discardUnsubmitted([owned])
+                    }
                 }
                 let excludedBaseline = policy.mode == .keepUpdated
                     && policy.watchInitialContent == .onlyNewAndChanged
@@ -339,12 +357,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     }
 
     @objc private func chooseFolderAction() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.treatsFilePackagesAsDirectories = false
-        panel.resolvesAliases = false
+        let panel = Self.panel(for: .folder)
         if panel.runModal() == .OK, let root = panel.url { reviewFolder(root) }
     }
 
@@ -355,14 +368,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     ) {
         do {
             try draft.add(urls, surface: surface, source: source)
-            if draft.containsSnapshots {
-                keepUpdated.state = .off
-                statusLabel.stringValue = "Captured copies are ready for review. They are not linked to temporary source files."
-            } else if draft.containsFolders {
-                statusLabel.stringValue = "Double-click a folder to review its scope before adding it."
-            } else {
-                statusLabel.stringValue = "Ready to add."
-            }
+            describeDraft()
         } catch CaptureDraftError.tooManyItems {
             statusLabel.stringValue = "Choose no more than 10 files at a time."
         } catch CaptureDraftError.duplicateItem {
@@ -376,14 +382,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     private func add(_ candidates: [ManualCaptureCandidate]) {
         do {
             try draft.add(candidates)
-            if draft.containsSnapshots {
-                keepUpdated.state = .off
-                statusLabel.stringValue = "Captured copies are ready for review. They are not linked to temporary source files."
-            } else if draft.containsFolders {
-                statusLabel.stringValue = "Double-click a folder to review its scope before adding it."
-            } else {
-                statusLabel.stringValue = "Ready to add."
-            }
+            describeDraft()
         } catch {
             // The draft takes a selection whole or not at all, so none of these
             // candidates is in review and all of them are still ours to release.
@@ -396,6 +395,42 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
             default:
                 statusLabel.stringValue = "That item is not a supported document."
             }
+        }
+        refresh()
+    }
+
+    /// One sentence for what the current review list now needs. A refused item
+    /// is named first, because nothing is published while one is still listed.
+    private func describeDraft() {
+        if draft.containsUnsupported {
+            statusLabel.stringValue = "One or more chosen items aren’t supported documents. Select each one and choose Remove."
+        } else if draft.containsSnapshots {
+            keepUpdated.state = .off
+            statusLabel.stringValue = "Captured copies are ready for review. They are not linked to temporary source files."
+        } else if draft.containsFolders {
+            statusLabel.stringValue = "Double-click a folder to review its scope before adding it."
+        } else {
+            statusLabel.stringValue = "Ready to add."
+        }
+    }
+
+    /// Takes the selected row out of review and releases whatever it held. This
+    /// is the only way a refused item, or a folder the person will not review,
+    /// leaves the list.
+    @objc private func removeSelectedAction() {
+        let row = table.selectedRow
+        guard row >= 0, let removed = draft.remove(at: row) else { return }
+        // Whatever the row held goes with it — a file grant, owned bytes, or a
+        // native folder row's provisional root grant — together with its
+        // durable record.
+        if let owned = removed.ownedCandidate {
+            submitter.discardUnsubmitted([owned])
+        }
+        if draft.items.isEmpty {
+            statusLabel.stringValue = "Choose files to begin."
+            promoteWaitingSelection()
+        } else {
+            describeDraft()
         }
         refresh()
     }
@@ -462,11 +497,11 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         }
     }
 
-    /// Releases every candidate still in review or waiting — their grants, owned
-    /// bytes and durable records — without publishing any. This is the discard
-    /// and quit path; nothing is added to Core.
+    /// Releases every candidate still in review or waiting — their file grants,
+    /// folder root grants, owned bytes and durable records — without publishing
+    /// any. This is the discard and quit path; nothing is added to Core.
     public func discardUnsubmittedCandidates() {
-        submitter.discardUnsubmitted(draft.fileCandidates + waitingSelections.flatMap { $0 })
+        submitter.discardUnsubmitted(draft.ownedCandidates + waitingSelections.flatMap { $0 })
         draft = CaptureDraft()
         waitingSelections.removeAll()
         refresh()
@@ -507,10 +542,13 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         let cell = NSTableCellView()
         let icon = NSImageView(image: NSWorkspace.shared.icon(forFile: item.url.path))
         icon.translatesAutoresizingMaskIntoConstraints = false
-        let label = NSTextField(labelWithString: item.displayName)
+        let label = NSTextField(labelWithString: item.kind == .unsupported
+            ? "\(item.displayName) — not a supported document"
+            : item.displayName)
         label.translatesAutoresizingMaskIntoConstraints = false
         label.lineBreakMode = .byTruncatingMiddle
         label.toolTip = item.displayName
+        if item.kind == .unsupported { label.textColor = .secondaryLabelColor }
         cell.addSubview(icon)
         cell.addSubview(label)
         NSLayoutConstraint.activate([

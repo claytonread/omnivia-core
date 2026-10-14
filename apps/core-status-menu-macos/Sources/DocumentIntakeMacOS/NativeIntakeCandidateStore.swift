@@ -2,6 +2,10 @@ import Foundation
 
 public enum NativeIntakeCandidateKind: String, Codable, Sendable {
     case originalFile = "original_file"
+    /// One selected folder, bound to a companion-owned root grant. The
+    /// candidate is the root itself: it is never a direct file, and nothing
+    /// inside it is listed or captured until its scope is reviewed.
+    case folderRoot = "folder_root"
     case ownedSnapshot = "owned_snapshot"
 }
 
@@ -21,10 +25,11 @@ public enum NativeIntakeCandidateState: String, Codable, Sendable {
 /// One companion-owned candidate produced by a slot of an authenticated native
 /// handoff request (design §7.2).
 ///
-/// Bounded surface: only the two kinds the Finder and Share handoffs can
+/// Bounded surface: only the three kinds the Finder and Share handoffs can
 /// produce today are represented — `original_file` (a companion-owned
-/// persistent read-only grant) and `owned_snapshot` (a companion-owned copy of
-/// shared bytes). This is not the full §7.2 candidate union. Any other kind,
+/// persistent read-only grant on one file), `folder_root` (a companion-owned
+/// root grant on one selected folder) and `owned_snapshot` (a companion-owned
+/// copy of shared bytes). This is not the full §7.2 candidate union. Any other kind,
 /// schema or field this code does not fully understand fails decoding or
 /// validation and the record is refused as invalid; it is never guessed at.
 /// The record names no target, workspace or principal.
@@ -43,6 +48,9 @@ public struct NativeIntakeCandidateV1: Codable, Equatable, Sendable {
         "candidateRevision",
         "kind",
         "nativeAccessLeaseRef",
+        "nativeRootRef",
+        "nativeRootOwnerRef",
+        "nativeRootBindingGeneration",
         "ownedContentRef",
         "ownedContentDigest",
         "ownedContentByteLength",
@@ -62,6 +70,17 @@ public struct NativeIntakeCandidateV1: Codable, Equatable, Sendable {
     public let kind: NativeIntakeCandidateKind
     /// `original_file` only: the access reference of the companion's own grant.
     public let nativeAccessLeaseRef: String?
+    /// `folder_root` only: the root reference of the companion's own root grant.
+    public let nativeRootRef: String?
+    /// `folder_root` only: the owner reference this candidate holds that root
+    /// grant under. Submitted folder work adopts its own owner, so releasing
+    /// this one never drops a grant that work still holds.
+    public let nativeRootOwnerRef: String?
+    /// `folder_root` only: the root grant's binding generation. Bound at the
+    /// adopted commit point, because a rolled-back attempt disconnects the
+    /// grant and a replay re-adopts it at the next generation. Review resolves
+    /// the folder only at this exact generation.
+    public private(set) var nativeRootBindingGeneration: UInt64?
     /// `owned_snapshot` only: the leaf name of the owned copy inside the
     /// request's owned directory.
     public let ownedContentRef: String?
@@ -81,6 +100,9 @@ public struct NativeIntakeCandidateV1: Codable, Equatable, Sendable {
         candidateRevision: UInt64 = 1,
         kind: NativeIntakeCandidateKind,
         nativeAccessLeaseRef: String? = nil,
+        nativeRootRef: String? = nil,
+        nativeRootOwnerRef: String? = nil,
+        nativeRootBindingGeneration: UInt64? = nil,
         ownedContentRef: String? = nil,
         ownedContentDigest: String? = nil,
         ownedContentByteLength: UInt64? = nil,
@@ -95,6 +117,9 @@ public struct NativeIntakeCandidateV1: Codable, Equatable, Sendable {
         self.candidateRevision = candidateRevision
         self.kind = kind
         self.nativeAccessLeaseRef = nativeAccessLeaseRef
+        self.nativeRootRef = nativeRootRef
+        self.nativeRootOwnerRef = nativeRootOwnerRef
+        self.nativeRootBindingGeneration = nativeRootBindingGeneration
         self.ownedContentRef = ownedContentRef
         self.ownedContentDigest = ownedContentDigest
         self.ownedContentByteLength = ownedContentByteLength
@@ -104,7 +129,8 @@ public struct NativeIntakeCandidateV1: Codable, Equatable, Sendable {
 
     public func replacing(
         state: NativeIntakeCandidateState,
-        content: (digest: String, byteLength: UInt64)? = nil
+        content: (digest: String, byteLength: UInt64)? = nil,
+        rootGeneration: UInt64? = nil
     ) -> Self {
         var copy = self
         copy.state = state
@@ -112,16 +138,18 @@ public struct NativeIntakeCandidateV1: Codable, Equatable, Sendable {
             copy.ownedContentDigest = content.digest
             copy.ownedContentByteLength = content.byteLength
         }
+        if let rootGeneration { copy.nativeRootBindingGeneration = rootGeneration }
         return copy
     }
 
     /// Everything that names the candidate and what backs it. It never changes
-    /// after the reservation; only the lifecycle state and the content binding
-    /// advance.
+    /// after the reservation; only the lifecycle state and the content or root
+    /// binding advance.
     fileprivate var identity: [String?] {
         [
             schema, nativeRequestID, offerDigest, slotID, candidateRef, String(candidateRevision),
-            kind.rawValue, nativeAccessLeaseRef, ownedContentRef, displayName,
+            kind.rawValue, nativeAccessLeaseRef, nativeRootRef, nativeRootOwnerRef,
+            ownedContentRef, displayName,
         ]
     }
 }
@@ -292,16 +320,29 @@ public final class NativeIntakeCandidateStore: @unchecked Sendable {
               records.count <= NativeHandoffMailbox.maximumSlots,
               Set(records.map(\.slotID)).count == records.count,
               Set(records.map(\.candidateRef)).count == records.count,
-              // Two slots never share a grant or an owned copy.
+              // Two slots never share a grant, a root grant, a root owner or an
+              // owned copy.
               Set(records.compactMap(\.nativeAccessLeaseRef)).count
               == records.compactMap(\.nativeAccessLeaseRef).count,
+              Set(records.compactMap(\.nativeRootRef)).count
+              == records.compactMap(\.nativeRootRef).count,
+              Set(records.compactMap(\.nativeRootOwnerRef)).count
+              == records.compactMap(\.nativeRootOwnerRef).count,
               Set(records.compactMap(\.ownedContentRef)).count
               == records.compactMap(\.ownedContentRef).count,
-              Set(records.map(\.kind)).count == 1,
+              validKinds(records),
               records.allSatisfy(validRecord(nativeRequestID: nativeRequestID)),
               records.compactMap(\.ownedContentByteLength).reduce(0, +)
               <= OwnedSnapshotStore.maximumSelectionBytes
         else { throw NativeIntakeCandidateStoreError.invalidRecord }
+    }
+
+    /// One Quick Action selection is an ordered mix of files and folders, so
+    /// those two kinds share a request. Owned copies come only from Share,
+    /// which offers nothing else, so they never share a request with either.
+    private static func validKinds(_ records: [NativeIntakeCandidateV1]) -> Bool {
+        let kinds = Set(records.map(\.kind))
+        return kinds == [.ownedSnapshot] || kinds.isSubset(of: [.originalFile, .folderRoot])
     }
 
     private static func validRecord(
@@ -318,14 +359,35 @@ public final class NativeIntakeCandidateStore: @unchecked Sendable {
                   !record.displayName.isEmpty,
                   record.displayName.utf8.count <= 255
             else { return false }
+            // No kind carries another kind's backing. A root reference on a
+            // file candidate, or a grant on a folder candidate, is a record
+            // this code does not understand, so it is refused rather than
+            // read as the kind it claims.
+            let rootFields = [record.nativeRootRef, record.nativeRootOwnerRef]
             switch record.kind {
             case .originalFile:
                 return record.nativeAccessLeaseRef.map { !$0.isEmpty && $0.utf8.count <= 128 } == true
+                    && rootFields.allSatisfy { $0 == nil }
+                    && record.nativeRootBindingGeneration == nil
                     && record.ownedContentRef == nil
                     && record.ownedContentDigest == nil
                     && record.ownedContentByteLength == nil
+            case .folderRoot:
+                guard record.nativeAccessLeaseRef == nil,
+                      record.ownedContentRef == nil,
+                      record.ownedContentDigest == nil,
+                      record.ownedContentByteLength == nil,
+                      rootFields.allSatisfy({ ($0?.utf8.count).map { $0 > 0 && $0 <= 128 } == true }),
+                      // The root grant's generation is bound together with the
+                      // adopted state: that binding is what lets review prove
+                      // it is resolving the same grant this candidate created.
+                      record.state != .adopted || record.nativeRootBindingGeneration != nil
+                else { return false }
+                return (record.nativeRootBindingGeneration ?? 1) > 0
             case .ownedSnapshot:
                 guard record.nativeAccessLeaseRef == nil,
+                      rootFields.allSatisfy({ $0 == nil }),
+                      record.nativeRootBindingGeneration == nil,
                       let name = record.ownedContentRef,
                       OwnedSnapshotStore.isSafeComponent(name),
                       // The digest and the length are bound together, and an
@@ -371,6 +433,11 @@ public final class NativeIntakeCandidateStore: @unchecked Sendable {
             if old.ownedContentDigest != nil,
                old.ownedContentDigest != new.ownedContentDigest
                 || old.ownedContentByteLength != new.ownedContentByteLength
+            {
+                throw NativeIntakeCandidateStoreError.illegalTransition
+            }
+            if old.nativeRootBindingGeneration != nil,
+               old.nativeRootBindingGeneration != new.nativeRootBindingGeneration
             {
                 throw NativeIntakeCandidateStoreError.illegalTransition
             }

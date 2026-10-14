@@ -109,6 +109,91 @@ packaging verification.
 - Reveals the selected installation's `run/service.log` without creating state.
 - Quitting the status menu leaves the Core Service unchanged.
 
+## Native intake routes
+
+Every route opens a review draft. None of them queues anything, and none reads
+a Finder selection or the general clipboard.
+
+- **Finder Service** — *Add to OmniVia Core…* takes files and folders from the
+  pasteboard the Service is handed and from nowhere else. It is advertised only
+  once a review draft can be opened, so an unready companion shows no menu item.
+- **Status-item drop** — a transparent child of the system status button, which
+  keeps its own click, menu and accessibility. It returns *copy* only, decides
+  on declared pasteboard types and the pasteboard's own item count alone (no
+  bytes are read while a drag hovers), and admits each drag session once. After
+  400 ms of hover it tints the icon and shows a compact affordance — *Drop to
+  add to Core* and the declared item count — as a nonactivating floating panel
+  that ignores mouse events and is clamped to the visible screen, so it takes
+  no key, activates no application, and leaves the drag, click, menu and
+  accessibility paths alone. It is ordered out on exit, end and drop. File URLs
+  are reviewed where they are; a promised file, a dropped link and dropped text
+  have no original to keep, so each becomes a captured copy this companion owns.
+
+### Promised files
+
+AppKit offers no way to reserve a promised file's bytes before a drag source
+delivers them, so nothing about a promise is pre-admitted beyond the file count
+it declares. The bytes are judged at the callback, not at the drop:
+
+- Delivery goes into a fresh `0700` directory this process makes, and that
+  directory is removed on every path out — delivered, refused or timed out.
+- A source that goes quiet is bounded by
+  `StatusItemDragPolicy.promisedDeliveryTimeout` (30 s). Expiry abandons the
+  drag whole and ignores every late callback; nothing is retried, because a
+  partly delivered promise is not the selection the person dragged.
+- Each delivered file's facts are read with `lstat` before anything is staged:
+  it must be a regular file lying directly in that directory, so a symlink is
+  refused rather than followed, and its length must fit
+  `OwnedSnapshotStore.maximumItemBytes` with the whole delivery fitting
+  `maximumSelectionBytes`. One refusal refuses the drag whole.
+- The copies then go to review like any other captured copy. Native aggregate
+  qualification still applies to them downstream: this boundary bounds the
+  companion's own staging, not the pipeline behind it.
+- **Native pickers** — files and folders use the two fixed `NSOpenPanel`
+  policies in `CaptureIntakePolicy.swift`, so neither picker can drift.
+- **Finder Quick Action** — a viewer Action extension. It returns the same
+  `NSExtensionItem` objects it was given, unmodified, and completes only after
+  the companion acknowledges adopting every offered slot.
+
+### Selected folders
+
+The Quick Action's activation rule admits folders as well as files, so each
+loaded selection URL is classified from the file system — not from its declared
+types — and offered as its own closed source kind:
+
+- A regular file is offered as `original_bookmark` and adopted as a read-only
+  grant on that file (`original_file` candidate).
+- A plain directory is offered as `folder_bookmark` and adopted as a
+  `NativeAccessStore` root grant under this candidate's own owner reference
+  (`folder_root` candidate). The candidate is the root itself: it is never
+  represented as a direct file, and the handoff lists, reads and captures
+  nothing inside it.
+- A package, a symlink, or anything that is neither fails visibly, so the
+  action shows its retry message rather than silently narrowing the selection.
+
+One selection is an ordered mix of both, established slot by slot in the order
+the person selected them and written adopted in one atomic write, so nothing is
+acknowledged until every slot holds what its record names.
+
+A folder's scope is reviewed separately, and only when the person asks for it:
+no plan is made, no directory is walked and nothing is queued during the
+handoff. A folder candidate's root grant is bound at the adopted commit point
+together with its exact generation, and review resolves the folder only at that
+generation — so a grant that was rolled back and re-adopted cannot be mistaken
+for the one the candidate created.
+
+Every way a folder row leaves review releases it: Remove, Discard, quit, a
+failed handoff, orphan recovery, and a folder plan that was successfully
+submitted. Releasing is owner scoped, so the grant itself survives while a
+submitted bulk run or watched folder still owns it — that work adopts its own
+root grant under its own owner, never this candidate's.
+
+One selection is bounded by what one review draft holds
+(`CaptureIntakePolicy.maximumSelectionItems`), and the Quick Action's bounded
+activation rule carries the same bound. An item that is not a supported document
+stays listed as refused until it is removed, and nothing is published while one
+is listed.
+
 ## Lifecycle adapter version 2
 
 The companion uses an owner-only per-installation lock and Unix activation

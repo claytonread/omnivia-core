@@ -5,8 +5,17 @@ public enum NativeHandoffSurface: String, Codable, Sendable {
     case share
 }
 
+/// What one offered slot claims to be. Closed: a kind this build does not
+/// know fails decoding, so an offer carrying one is refused whole.
 public enum NativeHandoffSourceKind: String, Codable, Sendable {
+    /// One selected regular file, to be adopted as a companion-owned
+    /// read-only grant on that file.
     case originalBookmark = "original_bookmark"
+    /// One selected folder, to be adopted as a companion-owned root grant.
+    /// Nothing inside it is read, listed or captured by the handoff; its
+    /// scope is reviewed separately and only on the person's request.
+    case folderBookmark = "folder_bookmark"
+    /// Bytes the sender handed over, to be copied into companion-owned storage.
     case capturedSnapshot = "captured_snapshot"
 }
 
@@ -338,7 +347,11 @@ public final class NativeHandoffMailbox: @unchecked Sendable {
                   slot.displayName.utf8.count <= 255
             else { throw NativeHandoffMailboxError.invalidOffer }
             switch slot.sourceKind {
-            case .originalBookmark:
+            // A file and a folder claim are carried the same way — one
+            // bookmark, no transfer blob — and only the Quick Action may make
+            // either. What the bookmark actually resolves to is checked by the
+            // owner that adopts it, never guessed from the claim.
+            case .originalBookmark, .folderBookmark:
                 guard offer.surface == .finderQuickAction,
                       let bookmark = slot.bookmark,
                       !bookmark.isEmpty,
@@ -370,6 +383,21 @@ public final class NativeHandoffMailbox: @unchecked Sendable {
                       && adoption.candidateRevision > 0
               })
         else { throw NativeHandoffMailboxError.invalidAcknowledgement }
+    }
+
+    /// True when the companion acknowledged adopting exactly the slots that
+    /// were offered, in the order they were offered. An extension completes its
+    /// request only on this: a partial, reordered, padded or empty
+    /// acknowledgement is not adoption, so the extension keeps its items and
+    /// stays open for a retry instead of reporting success.
+    public static func adoptionSatisfiesOffer(
+        offeredSlotIDs: [String],
+        acknowledgedSlotIDs: [String]
+    ) -> Bool {
+        !offeredSlotIDs.isEmpty
+            && offeredSlotIDs.count <= maximumSlots
+            && Set(offeredSlotIDs).count == offeredSlotIDs.count
+            && acknowledgedSlotIDs == offeredSlotIDs
     }
 
     static func validNonce(_ value: String) -> Bool {

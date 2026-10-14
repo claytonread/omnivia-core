@@ -5,6 +5,64 @@ import DocumentIntakeMacOS
 import Darwin
 import Foundation
 
+/// Collects one drag's promised files into a directory this process owns and
+/// reports them once, after every promise has delivered or failed. AppKit
+/// cannot make a drag source deliver, so a provider that goes quiet is bounded
+/// by `promisedDeliveryTimeout`: the drag is then abandoned whole, the
+/// directory is removed, and every late callback is ignored. Nothing is
+/// retried, and the directory is removed on every path out.
+@MainActor
+private final class PromisedFileDelivery {
+    private var collector: PromisedFileCollector
+    private let destination: URL
+    private let complete: ([URL]) -> Void
+    private var timeout: Timer?
+
+    init(
+        expectedPerReceiver: [Int],
+        destination: URL,
+        complete: @escaping ([URL]) -> Void
+    ) {
+        collector = PromisedFileCollector(expectedPerReceiver: expectedPerReceiver)
+        self.destination = destination
+        self.complete = complete
+        // The timer holds this collector so the bound survives a provider that
+        // drops its callbacks; firing once releases it again.
+        let timer = Timer(
+            timeInterval: StatusItemDragPolicy.promisedDeliveryTimeout,
+            repeats: false
+        ) { _ in
+            Task { @MainActor in
+                guard self.collector.abandon() else { return }
+                self.finish(nil)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        timeout = timer
+    }
+
+    func receive(receiver: Int, url: URL?) {
+        guard let delivered = collector.receive(receiver: receiver, url: url) else { return }
+        finish(delivered)
+    }
+
+    /// Reviews the delivered copies, if they are the facts the bounds require,
+    /// and removes the temporary directory either way.
+    private func finish(_ delivered: [URL]?) {
+        timeout?.invalidate()
+        timeout = nil
+        if let delivered,
+           let accepted = StatusItemDragPolicy.acceptedPromisedFiles(
+               delivered,
+               destination: destination
+           )
+        {
+            complete(accepted)
+        }
+        try? FileManager.default.removeItem(at: destination)
+    }
+}
+
 @MainActor
 final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private let configuration: CompanionConfiguration
@@ -40,6 +98,9 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private var folderBulkRunCoordinator: FolderBulkRunCoordinator?
     private var fileMonitoringCoordinator: FileMonitoringCoordinator?
     private var statusDropView: StatusItemDropView?
+    /// Owns the captured copies a drop makes from text, a link or a promised
+    /// file, so those copies are released with every other unsubmitted one.
+    private var snapshotStore: OwnedSnapshotStore?
     private var nativeHandoffReceiver: NativeHandoffReceiver?
     private var nativeHandoffPeerServer: NativeHandoffPeerServer?
 
@@ -80,6 +141,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             if let live = try? intakeCandidates?.nativeRequestIDs() {
                 _ = snapshotStore.removeExpired(keeping: Set(live))
             }
+            self.snapshotStore = snapshotStore
             folderMonitoringCoordinator = environment.folderMonitoring
             folderBulkRunCoordinator = environment.folderBulkCoordinator
             fileMonitoringCoordinator = environment.fileMonitoring
@@ -159,8 +221,13 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureMenu()
-        NSApp.servicesProvider = self
-        NSUpdateDynamicServices()
+        // The Finder Service is advertised only once this companion can
+        // actually open a review draft. With no review there is nothing for the
+        // Service to hand a selection to, so the menu item never appears.
+        if isReadyForReview {
+            NSApp.servicesProvider = self
+            NSUpdateDynamicServices()
+        }
         coordinator.onChange = { [weak self] snapshot in
             self?.render(snapshot)
         }
@@ -197,19 +264,29 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         capturePanelController?.addIncoming(urls, surface: .menuDrop)
     }
 
+    /// True once a review draft can be opened. Every native intake surface is
+    /// gated on it: an unready companion registers no Service and installs no
+    /// drop target rather than taking a selection it cannot show.
+    private var isReadyForReview: Bool { capturePanelController != nil }
+
+    /// The Finder Service. Files and folders come from the pasteboard the
+    /// Service was handed and from nowhere else: this reads no Finder selection
+    /// and no general clipboard, and it opens a review draft rather than
+    /// queueing anything.
     @objc func addToOmniViaCore(
         _ pasteboard: NSPasteboard,
         userData: String?,
         error: AutoreleasingUnsafeMutablePointer<NSString?>
     ) {
-        guard let urls = pasteboard.readObjects(
+        let urls = pasteboard.readObjects(
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]
-        ) as? [URL],
-              !urls.isEmpty,
-              urls.count <= 100
-        else {
-            error.pointee = "Choose up to 100 files or folders in Finder." as NSString
+        ) as? [URL] ?? []
+        if let refusal = CaptureIntakePolicy.admit(
+            itemCount: urls.count,
+            isReady: isReadyForReview
+        ) {
+            error.pointee = refusal.message as NSString
             return
         }
         capturePanelController?.addIncoming(urls, surface: .finderService)
@@ -262,9 +339,9 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
         addItem.isEnabled = capturePanelController != nil
         filesItem.isEnabled = folderManagementWindowController != nil
-        if let button = statusItem.button {
-            let dropView = StatusItemDropView { [weak self] urls in
-                self?.capturePanelController?.addIncoming(urls, surface: .menuDrop)
+        if isReadyForReview, let button = statusItem.button {
+            let dropView = StatusItemDropView { [weak self] contents in
+                self?.receiveStatusItemDrop(contents)
             }
             button.addSubview(dropView)
             NSLayoutConstraint.activate([
@@ -275,6 +352,77 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             ])
             statusDropView = dropView
         }
+    }
+
+    /// Routes one accepted status-item drop to review. Originals are reviewed
+    /// where they are; a promised file, a dropped link and dropped text have no
+    /// original to keep, so each becomes a captured copy this companion owns
+    /// and then goes to the same review draft. Nothing is queued here.
+    private func receiveStatusItemDrop(_ contents: StatusItemDropContents) {
+        guard let capturePanelController else { return }
+        if !contents.fileURLs.isEmpty {
+            capturePanelController.addIncoming(contents.fileURLs, surface: .menuDrop)
+            return
+        }
+        if !contents.promises.isEmpty {
+            receivePromisedFiles(contents.promises)
+            return
+        }
+        // A dropped link is kept as the text it is. The companion resolves no
+        // link and fetches nothing from the network.
+        let leaf = contents.textIsLink ? "Dropped Link" : "Dropped Text"
+        reviewCapturedCopies(contents.texts.enumerated().map { index, text in
+            .data(Data(text.utf8), suggestedFilename: "\(leaf) \(index + 1).txt")
+        })
+    }
+
+    /// Receives promised files into a directory this process owns, copies them
+    /// into the owned-copy store under their bounds, and sends the copies to
+    /// review. The promise is the source's only delivery, so the temporary
+    /// directory goes away as soon as the copies exist — or as soon as the
+    /// delivery times out or is refused.
+    private func receivePromisedFiles(_ receivers: [NSFilePromiseReceiver]) {
+        let expectedPerReceiver = receivers.map(\.fileNames.count)
+        let expected = expectedPerReceiver.reduce(0, +)
+        guard expected > 0, expected <= StatusItemDragPolicy.maximumPromisedFiles else { return }
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+        guard (try? FileManager.default.createDirectory(
+            at: destination,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )) != nil else { return }
+
+        let delivery = PromisedFileDelivery(
+            expectedPerReceiver: expectedPerReceiver,
+            destination: destination
+        ) { [weak self] urls in
+            self?.reviewCapturedCopies(urls.map { .file($0) })
+        }
+        for (index, receiver) in receivers.enumerated() {
+            receiver.receivePromisedFiles(
+                atDestination: destination,
+                options: [:],
+                operationQueue: .main
+            ) { url, error in
+                // `operationQueue: .main` delivers on the main thread, which is
+                // this actor.
+                MainActor.assumeIsolated {
+                    delivery.receive(receiver: index, url: error == nil ? url : nil)
+                }
+            }
+        }
+    }
+
+    /// Stages owned copies and opens them for review as captured copies, which
+    /// are never linked back to the temporary bytes they came from.
+    private func reviewCapturedCopies(_ inputs: [OwnedSnapshotInput]) {
+        guard !inputs.isEmpty,
+              let snapshotStore,
+              let capturePanelController,
+              let urls = try? snapshotStore.stage(inputs)
+        else { return }
+        capturePanelController.addIncomingSnapshots(urls, surface: .menuDrop)
     }
 
     private func render(_ snapshot: MenuSnapshot) {

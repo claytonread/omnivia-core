@@ -20,6 +20,29 @@ FINDER_EXTENSION_ID: Final = "com.omnivia.core.finder-action"
 FINDER_EXTENSION_EXECUTABLE: Final = "OmniViaFinderAction"
 SHARE_EXTENSION_ID: Final = "com.omnivia.core.share"
 SHARE_EXTENSION_EXECUTABLE: Final = "OmniViaShare"
+FINDER_EXTENSION_MAX_ITEMS: Final = 10
+# One bounded production activation rule, never TRUEPREDICATE. It admits
+# exactly one extension item, every one of whose attachments conforms to
+# public.data (a file's content) or public.directory (a folder, which
+# public.folder conforms to), between one and FINDER_EXTENSION_MAX_ITEMS of
+# them. That bound is the handoff mailbox's slot bound, so the Quick Action
+# cannot offer a selection the companion would refuse.
+#
+# public.url also conforms to public.data, so the rule alone does not restrict
+# activation to file URLs. The extension does: it refuses any provider that
+# does not conform to public.file-url before it offers a single slot.
+FINDER_EXTENSION_ACTIVATION_RULE: Final = (
+    "SUBQUERY ("
+    "extensionItems, $extensionItem,"
+    " SUBQUERY ("
+    "$extensionItem.attachments, $attachment,"
+    ' ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.data"'
+    ' OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.directory"'
+    ").@count == $extensionItem.attachments.@count"
+    " AND $extensionItem.attachments.@count >= 1"
+    f" AND $extensionItem.attachments.@count <= {FINDER_EXTENSION_MAX_ITEMS}"
+    ").@count == 1"
+)
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
 
@@ -152,9 +175,7 @@ def build_companion_app(
                 "NSExtensionPointIdentifier": "com.apple.ui-services",
                 "NSExtensionPrincipalClass": "FinderActionViewController",
                 "NSExtensionAttributes": {
-                    "NSExtensionActivationRule": {
-                        "NSExtensionActivationSupportsFileWithMaxCount": 10,
-                    },
+                    "NSExtensionActivationRule": FINDER_EXTENSION_ACTIVATION_RULE,
                     "NSExtensionServiceAllowsFinderPreviewItem": True,
                     "NSExtensionServiceRoleType": "NSExtensionServiceRoleTypeViewer",
                 },

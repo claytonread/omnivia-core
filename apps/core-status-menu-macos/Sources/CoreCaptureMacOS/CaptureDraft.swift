@@ -11,6 +11,9 @@ public enum CaptureDraftError: Error, Equatable {
 public enum CaptureDraftItemKind: Equatable {
     case file(CaptureContentKind)
     case folder
+    /// Chosen, but not a document this build can capture. It stays in the list
+    /// so the person sees what was refused, and leaves only when removed.
+    case unsupported
 }
 
 public struct CaptureDraftItem: Equatable {
@@ -22,6 +25,37 @@ public struct CaptureDraftItem: Equatable {
     /// an authenticated native handoff.
     public let native: NativeCandidateKey?
     public var displayName: String { url.lastPathComponent }
+
+    /// The candidate this row publishes as, when it is an ordinary file. A
+    /// folder or a refused item publishes nothing, so it has none.
+    public func candidate(keepUpdated: Bool = false) -> ManualCaptureCandidate? {
+        guard case .file = kind else { return nil }
+        return ManualCaptureCandidate(
+            url: url,
+            displayName: displayName,
+            surface: surface,
+            keepUpdated: keepUpdated,
+            source: source,
+            native: native
+        )
+    }
+
+    /// Whatever this row still owns, whichever kind it is: a file grant, owned
+    /// bytes, or the provisional root grant a native folder row holds — plus
+    /// the durable record that names it. Every ownership cleanup path (Remove,
+    /// discard, quit) releases these, so a folder row cannot outlive review
+    /// still holding a grant. A plainly picked row owns nothing of its own and
+    /// has none.
+    public var ownedCandidate: ManualCaptureCandidate? {
+        guard native != nil || source != .original else { return nil }
+        return ManualCaptureCandidate(
+            url: url,
+            displayName: displayName,
+            surface: surface,
+            source: source,
+            native: native
+        )
+    }
 }
 
 public struct CaptureDraft: Equatable {
@@ -56,10 +90,16 @@ public struct CaptureDraft: Equatable {
         })
     }
 
+    /// Classifies a selection in the order it was given and appends it whole.
+    /// An item that is not a supported document is kept as an `.unsupported`
+    /// row rather than refused — but only when nothing in the selection holds a
+    /// grant or owned bytes. A native or snapshot selection stays all-or-
+    /// nothing, because its caller releases the whole selection on a throw.
     private mutating func add(entries: [Entry]) throws {
         guard items.count + entries.count <= Self.maximumOrdinaryItems else {
             throw CaptureDraftError.tooManyItems
         }
+        let retainsRefused = entries.allSatisfy { $0.native == nil && $0.source == .original }
         var additions: [CaptureDraftItem] = []
         for entry in entries {
             let url = entry.url
@@ -67,27 +107,31 @@ public struct CaptureDraft: Equatable {
                   !additions.contains(where: { $0.url.standardizedFileURL == url.standardizedFileURL })
             else { throw CaptureDraftError.duplicateItem }
             let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+            let kind: CaptureDraftItemKind
             if values?.isDirectory == true {
-                guard entry.source == .original else { throw CaptureDraftError.unsupportedItem }
-                additions.append(CaptureDraftItem(
-                    url: url,
-                    kind: .folder,
-                    surface: entry.surface,
-                    source: entry.source,
-                    native: entry.native
-                ))
+                // A folder row is either a plainly picked folder or one adopted
+                // from a native handoff as a root grant. A file grant or owned
+                // bytes never name a folder.
+                guard entry.source == .original || entry.source.isAdoptedFolderRoot else {
+                    throw CaptureDraftError.unsupportedItem
+                }
+                kind = .folder
             } else if values?.isRegularFile == true,
-                      let kind = ManualCaptureSubmission.contentKind(for: url) {
-                additions.append(CaptureDraftItem(
-                    url: url,
-                    kind: .file(kind),
-                    surface: entry.surface,
-                    source: entry.source,
-                    native: entry.native
-                ))
+                      !entry.source.isAdoptedFolderRoot,
+                      let contentKind = ManualCaptureSubmission.contentKind(for: url) {
+                kind = .file(contentKind)
+            } else if retainsRefused {
+                kind = .unsupported
             } else {
                 throw CaptureDraftError.unsupportedItem
             }
+            additions.append(CaptureDraftItem(
+                url: url,
+                kind: kind,
+                surface: entry.surface,
+                source: entry.source,
+                native: entry.native
+            ))
         }
         items.append(contentsOf: additions)
     }
@@ -97,9 +141,12 @@ public struct CaptureDraft: Equatable {
         Set(items.compactMap { $0.native?.candidateRef })
     }
 
-    public mutating func remove(at index: Int) {
-        guard items.indices.contains(index) else { return }
-        items.remove(at: index)
+    /// Takes one row out of review and hands it back, so its caller can release
+    /// whatever that row still holds.
+    @discardableResult
+    public mutating func remove(at index: Int) -> CaptureDraftItem? {
+        guard items.indices.contains(index) else { return nil }
+        return items.remove(at: index)
     }
 
     public var fileCandidates: [ManualCaptureCandidate] {
@@ -107,20 +154,21 @@ public struct CaptureDraft: Equatable {
     }
 
     public func fileCandidates(keepUpdated: Bool) -> [ManualCaptureCandidate] {
-        items.compactMap { item in
-            guard case .file = item.kind else { return nil }
-            return ManualCaptureCandidate(
-                url: item.url,
-                displayName: item.displayName,
-                surface: item.surface,
-                keepUpdated: keepUpdated,
-                source: item.source,
-                native: item.native
-            )
-        }
+        items.compactMap { $0.candidate(keepUpdated: keepUpdated) }
+    }
+
+    /// Everything this draft still owns, folder rows included. This is what
+    /// ownership cleanup releases; publication uses `fileCandidates`.
+    public var ownedCandidates: [ManualCaptureCandidate] {
+        items.compactMap(\.ownedCandidate)
     }
 
     public var containsFolders: Bool { items.contains { $0.kind == .folder } }
+    public var containsUnsupported: Bool { items.contains { $0.kind == .unsupported } }
     public var containsSnapshots: Bool { items.contains { $0.source.isSnapshot } }
-    public var canSubmitFiles: Bool { !fileCandidates.isEmpty && !containsFolders }
+    /// A folder needs its own scope review and a refused item needs removing,
+    /// so neither is published alongside the ordinary files.
+    public var canSubmitFiles: Bool {
+        !fileCandidates.isEmpty && !containsFolders && !containsUnsupported
+    }
 }

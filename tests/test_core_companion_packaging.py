@@ -129,13 +129,18 @@ def test_companion_embeds_real_finder_and_share_extension_bundles(tmp_path: Path
     finder_plist = plistlib.loads((finder_bundle / "Contents" / "Info.plist").read_bytes())
     assert finder_plist["CFBundleIdentifier"] == "com.omnivia.core.finder-action"
     assert finder_plist["NSExtension"]["NSExtensionPointIdentifier"] == "com.apple.ui-services"
-    assert finder_plist["NSExtension"]["NSExtensionAttributes"] == {
-        "NSExtensionActivationRule": {
-            "NSExtensionActivationSupportsFileWithMaxCount": 10,
-        },
-        "NSExtensionServiceAllowsFinderPreviewItem": True,
-        "NSExtensionServiceRoleType": "NSExtensionServiceRoleTypeViewer",
-    }
+    attributes = finder_plist["NSExtension"]["NSExtensionAttributes"]
+    assert attributes["NSExtensionServiceAllowsFinderPreviewItem"] is True
+    assert attributes["NSExtensionServiceRoleType"] == "NSExtensionServiceRoleTypeViewer"
+    rule = attributes["NSExtensionActivationRule"]
+    assert isinstance(rule, str)
+    assert "TRUEPREDICATE" not in rule.upper()
+    assert 'UTI-CONFORMS-TO "public.data"' in rule
+    assert 'UTI-CONFORMS-TO "public.directory"' in rule
+    assert "$extensionItem.attachments.@count >= 1" in rule
+    assert "$extensionItem.attachments.@count <= 10" in rule
+    assert ".@count == 1" in rule
+    assert module.FINDER_EXTENSION_MAX_ITEMS == 10
     assert stat.S_IMODE(
         (finder_bundle / "Contents" / "MacOS" / "OmniViaFinderAction").stat().st_mode
     ) == 0o755

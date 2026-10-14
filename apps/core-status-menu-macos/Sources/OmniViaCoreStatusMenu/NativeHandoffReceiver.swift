@@ -277,14 +277,13 @@ final class NativeHandoffReceiver: NSObject {
             // The offer's bookmark and transfer blobs may only be used inside
             // its validity window. After it, a record cannot be completed.
             try NativeHandoffMailbox.validate(offer)
-            let adopted: [NativeIntakeCandidateV1]
-            switch reserved[0].kind {
-            case .originalFile:
-                try establishOriginals(reserved, offer: offer)
-                adopted = reserved.map { $0.replacing(state: .adopted) }
-            case .ownedSnapshot:
-                adopted = try stageSnapshots(reserved, offer: offer)
-            }
+            // Owned copies are staged as one batch under the request's quotas;
+            // grants are established slot by slot, in the order they were
+            // selected. The store keeps the two apart, so the first record's
+            // kind decides which of the two this request is.
+            let adopted = reserved[0].kind == .ownedSnapshot
+                ? try stageSnapshots(reserved, offer: offer)
+                : try establishGrants(reserved, offer: offer)
             try candidates.write(adopted)
             return adopted
         } catch {
@@ -313,36 +312,50 @@ final class NativeHandoffReceiver: NSObject {
         throw error
     }
 
-    private func establishOriginals(
+    /// Establishes one companion-owned grant per reserved slot, in the order
+    /// the slots were offered, and returns the records the adoption binds. A
+    /// file slot takes a read-only grant on the file; a folder slot takes a
+    /// root grant on the folder and binds its generation. A mixed selection is
+    /// established in its own order, and the whole request is written adopted
+    /// in one atomic write, so nothing is acknowledged until every slot holds
+    /// what its record names.
+    private func establishGrants(
         _ reserved: [NativeIntakeCandidateV1],
         offer: NativeHandoffOfferV1
-    ) throws {
+    ) throws -> [NativeIntakeCandidateV1] {
         guard offer.slots.count == reserved.count else { throw NativeHandoffMailboxError.invalidOffer }
-        for (index, record) in reserved.enumerated() {
+        return try reserved.enumerated().map { index, record in
             let slot = offer.slots[index]
-            guard let accessRef = record.nativeAccessLeaseRef, slot.slotID == record.slotID else {
+            guard slot.slotID == record.slotID else { throw NativeHandoffMailboxError.invalidOffer }
+            switch record.kind {
+            case .originalFile:
+                return try establishOriginal(record, slot: slot, index: index)
+            case .folderRoot:
+                return try establishFolderRoot(record, slot: slot, index: index)
+            case .ownedSnapshot:
                 throw NativeHandoffMailboxError.invalidOffer
             }
-            // A grant an interrupted attempt already adopted is reused before the
-            // offer's implicit transfer bookmark is touched; that bookmark dies
-            // with the extension host.
-            if try submitter.adoptedCandidate(
-                accessRef: accessRef,
-                linkedDocumentID: Self.documentID(record),
-                displayName: record.displayName,
-                surface: .finderQuickAction
-            ) != nil { continue }
-            guard let bookmark = slot.bookmark else { throw NativeHandoffMailboxError.invalidOffer }
-            var stale = false
-            let url = try URL(
-                resolvingBookmarkData: bookmark,
-                options: [.withoutUI],
-                relativeTo: nil,
-                bookmarkDataIsStale: &stale
-            )
-            guard !stale else { throw NativeAccessError.staleBookmark }
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        }
+    }
+
+    private func establishOriginal(
+        _ record: NativeIntakeCandidateV1,
+        slot: NativeHandoffSlotV1,
+        index: Int
+    ) throws -> NativeIntakeCandidateV1 {
+        guard let accessRef = record.nativeAccessLeaseRef else {
+            throw NativeHandoffMailboxError.invalidOffer
+        }
+        // A grant an interrupted attempt already adopted is reused before the
+        // offer's implicit transfer bookmark is touched; that bookmark dies
+        // with the extension host.
+        if try submitter.adoptedCandidate(
+            accessRef: accessRef,
+            linkedDocumentID: Self.documentID(record),
+            displayName: record.displayName,
+            surface: .finderQuickAction
+        ) != nil { return record.replacing(state: .adopted) }
+        try Self.withResolvedSlot(slot) { url in
             _ = try submitter.adoptOriginal(
                 url,
                 displayName: record.displayName,
@@ -350,8 +363,71 @@ final class NativeHandoffReceiver: NSObject {
                 accessRef: accessRef,
                 linkedDocumentID: Self.documentID(record)
             )
+        }
+        try checkpoint(.accessEstablished(slot: index))
+        return record.replacing(state: .adopted)
+    }
+
+    /// Binds one selected folder to a companion-owned root grant. The folder is
+    /// bound, never walked: nothing inside it is listed, read or captured here,
+    /// and no plan is made or submitted. Its scope is reviewed later, only when
+    /// the person asks for it.
+    private func establishFolderRoot(
+        _ record: NativeIntakeCandidateV1,
+        slot: NativeHandoffSlotV1,
+        index: Int
+    ) throws -> NativeIntakeCandidateV1 {
+        guard let rootRef = record.nativeRootRef,
+              let ownerRef = record.nativeRootOwnerRef
+        else { throw NativeHandoffMailboxError.invalidOffer }
+        // As for a file: a root grant an interrupted attempt already adopted is
+        // reused before the offer's implicit bookmark is touched.
+        let adopted: ManualCaptureCandidate
+        if let existing = try submitter.adoptedFolderCandidate(
+            rootRef: rootRef,
+            ownerRef: ownerRef,
+            displayName: record.displayName,
+            surface: .finderQuickAction
+        ) {
+            adopted = existing
+        } else {
+            adopted = try Self.withResolvedSlot(slot) { url in
+                try submitter.adoptFolderRoot(
+                    url,
+                    displayName: record.displayName,
+                    surface: .finderQuickAction,
+                    rootRef: rootRef,
+                    ownerRef: ownerRef
+                )
+            }
             try checkpoint(.accessEstablished(slot: index))
         }
+        guard let generation = adopted.source.adoptedRootGeneration else {
+            throw NativeAccessError.unknownAccess
+        }
+        return record.replacing(state: .adopted, rootGeneration: generation)
+    }
+
+    /// Resolves one slot's implicit handoff bookmark and runs `body` inside its
+    /// security scope, balanced on every path out. That bookmark dies with the
+    /// extension host, so it is touched exactly here and only while the offer
+    /// is still valid.
+    private static func withResolvedSlot<T>(
+        _ slot: NativeHandoffSlotV1,
+        _ body: (URL) throws -> T
+    ) throws -> T {
+        guard let bookmark = slot.bookmark else { throw NativeHandoffMailboxError.invalidOffer }
+        var stale = false
+        let url = try URL(
+            resolvingBookmarkData: bookmark,
+            options: [.withoutUI],
+            relativeTo: nil,
+            bookmarkDataIsStale: &stale
+        )
+        guard !stale else { throw NativeAccessError.staleBookmark }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        return try body(url)
     }
 
     /// Copies this request's transfer blobs into the companion's own storage
@@ -445,16 +521,9 @@ final class NativeHandoffReceiver: NSObject {
         _ records: [NativeIntakeCandidateV1]
     ) throws -> [ManualCaptureCandidate] {
         switch records[0].kind {
-        case .originalFile:
+        case .originalFile, .folderRoot:
             return try records.map { record in
-                guard let accessRef = record.nativeAccessLeaseRef,
-                      let owned = try submitter.adoptedCandidate(
-                          accessRef: accessRef,
-                          linkedDocumentID: Self.documentID(record),
-                          displayName: record.displayName,
-                          surface: .finderQuickAction
-                      )
-                else { throw NativeAccessError.unknownAccess }
+                let owned = try reviewableGrant(record)
                 return ManualCaptureCandidate(
                     url: owned.url,
                     displayName: record.displayName,
@@ -487,6 +556,45 @@ final class NativeHandoffReceiver: NSObject {
         }
     }
 
+    /// Rebuilds one grant-backed candidate from what its record bound, proving
+    /// the grant is still connected under the identity the record names. The
+    /// folder case resolves only at the generation the record bound, so a root
+    /// grant that was rolled back and re-adopted since cannot be mistaken for
+    /// the one this candidate created.
+    private func reviewableGrant(
+        _ record: NativeIntakeCandidateV1
+    ) throws -> ManualCaptureCandidate {
+        let owned: ManualCaptureCandidate?
+        switch record.kind {
+        case .originalFile:
+            guard let accessRef = record.nativeAccessLeaseRef else {
+                throw NativeAccessError.unknownAccess
+            }
+            owned = try submitter.adoptedCandidate(
+                accessRef: accessRef,
+                linkedDocumentID: Self.documentID(record),
+                displayName: record.displayName,
+                surface: .finderQuickAction
+            )
+        case .folderRoot:
+            guard let rootRef = record.nativeRootRef,
+                  let ownerRef = record.nativeRootOwnerRef,
+                  let generation = record.nativeRootBindingGeneration
+            else { throw NativeAccessError.unknownAccess }
+            owned = try submitter.adoptedFolderCandidate(
+                rootRef: rootRef,
+                ownerRef: ownerRef,
+                generation: generation,
+                displayName: record.displayName,
+                surface: .finderQuickAction
+            )
+        case .ownedSnapshot:
+            throw NativeAccessError.unknownAccess
+        }
+        guard let owned else { throw NativeAccessError.unknownAccess }
+        return owned
+    }
+
     // MARK: Releasing
 
     /// Drops what these records name, then marks them released. Resources go
@@ -501,10 +609,19 @@ final class NativeHandoffReceiver: NSObject {
         )
     }
 
-    /// Never disconnects a grant that submitted work still names.
+    /// Never disconnects a grant that submitted work still names: a file grant
+    /// a queued capture or subscription is bound to is left alone, and a root
+    /// grant is released only for this candidate's own owner, so one a
+    /// submitted bulk run or watched folder still owns survives.
     private func releaseResources(of records: [NativeIntakeCandidateV1]) {
         for accessRef in records.compactMap(\.nativeAccessLeaseRef) {
             submitter.releaseGrant(accessRef: accessRef)
+        }
+        for record in records where record.kind == .folderRoot {
+            guard let rootRef = record.nativeRootRef,
+                  let ownerRef = record.nativeRootOwnerRef
+            else { continue }
+            submitter.releaseRootGrant(rootRef: rootRef, ownerRef: ownerRef)
         }
         if records.contains(where: { $0.kind == .ownedSnapshot }) {
             snapshotStore.removeRequest(requestID: records[0].nativeRequestID)
@@ -529,7 +646,11 @@ final class NativeHandoffReceiver: NSObject {
     }
 
     private static func kind(of slot: NativeHandoffSlotV1) -> NativeIntakeCandidateKind {
-        slot.sourceKind == .originalBookmark ? .originalFile : .ownedSnapshot
+        switch slot.sourceKind {
+        case .originalBookmark: .originalFile
+        case .folderBookmark: .folderRoot
+        case .capturedSnapshot: .ownedSnapshot
+        }
     }
 
     private static func reservation(
@@ -548,6 +669,22 @@ final class NativeHandoffReceiver: NSObject {
                 candidateRef: "nic-\(identity)",
                 kind: .originalFile,
                 nativeAccessLeaseRef: "candidate-access-\(identity)",
+                displayName: slot.displayName,
+                state: .needsAccess
+            )
+        case .folderBookmark:
+            // One root grant and one owner per slot. Two slots naming the same
+            // folder reserve two independent roots, because the reservation is
+            // made before any bookmark is resolved and so cannot know they are
+            // the same folder.
+            return NativeIntakeCandidateV1(
+                nativeRequestID: offer.requestNonce,
+                offerDigest: offerDigest,
+                slotID: slot.slotID,
+                candidateRef: "nic-\(identity)",
+                kind: .folderRoot,
+                nativeRootRef: "candidate-root-\(identity)",
+                nativeRootOwnerRef: "candidate-owner-\(identity)",
                 displayName: slot.displayName,
                 state: .needsAccess
             )

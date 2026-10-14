@@ -25,6 +25,61 @@ final class CaptureDraftTests: XCTestCase {
         XCTAssertEqual(draft.fileCandidates.map(\.displayName), ["brief.pdf"])
     }
 
+    func testOwnershipCleanupCoversFolderRowsAndNotPlainlyPickedOnes() throws {
+        let root = try temporaryDirectory()
+        let file = root.appendingPathComponent("brief.pdf")
+        try Data("pdf".utf8).write(to: file)
+        let folder = root.appendingPathComponent("Briefs", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let native = NativeCandidateKey(
+            nativeRequestID: UUID().uuidString.lowercased(),
+            candidateRef: "nic-1"
+        )
+        var draft = CaptureDraft()
+
+        try draft.add([
+            ManualCaptureCandidate(
+                url: folder,
+                surface: .finderQuickAction,
+                source: .adoptedFolderRoot(rootRef: "root-1", generation: 3, ownerRef: "owner-1"),
+                native: native
+            ),
+        ])
+        try draft.add([file])
+
+        // A native folder row is a folder, never a publishable file, and it
+        // holds the grant that ownership cleanup has to release.
+        XCTAssertEqual(draft.items.map(\.kind), [.folder, .file(.pdf)])
+        XCTAssertEqual(draft.fileCandidates.map(\.displayName), ["brief.pdf"])
+        XCTAssertFalse(draft.canSubmitFiles)
+        XCTAssertEqual(draft.ownedCandidates.map(\.displayName), ["Briefs"])
+        XCTAssertEqual(draft.ownedCandidates.map(\.native), [native])
+        XCTAssertEqual(
+            draft.ownedCandidates.map(\.source),
+            [.adoptedFolderRoot(rootRef: "root-1", generation: 3, ownerRef: "owner-1")]
+        )
+        // The plainly picked file owns nothing of its own, so it has no
+        // candidate to release.
+        XCTAssertNil(draft.items[1].ownedCandidate)
+    }
+
+    func testAFolderRootSourceNeverClassifiesAsAFile() throws {
+        let root = try temporaryDirectory()
+        let file = root.appendingPathComponent("brief.pdf")
+        try Data("pdf".utf8).write(to: file)
+        var draft = CaptureDraft()
+
+        // A root grant never names a file: refused rather than published as one.
+        XCTAssertThrowsError(try draft.add([
+            ManualCaptureCandidate(
+                url: file,
+                surface: .finderQuickAction,
+                source: .adoptedFolderRoot(rootRef: "root-1", generation: 1, ownerRef: "owner-1")
+            ),
+        ]))
+        XCTAssertEqual(draft.items, [])
+    }
+
     func testExternalInvocationSurfaceSurvivesDraftClassification() throws {
         let root = try temporaryDirectory()
         let file = root.appendingPathComponent("brief.pdf")
@@ -63,7 +118,12 @@ final class CaptureDraftTests: XCTestCase {
         let unsupported = root.appendingPathComponent("archive.bin")
         try Data("x".utf8).write(to: unsupported)
         var draft = CaptureDraft()
-        XCTAssertThrowsError(try draft.add([unsupported]))
+        // A picked file that is not a supported document stays listed, and
+        // nothing is published while it is listed.
+        try draft.add([unsupported])
+        XCTAssertEqual(draft.items.map(\.kind), [.unsupported])
+        XCTAssertFalse(draft.canSubmitFiles)
+        draft.remove(at: 0)
 
         let supported = root.appendingPathComponent("note.txt")
         try Data("x".utf8).write(to: supported)

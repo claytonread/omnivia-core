@@ -62,7 +62,7 @@ final class FinderActionViewController: NSViewController {
                 slots.append(NativeHandoffSlotV1(
                     slotID: UUID().uuidString.lowercased(),
                     displayName: url.lastPathComponent,
-                    sourceKind: .originalBookmark,
+                    sourceKind: try Self.sourceKind(of: url),
                     bookmark: bookmark
                 ))
             }
@@ -78,15 +78,44 @@ final class FinderActionViewController: NSViewController {
             )
             status.stringValue = "Waiting for OmniVia Core…"
             let acknowledgement = try await submitAuthenticatedOffer(offer, mailbox: mailbox)
-            guard acknowledgement.adoptions.map(\.slotID) == slots.map(\.slotID) else {
+            guard NativeHandoffMailbox.adoptionSatisfiesOffer(
+                offeredSlotIDs: slots.map(\.slotID),
+                acknowledgedSlotIDs: acknowledgement.adoptions.map(\.slotID)
+            ) else {
                 throw OmniViaExtensionError.invalidInput
             }
             stopAccessing()
+            // The items this action was given are returned exactly as they
+            // arrived: the same `NSExtensionItem` objects carrying the same
+            // providers, unopened and unmodified, so the action is a viewer and
+            // changes nothing about the Finder selection.
             context.completeRequest(returningItems: originalItems, completionHandler: nil)
         } catch {
             stopAccessing()
             status.stringValue = "Choose the original in OmniVia Core. You can retry or cancel this action."
         }
+    }
+
+    /// What one loaded selection URL is, read from the file system rather than
+    /// taken from the item's declared types. The activation rule admits folders
+    /// as well as files, so a selection is classified here: a regular file is
+    /// offered as an original grant, a plain directory as a folder root. A
+    /// package, a symlink, or anything that is neither — a device, a socket, an
+    /// item that has gone — is refused, which surfaces as the action's retry
+    /// message rather than as a silently narrowed selection.
+    private static func sourceKind(of url: URL) throws -> NativeHandoffSourceKind {
+        guard let values = try? url.resourceValues(forKeys: [
+            .isRegularFileKey,
+            .isDirectoryKey,
+            .isPackageKey,
+            .isSymbolicLinkKey,
+        ]) else { throw OmniViaExtensionError.invalidInput }
+        if values.isRegularFile == true { return .originalBookmark }
+        guard values.isDirectory == true,
+              values.isPackage != true,
+              values.isSymbolicLink != true
+        else { throw OmniViaExtensionError.invalidInput }
+        return .folderBookmark
     }
 
     private func stopAccessing() {

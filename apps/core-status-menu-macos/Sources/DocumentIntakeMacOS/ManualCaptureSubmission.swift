@@ -22,6 +22,15 @@ public struct ManualCaptureCandidate: Sendable, Equatable {
             generation: UInt64,
             linkedDocumentID: String
         )
+        /// A provisional companion-owned root grant on one selected folder.
+        /// It publishes nothing on its own: the folder's scope is reviewed
+        /// separately, and the work that submission creates adopts its own
+        /// root grant under its own owner.
+        case adoptedFolderRoot(
+            rootRef: String,
+            generation: UInt64,
+            ownerRef: String
+        )
 
         public var isSnapshot: Bool {
             if case .capturedSnapshot = self { return true }
@@ -31,6 +40,17 @@ public struct ManualCaptureCandidate: Sendable, Equatable {
         public var isAdoptedOriginal: Bool {
             if case .adoptedOriginal = self { return true }
             return false
+        }
+
+        public var isAdoptedFolderRoot: Bool {
+            if case .adoptedFolderRoot = self { return true }
+            return false
+        }
+
+        /// The generation of the root grant this source holds, when it holds one.
+        public var adoptedRootGeneration: UInt64? {
+            if case let .adoptedFolderRoot(_, generation, _) = self { return generation }
+            return nil
         }
     }
 
@@ -195,6 +215,12 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                         && $0.state == .connected
                 }) else { throw NativeAccessError.unknownAccess }
                 descriptor = existing
+            case .adoptedFolderRoot:
+                // A folder is published by folder submission, which adopts its
+                // own root grant under its own owner. This path publishes
+                // documents, so it refuses a root grant rather than binding one
+                // as if it were a direct file.
+                throw ManualCaptureSubmissionError.unsupportedType
             case .original, .capturedSnapshot:
                 documentID = Self.identifier(prefix: "doc")
                 descriptor = try accessStore.adopt(
@@ -321,6 +347,71 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         )
     }
 
+    /// Converts a live implicit handoff folder URL into a companion-owned root
+    /// grant before the extension is acknowledged. The folder is bound, not
+    /// read: nothing inside it is listed, opened or captured here. The caller
+    /// supplies the identities its durable record reserved, so a replay of the
+    /// same request recognises the root grant it already created.
+    public func adoptFolderRoot(
+        _ url: URL,
+        displayName: String,
+        surface: CaptureSurface,
+        rootRef: String,
+        ownerRef: String
+    ) throws -> ManualCaptureCandidate {
+        let root = try accessStore.adoptRoot(
+            rootRef: rootRef,
+            ownerRef: ownerRef,
+            selectedURL: url
+        )
+        return ManualCaptureCandidate(
+            url: url,
+            displayName: displayName,
+            surface: surface,
+            source: .adoptedFolderRoot(
+                rootRef: root.rootRef,
+                generation: root.generation,
+                ownerRef: ownerRef
+            )
+        )
+    }
+
+    /// Rebuilds the candidate for a root grant this companion already owns,
+    /// resolving the folder through its own persistent bookmark. `generation`
+    /// pins the exact binding the caller's record bound; passing nil accepts
+    /// whichever generation is connected, which is what an interrupted
+    /// establishment needs before it has bound one. Returns nil when no
+    /// connected root holds that reference under that owner, so the caller
+    /// adopts it once.
+    public func adoptedFolderCandidate(
+        rootRef: String,
+        ownerRef: String,
+        generation: UInt64? = nil,
+        displayName: String,
+        surface: CaptureSurface
+    ) throws -> ManualCaptureCandidate? {
+        guard let root = accessStore.rootDescriptors().first(where: { candidate in
+            candidate.rootRef == rootRef
+                && candidate.state == .connected
+                && candidate.ownerRefs.contains(ownerRef)
+                && (generation == nil || candidate.generation == generation)
+        }) else { return nil }
+        let url = try accessStore.withRootReadAccess(
+            rootRef: root.rootRef,
+            expectedGeneration: root.generation
+        ) { $0 }
+        return ManualCaptureCandidate(
+            url: url,
+            displayName: displayName,
+            surface: surface,
+            source: .adoptedFolderRoot(
+                rootRef: root.rootRef,
+                generation: root.generation,
+                ownerRef: ownerRef
+            )
+        )
+    }
+
     /// Rebuilds the candidate for a grant this companion already owns, reading
     /// the file through its own persistent bookmark. Returns nil when no
     /// connected record holds that identity, so the caller adopts it once.
@@ -362,6 +453,8 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         for candidate in candidates {
             switch candidate.source {
             case let .adoptedOriginal(accessRef, _, _): releaseGrant(accessRef: accessRef)
+            case let .adoptedFolderRoot(rootRef, _, ownerRef):
+                releaseRootGrant(rootRef: rootRef, ownerRef: ownerRef)
             case .capturedSnapshot: snapshots.append(candidate.url)
             case .original: break
             }
@@ -378,6 +471,16 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
     public func releaseGrant(accessRef: String) {
         guard !isBound(accessRef: accessRef) else { return }
         _ = try? accessStore.disconnect(accessRef: accessRef)
+    }
+
+    /// Gives up this candidate's share of a root grant. The release is owner
+    /// scoped, so the grant itself survives while any other owner — a
+    /// submitted bulk run, a watched-folder subscription — or any connected
+    /// member still holds it. That is what makes every release path safe to
+    /// call for a folder whose plan was in fact submitted: submitted work
+    /// adopts its own owner, never this one.
+    public func releaseRootGrant(rootRef: String, ownerRef: String) {
+        _ = try? accessStore.releaseRoot(rootRef: rootRef, ownerRef: ownerRef)
     }
 
     /// True when a queued capture or an active file subscription is bound to

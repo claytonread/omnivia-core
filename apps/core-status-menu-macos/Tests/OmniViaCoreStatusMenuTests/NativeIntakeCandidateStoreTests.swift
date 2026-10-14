@@ -18,6 +18,7 @@ final class NativeIntakeCandidateStoreTests: XCTestCase {
         let nonce = newID()
         let slot = newID()
         let finder = original(nonce: nonce, slot: slot)
+        let folder = folderRoot(nonce: nonce, slot: slot)
         let tooMany = (0..<11).map { _ in original(nonce: nonce, slot: newID()) }
         let aggregateOverQuota = (0..<5).map { index in
             snapshot(
@@ -38,7 +39,10 @@ final class NativeIntakeCandidateStoreTests: XCTestCase {
             ("an object, not a list", Data("{}".utf8)),
             ("no records", Data("[]".utf8)),
             ("other schema", try mutated(finder) { $0.replacingOccurrences(of: "intake-candidate.v1", with: "intake-candidate.v2") }),
-            ("unknown kind", try mutated(finder) { $0.replacingOccurrences(of: "original_file", with: "folder_root") }),
+            // A kind this build does not fully understand is never guessed at,
+            // whatever else the record says.
+            ("unknown kind", try mutated(finder) { $0.replacingOccurrences(of: "original_file", with: "folder_tree") }),
+            ("unknown kind on a folder record", try mutated(folder) { $0.replacingOccurrences(of: "folder_root", with: "directory_root") }),
             ("unknown state", try mutated(finder) { $0.replacingOccurrences(of: "needs_access", with: "frozen") }),
             ("another request's record", try encode([original(nonce: newID(), slot: slot)])),
             ("repeated slot", try encode([finder, finder])),
@@ -59,7 +63,27 @@ final class NativeIntakeCandidateStoreTests: XCTestCase {
             ("no display name", try encode([original(nonce: nonce, slot: slot, displayName: "")])),
             ("grant kind with no grant", try encode([original(nonce: nonce, slot: slot, lease: .some(nil))])),
             ("grant kind carrying owned bytes", try encode([original(nonce: nonce, slot: slot, content: "1-a.txt")])),
-            ("mixed kinds", try encode([finder, snapshot(nonce: nonce, slot: newID())])),
+            // Owned copies come only from Share, which offers nothing else, so
+            // they never share a request with a grant-backed candidate.
+            ("owned copies mixed with a file grant", try encode([finder, snapshot(nonce: nonce, slot: newID())])),
+            ("owned copies mixed with a folder root", try encode([folder, snapshot(nonce: nonce, slot: newID())])),
+            // No kind carries another kind's backing.
+            ("folder kind with no root ref", try encode([folderRoot(nonce: nonce, slot: slot, rootRef: .some(nil))])),
+            ("folder kind with no owner ref", try encode([folderRoot(nonce: nonce, slot: slot, ownerRef: .some(nil))])),
+            ("folder kind carrying a file grant", try encode([folderRoot(nonce: nonce, slot: slot, lease: "candidate-access-1")])),
+            ("folder kind carrying owned bytes", try encode([folderRoot(nonce: nonce, slot: slot, content: "1-a.txt")])),
+            ("adopted folder with no bound generation", try encode([folderRoot(nonce: nonce, slot: slot, state: .adopted)])),
+            ("folder generation zero", try encode([folderRoot(nonce: nonce, slot: slot, rootGeneration: 0, state: .adopted)])),
+            ("file kind carrying a root ref", try encode([original(nonce: nonce, slot: slot, rootRef: "candidate-root-1")])),
+            ("snapshot kind carrying a root ref", try encode([snapshot(nonce: nonce, slot: slot, rootRef: "candidate-root-1")])),
+            ("two slots sharing one root grant", try encode([
+                folderRoot(nonce: nonce, slot: slot, rootRef: "candidate-root-shared"),
+                folderRoot(nonce: nonce, slot: newID(), rootRef: "candidate-root-shared"),
+            ])),
+            ("two slots sharing one root owner", try encode([
+                folderRoot(nonce: nonce, slot: slot, ownerRef: "candidate-owner-shared"),
+                folderRoot(nonce: nonce, slot: newID(), ownerRef: "candidate-owner-shared"),
+            ])),
             ("snapshot kind with no copy", try encode([snapshot(nonce: nonce, slot: slot, content: .some(nil))])),
             ("snapshot copy outside its directory", try encode([snapshot(nonce: nonce, slot: slot, content: "../escape.txt")])),
             ("snapshot copy hidden", try encode([snapshot(nonce: nonce, slot: slot, content: ".hidden")])),
@@ -156,6 +180,49 @@ final class NativeIntakeCandidateStoreTests: XCTestCase {
         XCTAssertEqual(try reopened.nativeRequestIDs(), [nonce])
         XCTAssertEqual(try permissions(root.appendingPathComponent("\(nonce).json")), 0o600)
         XCTAssertEqual(try permissions(root), 0o700)
+    }
+
+    func testOneRequestHoldsAnOrderedMixOfFilesAndFolderRoots() throws {
+        // One Quick Action selection is files and folders in the order they
+        // were selected, so those two kinds share a request.
+        let root = try temporaryDirectory()
+        let nonce = newID()
+        let slots = [newID(), newID(), newID()]
+        let reserved = [
+            original(nonce: nonce, slot: slots[0]),
+            folderRoot(nonce: nonce, slot: slots[1]),
+            original(nonce: nonce, slot: slots[2]),
+        ]
+        let store = try NativeIntakeCandidateStore(root: root)
+        try store.write(reserved)
+
+        XCTAssertEqual(
+            try store.load(nativeRequestID: nonce)?.map(\.kind),
+            [.originalFile, .folderRoot, .originalFile]
+        )
+        XCTAssertEqual(try store.load(nativeRequestID: nonce)?.map(\.slotID), slots)
+
+        // The folder's root generation is bound with the adopted state, and is
+        // then write-once like a bound digest.
+        let adopted = [
+            reserved[0].replacing(state: .adopted),
+            reserved[1].replacing(state: .adopted, rootGeneration: 2),
+            reserved[2].replacing(state: .adopted),
+        ]
+        try store.write(adopted)
+        try store.write(adopted)
+        XCTAssertEqual(
+            try store.load(nativeRequestID: nonce)?.map(\.nativeRootBindingGeneration),
+            [nil, 2, nil]
+        )
+        XCTAssertThrowsError(
+            try store.write([
+                adopted[0],
+                reserved[1].replacing(state: .adopted, rootGeneration: 3),
+                adopted[2],
+            ]),
+            "a bound root generation cannot be rebound"
+        ) { assertIllegal($0) }
     }
 
     func testNothingExpiresByAge() throws {
@@ -273,6 +340,7 @@ final class NativeIntakeCandidateStoreTests: XCTestCase {
         revision: UInt64 = 1,
         displayName: String = "brief.pdf",
         lease: String?? = nil,
+        rootRef: String? = nil,
         content: String? = nil,
         state: NativeIntakeCandidateState = .needsAccess,
         digest: String? = nil,
@@ -286,9 +354,40 @@ final class NativeIntakeCandidateStoreTests: XCTestCase {
             candidateRevision: revision,
             kind: .originalFile,
             nativeAccessLeaseRef: lease ?? "candidate-access-\(nonce)-\(slot)",
+            nativeRootRef: rootRef,
             ownedContentRef: content,
             ownedContentDigest: digest,
             ownedContentByteLength: length,
+            displayName: displayName,
+            state: state
+        )
+    }
+
+    private func folderRoot(
+        nonce: String,
+        slot: String,
+        candidateRef: String? = nil,
+        revision: UInt64 = 1,
+        displayName: String = "Briefs",
+        lease: String? = nil,
+        rootRef: String?? = nil,
+        ownerRef: String?? = nil,
+        rootGeneration: UInt64? = nil,
+        content: String? = nil,
+        state: NativeIntakeCandidateState = .needsAccess
+    ) -> NativeIntakeCandidateV1 {
+        NativeIntakeCandidateV1(
+            nativeRequestID: nonce,
+            offerDigest: offerDigest,
+            slotID: slot,
+            candidateRef: candidateRef ?? "nic-\(nonce)-\(slot)",
+            candidateRevision: revision,
+            kind: .folderRoot,
+            nativeAccessLeaseRef: lease,
+            nativeRootRef: rootRef ?? "candidate-root-\(nonce)-\(slot)",
+            nativeRootOwnerRef: ownerRef ?? "candidate-owner-\(nonce)-\(slot)",
+            nativeRootBindingGeneration: rootGeneration,
+            ownedContentRef: content,
             displayName: displayName,
             state: state
         )
@@ -300,6 +399,7 @@ final class NativeIntakeCandidateStoreTests: XCTestCase {
         candidateRef: String? = nil,
         revision: UInt64 = 1,
         displayName: String = "alpha.txt",
+        rootRef: String? = nil,
         content: String?? = nil,
         state: NativeIntakeCandidateState = .needsAccess,
         digest: String? = nil,
@@ -312,6 +412,7 @@ final class NativeIntakeCandidateStoreTests: XCTestCase {
             candidateRef: candidateRef ?? "nic-\(nonce)-\(slot)",
             candidateRevision: revision,
             kind: .ownedSnapshot,
+            nativeRootRef: rootRef,
             ownedContentRef: content ?? "1-alpha.txt",
             ownedContentDigest: digest,
             ownedContentByteLength: length,
