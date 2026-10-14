@@ -54,22 +54,35 @@ enum Ov {
     static let bgInsetDeep = dynamic(srgb(0xEEEEF0), srgb(0x141417))
     static let textPrimary = dynamic(black(0.85), white(0.92))
     static let textSecondary = dynamic(black(0.55), white(0.58))
-    static let textTertiary = dynamic(black(0.38), white(0.40))
-    static let textQuaternary = dynamic(black(0.24), white(0.26))
+    static let textTertiary = dynamic(black(0.56), white(0.64))
+    static let textQuaternary = dynamic(black(0.50), white(0.52))
     static let separator = dynamic(black(0.09), white(0.10))
     static let borderSubtle = dynamic(black(0.07), white(0.08))
     static let borderControl = dynamic(black(0.16), white(0.18))
 
-    // MARK: Accent and semantics (styles/tokens.css)
+    // MARK: Accent and semantics
+    //
+    // Measured from the prototype as it runs, not read from `styles/tokens.css`:
+    // `os/next.css` redefines the semantic colours and the two quietest text
+    // tones on top of it, and the file's own values are the ones underneath.
 
     /// Brick 500 in light; lifted for contrast on dark.
     static let accent = dynamic(srgb(0x9E302A), srgb(0xD2756C))
     static let accentActive = dynamic(srgb(0x631A17), srgb(0xE6968D))
-    static let success = dynamic(srgb(0x2E9E6B), srgb(0x3DBE83))
-    static let warning = dynamic(srgb(0xC8821E), srgb(0xE0A33E))
-    static let danger = dynamic(srgb(0xE0484D), srgb(0xF2585D))
-    static let dangerMuted = dynamic(srgb(0xE0484D, 0.13), srgb(0xF2585D, 0.18))
+    static let success = dynamic(srgb(0x1F7A50), srgb(0x4ED396))
+    static let warning = dynamic(srgb(0x8A5A0B), srgb(0xF0B95A))
+    static let danger = dynamic(srgb(0xC0272C), srgb(0xFF8A8E))
+    static let dangerMuted = dynamic(srgb(0xC0272C, 0.13), srgb(0xFF8A8E, 0.18))
     static let onAccent = NSColor.white
+
+    /// `--ov-border-default` and `--ov-material-hud`: the toast's border and
+    /// its surface, which is a near-opaque wash rather than a blur, because
+    /// the design's `backdrop-filter` has nothing behind it but the window.
+    static let borderDefault = dynamic(
+        NSColor(srgbRed: 60 / 255.0, green: 59 / 255.0, blue: 66 / 255.0, alpha: 0.30),
+        white(0.26)
+    )
+    static let materialHud = dynamic(srgb(0xF5F5F6, 0.96), srgb(0x1C1C21, 0.96))
 
     /// `.ov-btn--primary`. In dark, `os/next.css` redefines it to the muted
     /// accent with white text; in light it stays the solid accent. Dynamic,
@@ -361,6 +374,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var serviceHost = "This Mac"
     private var addSheet: AddApplicationSheet?
     private var confirmSheet: ConfirmSheet?
+    private var toasts: OvToastHost?
     /// Which application's details are open (`V.app`).
     private var openApplication: String?
     private var footerDot: NSView?
@@ -618,9 +632,24 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         // there keeps the pane usable without needing that rule.
         window.minSize = NSSize(width: 640, height: 420)
         window.contentView = buildContent(appearance: Self.targetAppearance)
+        attachToasts(to: window)
         renderSidebar()
         render()
         return window
+    }
+
+    /// `#sw-toasts` floats over the whole window, so it is attached to the
+    /// content view rather than the pane, and re-attached whenever that view
+    /// is replaced.
+    private func attachToasts(to window: NSWindow) {
+        guard let content = window.contentView else { return }
+        toasts = OvToastHost(in: content)
+    }
+
+    /// Say what happened, once. Successes only — a refusal belongs in the
+    /// sheet that asked for it, which stays open to say so.
+    private func toast(_ message: String) {
+        toasts?.show(message, kind: .ok, appearance: Self.targetAppearance)
     }
 
     /// The whole view tree, built against `window`'s current appearance.
@@ -2531,6 +2560,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     private func rebuildForAppearance() {
         guard let window else { return }
         window.contentView = buildContent(appearance: Self.targetAppearance)
+        attachToasts(to: window)
         renderSidebar()
         render()
         positionWindowControls()
@@ -2650,6 +2680,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                 + "acknowledges it.",
             action: "Allow contributions",
             working: "Updating \(host.displayName)…",
+            saved: "\(host.displayName) can contribute",
             host: host,
             profile: "authoring"
         )
@@ -2664,6 +2695,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                 + "in the workspace and keeps its current review state.",
             action: "Remove permission",
             working: "Updating \(host.displayName)…",
+            saved: "\(host.displayName) returned to Read only",
             host: host,
             profile: "restricted"
         )
@@ -2679,6 +2711,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         note: String = "",
         action: String,
         working: String,
+        saved: String,
         host: McpHostStatus,
         profile: String
     ) {
@@ -2704,8 +2737,11 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                     host: host.host, workspace: workspace, profile: profile
                 )
                 switch result {
-                case .success: self.confirmSheet?.close()
-                case .failure(let error): self.confirmSheet?.showFailure(Self.mcpFailure(error))
+                case .success:
+                    self.confirmSheet?.close()
+                    self.toast(saved)
+                case .failure(let error):
+                    self.confirmSheet?.showFailure(Self.mcpFailure(error))
                 }
                 self.finishMcpWrite(result.map { _ in () })
             }
@@ -2738,6 +2774,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                 case .success:
                     self.openApplication = nil
                     self.confirmSheet?.close()
+                    self.toast("Access revoked for \(name)")
                 case .failure(let error):
                     self.confirmSheet?.showFailure(Self.mcpFailure(error))
                 }
