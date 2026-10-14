@@ -284,3 +284,150 @@ def test_only_a_qualified_direct_drawing_child_reaches_a_chart() -> None:
 
     for sheet in (foreign, nested):
         assert records(xlsx(sheet)) == []
+
+
+# The same route written wholly in the Strict profile: every namespace and
+# every relationship type is the ``purl.oclc.org`` spelling OOXML defines
+# beside the ``openxmlformats.org`` one. The content types are shared between
+# the profiles, so they are the fixture's own unchanged, and a Strict workbook
+# reaches its chart on the Strict names alone.
+STRICT_MAIN = "http://purl.oclc.org/ooxml/spreadsheetml/main"
+STRICT_RELNS = "http://purl.oclc.org/ooxml/officeDocument/relationships"
+STRICT_SHEET_DRAWING_NS = "http://purl.oclc.org/ooxml/drawingml/spreadsheetDrawing"
+STRICT_DRAWING_NS = "http://purl.oclc.org/ooxml/drawingml/main"
+STRICT_CHART_NS = "http://purl.oclc.org/ooxml/drawingml/chart"
+# Columns 1..2 and rows 1..3 are the A1 range ``B2:C4``.
+STRICT_ANCHOR = (
+    "<xdr:twoCellAnchor>"
+    "<xdr:from><xdr:col>1</xdr:col><xdr:colOff>0</xdr:colOff>"
+    "<xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>"
+    "<xdr:to><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff>"
+    "<xdr:row>3</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>"
+    "<xdr:graphicFrame><xdr:nvGraphicFramePr>"
+    '<xdr:cNvPr id="2" name="Chart 1"/><xdr:cNvGraphicFramePr/>'
+    "</xdr:nvGraphicFramePr><xdr:xfrm/>"
+    f'<a:graphic><a:graphicData uri="{STRICT_CHART_NS}">'
+    f'<c:chart xmlns:c="{STRICT_CHART_NS}" xmlns:r="{STRICT_RELNS}" r:id="rIdC"/>'
+    "</a:graphicData></a:graphic></xdr:graphicFrame>"
+    "<xdr:clientData/></xdr:twoCellAnchor>"
+)
+STRICT_CHART = (
+    f'<c:chartSpace xmlns:c="{STRICT_CHART_NS}" xmlns:a="{STRICT_DRAWING_NS}">'
+    "<c:chart><c:title><c:tx><c:rich><a:p>"
+    "<a:r><a:t>Strict revenue</a:t></a:r>"
+    "</a:p></c:rich></c:tx></c:title>"
+    "<c:plotArea><c:barChart>"
+    '<c:ser><c:idx val="0"/><c:order val="0"/>'
+    "<c:val><c:numRef><c:f>Strict!$B$2</c:f>"
+    '<c:numCache><c:ptCount val="1"/>'
+    '<c:pt idx="0"><c:v>7</c:v></c:pt></c:numCache>'
+    "</c:numRef></c:val></c:ser>"
+    "</c:barChart></c:plotArea></c:chart></c:chartSpace>"
+)
+
+
+def strict_xlsx() -> bytes:
+    """One Strict sheet relating one drawing, anchoring one chart, over one value."""
+    members = {
+        "[Content_Types].xml": (
+            "<Types>"
+            f'<Override PartName="/{DRAWING_PART}" ContentType="{DRAWING_CT}"/>'
+            f'<Override PartName="/{CHART_PART}" ContentType="{CHART_CT}"/>'
+            "</Types>"
+        ),
+        "xl/workbook.xml": (
+            f'<workbook xmlns="{STRICT_MAIN}" xmlns:r="{STRICT_RELNS}"><sheets>'
+            '<sheet name="Strict" sheetId="3" r:id="rId1"/>'
+            "</sheets></workbook>"
+        ),
+        "xl/_rels/workbook.xml.rels": (
+            "<Relationships>"
+            '<Relationship Id="rId1" Target="worksheets/sheet1.xml"'
+            f' Type="{STRICT_RELNS}/worksheet"/>'
+            "</Relationships>"
+        ),
+        SHEET_PART: (
+            f'<worksheet xmlns="{STRICT_MAIN}" xmlns:r="{STRICT_RELNS}">'
+            '<sheetData/><drawing r:id="rIdD"/></worksheet>'
+        ),
+        "xl/worksheets/_rels/sheet1.xml.rels": (
+            "<Relationships>"
+            '<Relationship Id="rIdD" Target="../drawings/drawing1.xml"'
+            f' Type="{STRICT_RELNS}/drawing"/>'
+            "</Relationships>"
+        ),
+        DRAWING_PART: (
+            f'<xdr:wsDr xmlns:xdr="{STRICT_SHEET_DRAWING_NS}"'
+            f' xmlns:a="{STRICT_DRAWING_NS}">{STRICT_ANCHOR}</xdr:wsDr>'
+        ),
+        "xl/drawings/_rels/drawing1.xml.rels": (
+            "<Relationships>"
+            '<Relationship Id="rIdC" Target="../charts/chart1.xml"'
+            f' Type="{STRICT_RELNS}/chart"/>'
+            "</Relationships>"
+        ),
+        CHART_PART: STRICT_CHART,
+    }
+    return archive(members)
+
+
+def test_a_strict_profile_workbook_reaches_its_chart_on_strict_names() -> None:
+    """The Strict route reports the same records as the Transitional one.
+
+    Nothing about a record is profile-specific: the route is walked on the
+    Strict namespaces and relationship types throughout, and what comes back
+    is the Transitional fixture's own provenance differing only in the sheet
+    it is on and the cells its anchor covers.
+    """
+    strict = EXPECTED | {"sheetId": "3", "sheet": "Strict", "anchorRange": "B2:C4"}
+
+    assert records(strict_xlsx()) == [
+        ("Strict revenue", strict),
+        (
+            "7",
+            strict
+            | SERIES_PLACE
+            | {
+                "chartRole": "chart_value",
+                "pointIndex": "0",
+                "formula": "Strict!$B$2",
+            },
+        ),
+    ]
+
+
+# Every base URI the fixture's route is written on, beside its Strict spelling.
+# The content types are shared between the profiles, so none of them appears
+# here and the rewritten package declares exactly the fixture's own.
+STRICT_URIS = {
+    MAIN: STRICT_MAIN,
+    RELNS: STRICT_RELNS,
+    SHEET_DRAWING_NS: STRICT_SHEET_DRAWING_NS,
+    DRAWING_NS: STRICT_DRAWING_NS,
+    CHART_NS: STRICT_CHART_NS,
+}
+
+
+def strict_profile(content: bytes) -> bytes:
+    """The same package with every Transitional base URI respelt as Strict."""
+    with zipfile.ZipFile(io.BytesIO(content)) as package:
+        members = {
+            name: package.read(name).decode("utf-8")
+            for name in package.namelist()
+        }
+    for name, member in members.items():
+        for transitional, strict in STRICT_URIS.items():
+            member = member.replace(transitional, strict)
+        members[name] = member
+    return archive(members)
+
+
+def test_the_strict_spelling_of_the_fixture_reports_the_same_records() -> None:
+    """Respelling the whole route changes nothing that comes out of it.
+
+    The Transitional fixture is rewritten member by member -- workbook,
+    worksheet, both relationship parts, the drawing and the chart -- and the
+    records read back off it are the Transitional ones exactly, so the Strict
+    names carry the route end to end and reach the same cached chart output.
+    """
+    assert records(strict_profile(xlsx())) == records(xlsx()) != []
