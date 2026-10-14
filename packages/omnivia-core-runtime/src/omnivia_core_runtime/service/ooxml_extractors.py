@@ -187,6 +187,26 @@ _XLSX_DEFINED_NAME_FLAGS: Final = (
     "publishToServer",
     "workbookParameter",
 )
+# The content type that qualifies a part as a worksheet's classic comments
+# ("notes") list. The relationship type is the pair OOXML defines for every
+# comments part, shared with PresentationML -- see ``_COMMENTS_RELATIONSHIPS`` --
+# so the declared content type is the whole of what keeps a SpreadsheetML
+# comment list from being read as a slide's, and the other way round. Compared
+# against ``declared_type``, which case-folds; the authored spelling is already
+# folded.
+_XLSX_COMMENTS_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"
+)
+# One comments part's own bounds. A comment body is rich text, so its runs are
+# work the part asks for whether or not any of them stores text; the run bound
+# is taken across the whole part, for the reason the sheet-wide table bound is.
+# ponytail: 10k comments and 10k authors, 20k runs across the whole part, and
+# 100k characters per comment; widen only if a real workbook is refused by
+# these.
+_MAX_XLSX_COMMENTS: Final = 10_000
+_MAX_XLSX_COMMENT_AUTHORS: Final = 10_000
+_MAX_XLSX_COMMENT_RUNS: Final = 20_000
+_MAX_XLSX_COMMENT_CHARS: Final = 100_000
 # The shape-tree children that carry an identity and a z-order position.
 # ``contentPart`` carries neither, so it is not a shape here.
 _PPTX_SHAPES: Final = frozenset({"sp", "grpSp", "graphicFrame", "cxnSp", "pic"})
@@ -1561,6 +1581,36 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                     )
                 )
                 _bounded(segments)
+            # A comment is anchored to a reference, not to a cell: nothing here
+            # requires the sheet to have written anything at that position, and
+            # no cell is materialised for one.
+            for text, provenance in _xlsx_comments(package, part):
+                segments.append(
+                    ExtractedSegment(
+                        "comment",
+                        _locator(
+                            capture_id,
+                            **provenance,
+                            sheetPart=part,
+                            sheetId=sheet_id,
+                            sheet=sheet_name,
+                            sheetState=state,
+                        ),
+                        # A comment written with no text is still a comment the
+                        # file claims, so it is reported rather than dropped.
+                        # ``document_intake`` takes exactly one content
+                        # representation and refuses empty text, so the empty
+                        # claim is carried as the value it is; nothing is
+                        # invented to stand in for text the file never wrote.
+                        text=text or None,
+                        structured_value=None if text else {"text": ""},
+                        # A comment is out of the grid's flow wherever it sits,
+                        # including on a hidden sheet: the sheet's state is
+                        # reported in the locator rather than folded into this.
+                        visibility="annotation",
+                    )
+                )
+                _bounded(segments)
         # After every sheet's own content, in the order the workbook declared
         # them: a defined name is the workbook's declaration rather than a
         # sheet's, even where it scopes itself to one.
@@ -2332,6 +2382,181 @@ def _hyperlink_relation(
     }, external
 
 
+def _xlsx_comments(
+    package: _Package, part: str
+) -> list[tuple[str, dict[str, object]]]:
+    """Return one worksheet's classic comments as (text, provenance), in order.
+
+    Order is the order the comment list wrote them in; nothing is sorted by
+    anchor, author or position. The part is reached only through the
+    worksheet's own relationships, by the one relationship type OOXML defines
+    for a comments part and the content type SpreadsheetML declares for its
+    own, so a slide's comment list, an external target and a member that merely
+    looks like the part all reach nothing. Two qualifying relationships leave
+    which list is meant ambiguous, so the sheet is refused.
+
+    Nothing here opens the legacy drawing a worksheet names beside its
+    comments: the VML it holds carries a comment's on-screen box, never its
+    text, and a comment is placed by the ``ref`` it already declares. No shape,
+    image, hyperlink or other external target is reached from here either.
+
+    A comment on a hidden sheet is still a comment, so visibility is the
+    caller's ``annotation`` either way and the sheet's own state is recorded in
+    the locator rather than folded into it.
+    """
+    related = _related_part(
+        package,
+        part,
+        _COMMENTS_RELATIONSHIPS,
+        _XLSX_COMMENTS_CONTENT_TYPE,
+        "comments",
+        owner="worksheet",
+        label="XLSX",
+    )
+    if related is None:
+        return []
+    relation_id, comments_part = related
+    root = package.xml(comments_part)
+    namespace, _, local = root.tag.rpartition("}")
+    namespace = namespace.lstrip("{")
+    # The declared content type says what the part is; the root is where the
+    # part says so itself, in one of the two namespaces OOXML defines for
+    # SpreadsheetML. Everything below is then held to that same namespace, so a
+    # lookalike spelling one of these local names in another namespace -- or in
+    # none -- declares nothing the part can be read from.
+    if namespace not in _SPREADSHEETML:
+        raise OOXMLInvalid("XLSX comments part uses an unsupported namespace")
+    if local != "comments":
+        raise OOXMLInvalid("XLSX comments part is not rooted at its own list")
+    scope = f"{{{namespace}}}"
+    authors: list[str] | None = None
+    listed: ElementTree.Element | None = None
+    for node in root:
+        if node.tag == f"{scope}authors":
+            if authors is not None:
+                raise OOXMLInvalid("XLSX comments part declares two author lists")
+            authors = _xlsx_comment_authors(node, scope)
+        elif node.tag == f"{scope}commentList":
+            if listed is not None:
+                raise OOXMLInvalid("XLSX comments part declares two comment lists")
+            listed = node
+        elif node.tag != f"{scope}extLst":
+            raise OOXMLInvalid("XLSX comments part holds an unsupported element")
+    # Every comment cites an author by position in this one list, so a part
+    # without it reports authors nobody can resolve.
+    if authors is None:
+        raise OOXMLInvalid("XLSX comments part declares no author list")
+    # SpreadsheetML requires the list itself, so a part declaring none -- or
+    # declaring one only below an extension, which is not this element -- is not
+    # a comments part the reader can read, however empty the list would be.
+    if listed is None:
+        raise OOXMLInvalid("XLSX comments part declares no comment list")
+    result: list[tuple[str, dict[str, object]]] = []
+    anchors: set[tuple[int, int, int, int]] = set()
+    runs = 0
+    for index, entry in enumerate(listed):
+        if entry.tag != f"{scope}comment":
+            raise OOXMLInvalid("XLSX comment list holds an unsupported element")
+        if index >= _MAX_XLSX_COMMENTS:
+            raise OOXMLInvalid("XLSX worksheet has too many comments")
+        reference = entry.attrib.get("ref")
+        if not reference:
+            raise OOXMLInvalid("XLSX comment declares no reference")
+        # Validated as a coordinate or range, then kept exactly as written. Two
+        # comments over one anchor leave the anchor holding two comments and
+        # nothing here picks between them; the bounds are what is compared, so
+        # ``A1`` and ``A1:A1`` are the one anchor they name.
+        anchor = _cell_range(reference)
+        if anchor in anchors:
+            raise OOXMLInvalid("XLSX comment anchor is repeated")
+        anchors.add(anchor)
+        author_id = entry.attrib.get("authorId", "")
+        if _INDEX.fullmatch(author_id) is None or int(author_id) > _MAX_INDEX:
+            raise OOXMLInvalid("XLSX comment author id is malformed")
+        if int(author_id) >= len(authors):
+            raise OOXMLInvalid("XLSX comment names no author")
+        text, runs = _xlsx_comment_text(entry, scope, runs)
+        result.append(
+            (
+                text,
+                {
+                    "part": comments_part,
+                    "relationshipId": _clip(relation_id, _MAX_META_CHARS),
+                    "commentForm": "classic",
+                    # Zero-based, the position the list wrote it at: a
+                    # SpreadsheetML comment carries no id of its own.
+                    "commentIndex": index,
+                    "cell": reference,
+                    "authorId": int(author_id),
+                    "author": authors[int(author_id)],
+                    # Stated so no consumer reads the name above as identity.
+                    "authorAuthenticated": False,
+                },
+            )
+        )
+    return result
+
+
+def _xlsx_comment_authors(holder: ElementTree.Element, scope: str) -> list[str]:
+    """Read a comments part's author list, in the order it declares them.
+
+    SpreadsheetML gives an author no identifier of its own: an author is a bare
+    string and a comment cites it by its zero-based position here, so there is
+    no id to repeat and two entries spelling one name are two authors rather
+    than a duplicate. Each name is a claim the file makes about itself, never
+    evidence of who commented. An author is an ``xsd:string``, so markup inside
+    one is not a structure to descend into.
+    """
+    authors: list[str] = []
+    for node in holder:
+        if node.tag != f"{scope}author" or len(node):
+            raise OOXMLInvalid("XLSX comment author list holds an unsupported element")
+        if len(authors) >= _MAX_XLSX_COMMENT_AUTHORS:
+            raise OOXMLInvalid("XLSX comment author list is too large")
+        authors.append(_clip(node.text or "", _MAX_META_CHARS))
+    return authors
+
+
+def _xlsx_comment_text(
+    entry: ElementTree.Element, scope: str, runs: int
+) -> tuple[str, int]:
+    """Read one comment's rich text, concatenating its stored runs in order.
+
+    A body is ``CT_Rst``: the string stored directly, or a run list each of
+    whose runs stores its own piece of it, so the text that comes back is the
+    pieces the part stored concatenated in the order it stored them. Nothing
+    here reads formatting, and a phonetic run is a reading of the body rather
+    than part of it, so it is not concatenated into one.
+
+    A second body leaves the comment with two texts and nothing here picks
+    between them. ``runs`` is carried in and out so the bound holds across the
+    whole part rather than per comment.
+    """
+    body: ElementTree.Element | None = None
+    for node in entry:
+        if node.tag == f"{scope}text":
+            if body is not None:
+                raise OOXMLInvalid("XLSX comment declares two bodies")
+            body = node
+        elif node.tag != f"{scope}commentPr":
+            raise OOXMLInvalid("XLSX comment holds an unsupported element")
+    if body is None:
+        raise OOXMLInvalid("XLSX comment declares no body")
+    pieces: list[str] = []
+    for node in body:
+        if node.tag == f"{scope}t":
+            pieces.append(node.text or "")
+        elif node.tag == f"{scope}r":
+            runs += 1
+            if runs > _MAX_XLSX_COMMENT_RUNS:
+                raise OOXMLInvalid("XLSX comment runs exceed the accepted bound")
+            pieces.extend(child.text or "" for child in node if child.tag == f"{scope}t")
+    text = "".join(pieces)
+    if len(text) > _MAX_XLSX_COMMENT_CHARS:
+        raise OOXMLInvalid("XLSX comment text exceeds the accepted bound")
+    return text, runs
+
+
 def _cell_index(coordinate: str) -> tuple[int, int]:
     """Return the (column, row) one A1 coordinate names, or refuse it."""
     match = _CELL_REF.fullmatch(coordinate)
@@ -2425,6 +2650,7 @@ def _related_part(
     content_type: str,
     what: str,
     owner: str = "slide",
+    label: str = "PPTX",
 ) -> tuple[str, str] | None:
     """Return the (relationship id, part) ``source`` relates to as ``what``.
 
@@ -2440,6 +2666,10 @@ def _related_part(
     all settled when the relationship was resolved. Two qualifying
     relationships leave which part is meant ambiguous, so ``source`` is refused
     rather than read from whichever sorts first.
+
+    ``label`` is the format whose relationship is being resolved and ``owner``
+    the kind of part holding it, so a refusal names the file it came from
+    rather than whichever format reached this code first.
     """
     rels = posixpath.join(
         posixpath.dirname(source), "_rels", posixpath.basename(source) + ".rels"
@@ -2452,12 +2682,12 @@ def _related_part(
     if not named:
         return None
     if len(named) > 1:
-        raise OOXMLInvalid(f"PPTX {owner} names more than one {what} relationship")
+        raise OOXMLInvalid(f"{label} {owner} names more than one {what} relationship")
     target, external = package.relationships[rels][named[0]]
     if external:
-        raise OOXMLInvalid(f"PPTX {what} relationship is external")
+        raise OOXMLInvalid(f"{label} {what} relationship is external")
     if package.declared_type(target) != content_type:
-        raise OOXMLInvalid(f"PPTX {what} relationship does not name a {what} part")
+        raise OOXMLInvalid(f"{label} {what} relationship does not name a {what} part")
     return named[0], target
 
 
