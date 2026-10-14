@@ -282,8 +282,9 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         deliverPendingCaptures()
         reconcileWatchedFolders()
         // Arms `.startup` and surfaces whatever the persisted schedule already owed. Scheduling
-        // reads no watched scope, so it does not wait on pending establishment above.
-        folderReconciliationDriver?.startup()
+        // reads no watched scope, so it does not wait on pending establishment above; running the
+        // demands does, and the executor's own establishment gate is what holds them back.
+        runReconciliation(folderReconciliationDriver?.startup())
         nativeHandoffReceiver?.reconcile()
         shareInboxAdopter?.reconcile()
 
@@ -312,13 +313,15 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             timeInterval: FolderReconciliationDriver.tickInterval,
             repeats: true
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.folderReconciliationDriver?.tick() }
+            Task { @MainActor [weak self] in
+                self?.runReconciliation(self?.folderReconciliationDriver?.tick())
+            }
         }
         RunLoop.main.add(reconciliationTimer, forMode: .common)
         self.reconciliationTimer = reconciliationTimer
         // Sleep stops the clock for the schedule and stops FSEvents for the stream, and a remount
         // replaces a root this process cannot otherwise notice. Both are immediate triggers; the
-        // handlers do nothing but hand them to the driver.
+        // handlers do nothing but hand them to the driver and its demands to the executor.
         let workspace = NSWorkspace.shared.notificationCenter
         workspaceObservers = [
             workspace.addObserver(
@@ -326,14 +329,18 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.folderReconciliationDriver?.wake() }
+                Task { @MainActor [weak self] in
+                    self?.runReconciliation(self?.folderReconciliationDriver?.wake())
+                }
             },
             workspace.addObserver(
                 forName: NSWorkspace.didMountNotification,
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.folderReconciliationDriver?.remount() }
+                Task { @MainActor [weak self] in
+                    self?.runReconciliation(self?.folderReconciliationDriver?.remount())
+                }
             },
         ]
     }
@@ -573,6 +580,17 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             _ = await fileMonitoring?.reconcileReceipts()
             await self.refreshFolderEventObservation()
         }
+    }
+
+    /// Hands the demands a lifecycle entry point just armed to the one executor, off the main
+    /// actor. That actor is the whole of the no-overlap guarantee: a second batch waits for the
+    /// first instead of running beside it, and a demand the first batch already reported is no
+    /// longer owed by the time the second reaches it.
+    private func runReconciliation(_ demands: [FolderReconciliationScheduler.Demand]?) {
+        guard let demands, !demands.isEmpty,
+              let executor = intakeEnvironment?.folderReconciliationExecutor
+        else { return }
+        Task.detached { await executor.run(demands) }
     }
 
     private func reconcileWatchedFolders() {

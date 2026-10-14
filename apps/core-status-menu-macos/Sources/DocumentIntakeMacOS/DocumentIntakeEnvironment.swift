@@ -12,10 +12,13 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     public let queue: CaptureIntentQueue
     public let folderSubscriptions: FolderSubscriptionStore
     public let folderMonitoring: FolderMonitoringCoordinator
-    /// Durable event-stream cursor and dirty obligations. Fed by `FolderEventBridge`; reconciliation does not acknowledge it yet.
+    /// Durable event-stream cursor and dirty obligations. Fed by `FolderEventBridge` and
+    /// acknowledged by `folderReconciliationExecutor` for the work it actually covered.
     public let folderObservation: FolderObservationLedger
     /// Durable periodic schedule and coverage truth for active folder subscriptions.
     public let folderReconciliation: FolderReconciliationScheduler
+    /// Runs the demands the schedule arms, off the main actor.
+    public let folderReconciliationExecutor: FolderReconciliationExecutor
     public let folderBulkRuns: FolderBulkRunStore
     public let folderBulkCoordinator: FolderBulkRunCoordinator
     public let fileSubscriptions: FileSubscriptionStore
@@ -81,6 +84,15 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             queue: queue,
             subscriptions: folderSubscriptions,
             reader: reader,
+            controlledStores: controlledStores
+        )
+        folderReconciliationExecutor = FolderReconciliationExecutor(
+            accessStore: accessStore,
+            subscriptions: folderSubscriptions,
+            observation: folderObservation,
+            scheduler: folderReconciliation,
+            reader: reader,
+            gate: gate,
             controlledStores: controlledStores
         )
         folderBulkRuns = try FolderBulkRunStore(

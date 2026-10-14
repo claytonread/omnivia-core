@@ -486,7 +486,10 @@ final class FolderReconciliationSchedulerTests: XCTestCase {
         XCTAssertFalse(state.isOverdue(at: Self.epoch.addingTimeInterval(900)))
     }
 
-    func testIncompleteCoverageIsOverdueAsSoonAsItIsDueAgain() throws {
+    /// Incomplete coverage is attention from the instant it is reported, not when its next interval
+    /// happens to come round. A folder whose members could not all be covered is not quietly fine
+    /// for the rest of the interval because the clock has not moved.
+    func testIncompleteCoverageIsOverdueAsSoonAsItIsReported() throws {
         let lane = try lane(["sub-a"])
         let scheduler = try scheduler(lane)
         try scheduler.complete(
@@ -497,8 +500,12 @@ final class FolderReconciliationSchedulerTests: XCTestCase {
         let state = scheduler.coverage(subscriptionID: "sub-a", kind: .metadata)
         XCTAssertEqual(state.lastOutcome, .partial)
         XCTAssertFalse(state.isUpToDate(at: lane.clock.now))
-        XCTAssertFalse(state.isOverdue(at: lane.clock.now))
+        XCTAssertTrue(state.isOverdue(at: lane.clock.now))
         XCTAssertTrue(state.isOverdue(at: Self.epoch.addingTimeInterval(900)))
+        // Partial coverage still spends its kind's interval: re-reading every resident member to
+        // learn that a provider-only one is still provider-only would cost the pass for nothing.
+        XCTAssertFalse(state.isDue(at: lane.clock.now))
+        XCTAssertEqual(state.dueAt, Self.epoch.addingTimeInterval(900))
     }
 
     func testCompletingClearsTheArmedTriggerAndReschedules() throws {

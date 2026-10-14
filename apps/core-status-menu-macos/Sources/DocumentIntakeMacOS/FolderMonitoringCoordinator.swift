@@ -90,7 +90,10 @@ public actor FolderMonitoringCoordinator {
     /// True once the subscription's own root group is established work. A
     /// repairable or unavailable root is still established: only one that never
     /// finished being established is not.
-    private static func isEstablished(
+    ///
+    /// Shared with `FolderReconciliationExecutor`, which gates its automatic
+    /// passes on the same condition for the same reason.
+    static func isEstablished(
         _ subscription: FolderSubscription,
         in accessStore: NativeAccessStore
     ) -> Bool {

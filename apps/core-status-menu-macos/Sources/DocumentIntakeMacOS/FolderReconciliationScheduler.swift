@@ -120,10 +120,16 @@ public struct FolderReconciliationCoverageState: Equatable, Sendable {
         return now >= dueAt
     }
 
-    /// Work is owed and the last pass did not achieve complete coverage, so there is no recent
-    /// truth to fall back on. The UI shows attention here, never "up to date".
+    /// There is no complete coverage to fall back on: either a pass has run and left the scope
+    /// only partly covered, or none has run and work is owed. The UI shows attention here, never
+    /// "up to date".
+    ///
+    /// An incomplete pass is overdue the instant it reports, not when its next interval elapses.
+    /// A folder whose members could not all be covered is not quietly fine for the next day
+    /// because the clock has not come round.
     public func isOverdue(at now: Date) -> Bool {
-        isDue(at: now) && lastOutcome != .complete
+        guard let lastOutcome else { return isDue(at: now) }
+        return lastOutcome != .complete
     }
 
     /// The only state a UI may present as up to date.
@@ -184,6 +190,15 @@ public final class FolderReconciliationScheduler: @unchecked Sendable {
     /// Design §21.6: a due interval may be stretched by up to this fraction, deterministically, so
     /// subscriptions established together do not all come due in the same instant.
     public static let maximumJitterFraction = 0.2
+    /// How soon a pass that reached nothing comes due again. A failed or provider-unavailable pass
+    /// covered no item at all and is cheap to retry — an unresolvable grant refuses before it
+    /// reads anything — so it is runnable again within one driver tick instead of waiting out a
+    /// 15-minute or 24-hour interval it has no coverage truth to spend.
+    ///
+    /// Partial coverage keeps its kind's interval: a member whose bytes are provider-only is
+    /// still provider-only a minute later, and re-reading every resident member to learn that
+    /// would cost the whole pass for nothing. `isOverdue` is what keeps that gap visible.
+    public static let retryInterval: TimeInterval = 60
 
     private let gate: PublicationGate
     private let subscriptions: FolderSubscriptionStore
@@ -233,8 +248,19 @@ public final class FolderReconciliationScheduler: @unchecked Sendable {
         from: Date,
         fraction: Double
     ) -> Date {
+        nextDue(interval: kind.interval, from: from, fraction: fraction)
+    }
+
+    /// `dueAt` for a pass that reached nothing, so it is runnable again promptly. Jittered like
+    /// any other interval: a provider that went away took every subscription with it, and they do
+    /// not all come back to it in the same instant.
+    static func retryDue(from: Date, fraction: Double) -> Date {
+        nextDue(interval: retryInterval, from: from, fraction: fraction)
+    }
+
+    private static func nextDue(interval: TimeInterval, from: Date, fraction: Double) -> Date {
         let clamped = fraction.isFinite ? min(max(fraction, 0), 1) : 0
-        return from.addingTimeInterval(kind.interval * (1 + maximumJitterFraction * clamped))
+        return from.addingTimeInterval(interval * (1 + maximumJitterFraction * clamped))
     }
 
     // MARK: - Reading
@@ -328,7 +354,11 @@ public final class FolderReconciliationScheduler: @unchecked Sendable {
         else { throw FolderReconciliationError.invalidState }
         let now = clock()
         let outcome = result.outcome
-        let due = Self.nextDue(kind, from: now, fraction: jitter(subscriptionID, kind))
+        let fraction = jitter(subscriptionID, kind)
+        // A pass that reached nothing spends no interval on it; see `retryInterval`.
+        let due = outcome == .failed || outcome == .providerUnavailable
+            ? Self.retryDue(from: now, fraction: fraction)
+            : Self.nextDue(kind, from: now, fraction: fraction)
         return try mutate { document in
             var value = entry(subscriptionID, kind, in: document)
                 ?? FolderReconciliationEntry(
