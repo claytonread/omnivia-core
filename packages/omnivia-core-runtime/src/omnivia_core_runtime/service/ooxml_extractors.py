@@ -207,6 +207,38 @@ _MAX_XLSX_COMMENTS: Final = 10_000
 _MAX_XLSX_COMMENT_AUTHORS: Final = 10_000
 _MAX_XLSX_COMMENT_RUNS: Final = 20_000
 _MAX_XLSX_COMMENT_CHARS: Final = 100_000
+# The relationship and content types that together qualify the two parts
+# threaded comments live in: the workbook-wide person list every comment cites,
+# and one worksheet's own comment list. Both are a Microsoft extension, so each
+# type has one defined URI rather than a Strict/Transitional pair, and neither
+# reaches -- nor is reached by -- the classic SpreadsheetML comment types above.
+# The relationship path is matched exactly, so the capital in
+# ``threadedComment`` is part of the route; the content types are compared
+# against ``declared_type``, which case-folds, and are written folded here.
+_XLSX_PERSONS_RELATIONSHIPS: Final = frozenset(
+    {"http://schemas.microsoft.com/office/2017/10/relationships/person"}
+)
+_XLSX_PERSONS_CONTENT_TYPE: Final = "application/vnd.ms-excel.person+xml"
+_XLSX_THREADED_RELATIONSHIPS: Final = frozenset(
+    {"http://schemas.microsoft.com/office/2017/10/relationships/threadedComment"}
+)
+_XLSX_THREADED_CONTENT_TYPE: Final = "application/vnd.ms-excel.threadedcomments+xml"
+# The one namespace both parts are written in. As with every part reached by its
+# declared type alone, the namespace and the root are the remaining check that
+# the part holds the vocabulary the declaration promised, and everything below
+# the root is held to that same namespace: a lookalike spelling one of these
+# names in another namespace -- or in none -- declares nothing here.
+_XLSX_THREADED_MAIN: Final = (
+    "http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments"
+)
+# One threaded part's own bounds: the records a list may declare, counted across
+# the part, and one comment's text. A threaded comment's text is a plain string
+# rather than the rich text a classic comment holds, so there are no runs to
+# bound separately.
+# ponytail: 10k persons and 10k comments per part, 100k characters per comment;
+# widen only if a real workbook is refused by these.
+_MAX_XLSX_THREADED_RECORDS: Final = 10_000
+_MAX_XLSX_THREADED_CHARS: Final = 100_000
 # The shape-tree children that carry an identity and a z-order position.
 # ``contentPart`` carries neither, so it is not a shape here.
 _PPTX_SHAPES: Final = frozenset({"sp", "grpSp", "graphicFrame", "cxnSp", "pic"})
@@ -1454,6 +1486,10 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         # scoped to a sheet the workbook never declared is refused rather than
         # reported after a package's worth of work.
         defined_names = _xlsx_defined_names(workbook, sheets)
+        # The person list a threaded comment cites is the workbook's own part,
+        # not a sheet's, so it is resolved once and every sheet's threads cite
+        # the same table.
+        persons = _xlsx_persons(package)
         segments: list[ExtractedSegment] = []
         populated = 0
         for sheet_name, sheet_id, part, state in sheets:
@@ -1584,7 +1620,15 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
             # A comment is anchored to a reference, not to a cell: nothing here
             # requires the sheet to have written anything at that position, and
             # no cell is materialised for one.
-            for text, provenance in _xlsx_comments(package, part):
+            #
+            # The classic list first, then the threaded one: each is its own
+            # part reached on its own route, and a workbook carrying threads
+            # normally carries a classic placeholder beside each of them, so
+            # both forms are reported and each says which it is.
+            for text, provenance in (
+                *_xlsx_comments(package, part),
+                *_xlsx_threaded_comments(package, part, persons),
+            ):
                 segments.append(
                     ExtractedSegment(
                         "comment",
@@ -2555,6 +2599,478 @@ def _xlsx_comment_text(
     if len(text) > _MAX_XLSX_COMMENT_CHARS:
         raise OOXMLInvalid("XLSX comment text exceeds the accepted bound")
     return text, runs
+
+
+def _xlsx_threaded_root(
+    package: _Package, part: str, expected: str
+) -> ElementTree.Element:
+    """Parse one threaded-comment part, refusing a root that is not its own.
+
+    The declared content type says what the part is; the root element is where
+    the part says so itself, in the one namespace the extension defines. A root
+    in any other namespace -- the SpreadsheetML namespaces the classic list is
+    written in among them -- or under any other name is not the vocabulary the
+    declaration promised, so the part is refused rather than read for whatever
+    elements happen to be in it.
+    """
+    root = package.xml(part)
+    namespace, _, local = root.tag.rpartition("}")
+    if namespace.lstrip("{") != _XLSX_THREADED_MAIN:
+        raise OOXMLInvalid("XLSX threaded comment part uses an unsupported namespace")
+    if local != expected:
+        raise OOXMLInvalid("XLSX threaded comment part is not rooted at its own list")
+    return root
+
+
+def _xlsx_threaded_guid(
+    element: ElementTree.Element, name: str, label: str
+) -> str | None:
+    """Return one ``ST_Guid`` attribute as written, or None where it is absent.
+
+    A written value is validated and then kept exactly as written -- never
+    recased, rebraced or renumbered -- so an id stays the one the file declared
+    and a reference to one stays the reference the file wrote.
+
+    The grammar carries four of these at three positions, so ``label`` names
+    which one a refusal is about: a person's own id is not a comment's, and a
+    comment citing a person is not the same claim as one naming its parent.
+    """
+    raw = element.attrib.get(name)
+    if raw is not None and _GUID.fullmatch(raw) is None:
+        raise OOXMLInvalid(f"XLSX {label} is malformed")
+    return raw
+
+
+def _xlsx_threaded_claim(element: ElementTree.Element, name: str) -> str | None:
+    """Return one free-text attribute clipped, or None where it is not written.
+
+    Nothing here parses or resolves the value -- a timestamp stays the string
+    the package wrote, never a moment anything happened.
+    """
+    value = element.attrib.get(name)
+    return None if value is None else _clip(value, _MAX_META_CHARS)
+
+
+def _xlsx_threaded_done(entry: ElementTree.Element) -> bool | None:
+    """Whether a thread was marked resolved, or ``None`` where it says nothing.
+
+    The mark is a tri-state claim rather than a boolean: a thread the file never
+    marked is not the same claim as one the file marked unresolved, so an absent
+    attribute stays absent rather than folding into a false. The type is closed,
+    so a value outside it is refused rather than read as whichever of the two it
+    resembles.
+    """
+    value = entry.attrib.get("done")
+    if value is None:
+        return None
+    if value in _TRUE_FLAGS:
+        return True
+    if value in _FALSE_FLAGS:
+        return False
+    raise OOXMLInvalid("XLSX threaded comment resolution mark is malformed")
+
+
+def _xlsx_extension_list(seen: bool, owner: str) -> bool:
+    """Admit one direct ``extLst`` below ``owner``, refusing a second.
+
+    The schema gives each of the extension's own elements a single extension
+    point, so a second one leaves two sets of extensions at one position and
+    nothing here picks between them. The one is left alone -- nothing inside it
+    is read -- which is what makes a second a refusal rather than more of the
+    same. Each position is counted on its own: a point below a list says nothing
+    about the points below its records.
+    """
+    if seen:
+        raise OOXMLInvalid(f"XLSX {owner} holds more than one extension list")
+    return True
+
+
+def _xlsx_persons(package: _Package) -> dict[str, dict[str, object]]:
+    """Index the workbook's threaded-comment persons by the id each claims.
+
+    The person list is the workbook's own part, reached only through the
+    workbook's own relationships, so one table serves every sheet. Every field
+    is recorded exactly as the package wrote it and nothing here checks that any
+    of it names a real person: a person record is a claim the file makes about
+    itself, never evidence of who commented, and a user or provider id is no
+    more than another such claim.
+
+    A ``displayName`` is the one field the schema requires, so a record without
+    one declares no person at all and the table is refused rather than indexed
+    under a name nothing wrote; an authored empty one is kept as written.
+
+    Ids are indexed case-folded because only a GUID's hex digits vary in case,
+    so two records whose ids differ in nothing else claim one identity and leave
+    every comment citing it ambiguous; the table is refused rather than read
+    under one of them.
+    """
+    related = _related_part(
+        package,
+        "xl/workbook.xml",
+        _XLSX_PERSONS_RELATIONSHIPS,
+        _XLSX_PERSONS_CONTENT_TYPE,
+        "person",
+        owner="workbook",
+        label="XLSX",
+    )
+    if related is None:
+        return {}
+    relation_id, part = related
+    root = _xlsx_threaded_root(package, part, "personList")
+    scope = f"{{{_XLSX_THREADED_MAIN}}}"
+    persons: dict[str, dict[str, object]] = {}
+    extension = False
+    for record in root:
+        if record.tag == f"{scope}extLst":
+            extension = _xlsx_extension_list(extension, "person list")
+            continue
+        if record.tag != f"{scope}person":
+            raise OOXMLInvalid("XLSX person list holds an unsupported element")
+        # A person is its attributes: the schema gives it no content but the one
+        # extension point, so a person below a person declares no second person
+        # and a lookalike left unqualified declares no point.
+        person_extension = False
+        for node in record:
+            if node.tag != f"{scope}extLst":
+                raise OOXMLInvalid("XLSX person holds an unsupported element")
+            person_extension = _xlsx_extension_list(person_extension, "person")
+        if len(persons) >= _MAX_XLSX_THREADED_RECORDS:
+            raise OOXMLInvalid("XLSX person list is too large")
+        person_id = _xlsx_threaded_guid(record, "id", "person id")
+        if person_id is None:
+            raise OOXMLInvalid("XLSX person declares no id")
+        if person_id.casefold() in persons:
+            raise OOXMLInvalid("XLSX person id is repeated")
+        display_name = _xlsx_threaded_claim(record, "displayName")
+        if display_name is None:
+            raise OOXMLInvalid("XLSX person declares no display name")
+        persons[person_id.casefold()] = {
+            "personPart": part,
+            "personRelationshipId": _clip(relation_id, _MAX_META_CHARS),
+            "personDisplayName": display_name,
+            "personUserId": _xlsx_threaded_claim(record, "userId"),
+            "personProviderId": _xlsx_threaded_claim(record, "providerId"),
+            # Stated so no consumer reads the claims above as identity.
+            "authorAuthenticated": False,
+        }
+    return persons
+
+
+def _xlsx_threaded_comments(
+    package: _Package, part: str, persons: dict[str, dict[str, object]]
+) -> list[tuple[str, dict[str, object]]]:
+    """Return one worksheet's threaded comments as (text, provenance), in order.
+
+    Order is the order the part wrote them in -- a thread's root, then the
+    replies that cite it -- and nothing is sorted by id, person or timestamp.
+    The part is reached only through the worksheet's own relationships, by the
+    one relationship type the extension defines and the content type it
+    declares for its own part, so the classic list, an external target and a
+    member that merely looks like the part all reach nothing.
+
+    A threaded comment cites a person the workbook's own list has to define: a
+    comment citing an id nobody declared names nobody at all, so the sheet is
+    refused rather than reported against a person that is not there.
+
+    A reply carries its thread's anchor rather than one of its own, so it
+    inherits the anchor of the root its chain of parents ends at; a reply that
+    writes a ``ref`` anyway is accepted only where it names that same cell or
+    range, because a reply sitting somewhere other than its thread is a claim
+    nothing here can place. ``parentId`` names a comment the part declares
+    rather than one it has already written -- the schema orders nothing -- so
+    the chains are walked only once the whole list is read, and a reply written
+    before its root still resolves. What stays the part's order is the report.
+
+    Nothing here conflates the two forms. A workbook carrying threaded comments
+    normally carries a classic comment beside each thread as a placeholder for
+    readers that do not know the extension; that is the classic part's own
+    claim, read on its own route, and each form says which it is rather than
+    either standing in for the other.
+    """
+    related = _related_part(
+        package,
+        part,
+        _XLSX_THREADED_RELATIONSHIPS,
+        _XLSX_THREADED_CONTENT_TYPE,
+        "threaded comments",
+        owner="worksheet",
+        label="XLSX",
+    )
+    if related is None:
+        return []
+    relation_id, threaded_part = related
+    root = _xlsx_threaded_root(package, threaded_part, "ThreadedComments")
+    scope = f"{{{_XLSX_THREADED_MAIN}}}"
+    result: list[tuple[str, dict[str, object]]] = []
+    # Every comment the part declares, by the id it claims: what a ``parentId``
+    # is resolved against, and the set a repeated id is found in.
+    positions: dict[str, int] = {}
+    extension = False
+    for entry in root:
+        if entry.tag == f"{scope}extLst":
+            extension = _xlsx_extension_list(extension, "threaded comment list")
+            continue
+        if entry.tag != f"{scope}threadedComment":
+            raise OOXMLInvalid(
+                "XLSX threaded comment list holds an unsupported element"
+            )
+        if len(result) >= _MAX_XLSX_THREADED_RECORDS:
+            raise OOXMLInvalid("XLSX worksheet has too many threaded comments")
+        comment_id = _xlsx_threaded_guid(entry, "id", "threaded comment id")
+        if comment_id is None:
+            raise OOXMLInvalid("XLSX threaded comment declares no id")
+        # Compared case-folded, as the person ids are and for the same reason.
+        if comment_id.casefold() in positions:
+            raise OOXMLInvalid("XLSX threaded comment id is repeated")
+        person_id = _xlsx_threaded_guid(
+            entry, "personId", "threaded comment person citation"
+        )
+        if person_id is None:
+            raise OOXMLInvalid("XLSX threaded comment names no person")
+        person = persons.get(person_id.casefold())
+        if person is None:
+            raise OOXMLInvalid("XLSX threaded comment names an undeclared person")
+        parent_id = _xlsx_threaded_guid(entry, "parentId", "threaded comment parent id")
+        reference = entry.attrib.get("ref") or None
+        if reference is not None:
+            # Validated as a coordinate or a range, then kept as written.
+            _cell_range(reference)
+        positions[comment_id.casefold()] = len(result)
+        text, mentions, declared = _xlsx_threaded_text(entry, scope, persons)
+        result.append(
+            (
+                text,
+                {
+                    "part": threaded_part,
+                    "relationshipId": _clip(relation_id, _MAX_META_CHARS),
+                    "commentForm": "threaded",
+                    # Zero-based, counting comments: the extension point is not
+                    # one, so it holds no position in the list.
+                    "commentIndex": len(result),
+                    # What this record itself claimed, which a reply need not
+                    # claim at all.
+                    "ref": reference,
+                    "commentId": comment_id,
+                    "parentCommentId": parent_id,
+                    "personId": person_id,
+                    **person,
+                    # ``dT``, kept as the string the package wrote.
+                    "timestamp": _xlsx_threaded_claim(entry, "dT"),
+                    "done": _xlsx_threaded_done(entry),
+                    # A declared and empty list and no list at all carry the
+                    # same empty mentions, so whether one was written is its
+                    # own claim.
+                    "mentionsDeclared": mentions is not None,
+                    "mentions": mentions or [],
+                    # An absent ``text`` and an empty one carry the same empty
+                    # text, so whether one was written is its own claim.
+                    "textDeclared": declared,
+                },
+            )
+        )
+    # Then the anchors, now that every comment a ``parentId`` could name has
+    # been read. Each record is left where the part wrote it.
+    for index, (_, provenance) in enumerate(result):
+        anchor = _xlsx_threaded_anchor(result, positions, index)
+        claimed = provenance["ref"]
+        # The bounds are what is compared, so ``A1`` and ``A1:A1`` are the one
+        # anchor they name rather than a contradiction.
+        if isinstance(claimed, str) and _cell_range(claimed) != _cell_range(anchor):
+            raise OOXMLInvalid(
+                "XLSX threaded comment reply contradicts its thread anchor"
+            )
+    return result
+
+
+def _xlsx_threaded_anchor(
+    comments: list[tuple[str, dict[str, object]]],
+    positions: dict[str, int],
+    index: int,
+) -> str:
+    """Return the anchor of the thread the comment at ``index`` sits in.
+
+    A reply inherits from the root its chain of parents ends at rather than
+    from its immediate parent, so an anchor carries down a chain of any depth.
+    The walk is bounded by the comments on it: a comment that is its own
+    parent, or any cycle of them, reaches no root, and so does a chain that
+    runs past a comment the part never declared. Each anchor is settled onto
+    every record the walk crossed, so no comment is walked more than once.
+    """
+    path = [index]
+    crossed = {index}
+    while True:
+        record = comments[path[-1]][1]
+        settled = record.get("cell")
+        if isinstance(settled, str):
+            anchor = settled
+            break
+        parent = record["parentCommentId"]
+        if not isinstance(parent, str):
+            # A thread root, which anchors itself and so has to say where.
+            claimed = record["ref"]
+            if not isinstance(claimed, str):
+                raise OOXMLInvalid("XLSX threaded comment declares no reference")
+            anchor = claimed
+            break
+        following = positions.get(parent.casefold())
+        if following is None:
+            raise OOXMLInvalid("XLSX threaded comment reply names no parent comment")
+        if following in crossed:
+            raise OOXMLInvalid("XLSX threaded comment reply reaches no thread root")
+        path.append(following)
+        crossed.add(following)
+    for position in path:
+        comments[position][1]["cell"] = anchor
+    return anchor
+
+
+def _xlsx_threaded_text(
+    entry: ElementTree.Element, scope: str, persons: dict[str, dict[str, object]]
+) -> tuple[str, list[dict[str, object]] | None, bool]:
+    """Read a threaded comment's text and mentions, and whether text was written.
+
+    The text is an ``xsd:string`` rather than the rich text a classic comment
+    holds, so markup inside it is not a structure to descend into: a ``text``
+    element carrying one is refused rather than read down to its first child. A
+    second one leaves the comment with two texts and nothing here picks between
+    them. The element itself is optional, so a comment carrying none at all
+    makes the same empty claim an empty element does rather than being refused;
+    the declaration is returned beside the text, because an empty element and no
+    element at all are the same text but not the same claim.
+
+    The one mentions list is accepted where the schema places it, directly
+    below the comment and in the part's own namespace, and it is read only once
+    the text is settled: a mention is a span of that text, so there is nothing
+    to slice until it is known, and the schema orders the two elements either
+    way. A comment declaring no list is returned a ``None``, which is not the
+    claim a list declared empty makes.
+    """
+    text: str | None = None
+    listed: ElementTree.Element | None = None
+    extension = False
+    for node in entry:
+        if node.tag == f"{scope}text":
+            if text is not None or len(node):
+                raise OOXMLInvalid("XLSX threaded comment text is malformed")
+            text = node.text or ""
+        elif node.tag == f"{scope}mentions":
+            if listed is not None:
+                raise OOXMLInvalid("XLSX threaded comment declares two mention lists")
+            listed = node
+        elif node.tag == f"{scope}extLst":
+            extension = _xlsx_extension_list(extension, "threaded comment")
+        else:
+            raise OOXMLInvalid("XLSX threaded comment holds an unsupported element")
+    declared = text is not None
+    text = text or ""
+    if len(text) > _MAX_XLSX_THREADED_CHARS:
+        raise OOXMLInvalid("XLSX threaded comment text exceeds the accepted bound")
+    mentions = None if listed is None else _xlsx_mentions(listed, text, scope, persons)
+    return text, mentions, declared
+
+
+def _xlsx_mentions(
+    listed: ElementTree.Element,
+    text: str,
+    scope: str,
+    persons: dict[str, dict[str, object]],
+) -> list[dict[str, object]]:
+    """Read one comment's mentions in source order, as spans of its own text.
+
+    A mention carries no text of its own: it names a position and a length in
+    the comment's ``text``, so the slice reported is the file's own claim about
+    what was mentioned. The offsets are character counts rather than byte ones,
+    which is what Python's own indexing counts, so the slice is taken directly
+    and reported exactly as written rather than clipped: a mention is evidence
+    of what the file claimed, and a shortened slice is a different claim.
+    Order is the order the file wrote them in -- nothing is sorted by offset --
+    and overlapping spans are left as written, because a mention is a claim
+    about the text rather than a partition of it.
+
+    Reporting the slices whole lets a short comment emit far more text than it
+    holds, because every span is sliced out of it again and overlapping ones
+    are each their own output. The lengths are summed as they are accepted and
+    held to the bound one comment's own text is held to, so a list of spans
+    cannot amplify past what a comment may carry.
+
+    Both identities a mention carries are ``ST_Guid``, kept exactly as written,
+    and the person it cites has to be one the workbook's own list declares, as
+    a comment's own author does; that record's claims about itself are merged
+    in, still marked unauthenticated, because they are no more evidence of who
+    was mentioned than they are of who commented. MS-XLSX spells the citation
+    ``mentionpersonId`` -- a lower-case ``p`` where the rest of the grammar
+    capitalises -- so it is read exactly as the schema declares it.
+
+    Each offset is an ``xsd:unsignedInt``, so a value outside the type is
+    refused rather than clamped into one inside it, and a span reaching past
+    the end of the text slices nothing rather than slicing what is left. A
+    repeated mention id claims one identity twice, refused as the grammar's
+    other ids are. Nothing here checks that a span's text is the person's
+    display name: what the text says is the file's claim, not a derivation.
+    """
+    mentions: list[dict[str, object]] = []
+    seen: set[str] = set()
+    sliced = 0
+    for node in listed:
+        # The schema gives the list nothing but qualified mentions, and gives a
+        # mention no content at all, so a lookalike spelled elsewhere or left
+        # unqualified declares nothing and neither does anything below one.
+        if node.tag != f"{scope}mention":
+            raise OOXMLInvalid("XLSX mention list holds an unsupported element")
+        if len(node):
+            raise OOXMLInvalid("XLSX mention holds an unsupported element")
+        if len(mentions) >= _MAX_XLSX_THREADED_RECORDS:
+            raise OOXMLInvalid("XLSX threaded comment has too many mentions")
+        mention_id = _xlsx_threaded_guid(node, "mentionId", "mention id")
+        if mention_id is None:
+            raise OOXMLInvalid("XLSX mention declares no mention id")
+        # Compared case-folded, as the grammar's other ids are: only a GUID's
+        # hex letters vary in case, so two spellings claim one identity.
+        if mention_id.casefold() in seen:
+            raise OOXMLInvalid("XLSX mention id is repeated")
+        seen.add(mention_id.casefold())
+        person_id = _xlsx_threaded_guid(
+            node, "mentionpersonId", "mention person citation"
+        )
+        if person_id is None:
+            raise OOXMLInvalid("XLSX mention names no person")
+        person = persons.get(person_id.casefold())
+        if person is None:
+            raise OOXMLInvalid("XLSX mention names an undeclared person")
+        start = _xlsx_mention_offset(node, "startIndex", "start index")
+        length = _xlsx_mention_offset(node, "length", "length")
+        if start + length > len(text):
+            raise OOXMLInvalid("XLSX mention span runs past the comment text")
+        # Each span is inside the text, so the slice is exactly ``length``
+        # characters and the running total is what the list will emit.
+        sliced += length
+        if sliced > _MAX_XLSX_THREADED_CHARS:
+            raise OOXMLInvalid("XLSX mention spans exceed the accepted bound")
+        mentions.append(
+            {
+                "mentionId": mention_id,
+                "mentionPersonId": person_id,
+                "startIndex": start,
+                "length": length,
+                "text": text[start : start + length],
+                **person,
+            }
+        )
+    return mentions
+
+
+def _xlsx_mention_offset(element: ElementTree.Element, name: str, label: str) -> int:
+    """Read one mention offset, refusing a value its type does not carry.
+
+    Both offsets are ``xsd:unsignedInt`` and both are required, so an absent
+    one is its own refusal rather than a zero.
+    """
+    raw = element.attrib.get(name)
+    if raw is None:
+        raise OOXMLInvalid(f"XLSX mention declares no {label}")
+    if _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
+        raise OOXMLInvalid(f"XLSX mention {label} is malformed")
+    return int(raw)
 
 
 def _cell_index(coordinate: str) -> tuple[int, int]:
