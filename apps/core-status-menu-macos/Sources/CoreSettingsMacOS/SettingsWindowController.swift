@@ -351,20 +351,16 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             }
         }
 
-        /// SF Symbol nearest the design's Lucide icon.
-        var symbol: String {
+        /// The design's own glyph, by Lucide name.
+        var icon: OvIcon {
             switch self {
-            case .general: return "slider.horizontal.3"          // sliders-horizontal
-            case .data: return "internaldrive"                   // hard-drive
-            // `square.3.layers.3d*` is macOS 14, and filled among outlines;
-            // `square.stack.3d.up` is the nearest outline stack on 13.
-            case .capture: return "square.stack.3d.up"            // layers
-            // No SF equivalent of search-check exists, and a page with a
-            // magnifier says "document processing" better than text alone.
-            case .documentProcessing: return "doc.text.magnifyingglass" // search-check
-            case .processing: return "arrow.triangle.2.circlepath" // refresh-cw
-            case .access: return "shield"                        // shield
-            case .maintenance: return "wrench.adjustable"        // wrench
+            case .general: return .slidersHorizontal
+            case .data: return .hardDrive
+            case .capture: return .layers
+            case .documentProcessing: return .searchCheck
+            case .processing: return .refreshCw
+            case .access: return .shield
+            case .maintenance: return .wrench
             }
         }
     }
@@ -837,7 +833,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         let panes = Pane.allCases
         for (index, pane) in panes.enumerated() {
-            let row = SidebarRowView(title: pane.rawValue, symbol: pane.symbol)
+            let row = SidebarRowView(title: pane.rawValue, glyph: pane.icon)
             row.isSelected = pane == selectedPane
             row.onSelect = { [weak self] in self?.selectedPane = pane }
             row.moveSelection = { [weak self] delta in
@@ -992,17 +988,17 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         case ok, neutral, approval, attention, unknown, stale, checking, off, blocked, notBuilt
     }
 
-    private static func chipGlyph(_ tone: ChipTone) -> String {
+    private static func chipGlyph(_ tone: ChipTone) -> OvIcon? {
         switch tone {
-        case .ok: return "checkmark.circle"          // check-circle-2 (outline)
-        case .neutral, .unknown: return "circle.dashed"
-        case .approval: return "exclamationmark.circle"
-        case .attention: return "exclamationmark.triangle"
-        case .stale: return "clock"
-        case .off: return "circle.slash"
-        case .blocked: return "xmark.circle"
-        case .notBuilt: return "minus.circle"
-        case .checking: return ""                     // a spinner, not a glyph
+        case .ok: return .checkCircle2
+        case .neutral, .unknown: return .circleDashed
+        case .approval: return .alertCircle
+        case .attention: return .alertTriangle
+        case .stale: return .clock
+        case .off: return .circleSlash
+        case .blocked: return .xCircle
+        case .notBuilt: return .minusCircle
+        case .checking: return nil                    // a spinner, not a glyph
         }
     }
 
@@ -1046,9 +1042,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             leading = spinner
         } else {
             let icon = NSImageView()
-            icon.image = NSImage(
-                systemSymbolName: Self.chipGlyph(tone), accessibilityDescription: text
-            )?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+            icon.image = Self.chipGlyph(tone)?.image(size: 13)   // `.cs-status .lucide` is 13px
+            icon.setAccessibilityLabel(text)
             icon.contentTintColor = Self.chipColor(tone)
             leading = icon
         }
@@ -1184,18 +1179,15 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// filled slab made it read as a recovery block, which *is* boxed, losing
     /// the one cue that separates "a fact about this pane" from "something you
     /// can act on".
-    private func note(_ text: String, symbol: String = "info.circle", attn: Bool = false) -> NSStackView {
+    private func note(_ text: String, symbol: OvIcon = .info, attn: Bool = false) -> NSStackView {
         let box = NSStackView()
         box.orientation = .horizontal
         box.alignment = .firstBaseline
         box.spacing = 8
         box.edgeInsets = NSEdgeInsets(top: 14, left: 0, bottom: 0, right: 0)
         let icon = NSImageView()
-        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .regular)) {
-            icon.image = image
-            icon.contentTintColor = attn ? Ov.warning : Ov.textTertiary
-        }
+        icon.image = symbol.image(size: 13)          // `.cs-note .lucide` is 13px
+        icon.contentTintColor = attn ? Ov.warning : Ov.textTertiary
         icon.setContentHuggingPriority(.required, for: .horizontal)
         let label = NSTextField(wrappingLabelWithString: text)
         label.font = OvFont.sans(11.5)
@@ -1236,10 +1228,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         // Swap the glyph rather than rotating the view. `frameCenterRotation`
         // on a constraint-driven image view rotates about a frame the layout
         // then re-sizes, which rendered the open state as a stray tick.
-        chevron.image = NSImage(
-            systemSymbolName: isOpen ? "chevron.down" : "chevron.right",
-            accessibilityDescription: nil
-        )?.withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))
+        // `.cs-disc>summary .lucide` is 13px.
+        chevron.image = (isOpen ? OvIcon.chevronDown : .chevronRight).image(size: 13)
         chevron.contentTintColor = Ov.textTertiary
         chevron.setContentHuggingPriority(.required, for: .horizontal)
 
@@ -1666,7 +1656,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         content.addArrangedSubview(
             note(
                 "Storage and backups belong to a workspace. These controls are the finished shape of the pane; the backup feature that fills them is not installed in this build, so there is nothing here to switch off or repair.",
-                symbol: "internaldrive"
+                symbol: .hardDrive
             )
         )
     }
@@ -1872,7 +1862,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         content.addArrangedSubview(
             note(
                 "Everything runs on this Mac. No workspace content is sent to an external service.",
-                symbol: "checkmark.shield"
+                symbol: .shieldCheck
             )
         )
     }
@@ -1939,7 +1929,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         content.addArrangedSubview(
             note(
                 "Connections are local to this Mac. Core is not exposed to other devices or the internet.",
-                symbol: "checkmark.shield"
+                symbol: .shieldCheck
             )
         )
     }
@@ -2268,7 +2258,7 @@ final class SidebarRowView: NSView {
     private let label: NSTextField
     private let icon: NSImageView
 
-    init(title: String, symbol: String) {
+    init(title: String, glyph: OvIcon) {
         // A plain label, not `OvFont.label`. That builds an *attributed*
         // string carrying its own `.foregroundColor`, and on an attributed
         // NSTextField a later `textColor =` is ignored — so the selected row
@@ -2279,11 +2269,10 @@ final class SidebarRowView: NSView {
         label.font = OvFont.sans(13)
         label.textColor = Ov.textPrimary
         icon = NSImageView()
-        // A 16×16 glyph box (`#sw-nav .nav-row svg`); the symbol is sized 15 so
-        // wide glyphs fit it without being scaled down.
-        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
-            .withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
-        icon.imageScaling = .scaleProportionallyDown
+        // 16px, the size `#sw-nav .nav-row svg` asks for. Every glyph shares
+        // one 24×24 viewBox and one stroke weight, so they are the same
+        // optical size without any per-glyph scaling.
+        icon.image = glyph.image(size: 16)
         icon.contentTintColor = Ov.textSecondary
         super.init(frame: .zero)
         wantsLayer = true
