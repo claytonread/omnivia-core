@@ -10,7 +10,9 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import re
 from collections import Counter
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any, Final
 
@@ -52,6 +54,16 @@ DOCUMENT_NO_RELIABLE_TEXT: Final = "no_reliable_text_found"
 MAX_TEXT_BYTES: Final = 1_048_576
 MAX_RECORDS: Final = 100_000
 MAX_FIELDS: Final = 1_000_000
+#: HTML walk bounds: start tags read, open nesting depth, attributes on one
+#: element, characters accumulated for one element's own text, characters of one
+#: link or image target, and emitted segments. Every one of them refuses the
+#: source when it is breached; none of them truncates prose to fit.
+MAX_HTML_ELEMENTS: Final = 100_000
+MAX_HTML_DEPTH: Final = 64
+MAX_HTML_ATTRIBUTES: Final = 256
+MAX_HTML_SEGMENT_CHARS: Final = 100_000
+MAX_HTML_REFERENCE_CHARS: Final = 2048
+MAX_HTML_SEGMENTS: Final = 50_000
 DOCX_MEDIA_TYPE: Final = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
@@ -66,6 +78,30 @@ IMAGE_MEDIA_TYPES: Final = frozenset(
     {"image/png", "image/jpeg", "image/tiff", "image/heic", "image/heif", "image/webp"}
 )
 RTF_MEDIA_TYPES: Final = frozenset({"application/rtf", "text/rtf"})
+#: Elements that carry no end tag, so the walk must not hold one open.
+_HTML_VOID: Final = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+#: Elements whose text is never document body, whatever it contains.
+_HTML_HIDDEN: Final = frozenset({"script", "style", "template"})
+#: Elements that cannot be their own direct child, so a repeat implies an end.
+_HTML_PEER_CLOSING: Final = frozenset({"li", "p", "td", "th"})
+_REFERENCE_SCHEME: Final = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]{1,31}):")
 
 
 class DocumentExtractionUnsupported(ValueError):
@@ -231,7 +267,47 @@ def _extract_delimited(
     )
 
 
+@dataclass(slots=True)
+class _OpenElement:
+    """One open element's walk state: where it is, and what text is its own."""
+
+    tag: str
+    #: The element's DOM path, built from sibling indices among its parent's
+    #: element children, so the same source always locates it the same way.
+    path: str
+    #: The segment role this element's own text carries, or ``None`` when the
+    #: element is structure only and its text belongs to a descendant block.
+    role: str | None
+    hidden: bool
+    element_id: str | None
+    #: Element children opened so far, which is the next child's sibling index.
+    children: int = 0
+    #: Text runs already emitted for this element. A block that encloses another
+    #: block emits its own words in more than one run, and the run index is what
+    #: keeps those segments' locators distinct and ordered.
+    runs: int = 0
+    chunks: list[str] = field(default_factory=list)
+    length: int = 0
+
+
 class _InertHTMLParser(HTMLParser):
+    """Walk the start/end events of one HTML source and locate its text.
+
+    Text belongs to the nearest enclosing block element only, so a nested
+    block's text is never repeated in its ancestor's segment, and inline markup
+    inside a block keeps the source order of the words around it. A block whose
+    words are interrupted by a nested block emits them as ordered runs, so
+    ``<p>outer<section><p>inner</p></section>after</p>`` reads ``outer``,
+    ``inner``, ``after`` in that order and duplicates nothing. A link or image
+    target is recorded as inert inventory text and is never opened, fetched or
+    resolved. Every bound is a refusal: prose is never silently truncated to
+    fit one.
+    """
+
+    #: Blocks whose own text is a segment, including the structural containers,
+    #: which carry the plain body role: a container holds its own loose text and
+    #: bounds attribution, so a block nested inside one never leaks its words
+    #: into an ancestor block's segment.
     block_roles: Final = {
         "h1": "heading",
         "h2": "heading",
@@ -242,70 +318,186 @@ class _InertHTMLParser(HTMLParser):
         "p": "body",
         "li": "list_item",
         "pre": "body",
-        "code": "body",
         "caption": "body",
         "th": "table_cell",
         "td": "table_cell",
-    }
+    } | dict.fromkeys(
+        (
+            "div",
+            "section",
+            "article",
+            "nav",
+            "aside",
+            "header",
+            "footer",
+            "main",
+            "blockquote",
+            "ul",
+            "ol",
+            "table",
+            "tr",
+        ),
+        "body",
+    )
 
     def __init__(self, capture_id: str) -> None:
         super().__init__(convert_charrefs=True)
         self.capture_id = capture_id
-        self.stack: list[tuple[str, str | None, list[str], dict[str, str]]] = []
+        # The first entry is the synthetic frame outside the document's own
+        # elements, so the current element is always ``stack[-1]``, the open
+        # depth is ``len(stack) - 1``, and a stray end tag cannot pop past it.
+        self.stack: list[_OpenElement] = [_OpenElement("", "", None, False, None)]
         self.segments: list[ExtractedSegment] = []
-        self.ordinal = 0
+        self.elements = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.elements += 1
+        if self.elements > MAX_HTML_ELEMENTS:
+            raise DocumentExtractionInvalid("HTML has too many elements")
+        if len(attrs) > MAX_HTML_ATTRIBUTES:
+            raise DocumentExtractionInvalid("HTML element has too many attributes")
+        if tag in _HTML_PEER_CLOSING and self.stack[-1].tag == tag:
+            # ponytail: only the same-tag implied end tag, which is what
+            # `<li>a<li>b` needs; full implied-end-tag inference belongs with
+            # the rest of the HTML scope.
+            self._close(len(self.stack) - 1)
+        role = self.block_roles.get(tag) or (
+            "hidden_content" if tag in _HTML_HIDDEN else None
+        )
+        if role is not None:
+            # A block is starting, so the words the enclosing block has read so
+            # far end here: emitting them now is what keeps the ancestor's
+            # before-text ahead of this block's text in the segment order.
+            self._flush_run()
         attributes = {key: value or "" for key, value in attrs}
-        role = self.block_roles.get(tag)
-        if role is not None or tag in {"script", "style", "template"}:
-            self.stack.append((tag, role, [], attributes))
-        if tag == "img" and attributes.get("alt"):
-            self.ordinal += 1
-            self.segments.append(
-                ExtractedSegment(
-                    "image_alt",
-                    _locator(
-                        self.capture_id,
-                        unit="element",
-                        element=tag,
-                        ordinal=self.ordinal,
-                    ),
-                    text=attributes["alt"],
+        parent = self.stack[-1]
+        parent.children += 1
+        path = f"{parent.path}/{parent.children}:{tag}"
+        hidden = parent.hidden or tag in _HTML_HIDDEN or "hidden" in attributes
+        if tag == "img":
+            alt = attributes.get("alt")
+            if alt:
+                self._emit(
+                    ExtractedSegment(
+                        "hidden_content" if hidden else "image_alt",
+                        self._locator(tag, path, attributes.get("id")),
+                        text=alt,
+                        visibility="hidden" if hidden else "visible",
+                    )
                 )
-            )
+            self._reference("image", tag, path, attributes.get("src"))
+        elif tag == "a":
+            self._reference("link", tag, path, attributes.get("href"))
+        if tag in _HTML_VOID:
+            return
+        if len(self.stack) > MAX_HTML_DEPTH:
+            raise DocumentExtractionInvalid("HTML nesting exceeds the accepted bound")
+        self.stack.append(
+            _OpenElement(tag, path, role, hidden, attributes.get("id"))
+        )
 
     def handle_data(self, data: str) -> None:
-        for _, _, chunks, _ in self.stack:
-            chunks.append(data)
+        for element in reversed(self.stack):
+            if element.role is None:
+                continue
+            element.chunks.append(data)
+            element.length += len(data)
+            if element.length > MAX_HTML_SEGMENT_CHARS:
+                raise DocumentExtractionInvalid(
+                    "HTML element text exceeds the accepted bound"
+                )
+            return
 
     def handle_endtag(self, tag: str) -> None:
         index = next(
-            (i for i in range(len(self.stack) - 1, -1, -1) if self.stack[i][0] == tag),
+            (i for i in range(len(self.stack) - 1, 0, -1) if self.stack[i].tag == tag),
             None,
         )
-        if index is None:
+        if index is not None:
+            self._close(index)
+
+    def close(self) -> None:
+        super().close()
+        # Elements the source never closed still carry their own text.
+        self._close(1)
+
+    def _close(self, index: int) -> None:
+        """Close the element at ``index`` and any descendant left open in it."""
+        while len(self.stack) > index:
+            self._emit_text(self.stack.pop())
+
+    def _flush_run(self) -> None:
+        """End the pending text run of the nearest enclosing block, if any."""
+        for element in reversed(self.stack):
+            if element.role is None:
+                continue
+            self._emit_text(element)
+            element.chunks.clear()
             return
-        opened, role, chunks, attributes = self.stack.pop(index)
-        text = "".join(chunks)
-        if not text:
+
+    def _emit_text(self, element: _OpenElement) -> None:
+        text = "".join(element.chunks)
+        if element.role is None or not text.strip():
             return
-        self.ordinal += 1
-        hidden = opened in {"script", "style", "template"} or "hidden" in attributes
-        self.segments.append(
+        # Only an emitted run takes an index, so a block's runs are numbered
+        # from one with no gaps however much whitespace sits between them.
+        element.runs += 1
+        self._emit(
             ExtractedSegment(
-                "hidden_content" if hidden else role or "body",
-                _locator(
-                    self.capture_id,
-                    unit="element",
-                    element=opened,
-                    ordinal=self.ordinal,
-                    elementId=attributes.get("id"),
+                "hidden_content" if element.hidden else element.role,
+                self._locator(
+                    element.tag, element.path, element.element_id, element.runs
                 ),
                 text=text,
-                visibility="hidden" if hidden else "visible",
+                visibility="hidden" if element.hidden else "visible",
             )
         )
+
+    def _reference(self, kind: str, tag: str, path: str, target: str | None) -> None:
+        """Inventory one link or image target as text, without resolving it."""
+        if target is None:
+            return
+        if len(target) > MAX_HTML_REFERENCE_CHARS:
+            raise DocumentExtractionInvalid("HTML reference exceeds the accepted bound")
+        self._emit(
+            ExtractedSegment(
+                "object_inventory",
+                self._locator(tag, path, None),
+                structured_value={
+                    "kind": kind,
+                    "scheme": _reference_scheme(target),
+                    "target": target,
+                    "resolved": False,
+                },
+                extraction_method="inventory",
+                visibility="annotation",
+            )
+        )
+
+    def _emit(self, segment: ExtractedSegment) -> None:
+        self.segments.append(segment)
+        if len(self.segments) > MAX_HTML_SEGMENTS:
+            raise DocumentExtractionInvalid("HTML extraction has too many segments")
+
+    def _locator(
+        self, tag: str, path: str, element_id: str | None, run: int | None = None
+    ) -> dict[str, Any]:
+        return _locator(
+            self.capture_id,
+            unit="element",
+            element=tag,
+            path=path,
+            run=run,
+            elementId=element_id,
+        )
+
+
+def _reference_scheme(target: str) -> str:
+    """Name the reference kind of a target from its text alone."""
+    if target.startswith("#"):
+        return "fragment"
+    match = _REFERENCE_SCHEME.match(target)
+    return match.group(1).lower() if match else "relative"
 
 
 def _extract_html(content: bytes, *, capture_id: str) -> ExtractionOutcome:
@@ -314,6 +506,8 @@ def _extract_html(content: bytes, *, capture_id: str) -> ExtractionOutcome:
     try:
         parser.feed(text)
         parser.close()
+    except DocumentExtractionInvalid:
+        raise
     except (ValueError, RecursionError) as error:
         raise DocumentExtractionInvalid(
             "HTML is outside the accepted parser bounds"
