@@ -29,7 +29,7 @@ try MainActor.assumeIsolated {
     }
 
     // Optional, so the preview can exercise a real installation:
-    //   --cli <path to omnivia> --installation-state <path>
+    //   --cli <path to omnivia> --installation-state <path> [--workspace-id <id>]
     // Without them the window opens against a synthetic context and the
     // Access pane says it has no route to the CLI, which is the truth.
     func argument(_ name: String) -> String? {
@@ -52,12 +52,16 @@ try MainActor.assumeIsolated {
         )
     }
 
+    // The workspace a configure would be bound to. Synthetic unless given,
+    // so the launcher cannot quietly grant access to a real one: the companion
+    // takes the same `--workspace-id`.
+    let workspace = argument("--workspace-id") ?? "preview-workspace"
     let coordinator = ReadinessCoordinator(
         context: ReadinessContext(
             installationRevision: "preview-install",
             localSessionRef: UUID().uuidString,
             targetRef: "local",
-            workspaceRef: "preview-workspace",
+            workspaceRef: workspace,
             configurationRevision: "1"
         )
     )
