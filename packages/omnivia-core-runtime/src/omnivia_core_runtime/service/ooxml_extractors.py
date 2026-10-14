@@ -75,6 +75,13 @@ _ANNOTATION_MARKS: Final = {
 # Range markers are also legal between blocks, rows and cells.
 _RANGE_TAGS: Final = frozenset({"commentRangeStart", "commentRangeEnd"})
 _INLINE_MARKS: Final = frozenset(_ANNOTATION_MARKS) | {"hyperlink"}
+# ``f/@t``, which defaults to ``normal``, mapped to the kind recorded for it.
+_FORMULA_KINDS: Final = {
+    "normal": "ordinary",
+    "shared": "shared",
+    "array": "array",
+    "dataTable": "dataTable",
+}
 
 
 class OOXMLInvalid(ValueError):
@@ -438,13 +445,12 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         populated = 0
         for sheet_name, sheet_id, part, hidden in sheets:
             root = package.xml(part)
+            masters = _shared_masters(root)
             for cell in (item for item in root.iter() if _local(item.tag) == "c"):
                 coordinate = cell.attrib.get("r")
                 if not coordinate:
                     raise OOXMLInvalid("XLSX cell has no coordinate")
-                formula = next(
-                    (node.text or "" for node in cell if _local(node.tag) == "f"), None
-                )
+                formula = next((node for node in cell if _local(node.tag) == "f"), None)
                 value = next(
                     (node.text or "" for node in cell if _local(node.tag) == "v"), None
                 )
@@ -462,15 +468,13 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                     cell=coordinate,
                 )
                 visibility = "hidden" if hidden else "visible"
+                cell_type = cell.attrib.get("t")
                 if formula is not None:
                     segments.append(
                         ExtractedSegment(
                             "formula",
                             locator,
-                            structured_value={
-                                "expression": formula,
-                                "cacheFreshness": "unknown",
-                            },
+                            structured_value=_xlsx_formula(formula, masters, value),
                             visibility=visibility,
                         )
                     )
@@ -479,12 +483,19 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                             ExtractedSegment(
                                 "saved_value",
                                 locator,
-                                structured_value={"raw": value, "freshness": "unknown"},
+                                structured_value={
+                                    "raw": value,
+                                    "cellType": cell_type,
+                                    # An error cache is the recorded outcome of
+                                    # the last calculation, never a text value.
+                                    "error": cell_type == "e",
+                                    "freshness": "unknown",
+                                },
                                 visibility=visibility,
                             )
                         )
                 else:
-                    decoded = _xlsx_value(cell.attrib.get("t"), value, inline, shared)
+                    decoded = _xlsx_value(cell_type, value, inline, shared)
                     segments.append(
                         ExtractedSegment(
                             "table_cell",
@@ -492,7 +503,7 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                             structured_value={
                                 "raw": value,
                                 "decoded": decoded,
-                                "cellType": cell.attrib.get("t"),
+                                "cellType": cell_type,
                             },
                             visibility=visibility,
                         )
@@ -623,6 +634,58 @@ def _shared_strings(package: _Package) -> list[str]:
         for item in package.xml("xl/sharedStrings.xml")
         if _local(item.tag) == "si"
     ]
+
+
+def _shared_masters(root: ElementTree.Element) -> frozenset[str]:
+    """Collect the shared-formula indices one sheet defines a master for.
+
+    A shared formula is written out once, on the cell that carries the ``ref``
+    range; every other cell in that range carries only the index. Two masters
+    for one index leave those followers naming two expressions, so the sheet is
+    refused rather than read under one of them. Indices are scoped to the
+    sheet, so each sheet is collected on its own.
+    """
+    masters: set[str] = set()
+    for node in root.iter():
+        if _local(node.tag) != "f" or node.attrib.get("t") != "shared":
+            continue
+        index = node.attrib.get("si")
+        if index is None or node.attrib.get("ref") is None:
+            continue
+        if index in masters:
+            raise OOXMLInvalid("XLSX shared formula has more than one master")
+        masters.add(index)
+    return frozenset(masters)
+
+
+def _xlsx_formula(
+    element: ElementTree.Element, masters: frozenset[str], cached: str | None
+) -> dict[str, object]:
+    """Describe one ``f`` element without evaluating any part of it.
+
+    The expression is kept exactly as written, including the empty text a
+    shared-formula follower carries: deriving a follower's expression from its
+    master would mean translating references, which is calculation. The index
+    and range are recorded as attributes so the relationship stays readable
+    without it. A follower whose master the sheet never defines points at no
+    expression at all, so the package is refused.
+    """
+    kind = _FORMULA_KINDS.get(element.attrib.get("t", "normal"))
+    if kind is None:
+        raise OOXMLInvalid("XLSX formula has an unknown type")
+    index = element.attrib.get("si")
+    if kind == "shared" and (index is None or index not in masters):
+        raise OOXMLInvalid("XLSX shared formula has no master")
+    return {
+        "expression": element.text or "",
+        "kind": kind,
+        "sharedIndex": index,
+        "ref": element.attrib.get("ref"),
+        # Nothing is calculated here, so an absent cache stays absent and a
+        # present one is never checked against the expression.
+        "cacheState": "missing" if cached is None else "present",
+        "cacheFreshness": "unknown",
+    }
 
 
 def _xlsx_value(

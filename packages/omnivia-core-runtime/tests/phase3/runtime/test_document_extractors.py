@@ -146,9 +146,18 @@ def test_xlsx_preserves_formula_and_saved_cache_as_distinct_values() -> None:
     ]
     assert result.segments[1].structured_value == {
         "expression": "SUM(B2:B3)",
+        "kind": "ordinary",
+        "sharedIndex": None,
+        "ref": None,
+        "cacheState": "present",
         "cacheFreshness": "unknown",
     }
-    assert result.segments[2].structured_value == {"raw": "42", "freshness": "unknown"}
+    assert result.segments[2].structured_value == {
+        "raw": "42",
+        "cellType": None,
+        "error": False,
+        "freshness": "unknown",
+    }
 
 
 def test_pptx_extracts_slide_text_and_notes_without_rendering() -> None:
