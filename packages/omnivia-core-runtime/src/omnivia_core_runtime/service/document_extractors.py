@@ -70,8 +70,9 @@ MAX_FIELDS: Final = 1_000_000
 MAX_DELIMITED_CHARS: Final = 64 * 1_048_576
 #: HTML walk bounds: start tags read, open nesting depth, attributes on one
 #: element, characters accumulated for one element's own text, characters of one
-#: link or image target, and emitted segments. Every one of them refuses the
-#: source when it is breached; none of them truncates prose to fit.
+#: link or image target or one table attribute, and emitted segments. Every one
+#: of them refuses the source when it is breached; none of them truncates prose
+#: to fit.
 MAX_HTML_ELEMENTS: Final = 100_000
 MAX_HTML_DEPTH: Final = 64
 MAX_HTML_ATTRIBUTES: Final = 256
@@ -97,6 +98,11 @@ MAX_HTML_TABLE_SPAN: Final = 1000
 #: hundredfold below that product: a real table of a thousand rows by twenty
 #: columns charges tens of thousands of slots, not millions.
 MAX_HTML_TABLE_GRID_SLOTS: Final = 1_000_000
+#: Header cells one ``headers`` attribute may claim. The attribute's own length
+#: is bounded by ``MAX_HTML_REFERENCE_CHARS``, which bounds the token count with
+#: it, but a cell governed by more header cells than a document table has rows
+#: describes no table anyone wrote, so the count is bounded in its own right.
+MAX_HTML_TABLE_HEADER_REFS: Final = 64
 #: Distinct libxml2 conditions reported from one admission parse. A warning list
 #: is diagnostics, not prose, so this one is a cap rather than a refusal.
 MAX_HTML_PARSER_WARNINGS: Final = 32
@@ -147,6 +153,20 @@ _HTML_TABLE_SECTIONS: Final = frozenset({"thead", "tbody", "tfoot"})
 #: A span attribute's whole accepted syntax: an unsigned ASCII decimal, short
 #: enough that the value is read before its magnitude is judged.
 _SPAN_VALUE: Final = re.compile(r"[0-9]{1,4}")
+#: The ``scope`` keywords a header cell may declare. ``row`` and ``col`` name a
+#: reach this walk can establish from the cell's own place; ``rowgroup`` and
+#: ``colgroup`` name one it cannot, so they are reported and nothing is inferred
+#: from them.
+_HTML_TABLE_SCOPES: Final = frozenset({"row", "col", "rowgroup", "colgroup"})
+#: The ASCII whitespace an IDREF list is separated by. HTML separates on these
+#: five characters only, so an id holding a non-breaking space is one token here
+#: as it is there, rather than two.
+_ASCII_WHITESPACE: Final = re.compile(r"[ \t\n\f\r]+")
+#: A ``headers`` attribute anywhere in the source, which is what decides whether
+#: the header-id prescan is worth a second walk. The attribute name cannot be
+#: spelled with a character reference, so a source with no literal occurrence of
+#: it has no cell that claims explicit headers.
+_HEADERS_ATTRIBUTE: Final = re.compile(r"(?i)headers\s*=")
 _REFERENCE_SCHEME: Final = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]{1,31}):")
 #: An XML declaration at the head of the source declares the same thing, so
 #: XML-declared XHTML served as ``text/html`` is still read as XML.
@@ -473,6 +493,15 @@ class _InertHTMLParser(HTMLParser):
     validated spans, and the header cells that govern it. A caption keeps the
     ordinal of the table it captions. Each table owns its grid, so a table
     nested inside a cell advances none of the enclosing table's counters.
+
+    A cell's governing header cells are read from its ``headers`` attribute when
+    it carries one and from the grid's own geometry when it does not, and the
+    two readings are told apart by ``headerRefs``: present, and the cell's
+    ``headers`` are the ones its own markup claimed; absent, and they are the
+    ones this walk inferred. An explicit claim is never mixed with an inferred
+    one and never falls back to one, not even when it resolves to nothing, so a
+    source that says which headers govern a cell is believed over this walk's
+    reading of where the cell sits.
     """
 
     #: Blocks whose own text is a segment, including the structural containers,
@@ -511,7 +540,13 @@ class _InertHTMLParser(HTMLParser):
         "body",
     )
 
-    def __init__(self, capture_id: str) -> None:
+    def __init__(
+        self,
+        capture_id: str,
+        *,
+        header_ids: dict[tuple[int, str], str | None] | None = None,
+        collect_only: bool = False,
+    ) -> None:
         super().__init__(convert_charrefs=True)
         self.capture_id = capture_id
         # The first entry is the synthetic frame outside the document's own
@@ -524,6 +559,13 @@ class _InertHTMLParser(HTMLParser):
         self.tables = 0
         #: Grid slots charged by every table in this source so far.
         self.grid_slots = 0
+        #: (table ordinal, ``id``) -> the DOM path of the header cell declaring
+        #: it, or ``None`` when more than one header cell of that table declares
+        #: it. The collecting walk fills it and the locating walk only reads it,
+        #: so a reference resolves the same way wherever in its table it sits.
+        self.header_ids: dict[tuple[int, str], str | None] = header_ids or {}
+        #: Whether this walk only indexes header ids, emitting no segment.
+        self.collect_only = collect_only
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.elements += 1
@@ -644,6 +686,57 @@ class _InertHTMLParser(HTMLParser):
                 return first
             first = blocked + 1
 
+    def _headers(
+        self,
+        table: _OpenTable,
+        path: str,
+        columns: range,
+        *,
+        tag: str,
+        refs: list[str] | None,
+    ) -> list[str]:
+        """The header cells that govern one cell, by the stronger of two readings.
+
+        An explicit ``headers`` attribute is the cell's own claim about which
+        header cells govern it, and it is read in the order it was written,
+        deduplicated, and resolved only against the header cells of this same
+        table. A reference that names nothing in this table, names a cell of
+        another table, names the cell itself, or names an id more than one
+        header cell of this table declares resolves to nothing: the claim is
+        still published verbatim beside the resolution, so an unresolved
+        reference is reported rather than invented or dropped in silence.
+
+        Only a cell carrying no ``headers`` attribute at all is read from the
+        grid's geometry instead. One that carries an empty or wholly unresolved
+        attribute keeps no headers, because falling back to inference there
+        would answer the source's own claim with this walk's guess.
+        """
+        if refs is not None:
+            self._charge(len(refs))
+            return list(
+                dict.fromkeys(
+                    found
+                    for found in (
+                        self.header_ids.get((table.ordinal, ref)) for ref in refs
+                    )
+                    # A cell is never its own header, however it is referenced.
+                    if found is not None and found != path
+                )
+            )
+        # The governing headers are read before this cell registers itself, so a
+        # header cell is never its own header.
+        headers = dict.fromkeys(
+            header
+            for header in (table.column_headers.get(column) for column in columns)
+            if header is not None
+        )
+        if tag == "td":
+            # A row's leading header heads that row's data, not the other
+            # headers beside it: without this, the second ``th`` of a header row
+            # in a table with no ``thead`` would read as headed by the first.
+            headers.update(dict.fromkeys(table.row_headers))
+        return list(headers)
+
     def _place(self, tag: str, path: str, attributes: dict[str, str]) -> dict[str, Any]:
         """Fix one table element's place in the grid of the table it sits in.
 
@@ -652,6 +745,16 @@ class _InertHTMLParser(HTMLParser):
         hold it, where free means no cell spanning down from an earlier row
         still occupies it. A cell outside any table keeps no place, because
         there is no grid for it to have one in.
+
+        A header cell additionally keeps what its own markup says about it: the
+        ``scope`` keyword it declares, its ``abbr`` label, and the ``id`` the
+        locator already carries. A declared ``scope`` also narrows what this
+        walk infers from the cell's position: ``col`` heads the columns it
+        covers and not its row, ``row`` heads its row and not its columns, and
+        ``rowgroup`` or ``colgroup`` heads nothing inferred at all, because this
+        walk cannot establish the extent of a group from one cell's place in it.
+        A ``scope`` this walk does not know is reported as declared and leaves
+        the positional reading alone, which is all that is left to go on.
         """
         if tag not in {"caption", "tr", "th", "td"}:
             return {}
@@ -681,6 +784,11 @@ class _InertHTMLParser(HTMLParser):
             table.rows = 1
         row_span = _table_span(attributes.get("rowspan"))
         column_span = _table_span(attributes.get("colspan"))
+        refs = _header_refs(attributes.get("headers"))
+        abbr = attributes.get("abbr") if tag == "th" else None
+        scope, unsupported_scope = (
+            _table_scope(attributes.get("scope")) if tag == "th" else (None, None)
+        )
         first = self._free_run(table, table.column + 1, column_span)
         last = first + column_span - 1
         table.column = last
@@ -688,29 +796,21 @@ class _InertHTMLParser(HTMLParser):
         # The header reads and the span registration below each walk the claimed
         # columns, so the claim is charged once for all of them.
         self._charge(column_span)
-        # The governing headers are read before this cell registers itself, so a
-        # header cell is never its own header.
-        headers = dict.fromkeys(
-            header
-            for header in (table.column_headers.get(column) for column in columns)
-            if header is not None
-        )
-        if tag == "td":
-            # A row's leading header heads that row's data, not the other
-            # headers beside it: without this, the second ``th`` of a header row
-            # in a table with no ``thead`` would read as headed by the first.
-            headers.update(dict.fromkeys(table.row_headers))
+        headers = self._headers(table, path, columns, tag=tag, refs=refs)
         if tag == "th":
-            for column in columns:
-                table.column_headers.setdefault(column, path)
-            # ponytail: a header's reach is read from its position alone — the
-            # first `th` in a column heads that column, and a `th` starting a
-            # body row heads that row. `scope`, `headers` and `abbr` are not
-            # read, so a multi-level header hierarchy is reported as the flat
-            # nearest-header relation; honouring those attributes belongs with
-            # the rest of the HTML table scope.
-            if first == 1 and section != "thead":
+            if scope in {None, "col"}:
+                for column in columns:
+                    table.column_headers.setdefault(column, path)
+            # ponytail: a header's inferred reach is its own columns and, for a
+            # row header, its own rows. A `scope` of `rowgroup` or `colgroup`
+            # therefore claims nothing inferred, so a multi-level hierarchy that
+            # states its levels only by group scope reads as no relation rather
+            # than as a wrong one; establishing a group's extent needs the
+            # column/row-group model, which belongs with the rest of that scope.
+            if scope == "row" or (scope is None and first == 1 and section != "thead"):
                 table.row_headers[path] = row_span
+            if self.collect_only:
+                self._index_header(table, path, attributes.get("id"))
         if row_span > 1:
             for column in columns:
                 table.occupied[column] = row_span
@@ -725,8 +825,32 @@ class _InertHTMLParser(HTMLParser):
             "cellKind": tag,
             "rowSpan": row_span,
             "colSpan": column_span,
-            "headers": list(headers),
+            "headers": headers,
+            # Absent unless the source wrote one, so that an absent attribute, a
+            # declared keyword and a declaration this walk cannot read are three
+            # distinct readings rather than one key that has to carry all three.
+            "headerRefs": refs,
+            "scope": scope,
+            "scopeUnsupported": unsupported_scope,
+            "abbr": None if abbr is None else _table_attribute(abbr),
         }
+
+    def _index_header(
+        self, table: _OpenTable, path: str, element_id: str | None
+    ) -> None:
+        """Index one header cell's ``id`` for the table it sits in.
+
+        The id is indexed per table, so a nested table's ids are isolated from
+        the ids of the table around it even when the two repeat. Two header
+        cells of one table claiming one id make every reference to it
+        ambiguous, and the conservative reading of an ambiguous reference is
+        that it resolves to neither cell rather than to whichever the walk
+        happened to see first.
+        """
+        if not element_id:
+            return
+        key = (table.ordinal, element_id)
+        self.header_ids[key] = None if key in self.header_ids else path
 
     def handle_data(self, data: str) -> None:
         for element in reversed(self.stack):
@@ -811,6 +935,10 @@ class _InertHTMLParser(HTMLParser):
         )
 
     def _emit(self, segment: ExtractedSegment) -> None:
+        if self.collect_only:
+            # The collecting walk is after header ids only; the located
+            # segments are the locating walk's to publish.
+            return
         self.segments.append(segment)
         if len(self.segments) > MAX_HTML_SEGMENTS:
             raise DocumentExtractionInvalid("HTML extraction has too many segments")
@@ -852,6 +980,70 @@ def _table_span(value: str | None) -> int:
     if not 1 <= span <= MAX_HTML_TABLE_SPAN:
         raise DocumentExtractionInvalid("HTML table span is outside the accepted bound")
     return span
+
+
+def _table_attribute(value: str) -> str:
+    """One table attribute value, or refuse a source that wrote an unbounded one.
+
+    The bound is the one the walk already puts on a link or image target, and
+    breaching it refuses the source: a truncated ``headers`` list would claim a
+    relationship to a header the source never named.
+    """
+    if len(value) > MAX_HTML_REFERENCE_CHARS:
+        raise DocumentExtractionInvalid(
+            "HTML table attribute exceeds the accepted bound"
+        )
+    return value
+
+
+def _header_refs(value: str | None) -> list[str] | None:
+    """Read one cell's ``headers`` attribute as the ordered IDREF list it claims.
+
+    Absent is distinct from empty: an absent attribute leaves the cell to the
+    grid's geometry, and an attribute that names nothing leaves the cell with no
+    headers at all. The tokens are kept verbatim and in source order, repeats
+    included, because what the source claimed is reported whether or not it
+    resolves to anything.
+    """
+    if value is None:
+        return None
+    refs = [
+        token for token in _ASCII_WHITESPACE.split(_table_attribute(value)) if token
+    ]
+    if len(refs) > MAX_HTML_TABLE_HEADER_REFS:
+        raise DocumentExtractionInvalid("HTML table cell references too many headers")
+    return refs
+
+
+def _table_scope(value: str | None) -> tuple[str | None, str | None]:
+    """Read one header cell's ``scope`` as either a known keyword or a raw value.
+
+    An absent attribute is neither; a keyword is matched the way HTML matches
+    an enumerated attribute, which is ASCII case-insensitively, so a value that
+    is not ASCII cannot be one of them and is reported as declared instead. A
+    value this walk does not know is never mapped onto one it does.
+    """
+    if value is None:
+        return None, None
+    declared = _table_attribute(value)
+    keyword = declared.lower() if declared.isascii() else declared
+    return (keyword, None) if keyword in _HTML_TABLE_SCOPES else (None, declared)
+
+
+def _header_ids(text: str) -> dict[tuple[int, str], str | None]:
+    """Index the ``id`` of every header cell in one source, per table.
+
+    The index is collected by a walk over the same bytes as the locating one,
+    with the same grid rules, so the table ordinals and DOM paths it records are
+    the ones the locating walk reports. Collecting it first is what lets a
+    ``headers`` reference resolve to a header cell written later in its table,
+    and what makes a duplicate id ambiguous for every reference to it rather
+    than only for the ones that follow the duplicate.
+    """
+    parser = _InertHTMLParser("", collect_only=True)
+    parser.feed(text)
+    parser.close()
+    return parser.header_ids
 
 
 def _reference_scheme(target: str) -> str:
@@ -928,8 +1120,12 @@ def _extract_html(
     # The admission parse decides whether the source is readable at all; the
     # segments are still located by the inert walk over the same bytes, so what
     # this adapter publishes does not move when libxml2's tree does.
-    parser = _InertHTMLParser(capture_id)
     try:
+        # The header-id index is only wanted by a cell claiming explicit
+        # headers, and the attribute name cannot be written any other way, so a
+        # source without it is spared the collecting walk entirely.
+        header_ids = _header_ids(text) if _HEADERS_ATTRIBUTE.search(text) else {}
+        parser = _InertHTMLParser(capture_id, header_ids=header_ids)
         parser.feed(text)
         parser.close()
     except DocumentExtractionInvalid:

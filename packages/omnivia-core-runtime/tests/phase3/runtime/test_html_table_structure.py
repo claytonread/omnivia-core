@@ -17,7 +17,9 @@ import pytest
 from omnivia_core_runtime.service import document_extractors
 from omnivia_core_runtime.service.document_extractors import (
     MAX_HTML_ELEMENTS,
+    MAX_HTML_REFERENCE_CHARS,
     MAX_HTML_TABLE_GRID_SLOTS,
+    MAX_HTML_TABLE_HEADER_REFS,
     MAX_HTML_TABLE_SPAN,
     DocumentExtractionInvalid,
     extract_document,
@@ -42,6 +44,15 @@ NESTED: Final = (
     b"<tr><td>inner-c</td></tr></table></td>"
     b"<td>after</td></tr>"
     b"<tr><td>next</td></tr></table>"
+)
+#: A table whose data cells name the header cells that govern them by id, in an
+#: order and a combination the grid's own geometry would never arrive at: the
+#: fixture the precedence and ordering cases read.
+EXPLICIT: Final = (
+    b'<table><thead><tr><th id="metric">Metric</th>'
+    b'<th id="q1">Q1</th><th id="q2">Q2</th></tr></thead>'
+    b'<tbody><tr><th id="sales">Sales</th>'
+    b'<td headers="sales q2">5</td><td headers="q1">6</td></tr></tbody></table>'
 )
 
 
@@ -68,6 +79,10 @@ def cells(result: ExtractionOutcome) -> list[dict[str, Any]]:
                     "rowSpan",
                     "colSpan",
                     "headers",
+                    "headerRefs",
+                    "scope",
+                    "scopeUnsupported",
+                    "abbr",
                 }
             },
         }
@@ -80,6 +95,18 @@ def grid(result: ExtractionOutcome) -> list[tuple[str | None, int, int, int]]:
     """Each cell's text against the table, row and column it was placed in."""
     return [
         (item["text"], item["table"], item["row"], item["column"])
+        for item in cells(result)
+    ]
+
+
+def headers(result: ExtractionOutcome) -> list[tuple[str | None, Any, list[str]]]:
+    """Each cell's text against the headers it claimed and the ones it resolved.
+
+    A claim of ``None`` is a cell that carried no ``headers`` attribute, which
+    is the only cell whose headers were read from the grid's geometry.
+    """
+    return [
+        (item["text"], item.get("headerRefs"), item["headers"])
         for item in cells(result)
     ]
 
@@ -545,6 +572,327 @@ def test_non_table_extraction_is_unchanged_by_the_grid() -> None:
             },
         ),
     ]
+
+
+def test_a_cell_naming_its_own_headers_is_believed_over_the_grid() -> None:
+    result = html(EXPLICIT)
+
+    # The grid would have headed cell "5" by the header of its own column and
+    # the header starting its row; the cell says otherwise, and what it says is
+    # published in the order it wrote it. Cell "6" names one header where the
+    # grid would have given it two, so the explicit reading replaces the
+    # inferred one rather than adding to it.
+    assert headers(result) == [
+        ("Metric", None, []),
+        ("Q1", None, []),
+        ("Q2", None, []),
+        ("Sales", None, ["/1:table/1:thead/1:tr/1:th"]),
+        (
+            "5",
+            ["sales", "q2"],
+            ["/1:table/2:tbody/1:tr/1:th", "/1:table/1:thead/1:tr/3:th"],
+        ),
+        ("6", ["q1"], ["/1:table/1:thead/1:tr/2:th"]),
+    ]
+    # The same bytes resolve the same way on every run, so the digest the
+    # revision is identified by does not move.
+    assert html(EXPLICIT).output_digest == result.output_digest
+
+
+def test_a_reference_to_a_header_written_later_in_the_table_still_resolves() -> None:
+    result = html(
+        b'<table><tr><td headers="total">5</td><th id="total">Total</th></tr></table>'
+    )
+
+    # Which header cells a table holds does not depend on where in it a cell
+    # referring to one sits, so a reference is not reported as unresolved just
+    # because the header it names comes after it.
+    assert headers(result) == [
+        ("5", ["total"], ["/1:table/1:tr/2:th"]),
+        ("Total", None, []),
+    ]
+
+
+def test_an_unresolved_reference_is_published_as_claimed_and_resolves_to_nothing() -> (
+    None
+):
+    result = html(
+        b'<table><tr><th id="h">H</th><td id="d">d</td>'
+        b'<td headers="h missing d h">x</td></tr></table>'
+    )
+
+    # Every claim is kept verbatim and in order, repeats included; only a claim
+    # naming a header cell of this table resolves. An id this table does not
+    # hold and an id held by a cell that is not a header cell both resolve to
+    # nothing, and neither is filled in from anywhere else.
+    assert headers(result) == [
+        ("H", None, []),
+        ("d", None, ["/1:table/1:tr/1:th"]),
+        ("x", ["h", "missing", "d", "h"], ["/1:table/1:tr/1:th"]),
+    ]
+
+
+def test_a_cell_naming_itself_is_not_made_its_own_header() -> None:
+    result = html(
+        b'<table><tr><th id="h" headers="h">H</th><td headers="h">x</td></tr></table>'
+    )
+
+    assert headers(result) == [
+        ("H", ["h"], []),
+        ("x", ["h"], ["/1:table/1:tr/1:th"]),
+    ]
+
+
+def test_two_header_cells_of_one_table_claiming_one_id_resolve_to_neither() -> None:
+    result = html(
+        b'<table><tr><th id="h">first</th><th id="h">second</th></tr>'
+        b'<tr><td headers="h">x</td></tr></table>'
+    )
+
+    # One id naming two header cells names neither of them unambiguously, so
+    # the conservative reading is that it resolves to nothing at all rather than
+    # to whichever of the two the walk read first.
+    assert headers(result)[-1] == ("x", ["h"], [])
+    # The same markup with the duplicate removed resolves, so the refusal to
+    # resolve is the duplicate speaking and not the fixture.
+    control = html(
+        b'<table><tr><th id="h">first</th></tr><tr><td headers="h">x</td></tr></table>'
+    )
+    assert headers(control)[-1] == ("x", ["h"], ["/1:table/1:tr/1:th"])
+
+
+def test_a_duplicate_id_is_ambiguous_for_a_reference_that_precedes_it() -> None:
+    result = html(
+        b'<table><tr><td headers="h">x</td></tr>'
+        b'<tr><th id="h">first</th><th id="h">second</th></tr></table>'
+    )
+
+    # The index is complete before any reference is resolved, so the duplicate
+    # makes the id ambiguous wherever the reference to it sits.
+    assert headers(result)[0] == ("x", ["h"], [])
+
+
+def test_a_nested_table_resolves_its_own_ids_and_not_the_ones_repeated_around_it() -> (
+    None
+):
+    result = html(
+        b'<table><tr><th id="h">Outer</th>'
+        b'<td><table><tr><th id="h">Inner</th>'
+        b'<td headers="h">in</td></tr></table></td>'
+        b'<td headers="h">out</td></tr></table>'
+    )
+
+    # Each table holds its own ``h``, so neither is ambiguous and neither cell
+    # resolves to the header of the other table.
+    assert headers(result) == [
+        ("Outer", None, []),
+        ("Inner", None, []),
+        ("in", ["h"], ["/1:table/1:tr/2:td/1:table/1:tr/1:th"]),
+        ("out", ["h"], ["/1:table/1:tr/1:th"]),
+    ]
+
+
+def test_a_reference_to_another_tables_header_resolves_to_nothing() -> None:
+    result = html(
+        b'<table><tr><th id="h">H</th></tr></table>'
+        b'<table><tr><td headers="h">x</td></tr></table>'
+    )
+
+    assert headers(result) == [("H", None, []), ("x", ["h"], [])]
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    [b' headers=""', b' headers="   "', b' headers="nothing"', b" headers"],
+)
+def test_an_empty_or_unresolved_claim_never_falls_back_to_inference(
+    attribute: bytes,
+) -> None:
+    source = (
+        b"<table><tr><th>Name</th></tr><tr><td" + attribute + b">x</td></tr></table>"
+    )
+
+    # The cell states which headers govern it; that it states none, or states
+    # only ids this table does not hold, is the source speaking and not a gap
+    # for this walk's reading of the geometry to fill.
+    assert headers(html(source))[-1][2] == []
+    assert headers(html(source.replace(attribute, b"")))[-1] == (
+        "x",
+        None,
+        ["/1:table/1:tr/1:th"],
+    )
+
+
+def test_a_column_scope_heads_the_column_and_not_the_row() -> None:
+    source = b"<table><tr><th%s>C</th><td>x</td></tr><tr><td>y</td></tr></table>"
+
+    scoped = headers(html(source % b' scope="col"'))
+    positional = headers(html(source % b""))
+
+    # Without a scope the header starts a body row, so the grid reads it as
+    # heading that row as well as its column. Declaring ``col`` narrows it to
+    # the column, and the cell beside it is left with no header at all.
+    assert scoped == [
+        ("C", None, []),
+        ("x", None, []),
+        ("y", None, ["/1:table/1:tr/1:th"]),
+    ]
+    assert positional[1] == ("x", None, ["/1:table/1:tr/1:th"])
+
+
+def test_a_row_scope_heads_the_row_and_not_the_column() -> None:
+    result = html(
+        b'<table><thead><tr><th scope="row">R</th><td>x</td></tr></thead>'
+        b"<tbody><tr><td>y</td></tr></tbody></table>"
+    )
+
+    # Position alone would never read a header in ``thead`` as heading its row;
+    # the declared scope is believed over that reading, and the column it sits
+    # in is left headerless because the cell never claimed it.
+    assert headers(result) == [
+        ("R", None, []),
+        ("x", None, ["/1:table/1:thead/1:tr/1:th"]),
+        ("y", None, []),
+    ]
+
+
+@pytest.mark.parametrize("scope", [b"rowgroup", b"colgroup"])
+def test_a_group_scope_claims_no_relationship_that_cannot_be_established(
+    scope: bytes,
+) -> None:
+    result = html(
+        b'<table><tbody><tr><th scope="' + scope + b'" id="g">G</th>'
+        b"<td>x</td></tr><tr><td>y</td></tr></tbody></table>"
+    )
+
+    # The extent of a row or column group is not something one cell's place in
+    # the grid states, so nothing is inferred from a header that declares one.
+    assert headers(result) == [("G", None, []), ("x", None, []), ("y", None, [])]
+    # The declaration is still reported, and a cell may still name the header
+    # explicitly: what is withheld is the inference, not the relationship.
+    assert [item.get("scope") for item in cells(result)] == [scope.decode(), None, None]
+
+
+@pytest.mark.parametrize("declared", [b"col", b"COL", b"Col"])
+def test_a_scope_keyword_is_matched_the_way_html_matches_one(declared: bytes) -> None:
+    result = html(b'<table><tr><th scope="' + declared + b'">C</th></tr></table>')
+
+    # An enumerated attribute is matched ASCII case-insensitively, and the
+    # keyword is reported in the one spelling a consumer can compare against.
+    assert cells(result) == [
+        {
+            "text": "C",
+            "path": "/1:table/1:tr/1:th",
+            "table": 1,
+            "row": 1,
+            "column": 1,
+            "section": "direct",
+            "cellKind": "th",
+            "rowSpan": 1,
+            "colSpan": 1,
+            "headers": [],
+            "scope": "col",
+        }
+    ]
+
+
+@pytest.mark.parametrize("declared", [b"bogus", b"ROWS", "ＣＯＬ".encode()])
+def test_an_unsupported_scope_is_reported_and_leaves_the_positional_reading(
+    declared: bytes,
+) -> None:
+    result = html(
+        b'<table><tr><th scope="' + declared + b'">H</th><td>x</td></tr></table>'
+    )
+
+    # A keyword this walk cannot read is never mapped onto one it can, so it is
+    # published as declared and the geometry is all that is left to read the
+    # header's reach from.
+    assert [
+        (item.get("scope"), item.get("scopeUnsupported")) for item in cells(result)
+    ] == [(None, declared.decode()), (None, None)]
+    assert headers(result)[1] == ("x", None, ["/1:table/1:tr/1:th"])
+
+
+def test_a_header_cell_keeps_the_id_abbr_and_scope_the_source_wrote() -> None:
+    result = html(
+        b'<table><tr><th id="q1" abbr="Q1" scope="col">First quarter</th>'
+        b"<th>Second quarter</th></tr></table>"
+    )
+
+    kept = [
+        {
+            key: value
+            for key, value in item.source_locator.items()
+            if key in {"elementId", "abbr", "scope", "scopeUnsupported"}
+        }
+        for item in result.segments
+        if item.semantic_role == "table_cell"
+    ]
+    # Each of the three is published only because the source wrote it, so the
+    # header that wrote none of them carries none of them.
+    assert kept == [{"elementId": "q1", "abbr": "Q1", "scope": "col"}, {}]
+
+
+@pytest.mark.parametrize("attribute", ["headers", "scope", "abbr"])
+def test_a_table_attribute_past_the_length_bound_refuses_the_source(
+    attribute: str,
+) -> None:
+    def source(length: int) -> bytes:
+        return (
+            b"<table><tr><th "
+            + attribute.encode()
+            + b'="'
+            + b"x" * length
+            + b'">H</th></tr></table>'
+        )
+
+    with pytest.raises(DocumentExtractionInvalid, match="attribute exceeds"):
+        html(source(MAX_HTML_REFERENCE_CHARS + 1))
+
+    # The same markup at the bound is accepted, so the refusal is the bound
+    # speaking and not the fixture.
+    assert html(source(MAX_HTML_REFERENCE_CHARS)).state == "succeeded"
+
+
+def test_a_cell_claiming_more_headers_than_the_bound_refuses_the_source() -> None:
+    def source(count: int) -> bytes:
+        claims = b" ".join(b"h%d" % index for index in range(count))
+        return b'<table><tr><td headers="' + claims + b'">x</td></tr></table>'
+
+    with pytest.raises(DocumentExtractionInvalid, match="too many headers"):
+        html(source(MAX_HTML_TABLE_HEADER_REFS + 1))
+
+    # Every claim at the bound is published, none of them resolving, because a
+    # claim is never trimmed to fit a bound it does not breach.
+    accepted = html(source(MAX_HTML_TABLE_HEADER_REFS))
+    assert len(headers(accepted)[0][1]) == MAX_HTML_TABLE_HEADER_REFS
+    assert headers(accepted)[0][2] == []
+
+
+def test_equivalent_html_and_xhtml_resolve_their_headers_identically() -> None:
+    xhtml = (
+        b'<?xml version="1.0" encoding="UTF-8"?>'
+        b'<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+        + EXPLICIT.replace(b"<thead>", b'<thead id="head"><!--kept-->')
+        + b"</body></html>"
+    )
+    plain = EXPLICIT.replace(b"<thead>", b'<thead id="head"><!--kept-->')
+
+    def unwrap(item: dict[str, Any]) -> dict[str, Any]:
+        """Drop the document the XHTML fixture must wrap its table in."""
+        prefix = "/1:html/1:body"
+        return {
+            **item,
+            "path": item["path"].removeprefix(prefix),
+            "headers": [header.removeprefix(prefix) for header in item["headers"]],
+        }
+
+    strict = html(xhtml, media_type="application/xhtml+xml")
+
+    # The admission parse differs between the two; nothing a cell claims or
+    # resolves does. The ids the claims resolve against are the same ids, and a
+    # row group carrying one of its own does not become a header cell.
+    assert cells(html(plain)) == [unwrap(item) for item in cells(strict)]
 
 
 def test_a_link_inside_a_cell_stays_inert_inventory() -> None:
