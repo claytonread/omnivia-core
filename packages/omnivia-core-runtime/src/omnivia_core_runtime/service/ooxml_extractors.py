@@ -378,6 +378,50 @@ _MAX_PPTX_DIAGRAM_CONNECTIONS: Final = 20_000
 _MAX_PPTX_DIAGRAM_PARAGRAPHS: Final = 20_000
 _MAX_PPTX_DIAGRAM_RUNS: Final = 100_000
 _MAX_PPTX_DIAGRAM_CHARS: Final = 100_000
+# The relationship and content types that together qualify the two parts a
+# slide's inherited text lives in: the layout the slide itself names, and the
+# master that layout itself names. As with the notes and comment types, only
+# the two URIs OOXML defines for each qualify -- Transitional and Strict -- so
+# nothing reaches either part by ending the same way, and neither type reaches
+# the other's part.
+_LAYOUT_RELATIONSHIPS: Final = frozenset(
+    {
+        (
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            "/slideLayout"
+        ),
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/slideLayout",
+    }
+)
+_MASTER_RELATIONSHIPS: Final = frozenset(
+    {
+        (
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            "/slideMaster"
+        ),
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/slideMaster",
+    }
+)
+# Compared against ``declared_type``, which case-folds, so both are written
+# folded: the authored spellings are ``...presentationml.slideLayout+xml`` and
+# ``...presentationml.slideMaster+xml``. The content type is the same under
+# Transitional and Strict.
+_LAYOUT_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.presentationml.slidelayout+xml"
+)
+_MASTER_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.presentationml.slidemaster+xml"
+)
+# A layout or master is read for its own text bodies only. A graphic frame
+# there relates its table, chart or diagram through that part's relationships
+# rather than the slide's, and a frame on a layout describes what a slide would
+# place rather than material the slide shows, so an inherited frame is left
+# alone -- as every picture and group already is.
+_PPTX_INHERITED_SHAPES: Final = frozenset({"sp", "cxnSp"})
+# The two roots the inherited parts declare themselves at, in the PresentationML
+# namespaces every other PresentationML part here is held to.
+_LAYOUT_ROOT: Final = "sldLayout"
+_MASTER_ROOT: Final = "sldMaster"
 _MAX_PPTX_COMMENTS: Final = 10_000
 _MAX_PPTX_COMMENT_AUTHORS: Final = 10_000
 _MAX_PPTX_COMMENT_CHARS: Final = 100_000
@@ -906,7 +950,11 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 capture_id, part, slide_id, ordinal, hidden, segments, package
             )
             slide_root = package.xml(part)
+            # The slide's own text first, so that what it shows itself is what
+            # suppresses an exact repeat of it from behind. The walker carries
+            # what it has already shown from one pass to the other.
             walker.walk(_pptx_tree(slide_root), (), (), 0)
+            walker.inherited(slide_root)
             notes = _related_part(
                 package, part, _NOTES_RELATIONSHIPS, _NOTES_CONTENT_TYPE, "notes"
             )
@@ -1884,6 +1932,83 @@ def _pptx_tree(root: ElementTree.Element) -> ElementTree.Element:
     return tree
 
 
+def _pptx_inherited_root(
+    package: _Package, part: str, expected: str
+) -> ElementTree.Element:
+    """Parse one layout or master, refusing a root that is not its own.
+
+    The declared content type says what the part is; the root element is where
+    the part says so itself, in one of the PresentationML namespaces. Anything
+    else is not the vocabulary the declaration promised, so the part is refused
+    rather than read for whatever shapes happen to be in it -- and a layout is
+    never read as a master, or the other way round, however it is declared.
+    """
+    root = package.xml(part)
+    namespace = root.tag.rpartition("}")[0].lstrip("{")
+    if namespace not in _PRESENTATIONML:
+        raise OOXMLInvalid("PPTX inherited part uses an unsupported namespace")
+    if _local(root.tag) != expected:
+        raise OOXMLInvalid(f"PPTX inherited part is not rooted at its own {expected}")
+    return root
+
+
+def _pptx_inherited_tree(
+    root: ElementTree.Element, what: str
+) -> ElementTree.Element:
+    """Return a layout or master's own shape tree, reached one hop at a time.
+
+    The tree is the ``spTree`` directly below the part's own ``cSld``, which is
+    the one place the schema puts it. Nothing is found by searching the part for
+    a descendant that happens to be named one, so a shape tree written anywhere
+    else -- inside an extension, or in another vocabulary's markup carried
+    along -- is not read as this part's own declaration of what it shows.
+    """
+    common = next((node for node in root if _local(node.tag) == "cSld"), None)
+    tree = (
+        None
+        if common is None
+        else next((node for node in common if _local(node.tag) == "spTree"), None)
+    )
+    if tree is None:
+        raise OOXMLInvalid(f"PPTX slide {what} has no shape tree")
+    return tree
+
+
+def _pptx_shape_id(shape: ElementTree.Element, seen: set[str], what: str) -> str:
+    """Return the shape's identifier, refusing a missing or repeated one."""
+    properties = next(
+        (
+            node
+            for holder in shape
+            if _local(holder.tag).startswith("nv")
+            for node in holder
+            if _local(node.tag) == "cNvPr"
+        ),
+        None,
+    )
+    shape_id = None if properties is None else properties.attrib.get("id")
+    if shape_id is None or _SHAPE_ID.fullmatch(shape_id) is None:
+        raise OOXMLInvalid("PPTX shape has no readable identifier")
+    if shape_id in seen:
+        raise OOXMLInvalid(f"PPTX shape identifier is repeated on one {what}")
+    seen.add(shape_id)
+    return shape_id
+
+
+def _pptx_shows_master(element: ElementTree.Element) -> bool:
+    """Whether a slide or layout shows the inherited shapes behind it.
+
+    Unlike the SpreadsheetML flags, an absent attribute here means they are
+    shown: ``showMasterSp`` is only ever written to turn them off.
+    """
+    value = element.attrib.get("showMasterSp")
+    if value is None or value in _TRUE_FLAGS:
+        return True
+    if value in _FALSE_FLAGS:
+        return False
+    raise OOXMLInvalid("PPTX inherited shapes flag is malformed")
+
+
 @dataclass(frozen=True, slots=True)
 class _PptxTable:
     """One validated table: its grid, its cells in source order, and its merges.
@@ -2561,8 +2686,14 @@ class _PptxWalker:
     itself SmartArt reports that data model's stored point text and the
     connections it encodes. Geometry and
     the placeholder reference are recorded exactly as the shape encodes them;
-    nothing is inherited from a layout or master, and no group child-space
+    no value is resolved from a layout or master, and no group child-space
     mapping is applied, so a shape that encodes no transform carries none.
+
+    ``inherited`` then reports the text the slide's layout and master show
+    behind it, as text in its own right at the part that holds it. It is a
+    pass of its own rather than part of the walk above, because what it reads
+    is another part's shape tree and what suppresses a repeat is everything
+    the walk already reported.
 
     Shapes, paragraphs and runs are counted across the whole slide, because the
     walker is the slide's scope: the indexes in a locator are local to the shape
@@ -2587,6 +2718,10 @@ class _PptxWalker:
         self._segments = segments
         self._package = package
         self._ids: set[str] = set()
+        # Every visual identity this slide has already shown, in the order-free
+        # form ``_visual`` builds. The inherited pass consults it; the slide's
+        # own pass only adds to it.
+        self._shown: set[tuple[str, str, tuple[tuple[str, int], ...] | None]] = set()
         self.shapes = 0
         self.paragraphs = 0
         self.runs = 0
@@ -2607,7 +2742,7 @@ class _PptxWalker:
             self.shapes += 1
             if self.shapes > _MAX_PPTX_SHAPES:
                 raise OOXMLInvalid("PPTX slide has too many shapes")
-            shape_id = self._identity(child)
+            shape_id = _pptx_shape_id(child, self._ids, "slide")
             # Validated for every shape, including a group and a picture: a
             # malformed transform is malformed wherever it is written.
             geometry = _pptx_geometry(child)
@@ -2634,25 +2769,129 @@ class _PptxWalker:
             elif kind in _PPTX_TEXT_SHAPES:
                 self._emit(child, "body", where)
 
-    def _identity(self, shape: ElementTree.Element) -> str:
-        """Return the shape's identifier, refusing a missing or repeated one."""
-        properties = next(
-            (
-                node
-                for holder in shape
-                if _local(holder.tag).startswith("nv")
-                for node in holder
-                if _local(node.tag) == "cNvPr"
-            ),
-            None,
+    def inherited(self, slide_root: ElementTree.Element) -> None:
+        """Emit the authored text the slide's layout and master show behind it.
+
+        Routing is exact and goes one hop at a time: the layout is the one part
+        the slide itself relates as a layout, and the master is the one that
+        layout itself relates as a master. Each relationship has to be
+        internal, has to carry one of the two URIs OOXML defines for its type,
+        and has to resolve to a part the package declares with that type's own
+        content type and that is rooted at its own element in a PresentationML
+        namespace. Nothing is reached by a part's name, by substituting into
+        the slide's, or by scanning the package for a member that looks like
+        one, and a slide relating no layout inherits nothing rather than being
+        refused.
+
+        ``showMasterSp`` is honoured where each part writes it. A slide that
+        turns inherited shapes off shows neither its layout's nor its master's,
+        so neither part is opened; a layout that turns them off shows its own
+        but not the master's. The attribute is only ever written to turn them
+        off, so an absent one shows them.
+        """
+        if not _pptx_shows_master(slide_root):
+            return
+        layout = _related_part(
+            self._package,
+            self._part,
+            _LAYOUT_RELATIONSHIPS,
+            _LAYOUT_CONTENT_TYPE,
+            "slide layout",
         )
-        shape_id = None if properties is None else properties.attrib.get("id")
-        if shape_id is None or _SHAPE_ID.fullmatch(shape_id) is None:
-            raise OOXMLInvalid("PPTX shape has no readable identifier")
-        if shape_id in self._ids:
-            raise OOXMLInvalid("PPTX shape identifier is repeated on one slide")
-        self._ids.add(shape_id)
-        return shape_id
+        if layout is None:
+            return
+        layout_id, layout_part = layout
+        layout_root = _pptx_inherited_root(self._package, layout_part, _LAYOUT_ROOT)
+        self._inherited(layout_part, layout_id, layout_root, "layout")
+        if not _pptx_shows_master(layout_root):
+            return
+        master = _related_part(
+            self._package,
+            layout_part,
+            _MASTER_RELATIONSHIPS,
+            _MASTER_CONTENT_TYPE,
+            "slide master",
+            owner="slide layout",
+        )
+        if master is None:
+            return
+        master_id, master_part = master
+        self._inherited(
+            master_part,
+            master_id,
+            _pptx_inherited_root(self._package, master_part, _MASTER_ROOT),
+            "master",
+        )
+
+    def _inherited(
+        self,
+        part: str,
+        relation_id: str,
+        root: ElementTree.Element,
+        level: str,
+    ) -> None:
+        """Emit one inherited part's own authored text, in its declared order.
+
+        Only a shape directly below that part's shape tree is read: a group is
+        not entered, and a graphic frame or picture is left alone, so no table,
+        chart or diagram is reached through a part whose own relationships
+        nothing here resolves. Every shape in the tree still takes its place in
+        the z-order and has its identity validated, exactly as on a slide, so
+        skipping one never shifts another's position.
+
+        A shape holding a placeholder reference is skipped whatever it holds.
+        What text a slide inherits into a placeholder is placeholder
+        applicability -- which frame on which part supplies it, and whether the
+        slide has already filled it -- and that is not implemented here, so no
+        placeholder's text is reported rather than reported in the wrong place.
+
+        An exact visual duplicate of something already shown is not shown
+        twice. That is decided on the whole of what a run puts on the slide --
+        its role, its text once whitespace is normalised, and the transform the
+        shape holding it encodes, exactly as encoded -- never on the text
+        alone. Two shapes carrying the same words at different positions are
+        two authored things and both are reported; only the same words in the
+        same place are the one thing seen twice. Suppression never moves an
+        index, so each locator names where its run actually sits.
+        """
+        seen: set[str] = set()
+        position = 0
+        for child in _pptx_children(_pptx_inherited_tree(root, level)):
+            kind = _local(child.tag)
+            if kind not in _PPTX_SHAPES:
+                continue
+            self.shapes += 1
+            if self.shapes > _MAX_PPTX_SHAPES:
+                raise OOXMLInvalid("PPTX slide has too many shapes")
+            shape_id = _pptx_shape_id(child, seen, f"slide {level}")
+            # Validated for every shape in the tree, including the ones whose
+            # text is not read: a malformed transform is malformed wherever it
+            # is written.
+            geometry = _pptx_geometry(child)
+            here = position
+            position += 1
+            if kind not in _PPTX_INHERITED_SHAPES:
+                continue
+            if _pptx_placeholder(child) != (None, None):
+                continue
+            self._emit(
+                child,
+                "body",
+                {
+                    "part": part,
+                    "relationshipId": relation_id,
+                    "inheritedFrom": level,
+                    "slidePart": self._part,
+                    "slideId": self._slide_id,
+                    "slide": self._ordinal,
+                    "slideHidden": self._hidden,
+                    "shapeId": shape_id,
+                    "shapeKind": kind,
+                    "zOrder": here,
+                    "geometry": geometry,
+                },
+                suppress=True,
+            )
 
     def _where(
         self,
@@ -2804,10 +3043,47 @@ class _PptxWalker:
             )
             _bounded(self._segments)
 
+    def _visual(
+        self, role: str, text: str, geometry: object
+    ) -> tuple[str, str, tuple[tuple[str, int], ...] | None]:
+        """Return what one run puts on the slide, as a comparable identity.
+
+        The whole of it, never the text alone: the role the run is reported
+        under, its text once whitespace is normalised, and the transform the
+        shape holding it encodes. ``geometry`` is the locator's own
+        ``geometry`` value -- which both the slide's walk and the inherited
+        pass record -- taken exactly as the shape encoded it, in EMU, with
+        nothing resolved or rounded; it is sorted into a tuple only because a
+        dict's order follows the authored attribute order and says nothing
+        about where the shape sits. A shape that encodes no transform carries
+        no coordinates, so two such shapes are compared on role and text.
+
+        The same words at two different transforms are therefore two authored
+        things, and only the same words at the same transform are one thing
+        seen twice.
+        """
+        coordinates = (
+            tuple(sorted(geometry.items())) if isinstance(geometry, dict) else None
+        )
+        return role, " ".join(text.split()), coordinates
+
     def _emit(
-        self, holder: ElementTree.Element, role: str, where: dict[str, object]
+        self,
+        holder: ElementTree.Element,
+        role: str,
+        where: dict[str, object],
+        *,
+        suppress: bool = False,
     ) -> None:
-        """Emit one segment per non-empty run of ``holder``'s own paragraphs."""
+        """Emit one segment per non-empty run of ``holder``'s own paragraphs.
+
+        Every run emitted records its visual identity on the walker, so a later
+        pass over the same slide can tell what is already shown. ``suppress``
+        then drops a run whose identity is one of those -- the inherited pass
+        asks for that, the slide's own pass does not, so a slide's own text is
+        always reported. Indexes are unaffected, so a suppressed run leaves the
+        ones around it where they are.
+        """
         for paragraph_index, paragraph in enumerate(_pptx_paragraphs(holder)):
             self.paragraphs += 1
             if self.paragraphs > _MAX_PPTX_PARAGRAPHS:
@@ -2821,6 +3097,10 @@ class _PptxWalker:
                 if not text:
                     # An empty run keeps its index; it carries no text to report.
                     continue
+                identity = self._visual(role, text, where.get("geometry"))
+                if suppress and identity in self._shown:
+                    continue
+                self._shown.add(identity)
                 self._segments.append(
                     ExtractedSegment(
                         role,

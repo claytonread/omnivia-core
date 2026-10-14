@@ -64,9 +64,12 @@ COMMENT_RELATION = (
 AUTHOR_RELATION = (
     f'<Relationship Id="rIdA" Type="{AUTHORS_TYPE}" Target="authors.xml"/>'
 )
-# A slide relationship under a type that qualifies as nothing read here.
+# A slide relationship under a type that qualifies as nothing read here: the
+# layout lookalike the sibling suites use, which is not one of the two URIs
+# OOXML defines for a layout, so it reaches neither comments nor inherited text
+# and leaves these tests about the comment extension alone.
 LAYOUT_RELATION = (
-    f'<Relationship Id="rId2" Type="{REL_NS}/slideLayout"'
+    '<Relationship Id="rId2" Type="urn:x/officeDocument/relationships/slideLayout"'
     ' Target="../slideLayouts/slideLayout1.xml"/>'
 )
 AUTHOR_OVERRIDE = f'<Override PartName="/{AUTHOR_PART}" ContentType="{AUTHORS_CT}"/>'
