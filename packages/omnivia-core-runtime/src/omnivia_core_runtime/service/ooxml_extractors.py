@@ -165,6 +165,28 @@ _XLSX_TABLE_COLUMN: Final[dict[str, object]] = {
     "calculatedColumnFormula": None,
     "totalsRowFormula": None,
 }
+# A workbook's defined names are counted before any is read, and each one's
+# expression is bounded on its own: the whole declaration is reported in one
+# record, and the stored expression is the only part of it that is not already
+# held to the metadata bound.
+# ponytail: 4096 names and 8 KiB of expression each; a wider profile only if a
+# real workbook is refused by these.
+_MAX_XLSX_DEFINED_NAMES: Final = 4_096
+_MAX_XLSX_DEFINED_NAME_CHARS: Final = 8 * 1024
+# The boolean attributes a defined name carries, read in this order so every
+# record carries the same keys. Each one is inert here: ``function`` says the
+# name was declared as a function, ``vbProcedure`` and ``xlm`` say which
+# vocabulary wrote it, and nothing is called, bound or run on account of any of
+# them. SpreadsheetML defaults all six to false, so an absent one is a declared
+# false rather than an unknown.
+_XLSX_DEFINED_NAME_FLAGS: Final = (
+    "hidden",
+    "function",
+    "vbProcedure",
+    "xlm",
+    "publishToServer",
+    "workbookParameter",
+)
 # The shape-tree children that carry an identity and a z-order position.
 # ``contentPart`` carries neither, so it is not a shape here.
 _PPTX_SHAPES: Final = frozenset({"sp", "grpSp", "graphicFrame", "cxnSp", "pic"})
@@ -1406,7 +1428,12 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         if "xl/workbook.xml" not in package.names:
             raise OOXMLInvalid("XLSX workbook part is missing")
         shared = _shared_strings(package)
-        sheets = _xlsx_sheets(package)
+        workbook = package.xml("xl/workbook.xml")
+        sheets = _xlsx_sheets(package, workbook)
+        # Resolved against the sheet list before any sheet is read, so a name
+        # scoped to a sheet the workbook never declared is refused rather than
+        # reported after a package's worth of work.
+        defined_names = _xlsx_defined_names(workbook, sheets)
         segments: list[ExtractedSegment] = []
         populated = 0
         for sheet_name, sheet_id, part, state in sheets:
@@ -1534,12 +1561,40 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                     )
                 )
                 _bounded(segments)
+        # After every sheet's own content, in the order the workbook declared
+        # them: a defined name is the workbook's declaration rather than a
+        # sheet's, even where it scopes itself to one.
+        for defined in defined_names:
+            segments.append(
+                ExtractedSegment(
+                    "object_inventory",
+                    _locator(
+                        capture_id,
+                        part="xl/workbook.xml",
+                        definedName=defined["name"],
+                        scope=defined["scope"],
+                    ),
+                    structured_value=defined,
+                    extraction_method="inventory",
+                    # A name is out of sight where it hides itself or where the
+                    # sheet it is scoped to is out of sight; a workbook-scoped
+                    # name has no sheet to take visibility from.
+                    visibility=(
+                        "hidden"
+                        if defined["hidden"]
+                        or defined["sheetState"] not in (None, "visible")
+                        else "visible"
+                    ),
+                )
+            )
+            _bounded(segments)
         return OOXMLExtraction(
             tuple(segments),
             "workbook_cell",
             populated,
             {
                 "sheets": len(sheets),
+                "definedNames": len(defined_names),
                 "packageMembers": len(package.names),
                 "externalReferences": package.external_relationships,
             },
@@ -1650,7 +1705,9 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         )
 
 
-def _xlsx_sheets(package: _Package) -> list[tuple[str, str, str, str]]:
+def _xlsx_sheets(
+    package: _Package, root: ElementTree.Element
+) -> list[tuple[str, str, str, str]]:
     """List (name, sheetId, part, visibility state) for each declared sheet.
 
     The state is kept as the workbook wrote it, so a very hidden sheet stays
@@ -1659,7 +1716,7 @@ def _xlsx_sheets(package: _Package) -> list[tuple[str, str, str, str]]:
     """
     relations = package.relationships.get("xl/_rels/workbook.xml.rels", {})
     result: list[tuple[str, str, str, str]] = []
-    for sheet in package.xml("xl/workbook.xml").iter():
+    for sheet in root.iter():
         if _local(sheet.tag) != "sheet":
             continue
         relation_id = _relationship_id(sheet.attrib)
@@ -1680,6 +1737,103 @@ def _xlsx_sheets(package: _Package) -> list[tuple[str, str, str, str]]:
     if len(result) > 100:
         raise OOXMLInvalid("XLSX has too many sheets")
     return result
+
+
+def _xlsx_defined_names(
+    root: ElementTree.Element, sheets: list[tuple[str, str, str, str]]
+) -> list[dict[str, object]]:
+    """Inventory the workbook's defined names without resolving any of them.
+
+    A defined name is reached on the schema's own route and no other: the
+    ``definedNames`` directly below the workbook and a ``definedName`` directly
+    below that, both qualified in the workbook root's own namespace, and that
+    namespace has to be SpreadsheetML. An unqualified, foreign or further
+    nested lookalike declares nothing and stays transparent, so a workbook that
+    writes no namespace reports no defined names rather than being read for
+    whatever spells the same local name.
+
+    What comes back is what the workbook already stored. The name is kept
+    exactly as written, so a built-in name keeps its ``_xlnm.`` prefix and its
+    own casing, and the expression is carried as the text it is: nothing here
+    evaluates it, resolves what it names, follows an external workbook
+    reference, or materialises a cell for any range it covers. The rest of the
+    record is the inert metadata the declaration carries beside it.
+
+    A local scope is a zero-based ordinal into the workbook's own sheet list,
+    resolved to that sheet's identity, part and visibility state; an ordinal
+    naming no sheet scopes the name to nothing, so it is refused. One scope
+    names a name once however it is cased, so a repeat inside one scope leaves
+    two expressions under one name and is refused -- but one name in two
+    different local scopes is two names, and both are kept.
+    """
+    namespace, _, _ = root.tag.rpartition("}")
+    namespace = namespace.lstrip("{")
+    if namespace not in _SPREADSHEETML:
+        return []
+    declared = [node for node in root if node.tag == f"{{{namespace}}}definedNames"]
+    if not declared:
+        return []
+    if len(declared) > 1:
+        raise OOXMLInvalid("XLSX workbook declares more than one defined-name list")
+    # Counted before the first name is read: a workbook's declarations are the
+    # work it asks for whether or not any of them resolves.
+    member = f"{{{namespace}}}definedName"
+    entries = [node for node in declared[0] if node.tag == member]
+    if len(entries) > _MAX_XLSX_DEFINED_NAMES:
+        raise OOXMLInvalid("XLSX workbook declares too many defined names")
+    records: list[dict[str, object]] = []
+    seen: set[tuple[int | None, str]] = set()
+    for entry in entries:
+        # An identity is never clipped: two over-long names cut to the same
+        # text would be one name, so one outside the bound is refused.
+        name = entry.attrib.get("name", "")
+        if not name or len(name) > _MAX_META_CHARS:
+            raise OOXMLInvalid("XLSX defined name is missing, empty or over-long")
+        # The stored expression, exactly as written. A name with nothing stored
+        # under it defines nothing, and an over-long one is refused rather than
+        # cut down into an expression the workbook never wrote.
+        expression = entry.text or ""
+        if not expression:
+            raise OOXMLInvalid("XLSX defined name declares no expression")
+        if len(expression) > _MAX_XLSX_DEFINED_NAME_CHARS:
+            raise OOXMLInvalid(
+                "XLSX defined name expression exceeds the accepted bound"
+            )
+        local = entry.attrib.get("localSheetId")
+        sheet: tuple[str, str, str, str] | None = None
+        ordinal: int | None = None
+        if local is not None:
+            if _DIGITS.fullmatch(local) is None or int(local) >= len(sheets):
+                raise OOXMLInvalid("XLSX defined name names no local sheet")
+            ordinal = int(local)
+            sheet = sheets[ordinal]
+        if (ordinal, name.casefold()) in seen:
+            raise OOXMLInvalid("XLSX defined name is repeated in one scope")
+        seen.add((ordinal, name.casefold()))
+        records.append(
+            {
+                "kind": "definedName",
+                "name": name,
+                "expression": expression,
+                "scope": "workbook" if sheet is None else "sheet",
+                "localSheetId": ordinal,
+                "sheet": None if sheet is None else sheet[0],
+                "sheetId": None if sheet is None else sheet[1],
+                "sheetPart": None if sheet is None else sheet[2],
+                "sheetState": None if sheet is None else sheet[3],
+                # Free text the declaration carries, clipped rather than
+                # refused: neither one is an identity, and nothing here reads
+                # either as anything but the text it is.
+                **{
+                    key: None
+                    if (value := entry.attrib.get(key)) is None
+                    else _clip(value, _MAX_META_CHARS)
+                    for key in ("comment", "description")
+                },
+                **{key: _flag(entry, key) for key in _XLSX_DEFINED_NAME_FLAGS},
+            }
+        )
+    return records
 
 
 def _xlsx_cells(
