@@ -112,7 +112,7 @@ def archive(members: dict[str, str]) -> bytes:
     return buffer.getvalue()
 
 
-def xlsx(sheet: str = SHEET) -> bytes:
+def xlsx(sheet: str = SHEET, drawing: str = DRAWING) -> bytes:
     """One sheet relating one drawing, anchoring one chart, over one series.
 
     The chart relates an embedded workbook whose member is not an archive at
@@ -144,7 +144,7 @@ def xlsx(sheet: str = SHEET) -> bytes:
             f' Type="{RELNS}/drawing"/>'
             "</Relationships>"
         ),
-        DRAWING_PART: DRAWING,
+        DRAWING_PART: drawing,
         "xl/drawings/_rels/drawing1.xml.rels": (
             "<Relationships>"
             '<Relationship Id="rIdC" Target="../charts/chart1.xml"'
@@ -284,6 +284,32 @@ def test_only_a_qualified_direct_drawing_child_reaches_a_chart() -> None:
 
     for sheet in (foreign, nested):
         assert records(xlsx(sheet)) == []
+
+
+def test_only_qualified_direct_anchor_and_frame_elements_are_read() -> None:
+    """The anchor and the frame are each read by name *and* place, not shape.
+
+    Both variants keep every descendant of the renamed element exactly as the
+    valid fixture wrote it, so only the element's own vocabulary differs: a
+    direct ``twoCellAnchor`` moved into a foreign namespace, and a correctly
+    qualified anchor whose direct ``graphicFrame`` is moved into one. Neither
+    is the element the spreadsheet-drawing grammar declares, so neither route
+    reaches the chart.
+    """
+    foreign = ' xmlns:f="urn:not-spreadsheetdrawing"'
+    anchor = ANCHOR.replace(
+        "<xdr:twoCellAnchor ", f"<f:twoCellAnchor{foreign} ", 1
+    ).replace("</xdr:twoCellAnchor>", "</f:twoCellAnchor>")
+    frame = ANCHOR.replace(
+        "<xdr:graphicFrame ", f"<f:graphicFrame{foreign} ", 1
+    ).replace("</xdr:graphicFrame>", "</f:graphicFrame>")
+
+    for variant in (anchor, frame):
+        drawing = (
+            f'<xdr:wsDr xmlns:xdr="{SHEET_DRAWING_NS}" xmlns:a="{DRAWING_NS}">'
+            f"{variant}</xdr:wsDr>"
+        )
+        assert records(xlsx(drawing=drawing)) == []
 
 
 # The Strict profile's spelling of each base URI: the ``purl.oclc.org`` name

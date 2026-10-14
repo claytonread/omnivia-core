@@ -3188,23 +3188,32 @@ def _xlsx_charts(
         "XLSX",
     )
     drawing = package.xml(drawing_part)
-    namespace, _, local = drawing.tag.rpartition("}")
-    if namespace.lstrip("{") not in _XLSX_DRAWING_NAMESPACES:
+    drawing_namespace, _, local = drawing.tag.rpartition("}")
+    drawing_namespace = drawing_namespace.lstrip("{")
+    if drawing_namespace not in _XLSX_DRAWING_NAMESPACES:
         raise OOXMLInvalid("XLSX drawing part uses an unsupported namespace")
     if local != "wsDr":
         raise OOXMLInvalid("XLSX drawing part is not rooted at its own drawing")
+    # The drawing's own vocabulary is settled by the namespace just validated,
+    # so an anchor counts only where its qualified name is that namespace's:
+    # an unqualified or foreign lookalike declares nothing and is transparent.
+    anchor_names = {f"{{{drawing_namespace}}}{name}" for name in _XLSX_ANCHORS}
     result: list[tuple[str, dict[str, object]]] = []
     for index, anchor in enumerate(
-        node for node in drawing if _local(node.tag) in _XLSX_ANCHORS
+        node for node in drawing if node.tag in anchor_names
     ):
         if index >= _MAX_XLSX_ANCHORS:
             raise OOXMLInvalid("XLSX drawing has too many anchors")
         # ponytail: two-cell anchors only; the single-cell and absolute kinds
         # are passed over until a unit asks for the ranges they name, each of
         # which is derived from an extent rather than written as a corner.
-        if _local(anchor.tag) != "twoCellAnchor":
+        if anchor.tag != f"{{{drawing_namespace}}}twoCellAnchor":
             continue
-        frames = [node for node in anchor if _local(node.tag) == "graphicFrame"]
+        frames = [
+            node
+            for node in anchor
+            if node.tag == f"{{{drawing_namespace}}}graphicFrame"
+        ]
         if len(frames) > 1:
             raise OOXMLInvalid("XLSX anchor holds more than one graphic frame")
         if not frames:
