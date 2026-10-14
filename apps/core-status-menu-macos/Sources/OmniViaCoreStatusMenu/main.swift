@@ -21,6 +21,13 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     /// One owned Settings window (MR-001). Created on first open; closing it
     /// never touches Core lifecycle.
     private var settingsWindowController: SettingsWindowController?
+    /// The most recent poll, so a window opened between polls starts with the
+    /// state already known rather than waiting out the poll interval.
+    private var lastSnapshot: MenuSnapshot?
+    /// When Core was last polled as running. Held here, not in the settings
+    /// window, because this companion runs continuously while that window
+    /// spends most of its life closed.
+    private var lastSeenRunning: Date?
     /// The same resolved `omnivia` the lifecycle runner uses. Held so the
     /// Settings window can administer installed MCP hosts through it; nil when
     /// the CLI could not be found, which the Access pane then states.
@@ -109,6 +116,11 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func render(_ snapshot: MenuSnapshot) {
+        lastSnapshot = snapshot
+        if case .status(let status) = snapshot.condition, status.lifecycleState == .running,
+           status.connectionState != .unreachable {
+            lastSeenRunning = Date()
+        }
         let projection = MenuProjection.project(snapshot)
         titleItem.title = projection.title
         detailItem.title = projection.detail
@@ -129,6 +141,39 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             button.title = "O"
         }
         button.toolTip = "\(projection.title) — \(projection.detail)"
+        reportServiceState(snapshot)
+    }
+
+    /// Forward the state this companion already polls to the settings window's
+    /// sidebar footer. The window invokes no lifecycle command itself (MR-005),
+    /// so the state is pushed here rather than fetched there.
+    private func reportServiceState(_ snapshot: MenuSnapshot) {
+        guard let controller = settingsWindowController else { return }
+        switch snapshot.condition {
+        case .checking:
+            // The first poll, before any status: leave the footer as it was
+            // rather than flicker a state we do not have yet.
+            break
+        case .unavailable:
+            // The adapter itself could not be run, so Core's state is unknown
+            // — which is not the same as Core being unreachable or stopped.
+            controller.updateServiceState(.unknown)
+        case .status(let status):
+            let state: CoreServiceState
+            if status.connectionState == .unreachable {
+                state = .unreachable(lastSeen: lastSeenRunning)
+            } else {
+                switch status.lifecycleState {
+                case .running: state = .running
+                case .starting: state = .starting
+                case .stopping: state = .stopping
+                case .stopped: state = .stopped
+                case .failed: state = .failed
+                case .unknown: state = .unknown
+                }
+            }
+            controller.updateServiceState(state, host: status.target.displayName)
+        }
     }
 
     @objc private func refresh() {
@@ -149,6 +194,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 mcp: mcp
             )
         }
+        if let lastSnapshot { reportServiceState(lastSnapshot) }
         settingsWindowController?.openOrFocus()
     }
 

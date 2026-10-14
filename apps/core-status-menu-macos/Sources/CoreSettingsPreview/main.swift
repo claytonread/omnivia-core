@@ -14,6 +14,7 @@
 // ============================================================================
 
 import AppKit
+import Foundation
 import CoreSettingsMacOS
 
 // Top-level code runs on the process's main thread; the settings types are
@@ -54,6 +55,34 @@ try MainActor.assumeIsolated {
         )
     )
     let controller = SettingsWindowController(coordinator: coordinator, mcp: mcp)
+
+    // Optional, so the sidebar footer's service states can be looked at
+    // without a companion to report them:
+    //   --service-state running|stopped|unreachable|starting|stopping|failed
+    // Without it the footer says it has no feed, which is the truth here.
+    if let name = argument("--service-state") {
+        let state: CoreServiceState?
+        switch name {
+        case "running": state = .running
+        case "stopped": state = .stopped
+        case "starting": state = .starting
+        case "stopping": state = .stopping
+        case "failed": state = .failed
+        case "unreachable":
+            // A fixed time, so this launcher's output is reproducible.
+            var when = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+            when.hour = 9
+            when.minute = 41
+            state = .unreachable(lastSeen: Calendar.current.date(from: when))
+        default: state = nil
+        }
+        guard let state else {
+            FileHandle.standardError.write(Data("unknown --service-state \(name)\n".utf8))
+            exit(2)
+        }
+        controller.updateServiceState(state, host: "This Mac")
+    }
+
     controller.openOrFocus()
     application.run()
 }

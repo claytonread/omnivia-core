@@ -315,6 +315,26 @@ enum OvFont {
     }
 }
 
+/// What the sidebar footer says about Core (`renderFoot` in the design).
+///
+/// Supplied by the companion, which already polls the lifecycle adapter every
+/// few seconds. The settings window never invokes a lifecycle command itself
+/// (MR-005), so this is pushed in rather than fetched.
+public enum CoreServiceState: Equatable, Sendable {
+    /// No feed — the window was opened without a companion to report state.
+    case unknown
+    case running
+    case stopped
+    case starting
+    case stopping
+    /// Core exited abnormally. Amber, not grey: a failure rendered as a
+    /// benign "stopped" is exactly what §A6 forbids.
+    case failed
+    /// `lastSeen` is when Core was last observed running, or nil if the
+    /// reporter has never observed it running.
+    case unreachable(lastSeen: Date?)
+}
+
 @MainActor
 public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// One window per companion (MR-001). Reopening focuses the existing one.
@@ -325,6 +345,22 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let notificationCenter: UNUserNotificationCenter?
     private var cancellables: Set<AnyCancellable> = []
     private var appearanceObserver: NSKeyValueObservation?
+
+    // MARK: Core service state (the sidebar footer)
+
+    private var serviceState: CoreServiceState = .unknown
+    private var serviceHost = "This Mac"
+    private var footerDot: NSView?
+    private var footerLabel: NSTextField?
+
+    /// Report Core's state. Idempotent, and safe to call before the window is
+    /// built — the footer reads these when it is next laid out.
+    public func updateServiceState(_ state: CoreServiceState, host: String? = nil) {
+        let changed = state != serviceState || (host.map { $0 != serviceHost } ?? false)
+        serviceState = state
+        if let host, !host.isEmpty { serviceHost = host }
+        if changed { renderFooter() }
+    }
 
     // MARK: Installed MCP (the Access pane's applications)
     private let mcp: McpAdministering?
@@ -795,10 +831,10 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     /// `.cs-foot`: a hairline rule, a status dot and one line of text.
     ///
-    /// The design's footer reports the service state. This window never invokes
-    /// a lifecycle command (MR-005), so it does not know that state and says so
-    /// rather than showing a dot that implies one — an unknown rendered as a
-    /// green tick is exactly what the amendment's §A6 forbids.
+    /// The state comes from the companion, which polls the lifecycle adapter.
+    /// With no companion there is no feed, and the footer says that rather
+    /// than showing a dot that implies a state — an unknown rendered as a
+    /// green tick is exactly what §A6 forbids.
     private func buildSidebarFooter() -> NSView {
         let container = NSView()
 
@@ -815,11 +851,14 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         dot.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(dot)
 
-        let label = NSTextField(wrappingLabelWithString: "Core status lives in the menu")
+        let label = NSTextField(wrappingLabelWithString: "")
         label.font = OvFont.sans(11.5)
         label.textColor = Ov.textSecondary
         label.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(label)
+        footerDot = dot
+        footerLabel = label
+        renderFooter()
 
         NSLayoutConstraint.activate([
             rule.topAnchor.constraint(equalTo: container.topAnchor),
@@ -889,6 +928,52 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         scroll.contentView.scroll(to: .zero)
         scroll.reflectScrolledClipView(scroll.contentView)
     }
+
+    /// The footer's dot and sentence, per `renderFoot`. The unreachable line
+    /// is the long one and wraps to two lines by design; the label is a
+    /// wrapping field pinned to the sidebar, so it does that on its own.
+    private func renderFooter() {
+        guard let footerDot, let footerLabel else { return }
+        let colour: NSColor
+        let text: String
+        switch serviceState {
+        case .running:
+            colour = Ov.success
+            text = "Core running · \(serviceHost)"
+        case .stopped:
+            colour = Ov.textQuaternary
+            text = "Core stopped · \(serviceHost)"
+        case .unreachable(let lastSeen):
+            colour = Ov.warning
+            // "last seen" is omitted rather than guessed when Core has never
+            // been observed running.
+            if let seen = lastSeen {
+                text = "Core unreachable · last\u{00A0}seen \(Self.clock.string(from: seen)) · \(serviceHost)"
+            } else {
+                text = "Core unreachable · \(serviceHost)"
+            }
+        case .starting:
+            colour = Ov.warning
+            text = "Core starting… · \(serviceHost)"
+        case .stopping:
+            colour = Ov.warning
+            text = "Core stopping… · \(serviceHost)"
+        case .failed:
+            colour = Ov.warning
+            text = "Core failed · \(serviceHost)"
+        case .unknown:
+            colour = Ov.textQuaternary
+            text = "Core status lives in the menu"
+        }
+        footerDot.layer?.backgroundColor = footerDot.resolved(colour)
+        footerLabel.stringValue = text
+    }
+
+    private static let clock: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 
     /// Keep the keyboard on the sidebar after an arrow key: selecting a pane
     /// rebuilds every row, so the focused view is gone by the time the key
