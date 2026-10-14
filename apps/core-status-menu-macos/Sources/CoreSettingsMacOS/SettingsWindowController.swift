@@ -350,6 +350,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     private var serviceState: CoreServiceState = .unknown
     private var serviceHost = "This Mac"
+    private var addSheet: AddApplicationSheet?
     private var footerDot: NSView?
     private var footerLabel: NSTextField?
 
@@ -965,7 +966,13 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             colour = Ov.textQuaternary
             text = "Core status lives in the menu"
         }
-        footerDot.layer?.backgroundColor = footerDot.resolved(colour)
+        // Against the window's chosen appearance, not the dot's own: during a
+        // rebuild it has no window yet, so `resolved` would read the app's —
+        // which painted a dark-mode 26% white dot onto the light sidebar and
+        // made it invisible.
+        Self.targetAppearance.performAsCurrentDrawingAppearance {
+            footerDot.layer?.backgroundColor = colour.cgColor
+        }
         footerLabel.stringValue = text
     }
 
@@ -1000,13 +1007,38 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         guard let content = contentStack else { return }
         content.views.forEach { content.removeView($0) }
 
-        let title = OvFont.paneTitle(selectedPane.rawValue)
-        content.addArrangedSubview(title)
-        content.addArrangedSubview(ovSpacer(5))
+        // `U.head(title, sub, right)`: title and lede on the left, the pane's
+        // one action top-right, its own padding-top:2px against the title.
+        let heading = NSStackView()
+        heading.orientation = .vertical
+        heading.alignment = .leading
+        heading.spacing = 5
+        heading.addArrangedSubview(OvFont.paneTitle(selectedPane.rawValue))
         let lede = NSTextField(wrappingLabelWithString: selectedPane.lede)
         lede.font = OvFont.sans(12.5)
         lede.textColor = Ov.textSecondary
-        content.addArrangedSubview(lede)
+        heading.addArrangedSubview(lede)
+
+        if let action = paneHeaderAction() {
+            let head = NSStackView()
+            head.orientation = .horizontal
+            head.alignment = .top
+            head.spacing = 16
+            head.addArrangedSubview(heading)
+            head.addArrangedSubview(action)
+            head.setHuggingPriority(.defaultLow, for: .horizontal)
+            heading.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            action.setContentCompressionResistancePriority(.required, for: .horizontal)
+            content.addArrangedSubview(head)
+            // Same inset arithmetic the cards use: a plain width tie to the
+            // stack ignores its edge insets and outdents the title.
+            head.widthAnchor.constraint(
+                equalTo: content.widthAnchor,
+                constant: -(content.edgeInsets.left + content.edgeInsets.right)
+            ).isActive = true
+        } else {
+            content.addArrangedSubview(heading)
+        }
         content.addArrangedSubview(ovSpacer(18))
 
         switch selectedPane {
@@ -1427,9 +1459,10 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         _ title: String,
         style: OvButtonStyle = .bordered,
         action: Selector,
-        subject: String? = nil
+        subject: String? = nil,
+        icon: OvIcon? = nil
     ) -> NSButton {
-        let button = OvButton(title: title, style: style)
+        let button = OvButton(title: title, style: style, icon: icon)
         button.target = self
         button.action = action
         if let subject { button.setAccessibilityLabel("\(title) — \(subject)") }
@@ -1996,32 +2029,42 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         for host in status.hosts { accessRow(host, into: apps, reachable: status.serviceReachable) }
 
-        // "Add application…" is really "configure one of the two hosts this
-        // installation knows", so it only appears while one is unconfigured.
-        let unconfigured = status.hosts.filter { $0.grant != .active }
-        if !unconfigured.isEmpty {
-            let add = button(
-                "Add application…",
-                style: .primary,
-                action: #selector(addApplication),
-                subject: "MCP host"
-            )
-            add.isEnabled = status.serviceReachable && mcpBusy == nil
-            row(
-                into: apps,
-                title: "Add application…",
-                detail: status.serviceReachable
-                    ? "Gives one of this installation's known hosts a dedicated principal bound to this workspace."
-                    : "Core must be running before an application can be added — configuring one provisions a credential through the service.",
-                trailing: add
-            )
-        }
-
         content.addArrangedSubview(
             note("Configured access is not a live connection. macOS permissions and Core’s own workspace authority stay separate facts. Core does not record when an application last used this workspace, so no last-activity time is shown.")
         )
+        if !status.serviceReachable {
+            content.addArrangedSubview(
+                note(
+                    "Core must be running before an application can be added — configuring one provisions a credential through the service.",
+                    symbol: .alertTriangle,
+                    attn: true
+                )
+            )
+        }
         if let mcpError { accessErrorNote(mcpError, into: content) }
         accessConnectionDetails(content)
+    }
+
+    /// The pane's one header action (`U.head`'s third argument). Only Access
+    /// has one; the rest of the panes return nil and keep the plain heading.
+    ///
+    /// "Add application…" is really "configure one of the hosts this
+    /// installation knows", so it is offered only while one is unconfigured,
+    /// and only while Core is reachable — configuring provisions a credential
+    /// through the service, and §A2 forbids this window starting one.
+    private func paneHeaderAction() -> NSView? {
+        guard selectedPane == .access, mcp != nil else { return nil }
+        let add = button(
+            "Add application…",
+            style: .bordered,
+            action: #selector(addApplication),
+            subject: "MCP host",
+            icon: .plus
+        )
+        let unconfigured = mcpStatus?.hosts.contains { $0.grant != .active } ?? false
+        add.isEnabled =
+            unconfigured && (mcpStatus?.serviceReachable ?? false) && mcpBusy == nil
+        return add
     }
 
     /// One MCP host, as the design's application row.
@@ -2075,16 +2118,18 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func accessErrorNote(_ error: McpError, into content: NSStackView) {
-        let text: String
+    static func mcpFailure(_ error: McpError) -> String {
         switch error {
-        case .unavailable: text = "The installed omnivia command could not be run from here."
-        case .timedOut: text = "Reading application access took too long and was stopped. Nothing was changed."
-        case .unreadableOutput: text = "Core answered in a form this build does not recognise. Nothing was changed."
-        case .notAdministrator: text = "Administering applications needs an installation administrator on this Mac."
-        case .failed: text = "Core refused the change. Nothing was changed."
+        case .unavailable: return "The installed omnivia command could not be run from here."
+        case .timedOut: return "Reading application access took too long and was stopped. Nothing was changed."
+        case .unreadableOutput: return "Core answered in a form this build does not recognise. Nothing was changed."
+        case .notAdministrator: return "Administering applications needs an installation administrator on this Mac."
+        case .failed: return "Core refused the change. Nothing was changed."
         }
-        content.addArrangedSubview(note(text, symbol: .alertTriangle, attn: true))
+    }
+
+    private func accessErrorNote(_ error: McpError, into content: NSStackView) {
+        content.addArrangedSubview(note(Self.mcpFailure(error), symbol: .alertTriangle, attn: true))
     }
 
     /// Transport and socket. Its own function so the early return above —
@@ -2363,44 +2408,42 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     @objc private func addApplication() {
         guard let mcp, let status = mcpStatus, let window else { return }
-        let choices = status.hosts.filter { $0.grant != .active }
-        guard let host = choices.first else { return }
+        let choices = status.hosts
+            .filter { $0.grant != .active }
+            .map { AddApplicationSheet.Choice(host: $0.host, displayName: $0.displayName) }
+        guard !choices.isEmpty else { return }
         let workspace = coordinator.snapshot.context.workspaceRef
 
-        // Which host and which level, then a plain statement of what the
-        // change does. Configuring mints a credential and writes a config
-        // file for that host; §A8 wants the consequence stated before a
-        // disruptive change, not after.
-        let alert = NSAlert()
-        alert.messageText = "Add \(host.displayName)?"
-        alert.informativeText = """
-        \(host.displayName) will get its own credential for the workspace \
-        \(workspace), and a configuration file written for it on this Mac.
-
-        Read only lets it search and retrieve. Read and contribute also lets \
-        it submit evidence and proposed memory; it cannot approve its own \
-        contributions as trusted knowledge.
-        """
-        alert.addButton(withTitle: "Read only")
-        alert.addButton(withTitle: "Read and contribute")
-        alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { [weak self] response in
+        let sheet = AddApplicationSheet(
+            choices: choices,
+            workspace: workspace
+        ) { [weak self] host, profile in
             guard let self else { return }
-            let profile: String
-            switch response {
-            case .alertFirstButtonReturn: profile = "restricted"
-            case .alertSecondButtonReturn: profile = "authoring"
-            default: return
-            }
-            self.mcpBusy = host.host
+            let name = choices.first { $0.host == host }?.displayName ?? host
+            self.addSheet?.showWorking("Registering \(name)…")
+            self.mcpBusy = host
             self.render()
             Task { @MainActor in
                 let result = await mcp.configure(
-                    host: host.host, workspace: workspace, profile: profile
+                    host: host, workspace: workspace, profile: profile
                 )
+                switch result {
+                case .success:
+                    self.addSheet?.showAdded(
+                        name: name,
+                        level: profile == "authoring" ? "Read and contribute" : "Read only"
+                    )
+                case .failure(let error):
+                    self.addSheet?.showFailure(Self.mcpFailure(error))
+                }
+                // The pane re-reads either way: a configure that found an
+                // equivalent setup returns it unrotated, and a failed one
+                // compensates by revoking. Only a fresh read is the truth.
                 self.finishMcpWrite(result)
             }
         }
+        addSheet = sheet
+        sheet.present(in: window, appearance: Self.targetAppearance)
     }
 
     @objc private func revokeApplication(_ sender: NSButton) {
@@ -2857,11 +2900,18 @@ enum OvButtonStyle { case bordered, primary }
 final class OvButton: NSButton {
     private let style: OvButtonStyle
 
-    init(title: String, style: OvButtonStyle, size: OvButtonSize = .row) {
+    init(title: String, style: OvButtonStyle, size: OvButtonSize = .row, icon: OvIcon? = nil) {
         self.style = style
         self.size = size
         super.init(frame: .zero)
         self.title = title
+        if let icon {
+            // `U.btn`'s `icon`: the glyph leads the label, at the label's own
+            // colour, so it is a template image tinted by contentTintColor.
+            image = icon.image(size: 13)
+            imagePosition = .imageLeading
+            imageHugsTitle = true
+        }
         isBordered = false
         setButtonType(.momentaryPushIn)
         wantsLayer = true
@@ -2874,7 +2924,9 @@ final class OvButton: NSButton {
         let height: CGFloat = size == .row ? 26 : 28
         let padding: CGFloat = size == .row ? 11 : 12
         heightAnchor.constraint(equalToConstant: height).isActive = true
-        widthAnchor.constraint(greaterThanOrEqualToConstant: textWidth + padding * 2).isActive = true
+        widthAnchor.constraint(
+            greaterThanOrEqualToConstant: textWidth + padding * 2 + (icon == nil ? 0 : 19)
+        ).isActive = true
     }
 
     enum OvButtonSize { case row, md }
@@ -2913,7 +2965,7 @@ final class OvButton: NSButton {
 
 // MARK: - Small layout helpers
 
-private func ovSpacer(_ height: CGFloat) -> NSView {
+func ovSpacer(_ height: CGFloat) -> NSView {
     let view = NSView()
     view.translatesAutoresizingMaskIntoConstraints = false
     view.heightAnchor.constraint(equalToConstant: height).isActive = true

@@ -51,6 +51,23 @@ public struct McpHostStatus: Sendable, Equatable {
     public let advertisedToolCount: Int?
     public let authoringIntent: Bool?
 
+    public init(
+        host: String, configuration: Presence, credential: Presence, grant: Grant,
+        profile: Profile?, principalID: String?, workspaceID: String?,
+        serviceReachable: Bool, advertisedToolCount: Int?, authoringIntent: Bool?
+    ) {
+        self.host = host
+        self.configuration = configuration
+        self.credential = credential
+        self.grant = grant
+        self.profile = profile
+        self.principalID = principalID
+        self.workspaceID = workspaceID
+        self.serviceReachable = serviceReachable
+        self.advertisedToolCount = advertisedToolCount
+        self.authoringIntent = authoringIntent
+    }
+
     /// There is no display name in the model — only the host enum — so the
     /// name shown is derived here rather than invented per call site.
     public var displayName: String {
@@ -65,6 +82,11 @@ public struct McpHostStatus: Sendable, Equatable {
 public struct McpStatus: Sendable, Equatable {
     public let version: Int
     public let hosts: [McpHostStatus]
+
+    public init(version: Int, hosts: [McpHostStatus]) {
+        self.version = version
+        self.hosts = hosts
+    }
 
     /// Reachability is reported per host but is a property of the one service.
     public var serviceReachable: Bool { hosts.contains { $0.serviceReachable } }

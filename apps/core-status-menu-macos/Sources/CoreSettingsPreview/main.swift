@@ -38,7 +38,13 @@ try MainActor.assumeIsolated {
         return args[i + 1]
     }
     var mcp: McpAdministering?
-    if let cli = argument("--cli"), let state = argument("--installation-state") {
+    // Dev-only: a roster with the service reachable, so the Access pane and
+    // the Add-application sheet can be looked at on a machine with no Core
+    // running. It answers reads only — `configure` and `revoke` refuse, so
+    // nothing here can be mistaken for a working write path.
+    if CommandLine.arguments.contains("--stub-mcp") {
+        mcp = StubMcp()
+    } else if let cli = argument("--cli"), let state = argument("--installation-state") {
         mcp = McpCommandRunner(
             executable: URL(fileURLWithPath: cli),
             installationState: URL(fileURLWithPath: state)
@@ -85,4 +91,35 @@ try MainActor.assumeIsolated {
 
     controller.openOrFocus()
     application.run()
+}
+
+
+/// Reads answer; writes refuse. See `--stub-mcp` above.
+struct StubMcp: McpAdministering {
+    func status() async -> Result<McpStatus, McpError> {
+        .success(
+            McpStatus(
+                version: 1,
+                hosts: [
+                    McpHostStatus(
+                        host: "claude-code", configuration: .absent, credential: .absent,
+                        grant: .absent, profile: nil, principalID: nil, workspaceID: nil,
+                        serviceReachable: true, advertisedToolCount: nil, authoringIntent: nil
+                    ),
+                    McpHostStatus(
+                        host: "codex", configuration: .present, credential: .present,
+                        grant: .active, profile: .authoring, principalID: "mcp-codex-preview",
+                        workspaceID: "preview-workspace", serviceReachable: true,
+                        advertisedToolCount: 11, authoringIntent: true
+                    ),
+                ]
+            )
+        )
+    }
+
+    func configure(host: String, workspace: String, profile: String) async -> Result<Void, McpError> {
+        .failure(.notAdministrator)
+    }
+
+    func revoke(host: String) async -> Result<Void, McpError> { .failure(.notAdministrator) }
 }
