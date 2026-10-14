@@ -52,8 +52,15 @@ RASTER_WORKER_BUILD: Final = RASTER_BUILD
 #: searchable text: **Source captured; no reliable text found**.
 DOCUMENT_NO_RELIABLE_TEXT: Final = "no_reliable_text_found"
 MAX_TEXT_BYTES: Final = 1_048_576
-MAX_RECORDS: Final = 100_000
+#: Delimited bounds: records in one source, columns in one record, decoded
+#: UTF-8 bytes in one field, fields in the whole source, and decoded characters
+#: in the whole source. Every one of them refuses the source when it is
+#: breached; none of them drops a record or truncates a field to fit.
+MAX_RECORDS: Final = 250_000
+MAX_COLUMNS: Final = 1_024
+MAX_FIELD_BYTES: Final = 1_048_576
 MAX_FIELDS: Final = 1_000_000
+MAX_DELIMITED_CHARS: Final = 64 * 1_048_576
 #: HTML walk bounds: start tags read, open nesting depth, attributes on one
 #: element, characters accumulated for one element's own text, characters of one
 #: link or image target, and emitted segments. Every one of them refuses the
@@ -102,6 +109,16 @@ _HTML_HIDDEN: Final = frozenset({"script", "style", "template"})
 #: Elements that cannot be their own direct child, so a repeat implies an end.
 _HTML_PEER_CLOSING: Final = frozenset({"li", "p", "td", "th"})
 _REFERENCE_SCHEME: Final = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]{1,31}):")
+#: Byte-order marks that declare a delimited source's encoding, each with the
+#: codec it declares and the name the outcome reports.
+_DELIMITED_BOMS: Final = (
+    (b"\xef\xbb\xbf", "utf-8", "utf-8-bom"),
+    (b"\xff\xfe", "utf-16-le", "utf-16-le-bom"),
+    (b"\xfe\xff", "utf-16-be", "utf-16-be-bom"),
+)
+# csv's process-wide field limit is well below our field bound, so without this
+# a field this adapter accepts would be refused by the reader instead.
+csv.field_size_limit(MAX_FIELD_BYTES)
 
 
 class DocumentExtractionUnsupported(ValueError):
@@ -206,46 +223,103 @@ def _decode_utf8(content: bytes) -> str:
 
 
 def _decode_delimited(content: bytes) -> tuple[str, str]:
-    if content.startswith((b"\xff\xfe", b"\xfe\xff")):
-        encoding = "utf-16"
-    else:
-        encoding = "utf-8-sig"
+    """Decode one delimited source under its declared encoding, or refuse it.
+
+    UTF-8 is the only encoding read without a declaration. UTF-16 is read only
+    when a byte-order mark declares it, because undeclared UTF-16 is
+    indistinguishable from UTF-8 that carries NUL characters, and choosing
+    between those two readings is how a column silently becomes mojibake. A
+    declared mark is consumed rather than kept, so the first field is the label
+    the source wrote and not that label behind a stray U+FEFF.
+    """
+    codec, encoding = "utf-8", "utf-8"
+    for mark, declared_codec, declared_name in _DELIMITED_BOMS:
+        if content.startswith(mark):
+            content = content[len(mark) :]
+            codec, encoding = declared_codec, declared_name
+            break
     try:
-        return content.decode(encoding), encoding
+        text = content.decode(codec)
     except UnicodeDecodeError as error:
         raise DocumentExtractionInvalid(
             "delimited text has an unsupported encoding"
         ) from error
+    if len(text) > MAX_DELIMITED_CHARS:
+        raise DocumentExtractionInvalid("delimited text exceeds the accepted bound")
+    if "\x00" in text:
+        # A NUL is never delimited text; it is what undeclared UTF-16 and
+        # UTF-32 look like once they have been read as something else.
+        raise DocumentExtractionInvalid("delimited text contains NUL characters")
+    return text, encoding
 
 
 def _extract_delimited(
     content: bytes, *, capture_id: str, delimiter: str
 ) -> ExtractionOutcome:
+    """Locate every field of one delimited source exactly as the source holds it.
+
+    The delimiter comes from the admitted media type and from nothing else: the
+    bytes are never sniffed, so one source never parses two ways. The first
+    record is data like any other, whatever its labels look like: a header row
+    is never deleted, deduplicated, renamed or filled in, because nothing in
+    the bytes says one exists. An empty trailing field, a newline inside a
+    quoted field, a leading zero and a formula-like string are all carried
+    through verbatim, so a value is what the source wrote and never what a
+    spreadsheet would make of it.
+
+    A record whose field count differs from the first non-empty record's is
+    kept with its own count in every one of its locators and reported as a
+    warning; it is never padded out, trimmed back or dropped. A blank line is a
+    record with no fields, counted and reported as such so that it is not
+    mistaken for a ragged one. Every bound is a refusal.
+    """
     text, encoding = _decode_delimited(content)
     reader = csv.reader(
         io.StringIO(text, newline=""), delimiter=delimiter, quotechar='"', strict=True
     )
     segments: list[ExtractedSegment] = []
     previous_line = 0
-    field_count = 0
+    fields = 0
+    records = 0
+    baseline: int | None = None
+    ragged = 0
+    blank = 0
     try:
-        for record, row in enumerate(reader, start=1):
-            if record > MAX_RECORDS:
+        for records, row in enumerate(reader, start=1):
+            if records > MAX_RECORDS:
                 raise DocumentExtractionInvalid("delimited text has too many records")
-            field_count += len(row)
-            if field_count > MAX_FIELDS:
+            if len(row) > MAX_COLUMNS:
+                raise DocumentExtractionInvalid("delimited record has too many columns")
+            fields += len(row)
+            if fields > MAX_FIELDS:
                 raise DocumentExtractionInvalid("delimited text has too many fields")
+            if not row:
+                blank += 1
+            elif baseline is None:
+                baseline = len(row)
+            elif len(row) != baseline:
+                ragged += 1
             start_line = previous_line + 1
             previous_line = reader.line_num
             for column, value in enumerate(row, start=1):
+                # A character is at most four UTF-8 bytes, so only a field long
+                # enough to reach the bound in the worst case is measured.
+                if (
+                    len(value) > MAX_FIELD_BYTES // 4
+                    and len(value.encode()) > MAX_FIELD_BYTES
+                ):
+                    raise DocumentExtractionInvalid(
+                        "delimited field exceeds the accepted bound"
+                    )
                 segments.append(
                     ExtractedSegment(
                         "table_cell",
                         _locator(
                             capture_id,
                             unit="record",
-                            record=record,
+                            record=records,
                             column=column,
+                            fieldCount=len(row),
                             physicalLineStart=start_line,
                             physicalLineEnd=reader.line_num,
                         ),
@@ -257,12 +331,26 @@ def _extract_delimited(
     return _outcome(
         tuple(segments),
         unit_type="record",
-        expected=max(0, record if "record" in locals() else 0),
+        expected=records,
         known_empty=not bool(segments),
         limitations={
             "encoding": encoding,
             "delimiter": delimiter,
+            "delimiterSource": "media_type",
             "headerTreatment": "preserved_as_record",
+            "fieldCountBaseline": baseline or 0,
+            "records": records,
+            "fields": fields,
+            "raggedRecords": ragged,
+            "blankRecords": blank,
+            "warnings": [
+                name
+                for name, count in (
+                    ("ragged_records", ragged),
+                    ("blank_records", blank),
+                )
+                if count
+            ],
         },
     )
 
