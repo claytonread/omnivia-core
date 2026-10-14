@@ -91,6 +91,26 @@ _CELL_REF: Final = re.compile(r"([A-Z]{1,3})([0-9]{1,7})")
 _DIGITS: Final = re.compile(r"[0-9]{1,7}")
 _TRUE_FLAGS: Final = frozenset({"1", "true", "on"})
 _FALSE_FLAGS: Final = frozenset({"0", "false", "off"})
+# The shape-tree children that carry an identity and a z-order position.
+# ``contentPart`` carries neither, so it is not a shape here.
+_PPTX_SHAPES: Final = frozenset({"sp", "grpSp", "graphicFrame", "cxnSp", "pic"})
+# A picture holds no text of its own, and a group's text belongs to its members.
+_PPTX_TEXT_SHAPES: Final = frozenset({"sp", "graphicFrame", "cxnSp"})
+# A field is a run that renders a generated value; its text is still a run.
+_PPTX_RUNS: Final = frozenset({"r", "fld"})
+_MAX_PPTX_SHAPES: Final = 4_000
+_MAX_PPTX_GROUP_DEPTH: Final = 16
+# Counted across the whole slide, not per shape or per paragraph: a per-shape
+# bound multiplies out by the shape bound, and an empty run emits no segment, so
+# MAX_SEGMENTS does not bound the traversal either.
+_MAX_PPTX_PARAGRAPHS: Final = 20_000
+_MAX_PPTX_RUNS: Final = 100_000
+_SHAPE_ID: Final = re.compile(r"[0-9]{1,10}")
+# ST_Coordinate is a signed EMU count; an offset may be negative, so the sign is
+# accepted here and the value is kept exactly as the shape wrote it.
+_EMU_OFFSET: Final = re.compile(r"-?[0-9]{1,20}")
+# An extent is ST_PositiveCoordinate: a width or a height is never negative.
+_EMU_EXTENT: Final = re.compile(r"[0-9]{1,20}")
 
 
 class OOXMLInvalid(ValueError):
@@ -570,34 +590,8 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         slides = _pptx_slides(package)
         segments: list[ExtractedSegment] = []
         for ordinal, (slide_id, part, hidden) in enumerate(slides, start=1):
-            root = package.xml(part)
-            shape_ordinal = 0
-            for shape in (
-                item
-                for item in root.iter()
-                if _local(item.tag) in {"sp", "graphicFrame"}
-            ):
-                text = "".join(
-                    node.text or "" for node in shape.iter() if _local(node.tag) == "t"
-                )
-                if not text:
-                    continue
-                shape_ordinal += 1
-                segments.append(
-                    ExtractedSegment(
-                        "body",
-                        _locator(
-                            capture_id,
-                            part=part,
-                            slideId=slide_id,
-                            slide=ordinal,
-                            shape=shape_ordinal,
-                        ),
-                        text=text,
-                        visibility="hidden" if hidden else "visible",
-                    )
-                )
-                _bounded(segments)
+            walker = _PptxWalker(capture_id, part, slide_id, ordinal, hidden, segments)
+            walker.walk(_pptx_tree(package.xml(part)), (), (), 0)
             notes = part.replace("slides/slide", "notesSlides/notesSlide")
             if notes in package.names:
                 note_text = "".join(
@@ -873,6 +867,286 @@ def _pptx_slides(package: _Package) -> list[tuple[str, str, bool]]:
     if len(result) > 500:
         raise OOXMLInvalid("PPTX has too many slides")
     return result
+
+
+def _pptx_tree(root: ElementTree.Element) -> ElementTree.Element:
+    """Return the slide's shape tree, refusing a slide that declares none.
+
+    The tree is the slide's own declaration of what it holds and in what order,
+    so it is the only place shapes are read from. A slide without one names no
+    shapes at all, which is not a slide anyone authored.
+    """
+    tree = next((node for node in root.iter() if _local(node.tag) == "spTree"), None)
+    if tree is None:
+        raise OOXMLInvalid("PPTX slide has no shape tree")
+    return tree
+
+
+class _PptxWalker:
+    """Walks one slide's shape tree in declared order, entering group shapes.
+
+    The tree's child order *is* the z-order, back to front, so position is the
+    index of a shape among its own siblings. A group is a level of its own:
+    ``groupPath`` names the groups a shape sits inside, outermost first, and
+    ``zPath`` gives the sibling index at every level down to the shape itself.
+    A group's text is its members' text, read once where each member sits, so
+    nothing is reported twice.
+
+    Each run of each paragraph becomes one segment, in source order, carrying
+    its paragraph and run index inside the shape it belongs to. Geometry and
+    the placeholder reference are recorded exactly as the shape encodes them;
+    nothing is inherited from a layout or master, and no group child-space
+    mapping is applied, so a shape that encodes no transform carries none.
+
+    Shapes, paragraphs and runs are counted across the whole slide, because the
+    walker is the slide's scope: the indexes in a locator are local to the shape
+    or paragraph that holds them and bound nothing on their own.
+    """
+
+    def __init__(
+        self,
+        capture_id: str,
+        part: str,
+        slide_id: str,
+        ordinal: int,
+        hidden: bool,
+        segments: list[ExtractedSegment],
+    ) -> None:
+        self._capture_id = capture_id
+        self._part = part
+        self._slide_id = slide_id
+        self._ordinal = ordinal
+        self._hidden = hidden
+        self._segments = segments
+        self._ids: set[str] = set()
+        self.shapes = 0
+        self.paragraphs = 0
+        self.runs = 0
+
+    def walk(
+        self,
+        parent: ElementTree.Element,
+        path: tuple[str, ...],
+        z_path: tuple[int, ...],
+        depth: int,
+    ) -> None:
+        position = 0
+        for child in _pptx_children(parent):
+            kind = _local(child.tag)
+            if kind not in _PPTX_SHAPES:
+                continue
+            self.shapes += 1
+            if self.shapes > _MAX_PPTX_SHAPES:
+                raise OOXMLInvalid("PPTX slide has too many shapes")
+            shape_id = self._identity(child)
+            # Validated for every shape, including a group and a picture: a
+            # malformed transform is malformed wherever it is written.
+            geometry = _pptx_geometry(child)
+            here = (*z_path, position)
+            position += 1
+            if kind == "grpSp":
+                if depth >= _MAX_PPTX_GROUP_DEPTH:
+                    raise OOXMLInvalid("PPTX group shapes are nested too deeply")
+                self.walk(child, (*path, shape_id), here, depth + 1)
+            elif kind in _PPTX_TEXT_SHAPES:
+                self._text(child, kind, shape_id, path, here, geometry)
+
+    def _identity(self, shape: ElementTree.Element) -> str:
+        """Return the shape's identifier, refusing a missing or repeated one."""
+        properties = next(
+            (
+                node
+                for holder in shape
+                if _local(holder.tag).startswith("nv")
+                for node in holder
+                if _local(node.tag) == "cNvPr"
+            ),
+            None,
+        )
+        shape_id = None if properties is None else properties.attrib.get("id")
+        if shape_id is None or _SHAPE_ID.fullmatch(shape_id) is None:
+            raise OOXMLInvalid("PPTX shape has no readable identifier")
+        if shape_id in self._ids:
+            raise OOXMLInvalid("PPTX shape identifier is repeated on one slide")
+        self._ids.add(shape_id)
+        return shape_id
+
+    def _text(
+        self,
+        shape: ElementTree.Element,
+        kind: str,
+        shape_id: str,
+        path: tuple[str, ...],
+        z_path: tuple[int, ...],
+        geometry: dict[str, int] | None,
+    ) -> None:
+        placeholder_type, placeholder_index = _pptx_placeholder(shape)
+        for paragraph_index, paragraph in enumerate(_pptx_paragraphs(shape)):
+            self.paragraphs += 1
+            if self.paragraphs > _MAX_PPTX_PARAGRAPHS:
+                raise OOXMLInvalid("PPTX slide has too many paragraphs")
+            for run_index, text in enumerate(_pptx_runs(paragraph)):
+                # Counted before the text is looked at: an empty run is work the
+                # slide asked for even though it reports nothing.
+                self.runs += 1
+                if self.runs > _MAX_PPTX_RUNS:
+                    raise OOXMLInvalid("PPTX slide has too many runs")
+                if not text:
+                    # An empty run keeps its index; it carries no text to report.
+                    continue
+                self._segments.append(
+                    ExtractedSegment(
+                        "body",
+                        _locator(
+                            self._capture_id,
+                            part=self._part,
+                            slideId=self._slide_id,
+                            slide=self._ordinal,
+                            slideHidden=self._hidden,
+                            shapeId=shape_id,
+                            shapeKind=kind,
+                            groupPath=list(path),
+                            zOrder=z_path[-1],
+                            zPath=list(z_path),
+                            geometry=geometry,
+                            placeholderType=placeholder_type,
+                            placeholderIndex=placeholder_index,
+                            paragraph=paragraph_index,
+                            run=run_index,
+                        ),
+                        text=text,
+                        visibility="hidden" if self._hidden else "visible",
+                    )
+                )
+                _bounded(self._segments)
+
+
+def _pptx_children(parent: ElementTree.Element) -> Iterator[ElementTree.Element]:
+    """Yield one level's children, entering markup-compatibility wrappers.
+
+    ``mc:AlternateContent`` is not a shape: it offers one shape twice, so the
+    ``Choice`` branch is read and the ``Fallback`` repeat of it is skipped, and
+    what the wrapper holds takes the wrapper's own place in the z-order.
+    """
+    stack = [iter(parent)]
+    while stack:
+        for child in stack[-1]:
+            if _local(child.tag) != "AlternateContent":
+                yield child
+                continue
+            branch = next(
+                (node for node in child if _local(node.tag) == "Choice"),
+                next((node for node in child if _local(node.tag) == "Fallback"), None),
+            )
+            if branch is not None:
+                stack.append(iter(branch))
+                break
+        else:
+            stack.pop()
+
+
+def _pptx_paragraphs(
+    shape: ElementTree.Element,
+) -> Iterator[ElementTree.Element]:
+    """Yield the shape's own paragraphs in source order.
+
+    Any shape nested below this one is skipped: its text is read where that
+    shape itself sits, so no paragraph is yielded twice. A compatibility
+    fallback repeats the choice branch, so it is skipped for the same reason.
+    A paragraph is not entered, so a body holds no body of its own.
+    """
+    stack = [iter(shape)]
+    while stack:
+        for node in stack[-1]:
+            tag = _local(node.tag)
+            if tag == "p":
+                yield node
+            elif tag not in _PPTX_SHAPES and tag != "Fallback":
+                stack.append(iter(node))
+                break
+        else:
+            stack.pop()
+
+
+def _pptx_runs(paragraph: ElementTree.Element) -> Iterator[str]:
+    """Yield each run's text in declared order, keeping a break a separator.
+
+    Only the paragraph's own runs are read, so run order is exactly the order
+    the paragraph wrote them in. Text inside a run is joined as written.
+    """
+    for node in paragraph:
+        if _local(node.tag) not in _PPTX_RUNS:
+            continue
+        yield "".join(
+            item.text or "" for item in node if _local(item.tag) == "t"
+        )
+
+
+def _pptx_geometry(shape: ElementTree.Element) -> dict[str, int] | None:
+    """Return the transform one shape encodes, or None when it encodes none.
+
+    Offsets and extents are kept verbatim in EMU. Nothing is inherited from a
+    placeholder's layout and no group child-space mapping is applied, so an
+    absent transform stays absent rather than being resolved into one.
+    """
+    for node in shape:
+        tag = _local(node.tag)
+        if tag not in {"spPr", "grpSpPr", "xfrm"}:
+            continue
+        transform = (
+            node
+            if tag == "xfrm"
+            else next((item for item in node if _local(item.tag) == "xfrm"), None)
+        )
+        if transform is None:
+            continue
+        values: dict[str, int] = {}
+        for item in transform:
+            item_tag = _local(item.tag)
+            if item_tag == "off":
+                values.update(_emu(item, ("x", "y"), _EMU_OFFSET))
+            elif item_tag == "ext":
+                values.update(_emu(item, ("cx", "cy"), _EMU_EXTENT))
+        return values or None
+    return None
+
+
+def _emu(
+    element: ElementTree.Element, names: tuple[str, ...], pattern: re.Pattern[str]
+) -> dict[str, int]:
+    """Read one offset or extent, refusing a value that is not a coordinate.
+
+    The pattern is the attribute's own type: an offset is signed, so a shape
+    placed off the slide keeps its negative coordinate, while an extent has no
+    signed form at all and a negative width or height is refused.
+    """
+    values: dict[str, int] = {}
+    for name in names:
+        raw = element.attrib.get(name)
+        if raw is None or pattern.fullmatch(raw) is None:
+            raise OOXMLInvalid("PPTX shape geometry is malformed")
+        values[name] = int(raw)
+    return values
+
+
+def _pptx_placeholder(
+    shape: ElementTree.Element,
+) -> tuple[str | None, str | None]:
+    """Return the (type, index) one shape's placeholder reference names.
+
+    The reference is recorded, never followed: nothing here reads the layout or
+    master it points at. DrawingML defaults an unstated type to ``body``.
+    """
+    for holder in shape:
+        if not _local(holder.tag).startswith("nv"):
+            continue
+        for properties in holder:
+            if _local(properties.tag) != "nvPr":
+                continue
+            for node in properties:
+                if _local(node.tag) == "ph":
+                    return node.attrib.get("type", "body"), node.attrib.get("idx")
+    return None, None
 
 
 def _shared_strings(package: _Package) -> list[str]:
