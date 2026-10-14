@@ -2151,3 +2151,596 @@ def test_an_internal_image_target_the_package_does_not_hold_is_refused() -> None
             ),
             capture_id=CAPTURE,
         )
+
+
+# A chart part the package declares, reached by the one route a drawing names
+# its chart on: the object's own ``a:graphic``, its direct ``a:graphicData``,
+# and the ``c:chart`` below that. The values the part holds are the copy it
+# already stored -- nothing here opens the workbook behind them.
+CHART_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+CHART_CT = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml"
+CHART_PART = "word/charts/chart1.xml"
+CHART_RELATION = ("rId7", "charts/chart1.xml", False, "chart")
+CHART_REFERENCE = (
+    "<a:graphic><a:graphicData>"
+    f'<c:chart xmlns:c="{CHART_NS}" r:id="rId7"/>'
+    "</a:graphicData></a:graphic>"
+)
+RICH_TITLE = (
+    "<c:title><c:tx><c:rich><a:p>"
+    "<a:r><a:t>Quarterly</a:t></a:r><a:r><a:t> revenue</a:t></a:r>"
+    "</a:p></c:rich></c:tx></c:title>"
+)
+# One series, each slot holding a source formula and the single point it cached.
+PLOTTED = (
+    "<c:plotArea><c:barChart><c:ser>"
+    '<c:idx val="0"/><c:order val="0"/>'
+    '<c:tx><c:strRef><c:f>Sheet1!$B$1</c:f><c:strCache><c:ptCount val="1"/>'
+    '<c:pt idx="0"><c:v>Revenue</c:v></c:pt></c:strCache></c:strRef></c:tx>'
+    '<c:cat><c:strRef><c:f>Sheet1!$A$2</c:f><c:strCache><c:ptCount val="1"/>'
+    '<c:pt idx="0"><c:v>Q1</c:v></c:pt></c:strCache></c:strRef></c:cat>'
+    '<c:val><c:numRef><c:f>Sheet1!$B$2</c:f><c:numCache><c:ptCount val="1"/>'
+    '<c:pt idx="0"><c:v>12</c:v></c:pt></c:numCache></c:numRef></c:val>'
+    "</c:ser></c:barChart></c:plotArea>"
+)
+# The provenance the title record carries. Every other record differs from it
+# only in ``chartRole`` and the place inside the chart.
+CHART_LOCATOR: dict[str, object] = {
+    "captureId": CAPTURE,
+    "part": "word/document.xml",
+    "story": "body",
+    "position": "0.c0",
+    "chartPart": CHART_PART,
+    "relationshipId": "rId7",
+    "seriesIndex": None,
+    "seriesOrder": None,
+    "categoryLevel": None,
+    "pointIndex": None,
+    "formula": None,
+    "chartRole": "chart_title",
+    "freshness": "unknown",
+}
+
+
+CHART_DRAWING = drawing(graphic=CHART_REFERENCE)
+
+
+def charted(chart: str, body: str | None = None) -> bytes:
+    """A document whose one drawing names the part holding ``chart``.
+
+    ``body`` defaults to that drawing alone, inline in a paragraph of its own; a
+    test that places the same drawing elsewhere passes the body it wants.
+    """
+    space = (
+        f'<c:chartSpace xmlns:c="{CHART_NS}" xmlns:a="{DRAWING_NS}">'
+        f"<c:chart>{chart}</c:chart></c:chartSpace>"
+    )
+    return linked(
+        f"<w:p>{CHART_DRAWING}</w:p>" if body is None else body,
+        CHART_RELATION,
+        content_types=f'<Override PartName="/{CHART_PART}" ContentType="{CHART_CT}"/>',
+        **{CHART_PART: space},
+    )
+
+
+def test_a_chart_is_inventoried_where_it_sits_with_its_stored_values_after() -> None:
+    """The record comes first, then the title and the points the part stored, in
+    source order. Each value names the chart part and the relationship that
+    reached it, and each is ``unknown`` freshness: nothing was refreshed."""
+    content = charted(RICH_TITLE + PLOTTED)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("object_inventory", None, "0.c0"),
+        ("chart", "Quarterly revenue", "0.c0"),
+        ("chart", "Revenue", "0.c0"),
+        ("chart", "Q1", "0.c0"),
+        ("chart", "12", "0.c0"),
+    ]
+    assert inventory(content) == [
+        (
+            "0.c0",
+            {
+                "kind": "drawingChart",
+                "placement": "inline",
+                "relationshipId": "rId7",
+                "chartPart": CHART_PART,
+                "refreshed": False,
+                "embeddedWorkbookOpened": False,
+                "storedRecords": 4,
+            },
+        )
+    ]
+    title, name, category, value = result.segments[1:]
+    assert title.source_locator == CHART_LOCATOR
+    assert [dict(item.source_locator) for item in (name, category, value)] == [
+        CHART_LOCATOR
+        | {
+            "chartRole": role,
+            "seriesIndex": "0",
+            "seriesOrder": "0",
+            "pointIndex": "0",
+            "formula": formula,
+        }
+        for role, formula in (
+            ("chart_series_name", "Sheet1!$B$1"),
+            ("chart_category", "Sheet1!$A$2"),
+            ("chart_value", "Sheet1!$B$2"),
+        )
+    ]
+
+
+def test_a_chart_that_stored_nothing_is_still_inventoried_where_it_sits() -> None:
+    """A chart part with no title and no series stored no value to report, and
+    the object is still the one the story anchored, so the record stands alone
+    and says outright that it holds nothing."""
+    content = charted("")
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert inventory(content) == [
+        (
+            "0.c0",
+            {
+                "kind": "drawingChart",
+                "placement": "inline",
+                "relationshipId": "rId7",
+                "chartPart": CHART_PART,
+                "refreshed": False,
+                "embeddedWorkbookOpened": False,
+                "storedRecords": 0,
+            },
+        )
+    ]
+    assert [item.semantic_role for item in result.segments] == ["object_inventory"]
+
+
+def test_a_chart_splits_a_cell_rather_than_joining_the_prose_around_it() -> None:
+    """The chart is ordered where it sits, so it closes the cell's open run
+    rather than trailing the prose it interrupts: the text before it is reported
+    first, the record and the stored values next, and the text after it starts a
+    run of its own. Every locator is the position the XML put the value at, and
+    the four records of one chart are told apart by the place inside it."""
+    body = (
+        "<w:tbl><w:tr><w:tc>"
+        f"<w:p>{run('Figure')}{CHART_DRAWING}{run(' caption')}</w:p>"
+        "</w:tc></w:tr></w:tbl>"
+    )
+    content = charted(RICH_TITLE + PLOTTED, body)
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("table_cell", "Figure", "0.r0.c0"),
+        ("object_inventory", None, "0.r0.c0.0.c0"),
+        ("chart", "Quarterly revenue", "0.r0.c0.0.c0"),
+        ("chart", "Revenue", "0.r0.c0.0.c0"),
+        ("chart", "Q1", "0.r0.c0.0.c0"),
+        ("chart", "12", "0.r0.c0.0.c0"),
+        ("table_cell", " caption", "0.r0.c0.t1"),
+    ]
+    assert result.segments[2].source_locator == CHART_LOCATOR | {
+        "position": "0.r0.c0.0.c0"
+    }
+    locators = [tuple(sorted(i.source_locator.items())) for i in result.segments]
+    assert len(set(locators)) == len(locators)
+
+
+def test_an_anchored_chart_is_recorded_as_the_object_declared_it() -> None:
+    """Placement is the drawing element's own, so a chart anchored against the
+    page is recorded as anchored rather than as part of the text flow."""
+    anchored = f"<w:p>{drawing('anchor', graphic=CHART_REFERENCE)}</w:p>"
+
+    assert inventory(charted(RICH_TITLE, anchored)) == [
+        (
+            "0.c0",
+            {
+                "kind": "drawingChart",
+                "placement": "anchor",
+                "relationshipId": "rId7",
+                "chartPart": CHART_PART,
+                "refreshed": False,
+                "embeddedWorkbookOpened": False,
+                "storedRecords": 1,
+            },
+        )
+    ]
+
+
+def test_a_deletion_over_a_chart_is_kept_over_its_record_and_its_values() -> None:
+    """A deletion wrapped around the drawing is the revision it is, over the
+    inventory record and over every value the chart part stored, exactly as it
+    is over an image and the claims its author made about it."""
+    deleted = f"<w:p><w:del>{CHART_DRAWING}</w:del></w:p>"
+
+    result = extract_docx(charted(RICH_TITLE + PLOTTED, deleted), capture_id=CAPTURE)
+
+    assert [
+        (i.semantic_role, i.visibility, i.revision_state) for i in result.segments
+    ] == [("object_inventory", "annotation", "deleted")] + [
+        ("chart", "annotation", "deleted")
+    ] * 4
+
+
+def test_a_chart_is_the_saved_result_of_the_field_it_sits_under() -> None:
+    """A field whose stored result is a chart alone stored a result, exactly as
+    one whose result is an image did. Before the separator the same chart is
+    field code, which carries no chart of its own, so it is refused rather than
+    inventoried as the field's result."""
+    saved = (
+        f"<w:p>{fld('begin')}{instr(' CHART ')}{fld('separate')}"
+        f"{CHART_DRAWING}{fld('end')}</w:p>"
+    )
+    content = charted(RICH_TITLE, saved)
+
+    assert [
+        (i.semantic_role, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("object_inventory", "0.f0"),
+        ("object_inventory", "0.c0"),
+        ("chart", "0.c0"),
+    ]
+    assert inventory(content)[0][1]["savedResultPresent"] is True
+
+    code = (
+        f"<w:p>{fld('begin')}{instr(' CHART ')}{CHART_DRAWING}"
+        f"{fld('separate')}{fld('end')}</w:p>"
+    )
+
+    with pytest.raises(OOXMLInvalid, match="instruction holds a chart"):
+        extract_docx(charted(RICH_TITLE, code), capture_id=CAPTURE)
+
+
+# The ``c:chart`` alone, for the drawings below that put a reference somewhere
+# other than the single place ``CHART_REFERENCE`` puts it.
+CHART_CHILD = f'<c:chart xmlns:c="{CHART_NS}" r:id="rId7"/>'
+# The Strict half of each pair the route is held to. A reference written in
+# these is the same declaration as one written in the Transitional pair, and a
+# namespace that merely resembles either is another vocabulary.
+STRICT_DRAWING_NS = "http://purl.oclc.org/ooxml/drawingml/main"
+STRICT_CHART_NS = "http://purl.oclc.org/ooxml/drawingml/chart"
+STRICT_CHART_CHILD = f'<k:chart xmlns:k="{STRICT_CHART_NS}" r:id="rId7"/>'
+
+
+def graphed(*children: str) -> str:
+    """One ``a:graphic`` whose single ``a:graphicData`` holds ``children``."""
+    return f"<a:graphic><a:graphicData>{''.join(children)}</a:graphicData></a:graphic>"
+
+
+def test_only_the_schema_qualified_route_reaches_a_chart() -> None:
+    """An element that shares a local name and nothing else declares no chart,
+    whether it stands where the graphic, its data or the reference would, and a
+    namespace that merely resembles one OOXML defines -- a character longer, a
+    slash longer, one holding the real URI inside it -- is another vocabulary.
+    A drawing that declares nothing is the transparent wrapper it has always
+    been, so the prose beside it is still read and no chart is inventoried off
+    it. The ``uri`` a graphic data declares is never read, so it names no chart
+    either."""
+    other = 'xmlns:z="urn:example:other"'
+    lookalikes = (
+        # The graphic, its data and the reference itself, each in turn.
+        (
+            f"<z:graphic {other}><a:graphicData>{CHART_CHILD}"
+            "</a:graphicData></z:graphic>"
+        ),
+        (
+            f"<a:graphic><z:graphicData {other}>{CHART_CHILD}"
+            "</z:graphicData></a:graphic>"
+        ),
+        graphed(f'<z:chart {other} r:id="rId7"/>'),
+        # A graphic data written in the chart namespace is not the graphic data
+        # the route names, so nothing below it is on the route either.
+        (
+            f'<a:graphic><c:graphicData xmlns:c="{CHART_NS}">{CHART_CHILD}'
+            "</c:graphicData></a:graphic>"
+        ),
+        # Namespaces compare as strings, so each of these is a chart element of
+        # some other vocabulary that happens to read like the one OOXML defines.
+        graphed(f'<c:chart xmlns:c="{CHART_NS}2" r:id="rId7"/>'),
+        graphed(f'<c:chart xmlns:c="{CHART_NS}/" r:id="rId7"/>'),
+        graphed(f'<c:chart xmlns:c="urn:example:{CHART_NS}" r:id="rId7"/>'),
+        # The declared ``uri`` says chart and the element below it does not.
+        (
+            f'<a:graphic><a:graphicData uri="{CHART_NS}">'
+            f'<z:chart {other} r:id="rId7"/></a:graphicData></a:graphic>'
+        ),
+    )
+
+    for graphic in lookalikes:
+        content = charted(
+            RICH_TITLE + PLOTTED,
+            p("Prose") + f"<w:p>{drawing(graphic=graphic)}</w:p>",
+        )
+
+        assert read(content) == [("body", "Prose", "0")]
+
+    # Each step's Strict half is the same declaration as its Transitional one,
+    # so the route above is refused for its namespaces and not for its shape.
+    strict = (
+        f'<s:graphic xmlns:s="{STRICT_DRAWING_NS}"><s:graphicData>'
+        f"{STRICT_CHART_CHILD}</s:graphicData></s:graphic>"
+    )
+    whole = charted(RICH_TITLE, f"<w:p>{drawing(graphic=strict)}</w:p>")
+
+    assert [
+        (i.semantic_role, i.text)
+        for i in extract_docx(whole, capture_id=CAPTURE).segments
+    ] == [("object_inventory", None), ("chart", "Quarterly revenue")]
+
+
+def test_a_drawing_that_names_more_than_one_chart_is_refused() -> None:
+    """One drawing object displays one graphic, so two schema-valid references
+    below it leave which chart it shows unanswerable: under one graphic data,
+    under two of them, under two graphics, or written one in each of the two
+    namespaces OOXML defines while naming the one relationship. Nothing here
+    chooses between them, and naming the same chart twice is still twice."""
+    ambiguous = (
+        graphed(CHART_CHILD, CHART_CHILD),
+        (
+            f"<a:graphic><a:graphicData>{CHART_CHILD}</a:graphicData>"
+            f"<a:graphicData>{CHART_CHILD}</a:graphicData></a:graphic>"
+        ),
+        CHART_REFERENCE + CHART_REFERENCE,
+        graphed(CHART_CHILD, STRICT_CHART_CHILD),
+    )
+
+    for graphic in ambiguous:
+        with pytest.raises(
+            OOXMLInvalid, match="declares more than one chart reference"
+        ):
+            extract_docx(
+                charted(RICH_TITLE, f"<w:p>{drawing(graphic=graphic)}</w:p>"),
+                capture_id=CAPTURE,
+            )
+
+    # A reference off that route is no second declaration: one below the
+    # drawing but under no graphic, and one a step deeper than the graphic
+    # data, are each passed over, so the chart the object does declare stays
+    # the single chart it shows.
+    for graphic in (
+        CHART_CHILD + CHART_REFERENCE,
+        graphed(f"<a:ext>{CHART_CHILD}</a:ext>", CHART_CHILD),
+    ):
+        content = charted(RICH_TITLE, f"<w:p>{drawing(graphic=graphic)}</w:p>")
+
+        assert [
+            i.semantic_role for i in extract_docx(content, capture_id=CAPTURE).segments
+        ] == ["object_inventory", "chart"]
+
+
+def mixed(graphic: str) -> bytes:
+    """A package holding both the image a drawing may declare and the chart part
+    it may name, so either reference below one drawing resolves on its own."""
+    space = (
+        f'<c:chartSpace xmlns:c="{CHART_NS}" xmlns:a="{DRAWING_NS}">'
+        f"<c:chart>{RICH_TITLE}</c:chart></c:chartSpace>"
+    )
+    return linked(
+        f"<w:p>{drawing(graphic=graphic)}</w:p>",
+        CHART_RELATION,
+        IMAGE_RELATION,
+        content_types=(
+            f'<Override PartName="/{CHART_PART}" ContentType="{CHART_CT}"/>'
+            f"{PNG_DEFAULT}"
+        ),
+        members=IMAGE_MEMBER,
+        **{CHART_PART: space},
+    )
+
+
+def test_a_drawing_that_declares_both_an_image_and_a_chart_is_refused() -> None:
+    """A displayed image and a chart are different declarations on the one
+    route, so an object making both leaves what it shows unanswerable: neither
+    which came first in the XML nor which graphic data each sits under decides
+    it. Both halves resolve here -- the package declares the image part and
+    holds the chart part -- so what is refused is the pair and not either one."""
+    both = (
+        graphed(picture(blip()), CHART_CHILD),
+        graphed(CHART_CHILD, picture(blip())),
+        (
+            f"<a:graphic><a:graphicData>{picture(blip())}</a:graphicData>"
+            f"<a:graphicData>{CHART_CHILD}</a:graphicData></a:graphic>"
+        ),
+    )
+
+    for graphic in both:
+        with pytest.raises(OOXMLInvalid, match="declares both an image and a chart"):
+            extract_docx(mixed(graphic), capture_id=CAPTURE)
+
+    assert [
+        i.semantic_role
+        for i in extract_docx(mixed(CHART_REFERENCE), capture_id=CAPTURE).segments
+    ] == ["object_inventory", "chart"]
+    assert [
+        i.semantic_role
+        for i in extract_docx(
+            mixed(graphed(picture(blip()))), capture_id=CAPTURE
+        ).segments
+    ] == ["object_inventory"]
+
+
+# The whole package a schema-valid reference is read through: the chart space,
+# and the declaration that makes the part a chart part. Each test below leaves
+# the reference exactly as the drawing writes it and changes one step of the
+# package around it.
+CHART_SPACE = (
+    f'<c:chartSpace xmlns:c="{CHART_NS}" xmlns:a="{DRAWING_NS}">'
+    f"<c:chart>{RICH_TITLE}</c:chart></c:chartSpace>"
+)
+CHART_OVERRIDE = f'<Override PartName="/{CHART_PART}" ContentType="{CHART_CT}"/>'
+
+
+def related(
+    *relations: tuple[str, str, bool, str],
+    content_types: str = CHART_OVERRIDE,
+    members: dict[str, bytes] | None = None,
+    **parts: str,
+) -> bytes:
+    """The one inline charted paragraph, over the package given around it."""
+    return linked(
+        f"<w:p>{CHART_DRAWING}</w:p>",
+        *relations,
+        content_types=content_types,
+        members=members,
+        **parts,
+    )
+
+
+def test_a_chart_reference_that_reaches_no_chart_relationship_is_refused() -> None:
+    """The id is resolved through the holding part's own relationships or not at
+    all: no chart path is derived from the story's name, so a chart part sitting
+    in the package unrelated is never read. The relationship has to be there, it
+    has to carry one of the URIs OOXML defines for a chart, and it has to be
+    internal -- ``r:id`` names a part of the package, so an external target is
+    no chart and is not quietly recorded as a link. Every refusal names the
+    document the reference came from, not whichever format reached the shared
+    reader first."""
+    cases = (
+        ((), "chart reference names a missing relationship"),
+        # The package relates a chart, under an id this drawing does not name.
+        (
+            (("rId1", "charts/chart1.xml", False, "chart"),),
+            "chart reference names a missing relationship",
+        ),
+        # A relationship of another type names something that is not a chart,
+        # and no type reaches one by ending the same way as one.
+        (
+            (("rId7", "charts/chart1.xml", False, "oleObject"),),
+            "chart reference names a relationship of another type",
+        ),
+        (
+            (("rId7", "charts/chart1.xml", False, "x/chart"),),
+            "chart reference names a relationship of another type",
+        ),
+        (
+            (("rId7", "https://example.invalid/chart1.xml", True, "chart"),),
+            "chart relationship is external",
+        ),
+    )
+
+    for relations, message in cases:
+        with pytest.raises(OOXMLInvalid, match=f"DOCX {message}"):
+            extract_docx(
+                related(*relations, **{CHART_PART: CHART_SPACE}), capture_id=CAPTURE
+            )
+
+
+def test_a_chart_part_the_package_does_not_hold_or_declare_is_refused() -> None:
+    """Containment and existence are settled when the package validates its
+    relationships, so a chart part that is not there never reaches a record.
+    The target also has to be declared a chart part rather than merely named
+    one: a part the package declares as something else, or declares as nothing
+    at all, qualifies as no chart."""
+    with pytest.raises(OOXMLInvalid, match="escapes or misses the package"):
+        extract_docx(related(CHART_RELATION), capture_id=CAPTURE)
+
+    styles = (
+        f'<Override PartName="/{CHART_PART}" ContentType="application/vnd.'
+        'openxmlformats-officedocument.wordprocessingml.styles+xml"/>'
+    )
+    for content_types in ("", styles):
+        with pytest.raises(
+            OOXMLInvalid, match="DOCX chart relationship does not name a chart part"
+        ):
+            extract_docx(
+                related(
+                    CHART_RELATION,
+                    content_types=content_types,
+                    **{CHART_PART: CHART_SPACE},
+                ),
+                capture_id=CAPTURE,
+            )
+
+
+def test_a_chart_part_rooted_in_another_namespace_is_refused() -> None:
+    """The declared content type says what the part is; the root element is
+    where the part says so itself. A root that merely reads like a chart space
+    -- a namespace a character longer, one holding the real URI inside it, the
+    drawing namespace the space's own prefixes bind -- is another vocabulary,
+    and the reference that reached it stays the schema-valid reference it was.
+    The Strict namespace is the same declaration as the Transitional one, so it
+    is read, whichever half the reference naming it was written in."""
+    for namespace in (f"{CHART_NS}2", f"urn:example:{CHART_NS}", DRAWING_NS, "urn:c"):
+        space = CHART_SPACE.replace(f'xmlns:c="{CHART_NS}"', f'xmlns:c="{namespace}"')
+
+        with pytest.raises(
+            OOXMLInvalid, match="DOCX chart part uses an unsupported namespace"
+        ):
+            extract_docx(
+                related(CHART_RELATION, **{CHART_PART: space}), capture_id=CAPTURE
+            )
+
+    strict = CHART_SPACE.replace(CHART_NS, STRICT_CHART_NS)
+
+    assert [
+        (i.semantic_role, i.text)
+        for i in extract_docx(
+            related(CHART_RELATION, **{CHART_PART: strict}), capture_id=CAPTURE
+        ).segments
+    ] == [("object_inventory", None), ("chart", "Quarterly revenue")]
+
+
+# The workbook a chart may keep its data in: the member, the relationship the
+# chart part itself holds to it, and the ``c:externalData`` the chart space
+# names that relationship on. The member is declared nothing and is not a
+# workbook at all, so a reader that opened it would fail rather than pass.
+WORKBOOK_MEMBER = {"word/embeddings/book.xlsx": b"not a workbook anything here reads"}
+WORKBOOK_RELATION = ("rId8", "../embeddings/book.xlsx", False, "package")
+EXTERNAL_DATA = '<c:externalData r:id="rId8"><c:autoUpdate val="1"/></c:externalData>'
+
+
+def test_an_embedded_workbook_behind_a_chart_is_never_opened() -> None:
+    """The chart's own package relationships are not followed to its data: the
+    workbook's bytes are never opened or interpreted, nothing is refreshed from
+    them and no value is recalculated, however insistently ``c:autoUpdate``
+    asks. What is reported is the copy the chart part had already cached, which
+    reads exactly as it does in a package embedding no workbook at all, and the
+    record says outright that the workbook stayed shut."""
+    space = (
+        f'<c:chartSpace xmlns:c="{CHART_NS}" xmlns:a="{DRAWING_NS}" '
+        f'xmlns:r="{REL.rstrip("/")}">'
+        f"<c:chart>{RICH_TITLE}{PLOTTED}</c:chart>{EXTERNAL_DATA}</c:chartSpace>"
+    )
+    content = related(
+        CHART_RELATION,
+        members=WORKBOOK_MEMBER,
+        **{
+            CHART_PART: space,
+            "word/charts/_rels/chart1.xml.rels": rels(WORKBOOK_RELATION),
+        },
+    )
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert (
+        result.segments
+        == extract_docx(charted(RICH_TITLE + PLOTTED), capture_id=CAPTURE).segments
+    )
+    assert [(i.semantic_role, i.text) for i in result.segments] == [
+        ("object_inventory", None),
+        ("chart", "Quarterly revenue"),
+        ("chart", "Revenue"),
+        ("chart", "Q1"),
+        ("chart", "12"),
+    ]
+    assert inventory(content) == [
+        (
+            "0.c0",
+            {
+                "kind": "drawingChart",
+                "placement": "inline",
+                "relationshipId": "rId7",
+                "chartPart": CHART_PART,
+                "refreshed": False,
+                "embeddedWorkbookOpened": False,
+                "storedRecords": 4,
+            },
+        )
+    ]

@@ -821,13 +821,13 @@ def test_literal_and_level_counts_are_bounded(monkeypatch: pytest.MonkeyPatch) -
     levels = multi("Sheet1!$A$1", *[points(("0", "Q1"))] * 4, total="1")
     levelled_chart = _plotted(series(name=None, cat=levels, val=None))
 
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_CHART_CATEGORY_LEVELS", 3)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_CHART_CATEGORY_LEVELS", 3)
     with pytest.raises(OOXMLInvalid, match="too many category levels"):
         extract_pptx(levelled_chart, capture_id=CAPTURE)
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_CHART_CATEGORY_LEVELS", 256)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_CHART_CATEGORY_LEVELS", 256)
 
     # The point bound counts every level, and a literal list, like any cache.
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_CHART_POINTS", 3)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_CHART_POINTS", 3)
     with pytest.raises(OOXMLInvalid, match="too many cached points"):
         extract_pptx(levelled_chart, capture_id=CAPTURE)
 
@@ -854,20 +854,20 @@ def test_chart_counts_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     many = "".join(series(idx=str(index), order=str(index)) for index in range(4))
     plotted = pptx(charts={CHART_PART: chart(f"<c:plotArea>{many}</c:plotArea>")})
 
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_CHART_SERIES", 3)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_CHART_SERIES", 3)
     with pytest.raises(OOXMLInvalid, match="too many series"):
         extract_pptx(plotted, capture_id=CAPTURE)
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_CHART_SERIES", 1_000)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_CHART_SERIES", 1_000)
 
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_CHART_POINTS", 2)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_CHART_POINTS", 2)
     with pytest.raises(OOXMLInvalid, match="too many cached points"):
         extract_pptx(pptx(), capture_id=CAPTURE)
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_CHART_POINTS", 100_000)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_CHART_POINTS", 100_000)
 
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_CHART_TITLE_RUNS", 1)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_CHART_TITLE_RUNS", 1)
     with pytest.raises(OOXMLInvalid, match="title has too many runs"):
         extract_pptx(pptx(), capture_id=CAPTURE)
-    monkeypatch.setattr(ooxml_extractors, "_MAX_PPTX_CHART_TITLE_RUNS", 20_000)
+    monkeypatch.setattr(ooxml_extractors, "_MAX_CHART_TITLE_RUNS", 20_000)
 
     monkeypatch.setattr(ooxml_extractors, "MAX_SEGMENTS", 2)
     with pytest.raises(OOXMLInvalid, match="too many segments"):

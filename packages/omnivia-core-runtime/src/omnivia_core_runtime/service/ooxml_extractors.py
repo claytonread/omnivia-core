@@ -324,13 +324,16 @@ _CHART_REFERENCES: Final = {
 # source at all. ``c:v`` on its own is the single literal a series name may be.
 _CHART_LITERALS: Final = frozenset({"strLit", "numLit"})
 _CHART_SOURCES: Final = frozenset({"v", *_CHART_REFERENCES, *_CHART_LITERALS})
-_MAX_PPTX_CHART_SERIES: Final = 1_000
+# The chart bounds are the reader's own rather than any one format's: the same
+# bounded reader serves a PPTX graphic frame's chart and a DOCX drawing's, so
+# both are held to these.
+_MAX_CHART_SERIES: Final = 1_000
 # Counted across one chart part, over every cache and literal list it holds.
-_MAX_PPTX_CHART_POINTS: Final = 100_000
+_MAX_CHART_POINTS: Final = 100_000
 # A level is work a multi-level cache asks for whether or not it holds a point,
 # so the levels are bounded before any of them is read.
-_MAX_PPTX_CHART_CATEGORY_LEVELS: Final = 256
-_MAX_PPTX_CHART_TITLE_RUNS: Final = 20_000
+_MAX_CHART_CATEGORY_LEVELS: Final = 256
+_MAX_CHART_TITLE_RUNS: Final = 20_000
 # The two DrawingML diagram namespaces SmartArt is written in. One of them is
 # what a graphic frame's ``a:graphicData/@uri`` carries to say the graphic is
 # SmartArt, and the same URI is the namespace the data model part is rooted in.
@@ -358,6 +361,13 @@ _DRAWING_GRAPHIC: Final = frozenset(
 )
 _DRAWING_GRAPHIC_DATA: Final = frozenset(
     tag + "Data" for tag in _DRAWING_GRAPHIC
+)
+# The one element a graphic names its chart on, in the two DrawingML chart
+# namespaces OOXML defines -- the same pair a chart part is rooted in. A
+# ``chart`` element written in any other vocabulary shares a local name and
+# nothing else, and names no chart.
+_DRAWING_CHART: Final = frozenset(
+    f"{{{namespace}}}chart" for namespace in _CHART_NAMESPACES
 )
 # The relationship and content types that together qualify a diagram data part:
 # the one part SmartArt keeps its points and connections in. As with the chart
@@ -2698,37 +2708,44 @@ def _pptx_frame_chart(frame: ElementTree.Element) -> str | None:
     return relation_id
 
 
-def _pptx_referenced_part(
+def _referenced_part(
     package: _Package,
-    slide: str,
+    source: str,
     relation_id: str,
     defined: frozenset[str],
     content_type: str,
     what: str,
+    owner: str = "PPTX",
 ) -> str:
-    """Return the ``what`` part one frame's own relationship id names.
+    """Return the ``what`` part one reference's own relationship id names.
 
-    The id is resolved only through the slide's relationships, so containment,
-    path safety and existence were all settled when that relationship was
-    resolved and no member is reached by merely looking like the part. The
-    relationship has to be internal, has to carry one of the URIs OOXML defines
-    for the type, and has to resolve to a part the package declares with that
-    type's own content type.
+    The id is resolved only through the relationships of ``source``, the part
+    that holds the reference, so containment, path safety and existence were all
+    settled when that relationship was resolved and no member is reached by
+    merely looking like the part. The relationship has to be internal, has to
+    carry one of the URIs OOXML defines for the type, and has to resolve to a
+    part the package declares with that type's own content type.
+
+    ``owner`` is the format whose reference is being resolved, so a refusal
+    names the file it came from rather than whichever format reached this code
+    first.
     """
     rels = posixpath.join(
-        posixpath.dirname(slide), "_rels", posixpath.basename(slide) + ".rels"
+        posixpath.dirname(source), "_rels", posixpath.basename(source) + ".rels"
     )
     entry = package.relationships.get(rels, {}).get(relation_id)
     if entry is None:
-        raise OOXMLInvalid(f"PPTX {what} reference names a missing relationship")
+        raise OOXMLInvalid(f"{owner} {what} reference names a missing relationship")
     kind = package.relationship_types.get(rels, {}).get(relation_id, "")
     if not _is_defined_relationship(kind, defined):
-        raise OOXMLInvalid(f"PPTX {what} reference names a relationship of another type")
+        raise OOXMLInvalid(
+            f"{owner} {what} reference names a relationship of another type"
+        )
     target, external = entry
     if external:
-        raise OOXMLInvalid(f"PPTX {what} relationship is external")
+        raise OOXMLInvalid(f"{owner} {what} relationship is external")
     if package.declared_type(target) != content_type:
-        raise OOXMLInvalid(f"PPTX {what} relationship does not name a {what} part")
+        raise OOXMLInvalid(f"{owner} {what} relationship does not name a {what} part")
     return target
 
 
@@ -3149,7 +3166,7 @@ def _pptx_diagram_records(
     return points, connections
 
 
-def _pptx_chart_root(package: _Package, part: str) -> ElementTree.Element:
+def _chart_root(package: _Package, part: str, owner: str) -> ElementTree.Element:
     """Parse one chart part, refusing a root that is not a chart space.
 
     The declared content type says what the part is; the root element is where
@@ -3161,14 +3178,14 @@ def _pptx_chart_root(package: _Package, part: str) -> ElementTree.Element:
     root = package.xml(part)
     namespace, _, local = root.tag.rpartition("}")
     if namespace.lstrip("{") not in _CHART_NAMESPACES:
-        raise OOXMLInvalid("PPTX chart part uses an unsupported namespace")
+        raise OOXMLInvalid(f"{owner} chart part uses an unsupported namespace")
     if local != "chartSpace":
-        raise OOXMLInvalid("PPTX chart part is not rooted at its own chart space")
+        raise OOXMLInvalid(f"{owner} chart part is not rooted at its own chart space")
     return root
 
 
-def _pptx_chart_records(
-    package: _Package, part: str
+def _chart_records(
+    package: _Package, part: str, owner: str
 ) -> list[tuple[dict[str, object], str]]:
     """Read one chart's stored title and stored points as (place, value) records.
 
@@ -3185,39 +3202,44 @@ def _pptx_chart_records(
     a series with two of one thing, and a point index claimed twice leaves one
     position with two values, so the chart is refused rather than read under one
     of them.
+
+    A chart part is a chart part whichever format relates it, so a presentation
+    and a document are read by this one reader under one set of bounds and one
+    set of refusals. ``owner`` is the format that related it, carried through so
+    a refusal names the file it came from and never the other format.
     """
-    root = _pptx_chart_root(package, part)
+    root = _chart_root(package, part, owner)
     # Only the chart's own title: an axis or a legend carries a ``c:title`` of
     # its own further down, and neither is what the chart is called.
     chart = next((node for node in root if _local(node.tag) == "chart"), None)
     titles = [] if chart is None else [n for n in chart if _local(n.tag) == "title"]
     if len(titles) > 1:
-        raise OOXMLInvalid("PPTX chart holds more than one title")
+        raise OOXMLInvalid(f"{owner} chart holds more than one title")
     records: list[tuple[dict[str, object], str]] = (
-        [] if not titles else _pptx_chart_title(titles[0])
+        [] if not titles else _chart_title(titles[0], owner)
     )
     indices: set[str] = set()
     orders: set[str] = set()
     points = 0
     for series in (node for node in root.iter() if _local(node.tag) == "ser"):
-        if len(indices) >= _MAX_PPTX_CHART_SERIES:
-            raise OOXMLInvalid("PPTX chart has too many series")
-        index = _pptx_chart_index(series, "idx")
-        order = _pptx_chart_index(series, "order")
+        if len(indices) >= _MAX_CHART_SERIES:
+            raise OOXMLInvalid(f"{owner} chart has too many series")
+        index = _chart_index(series, "idx", owner)
+        order = _chart_index(series, "order", owner)
         if index in indices or order in orders:
-            raise OOXMLInvalid("PPTX chart series index or order is repeated")
+            raise OOXMLInvalid(f"{owner} chart series index or order is repeated")
         indices.add(index)
         orders.add(order)
         for slot, role in _CHART_SLOTS:
             holders = [item for item in series if _local(item.tag) == slot]
             if len(holders) > 1:
-                raise OOXMLInvalid("PPTX chart series holds more than one of a slot")
+                raise OOXMLInvalid(f"{owner} chart series holds more than one of a slot")
             if not holders:
                 continue
-            formula, cached = _pptx_chart_cache(holders[0])
+            formula, cached = _chart_cache(holders[0], owner)
             points += len(cached)
-            if points > _MAX_PPTX_CHART_POINTS:
-                raise OOXMLInvalid("PPTX chart has too many cached points")
+            if points > _MAX_CHART_POINTS:
+                raise OOXMLInvalid(f"{owner} chart has too many cached points")
             records.extend(
                 (
                     {
@@ -3236,8 +3258,8 @@ def _pptx_chart_records(
     return records
 
 
-def _pptx_chart_title(
-    title: ElementTree.Element,
+def _chart_title(
+    title: ElementTree.Element, owner: str
 ) -> list[tuple[dict[str, object], str]]:
     """Read the title text a chart stored, as rich runs or as a stored value.
 
@@ -3252,10 +3274,10 @@ def _pptx_chart_title(
     rich = next((node for node in holder if _local(node.tag) == "rich"), None)
     if rich is not None:
         runs = [node.text or "" for node in rich.iter() if _local(node.tag) == "t"]
-        if len(runs) > _MAX_PPTX_CHART_TITLE_RUNS:
-            raise OOXMLInvalid("PPTX chart title has too many runs")
+        if len(runs) > _MAX_CHART_TITLE_RUNS:
+            raise OOXMLInvalid(f"{owner} chart title has too many runs")
         return [({**_CHART_PLACE, "chartRole": "chart_title"}, "".join(runs))]
-    formula, cached = _pptx_chart_cache(holder)
+    formula, cached = _chart_cache(holder, owner)
     return [
         (
             {
@@ -3271,8 +3293,8 @@ def _pptx_chart_title(
     ]
 
 
-def _pptx_chart_cache(
-    holder: ElementTree.Element,
+def _chart_cache(
+    holder: ElementTree.Element, owner: str
 ) -> tuple[str | None, list[tuple[str | None, str | None, str]]]:
     """Read one slot's source formula and the points it already stored.
 
@@ -3290,7 +3312,7 @@ def _pptx_chart_cache(
     """
     sources = [node for node in holder if _local(node.tag) in _CHART_SOURCES]
     if len(sources) > 1:
-        raise OOXMLInvalid("PPTX chart slot holds more than one data source")
+        raise OOXMLInvalid(f"{owner} chart slot holds more than one data source")
     if not sources:
         return None, []
     source = sources[0]
@@ -3298,7 +3320,7 @@ def _pptx_chart_cache(
     if local == "v":
         return None, [(None, None, source.text or "")]
     if local in _CHART_LITERALS:
-        return None, _pptx_chart_points(source, _pptx_chart_declared(source))
+        return None, _chart_points(source, _chart_declared(source, owner), owner)
     formula = next((node for node in source if _local(node.tag) == "f"), None)
     stored = None if formula is None else _clip(formula.text or "", _MAX_TARGET_CHARS)
     cache = next(
@@ -3307,12 +3329,12 @@ def _pptx_chart_cache(
     if cache is None:
         return stored, []
     if local == "multiLvlStrRef":
-        return stored, _pptx_chart_levels(cache)
-    return stored, _pptx_chart_points(cache, _pptx_chart_declared(cache))
+        return stored, _chart_levels(cache, owner)
+    return stored, _chart_points(cache, _chart_declared(cache, owner), owner)
 
 
-def _pptx_chart_levels(
-    cache: ElementTree.Element,
+def _chart_levels(
+    cache: ElementTree.Element, owner: str
 ) -> list[tuple[str | None, str | None, str]]:
     """Read a multi-level category cache, level by level in source order.
 
@@ -3324,24 +3346,27 @@ def _pptx_chart_levels(
     cache, not on its levels, so it bounds the indices of all of them.
     """
     levels = [node for node in cache if _local(node.tag) == "lvl"]
-    if len(levels) > _MAX_PPTX_CHART_CATEGORY_LEVELS:
-        raise OOXMLInvalid("PPTX chart has too many category levels")
-    declared = _pptx_chart_declared(cache)
+    if len(levels) > _MAX_CHART_CATEGORY_LEVELS:
+        raise OOXMLInvalid(f"{owner} chart has too many category levels")
+    declared = _chart_declared(cache, owner)
     return [
         point
         for level, node in enumerate(levels)
-        for point in _pptx_chart_points(node, declared, str(level))
+        for point in _chart_points(node, declared, owner, str(level))
     ]
 
 
-def _pptx_chart_declared(holder: ElementTree.Element) -> int | None:
+def _chart_declared(holder: ElementTree.Element, owner: str) -> int | None:
     """Read what a cache or a literal list claims its source held, if it says."""
     count = next((node for node in holder if _local(node.tag) == "ptCount"), None)
-    return None if count is None else _pptx_chart_count(count, "val")
+    return None if count is None else _chart_count(count, "val", owner)
 
 
-def _pptx_chart_points(
-    holder: ElementTree.Element, declared: int | None, level: str | None = None
+def _chart_points(
+    holder: ElementTree.Element,
+    declared: int | None,
+    owner: str,
+    level: str | None = None,
 ) -> list[tuple[str | None, str | None, str]]:
     """Read one list's stored points in source order, refusing a malformed one.
 
@@ -3356,28 +3381,28 @@ def _pptx_chart_points(
     for node in holder:
         if _local(node.tag) != "pt":
             continue
-        index = _pptx_chart_count(node, "idx")
+        index = _chart_count(node, "idx", owner)
         if declared is not None and index >= declared:
-            raise OOXMLInvalid("PPTX chart cache point index is outside its count")
+            raise OOXMLInvalid(f"{owner} chart cache point index is outside its count")
         if str(index) in seen:
-            raise OOXMLInvalid("PPTX chart cache point index is repeated")
+            raise OOXMLInvalid(f"{owner} chart cache point index is repeated")
         seen.add(str(index))
         value = next((item for item in node if _local(item.tag) == "v"), None)
         if value is None or len(value):
-            raise OOXMLInvalid("PPTX chart cache point value is malformed")
+            raise OOXMLInvalid(f"{owner} chart cache point value is malformed")
         points.append((level, str(index), value.text or ""))
     return points
 
 
-def _pptx_chart_count(element: ElementTree.Element, name: str) -> int:
+def _chart_count(element: ElementTree.Element, name: str, owner: str) -> int:
     """Read one ``xsd:unsignedInt`` attribute, refusing a value that is not one."""
     raw = element.attrib.get(name)
     if raw is None or _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
-        raise OOXMLInvalid("PPTX chart cache point count is malformed")
+        raise OOXMLInvalid(f"{owner} chart cache point count is malformed")
     return int(raw)
 
 
-def _pptx_chart_index(series: ElementTree.Element, name: str) -> str:
+def _chart_index(series: ElementTree.Element, name: str, owner: str) -> str:
     """Read one series index or order verbatim, refusing a malformed value.
 
     The value is kept as the chart wrote it, never renumbered, so only its
@@ -3385,10 +3410,10 @@ def _pptx_chart_index(series: ElementTree.Element, name: str) -> str:
     """
     node = next((item for item in series if _local(item.tag) == name), None)
     if node is None:
-        raise OOXMLInvalid("PPTX chart series index or order is malformed")
+        raise OOXMLInvalid(f"{owner} chart series index or order is malformed")
     raw = node.attrib.get("val")
     if raw is None or _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
-        raise OOXMLInvalid("PPTX chart series index or order is malformed")
+        raise OOXMLInvalid(f"{owner} chart series index or order is malformed")
     return raw
 
 
@@ -3861,7 +3886,7 @@ class _PptxWalker:
         stored, and nothing here opens the workbook behind them or recalculates
         anything, so how current they are is not knowable from the package.
         """
-        part = _pptx_referenced_part(
+        part = _referenced_part(
             self._package,
             self._part,
             relation_id,
@@ -3869,7 +3894,7 @@ class _PptxWalker:
             _CHART_CONTENT_TYPE,
             "chart",
         )
-        for place, value in _pptx_chart_records(self._package, part):
+        for place, value in _chart_records(self._package, part, "PPTX"):
             self._segments.append(
                 ExtractedSegment(
                     "chart",
@@ -3903,7 +3928,7 @@ class _PptxWalker:
         or drawing parts the diagram relates to, so no visual hierarchy, label
         or reading order is read off how the diagram would be drawn.
         """
-        part = _pptx_referenced_part(
+        part = _referenced_part(
             self._package,
             self._part,
             relation_id,
@@ -4761,12 +4786,14 @@ class _DocxWalker:
     hidden by a run's own properties (``<paragraph>.v<n>``, a
     ``hidden_content`` segment), inline equations (``<paragraph>.e<n>``, an
     ``equation`` segment), DrawingML images (``<paragraph>.i<n>``, an
-    ``object_inventory`` segment and the ``image_alt`` claims after it) and
+    ``object_inventory`` segment and the ``image_alt`` claims after it),
+    DrawingML charts (``<paragraph>.c<n>``, an ``object_inventory`` segment and
+    the ``chart`` records the chart part stored after it) and
     text boxes (``<paragraph>.x<n>.<block>``)
     where they are anchored, and current text is never joined across one of
     them. A table cell reads its current paragraphs as one ``table_cell`` run,
-    closed by any deletion, hidden stretch, equation, image, text box, field or
-    nested table, and later runs sit at ``<cell>.t<n>``.
+    closed by any deletion, hidden stretch, equation, image, chart, text box,
+    field or nested table, and later runs sit at ``<cell>.t<n>``.
 
     Hyperlinks, fields and annotation references stay out of the text: each
     becomes an inert ``object_inventory`` segment at ``<paragraph>.h<n>``
@@ -5017,7 +5044,7 @@ class _DocxWalker:
         self.paragraphs += 1
         role = "table_cell" if cell else self._role(paragraph)
         current = removed = boxes = links = refs = fields = concealed = 0
-        maths = images = 0
+        maths = images = charts = 0
         for kind, value, box_deleted in _paragraph_items(
             paragraph, deleted, self._fields
         ):
@@ -5034,6 +5061,12 @@ class _DocxWalker:
                 self._flush(cell)
                 self._drawing(value, f"{position}.i{images}", box_deleted)
                 images += 1
+            elif kind == "k":
+                assert isinstance(value, ElementTree.Element)
+                # A chart is ordered where it sits, for the reason an image is.
+                self._flush(cell)
+                self._chart(value, f"{position}.c{charts}", box_deleted)
+                charts += 1
             elif kind == "m":
                 assert isinstance(value, ElementTree.Element)
                 item = _local(value.tag)
@@ -5209,6 +5242,81 @@ class _DocxWalker:
             )
             _bounded(self._segments)
 
+    def _chart(
+        self, drawing: ElementTree.Element, position: str, deleted: bool
+    ) -> None:
+        """Inventory one DrawingML chart, then report the values it stored.
+
+        The inventory record comes first and is emitted for every chart the
+        story anchors, whether or not the chart part stored a single value, so a
+        story's charts are inventoried where the XML placed them. It names
+        where the object sits -- ``inline`` in the text flow or ``anchor``
+        against the page -- the relationship id it named its chart on, the part
+        that relationship reached, and how many records the part had stored. It
+        also says outright what was not done: the chart was not refreshed and
+        the workbook it may embed was not opened.
+
+        The stored records then follow in source order, each a ``chart``
+        segment carrying the chart part, the relationship that reached it, the
+        place inside the chart the shared reader reports, and a ``freshness``
+        of ``unknown``: the values are the copy the package stored, and nothing
+        here opens the workbook behind them, resolves a source formula or
+        recalculates anything, so how current they are is not knowable from the
+        package. A formula rides beside its value as the inert metadata it is.
+
+        A deletion wrapped around the drawing is kept as the revision it is,
+        over the record and over every value it carried, exactly as it is over
+        an image and its claims.
+        """
+        relation_id = _docx_drawing_chart(drawing)
+        assert relation_id is not None
+        part = _referenced_part(
+            self._package,
+            self._part,
+            relation_id,
+            _CHART_RELATIONSHIPS,
+            _CHART_CONTENT_TYPE,
+            "chart",
+            "DOCX",
+        )
+        records = _chart_records(self._package, part, "DOCX")
+        self._inventory(
+            position,
+            {
+                "kind": "drawingChart",
+                "placement": _DOCX_DRAWINGS[drawing.tag],
+                "relationshipId": _clip(relation_id, _MAX_META_CHARS),
+                "chartPart": _clip(part, _MAX_TARGET_CHARS),
+                "refreshed": False,
+                "embeddedWorkbookOpened": False,
+                "storedRecords": len(records),
+            },
+            "visible",
+            deleted,
+        )
+        for place, value in records:
+            self._segments.append(
+                ExtractedSegment(
+                    "chart",
+                    self._locator(
+                        position,
+                        chartPart=part,
+                        relationshipId=relation_id,
+                        **place,
+                        freshness="unknown",
+                    ),
+                    # A cache that stored an empty value is still a record the
+                    # chart claims, so it is reported as the empty claim it is;
+                    # ``document_intake`` takes exactly one content
+                    # representation and refuses empty text.
+                    text=value or None,
+                    structured_value=None if value else {"value": ""},
+                    visibility="annotation" if deleted else "visible",
+                    revision_state="deleted" if deleted else "current",
+                )
+            )
+            _bounded(self._segments)
+
     def _flush(self, cell: _CellRun | None) -> None:
         if cell is None:
             return
@@ -5337,9 +5445,10 @@ def _paragraph_items(
     Kinds are ``t`` current text, ``d`` deleted text, ``v`` text a run's own
     properties hide (carrying whether a deletion wrapped it), ``x`` a text box,
     ``e`` an ``m:oMath`` or ``m:oMathPara`` equation, ``g`` a ``wp:inline`` or
-    ``wp:anchor`` drawing object that displays an image, ``m`` a hyperlink,
-    simple field or annotation marker, and ``c`` an already recorded complex
-    field (each carrying whether a deletion wrapped it).
+    ``wp:anchor`` drawing object that displays an image, ``k`` one that names a
+    chart, ``m`` a hyperlink, simple field or annotation marker, and ``c`` an
+    already recorded complex field (each carrying whether a deletion wrapped
+    it).
     Adjacent text of one kind is one stretch; tabs and breaks stay separators
     inside it. Hidden text is a stretch of its own, so it is never joined to the
     visible text around it.
@@ -5352,8 +5461,8 @@ def _paragraph_items(
     text. Text is read as the ordinary text it is only once every open field has
     separated, so a nested field's result is recorded under its own separator and
     still kept out of the prose while an outer instruction encloses it. An
-    equation and an image each count as that result the same way, and one
-    reached while any open field is still before its separator is refused
+    equation, an image and a chart each count as that result the same way, and
+    one reached while any open field is still before its separator is refused
     rather than read or inventoried.
     """
     items: list[tuple[str, str | ElementTree.Element | dict[str, object], bool]] = []
@@ -5397,15 +5506,17 @@ def _paragraph_items(
                 if len(items) > MAX_SEGMENTS:
                     raise OOXMLInvalid("OOXML extraction has too many segments")
                 continue
-            if node.tag in _DOCX_DRAWINGS and _docx_drawing_blip(node) is not None:
-                # An image is inventoried where it sits and holds no prose of
-                # its own, so it is never entered. A drawing object that
-                # displays no image -- the one holding a text box above all --
-                # is still the transparent wrapper it is today and is walked
-                # for the content it carries.
-                _field_result(fields, "an image")
+            if node.tag in _DOCX_DRAWINGS and (
+                declared := _docx_drawing_object(node)
+            ):
+                # An image and a chart are each recorded where they sit and
+                # hold no prose of their own, so neither is entered. A drawing
+                # object that declares neither -- the one holding a text box
+                # above all -- is still the transparent wrapper it is today and
+                # is walked for the content it carries.
+                _field_result(fields, "an image" if declared == "g" else "a chart")
                 close()
-                items.append(("g", node, state))
+                items.append((declared, node, state))
                 if len(items) > MAX_SEGMENTS:
                     raise OOXMLInvalid("OOXML extraction has too many segments")
                 continue
@@ -5581,6 +5692,63 @@ def _docx_drawing_blip(drawing: ElementTree.Element) -> ElementTree.Element | No
     if len(blips) > 1:
         raise OOXMLInvalid("DOCX drawing declares more than one image reference")
     return blips[0] if blips else None
+
+
+def _docx_drawing_chart(drawing: ElementTree.Element) -> str | None:
+    """Return the relationship id one drawing object names its chart on, or None.
+
+    The route in is the schema's own and nothing else: the object's direct
+    ``a:graphic``, that graphic's direct ``a:graphicData``, and the ``c:chart``
+    directly below that. Every step is held to the qualified names OOXML
+    defines for it -- the two DrawingML main namespaces for the graphic and its
+    data, the two DrawingML chart namespaces for the reference -- so an element
+    merely called ``graphic``, ``graphicData`` or ``chart`` in another
+    vocabulary is not on the route and names nothing, whichever step it stands
+    at. A reference reached anywhere else below the object -- in an
+    alternate-content fallback, inside a text box's own content, in an
+    extension list, below another graphic carried along -- is not what this
+    object displays and is passed over.
+
+    One drawing object displays one graphic, so two of anything along that
+    route leaves which chart it shows unanswerable and nothing here chooses
+    between them. A reference that names no relationship identifies no chart,
+    and no chart path is derived from the story's own name: the id is resolved
+    through the holding part's relationships or not at all.
+    """
+    charts = [
+        node
+        for graphic in drawing
+        if graphic.tag in _DRAWING_GRAPHIC
+        for data in graphic
+        if data.tag in _DRAWING_GRAPHIC_DATA
+        for node in data
+        if node.tag in _DRAWING_CHART
+    ]
+    if not charts:
+        return None
+    if len(charts) > 1:
+        raise OOXMLInvalid("DOCX drawing declares more than one chart reference")
+    relation_id = _relationship_id(charts[0].attrib)
+    if not relation_id:
+        raise OOXMLInvalid("DOCX chart reference names no relationship")
+    return relation_id
+
+
+def _docx_drawing_object(drawing: ElementTree.Element) -> str | None:
+    """Say which graphic a drawing object declares: ``g`` image, ``k`` chart, None.
+
+    A displayed image and a chart are different declarations on the same route,
+    so an object making both leaves what it shows unanswerable and nothing here
+    chooses between them. An object making neither is the transparent wrapper
+    it has always been -- the one holding a text box above all -- and is walked
+    for the content it carries. SmartArt, embedded objects and VML are other
+    declarations entirely and are left for their own slices.
+    """
+    image = _docx_drawing_blip(drawing) is not None
+    chart = _docx_drawing_chart(drawing) is not None
+    if image and chart:
+        raise OOXMLInvalid("DOCX drawing declares both an image and a chart")
+    return "g" if image else "k" if chart else None
 
 
 def _docx_doc_pr(drawing: ElementTree.Element) -> dict[str, str | None]:
