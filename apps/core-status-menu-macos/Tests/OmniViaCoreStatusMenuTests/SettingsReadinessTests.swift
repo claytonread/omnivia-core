@@ -318,3 +318,61 @@ final class SettingsReadinessTests: XCTestCase {
         XCTAssertEqual(row.detail, "The Core service is not running right now.")
     }
 }
+
+// MARK: - Settling when nothing is installed
+
+/// Every provider in this build reports "unimplemented". The pane must still
+/// settle: a refresh that has finished and found nothing is not the same as
+/// one still running, and "Checking macOS status…" that never resolves is the
+/// §A6 misreport in its quietest form.
+@MainActor
+final class ReadinessSettlesTests: XCTestCase {
+    private struct NeverInstalled: ReadinessProviding {
+        let checkID: ReadinessCheckID
+        func read() async -> ReadinessProviderOutcome {
+            .unimplemented(explanation: "The owning feature is not installed in this build.")
+        }
+    }
+
+    private let context = ReadinessContext(
+        installationRevision: "install-a",
+        localSessionRef: "session-1",
+        targetRef: "local",
+        workspaceRef: "workspace-1",
+        configurationRevision: "1"
+    )
+
+    func testARefreshOverUnimplementedProvidersStopsBeingInFlight() async {
+        let coordinator = ReadinessCoordinator(
+            providers: [
+                NeverInstalled(checkID: .companionLogin),
+                NeverInstalled(checkID: .coreBackground),
+            ],
+            context: context
+        )
+        coordinator.scheduleRefresh(.windowOpened)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(
+            coordinator.refreshInFlight,
+            "the refresh finished; leaving it in flight pins the pane on 'Checking…'"
+        )
+    }
+
+    func testTheSummaryStopsSayingItIsChecking() async {
+        let coordinator = ReadinessCoordinator(
+            providers: [NeverInstalled(checkID: .coreBackground)],
+            context: context
+        )
+        coordinator.scheduleRefresh(.windowOpened)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        let summary = ReadinessReducer.summarize(
+            checks: coordinator.snapshot.checks,
+            preferences: .manualLocalOnly,
+            refreshInFlight: coordinator.refreshInFlight,
+            everObserved: coordinator.snapshot.observedAt != nil
+        )
+        XCTAssertNotEqual(
+            summary.kind, .checking, "the check is over; it found nothing installed"
+        )
+    }
+}

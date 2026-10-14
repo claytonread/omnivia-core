@@ -494,8 +494,21 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         attentionNotificationsSelected = UserDefaults.standard.bool(
             forKey: Self.attentionNotificationsKey
         )
-        coordinator.$snapshot.sink { [weak self] _ in self?.render() }.store(in: &cancellables)
-        coordinator.$refreshInFlight.sink { [weak self] _ in self?.render() }.store(in: &cancellables)
+        // `receive(on:)` is not decoration. `@Published` sends in `willSet`,
+        // so a sink that renders immediately reads the value *before* the
+        // assignment and the window sits one update behind. The last thing a
+        // refresh does is set `refreshInFlight = false`; rendering on that
+        // send saw it still true, so the macOS access summary stayed on
+        // "Checking macOS status…" for the life of the window. Delivering on
+        // the next main-runloop pass renders the committed value.
+        coordinator.$snapshot
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.render() }
+            .store(in: &cancellables)
+        coordinator.$refreshInFlight
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.render() }
+            .store(in: &cancellables)
     }
 
     // MARK: - Window lifecycle (MR-001)
