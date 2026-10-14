@@ -2744,3 +2744,816 @@ def test_an_embedded_workbook_behind_a_chart_is_never_opened() -> None:
             },
         )
     ]
+
+
+# A drawing object declares SmartArt on the one route a slide's graphic frame
+# does: the object's own ``a:graphic``, the ``a:graphicData`` below it carrying
+# a diagram namespace as its ``uri``, and the ``dgm:relIds`` naming the data
+# model part. What is read off the data model is the copy it already stored --
+# each point's own ``dgm:t`` and the identity each connection encodes -- and
+# the layout, quick-style and colour ids named beside the data reach nothing.
+DIAGRAM_NS = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
+DIAGRAM_CT = "application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml"
+DIAGRAM_PART = "word/diagrams/data1.xml"
+DIAGRAM_RELATION = ("rId4", "diagrams/data1.xml", False, "diagramData")
+DIAGRAM_OVERRIDE = f'<Override PartName="/{DIAGRAM_PART}" ContentType="{DIAGRAM_CT}"/>'
+# ``r:lo``, ``r:qs`` and ``r:cs`` name no relationship the package declares at
+# all, so a reader that opened any of the three would refuse rather than pass.
+RELIDS = (
+    f'<dgm:relIds xmlns:dgm="{DIAGRAM_NS}"'
+    ' r:dm="rId4" r:lo="rId20" r:qs="rId21" r:cs="rId22"/>'
+)
+
+
+def dgm_data(*children: str) -> str:
+    """One ``a:graphicData`` whose ``uri`` declares its graphic SmartArt."""
+    return f'<a:graphicData uri="{DIAGRAM_NS}">{"".join(children)}</a:graphicData>'
+
+
+SMART_REFERENCE = f"<a:graphic>{dgm_data(RELIDS)}</a:graphic>"
+SMART_DRAWING = drawing(graphic=SMART_REFERENCE)
+
+
+def point(model_id: str, *texts: str) -> str:
+    """One ``dgm:pt``, carrying a text body only where it stored a run."""
+    stored = "".join(f"<a:r><a:t>{body}</a:t></a:r>" for body in texts)
+    return (
+        f'<dgm:pt modelId="{model_id}">'
+        + (f"<dgm:t><a:p>{stored}</a:p></dgm:t>" if texts else "")
+        + "</dgm:pt>"
+    )
+
+
+# Two points carrying one run of text each, and the one connection between
+# them. Nothing in the model says which point is above the other: that is the
+# layout's business, and the layout is never opened.
+POINTS = point("1", "First") + point("2", "Second")
+CONNECTION = '<dgm:cxn modelId="3" srcId="1" destId="2" srcOrd="0" destOrd="0"/>'
+
+
+def model(points: str = POINTS, connections: str = CONNECTION) -> str:
+    """One diagram data part holding the point list and the connection list."""
+    return (
+        f'<dgm:dataModel xmlns:dgm="{DIAGRAM_NS}" xmlns:a="{DRAWING_NS}">'
+        f"<dgm:ptLst>{points}</dgm:ptLst>"
+        f"<dgm:cxnLst>{connections}</dgm:cxnLst>"
+        "</dgm:dataModel>"
+    )
+
+
+def smart(body: str | None = None, data: str | None = None) -> bytes:
+    """A document whose one drawing names the part holding ``data``.
+
+    ``body`` defaults to that drawing alone, inline in a paragraph of its own; a
+    test that places the same drawing elsewhere passes the body it wants.
+    """
+    return linked(
+        f"<w:p>{SMART_DRAWING}</w:p>" if body is None else body,
+        DIAGRAM_RELATION,
+        content_types=DIAGRAM_OVERRIDE,
+        **{DIAGRAM_PART: model() if data is None else data},
+    )
+
+
+# The provenance the first point-text record carries. Every other record
+# differs from it only in where inside the diagram it sits.
+SMART_LOCATOR: dict[str, object] = {
+    "captureId": CAPTURE,
+    "part": "word/document.xml",
+    "story": "body",
+    "position": "0.d0",
+    "diagramPart": DIAGRAM_PART,
+    "relationshipId": "rId4",
+    "diagramRole": "point_text",
+    "modelId": "1",
+    "pointType": "node",
+    "pointIndex": 0,
+    "connectionModelId": None,
+    "paragraph": 0,
+    "run": 0,
+}
+# A connection sits at no point, paragraph or run, so none of those keys is on
+# its locator: what it carries is the identity it encodes and nothing more.
+SMART_CONNECTED: dict[str, object] = {
+    key: value
+    for key, value in SMART_LOCATOR.items()
+    if key
+    not in {
+        "diagramRole",
+        "modelId",
+        "pointType",
+        "pointIndex",
+        "connectionModelId",
+        "paragraph",
+        "run",
+    }
+} | {"diagramRole": "connection", "modelId": "3", "connectionIndex": 0}
+# The record the inventory segment carries, and the one the connection does.
+SMART_RECORD: dict[str, object] = {
+    "kind": "smartArt",
+    "placement": "inline",
+    "relationshipId": "rId4",
+    "diagramPart": DIAGRAM_PART,
+    "storedPointTextRecords": 2,
+    "storedConnections": 1,
+    "hierarchyInferred": False,
+    "relatedVisualPartsOpened": False,
+}
+SMART_CONNECTION: dict[str, object] = {
+    "kind": "diagramConnection",
+    "modelId": "3",
+    "connectionIndex": 0,
+    "connectionType": "parOf",
+    "sourceModelId": "1",
+    "destinationModelId": "2",
+    "sourceOrder": "0",
+    "destinationOrder": "0",
+    "parentTransitionModelId": None,
+    "siblingTransitionModelId": None,
+    "sourceResolved": True,
+    "destinationResolved": True,
+}
+
+
+def test_smartart_is_inventoried_where_it_sits_with_its_stored_text_after() -> None:
+    """The record comes first and says what was and was not done: where the
+    object sits, the relationship it named its data on, the part that reached,
+    how much the part had stored, and that no hierarchy was inferred and no
+    related visual part opened. The stored point text follows run by run under
+    the ``body`` role, then each connection as the inert identity it encodes."""
+    content = smart()
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("object_inventory", None, "0.d0"),
+        ("body", "First", "0.d0"),
+        ("body", "Second", "0.d0"),
+        ("object_inventory", None, "0.d0"),
+    ]
+    assert inventory(content) == [("0.d0", SMART_RECORD), ("0.d0", SMART_CONNECTION)]
+    record, first, second, link = result.segments
+    assert dict(record.source_locator) == {
+        key: SMART_LOCATOR[key] for key in ("captureId", "part", "story", "position")
+    }
+    assert (first.semantic_role, first.visibility, first.revision_state) == (
+        "body",
+        "visible",
+        "current",
+    )
+    assert dict(first.source_locator) == SMART_LOCATOR
+    assert dict(second.source_locator) == SMART_LOCATOR | {
+        "modelId": "2",
+        "pointIndex": 1,
+    }
+    assert (link.semantic_role, link.extraction_method, link.text) == (
+        "object_inventory",
+        "inventory",
+        None,
+    )
+    assert dict(link.source_locator) == SMART_CONNECTED
+    locators = [tuple(sorted(i.source_locator.items())) for i in result.segments]
+    assert len(set(locators)) == len(locators)
+
+
+def test_smartart_whose_points_stored_no_text_is_still_inventoried() -> None:
+    """A data model may define its points and store not one run of text in them.
+    The object is still the one the story anchored and the connections are still
+    the identities they encode, so the record stands and says outright that no
+    point text was stored."""
+    content = smart(data=model(point("1") + point("2")))
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert inventory(content) == [
+        ("0.d0", SMART_RECORD | {"storedPointTextRecords": 0}),
+        ("0.d0", SMART_CONNECTION),
+    ]
+    assert [i.semantic_role for i in result.segments] == [
+        "object_inventory",
+        "object_inventory",
+    ]
+
+
+def test_anchored_smartart_is_recorded_as_the_object_declared_it() -> None:
+    """Placement is the drawing element's own, so a diagram anchored against the
+    page is recorded as anchored rather than as part of the text flow."""
+    anchored = f"<w:p>{drawing('anchor', graphic=SMART_REFERENCE)}</w:p>"
+
+    assert inventory(smart(anchored)) == [
+        ("0.d0", SMART_RECORD | {"placement": "anchor"}),
+        ("0.d0", SMART_CONNECTION),
+    ]
+
+
+def test_a_deletion_over_smartart_is_kept_over_its_record_text_and_links() -> None:
+    """A deletion wrapped around the drawing is the revision it is, over the
+    inventory record, over every run of point text the data model stored and
+    over every connection it encoded, exactly as it is over a chart and the
+    values it cached."""
+    deleted = f"<w:p><w:del>{SMART_DRAWING}</w:del></w:p>"
+
+    result = extract_docx(smart(deleted), capture_id=CAPTURE)
+
+    assert [
+        (i.semantic_role, i.visibility, i.revision_state) for i in result.segments
+    ] == [
+        ("object_inventory", "annotation", "deleted"),
+        ("body", "annotation", "deleted"),
+        ("body", "annotation", "deleted"),
+        ("object_inventory", "annotation", "deleted"),
+    ]
+
+
+def test_smartart_is_the_saved_result_of_the_field_it_sits_under() -> None:
+    """A field whose stored result is a diagram alone stored a result, exactly as
+    one whose result is an image or a chart did. Before the separator the same
+    drawing is field code, which carries no diagram of its own, so it is refused
+    rather than inventoried as the field's result."""
+    saved = (
+        f"<w:p>{fld('begin')}{instr(' SMARTART ')}{fld('separate')}"
+        f"{SMART_DRAWING}{fld('end')}</w:p>"
+    )
+    content = smart(saved)
+
+    assert [
+        (i.semantic_role, i.source_locator["position"])
+        for i in extract_docx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("object_inventory", "0.f0"),
+        ("object_inventory", "0.d0"),
+        ("body", "0.d0"),
+        ("body", "0.d0"),
+        ("object_inventory", "0.d0"),
+    ]
+    assert inventory(content)[0][1]["savedResultPresent"] is True
+
+    code = (
+        f"<w:p>{fld('begin')}{instr(' SMARTART ')}{SMART_DRAWING}"
+        f"{fld('separate')}{fld('end')}</w:p>"
+    )
+
+    with pytest.raises(OOXMLInvalid, match="instruction holds SmartArt"):
+        extract_docx(smart(code), capture_id=CAPTURE)
+
+
+def declared(graphic: str) -> bytes:
+    """A package where the image, the chart and the diagram a drawing may name
+    all resolve, so what a pairing below one drawing is refused for is the pair
+    and not either half of it."""
+    return linked(
+        f"<w:p>{drawing(graphic=graphic)}</w:p>",
+        CHART_RELATION,
+        IMAGE_RELATION,
+        DIAGRAM_RELATION,
+        content_types=f"{CHART_OVERRIDE}{PNG_DEFAULT}{DIAGRAM_OVERRIDE}",
+        members=IMAGE_MEMBER,
+        **{CHART_PART: CHART_SPACE, DIAGRAM_PART: model()},
+    )
+
+
+def test_a_drawing_declaring_smartart_and_another_graphic_is_refused() -> None:
+    """A displayed image, a chart and SmartArt are three declarations on the one
+    route, so an object making two of them leaves what it shows unanswerable:
+    neither which came first in the XML nor whether the two share a graphic data
+    decides it. Every half resolves in this package, so what is refused is the
+    pair, named by the two declarations it made."""
+    for graphic, refused in (
+        (f"<a:graphic>{dgm_data(RELIDS, picture(blip()))}</a:graphic>", "an image"),
+        (
+            (
+                f"<a:graphic><a:graphicData>{picture(blip())}</a:graphicData>"
+                f"{dgm_data(RELIDS)}</a:graphic>"
+            ),
+            "an image",
+        ),
+        (f"<a:graphic>{dgm_data(RELIDS, CHART_CHILD)}</a:graphic>", "a chart"),
+        (
+            (
+                f"<a:graphic><a:graphicData>{CHART_CHILD}</a:graphicData>"
+                f"{dgm_data(RELIDS)}</a:graphic>"
+            ),
+            "a chart",
+        ),
+    ):
+        with pytest.raises(OOXMLInvalid, match=f"declares both {refused} and SmartArt"):
+            extract_docx(declared(graphic), capture_id=CAPTURE)
+
+    # Each half alone is the single graphic the object shows, read on its own
+    # route through the very same package.
+    assert [
+        i.semantic_role
+        for i in extract_docx(declared(SMART_REFERENCE), capture_id=CAPTURE).segments
+    ] == ["object_inventory", "body", "body", "object_inventory"]
+    assert [
+        i.semantic_role
+        for i in extract_docx(declared(CHART_REFERENCE), capture_id=CAPTURE).segments
+    ] == ["object_inventory", "chart"]
+    assert [
+        i.semantic_role
+        for i in extract_docx(
+            declared(graphed(picture(blip()))), capture_id=CAPTURE
+        ).segments
+    ] == ["object_inventory"]
+
+
+# The route a drawing object declares SmartArt on is the one a slide's graphic
+# frame declares it on, so it is held to the same pair of namespaces at every
+# step: the Transitional and the Strict halves of DrawingML main, of the diagram
+# vocabulary, and of the relationships namespace an id is written in. The tests
+# below leave the package whole -- the data part is declared and present, and
+# the relationship reaches it -- and vary one step of the route itself.
+STRICT_NS = "http://purl.oclc.org/ooxml/drawingml/diagram"
+REL_NS = REL.removesuffix("/")
+
+
+def routed(
+    body: str,
+    *,
+    uri: str | None = DIAGRAM_NS,
+    namespace: str = DRAWING_NS,
+) -> str:
+    """The ``a:graphic``/``a:graphicData`` route, each step's namespace its own."""
+    attribute = "" if uri is None else f' uri="{uri}"'
+    return (
+        f'<a:graphic xmlns:a="{namespace}">'
+        f"<a:graphicData{attribute}>{body}</a:graphicData></a:graphic>"
+    )
+
+
+def relids(
+    *,
+    dm: str | None = "rId4",
+    namespace: str = DIAGRAM_NS,
+    relationships: str = REL_NS,
+    extra: str = "",
+) -> str:
+    """One ``dgm:relIds``, always naming the layout, style and colour parts too.
+
+    Those three are the ids nothing here opens, and the package declares no
+    relationship for any of them, so a reader that followed one would refuse
+    rather than pass.
+    """
+    named = "" if dm is None else f' r:dm="{dm}"'
+    return (
+        f'<dgm:relIds xmlns:dgm="{namespace}" xmlns:r="{relationships}"'
+        f'{named} r:lo="rId20" r:qs="rId21" r:cs="rId22"{extra}/>'
+    )
+
+
+def drawn(graphic: str, data: str | None = None) -> bytes:
+    """The whole package, with ``graphic`` as the one declaration the drawing makes."""
+    return smart(f"<w:p>{drawing(graphic=graphic)}</w:p>", data=data)
+
+
+def roles(content: bytes) -> list[str]:
+    """Each segment's role, in the order the walker emitted it."""
+    return [i.semantic_role for i in extract_docx(content, capture_id=CAPTURE).segments]
+
+
+def test_only_the_schema_qualified_route_reaches_smartart() -> None:
+    """An element sharing a local name and nothing else declares no SmartArt,
+    whether it stands where the graphic or its data would, and a ``uri`` that
+    merely resembles a diagram namespace -- a character longer, a slash longer,
+    one holding the real URI inside it -- names another vocabulary. The route is
+    the drawing object's own children, so a qualified lookalike nested below it
+    is not its declaration either. A drawing declaring none of the three
+    graphics is the transparent wrapper it has always been, so the prose beside
+    it is still read and nothing is inventoried off it."""
+    other = 'xmlns:z="urn:example:other"'
+    lookalikes = (
+        # The graphic and its data, each in turn, written in a vocabulary that
+        # shares the local name and nothing else.
+        (
+            f'<z:graphic {other}><a:graphicData uri="{DIAGRAM_NS}">'
+            f"{RELIDS}</a:graphicData></z:graphic>"
+        ),
+        (
+            f'<a:graphic><z:graphicData {other} uri="{DIAGRAM_NS}">'
+            f"{RELIDS}</z:graphicData></a:graphic>"
+        ),
+        # A graphic data written in the diagram namespace is not the graphic
+        # data the route names, so nothing below it is on the route either.
+        (
+            f'<a:graphic><dgm:graphicData xmlns:dgm="{DIAGRAM_NS}"'
+            f' uri="{DIAGRAM_NS}">{RELIDS}</dgm:graphicData></a:graphic>'
+        ),
+        # Graphic and graphic data written in a vocabulary that is not DrawingML.
+        routed(relids(), namespace="urn:a"),
+        # Graphic data naming no vocabulary at all, and one naming another the
+        # package itself defines.
+        routed(relids(), uri=None),
+        routed(relids(), uri=CHART_NS),
+        # Namespace URIs compare as strings, so each of these says its graphic
+        # is something other than SmartArt.
+        routed(relids(), uri=DIAGRAM_NS + "Extra"),
+        routed(relids(), uri=DIAGRAM_NS + "/"),
+        routed(relids(), uri="urn:example:" + DIAGRAM_NS),
+        routed(relids(), uri=DIAGRAM_NS.replace("diagram", "Diagram")),
+        # A qualifying route nested below the drawing rather than on it: inside
+        # a graphic data that declares nothing, inside the frame properties
+        # beside it, and inside a compatibility fallback.
+        routed(SMART_REFERENCE, uri=None),
+        f"<wp:cNvGraphicFramePr>{SMART_REFERENCE}</wp:cNvGraphicFramePr>",
+        (
+            f"<mc:AlternateContent><mc:Fallback>{SMART_REFERENCE}"
+            "</mc:Fallback></mc:AlternateContent>"
+        ),
+        # The reference itself, standing under no graphic at all.
+        RELIDS,
+    )
+
+    for graphic in lookalikes:
+        content = smart(p("Prose") + f"<w:p>{drawing(graphic=graphic)}</w:p>")
+
+        assert read(content) == [("body", "Prose", "0")]
+
+    # The same package, with the one qualifying route, does declare SmartArt, so
+    # each refusal above is for the step it varied and not for the package.
+    assert roles(drawn(routed(relids()))) == [
+        "object_inventory",
+        "body",
+        "body",
+        "object_inventory",
+    ]
+
+
+def test_a_drawing_naming_more_than_one_diagram_reference_is_refused() -> None:
+    """A drawing object shows one graphic, so two qualifying graphic data
+    elements below it leave which diagram it shows unanswerable -- under two
+    graphics, under one, or written one in each of the two diagram namespaces
+    OOXML defines while naming the one relationship. One qualifying graphic data
+    holding two references is the same ambiguity a step lower down. Nothing here
+    chooses between them, and naming the same data model twice is still twice."""
+    for graphic in (
+        SMART_REFERENCE + SMART_REFERENCE,
+        f"<a:graphic>{dgm_data(RELIDS)}{dgm_data(RELIDS)}</a:graphic>",
+        (
+            f'<a:graphic>{dgm_data(RELIDS)}<a:graphicData uri="{STRICT_NS}">'
+            f"{relids(namespace=STRICT_NS)}</a:graphicData></a:graphic>"
+        ),
+    ):
+        with pytest.raises(
+            OOXMLInvalid, match="drawing holds more than one SmartArt reference"
+        ):
+            extract_docx(drawn(graphic), capture_id=CAPTURE)
+
+    with pytest.raises(
+        OOXMLInvalid, match="does not name exactly one diagram reference"
+    ):
+        extract_docx(drawn(routed(relids() + relids())), capture_id=CAPTURE)
+
+    # A reference off the route is no second declaration: one standing under no
+    # graphic, and one nested under a graphic data that declares nothing, are
+    # each passed over, so the diagram the object does declare stays the single
+    # graphic it shows.
+    for graphic in (
+        RELIDS + SMART_REFERENCE,
+        routed(SMART_REFERENCE, uri=None) + SMART_REFERENCE,
+    ):
+        assert roles(drawn(graphic)) == [
+            "object_inventory",
+            "body",
+            "body",
+            "object_inventory",
+        ]
+
+
+def test_a_missing_unqualified_or_foreign_data_reference_is_refused() -> None:
+    """SmartArt is advertised, so the reference has to be there, written as a
+    direct child in the namespace the ``uri`` declared, and naming its data
+    model on a relationship-namespaced ``dm``. A ``relIds`` from another
+    vocabulary, or one nested a step deeper, is not the declaration's own; and an
+    id written in no namespace or in another one names no relationship, whatever
+    the package would resolve it to."""
+    for body, reason in (
+        # Advertised and then naming nothing at all.
+        ("", "does not name exactly one diagram reference"),
+        # A ``relIds`` in the other diagram namespace, in a foreign one, and in
+        # none, each share a local name with the reference and nothing else.
+        (
+            relids(namespace=STRICT_NS),
+            "does not name exactly one diagram reference",
+        ),
+        (relids(namespace="urn:dgm"), "does not name exactly one diagram reference"),
+        (
+            '<relIds r:dm="rId4"/>',
+            "does not name exactly one diagram reference",
+        ),
+        # On the route means a direct child, so one carried a step deeper is not
+        # the graphic data's own reference.
+        (
+            f'<dgm:extLst xmlns:dgm="{DIAGRAM_NS}">{relids()}</dgm:extLst>',
+            "does not name exactly one diagram reference",
+        ),
+        # The reference is there and names no data model, names one in no
+        # namespace, or names one in a vocabulary that defines no such attribute.
+        (relids(dm=None), "SmartArt reference names no relationship"),
+        (
+            relids(dm=None, extra=' dm="rId4"'),
+            "SmartArt reference names no relationship",
+        ),
+        (relids(relationships="urn:r"), "SmartArt reference names no relationship"),
+        (
+            relids(dm=None, extra=' xmlns:z="urn:example:other" z:dm="rId4"'),
+            "SmartArt reference names no relationship",
+        ),
+    ):
+        with pytest.raises(OOXMLInvalid, match=reason):
+            extract_docx(drawn(routed(body)), capture_id=CAPTURE)
+
+    # One ``dm`` in each relationships namespace is two ids rather than a
+    # repeat, even where both spell out the same relationship.
+    doubled = relids(extra=f' xmlns:r2="{STRICT_REL_NS}" r2:dm="rId4"')
+    with pytest.raises(
+        OOXMLInvalid, match="SmartArt reference names more than one relationship"
+    ):
+        extract_docx(drawn(routed(doubled)), capture_id=CAPTURE)
+
+
+def test_the_strict_namespaces_reach_the_same_diagram() -> None:
+    """Strict and Transitional are the same declaration at every step of the
+    route: the DrawingML main namespace the graphic and its data are qualified
+    in, the diagram namespace the ``uri`` declares and the reference is written
+    in, and the relationships namespace the ``dm`` carries. The data model part
+    is rooted in the Strict vocabulary to match, and reaches the same records."""
+    strict = drawn(
+        routed(
+            relids(namespace=STRICT_NS, relationships=STRICT_REL_NS),
+            uri=STRICT_NS,
+            namespace=STRICT_DRAWING_NS,
+        ),
+        data=model().replace(DIAGRAM_NS, STRICT_NS),
+    )
+
+    assert [
+        (i.semantic_role, i.text) for i in extract_docx(strict, capture_id=CAPTURE).segments
+    ] == [
+        (i.semantic_role, i.text)
+        for i in extract_docx(smart(), capture_id=CAPTURE).segments
+    ]
+    assert inventory(strict) == [("0.d0", SMART_RECORD), ("0.d0", SMART_CONNECTION)]
+    assert (
+        dict(extract_docx(strict, capture_id=CAPTURE).segments[1].source_locator)
+        == SMART_LOCATOR
+    )
+
+
+def test_smartart_in_a_table_cell_splits_the_run_around_it_in_source_order() -> None:
+    """The diagram closes the cell's current run where it sits rather than
+    trailing the prose it precedes, exactly as a chart or an image does, and the
+    text after it opens a later run of the same cell. The record, the point text
+    and the connection all sit at the diagram's own position, and each carries a
+    locator no other segment carries."""
+    cell = f"<w:p>{run('Before ')}{SMART_DRAWING}{run(' after')}</w:p>"
+    content = smart(f"<w:tbl><w:tr><w:tc>{cell}</w:tc></w:tr></w:tbl>")
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("table_cell", "Before ", "0.r0.c0"),
+        ("object_inventory", None, "0.r0.c0.0.d0"),
+        ("body", "First", "0.r0.c0.0.d0"),
+        ("body", "Second", "0.r0.c0.0.d0"),
+        ("object_inventory", None, "0.r0.c0.0.d0"),
+        ("table_cell", " after", "0.r0.c0.t1"),
+    ]
+    assert inventory(content) == [
+        ("0.r0.c0.0.d0", SMART_RECORD),
+        ("0.r0.c0.0.d0", SMART_CONNECTION),
+    ]
+    locators = [tuple(sorted(i.source_locator.items())) for i in result.segments]
+    assert len(set(locators)) == len(locators)
+
+
+# The reference above is schema-valid at every step of the route, so what the
+# tests below vary is the package it resolves against: the relationship the
+# ``r:dm`` names, the member that relationship reaches, and what that member
+# says it is. ``smart()`` is the whole package intact, so each refusal here is
+# for the one step it varied.
+DIAGRAM_TYPE = REL + "diagramData"
+DATA: dict[str, str] = {DIAGRAM_PART: model()}
+
+
+def packaged(
+    *relations: tuple[str, str, bool, str],
+    content_types: str = DIAGRAM_OVERRIDE,
+    members: dict[str, bytes] | None = None,
+    **parts: str,
+) -> bytes:
+    """The one inline SmartArt paragraph, over the package given around it."""
+    return linked(
+        f"<w:p>{SMART_DRAWING}</w:p>",
+        *relations,
+        content_types=content_types,
+        members=members,
+        **parts,
+    )
+
+
+def typed(kind: str) -> dict[str, str]:
+    """The data relationship retyped: target and part stay the real ones."""
+    return {
+        "word/_rels/document.xml.rels": rels(DIAGRAM_RELATION).replace(
+            DIAGRAM_TYPE, kind
+        )
+    }
+
+
+def test_a_smartart_reference_that_reaches_no_diagram_relationship_is_refused() -> None:
+    """The id is resolved through the holding part's own relationships or not at
+    all: no diagram path is derived from the story's name, so a data part sitting
+    in the package under another id is never read. The relationship has to carry
+    one of the URIs OOXML defines for diagram data, and nothing reaches one by
+    ending the same way or by being another member of the diagram set. It also
+    has to be internal -- ``r:dm`` names a part of the package -- so an external
+    target is no data model and is not quietly recorded as a link. Every refusal
+    names the document the reference came from, not whichever format reached the
+    shared reader first."""
+    for relations, message in (
+        ((), "reference names a missing relationship"),
+        # The package relates the very same data part, under an id this drawing
+        # does not name.
+        (
+            (("rId1", "diagrams/data1.xml", False, "diagramData"),),
+            "reference names a missing relationship",
+        ),
+        (
+            (("rId4", "https://example.invalid/data1.xml", True, "diagramData"),),
+            "relationship is external",
+        ),
+    ):
+        with pytest.raises(OOXMLInvalid, match=f"DOCX diagram data {message}"):
+            extract_docx(packaged(*relations, **DATA), capture_id=CAPTURE)
+
+    for kind in (
+        # The defined URI with something appended, and with a segment inserted
+        # before its last one.
+        DIAGRAM_TYPE + "Extra",
+        REL + "x/diagramData",
+        # The path is case-sensitive, so a folded path names another type.
+        REL + "diagramdata",
+        # The same tail under another host.
+        (
+            "http://diagrams.example.invalid/officeDocument/2006/relationships"
+            "/diagramData"
+        ),
+        # The rest of the diagram set: each names a part nothing here opens.
+        REL + "diagramLayout",
+        REL + "diagramQuickStyle",
+        REL + "diagramColors",
+        REL + "diagramDrawing",
+    ):
+        with pytest.raises(
+            OOXMLInvalid,
+            match="DOCX diagram data reference names a relationship of another type",
+        ):
+            extract_docx(packaged(**typed(kind), **DATA), capture_id=CAPTURE)
+
+
+def test_a_diagram_part_the_package_does_not_hold_or_declare_is_refused() -> None:
+    """Containment and existence are settled when the package validates its
+    relationships, so a data part that is not there never reaches a record. The
+    target also has to be declared diagram data rather than merely named it: a
+    part the package declares as another member of the diagram set, as nothing
+    at all, or only through the default its extension carries, qualifies as no
+    data model."""
+    with pytest.raises(OOXMLInvalid, match="escapes or misses the package"):
+        extract_docx(packaged(DIAGRAM_RELATION), capture_id=CAPTURE)
+
+    layout = (
+        f'<Override PartName="/{DIAGRAM_PART}" ContentType="application/vnd.'
+        'openxmlformats-officedocument.drawingml.diagramLayout+xml"/>'
+    )
+    default = f'<Default Extension="xml" ContentType="{DIAGRAM_CT}"/>'
+    for content_types in ("", layout, default):
+        with pytest.raises(
+            OOXMLInvalid,
+            match="DOCX diagram data relationship does not name a diagram data part",
+        ):
+            extract_docx(
+                packaged(DIAGRAM_RELATION, content_types=content_types, **DATA),
+                capture_id=CAPTURE,
+            )
+
+
+def test_a_diagram_part_rooted_elsewhere_is_refused_and_strict_is_read() -> None:
+    """The declared content type says what the part is; the root element is
+    where the part says so itself. A root that merely reads like a data model --
+    a namespace a character longer, a slash longer, one holding the real URI
+    inside it, one recased, the DrawingML main namespace the model's own
+    prefixes bind, or no namespace at all -- is another vocabulary, and a root
+    in the right vocabulary at the wrong element is another part of the set. The
+    reference that reached it stays the schema-valid reference it was. The
+    Strict namespace is the same declaration as the Transitional one, so a
+    Strict data model reached by a Transitional reference is read."""
+    for namespace in (
+        DIAGRAM_NS + "2",
+        DIAGRAM_NS + "/",
+        f"urn:example:{DIAGRAM_NS}",
+        DIAGRAM_NS.replace("diagram", "Diagram"),
+        DRAWING_NS,
+        "urn:dgm",
+    ):
+        part = model().replace(f'"{DIAGRAM_NS}"', f'"{namespace}"')
+
+        with pytest.raises(
+            OOXMLInvalid, match="DOCX diagram part uses an unsupported namespace"
+        ):
+            extract_docx(
+                packaged(DIAGRAM_RELATION, **{DIAGRAM_PART: part}), capture_id=CAPTURE
+            )
+
+    with pytest.raises(
+        OOXMLInvalid, match="DOCX diagram part uses an unsupported namespace"
+    ):
+        extract_docx(
+            packaged(DIAGRAM_RELATION, **{DIAGRAM_PART: "<dataModel/>"}),
+            capture_id=CAPTURE,
+        )
+
+    # Rooted in the right vocabulary at the wrong element: the point list the
+    # model holds, the layout part's own root, and the reference that reached it.
+    for root in ("ptLst", "layoutDef", "relIds"):
+        part = model().replace("dgm:dataModel", f"dgm:{root}")
+
+        with pytest.raises(
+            OOXMLInvalid, match="DOCX diagram part is not rooted at its own data model"
+        ):
+            extract_docx(
+                packaged(DIAGRAM_RELATION, **{DIAGRAM_PART: part}), capture_id=CAPTURE
+            )
+
+    strict = packaged(
+        DIAGRAM_RELATION, **{DIAGRAM_PART: model().replace(DIAGRAM_NS, STRICT_NS)}
+    )
+
+    assert (
+        extract_docx(strict, capture_id=CAPTURE).segments
+        == extract_docx(smart(), capture_id=CAPTURE).segments
+    )
+    assert inventory(strict) == [("0.d0", SMART_RECORD), ("0.d0", SMART_CONNECTION)]
+
+
+# The rest of the diagram set, named from both of the places that name it: the
+# layout, quick-style and colour relationships the ``dgm:relIds`` already cites
+# beside the data, and the drawing part the data model's own extension cites on
+# a relationship of the data part itself -- the route a renderer takes to the
+# saved geometry. Every member is present, declared nothing, and not a part
+# anything here could parse, so a reader that opened one would fail rather than
+# quietly pass.
+VISUALS: dict[str, str] = {
+    f"word/diagrams/{name}.xml": "not a part anything here reads"
+    for name in ("layout1", "quickStyle1", "colors1", "drawing1")
+}
+SIBLINGS = (
+    ("rId20", "diagrams/layout1.xml", False, "diagramLayout"),
+    ("rId21", "diagrams/quickStyle1.xml", False, "diagramQuickStyle"),
+    ("rId22", "diagrams/colors1.xml", False, "diagramColors"),
+    ("rId23", "diagrams/drawing1.xml", False, "diagramDrawing"),
+)
+DSP_NS = "http://schemas.microsoft.com/office/drawing/2008/diagram"
+MODEL_EXT = (
+    f'<dgm:extLst><a:ext uri="{DSP_NS}">'
+    f'<dsp:dataModelExt xmlns:dsp="{DSP_NS}" relId="rId30" minVer="12.0"/>'
+    "</a:ext></dgm:extLst>"
+)
+
+
+def test_the_rest_of_the_diagram_set_stays_shut() -> None:
+    """Only the data reference is followed. The layout, quick-style and colour
+    parts named beside the data are there and malformed, the drawing part the
+    data model's own extension names is there and malformed, and the data part
+    carries its own relationship to it -- and the stored point text and
+    connection come back exactly as they do from a package holding none of them.
+    The record says so outright: no related visual part was opened and no
+    hierarchy was inferred, so no label, order or shape was read off how the
+    diagram would be drawn."""
+    content = packaged(
+        DIAGRAM_RELATION,
+        *SIBLINGS,
+        **{
+            DIAGRAM_PART: model().replace(
+                "</dgm:dataModel>", f"{MODEL_EXT}</dgm:dataModel>"
+            ),
+            "word/diagrams/_rels/data1.xml.rels": rels(
+                ("rId30", "drawing1.xml", False, "diagramDrawing")
+            ),
+            **VISUALS,
+        },
+    )
+
+    result = extract_docx(content, capture_id=CAPTURE)
+
+    assert result.segments == extract_docx(smart(), capture_id=CAPTURE).segments
+    assert [(i.semantic_role, i.text) for i in result.segments] == [
+        ("object_inventory", None),
+        ("body", "First"),
+        ("body", "Second"),
+        ("object_inventory", None),
+    ]
+    assert inventory(content) == [("0.d0", SMART_RECORD), ("0.d0", SMART_CONNECTION)]

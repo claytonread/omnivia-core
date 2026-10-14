@@ -492,6 +492,15 @@ _DOCX_DRAWINGS: Final[dict[str, str]] = {
 _DOCX_DOC_PR: Final = frozenset(
     f"{{{namespace}}}docPr" for namespace in _WORDPROCESSING_DRAWING
 )
+# The graphics a drawing object may declare, each keyed by the paragraph item
+# kind it is walked as and named as a refusal calls it. Three distinct
+# declarations on one route, so an object making two of them is refused by the
+# pair it made, and a field instruction holding one is refused by its name.
+_DOCX_GRAPHICS: Final[dict[str, str]] = {
+    "g": "an image",
+    "k": "a chart",
+    "s": "SmartArt",
+}
 # The DrawingML picture element, in the two picture namespaces OOXML defines.
 # It is the one shape that declares a displayed image, so a chart, a diagram or
 # an embedded object under the same ``a:graphicData`` is not reached through it.
@@ -2752,15 +2761,17 @@ def _referenced_part(
     return target
 
 
-def _pptx_frame_diagram(frame: ElementTree.Element) -> str | None:
-    """Return the relationship id the frame's SmartArt data reference names, or None.
+def _diagram_reference(
+    element: ElementTree.Element, owner: str, holder: str
+) -> str | None:
+    """Return the relationship id a holder's SmartArt data reference names, or None.
 
-    A frame declares its graphic on exactly one route: the ``a:graphic``
-    directly below the frame and the ``a:graphicData`` directly below that, both
+    A holder declares its graphic on exactly one route: the ``a:graphic``
+    directly below it and the ``a:graphicData`` directly below that, both
     qualified in the DrawingML main namespace. Only graphic data on that route
     declares anything, so a lookalike nested further down -- in an
     alternate-content fallback, in a text body, inside another graphic -- or one
-    written in a foreign namespace, is not the frame's declaration and routes
+    written in a foreign namespace, is not the holder's declaration and routes
     nowhere.
 
     Graphic data on the route says the graphic it holds is SmartArt in its own
@@ -2768,23 +2779,28 @@ def _pptx_frame_diagram(frame: ElementTree.Element) -> str | None:
     and for SmartArt it is one of the two diagram namespaces OOXML defines. It
     is read unqualified, as the schema writes it. Graphic data carrying any
     other URI -- or none -- is some other kind of graphic, so its paragraphs
-    stay the frame's own text and are never read as a diagram.
+    stay the holder's own text and are never read as a diagram.
 
     The reference itself is the ``dgm:relIds`` the qualified graphic data holds
     as a direct child, written in the namespace that ``uri`` declared, and the
     only id read off it is a relationship-namespaced ``dm``: an id written in no
     namespace, or in another one, names no relationship, and the layout,
     quick-style and colour relationships beside it name parts nothing here
-    opens. A frame holds one graphic object, so two qualifying graphic data
-    elements leave which diagram the frame shows ambiguous; and graphic data
-    that declares itself a diagram and then names no reference, or more than
-    one, is refused rather than read for whatever text happens to be in it. The
-    id is read from the frame itself; no diagram path is derived from the
-    slide's own name.
+    opens. A holder shows one graphic object, so two qualifying graphic data
+    elements leave which diagram it shows ambiguous; and graphic data that
+    declares itself a diagram and then names no reference, or more than one, is
+    refused rather than read for whatever text happens to be in it. The id is
+    read from the holder itself; no diagram path is derived from the holding
+    part's own name.
+
+    A slide's graphic frame and a Word story's drawing object declare SmartArt
+    on the one route, so both are read here. ``owner`` is the format the holder
+    came from and ``holder`` is what that format calls it, carried through so a
+    refusal names the file it came from and never the other format.
     """
     qualified = [
         node
-        for graphic in frame
+        for graphic in element
         if graphic.tag in _DRAWING_GRAPHIC
         for node in graphic
         if node.tag in _DRAWING_GRAPHIC_DATA
@@ -2793,18 +2809,20 @@ def _pptx_frame_diagram(frame: ElementTree.Element) -> str | None:
     if not qualified:
         return None
     if len(qualified) > 1:
-        raise OOXMLInvalid("PPTX graphic frame holds more than one SmartArt reference")
+        raise OOXMLInvalid(f"{owner} {holder} holds more than one SmartArt reference")
     namespace = qualified[0].attrib["uri"]
     named = [node for node in qualified[0] if node.tag == f"{{{namespace}}}relIds"]
     if len(named) != 1:
         raise OOXMLInvalid(
-            "PPTX SmartArt graphic data does not name exactly one diagram reference"
+            f"{owner} SmartArt graphic data does not name exactly one diagram reference"
         )
     ids = _namespaced_ids(named[0], "dm")
     if not ids:
-        raise OOXMLInvalid("PPTX SmartArt reference names no relationship")
+        raise OOXMLInvalid(f"{owner} SmartArt reference names no relationship")
     if len(ids) > 1:
-        raise OOXMLInvalid("PPTX SmartArt reference names more than one relationship")
+        raise OOXMLInvalid(
+            f"{owner} SmartArt reference names more than one relationship"
+        )
     return ids[0]
 
 
@@ -3568,7 +3586,9 @@ class _PptxWalker:
             frame = kind == "graphicFrame"
             table = _pptx_frame_table(child) if frame else None
             chart = _pptx_frame_chart(child) if frame else None
-            diagram = _pptx_frame_diagram(child) if frame else None
+            diagram = (
+                _diagram_reference(child, "PPTX", "graphic frame") if frame else None
+            )
             ole = (
                 _pptx_frame_object(self._package, self._part, child) if frame else None
             )
@@ -4803,12 +4823,15 @@ class _DocxWalker:
     ``equation`` segment), DrawingML images (``<paragraph>.i<n>``, an
     ``object_inventory`` segment and the ``image_alt`` claims after it),
     DrawingML charts (``<paragraph>.c<n>``, an ``object_inventory`` segment and
-    the ``chart`` records the chart part stored after it) and
+    the ``chart`` records the chart part stored after it), SmartArt
+    (``<paragraph>.d<n>``, an ``object_inventory`` segment, then the ``body``
+    point text the data model stored and an ``object_inventory`` segment per
+    encoded connection) and
     text boxes (``<paragraph>.x<n>.<block>``)
     where they are anchored, and current text is never joined across one of
     them. A table cell reads its current paragraphs as one ``table_cell`` run,
-    closed by any deletion, hidden stretch, equation, image, chart, text box,
-    field or nested table, and later runs sit at ``<cell>.t<n>``.
+    closed by any deletion, hidden stretch, equation, image, chart, diagram,
+    text box, field or nested table, and later runs sit at ``<cell>.t<n>``.
 
     Hyperlinks, fields and annotation references stay out of the text: each
     becomes an inert ``object_inventory`` segment at ``<paragraph>.h<n>``
@@ -5059,7 +5082,7 @@ class _DocxWalker:
         self.paragraphs += 1
         role = "table_cell" if cell else self._role(paragraph)
         current = removed = boxes = links = refs = fields = concealed = 0
-        maths = images = charts = 0
+        maths = images = charts = diagrams = 0
         for kind, value, box_deleted in _paragraph_items(
             paragraph, deleted, self._fields
         ):
@@ -5082,6 +5105,12 @@ class _DocxWalker:
                 self._flush(cell)
                 self._chart(value, f"{position}.c{charts}", box_deleted)
                 charts += 1
+            elif kind == "s":
+                assert isinstance(value, ElementTree.Element)
+                # SmartArt is ordered where it sits, for the reason a chart is.
+                self._flush(cell)
+                self._diagram(value, f"{position}.d{diagrams}", box_deleted)
+                diagrams += 1
             elif kind == "m":
                 assert isinstance(value, ElementTree.Element)
                 item = _local(value.tag)
@@ -5332,6 +5361,95 @@ class _DocxWalker:
             )
             _bounded(self._segments)
 
+    def _diagram(
+        self, drawing: ElementTree.Element, position: str, deleted: bool
+    ) -> None:
+        """Inventory one SmartArt diagram, then report the text it stored.
+
+        The inventory record comes first and is emitted for every diagram the
+        story anchors, whether or not the data model stored a single point of
+        text, so a story's diagrams are inventoried where the XML placed them.
+        It names where the object sits -- ``inline`` in the text flow or
+        ``anchor`` against the page -- the relationship id the drawing named its
+        data model on, the part that relationship reached, and how many point
+        text records and connections the part had stored. It also says outright
+        what was not done: no hierarchy was inferred and none of the related
+        visual parts was opened.
+
+        The stored point text then follows in source order, each run a ``body``
+        segment carrying the data model part, the relationship that reached it
+        and the point, paragraph and run the shared reader reports it at. The
+        connections follow as inert ``object_inventory`` records of the identity
+        each one encodes. Nothing here opens the layout, quick-style, colour or
+        drawing parts the ``dgm:relIds`` names beside the data, and no
+        connection is walked, so no label, hierarchy or reading order is read
+        off how the diagram would be drawn.
+
+        A deletion wrapped around the drawing is kept as the revision it is,
+        over the record and over every point and connection it carried, exactly
+        as it is over an image and its claims or a chart and its values.
+        """
+        relation_id = _diagram_reference(drawing, "DOCX", "drawing")
+        assert relation_id is not None
+        part = _referenced_part(
+            self._package,
+            self._part,
+            relation_id,
+            _DIAGRAM_RELATIONSHIPS,
+            _DIAGRAM_CONTENT_TYPE,
+            "diagram data",
+            "DOCX",
+        )
+        points, connections = _diagram_records(self._package, part, "DOCX")
+        self._inventory(
+            position,
+            {
+                "kind": "smartArt",
+                "placement": _DOCX_DRAWINGS[drawing.tag],
+                "relationshipId": _clip(relation_id, _MAX_META_CHARS),
+                "diagramPart": _clip(part, _MAX_TARGET_CHARS),
+                "storedPointTextRecords": len(points),
+                "storedConnections": len(connections),
+                "hierarchyInferred": False,
+                "relatedVisualPartsOpened": False,
+            },
+            "visible",
+            deleted,
+        )
+        provenance: dict[str, object] = {
+            "diagramPart": part,
+            "relationshipId": relation_id,
+        }
+        for place, text in points:
+            self._segments.append(
+                ExtractedSegment(
+                    "body",
+                    self._locator(position, **provenance, **place),
+                    text=text,
+                    visibility="annotation" if deleted else "visible",
+                    revision_state="deleted" if deleted else "current",
+                )
+            )
+            _bounded(self._segments)
+        for connection in connections:
+            self._segments.append(
+                ExtractedSegment(
+                    "object_inventory",
+                    self._locator(
+                        position,
+                        **provenance,
+                        diagramRole="connection",
+                        modelId=connection["modelId"],
+                        connectionIndex=connection["connectionIndex"],
+                    ),
+                    structured_value=connection,
+                    extraction_method="inventory",
+                    visibility="annotation" if deleted else "visible",
+                    revision_state="deleted" if deleted else "current",
+                )
+            )
+            _bounded(self._segments)
+
     def _flush(self, cell: _CellRun | None) -> None:
         if cell is None:
             return
@@ -5461,7 +5579,8 @@ def _paragraph_items(
     properties hide (carrying whether a deletion wrapped it), ``x`` a text box,
     ``e`` an ``m:oMath`` or ``m:oMathPara`` equation, ``g`` a ``wp:inline`` or
     ``wp:anchor`` drawing object that displays an image, ``k`` one that names a
-    chart, ``m`` a hyperlink, simple field or annotation marker, and ``c`` an
+    chart, ``s`` one that names SmartArt,
+    ``m`` a hyperlink, simple field or annotation marker, and ``c`` an
     already recorded complex field (each carrying whether a deletion wrapped
     it).
     Adjacent text of one kind is one stretch; tabs and breaks stay separators
@@ -5476,9 +5595,9 @@ def _paragraph_items(
     text. Text is read as the ordinary text it is only once every open field has
     separated, so a nested field's result is recorded under its own separator and
     still kept out of the prose while an outer instruction encloses it. An
-    equation, an image and a chart each count as that result the same way, and
-    one reached while any open field is still before its separator is refused
-    rather than read or inventoried.
+    equation, an image, a chart and SmartArt each count as that result the same
+    way, and one reached while any open field is still before its separator is
+    refused rather than read or inventoried.
     """
     items: list[tuple[str, str | ElementTree.Element | dict[str, object], bool]] = []
     pending: list[str] = []
@@ -5524,12 +5643,13 @@ def _paragraph_items(
             if node.tag in _DOCX_DRAWINGS and (
                 declared := _docx_drawing_object(node)
             ):
-                # An image and a chart are each recorded where they sit and
-                # hold no prose of their own, so neither is entered. A drawing
-                # object that declares neither -- the one holding a text box
-                # above all -- is still the transparent wrapper it is today and
-                # is walked for the content it carries.
-                _field_result(fields, "an image" if declared == "g" else "a chart")
+                # An image, a chart and SmartArt are each recorded where they
+                # sit and hold no prose of their own in the story, so none is
+                # entered: a diagram's text is the data model part's, read
+                # there. A drawing object that declares none of the three -- the
+                # one holding a text box above all -- is still the transparent
+                # wrapper it is today and is walked for the content it carries.
+                _field_result(fields, _DOCX_GRAPHICS[declared])
                 close()
                 items.append((declared, node, state))
                 if len(items) > MAX_SEGMENTS:
@@ -5684,8 +5804,9 @@ def _docx_drawing_blip(drawing: ElementTree.Element) -> ElementTree.Element | No
     fill carried in an extension list, the drawing a chart or a diagram holds
     of its own -- is not the image this object displays and is passed over, so
     a drawing that displays no image reports none rather than one found
-    somewhere else. Charts, SmartArt, embedded objects and VML are other
-    declarations entirely and are left for their own slices.
+    somewhere else. Charts and SmartArt are other declarations entirely, read
+    on their own routes; embedded objects and VML are left for their own
+    slices.
 
     One drawing object displays one image, so two of anything along that route
     -- two graphics, two pictures, two fills, two blips -- leave which image it
@@ -5750,20 +5871,31 @@ def _docx_drawing_chart(drawing: ElementTree.Element) -> str | None:
 
 
 def _docx_drawing_object(drawing: ElementTree.Element) -> str | None:
-    """Say which graphic a drawing object declares: ``g`` image, ``k`` chart, None.
+    """Say which graphic a drawing object declares, by its item kind, or None.
 
-    A displayed image and a chart are different declarations on the same route,
-    so an object making both leaves what it shows unanswerable and nothing here
-    chooses between them. An object making neither is the transparent wrapper
-    it has always been -- the one holding a text box above all -- and is walked
-    for the content it carries. SmartArt, embedded objects and VML are other
-    declarations entirely and are left for their own slices.
+    A displayed image, a chart and SmartArt are three different declarations on
+    the same route, so an object making two of them leaves what it shows
+    unanswerable and nothing here chooses between them: it is refused, named by
+    the pair it made. An object making none is the transparent wrapper it has
+    always been -- the one holding a text box above all -- and is walked for the
+    content it carries. Embedded objects and VML are other declarations
+    entirely and are left for their own slices.
     """
-    image = _docx_drawing_blip(drawing) is not None
-    chart = _docx_drawing_chart(drawing) is not None
-    if image and chart:
-        raise OOXMLInvalid("DOCX drawing declares both an image and a chart")
-    return "g" if image else "k" if chart else None
+    declared = [
+        kind
+        for kind, present in (
+            ("g", _docx_drawing_blip(drawing) is not None),
+            ("k", _docx_drawing_chart(drawing) is not None),
+            ("s", _diagram_reference(drawing, "DOCX", "drawing") is not None),
+        )
+        if present
+    ]
+    if len(declared) > 1:
+        raise OOXMLInvalid(
+            "DOCX drawing declares both "
+            f"{_DOCX_GRAPHICS[declared[0]]} and {_DOCX_GRAPHICS[declared[1]]}"
+        )
+    return declared[0] if declared else None
 
 
 def _docx_doc_pr(drawing: ElementTree.Element) -> dict[str, str | None]:
