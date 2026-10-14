@@ -127,6 +127,53 @@ _NOTES_CONTENT_TYPE: Final = (
     "application/vnd.openxmlformats-officedocument.presentationml.notesslide+xml"
 )
 _MAX_PPTX_NOTE_RUNS: Final = 20_000
+# The relationship and content types that together qualify the two parts
+# classic slide comments live in: the per-slide comment list, and the
+# presentation-wide author table it indexes into. As with the notes-slide type,
+# only the two URIs OOXML itself defines qualify -- Transitional and Strict --
+# so nothing reaches either part by ending the same way. Threaded ("modern")
+# comments are a different relationship and content type entirely and so reach
+# nothing here.
+_COMMENTS_RELATIONSHIPS: Final = frozenset(
+    {
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/comments",
+    }
+)
+_AUTHORS_RELATIONSHIPS: Final = frozenset(
+    {
+        (
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            "/commentAuthors"
+        ),
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/commentAuthors",
+    }
+)
+# Compared against ``declared_type``, which case-folds, so both are written
+# folded: the authored spelling is ``...presentationml.commentAuthors+xml``.
+_COMMENTS_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.presentationml.comments+xml"
+)
+_AUTHORS_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.presentationml.commentauthors+xml"
+)
+# The PresentationML main namespaces the two comment parts are written in. The
+# rest of this module reads local names only, but a comment part is reached by
+# its declared type alone, so the namespace is the one remaining check that the
+# part holds the vocabulary the declaration promised.
+_PRESENTATIONML: Final = frozenset(
+    {
+        "http://schemas.openxmlformats.org/presentationml/2006/main",
+        "http://purl.oclc.org/ooxml/presentationml/main",
+    }
+)
+_MAX_PPTX_COMMENTS: Final = 10_000
+_MAX_PPTX_COMMENT_AUTHORS: Final = 10_000
+_MAX_PPTX_COMMENT_CHARS: Final = 100_000
+# ST_Index is an ``xsd:unsignedInt``; the value is kept as written, never
+# renumbered, so only its range is checked.
+_INDEX: Final = re.compile(r"[0-9]{1,10}")
+_MAX_INDEX: Final = 0xFFFFFFFF
 # ST_Coordinate is a signed EMU count; an offset may be negative, so the sign is
 # accepted here and the value is kept exactly as the shape wrote it.
 _EMU_OFFSET: Final = re.compile(r"-?[0-9]{1,20}")
@@ -629,29 +676,57 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         if "ppt/presentation.xml" not in package.names:
             raise OOXMLInvalid("PPTX presentation part is missing")
         slides = _pptx_slides(package)
+        # The author table is the presentation's, not a slide's, so it is
+        # resolved once and every slide's comments index into the same one.
+        authors = _pptx_comment_authors(package)
         segments: list[ExtractedSegment] = []
         for ordinal, (slide_id, part, hidden) in enumerate(slides, start=1):
             walker = _PptxWalker(capture_id, part, slide_id, ordinal, hidden, segments)
             walker.walk(_pptx_tree(package.xml(part)), (), (), 0)
-            notes = _pptx_notes(package, part)
-            if notes is None:
-                continue
-            relation_id, notes_part = notes
-            note_text = _pptx_note_text(package, notes_part)
-            if note_text:
+            notes = _related_part(
+                package, part, _NOTES_RELATIONSHIPS, _NOTES_CONTENT_TYPE, "notes"
+            )
+            if notes is not None:
+                relation_id, notes_part = notes
+                note_text = _pptx_note_text(package, notes_part)
+                if note_text:
+                    segments.append(
+                        ExtractedSegment(
+                            "note",
+                            _locator(
+                                capture_id,
+                                part=notes_part,
+                                relationshipId=relation_id,
+                                slidePart=part,
+                                slideId=slide_id,
+                                slide=ordinal,
+                                slideHidden=hidden,
+                            ),
+                            text=note_text,
+                            visibility="annotation",
+                        )
+                    )
+                    _bounded(segments)
+            for text, provenance in _pptx_comments(package, part, authors):
                 segments.append(
                     ExtractedSegment(
-                        "note",
+                        "comment",
                         _locator(
                             capture_id,
-                            part=notes_part,
-                            relationshipId=relation_id,
+                            **provenance,
                             slidePart=part,
                             slideId=slide_id,
                             slide=ordinal,
                             slideHidden=hidden,
                         ),
-                        text=note_text,
+                        # A comment written with no text is still a comment the
+                        # file claims, so it is reported rather than dropped.
+                        # ``document_intake`` takes exactly one content
+                        # representation and refuses empty text, so the empty
+                        # claim is carried as the value it is; nothing is
+                        # invented to stand in for text the file never wrote.
+                        text=text or None,
+                        structured_value=None if text else {"text": ""},
                         visibility="annotation",
                     )
                 )
@@ -914,12 +989,12 @@ def _pptx_slides(package: _Package) -> list[tuple[str, str, bool]]:
     return result
 
 
-def _is_notes_relationship(kind: str) -> bool:
-    """Say whether one relationship type is the OOXML notes-slide type.
+def _is_defined_relationship(kind: str, defined: frozenset[str]) -> bool:
+    """Say whether one relationship type is one of the URIs OOXML defines for it.
 
     Scheme and host are case-insensitive under RFC 3986 and the path is not, so
-    only those two are folded, and only in ASCII: both defined URIs are ASCII,
-    so a type carrying any other character is not one of them and no non-ASCII
+    only those two are folded, and only in ASCII: every defined URI is ASCII, so
+    a type carrying any other character is not one of them and no non-ASCII
     character can case-fold its way into a match.
     """
     if not kind.isascii():
@@ -928,41 +1003,248 @@ def _is_notes_relationship(kind: str) -> bool:
     if not separator:
         return False
     host, slash, path = rest.partition("/")
-    return f"{scheme.lower()}://{host.lower()}{slash}{path}" in _NOTES_RELATIONSHIPS
+    return f"{scheme.lower()}://{host.lower()}{slash}{path}" in defined
 
 
-def _pptx_notes(package: _Package, slide: str) -> tuple[str, str] | None:
-    """Return the (relationship id, part) of one slide's own notes slide.
+def _related_part(
+    package: _Package,
+    source: str,
+    defined: frozenset[str],
+    content_type: str,
+    what: str,
+    owner: str = "slide",
+) -> tuple[str, str] | None:
+    """Return the (relationship id, part) ``source`` relates to as ``what``.
 
-    The notes part is only ever reached through the slide's own relationships.
-    No path is derived by substituting into the slide's file name, so a
-    notes-looking member that nothing relates to is not this slide's notes and
-    is never read; and nothing here asks a convenience API for a notes slide,
-    which would materialise one the package does not hold.
+    The part is only ever reached through ``source``'s own relationships. No
+    path is derived by substituting into ``source``'s file name, so a member
+    that merely looks like the part is not it and is never read; and nothing
+    here asks a convenience API for one, which would materialise a part the
+    package does not hold.
 
-    The relationship has to be internal, has to carry the notes-slide type, and
-    has to resolve to a part the package declares with the notes-slide content
-    type. Two notes relationships leave which part holds the notes ambiguous,
-    so the slide is refused rather than read from whichever sorts first.
+    The relationship has to be internal, has to carry one of the URIs OOXML
+    defines for the type, and has to resolve to a part the package declares with
+    that type's own content type. Containment, path safety and existence were
+    all settled when the relationship was resolved. Two qualifying
+    relationships leave which part is meant ambiguous, so ``source`` is refused
+    rather than read from whichever sorts first.
     """
     rels = posixpath.join(
-        posixpath.dirname(slide), "_rels", posixpath.basename(slide) + ".rels"
+        posixpath.dirname(source), "_rels", posixpath.basename(source) + ".rels"
     )
     named = sorted(
         relation_id
         for relation_id, kind in package.relationship_types.get(rels, {}).items()
-        if _is_notes_relationship(kind)
+        if _is_defined_relationship(kind, defined)
     )
     if not named:
         return None
     if len(named) > 1:
-        raise OOXMLInvalid("PPTX slide names more than one notes relationship")
+        raise OOXMLInvalid(f"PPTX {owner} names more than one {what} relationship")
     target, external = package.relationships[rels][named[0]]
     if external:
-        raise OOXMLInvalid("PPTX notes relationship is external")
-    if package.declared_type(target) != _NOTES_CONTENT_TYPE:
-        raise OOXMLInvalid("PPTX notes relationship does not name a notes part")
+        raise OOXMLInvalid(f"PPTX {what} relationship is external")
+    if package.declared_type(target) != content_type:
+        raise OOXMLInvalid(f"PPTX {what} relationship does not name a {what} part")
     return named[0], target
+
+
+def _pptx_comment_root(
+    package: _Package, part: str, expected: str
+) -> tuple[ElementTree.Element, str]:
+    """Parse one comment part, returning its root and the namespace it uses.
+
+    The declared content type says what the part is; the root element is where
+    the part says so itself. A root in any other namespace, or under any other
+    name, is not the vocabulary the declaration promised, so the part is refused
+    rather than read for whatever elements happen to be in it.
+    """
+    root = package.xml(part)
+    namespace, _, local = root.tag.rpartition("}")
+    if namespace.lstrip("{") not in _PRESENTATIONML:
+        raise OOXMLInvalid("PPTX comment part uses an unsupported namespace")
+    if local != expected:
+        raise OOXMLInvalid("PPTX comment part is not rooted at its own list")
+    return root, namespace.lstrip("{")
+
+
+def _pptx_comment_local(element: ElementTree.Element, namespace: str) -> str:
+    """Return one comment element's local name, refusing a foreign namespace.
+
+    Comment parts hold a closed vocabulary, so an element from somewhere else is
+    content no reader can place rather than something to skip past.
+    """
+    prefix, _, local = element.tag.rpartition("}")
+    if prefix.lstrip("{") != namespace:
+        raise OOXMLInvalid("PPTX comment part uses an unsupported namespace")
+    return local
+
+
+def _pptx_comment_authors(package: _Package) -> dict[str, dict[str, object]]:
+    """Index the presentation's classic comment authors by the id each claims.
+
+    Every field is recorded exactly as the package wrote it, and nothing here
+    checks that any of it names a real person: an author record is a claim the
+    file makes about itself, never evidence of who commented. Two records
+    claiming one id leave every comment citing it ambiguous, so the table is
+    refused rather than read under one of them.
+    """
+    related = _related_part(
+        package,
+        "ppt/presentation.xml",
+        _AUTHORS_RELATIONSHIPS,
+        _AUTHORS_CONTENT_TYPE,
+        "comment authors",
+        owner="presentation",
+    )
+    if related is None:
+        return {}
+    _relation_id, part = related
+    root, namespace = _pptx_comment_root(package, part, "cmAuthorLst")
+    authors: dict[str, dict[str, object]] = {}
+    for record in root:
+        if _pptx_comment_local(record, namespace) != "cmAuthor":
+            raise OOXMLInvalid("PPTX comment part holds an unsupported element")
+        if len(authors) >= _MAX_PPTX_COMMENT_AUTHORS:
+            raise OOXMLInvalid("PPTX comment author table is too large")
+        author_id = _pptx_comment_id(record, "id")
+        if author_id in authors:
+            raise OOXMLInvalid("PPTX comment author id is repeated")
+        authors[author_id] = {
+            "authorPart": part,
+            "authorName": _pptx_comment_claim(record, "name"),
+            "authorInitials": _pptx_comment_claim(record, "initials"),
+            "authorLastIndex": _pptx_comment_index(record, "lastIdx"),
+            "authorColorIndex": _pptx_comment_index(record, "clrIdx"),
+            # Stated so no consumer reads the fields above as identity.
+            "authorAuthenticated": False,
+        }
+    return authors
+
+
+def _pptx_comments(
+    package: _Package, slide: str, authors: dict[str, dict[str, object]]
+) -> list[tuple[str, dict[str, object]]]:
+    """Return one slide's classic comments as (text, provenance), in source order.
+
+    Order is the order the comment list wrote them in; nothing is sorted by id,
+    author or timestamp. A classic comment's identity is its author's id paired
+    with that author's own running index, which is why two authors may each hold
+    an ``idx`` of 1 and why one author may not. A comment whose author the table
+    never defines cites nobody at all, so the slide is refused rather than
+    reported against an author that is not there.
+    """
+    related = _related_part(
+        package, slide, _COMMENTS_RELATIONSHIPS, _COMMENTS_CONTENT_TYPE, "comments"
+    )
+    if related is None:
+        return []
+    relation_id, part = related
+    root, namespace = _pptx_comment_root(package, part, "cmLst")
+    result: list[tuple[str, dict[str, object]]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in root:
+        if _pptx_comment_local(entry, namespace) != "cm":
+            raise OOXMLInvalid("PPTX comment part holds an unsupported element")
+        if len(result) >= _MAX_PPTX_COMMENTS:
+            raise OOXMLInvalid("PPTX slide has too many comments")
+        author_id = _pptx_comment_id(entry, "authorId")
+        index = _pptx_comment_id(entry, "idx")
+        if (author_id, index) in seen:
+            raise OOXMLInvalid("PPTX comment id is repeated")
+        seen.add((author_id, index))
+        author = authors.get(author_id)
+        if author is None:
+            raise OOXMLInvalid("PPTX comment names no author")
+        text, position = _pptx_comment_body(entry, namespace)
+        result.append(
+            (
+                text,
+                {
+                    "part": part,
+                    "relationshipId": relation_id,
+                    "commentId": f"{author_id}:{index}",
+                    "commentIndex": index,
+                    "authorId": author_id,
+                    **author,
+                    "timestamp": _pptx_comment_claim(entry, "dt"),
+                    **position,
+                },
+            )
+        )
+    return result
+
+
+def _pptx_comment_body(
+    entry: ElementTree.Element, namespace: str
+) -> tuple[str, dict[str, object]]:
+    """Read one comment's text and anchor, refusing a malformed entry.
+
+    ``pos`` and ``text`` each appear once: a second of either leaves the comment
+    with two anchors or two bodies and nothing here picks between them. The text
+    is an ``xsd:string``, so markup inside it is not a structure to descend
+    into; a ``text`` element carrying one is refused rather than read down to
+    its first child.
+    """
+    text: str | None = None
+    position: dict[str, object] = {"x": None, "y": None}
+    anchored = False
+    for node in entry:
+        local = _pptx_comment_local(node, namespace)
+        if local == "pos":
+            if anchored:
+                raise OOXMLInvalid("PPTX comment declares more than one position")
+            anchored = True
+            position = {name: _pptx_comment_coordinate(node, name) for name in "xy"}
+        elif local == "text":
+            if text is not None or len(node):
+                raise OOXMLInvalid("PPTX comment text is malformed")
+            text = node.text or ""
+        elif local != "extLst":
+            raise OOXMLInvalid("PPTX comment part holds an unsupported element")
+    if text is None:
+        raise OOXMLInvalid("PPTX comment text is malformed")
+    if len(text) > _MAX_PPTX_COMMENT_CHARS:
+        raise OOXMLInvalid("PPTX comment text exceeds the accepted bound")
+    return text, position
+
+
+def _pptx_comment_index(element: ElementTree.Element, name: str) -> str | None:
+    """Read one ``ST_Index`` attribute verbatim, refusing a malformed value.
+
+    The value is kept as the package wrote it, never renumbered, so only its
+    range is checked.
+    """
+    raw = element.attrib.get(name)
+    if raw is not None and (_INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX):
+        raise OOXMLInvalid("PPTX comment index is malformed")
+    return raw
+
+
+def _pptx_comment_id(element: ElementTree.Element, name: str) -> str:
+    """Read an ``ST_Index`` the comment schema requires, refusing an absent one."""
+    index = _pptx_comment_index(element, name)
+    if index is None:
+        raise OOXMLInvalid("PPTX comment index is missing")
+    return index
+
+
+def _pptx_comment_coordinate(element: ElementTree.Element, name: str) -> int:
+    """Read one anchor coordinate, refusing a value that is not a coordinate."""
+    raw = element.attrib.get(name)
+    if raw is None or _EMU_OFFSET.fullmatch(raw) is None:
+        raise OOXMLInvalid("PPTX comment position is malformed")
+    return int(raw)
+
+
+def _pptx_comment_claim(element: ElementTree.Element, name: str) -> str | None:
+    """Return one free-text attribute clipped, or None where it is not written.
+
+    Nothing here parses or resolves the value -- a timestamp stays the string
+    the package wrote, never a moment anything happened.
+    """
+    value = element.attrib.get(name)
+    return None if value is None else _clip(value, _MAX_META_CHARS)
 
 
 def _pptx_note_text(package: _Package, part: str) -> str:
