@@ -82,6 +82,9 @@ class _Package:
             raise OOXMLInvalid("OOXML source is not a valid ZIP package") from error
         self.names: frozenset[str] = frozenset()
         self.relationships: dict[str, dict[str, tuple[str, bool]]] = {}
+        self.relationship_types: dict[str, dict[str, str]] = {}
+        # (source part, relationship id, type, target): recorded verbatim, inert.
+        self.external_targets: list[tuple[str, str, str, str]] = []
         self.external_relationships = 0
         self._validate()
 
@@ -204,6 +207,8 @@ class _Package:
                 raise OOXMLInvalid("OOXML relationship part is outside a _rels folder")
             base = posixpath.dirname(posixpath.dirname(name))
             entries: dict[str, tuple[str, bool]] = {}
+            types: dict[str, str] = {}
+            source = posixpath.join(base, posixpath.basename(name)[: -len(".rels")])
             for relation in self.xml(name).iter():
                 if _local(relation.tag) != "Relationship":
                     continue
@@ -221,6 +226,10 @@ class _Package:
                     # Recorded verbatim. Nothing opens, fetches or normalises it.
                     self.external_relationships += 1
                     entries[relation_id] = (target, True)
+                    types[relation_id] = relation.attrib.get("Type", "")
+                    self.external_targets.append(
+                        (source, relation_id, types[relation_id], target)
+                    )
                     continue
                 joined = posixpath.normpath(
                     target[1:]
@@ -236,7 +245,9 @@ class _Package:
                         "OOXML relationship escapes or misses the package"
                     )
                 entries[relation_id] = (joined, False)
+                types[relation_id] = relation.attrib.get("Type", "")
             self.relationships[name] = entries
+            self.relationship_types[name] = types
 
     def bytes(self, name: str, *, limit: int = MAX_XML_BYTES) -> bytes:
         if name not in self.names:
@@ -250,15 +261,39 @@ class _Package:
             raise OOXMLInvalid("OOXML XML member exceeds the accepted bound")
         return data
 
-    def xml(self, name: str) -> ElementTree.Element:
+    def _checked_xml(self, name: str) -> bytes:
         data = self.bytes(name)
         upper = data.upper()
         if any(marker in upper for marker in _FORBIDDEN_XML):
             raise OOXMLInvalid("OOXML XML contains a forbidden declaration")
+        return data
+
+    def xml(self, name: str) -> ElementTree.Element:
         try:
-            return ElementTree.fromstring(data)
+            return ElementTree.fromstring(self._checked_xml(name))
         except ElementTree.ParseError as error:
             raise OOXMLInvalid("OOXML XML is malformed") from error
+
+    def xml_with_prefixes(
+        self, name: str
+    ) -> tuple[ElementTree.Element, dict[str, str]]:
+        """Parse a part and report its namespace prefixes.
+
+        ElementTree drops prefixes, but markup-compatibility attributes name
+        namespaces by prefix. A prefix bound to two namespaces in one part is
+        ambiguous, so the part is refused rather than guessed at.
+        """
+        parser = ElementTree.XMLPullParser(events=("start-ns",))
+        try:
+            parser.feed(self._checked_xml(name))
+            root = parser.close()
+        except ElementTree.ParseError as error:
+            raise OOXMLInvalid("OOXML XML is malformed") from error
+        prefixes: dict[str, str] = {}
+        for _event, (prefix, uri) in parser.read_events():
+            if prefixes.setdefault(prefix, uri) != uri:
+                raise OOXMLInvalid("OOXML XML rebinds a namespace prefix")
+        return root, prefixes
 
 
 def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
