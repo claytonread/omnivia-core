@@ -510,6 +510,58 @@ _PPTX_DEFAULT_PLACEHOLDER_INDEX: Final = 0
 # namespaces every other PresentationML part here is held to.
 _LAYOUT_ROOT: Final = "sldLayout"
 _MASTER_ROOT: Final = "sldMaster"
+# ``ST_TransitionSpeed`` is a closed enumeration, so a transition claims one of
+# exactly these speeds or the slide claims none. A speed outside the set is
+# refused rather than carried through, for the reason a comment status outside
+# its own set is: anything reading it reads it as one of the three.
+_PPTX_TRANSITION_SPEEDS: Final = frozenset({"slow", "med", "fast"})
+# ``CT_SlideTransition``'s own attributes, which are the whole of what a
+# transition declares about itself: the speed it claims, whether a click
+# advances the slide, and the time after which it advances on its own. The set
+# is closed, so an unqualified attribute outside it is markup no slide
+# transition defines and the slide is refused rather than read past it. A
+# namespace-qualified attribute is another vocabulary's extension and is
+# recorded as one -- see ``transitionExtensionDeclared`` below.
+_PPTX_TRANSITION_ATTRIBUTES: Final = frozenset({"spd", "advClick", "advTm"})
+# The two children of a transition that are not the effect it draws.
+# ``extLst`` is an extension point, recorded as one. ``sndAc`` is the sound a
+# transition plays: audio is another slice's subject entirely, so it is neither
+# read nor counted here, and nothing in this module reaches a media part.
+_PPTX_TRANSITION_NON_EFFECT: Final = frozenset({"extLst", "sndAc"})
+# An effect's own attributes are not one closed set -- each effect kind defines
+# its own direction, orientation or pattern -- so they are inventoried by name
+# and value rather than interpreted, and only their number and size are bounded.
+_MAX_PPTX_TRANSITION_ATTRIBUTES: Final = 32
+# A timing tree is an animation program. Nothing here runs, schedules or reads
+# one: its nodes are counted by element name and nothing else about them is
+# looked at, so a node's attributes -- the command a ``p:cmd`` names among them
+# -- are never read. These bound the counting itself, which is the only work the
+# tree asks for.
+_MAX_PPTX_TIMING_NODES: Final = 20_000
+_MAX_PPTX_TIMING_DEPTH: Final = 64
+_MAX_PPTX_TIMING_KINDS: Final = 128
+# What one slide records about the way it plays: the transition it declares
+# between slides, and the animation tree it declares once it is up. Defaulted so
+# a slide declaring one of them carries the same keys as a slide declaring both.
+# ``None`` on a transition field says the slide declared no such value, which is
+# not the same as a value the schema would default it to -- nothing here applies
+# a schema default, because a default is what a player would do with the
+# declaration and no player runs here.
+_PPTX_SLIDE_PLAYBACK: Final[dict[str, object]] = {
+    "kind": "slide_playback",
+    "transitionDeclared": False,
+    "transitionSpeed": None,
+    "transitionAdvanceOnClick": None,
+    "transitionAdvanceAfter": None,
+    "transitionEffect": None,
+    "transitionEffectAttributes": None,
+    "transitionExtensionDeclared": False,
+    "timingDeclared": False,
+    "timingNodes": None,
+    "timingNodeKinds": None,
+    "timingDepth": None,
+    "timingExtensionDeclared": False,
+}
 _MAX_PPTX_COMMENTS: Final = 10_000
 _MAX_PPTX_COMMENT_AUTHORS: Final = 10_000
 _MAX_PPTX_COMMENT_CHARS: Final = 100_000
@@ -1076,6 +1128,24 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
             # what it has already shown from one pass to the other.
             walker.walk(_pptx_tree(slide_root), (), (), 0)
             walker.inherited(slide_root)
+            playback = _pptx_slide_playback(slide_root)
+            if playback is not None:
+                segments.append(
+                    ExtractedSegment(
+                        "object_inventory",
+                        _locator(
+                            capture_id,
+                            part=part,
+                            slideId=slide_id,
+                            slide=ordinal,
+                            slideHidden=hidden,
+                        ),
+                        structured_value=playback,
+                        extraction_method="inventory",
+                        visibility="hidden" if hidden else "visible",
+                    )
+                )
+                _bounded(segments)
             notes = _related_part(
                 package, part, _NOTES_RELATIONSHIPS, _NOTES_CONTENT_TYPE, "notes"
             )
@@ -2146,6 +2216,147 @@ def _pptx_shows_master(element: ElementTree.Element) -> bool:
     if value in _FALSE_FLAGS:
         return False
     raise OOXMLInvalid("PPTX inherited shapes flag is malformed")
+
+
+def _pptx_slide_playback(slide_root: ElementTree.Element) -> dict[str, object] | None:
+    """Return what one slide declares about the way it plays, or ``None``.
+
+    The transition and the timing tree are the slide element's own children, in
+    the same PresentationML namespace -- Transitional or Strict -- the slide
+    element itself is written in. That is the one place the schema puts either,
+    so it is the only place read: a ``transition`` or ``timing`` from another
+    vocabulary that happens to share the local name, or one nested anywhere
+    below the slide (inside the shape tree, an extension, or carried-along
+    markup), declares nothing about how this slide plays.
+
+    ``None`` says the slide declares neither, which is no fault: a slide that
+    never says how it plays has nothing to inventory. Where it does declare
+    one, it declares it once -- two of either leave which one the slide means
+    ambiguous, so the slide is refused rather than read from whichever was
+    written first.
+    """
+    namespace = slide_root.tag.rpartition("}")[0].lstrip("{")
+    if namespace not in _PRESENTATIONML:
+        return None
+    transitions = [
+        child for child in slide_root if child.tag == f"{{{namespace}}}transition"
+    ]
+    timings = [child for child in slide_root if child.tag == f"{{{namespace}}}timing"]
+    if len(transitions) > 1:
+        raise OOXMLInvalid("PPTX slide declares its transition more than once")
+    if len(timings) > 1:
+        raise OOXMLInvalid("PPTX slide declares its timing more than once")
+    if not transitions and not timings:
+        return None
+    record = dict(_PPTX_SLIDE_PLAYBACK)
+    if transitions:
+        record.update(_pptx_transition(transitions[0], namespace))
+    if timings:
+        record.update(_pptx_timing(timings[0], namespace))
+    return record
+
+
+def _pptx_transition(
+    transition: ElementTree.Element, namespace: str
+) -> dict[str, object]:
+    """Inventory one slide transition, without drawing or advancing anything.
+
+    The transition's own attributes are a closed set, so an unqualified one
+    outside it is markup no slide transition defines; a qualified one is
+    another vocabulary's extension and is recorded as one rather than read. The
+    effect is the single child that is neither the extension point nor the
+    sound a transition plays: the sound is never read, counted or resolved, so
+    nothing here reaches a media part. The effect's own attributes are kept by
+    the name the markup wrote them under -- qualified ones qualified, so no two
+    vocabularies collide in one record -- and are never interpreted: what a
+    direction or a pattern would do is what a player does with it.
+    """
+    extension = False
+    for key in transition.attrib:
+        if key.startswith("{"):
+            extension = True
+        elif key not in _PPTX_TRANSITION_ATTRIBUTES:
+            raise OOXMLInvalid("PPTX slide transition declares an unknown attribute")
+    speed = transition.attrib.get("spd")
+    if speed is not None and speed not in _PPTX_TRANSITION_SPEEDS:
+        raise OOXMLInvalid("PPTX slide transition speed is malformed")
+    click = transition.attrib.get("advClick")
+    if click is not None and click not in _TRUE_FLAGS | _FALSE_FLAGS:
+        raise OOXMLInvalid("PPTX slide transition click flag is malformed")
+    after = transition.attrib.get("advTm")
+    if after is not None and (
+        _INDEX.fullmatch(after) is None or int(after) > _MAX_INDEX
+    ):
+        raise OOXMLInvalid("PPTX slide transition advance time is malformed")
+    effects = [
+        child
+        for child in transition
+        if child.tag.startswith(f"{{{namespace}}}")
+        and _local(child.tag) not in _PPTX_TRANSITION_NON_EFFECT
+    ]
+    if len(effects) > 1:
+        raise OOXMLInvalid("PPTX slide transition declares more than one effect")
+    if len(effects) == 1 and len(effects[0].attrib) > _MAX_PPTX_TRANSITION_ATTRIBUTES:
+        raise OOXMLInvalid("PPTX slide transition effect declares too many attributes")
+    return {
+        "transitionDeclared": True,
+        "transitionSpeed": speed,
+        "transitionAdvanceOnClick": None if click is None else click in _TRUE_FLAGS,
+        "transitionAdvanceAfter": None if after is None else int(after),
+        "transitionEffect": _local(effects[0].tag) if effects else None,
+        "transitionEffectAttributes": (
+            {
+                key: _clip(value, _MAX_META_CHARS)
+                for key, value in sorted(effects[0].attrib.items())
+            }
+            if effects
+            else None
+        ),
+        "transitionExtensionDeclared": extension
+        or any(child.tag == f"{{{namespace}}}extLst" for child in transition),
+    }
+
+
+def _pptx_timing(timing: ElementTree.Element, namespace: str) -> dict[str, object]:
+    """Count one slide's timing tree by element name, and nothing else about it.
+
+    A timing tree is an animation program: a node names a trigger, a target and
+    sometimes a command. None of that is read here. Every element below the
+    timing element is counted under its local name and then left alone, so no
+    attribute is read, no target is resolved and no command is executed,
+    simulated or even inspected. The counts are returned in name order, so the
+    same tree always produces the same record.
+
+    The bounds are on the counting, which is the only work the tree asks for:
+    a tree with more nodes, deeper nesting, or more distinct node kinds than
+    one an author wrote is refused rather than walked.
+    """
+    kinds: dict[str, int] = {}
+    nodes = 0
+    deepest = 0
+    pending = [(child, 1) for child in timing]
+    while pending:
+        node, depth = pending.pop()
+        nodes += 1
+        if nodes > _MAX_PPTX_TIMING_NODES:
+            raise OOXMLInvalid("PPTX slide timing declares too many nodes")
+        if depth > _MAX_PPTX_TIMING_DEPTH:
+            raise OOXMLInvalid("PPTX slide timing is nested too deeply")
+        deepest = max(deepest, depth)
+        kind = _local(node.tag)
+        if kind not in kinds and len(kinds) == _MAX_PPTX_TIMING_KINDS:
+            raise OOXMLInvalid("PPTX slide timing declares too many node kinds")
+        kinds[kind] = kinds.get(kind, 0) + 1
+        pending.extend((child, depth + 1) for child in node)
+    return {
+        "timingDeclared": True,
+        "timingNodes": nodes,
+        "timingNodeKinds": dict(sorted(kinds.items())),
+        "timingDepth": deepest,
+        "timingExtensionDeclared": any(
+            child.tag == f"{{{namespace}}}extLst" for child in timing
+        ),
+    }
 
 
 @dataclass(frozen=True, slots=True)
