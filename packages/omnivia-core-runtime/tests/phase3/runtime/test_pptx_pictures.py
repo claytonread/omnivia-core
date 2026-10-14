@@ -197,6 +197,8 @@ EXPECTED = {
     "groupPath": [],
     "zOrder": 0,
     "zPath": [0],
+    "readingOrder": 0,
+    "readingPath": [0],
     "geometry": None,
     "placeholderType": None,
     "placeholderIndex": None,
@@ -218,6 +220,8 @@ def test_every_picture_is_inventoried_where_it_sits() -> None:
         "shapeId": "3",
         "zOrder": 1,
         "zPath": [1],
+        "readingOrder": 1,
+        "readingPath": [1],
     }
     # A picture whose author claimed nothing still reports every field, so one
     # record is shaped like every other's.
@@ -581,6 +585,7 @@ def test_an_image_record_does_not_disturb_where_the_picture_sits() -> None:
         "slideHidden": True,
         "groupPath": ["5"],
         "zPath": [0, 0],
+        "readingPath": [0, 0],
     }
     assert dict(alt.source_locator) == dict(record.source_locator) | {
         "altRole": "description"

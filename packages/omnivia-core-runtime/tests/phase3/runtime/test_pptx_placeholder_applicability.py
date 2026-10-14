@@ -248,6 +248,10 @@ EXPECTED = {
     "shapeId": "2",
     "shapeKind": "sp",
     "zOrder": 0,
+    # The layout's body slot sits above its title slot, so the title shape is
+    # written first and read second: its own part's order, not the slide's.
+    "readingOrder": 1,
+    "readingPath": [1],
     "geometry": {"x": 10, "y": 20, "cx": 30, "cy": 40},
     "placeholderType": "title",
     "placeholderIndex": None,
@@ -256,6 +260,8 @@ EXPECTED = {
     "slideGroupPath": [],
     "slideZOrder": 0,
     "slideZPath": [0],
+    "slideReadingOrder": 0,
+    "slideReadingPath": [0],
     "slideGeometry": {"x": 1, "y": 2, "cx": 3, "cy": 4},
     "paragraph": 0,
     "run": 0,
@@ -283,14 +289,58 @@ def test_an_empty_title_and_body_each_show_the_text_saved_for_their_own_slot() -
         "inheritedFrom": "master",
         "shapeId": "5",
         "zOrder": 1,
+        # Both of the master's slots sit at the same point, so the tie falls
+        # back to source order and this one is still read second.
+        "readingOrder": 1,
+        "readingPath": [1],
         "geometry": {"x": 50, "y": 60, "cx": 70, "cy": 80},
         "placeholderType": "body",
         "placeholderIndex": "1",
         "slideShapeId": "10",
         "slideZOrder": 1,
         "slideZPath": [1],
+        "slideReadingOrder": 1,
+        "slideReadingPath": [1],
         "slideGeometry": {"x": 5, "y": 6, "cx": 7, "cy": 8},
     }
+
+
+def test_an_applied_record_carries_both_parts_own_reading_order() -> None:
+    """The inherited shape's rank and the applying slot's rank, side by side.
+
+    Each is the rank the shape holds among its own part's siblings and neither
+    is derived from the other's coordinates. The slide places its title slot
+    above its body slot, so the title reads first there; the layout places its
+    title shape below its body shape, so the same slot's text reads second
+    where it was authored. Both transforms stay the ones their own part wrote.
+    """
+    content = pptx(
+        shapes=sp("9", at=(0, 10, 3, 4), placeholder=' type="title"')
+        + sp("10", at=(0, 900, 7, 8), placeholder=' type="body" idx="1"')
+    )
+
+    assert [
+        (
+            item.source_locator["inheritedFrom"],
+            item.source_locator["shapeId"],
+            item.source_locator["readingOrder"],
+            item.source_locator["readingPath"],
+            item.source_locator["slideShapeId"],
+            item.source_locator["slideReadingOrder"],
+            item.source_locator["slideReadingPath"],
+        )
+        for item in applied(content)
+    ] == [
+        ("layout", "2", 1, [1], "9", 0, [0]),
+        ("master", "5", 1, [1], "10", 1, [1]),
+    ]
+    assert [
+        (item.source_locator["geometry"], item.source_locator["slideGeometry"])
+        for item in applied(content)
+    ] == [
+        ({"x": 10, "y": 20, "cx": 30, "cy": 40}, {"x": 0, "y": 10, "cx": 3, "cy": 4}),
+        ({"x": 50, "y": 60, "cx": 70, "cy": 80}, {"x": 0, "y": 900, "cx": 7, "cy": 8}),
+    ]
 
 
 def test_a_bare_reference_is_the_body_slot_at_the_default_index() -> None:
@@ -620,6 +670,7 @@ def test_a_slot_inside_a_group_names_the_path_the_slide_shape_sits_on() -> None:
     assert dict(applied(content)[0].source_locator) == EXPECTED | {
         "slideGroupPath": ["8"],
         "slideZPath": [0, 0],
+        "slideReadingPath": [0, 0],
     }
 
 

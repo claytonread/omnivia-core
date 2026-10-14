@@ -194,6 +194,8 @@ EXPECTED = {
     "groupPath": [],
     "zOrder": 0,
     "zPath": [0],
+    "readingOrder": 0,
+    "readingPath": [0],
     "geometry": None,
     "placeholderType": None,
     "placeholderIndex": None,
@@ -291,6 +293,8 @@ def test_a_grouped_reference_on_a_hidden_slide_keeps_the_pictures_provenance()\
         "groupPath": ["5"],
         "zOrder": 0,
         "zPath": [1, 0],
+        "readingOrder": 0,
+        "readingPath": [1, 0],
     }
 
 

@@ -365,6 +365,171 @@ def test_a_group_child_space_mapping_is_recorded_but_never_applied() -> None:
     assert [item["geometry"] for item in located(content)] == [{"x": 60, "y": 70}]
 
 
+def at(x: int, y: int) -> str:
+    """One transform placing a shape at the given EMU offset."""
+    return f'<a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="10" cy="10"/></a:xfrm>'
+
+
+def ranked(content: bytes) -> list[tuple[object, ...]]:
+    """Each body segment's source order beside the reading-order rank given it."""
+    return [
+        (
+            item["shapeId"],
+            item["groupPath"],
+            item["zOrder"],
+            item["zPath"],
+            item["readingOrder"],
+            item["readingPath"],
+        )
+        for item in located(content)
+    ]
+
+
+def test_reading_order_ranks_top_to_bottom_then_left_without_moving_segments() -> None:
+    """The heuristic rank is recorded beside the source order, not instead of it.
+
+    Three shapes written in an order no reader would read them in: the lowest
+    first, then the two along the top from right to left. Emission stays the
+    source order the tree declared, ``zOrder`` and ``zPath`` still record it,
+    and the rank is the top-to-bottom, then left-to-right one.
+    """
+    content = pptx(
+        shape("2", "lowest", geometry=at(0, 1000))
+        + shape("3", "top right", geometry=at(500, 0))
+        + shape("4", "top left", geometry=at(100, 0))
+    )
+
+    assert texts(content) == ["lowest", "top right", "top left"]
+    assert ranked(content) == [
+        ("2", [], 0, [0], 2, [2]),
+        ("3", [], 1, [1], 1, [1]),
+        ("4", [], 2, [2], 0, [0]),
+    ]
+
+
+def test_shapes_at_one_point_keep_their_source_order() -> None:
+    """The rank is a total order, so a tie falls back to the source position."""
+    content = pptx(
+        shape("2", "first", geometry=at(5, 5))
+        + shape("3", "second", geometry=at(5, 5))
+        + shape("4", "third", geometry=at(5, 5))
+    )
+
+    assert texts(content) == ["first", "second", "third"]
+    assert [item["readingOrder"] for item in located(content)] == [0, 1, 2]
+
+
+def test_a_shape_with_no_position_keeps_source_order_after_the_placed_ones() -> None:
+    """An offset is read as a pair, so an extent alone is a size without a place.
+
+    Neither of the two unplaced shapes has a position to rank, so both fall back
+    to their source order and sit after the one shape that does -- which the
+    source order wrote last.
+    """
+    content = pptx(
+        shape("2", "no transform")
+        + shape("3", "size only", geometry='<a:xfrm><a:ext cx="10" cy="10"/></a:xfrm>')
+        + shape("4", "placed", geometry=at(0, 9000))
+    )
+
+    assert texts(content) == ["no transform", "size only", "placed"]
+    assert [
+        (item["geometry"], item["readingOrder"]) for item in located(content)
+    ] == [(None, 1), ({"cx": 10, "cy": 10}, 2), ({"x": 0, "y": 9000, "cx": 10, "cy": 10}, 0)]
+
+
+def test_a_group_is_ranked_as_one_block_and_its_members_inside_it() -> None:
+    """Members are ranked against each other, never against the slide's shapes.
+
+    The group sits low and holds a member higher on the slide than the shape
+    beside it. No child-space transform is composed, so that member is not
+    ranked above that shape: the group's whole block reads after it, and the
+    member's rank is its place inside the block.
+    """
+    content = pptx(
+        shape(
+            "5",
+            kind="grpSp",
+            geometry=at(0, 5000),
+            children=(
+                shape("8", "lower member", geometry=at(0, 900))
+                + shape("9", "upper member", geometry=at(0, 5))
+            ),
+        )
+        + shape("2", "beside the group", geometry=at(0, 10))
+    )
+
+    assert texts(content) == ["lower member", "upper member", "beside the group"]
+    assert ranked(content) == [
+        ("8", ["5"], 0, [0, 0], 1, [1, 1]),
+        ("9", ["5"], 1, [0, 1], 0, [1, 0]),
+        ("2", [], 1, [1], 0, [0]),
+    ]
+
+
+def test_a_group_with_no_transform_still_ranks_its_nested_members() -> None:
+    """An unplaced group is an unplaced block; inside it the heuristic still runs.
+
+    The outer group encodes no transform, so it ranks after the placed shape
+    beside it. Its nested group is placed and is ranked among its own siblings,
+    and the deepest member's rank is the path of ranks down to it.
+    """
+    inner = shape(
+        "7",
+        kind="grpSp",
+        geometry=at(0, 100),
+        children=shape("8", "deep", geometry=at(0, 1)),
+    )
+    content = pptx(
+        shape(
+            "5",
+            kind="grpSp",
+            children=shape("6", "shallow", geometry=at(0, 900)) + inner,
+        )
+        + shape("2", "placed", geometry=at(0, 10))
+    )
+
+    assert texts(content) == ["shallow", "deep", "placed"]
+    assert ranked(content) == [
+        ("6", ["5"], 0, [0, 0], 1, [1, 1]),
+        ("8", ["5", "7"], 0, [0, 1, 0], 0, [1, 0, 0]),
+        ("2", [], 1, [1], 0, [0]),
+    ]
+
+
+def test_every_segment_a_shape_emits_carries_the_one_reading_rank() -> None:
+    """Runs, table cells, a picture record and its alt text share the shape's rank.
+
+    The picture is written second and read first; the table frame is unplaced
+    and reads last. Every segment stays where the source order emitted it.
+    """
+    picture = (
+        '<p:pic><p:nvPicPr><p:cNvPr id="3" descr="A photograph"/></p:nvPicPr>'
+        f"<p:spPr>{at(0, 100)}</p:spPr></p:pic>"
+    )
+    content = pptx(
+        shape("2", "a|b", "c", geometry=at(0, 900)) + picture + table_frame("x|y")
+    )
+
+    assert [
+        (
+            item.semantic_role,
+            item.source_locator["shapeId"],
+            item.source_locator["readingOrder"],
+            item.source_locator["readingPath"],
+        )
+        for item in extract_pptx(content, capture_id=CAPTURE).segments
+    ] == [
+        ("body", "2", 1, [1]),
+        ("body", "2", 1, [1]),
+        ("body", "2", 1, [1]),
+        ("object_inventory", "3", 0, [0]),
+        ("image_alt", "3", 0, [0]),
+        ("table_cell", "4", 2, [2]),
+        ("table_cell", "4", 2, [2]),
+    ]
+
+
 def test_placeholder_reference_is_recorded_without_being_followed() -> None:
     """The type and index are kept; an unstated type is DrawingML's own default."""
     content = pptx(

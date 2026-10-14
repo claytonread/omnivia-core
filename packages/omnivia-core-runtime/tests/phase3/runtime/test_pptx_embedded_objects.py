@@ -210,6 +210,8 @@ EXPECTED = {
     "groupPath": [],
     "zOrder": 0,
     "zPath": [0],
+    "readingOrder": 0,
+    "readingPath": [0],
     "geometry": None,
     "placeholderType": None,
     "placeholderIndex": None,
@@ -426,6 +428,8 @@ def test_a_grouped_object_on_a_hidden_slide_keeps_the_frames_provenance() -> Non
         "groupPath": ["5"],
         "zOrder": 0,
         "zPath": [1, 0],
+        "readingOrder": 0,
+        "readingPath": [1, 0],
     }
 
 

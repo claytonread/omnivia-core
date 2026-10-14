@@ -1280,7 +1280,7 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
             # The slide's own text first, so that what it shows itself is what
             # suppresses an exact repeat of it from behind. The walker carries
             # what it has already shown from one pass to the other.
-            walker.walk(_pptx_tree(slide_root), (), (), 0)
+            walker.walk(_pptx_tree(slide_root), (), (), (), 0)
             walker.inherited(slide_root)
             playback = _pptx_slide_playback(slide_root)
             if playback is not None:
@@ -3371,6 +3371,13 @@ class _PptxWalker:
     A group's text is its members' text, read once where each member sits, so
     nothing is reported twice.
 
+    Z-order is not reading order, so each shape also carries the rank
+    ``_pptx_reading_ranks`` gives it among its siblings -- ``readingOrder``,
+    and ``readingPath`` for the path of ranks down to it. That is a documented
+    heuristic recorded beside the source order, never in place of it: segments
+    are emitted in source order, as they were, and both orders stay readable
+    off every segment a shape emits.
+
     Each run of each paragraph becomes one segment, in source order, carrying
     its paragraph and run index inside the shape it belongs to. A graphic frame
     holding a table reports its cells as table cells instead, each at its own
@@ -3437,9 +3444,15 @@ class _PptxWalker:
         parent: ElementTree.Element,
         path: tuple[str, ...],
         z_path: tuple[int, ...],
+        reading_path: tuple[int, ...],
         depth: int,
     ) -> None:
-        position = 0
+        # The level is read in full before any of it is reported, because the
+        # reading-order heuristic ranks a shape against its own siblings and so
+        # needs every sibling's transform. Counting, identity and geometry are
+        # validated exactly as they were, in source order, and what is reported
+        # afterwards is reported in source order too.
+        level: list[tuple[ElementTree.Element, str, str, dict[str, int] | None]] = []
         for child in _pptx_children(parent):
             kind = _local(child.tag)
             if kind not in _PPTX_SHAPES:
@@ -3450,15 +3463,17 @@ class _PptxWalker:
             shape_id = _pptx_shape_id(child, self._ids, "slide")
             # Validated for every shape, including a group and a picture: a
             # malformed transform is malformed wherever it is written.
-            geometry = _pptx_geometry(child)
+            level.append((child, kind, shape_id, _pptx_geometry(child)))
+        ranks = _pptx_reading_ranks([geometry for *_, geometry in level])
+        for position, (child, kind, shape_id, geometry) in enumerate(level):
             here = (*z_path, position)
-            position += 1
+            rank = (*reading_path, ranks[position])
             if kind == "grpSp":
                 if depth >= _MAX_PPTX_GROUP_DEPTH:
                     raise OOXMLInvalid("PPTX group shapes are nested too deeply")
-                self.walk(child, (*path, shape_id), here, depth + 1)
+                self.walk(child, (*path, shape_id), here, rank, depth + 1)
                 continue
-            where = self._where(child, kind, shape_id, path, here, geometry)
+            where = self._where(child, kind, shape_id, path, here, rank, geometry)
             frame = kind == "graphicFrame"
             table = _pptx_frame_table(child) if frame else None
             chart = _pptx_frame_chart(child) if frame else None
@@ -3494,7 +3509,12 @@ class _PptxWalker:
         Only a shape that is a placeholder at all: a shape holding no reference
         inherits into nothing. The slide shape is named alongside the slot
         because the text that applies here is the inherited part's, shown at a
-        position and in a frame the slide's own shape supplies.
+        position and in a frame the slide's own shape supplies -- which is why
+        the slide shape's reading-order rank rides along with its z-order: the
+        slot is read where the slide places it, not where the layout wrote it.
+        Both orders are kept: the inherited shape's own rank among its own
+        part's siblings stays on the record, and the slide slot's rank is added
+        beside it under its own ``slide``-prefixed names.
         """
         placeholder = _pptx_placeholder(shape)
         if placeholder is None:
@@ -3510,6 +3530,8 @@ class _PptxWalker:
                     "slideGroupPath": where["groupPath"],
                     "slideZOrder": where["zOrder"],
                     "slideZPath": where["zPath"],
+                    "slideReadingOrder": where["readingOrder"],
+                    "slideReadingPath": where["readingPath"],
                     "slideGeometry": where["geometry"],
                 },
             )
@@ -3634,6 +3656,18 @@ class _PptxWalker:
         ``_applicable`` settles against both parts once each has been read.
         Each one is returned for that, in the order the tree declared it.
 
+        The reading-order heuristic runs here too, and runs entirely inside
+        this part. There is one shape-tree level to rank -- a group is not
+        entered -- so these shapes are ranked against each other in the one
+        coordinate space they share, this part's own, and never against the
+        slide's: no layout or master offset is compared with a slide offset and
+        no slide position is derived for a shape that holds none. ``zOrder``
+        stays the scalar source position it was and the rank is recorded beside
+        it, as ``readingOrder`` with the single-level ``readingPath`` down to
+        it. Where the slide itself shows one of these shapes, through a
+        placeholder, ``_applies`` adds the applying slide shape's own rank
+        alongside, so such a record carries both parts' orders.
+
         An exact visual duplicate of something already shown is not shown
         twice. That is decided on the whole of what a run puts on the slide --
         its role, its text once whitespace is normalised, and the transform the
@@ -3645,7 +3679,13 @@ class _PptxWalker:
         """
         prompts: list[_PptxPrompt] = []
         seen: set[str] = set()
-        position = 0
+        # The one level is read in full before any of it is reported, because
+        # the heuristic ranks a shape against its own siblings and so needs
+        # every sibling's transform -- including the ones whose text is not
+        # read, which hold a position in both orders just as they always did.
+        # Counting, identity and geometry are validated in source order, and
+        # what is reported afterwards is reported in source order too.
+        siblings: list[tuple[ElementTree.Element, str, str, dict[str, int] | None]] = []
         for child in _pptx_children(_pptx_inherited_tree(root, level)):
             kind = _local(child.tag)
             if kind not in _PPTX_SHAPES:
@@ -3657,9 +3697,9 @@ class _PptxWalker:
             # Validated for every shape in the tree, including the ones whose
             # text is not read: a malformed transform is malformed wherever it
             # is written.
-            geometry = _pptx_geometry(child)
-            here = position
-            position += 1
+            siblings.append((child, kind, shape_id, _pptx_geometry(child)))
+        ranks = _pptx_reading_ranks([geometry for *_, geometry in siblings])
+        for here, (child, kind, shape_id, geometry) in enumerate(siblings):
             if kind not in _PPTX_INHERITED_SHAPES:
                 continue
             where: dict[str, object] = {
@@ -3673,6 +3713,8 @@ class _PptxWalker:
                 "shapeId": shape_id,
                 "shapeKind": kind,
                 "zOrder": here,
+                "readingOrder": ranks[here],
+                "readingPath": [ranks[here]],
                 "geometry": geometry,
             }
             placeholder = _pptx_placeholder(child)
@@ -3696,9 +3738,20 @@ class _PptxWalker:
         shape_id: str,
         path: tuple[str, ...],
         z_path: tuple[int, ...],
+        reading_path: tuple[int, ...],
         geometry: dict[str, int] | None,
     ) -> dict[str, object]:
-        """Return the slide and shape identity every segment of a shape carries."""
+        """Return the slide and shape identity every segment of a shape carries.
+
+        Source order and the reading-order heuristic are recorded side by side
+        and neither stands in for the other: ``zOrder`` and ``zPath`` are the
+        z-order the tree declared, ``readingOrder`` and ``readingPath`` the rank
+        ``_pptx_reading_ranks`` gave the shape among its own siblings and at
+        every level above it. Every segment one shape emits -- its runs, its
+        table's cells, its chart's or diagram's records, its picture, media or
+        object inventory -- carries this one identity, so all of them share a
+        shape's rank just as they share its z-order.
+        """
         placeholder = _pptx_placeholder(shape)
         placeholder_type, placeholder_index = placeholder or (None, None)
         return {
@@ -3711,6 +3764,8 @@ class _PptxWalker:
             "groupPath": list(path),
             "zOrder": z_path[-1],
             "zPath": list(z_path),
+            "readingOrder": reading_path[-1],
+            "readingPath": list(reading_path),
             "geometry": geometry,
             "placeholderType": placeholder_type,
             "placeholderIndex": placeholder_index,
@@ -4103,6 +4158,44 @@ def _pptx_runs(paragraph: ElementTree.Element) -> Iterator[str]:
         yield "".join(
             item.text or "" for item in node if _local(item.tag) == "t"
         )
+
+
+def _pptx_reading_ranks(geometries: list[dict[str, int] | None]) -> list[int]:
+    """Rank one shape-tree level into a reading order, top edge then left edge.
+
+    The tree's own order is z-order, back to front, which is not a reading
+    order: a shape drawn last can be the first one read. This is the documented
+    heuristic for the second one -- top edge first, then left edge -- recorded
+    beside the source order rather than in place of it, and never used to decide
+    what order segments are emitted in.
+
+    One level at a time, which is the only space in which the shapes being
+    compared share a coordinate system. A group is ranked among its siblings as
+    the one positioned block it is, and its members are ranked among themselves
+    inside that block, so a member's rank is read as the path of ranks down to
+    it. No child-space mapping is composed and no absolute slide position is
+    derived for a nested shape, because ``_pptx_geometry`` deliberately resolves
+    neither: a coordinate the file does not hold is not invented to sort by.
+
+    The order is total and stable, with source position as the documented
+    fallback. A shape is ranked on the top edge its own transform encodes, then
+    on the left edge; two shapes at the same point keep their source order, and
+    a shape whose transform encodes no offset has no position to read at all
+    and keeps its source order after every positioned sibling. ``off`` is read
+    as a pair, so a transform either places a shape or does not -- an extent
+    alone is a size without a position.
+    """
+
+    def key(position: int) -> tuple[int, int, int, int]:
+        geometry = geometries[position]
+        if geometry is None or "y" not in geometry:
+            return (1, 0, 0, position)
+        return (0, geometry["y"], geometry["x"], position)
+
+    ranks = [0] * len(geometries)
+    for rank, position in enumerate(sorted(range(len(geometries)), key=key)):
+        ranks[position] = rank
+    return ranks
 
 
 def _pptx_geometry(shape: ElementTree.Element) -> dict[str, int] | None:

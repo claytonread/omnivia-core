@@ -256,6 +256,8 @@ EXPECTED = {
     "groupPath": [],
     "zOrder": 0,
     "zPath": [0],
+    "readingOrder": 0,
+    "readingPath": [0],
     "geometry": None,
     "placeholderType": None,
     "placeholderIndex": None,

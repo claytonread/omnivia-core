@@ -270,6 +270,8 @@ EXPECTED = {
     "shapeId": "2",
     "shapeKind": "sp",
     "zOrder": 0,
+    "readingOrder": 0,
+    "readingPath": [0],
     "geometry": {"x": 10, "y": 20, "cx": 30, "cy": 40},
     "paragraph": 0,
     "run": 0,
@@ -612,6 +614,176 @@ def test_only_shapes_and_connectors_in_the_tree_itself_are_read() -> None:
         "cxnSp",
     )
     assert shape.source_locator["zOrder"] == 4
+
+
+def ranked(content: bytes) -> list[tuple[object, ...]]:
+    """Each inherited record's part and shape, source position beside its rank."""
+    return [
+        (
+            item.source_locator["inheritedFrom"],
+            item.source_locator["shapeId"],
+            item.source_locator["zOrder"],
+            item.source_locator["readingOrder"],
+            item.source_locator["readingPath"],
+        )
+        for item in inherited(content)
+    ]
+
+
+def test_inherited_shapes_are_ranked_in_their_own_parts_reading_order() -> None:
+    """The heuristic runs on each inherited part too, top edge then left edge.
+
+    The layout writes the lowest shape first and then the two along its top
+    from right to left. Emission stays the source order the part declared,
+    ``zOrder`` still records it, and the rank is the top-to-bottom, then
+    left-to-right one. The master is one shape of its own and ranks first in
+    its own tree, which is the only tree it is ranked in.
+    """
+    content = pptx(
+        layout=part(
+            "sldLayout",
+            sp("2", text="lowest", at=(0, 1000, 1, 1))
+            + sp("4", text="top right", at=(500, 0, 1, 1))
+            + sp("6", text="top left", at=(100, 0, 1, 1)),
+        )
+    )
+
+    assert behind(content) == [
+        ("layout", "2", "lowest"),
+        ("layout", "4", "top right"),
+        ("layout", "6", "top left"),
+        ("master", "3", "Beneath"),
+    ]
+    assert ranked(content) == [
+        ("layout", "2", 0, 2, [2]),
+        ("layout", "4", 1, 1, [1]),
+        ("layout", "6", 2, 0, [0]),
+        ("master", "3", 0, 0, [0]),
+    ]
+
+
+def test_inherited_shapes_at_one_point_keep_their_source_order() -> None:
+    """The rank is a total order here too, so a tie falls back to the position."""
+    content = pptx(
+        layout=part(
+            "sldLayout",
+            sp("2", text="first", at=LAYOUT_AT)
+            + sp("4", text="second", at=LAYOUT_AT)
+            + sp("6", text="third", at=LAYOUT_AT),
+        )
+    )
+
+    assert behind(content) == [
+        ("layout", "2", "first"),
+        ("layout", "4", "second"),
+        ("layout", "6", "third"),
+        ("master", "3", "Beneath"),
+    ]
+    assert [item.source_locator["readingOrder"] for item in inherited(content)] == [
+        0,
+        1,
+        2,
+        0,
+    ]
+
+
+def test_an_unplaced_inherited_shape_keeps_source_order_after_the_placed() -> None:
+    """An offset is read as a pair, so an extent alone is a size without a place.
+
+    Neither of the two unplaced shapes has a position to rank, so both fall
+    back to their source order and sit after the one shape that does -- which
+    the part wrote last.
+    """
+    content = pptx(
+        layout=part(
+            "sldLayout",
+            sp("2", text="no transform", at=None)
+            + sp(
+                "4",
+                text="size only",
+                transform='<a:xfrm><a:ext cx="10" cy="10"/></a:xfrm>',
+            )
+            + sp("6", text="placed", at=(0, 9000, 1, 1)),
+        )
+    )
+
+    assert [
+        (item.source_locator["geometry"], item.source_locator["readingOrder"])
+        for item in inherited(content)
+    ] == [
+        (None, 1),
+        ({"cx": 10, "cy": 10}, 2),
+        ({"x": 0, "y": 9000, "cx": 1, "cy": 1}, 0),
+        ({"x": 50, "y": 60, "cx": 70, "cy": 80}, 0),
+    ]
+
+
+def test_an_inherited_rank_is_never_measured_against_the_slides_own_space() -> None:
+    """Each part is ranked in its own coordinate space and in no other.
+
+    The slide's own shape sits above everything the layout holds, and the
+    layout's two shapes sit far below it. Were the two spaces compared, the
+    slide's shape would take the first rank and push the layout's to second and
+    third; were a slide position invented for the layout's shapes, their
+    recorded transforms would not be the ones the layout encoded. Neither
+    happens: the layout's shapes rank 0 and 1 among themselves, the slide's
+    shape ranks 0 among its own, and every transform is the one its own part
+    wrote.
+    """
+    content = pptx(
+        shapes=sp("9", text="Mine", at=(0, 5, 1, 1)),
+        layout=part(
+            "sldLayout",
+            sp("2", text="layout lower", at=(0, 900, 1, 1))
+            + sp("4", text="layout upper", at=(0, 10, 1, 1)),
+        ),
+    )
+
+    assert ranked(content) == [
+        ("layout", "2", 0, 1, [1]),
+        ("layout", "4", 1, 0, [0]),
+        ("master", "3", 0, 0, [0]),
+    ]
+    mine = extract_pptx(content, capture_id=CAPTURE).segments[0].source_locator
+    assert (mine["shapeId"], mine["readingOrder"], mine["readingPath"]) == ("9", 0, [0])
+    assert [item.source_locator["geometry"] for item in inherited(content)] == [
+        {"x": 0, "y": 900, "cx": 1, "cy": 1},
+        {"x": 0, "y": 10, "cx": 1, "cy": 1},
+        {"x": 50, "y": 60, "cx": 70, "cy": 80},
+    ]
+
+
+def test_a_shape_whose_text_is_not_read_still_holds_a_place_in_both_orders() -> None:
+    """A picture, a group and a frame are ranked where they sit, like any shape.
+
+    They take a position in the z-order already, and they take one in the
+    reading order for the same reason: they are shapes on the part, and
+    skipping what they hold never shifts another shape's place in either order.
+    Here the three skipped shapes are the three lowest, so the two reported
+    shapes keep the first two ranks while the skipped ones hold the rest.
+    """
+    content = pptx(
+        layout=part(
+            "sldLayout",
+            sp("4", kind="pic", text="Picture", at=(0, 900, 1, 1))
+            + sp(
+                "5",
+                kind="grpSp",
+                text=None,
+                at=(0, 800, 1, 1),
+                children=sp("6", text="Grouped", at=(0, 1, 1, 1)),
+            )
+            + sp("7", kind="graphicFrame", text="Framed", at=(0, 700, 1, 1))
+            + sp("8", kind="cxnSp", text="Connector", at=(0, 5, 1, 1))
+            + sp("2", text="Behind", at=(0, 10, 1, 1)),
+        )
+    )
+
+    assert ranked(content) == [
+        ("layout", "8", 3, 0, [0]),
+        ("layout", "2", 4, 1, [1]),
+        ("master", "3", 0, 0, [0]),
+    ]
 
 
 def test_an_exact_visual_duplicate_of_the_slides_own_text_is_dropped() -> None:
