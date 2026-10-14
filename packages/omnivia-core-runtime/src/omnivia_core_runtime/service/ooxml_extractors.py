@@ -167,6 +167,92 @@ _PRESENTATIONML: Final = frozenset(
         "http://purl.oclc.org/ooxml/presentationml/main",
     }
 )
+# The relationship and content types that together qualify the two parts modern
+# ("threaded") comments live in: the per-slide comment list, and the
+# presentation-wide author table it cites. These are a Microsoft extension, so
+# each type has one defined URI rather than a Strict/Transitional pair, and
+# neither the classic types above nor these reach the other's parts.
+#
+# Unlike the notes and classic comment parts, the relationship alone does not
+# reach the modern list: a slide has modern comments only where it says so in
+# its own ``p:extLst``, in the extension below, and the relationship it names
+# there is the one read. A slide that advertises nothing has no modern comments
+# however it relates, and a slide that advertises the extension has to carry
+# the one relationship it names.
+_MODERN_COMMENTS_RELATIONSHIPS: Final = frozenset(
+    {"http://schemas.microsoft.com/office/2018/10/relationships/comments"}
+)
+_MODERN_AUTHORS_RELATIONSHIPS: Final = frozenset(
+    {"http://schemas.microsoft.com/office/2018/10/relationships/authors"}
+)
+_MODERN_COMMENTS_CONTENT_TYPE: Final = "application/vnd.ms-powerpoint.comments+xml"
+_MODERN_AUTHORS_CONTENT_TYPE: Final = "application/vnd.ms-powerpoint.authors+xml"
+# The one namespace both modern parts, and the slide extension that routes to
+# the comment list, are written in. As with the classic parts, a part is
+# reached by its declared type alone, so the namespace is the remaining check
+# that it holds the vocabulary the declaration promised.
+_MODERN_MAIN: Final = "http://schemas.microsoft.com/office/powerpoint/2018/8/main"
+_MODERN_NAMESPACE: Final = frozenset({_MODERN_MAIN})
+_MODERN_COMMENT_REL: Final = f"{{{_MODERN_MAIN}}}commentRel"
+# The slide extension a modern comment list is named from, and the namespaces
+# the relationship id inside it may be written in -- the Transitional and
+# Strict relationships namespaces, the same pair every ``r:id`` in the package
+# uses. The extension URI is an ``ST_Guid``, so it is matched case-folded for
+# the reason an author id is: only its hex digits vary in case.
+_MODERN_COMMENTS_EXTENSION: Final = "{6950bfc3-d8da-4a85-94f7-54da5524770b}"
+_RELATIONSHIP_NAMESPACES: Final = frozenset(
+    {
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+        "http://purl.oclc.org/ooxml/officeDocument/relationships",
+    }
+)
+# The task fields a modern comment raised as work carries, each kept exactly
+# as written: a date stays a string, and a completion figure is not read as
+# progress anything made. A reply is not work in its own right, so these are a
+# comment's claims alone.
+_MODERN_COMMENT_TASK_CLAIMS: Final = (
+    "title",
+    "assignedTo",
+    "startDate",
+    "dueDate",
+    "complete",
+)
+# ``ST_CommentStatus`` is a closed enumeration, so a comment or reply claims
+# one of exactly these three states or the file claims none. Unlike the free
+# text above, a status outside the set is refused rather than carried through:
+# anything reading status reads it to decide whether a comment is still open,
+# and a state nothing defines would be answered with whatever that reader
+# defaults to. An absent status stays absent, as the schema allows -- that says
+# only that the file never claimed a state, not that it claimed "active".
+_MODERN_COMMENT_STATUS: Final = frozenset({"active", "resolved", "closed"})
+# ``CT_CommentReply`` is not ``CT_Comment``. A reply holds a body and the
+# extension point, and carries its identity, the author it cites, the state it
+# claims and when it claims to have been written. A position, an anchor, a
+# thread of its own and the task fields are a comment's grammar appearing where
+# the schema does not place it, so a reply writing any of them is refused
+# rather than read as a comment -- reporting a reply's anchor or due date would
+# be publishing a field the syntax never legally carried.
+_MODERN_REPLY_CHILDREN: Final = frozenset({"txBody", "extLst"})
+_MODERN_REPLY_ATTRIBUTES: Final = frozenset({"id", "authorId", "status", "created"})
+# The anchors a modern comment may declare, each naming what kind of thing it
+# is anchored to: a drawing element, a text range, a slide, the document, or --
+# where the file itself cannot say -- nothing it can name. The monikers inside
+# an anchor are not read: the kind is what places the comment, and descending
+# into a moniker would mean resolving the element it names.
+_MODERN_ANCHORS: Final = frozenset(
+    {"unknownAnchor", "deMkLst", "txMkLst", "sldMkLst", "docMkLst"}
+)
+# Every author field defaulted, so a comment citing an author the table never
+# defines carries the same keys as one whose author it does define.
+_MODERN_AUTHOR_UNKNOWN: Final[dict[str, object]] = {
+    "authorPart": None,
+    "authorName": None,
+    "authorInitials": None,
+    "authorUserId": None,
+    "authorProviderId": None,
+    # Stated so no consumer reads the fields above as identity.
+    "authorAuthenticated": False,
+}
 # The relationship and content types that together qualify a DrawingML chart
 # part. As with the notes-slide and comment types, only the two URIs OOXML
 # itself defines qualify -- Transitional and Strict -- so nothing reaches a
@@ -228,6 +314,13 @@ _MAX_PPTX_CHART_TITLE_RUNS: Final = 20_000
 _MAX_PPTX_COMMENTS: Final = 10_000
 _MAX_PPTX_COMMENT_AUTHORS: Final = 10_000
 _MAX_PPTX_COMMENT_CHARS: Final = 100_000
+# A modern comment body is rich text, so its runs are work the part asks for
+# whether or not any of them holds text. Counted across one comment part, over
+# every comment and reply in it, for the reason the slide-wide run bound is.
+_MAX_PPTX_COMMENT_RUNS: Final = 20_000
+# ST_Guid, kept exactly as written: the braces and the grouping are the form,
+# and the hex digits are the only part of it a writer varies in case.
+_GUID: Final = re.compile(r"\{[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\}")
 # ST_Index is an ``xsd:unsignedInt``; the value is kept as written, never
 # renumbered, so only its range is checked.
 _INDEX: Final = re.compile(r"[0-9]{1,10}")
@@ -734,15 +827,19 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         if "ppt/presentation.xml" not in package.names:
             raise OOXMLInvalid("PPTX presentation part is missing")
         slides = _pptx_slides(package)
-        # The author table is the presentation's, not a slide's, so it is
-        # resolved once and every slide's comments index into the same one.
+        # Each author table is the presentation's, not a slide's, so both are
+        # resolved once and every slide's comments cite the same two. The
+        # classic and modern forms carry their own tables, and a presentation
+        # may hold either, both or neither.
         authors = _pptx_comment_authors(package)
+        modern_authors = _pptx_modern_comment_authors(package)
         segments: list[ExtractedSegment] = []
         for ordinal, (slide_id, part, hidden) in enumerate(slides, start=1):
             walker = _PptxWalker(
                 capture_id, part, slide_id, ordinal, hidden, segments, package
             )
-            walker.walk(_pptx_tree(package.xml(part)), (), (), 0)
+            slide_root = package.xml(part)
+            walker.walk(_pptx_tree(slide_root), (), (), 0)
             notes = _related_part(
                 package, part, _NOTES_RELATIONSHIPS, _NOTES_CONTENT_TYPE, "notes"
             )
@@ -767,7 +864,12 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                         )
                     )
                     _bounded(segments)
-            for text, provenance in _pptx_comments(package, part, authors):
+            # Classic first, then modern: each form keeps its own source order,
+            # and a slide holding both reports both rather than one standing in
+            # for the other.
+            for text, provenance in _pptx_comments(
+                package, part, authors
+            ) + _pptx_modern_comments(package, part, slide_root, modern_authors):
                 segments.append(
                     ExtractedSegment(
                         "comment",
@@ -1110,18 +1212,23 @@ def _related_part(
 
 
 def _pptx_comment_root(
-    package: _Package, part: str, expected: str
+    package: _Package,
+    part: str,
+    expected: str,
+    namespaces: frozenset[str] = _PRESENTATIONML,
 ) -> tuple[ElementTree.Element, str]:
     """Parse one comment part, returning its root and the namespace it uses.
 
     The declared content type says what the part is; the root element is where
     the part says so itself. A root in any other namespace, or under any other
     name, is not the vocabulary the declaration promised, so the part is refused
-    rather than read for whatever elements happen to be in it.
+    rather than read for whatever elements happen to be in it. The classic and
+    modern parts each accept only their own namespaces, so neither is read as
+    the other however it is declared.
     """
     root = package.xml(part)
     namespace, _, local = root.tag.rpartition("}")
-    if namespace.lstrip("{") not in _PRESENTATIONML:
+    if namespace.lstrip("{") not in namespaces:
         raise OOXMLInvalid("PPTX comment part uses an unsupported namespace")
     if local != expected:
         raise OOXMLInvalid("PPTX comment part is not rooted at its own list")
@@ -1223,6 +1330,7 @@ def _pptx_comments(
                 {
                     "part": part,
                     "relationshipId": relation_id,
+                    "commentForm": "classic",
                     "commentId": f"{author_id}:{index}",
                     "commentIndex": index,
                     "authorId": author_id,
@@ -1305,6 +1413,370 @@ def _pptx_comment_claim(element: ElementTree.Element, name: str) -> str | None:
     """
     value = element.attrib.get(name)
     return None if value is None else _clip(value, _MAX_META_CHARS)
+
+
+def _pptx_comment_guid(element: ElementTree.Element, name: str) -> str:
+    """Read one ``ST_Guid`` the modern schema requires, refusing a bad value.
+
+    The value is kept exactly as written, never recased, rebraced or
+    renumbered, so an id stays the one the file cited.
+    """
+    raw = element.attrib.get(name)
+    if raw is None:
+        raise OOXMLInvalid("PPTX modern comment id is missing")
+    if _GUID.fullmatch(raw) is None:
+        raise OOXMLInvalid("PPTX modern comment id is malformed")
+    return raw
+
+
+def _pptx_modern_comment_status(element: ElementTree.Element) -> str | None:
+    """Return the state a modern comment or reply claims, refusing an undefined one.
+
+    The value is matched as written against the closed enumeration, so a state
+    differing only in case is not that state: ``ST_CommentStatus`` is
+    case-sensitive, and folding one in would be deciding that a writer meant a
+    value it did not write.
+    """
+    status = _pptx_comment_claim(element, "status")
+    if status is not None and status not in _MODERN_COMMENT_STATUS:
+        raise OOXMLInvalid("PPTX modern comment status is not a defined state")
+    return status
+
+
+def _pptx_modern_comment_authors(package: _Package) -> dict[str, dict[str, object]]:
+    """Index the presentation's modern comment authors by the id each claims.
+
+    Every field is recorded exactly as the package wrote it, and nothing here
+    checks that any of it names a real person: an author record is a claim the
+    file makes about itself, never evidence of who commented, and a user or
+    provider id is no more than another such claim. Ids are indexed case-folded
+    because only their hex digits vary in case, so two records whose ids differ
+    in nothing else claim one identity and leave every comment citing it
+    ambiguous; the table is refused rather than read under one of them.
+    """
+    related = _related_part(
+        package,
+        "ppt/presentation.xml",
+        _MODERN_AUTHORS_RELATIONSHIPS,
+        _MODERN_AUTHORS_CONTENT_TYPE,
+        "modern comment authors",
+        owner="presentation",
+    )
+    if related is None:
+        return {}
+    _relation_id, part = related
+    root, namespace = _pptx_comment_root(package, part, "authorLst", _MODERN_NAMESPACE)
+    authors: dict[str, dict[str, object]] = {}
+    for record in root:
+        local = _pptx_comment_local(record, namespace)
+        if local == "extLst":
+            continue
+        if local != "author":
+            raise OOXMLInvalid("PPTX comment part holds an unsupported element")
+        if len(authors) >= _MAX_PPTX_COMMENT_AUTHORS:
+            raise OOXMLInvalid("PPTX comment author table is too large")
+        author_id = _pptx_comment_guid(record, "id").casefold()
+        if author_id in authors:
+            raise OOXMLInvalid("PPTX comment author id is repeated")
+        authors[author_id] = {
+            **_MODERN_AUTHOR_UNKNOWN,
+            "authorPart": part,
+            "authorName": _pptx_comment_claim(record, "name"),
+            "authorInitials": _pptx_comment_claim(record, "initials"),
+            "authorUserId": _pptx_comment_claim(record, "userId"),
+            "authorProviderId": _pptx_comment_claim(record, "providerId"),
+        }
+    return authors
+
+
+def _pptx_modern_comment_extension(slide_root: ElementTree.Element) -> str | None:
+    """Return the relationship id the slide names its modern comment list by.
+
+    The advertisement is the slide's own: an ``ext`` directly inside the slide
+    element's own ``extLst``, both written in the same PresentationML namespace
+    the slide element is. That is the one place the extension is defined to
+    sit, so it is the only place read. An extension list hung off a shape
+    somewhere down the tree is that shape's, not the slide's; and an ``ext``
+    from another namespace is another vocabulary's element that happens to
+    share a local name, whatever URI it carries. Neither routes to a comment
+    list.
+
+    ``None`` says the slide advertises no modern comments at all, which is not
+    a fault: a slide relating to a comment part it never declares has none to
+    read, and nothing falls back to the relationship as the route in.
+
+    Where the slide does advertise the extension, everything it promises has to
+    be there. Two advertisements, or an advertisement holding no ``commentRel``
+    or more than one, leave which list the slide means ambiguous; an id written
+    in any namespace but the relationships one names no relationship in the
+    first place, and neither does a ``commentRel`` from somewhere other than
+    the one namespace the extension is defined in. Each is refused rather than
+    resolved to whichever reading happens to work.
+    """
+    namespace = slide_root.tag.rpartition("}")[0].lstrip("{")
+    if namespace not in _PRESENTATIONML:
+        return None
+    advertised = [
+        element
+        for container in slide_root
+        if container.tag == f"{{{namespace}}}extLst"
+        for element in container
+        if element.tag == f"{{{namespace}}}ext"
+        and element.attrib.get("uri", "").casefold() == _MODERN_COMMENTS_EXTENSION
+    ]
+    if not advertised:
+        return None
+    if len(advertised) > 1:
+        raise OOXMLInvalid("PPTX slide advertises modern comments more than once")
+    related = [
+        child for child in advertised[0] if child.tag == _MODERN_COMMENT_REL
+    ]
+    if len(related) != 1:
+        raise OOXMLInvalid(
+            "PPTX modern comment extension does not name exactly one relationship"
+        )
+    named = [
+        value
+        for key, value in related[0].attrib.items()
+        if _local(key) == "id"
+        and key.startswith("{")
+        and key.rpartition("}")[0].lstrip("{") in _RELATIONSHIP_NAMESPACES
+    ]
+    if not named:
+        raise OOXMLInvalid("PPTX modern comment extension names no relationship id")
+    if len(named) > 1:
+        raise OOXMLInvalid(
+            "PPTX modern comment extension names more than one relationship id"
+        )
+    return named[0]
+
+
+def _pptx_modern_comments(
+    package: _Package,
+    slide: str,
+    slide_root: ElementTree.Element,
+    authors: dict[str, dict[str, object]],
+) -> list[tuple[str, dict[str, object]]]:
+    """Return one slide's modern comments as (text, provenance), in source order.
+
+    The slide's own extension is the route in: it names the relationship the
+    list is reached through, so a slide advertising nothing has no modern
+    comments however it relates, and a slide advertising the extension has to
+    carry the one relationship it named. A relationship the extension does not
+    name is not the list the slide meant, and resolving the part from it anyway
+    would read a part the slide never claimed as its comments.
+
+    Order is the order the comment list wrote them in -- each comment, then its
+    own replies in turn -- and nothing is sorted by id, author or timestamp. A
+    reply is reported as the comment it is, citing the one it answers and the
+    position it holds in that thread.
+
+    A modern comment's identity is its own ``ST_Guid``, so unlike a classic
+    comment it cites an author without indexing into a running table. An author
+    the table never defines is kept as the id the file wrote, marked
+    unresolved: a comment citing an id nobody defined is still the file's own
+    claim, and no identity is invented to stand in for one.
+    """
+    extension_id = _pptx_modern_comment_extension(slide_root)
+    if extension_id is None:
+        return []
+    related = _related_part(
+        package,
+        slide,
+        _MODERN_COMMENTS_RELATIONSHIPS,
+        _MODERN_COMMENTS_CONTENT_TYPE,
+        "modern comments",
+    )
+    if related is None:
+        raise OOXMLInvalid("PPTX modern comment extension names a missing relationship")
+    relation_id, part = related
+    if relation_id != extension_id:
+        raise OOXMLInvalid("PPTX modern comment extension names another relationship")
+    root, namespace = _pptx_comment_root(package, part, "cmLst", _MODERN_NAMESPACE)
+    result: list[tuple[str, dict[str, object]]] = []
+    seen: set[str] = set()
+    runs = 0
+    for entry in root:
+        local = _pptx_comment_local(entry, namespace)
+        if local == "extLst":
+            continue
+        if local != "cm":
+            raise OOXMLInvalid("PPTX comment part holds an unsupported element")
+        if len(result) >= _MAX_PPTX_COMMENTS:
+            raise OOXMLInvalid("PPTX slide has too many comments")
+        text, provenance, replies, runs = _pptx_modern_entry(
+            entry, namespace, part, relation_id, authors, seen, runs
+        )
+        result.append((text, provenance))
+        for index, reply in enumerate(replies):
+            if _pptx_comment_local(reply, namespace) != "reply":
+                raise OOXMLInvalid("PPTX comment part holds an unsupported element")
+            if len(result) >= _MAX_PPTX_COMMENTS:
+                raise OOXMLInvalid("PPTX slide has too many comments")
+            reply_text, reply_where, _nested, runs = _pptx_modern_entry(
+                reply,
+                namespace,
+                part,
+                relation_id,
+                authors,
+                seen,
+                runs,
+                as_reply=True,
+            )
+            result.append(
+                (
+                    reply_text,
+                    {
+                        **reply_where,
+                        "parentCommentId": provenance["commentId"],
+                        "replyIndex": index,
+                    },
+                )
+            )
+    return result
+
+
+def _pptx_modern_entry(
+    entry: ElementTree.Element,
+    namespace: str,
+    part: str,
+    relation_id: str,
+    authors: dict[str, dict[str, object]],
+    seen: set[str],
+    runs: int,
+    *,
+    as_reply: bool = False,
+) -> tuple[str, dict[str, object], list[ElementTree.Element], int]:
+    """Read one modern comment or reply: its text, its claims and its replies.
+
+    A comment and a reply are reported in the same shape, so both are read here
+    and carry the same keys -- a reply simply holds nothing for the keys only a
+    comment may claim. They are not read under the same grammar: ``as_reply``
+    reads the narrower ``CT_CommentReply``, which admits only a body and the
+    extension point, and only the four attributes a reply may carry. A comment's
+    own children and claims written on a reply are refused there rather than
+    read, so no reply-only field is ever reported from syntax the schema does
+    not allow.
+
+    Within a comment, ``pos``, the anchor, the body and the reply list each
+    appear once -- a second of any of them leaves the comment with two of
+    something nothing here picks between. Two entries claiming one id leave
+    every reference to it ambiguous, so the part is refused rather than read
+    under one of them.
+    """
+    if as_reply and not _MODERN_REPLY_ATTRIBUTES.issuperset(entry.attrib):
+        raise OOXMLInvalid("PPTX modern comment reply holds an unsupported attribute")
+    comment_id = _pptx_comment_guid(entry, "id")
+    if comment_id.casefold() in seen:
+        raise OOXMLInvalid("PPTX comment id is repeated")
+    seen.add(comment_id.casefold())
+    author_id = _pptx_comment_guid(entry, "authorId")
+    author = authors.get(author_id.casefold())
+    text: str | None = None
+    position: dict[str, object] = {"x": None, "y": None}
+    anchor: str | None = None
+    replies: list[ElementTree.Element] = []
+    anchored = False
+    threaded = False
+    for node in entry:
+        local = _pptx_comment_local(node, namespace)
+        if as_reply and local not in _MODERN_REPLY_CHILDREN:
+            # A nested thread is called out for what it is -- a thread is one
+            # level deep -- and everything else is simply an element the reply
+            # grammar does not place here.
+            raise OOXMLInvalid(
+                "PPTX modern comment reply holds replies of its own"
+                if local == "replyLst"
+                else "PPTX comment part holds an unsupported element"
+            )
+        if local == "pos":
+            if anchored:
+                raise OOXMLInvalid("PPTX comment declares more than one position")
+            anchored = True
+            position = {name: _pptx_comment_coordinate(node, name) for name in "xy"}
+        elif local in _MODERN_ANCHORS:
+            if anchor is not None:
+                raise OOXMLInvalid("PPTX modern comment declares more than one anchor")
+            anchor = local
+        elif local == "txBody":
+            if text is not None:
+                raise OOXMLInvalid("PPTX modern comment text is malformed")
+            text, runs = _pptx_modern_text(node, runs)
+        elif local == "replyLst":
+            if threaded:
+                raise OOXMLInvalid("PPTX modern comment declares more than one thread")
+            threaded = True
+            # The extension point is dropped here rather than skipped later, so
+            # a reply's position in the thread counts replies and nothing else.
+            replies = [
+                item
+                for item in node
+                if _pptx_comment_local(item, namespace) != "extLst"
+            ]
+        elif local != "extLst":
+            raise OOXMLInvalid("PPTX comment part holds an unsupported element")
+    if text is None:
+        raise OOXMLInvalid("PPTX modern comment text is malformed")
+    return (
+        text,
+        {
+            "part": part,
+            "relationshipId": relation_id,
+            # The id the slide's extension named, recorded beside the one the
+            # part was reached through. The two are the same id: the extension
+            # is the route in, and a slide naming any other relationship is
+            # refused rather than read through either.
+            "extensionRelationshipId": relation_id,
+            "commentForm": "modern",
+            "commentId": comment_id,
+            "parentCommentId": None,
+            "replyIndex": None,
+            "authorId": author_id,
+            "authorResolved": author is not None,
+            **(_MODERN_AUTHOR_UNKNOWN if author is None else author),
+            "created": _pptx_comment_claim(entry, "created"),
+            "status": _pptx_modern_comment_status(entry),
+            # The task claims resolve to None on a reply, which may not write
+            # them at all: a reply carries the keys so both forms read alike,
+            # and carries nothing in them.
+            **{
+                name: _pptx_comment_claim(entry, name)
+                for name in _MODERN_COMMENT_TASK_CLAIMS
+            },
+            "anchorKind": anchor,
+            **position,
+        },
+        replies,
+        runs,
+    )
+
+
+def _pptx_modern_text(body: ElementTree.Element, runs: int) -> tuple[str, int]:
+    """Join one modern comment body's own text, bounding the runs it asks for.
+
+    The body is DrawingML rich text rather than the ``xsd:string`` a classic
+    comment holds, so its runs are read by local name as the slide's own are,
+    joined inside each paragraph and separated between them. Nothing in it is
+    resolved or evaluated: a mention is the text the file wrote, never a person
+    looked up, and a field is the value it already stored.
+    """
+    paragraphs: list[str] = []
+    for paragraph in body:
+        if _local(paragraph.tag) != "p":
+            continue
+        pieces: list[str] = []
+        for node in paragraph.iter():
+            if _local(node.tag) != "t":
+                continue
+            runs += 1
+            if runs > _MAX_PPTX_COMMENT_RUNS:
+                raise OOXMLInvalid("PPTX modern comments have too many runs")
+            pieces.append(node.text or "")
+        paragraphs.append("".join(pieces))
+    text = "\n".join(paragraphs)
+    if len(text) > _MAX_PPTX_COMMENT_CHARS:
+        raise OOXMLInvalid("PPTX comment text exceeds the accepted bound")
+    return text, runs
 
 
 def _pptx_note_text(package: _Package, part: str) -> str:

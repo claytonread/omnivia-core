@@ -1,9 +1,9 @@
 """Classic PPTX slide comments: qualification, provenance and refusals.
 
 Only the classic (per-slide ``p:cmLst``) comment form is read here. Threaded
-"modern" comments carry a different relationship and content type, so they
-reach nothing in this module and are covered only by the test that shows their
-relationship type does not qualify.
+"modern" comments carry a different relationship and content type, so the
+types below reach none of their parts; they are read by their own readers and
+covered in ``test_pptx_modern_comments.py``.
 """
 
 from __future__ import annotations
@@ -105,6 +105,7 @@ EXPECTED = {
     "captureId": CAPTURE,
     "part": COMMENT_PART,
     "relationshipId": "rId2",
+    "commentForm": "classic",
     "commentId": "0:1",
     "commentIndex": "1",
     "authorId": "0",
