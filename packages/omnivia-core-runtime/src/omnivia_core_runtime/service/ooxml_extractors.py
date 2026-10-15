@@ -3866,13 +3866,7 @@ def extract_pptx(
     ``budget`` is that aggregate ceiling, injectable so a breach can be
     exercised with a small budget rather than a real allocation.
     """
-    settings = settings if settings is not None else text_only_settings()
-    images = _EmbeddedImages(
-        settings,
-        ocr_engine,
-        budget if budget is not None else ExtractionBudget(),
-        embedded_image_gate(settings),
-    )
+    images = _EmbeddedImages.over(settings, ocr_engine=ocr_engine, budget=budget)
     with _Package(content) as package:
         if "ppt/presentation.xml" not in package.names:
             raise OOXMLInvalid("PPTX presentation part is missing")
@@ -3970,15 +3964,15 @@ def extract_pptx(
             "externalReferences": package.external_relationships,
             **images.to_limitations(),
         }
-        if images.budget.breach is not None:
-            limitations["limitBreach"] = images.budget.breach
+        if images.limit_breach is not None:
+            limitations["limitBreach"] = images.limit_breach
         return OOXMLExtraction(
             tuple(segments),
             "slide",
             len(slides),
             limitations,
-            failed_units=images.outcomes.count(EMBEDDED_MALFORMED),
-            limit_breach=images.budget.breach,
+            failed_units=images.failed_units,
+            limit_breach=images.limit_breach,
         )
 
 
@@ -10199,7 +10193,7 @@ class _PptxWalker:
         # built, so a picture naming only a reference out of the package carries
         # no part here and nothing of that reference is opened, fetched or
         # probed.
-        read = self._images.read(
+        read = self._images.member(
             self._package, record["imagePart"], record["imageContentType"], locator
         )
         self._segments.append(
