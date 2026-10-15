@@ -194,6 +194,12 @@ EXPECTED_ALLOCATION = (
         "Evidence Runtime",
         "candidate",
     ),
+    (
+        73,
+        "0073_semantic_vector_projection.sql",
+        "Evidence Runtime",
+        "candidate",
+    ),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -299,6 +305,11 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # (c40da7eb), then the repair that paired the two columns in one CHECK
     # (2674bfc5), which is where its current content lives.
     72: "2674bfc584b1c3fb4f421139ee6cb943e5017ba0",
+    # 0073 is the model-neutral semantic vector projection. Its lane authored it
+    # as 0069 against an older head; 0069-0072 were already allocated here, so it
+    # is renumbered to the next free number and pinned to the commit that carries
+    # its SQL on this branch.
+    73: "523b4dddf1281ebd94ed3e4aea05fecb7f5e579d",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

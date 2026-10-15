@@ -612,6 +612,17 @@
       "sha256": "4f16b4ebcf9a6a728a41e56fd2585ddb2a43ff5f18aa009743021a322374a1e4",
       "introduced_commit": "2674bfc584b1c3fb4f421139ee6cb943e5017ba0",
       "accepted_commit": null
+    },
+    {
+      "number": 73,
+      "filename": "0073_semantic_vector_projection.sql",
+      "owner": "Evidence Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 72,
+      "sha256": "a21aea920167818128015e7592c8df354959da9aefc0504774897a9df0a6ab52",
+      "introduced_commit": "523b4dddf1281ebd94ed3e4aea05fecb7f5e579d",
+      "accepted_commit": null
     }
   ]
 }
