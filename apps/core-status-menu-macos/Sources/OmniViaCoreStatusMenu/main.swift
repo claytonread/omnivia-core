@@ -77,7 +77,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private let stopItem = NSMenuItem(title: "Stop Service", action: #selector(stopService), keyEquivalent: "")
     private let logItem = NSMenuItem(title: "Show Service Log", action: #selector(showServiceLog), keyEquivalent: "l")
     private let addItem = NSMenuItem(title: "Add to Core…", action: #selector(openCapture), keyEquivalent: "a")
-    private let filesItem = NSMenuItem(title: "Files & Folders…", action: #selector(openFilesAndFolders), keyEquivalent: "")
+    private let filesItem = NSMenuItem(title: "Files and folders…", action: #selector(openFilesAndFolders), keyEquivalent: "")
     private let settingsItem = NSMenuItem(title: "Core Settings…", action: #selector(openSettings), keyEquivalent: ",")
     private var pollTimer: Timer?
     private var monitoringTimer: Timer?
@@ -196,12 +196,15 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 }
             )
             folderManagementWindowController = FolderManagementWindowController(
+                // The configured workspace, stated rather than inferred from a row.
+                workspaceName: configuration.workspaceID,
                 folderStore: environment.folderSubscriptions,
                 folderMonitoring: environment.folderMonitoring,
                 fileStore: environment.fileSubscriptions,
                 fileMonitoring: environment.fileMonitoring,
                 bulkStore: environment.folderBulkRuns,
-                bulkCoordinator: environment.folderBulkCoordinator
+                bulkCoordinator: environment.folderBulkCoordinator,
+                rootGroups: { environment.rootAccessGroups() }
             )
             let companionBinding = CaptureDeliveryBinding.installedCompanion(
                 installationState: configuration.installationState,

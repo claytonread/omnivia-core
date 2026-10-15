@@ -3,73 +3,57 @@ import DocumentIntakeMacOS
 
 @MainActor
 public final class FolderManagementWindowController: NSWindowController,
-    NSTableViewDataSource, NSTableViewDelegate
+    NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate
 {
-    private enum Row {
-        case file(FileSubscription)
-        case folder(FolderSubscription)
-        case bulkRun(FolderBulkRun)
-
-        var id: String {
-            switch self {
-            case let .file(value): value.subscriptionID
-            case let .folder(value): value.subscriptionID
-            case let .bulkRun(value): value.runID
-            }
-        }
-
-        var displayName: String {
-            switch self {
-            case let .file(value): value.displayName
-            case let .folder(value): value.rootDisplayName
-            case let .bulkRun(value): value.rootDisplayName
-            }
-        }
-
-        var subscriptionState: FolderSubscriptionState? {
-            switch self {
-            case let .file(value): value.state
-            case let .folder(value): value.state
-            case .bulkRun: nil
-            }
-        }
-
-        var isActive: Bool {
-            switch self {
-            case .file(let value): value.state == .active
-            case .folder(let value): value.state == .active
-            case .bulkRun(let value): value.state == .adding
-            }
-        }
-    }
-
+    private let workspaceName: String
     private let folderStore: FolderSubscriptionStore
     private let folderMonitoring: FolderMonitoringCoordinator
     private let fileStore: FileSubscriptionStore
     private let fileMonitoring: FileMonitoringCoordinator
     private let bulkStore: FolderBulkRunStore
     private let bulkCoordinator: FolderBulkRunCoordinator
+    /// Retained root groups. Read through a closure so the window never holds the
+    /// access store, which owns bookmarks this surface has no business seeing.
+    private let rootGroups: () -> [NativeRootAccessDescriptor]
+    private let segments = NSSegmentedControl(
+        labels: FilesAndFoldersSegment.allCases.map(\.title),
+        trackingMode: .selectOne,
+        target: nil,
+        action: nil
+    )
+    private let search = NSSearchField()
+    private let statusFilterButton = NSPopUpButton()
+    private let workspaceLabel = NSTextField(labelWithString: "")
     private let table = NSTableView()
+    private let detailView = NSTextView()
     private let statusLabel = NSTextField(labelWithString: "")
     private let pauseResumeButton = NSButton(title: "Pause", target: nil, action: nil)
     private let stopButton = NSButton(title: "Stop updating", target: nil, action: nil)
     private let checkButton = NSButton(title: "Check now", target: nil, action: nil)
-    private var rows: [Row] = []
+    private var segment = FilesAndFoldersSegment.files
+    private var statusFilter = FilesAndFoldersStatusFilter.all
+    private var model: FilesAndFoldersModel
+    private var items: [FilesAndFoldersItem] = []
 
     public init(
+        workspaceName: String,
         folderStore: FolderSubscriptionStore,
         folderMonitoring: FolderMonitoringCoordinator,
         fileStore: FileSubscriptionStore,
         fileMonitoring: FileMonitoringCoordinator,
         bulkStore: FolderBulkRunStore,
-        bulkCoordinator: FolderBulkRunCoordinator
+        bulkCoordinator: FolderBulkRunCoordinator,
+        rootGroups: @escaping () -> [NativeRootAccessDescriptor]
     ) {
+        self.workspaceName = workspaceName
         self.folderStore = folderStore
         self.folderMonitoring = folderMonitoring
         self.fileStore = fileStore
         self.fileMonitoring = fileMonitoring
         self.bulkStore = bulkStore
         self.bulkCoordinator = bulkCoordinator
+        self.rootGroups = rootGroups
+        model = FilesAndFoldersModel(workspaceName: workspaceName)
         super.init(window: nil)
     }
 
@@ -84,36 +68,17 @@ public final class FolderManagementWindowController: NSWindowController,
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    public func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+    public func numberOfRows(in tableView: NSTableView) -> Int { items.count }
 
     public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard rows.indices.contains(row), let identifier = tableColumn?.identifier else { return nil }
-        let value = rows[row]
+        guard items.indices.contains(row), let identifier = tableColumn?.identifier else { return nil }
+        let item = items[row]
         let text: String
-        switch (identifier.rawValue, value) {
-        case ("source", _): text = value.displayName
-        case ("kind", .file): text = "File"
-        case ("kind", .folder): text = "Folder"
-        case ("kind", .bulkRun): text = "Folder run"
-        case ("status", let .file(file)): text = Self.label(file.state)
-        case ("status", let .folder(folder)): text = Self.label(folder.state)
-        case ("status", let .bulkRun(run)): text = Self.label(run.state)
-        case ("files", .file): text = "1"
-        case ("files", let .folder(folder)): text = String(folder.members.count)
-        case ("files", let .bulkRun(run)): text = "\(run.admittedCount)/\(run.members.count)"
-        case ("checked", let .file(file)): text = file.lastCheckedAt ?? "Not yet"
-        case ("checked", let .folder(folder)):
-            text = folder.reviewChangeCount.map { "\($0) changes require review" }
-                ?? folder.lastCompletedMetadataScanAt
-                ?? "Not yet"
-        case ("checked", let .bulkRun(run)):
-            // Separate per-file facts, never one whole-folder success.
-            text = "\(run.admittedCount) added · \(run.publishedCount) in progress · "
-                + "\(run.plannedCount) waiting · \(run.stoppedCount) stopped · "
-                + "\(run.attentionCount) needs attention"
-                + (Self.isTerminal(run.state)
-                    ? " · links retained for manual refresh" : "")
-        default: text = ""
+        switch identifier.rawValue {
+        case "source": text = item.displayName
+        case "status": text = item.statusLabel
+        case "files": text = item.countText
+        default: text = item.activityText
         }
         let field = NSTextField(labelWithString: text)
         field.lineBreakMode = .byTruncatingMiddle
@@ -123,22 +88,23 @@ public final class FolderManagementWindowController: NSWindowController,
 
     public func tableViewSelectionDidChange(_ notification: Notification) { updateControls() }
 
+    public func controlTextDidChange(_ notification: Notification) { applyFilters() }
+
     private func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 410),
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 560),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Files & Folders"
+        window.title = "Files and folders"
         window.center()
 
         for (id, title, width) in [
-            ("source", "Source", 245.0),
-            ("kind", "Kind", 65.0),
+            ("source", "Source", 265.0),
             ("status", "Status", 125.0),
-            ("files", "Files", 55.0),
-            ("checked", "Last checked", 185.0),
+            ("files", "Files", 60.0),
+            ("activity", segment.activityColumnTitle, 300.0),
         ] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
             column.title = title
@@ -153,18 +119,50 @@ public final class FolderManagementWindowController: NSWindowController,
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
 
+        segments.selectedSegment = segment.rawValue
+        segments.target = self
+        segments.action = #selector(segmentChanged)
+        search.placeholderString = "Search by name or identifier"
+        search.delegate = self
+        search.sendsWholeSearchString = false
+        statusFilterButton.target = self
+        statusFilterButton.action = #selector(filterChanged)
+        rebuildStatusFilter()
+        workspaceLabel.stringValue = "Workspace: \(workspaceName)"
+        workspaceLabel.textColor = .secondaryLabelColor
+
+        detailView.isEditable = false
+        detailView.isSelectable = true
+        detailView.drawsBackground = false
+        detailView.isVerticallyResizable = true
+        detailView.isHorizontallyResizable = false
+        detailView.autoresizingMask = [.width]
+        detailView.textContainer?.widthTracksTextView = true
+        let detailScroll = NSScrollView()
+        detailScroll.documentView = detailView
+        detailScroll.hasVerticalScroller = true
+        detailScroll.borderType = .bezelBorder
+
         pauseResumeButton.target = self
         pauseResumeButton.action = #selector(pauseResume)
         stopButton.target = self
         stopButton.action = #selector(stopUpdating)
         checkButton.target = self
         checkButton.action = #selector(checkNow)
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let actions = NSStackView(views: [statusLabel, spacer, checkButton, pauseResumeButton, stopButton])
+
+        let searchSpacer = NSView()
+        searchSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let filters = NSStackView(views: [search, statusFilterButton, searchSpacer, workspaceLabel])
+        filters.orientation = .horizontal
+        filters.spacing = 8
+        let actionSpacer = NSView()
+        actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let actions = NSStackView(
+            views: [statusLabel, actionSpacer, checkButton, pauseResumeButton, stopButton]
+        )
         actions.orientation = .horizontal
         actions.spacing = 8
-        let root = NSStackView(views: [scroll, actions])
+        let root = NSStackView(views: [segments, filters, scroll, detailScroll, actions])
         root.orientation = .vertical
         root.spacing = 12
         root.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
@@ -176,67 +174,87 @@ public final class FolderManagementWindowController: NSWindowController,
             root.trailingAnchor.constraint(equalTo: host.trailingAnchor),
             root.topAnchor.constraint(equalTo: host.topAnchor),
             root.bottomAnchor.constraint(equalTo: host.bottomAnchor),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 290),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 240),
+            detailScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 140),
+            search.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
         ])
         window.contentView = host
         return window
     }
 
+    private func rebuildStatusFilter() {
+        let applicable = FilesAndFoldersStatusFilter.applicable(to: segment)
+        statusFilterButton.removeAllItems()
+        statusFilterButton.addItems(withTitles: applicable.map(\.title))
+        if !applicable.contains(statusFilter) { statusFilter = .all }
+        statusFilterButton.selectItem(at: applicable.firstIndex(of: statusFilter) ?? 0)
+    }
+
     private func reload() {
-        let files = fileStore.all().map(Row.file)
-        let folders = folderStore.all().map(Row.folder)
-        let bulkRuns = bulkStore.all().map(Row.bulkRun)
-        rows = (files + folders + bulkRuns).sorted {
-            if $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedSame {
-                return $0.id < $1.id
-            }
-            return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-        }
+        let folders = folderStore.all()
+        let runs = bulkStore.all()
+        model = FilesAndFoldersModel(
+            workspaceName: workspaceName,
+            files: fileStore.all(),
+            folders: folders,
+            retainedRoots: FilesAndFoldersModel.retainedRoots(
+                groups: rootGroups(),
+                runs: runs,
+                folders: folders
+            ),
+            runs: runs
+        )
+        applyFilters()
+    }
+
+    private func applyFilters() {
+        let selectedID = selected?.identifier
+        items = model.items(
+            segment: segment,
+            search: search.stringValue,
+            statusFilter: statusFilter
+        )
+        table.tableColumns.last?.title = segment.activityColumnTitle
         table.reloadData()
-        if rows.isEmpty {
-            statusLabel.stringValue = "No files or folders are kept updated."
-        } else {
-            let active = rows.filter(\.isActive).count
-            statusLabel.stringValue = "\(active) active · \(rows.count) total"
+        if let selectedID, let row = items.firstIndex(where: { $0.identifier == selectedID }) {
+            table.selectRowIndexes([row], byExtendingSelection: false)
         }
+        statusLabel.stringValue = model.summary(items: items, segment: segment)
         updateControls()
     }
 
     private func updateControls() {
-        guard let selected else {
-            pauseResumeButton.isEnabled = false
-            stopButton.isEnabled = false
-            checkButton.isEnabled = false
-            return
-        }
-        switch selected {
-        case let .bulkRun(run):
-            // Resuming is not retrying: a member that already failed keeps its
-            // own outcome until Retry unavailable files is chosen for it.
-            pauseResumeButton.title = run.state == .paused
-                ? "Resume"
-                : run.attentionCount > 0 ? "Retry unavailable files" : "Pause"
-            pauseResumeButton.isEnabled = [.adding, .paused, .needsAttention].contains(run.state)
-            stopButton.title = "Stop adding remaining files"
-            stopButton.isEnabled = run.plannedCount > 0
-            checkButton.isEnabled = run.state == .adding
-        case .file, .folder:
-            let state = selected.subscriptionState
-            pauseResumeButton.title = state == .reviewRequired
-                ? "Continue changes"
-                : state == .paused || state == .needsAccess ? "Resume" : "Pause"
-            pauseResumeButton.isEnabled = state.map {
-                [.active, .paused, .needsAccess, .reviewRequired].contains($0)
-            } ?? false
-            stopButton.title = "Stop updating"
-            stopButton.isEnabled = state != .stopped
-            checkButton.isEnabled = state == .active
+        let selected = self.selected
+        let actions = FilesAndFoldersModel.actions(for: selected)
+        pauseResumeButton.title = actions.pauseTitle
+        pauseResumeButton.isEnabled = actions.pauseEnabled
+        stopButton.title = actions.stopTitle
+        stopButton.isEnabled = actions.stopEnabled
+        checkButton.isEnabled = actions.checkEnabled
+        detailView.string = model.detail(for: selected)
+            .map { "\($0.label): \($0.value)" }
+            .joined(separator: "\n")
+        if selected == nil {
+            detailView.string = "Select a file or folder to see what Core records about it."
         }
     }
 
-    private var selected: Row? {
-        guard rows.indices.contains(table.selectedRow) else { return nil }
-        return rows[table.selectedRow]
+    private var selected: FilesAndFoldersItem? {
+        guard items.indices.contains(table.selectedRow) else { return nil }
+        return items[table.selectedRow]
+    }
+
+    @objc private func segmentChanged() {
+        segment = FilesAndFoldersSegment(rawValue: segments.selectedSegment) ?? .files
+        rebuildStatusFilter()
+        applyFilters()
+    }
+
+    @objc private func filterChanged() {
+        let applicable = FilesAndFoldersStatusFilter.applicable(to: segment)
+        guard applicable.indices.contains(statusFilterButton.indexOfSelectedItem) else { return }
+        statusFilter = applicable[statusFilterButton.indexOfSelectedItem]
+        applyFilters()
     }
 
     @objc private func pauseResume() {
@@ -269,6 +287,9 @@ public final class FolderManagementWindowController: NSWindowController,
                 } else {
                     _ = try? await bulkCoordinator.pause(runID: value.runID)
                 }
+            case .retainedRoot:
+                // Nothing watches a retained root, so there is nothing to pause.
+                break
             }
             reload()
         }
@@ -276,17 +297,16 @@ public final class FolderManagementWindowController: NSWindowController,
 
     @objc private func stopUpdating() {
         guard let selected else { return }
+        let isRun: Bool
+        if case .bulkRun = selected { isRun = true } else { isRun = false }
         let alert = NSAlert()
-        alert.messageText = selected.subscriptionState == nil
+        alert.messageText = isRun
             ? "Stop adding remaining files from \(selected.displayName)?"
             : "Stop updating \(selected.displayName)?"
-        alert.informativeText = selected.subscriptionState == nil
+        alert.informativeText = isRun
             ? "Already published files continue and already added files stay in Core. Only files that have not started will be stopped. Files already captured remain linked for manual refresh."
             : "Core will stop adding new changes. Existing files will remain linked for manual refresh, and additions already queued will continue."
-        alert.addButton(
-            withTitle: selected.subscriptionState == nil
-                ? "Stop adding remaining files" : "Stop updating"
-        )
+        alert.addButton(withTitle: isRun ? "Stop adding remaining files" : "Stop updating")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task {
@@ -302,6 +322,8 @@ public final class FolderManagementWindowController: NSWindowController,
                 outcome = "Stopped \(run?.stoppedCount ?? value.plannedCount) of "
                     + "\(value.members.count) files. Already added files remain in Core "
                     + "and stay linked for manual refresh."
+            case .retainedRoot:
+                break
             }
             reload()
             if let outcome { statusLabel.stringValue = outcome }
@@ -319,33 +341,10 @@ public final class FolderManagementWindowController: NSWindowController,
                 _ = await fileMonitoring.reconcile(subscriptionIDs: [value.subscriptionID])
             case let .bulkRun(value):
                 _ = await bulkCoordinator.advance(runID: value.runID)
+            case .retainedRoot:
+                break
             }
             reload()
-        }
-    }
-
-    private static func label(_ state: FolderSubscriptionState) -> String {
-        switch state {
-        case .waitingForCore: "Waiting for Core"
-        case .active: "Watching"
-        case .paused: "Paused"
-        case .reviewRequired: "Review required"
-        case .needsAccess: "Needs access"
-        case .stopped: "Stopped"
-        }
-    }
-
-    private static func isTerminal(_ state: FolderBulkRunState) -> Bool {
-        state == .complete || state == .stopped
-    }
-
-    private static func label(_ state: FolderBulkRunState) -> String {
-        switch state {
-        case .adding: "Adding"
-        case .paused: "Paused"
-        case .complete: "Added"
-        case .needsAttention: "Needs attention"
-        case .stopped: "Stopped"
         }
     }
 }

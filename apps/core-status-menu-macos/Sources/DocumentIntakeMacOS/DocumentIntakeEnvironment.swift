@@ -148,4 +148,11 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     public func reconcilePendingFolderEstablishment() async -> [String] {
         await FolderCaptureSubmission.reconcilePending(environment: self)
     }
+
+    /// The retained root groups, as projections that carry no bookmark and no
+    /// absolute route. The management window reads these so a folder that was
+    /// added once can be listed as retained rather than as a watch.
+    public func rootAccessGroups() -> [NativeRootAccessDescriptor] {
+        accessStore.rootDescriptors()
+    }
 }
