@@ -989,7 +989,12 @@ def test_a_malformed_resource_snapshot_is_its_own_terminal_fact(
     A resource snapshot this build cannot read is not the legacy absent one, and
     reading it as absent would resolve -- which is exactly what the capture was
     admitted to avoid. It settles naming the document that could not be read, and
-    the installed model is never consulted or pinned.
+    the installed model is never consulted.
+
+    It is still released, though. A capture this build cannot read may well have
+    been pinned by the build that wrote it, and a terminal settlement that skipped
+    the release would hold those bytes against the operator until something
+    restarted -- so the pin here is the one a readable admission would have left.
     """
     legacy_admission(
         monkeypatch,
@@ -1001,11 +1006,15 @@ def test_a_malformed_resource_snapshot_is_its_own_terminal_fact(
         tmp_path / "inst-bad-resources", tmp_path, "deu", "osd"
     )
     installed = installed_identities(resources)
-    admit(
+    capture = admit(
         runner,
         document_id="doc-malformed-resources",
         content=image_bytes(),
         media_type="image/png",
+    )
+    assert runner.workspace_id is not None
+    resources.pin(
+        capture_pin(runner.workspace_id, capture.capture_id), (installed["deu"],)
     )
 
     results = process_capture_outbox(runner, catalogue_for=authority)
@@ -1020,6 +1029,7 @@ def test_a_malformed_resource_snapshot_is_its_own_terminal_fact(
     assert (
         read_extraction_projection(runner, document_id="doc-malformed-resources") == []
     )
+    assert resources.store.load().pins == ()
     resources.remove(installed["deu"])
 
 

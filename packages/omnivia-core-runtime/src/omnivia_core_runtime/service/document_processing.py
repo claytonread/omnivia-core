@@ -165,11 +165,17 @@ PROCESSING_SETTINGS_INVALID = "processing_settings_invalid"
 #: or reinstalling a model cannot repair a record of which models were named.
 PROCESSING_RESOURCES_INVALID = "processing_resources_invalid"
 
-#: Resolves the trusted catalogue for one *frozen* ordered selection, at the moment
-#: the work runs. A callable rather than a catalogue because the managed cache
-#: publishes one directory per selection, so there is no single catalogue that could
-#: serve every selection -- see
+#: Resolves the trusted catalogue for one ordered *language* selection, at the
+#: moment the work runs. A callable rather than a catalogue because the managed
+#: cache publishes one directory per selection, so there is no single catalogue
+#: that could serve every selection -- see
 #: :func:`~omnivia_core_runtime.service.processing_settings.installation_catalogue`.
+#:
+#: This is the reprocess side. A reprocess is an explicit new decision resolved
+#: against the workspace's current preferences and executed inside one request, so
+#: it does have languages to resolve; a queued obligation does not, and asks
+#: :class:`FrozenResourceSource` for the identities it was admitted against
+#: instead.
 CatalogueFor = Callable[[Sequence[str]], TrustedOcrCatalogue]
 
 
@@ -244,12 +250,14 @@ class DocumentProcessingExecutor:
 
     runner: ServiceRunner
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
-    #: How a frozen ordered selection becomes a trusted catalogue, asked at the
-    #: moment an obligation runs. The executor holds no language of its own:
-    #: which languages are wanted is the capture row's frozen snapshot, and this
-    #: answers only whether the installation can serve them. An installation that
-    #: can lease is held for each obligation's whole extraction. ``None`` reads
-    #: the packaged fail-closed catalogue, which serves nothing.
+    #: Where this installation's OCR resources come from. The executor holds no
+    #: language and resolves none: which identities an obligation runs against is
+    #: its own capture row, frozen and pinned at admission, and this is only asked
+    #: whether it can still serve those exact identities -- under a re-asserted pin
+    #: and a lease that lasts the whole extraction. It is also what the pins of
+    #: abandoned obligations are reclaimed through. Anything that cannot serve a
+    #: frozen selection, ``None`` included, leaves such a capture reporting
+    #: unavailable resources rather than resolving a substitute.
     catalogue_for: CatalogueSource | None = None
     _next_poll: float = 0.0
     #: Whether this instance has already taken back the durable resource pins no
@@ -798,34 +806,41 @@ def _process_obligation(
     two documents was unreadable. It is deliberately *not* executed as the legacy
     no-selection case, which would resolve a profile nobody was offered.
 
-    The pin is released only after the obligation has reached a terminal
-    disposition, which is after :func:`_execute_obligation` has settled the outbox
-    row -- and therefore never on the path that pauses, and never when settling
-    itself failed. A release that is lost to a crash in that window leaves a pin
+    The pin is released once, after the obligation has reached a terminal
+    disposition, on *every* path that reaches one -- the undecodable ones included,
+    because a capture this build cannot read may well have been pinned by a build
+    that could, and settling it without releasing would hold those bytes until the
+    next start reclaimed them.
+
+    It is released only after :func:`_execute_obligation` has settled the outbox
+    row, and therefore never on the path that pauses and never when settling
+    itself failed. A release lost to a crash in that window leaves a pin
     :func:`reclaim_capture_pins` takes back, which is the recoverable direction;
     releasing before the settlement would leave the bytes removable while the
     obligation was still unresolved, which is not.
     """
     assert runner.workspace_id is not None
+    operation_id = capture_pin(runner.workspace_id, capture.capture_id)
     unexecutable: str | None = None
     settings: ProcessingSettings | None = None
     admitted: AdmittedResources | None = None
     try:
         settings = frozen_settings(capture)
         admitted = frozen_resources(capture)
-    except ProcessingSettingsInvalid:
+    except (ProcessingSettingsInvalid, OcrSelectionInvalid):
+        # The language order is validated when a settings document is decoded, so
+        # a malformed selection arrives as the same unreadable-preferences fact.
         unexecutable = PROCESSING_SETTINGS_INVALID
     except ProcessingResourcesInvalid:
         unexecutable = PROCESSING_RESOURCES_INVALID
     if unexecutable is not None:
-        return _execute_obligation(
+        result = _execute_obligation(
             runner,
             capture,
             ExtractionSettings(processing_mode=MODE_TEXT_ONLY),
             unexecutable=unexecutable,
         )
-    operation_id = capture_pin(runner.workspace_id, capture.capture_id)
-    try:
+    else:
         with capture_resources(
             capture,
             settings=settings,
@@ -833,24 +848,16 @@ def _process_obligation(
             source=source,
             operation_id=operation_id,
         ) as resources:
-            executed = resolve_settings(
-                media_type=capture.media_type,
-                profile_ref=capture.processing_profile_ref,
-                settings=settings,
-                resources=resources,
+            result = _execute_obligation(
+                runner,
+                capture,
+                resolve_settings(
+                    media_type=capture.media_type,
+                    profile_ref=capture.processing_profile_ref,
+                    settings=settings,
+                    resources=resources,
+                ),
             )
-            result = _execute_obligation(runner, capture, executed)
-    except OcrSelectionInvalid:
-        # A frozen selection that is not a selection at all. Unreachable from a
-        # snapshot this build wrote -- both documents validate their languages on
-        # the way in -- and settled as unexecutable rather than resolved, for the
-        # same reason an undecodable document is.
-        return _execute_obligation(
-            runner,
-            capture,
-            ExtractionSettings(processing_mode=MODE_TEXT_ONLY),
-            unexecutable=PROCESSING_RESOURCES_INVALID,
-        )
     _release(source, operation_id)
     return result
 
