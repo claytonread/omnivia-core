@@ -14,7 +14,7 @@ This document is generated from
 `qualification/wp15/qualification-ledger.v1.json` and is verified against it
 by `scripts/check-wp15-qualification.py`. It records what this checkout can
 show and what it cannot. **It is not a claim that the release is qualified.**
-29 of 130 gates have direct production-path coverage
+41 of 130 gates have direct production-path coverage
 of every condition they name; the rest carry the exact condition still
 missing.
 
@@ -22,22 +22,22 @@ missing.
 
 | Status | Gates | Meaning |
 |---|---|---|
-| passed | 29 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
+| passed | 41 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
 | failed | 0 | Evidence exists and shows the required result is not met. |
 | blocked_external | 46 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
-| not_executed | 54 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
-| not_implemented | 1 | The production path the gate names does not exist in this checkout. |
+| not_executed | 43 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
+| not_implemented | 0 | The production path the gate names does not exist in this checkout. |
 
 ## Counts by family and status
 
 | Family | Section | Gates | passed | failed | blocked_external | not_executed | not_implemented |
 |---|---|---|---|---|---|---|---|
-| AT | 20 | 50 | 7 | 0 | 19 | 24 | 0 |
+| AT | 20 | 50 | 10 | 0 | 19 | 21 | 0 |
 | NAT | 20.1 | 17 | 0 | 0 | 17 | 0 | 0 |
-| DOC | 20.2 | 19 | 4 | 0 | 0 | 15 | 0 |
-| MON | 20.3 | 38 | 16 | 0 | 10 | 12 | 0 |
-| END | 20.4 | 6 | 2 | 0 | 0 | 3 | 1 |
-| **total** | | **130** | 29 | 0 | 46 | 54 | 1 |
+| DOC | 20.2 | 19 | 9 | 0 | 0 | 10 | 0 |
+| MON | 20.3 | 38 | 20 | 0 | 10 | 8 | 0 |
+| END | 20.4 | 6 | 2 | 0 | 0 | 4 | 0 |
+| **total** | | **130** | 41 | 0 | 46 | 43 | 0 |
 
 ## Counts by required evidence class
 
@@ -63,20 +63,30 @@ each one's scope limits.
 
 | Gate | Gate summary |
 |---|---|
+| AT-05 | Paste a note, then drop files. |
 | AT-08 | An unsupported, oversized or mixed selection. |
+| AT-10 | A pasted path, an embedded URL and instruction text. |
 | AT-20 | A native queue capacity race across the Share and manual routes. |
 | AT-21 | A symlink, a tampered manifest or a tampered payload. |
 | AT-29 | Disconnect after durable publication, including before the first admission. |
 | AT-31 | Two refreshes finish in reverse order. |
+| AT-37 | One item fails before local publication, and separately a partial Core processing case. |
 | AT-47 | An earlier snapshot is admitted after a newer capture succeeds. |
 | AT-48 | A descriptor expires with a known-no-effect outcome, versus an ambiguous admission. |
+| DOC-02 | DOCX body and annotations. |
+| DOC-03 | XLSX formulas. |
+| DOC-04 | XLSX sparse and hidden content. |
+| DOC-07 | HTML. |
 | DOC-12 | OCR confidence. |
+| DOC-14 | Embedded document image profile. |
 | DOC-15 | Resource adversaries. |
 | DOC-17 | Reprocess races. |
 | DOC-18 | Retrieval publication. |
 | MON-01 | Create an individual watch. |
 | MON-02 | Folder once, with recursion on and off. |
 | MON-03 | New files appear during a one-off plan. |
+| MON-04 | A one-off run of 1,000 or more files. |
+| MON-06 | A new-and-changed baseline. |
 | MON-08 | An edit during a baseline or a scan. |
 | MON-09 | A burst of saves. |
 | MON-10 | A crash after a checkpoint. |
@@ -85,9 +95,11 @@ each one's scope limits.
 | MON-13 | The event UUID changes or is missing. |
 | MON-18 | Symlink, alias, nested mount and path traversal. |
 | MON-22 | Stop watching. |
+| MON-23 | Source Disconnect versus folder Disconnect. |
 | MON-24 | Pause, configuration change or disconnect at the final rename. |
 | MON-25 | Core sees a tombstone before the first capture. |
 | MON-29 | A byte or copy quota is reached. |
+| MON-30 | A known failed, unsupported or zero-text digest. |
 | MON-33 | Reverse job completion and a stale base. |
 | MON-36 | Scan and recursion limits. |
 | END-03 | A new source capture races reprocessing of an older capture. |

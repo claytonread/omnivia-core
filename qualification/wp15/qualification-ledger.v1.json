@@ -135,15 +135,26 @@
         {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIntakePolicyTests.swift",
           "symbol": "testDroppedTextAndLinksAreReviewedAsCapturedCopies",
-          "covers": "Dropped text becomes a reviewed captured copy, which is the note's representation but not its survival across a later drop."
+          "covers": "Dropped text becomes a reviewed captured copy, which is how a note is represented once it is submitted."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureSurfaceAcceptanceTests.swift",
+          "symbol": "testTypedNoteSurvivesALaterFileDropWithNoModeOrDestinationChange",
+          "covers": "A typed note, the keep-updated mode and the destination are each asserted unchanged after two files are dropped into the same draft through CapturePanelController.addIncoming."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureSurfaceAcceptanceTests.swift",
+          "symbol": "testAPanelReopenedByIncomingWorkKeepsTheNoteModeAndDestination",
+          "covers": "The same three survive incoming work rebuilding the panel chrome, which is the path the note-and-mode reset lived on."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test composes a typed note and a subsequent file drop in one draft and then asserts the note text, the mode and the destination are all unchanged. The surviving-note requirement is therefore unproven in either direction.",
-      "limitations": "The single reference covers how dropped text is classified, not what happens to an existing note when files arrive after it.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The drop runs through the real draft and the real panel controller. The note is set through a test accessor on the panel's own text view rather than a real paste, and the destination is an immutable workspaceName, so that clause is structural rather than observed. The one test that reaches buildWindow, where the reset lived, is skipped when NSScreen.screens is empty, so a headless runner proves the gate only on the window-less path.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/CaptureDraft.swift",
-        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/CaptureIntakePolicy.swift"
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/CaptureIntakePolicy.swift",
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/CapturePanelController.swift"
       ]
     },
     {
@@ -325,13 +336,24 @@
           "path": "tests/test_core_companion_packaging.py",
           "symbol": "test_share_extension_entitlements_cannot_reach_the_network",
           "covers": "The Share extension carries no network entitlement, which makes the no-fetch rule structural rather than a promise."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureSurfaceAcceptanceTests.swift",
+          "symbol": "testASharedFilesystemPathIsAdoptedAsItsOwnTextAndNeverRead",
+          "covers": "A shared filesystem path is adopted as its own text through the real Share inbox: the named file's own bytes never appear in the adopted snapshot."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureSurfaceAcceptanceTests.swift",
+          "symbol": "testAPastedPathInTheNoteIsTextAndOpensNothing",
+          "covers": "A path left in the review note adopts nothing, queues nothing and connects no access grant, so nothing opens it."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test asserts that a pasted filesystem path string is never opened as a file. The pasted-path third of the gate is covered only by the design intent recorded in the companion README, not by an assertion.",
-      "limitations": "The URL and instruction-text halves are well covered. The pasted-path half rests on the Shortcuts and Services routes reading no path string, which is stated in prose and in the entitlement set but not asserted by a test.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The URL and instruction-text halves run on the real Share adoption path. The pasted-path half is proven by absence: the named file's bytes do not reach the adopted snapshot, and no grant, queue entry or subscription appears. Nothing spies on file opens, the note is set through a test accessor rather than a real paste, and Extensions/Share's own view controller is outside the Swift test target.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareRepresentationPolicy.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareInboxStore.swift",
         "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/AppIntentsSupport.swift",
         "apps/core-status-menu-macos/Packaging/Share.entitlements",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py"
@@ -358,15 +380,27 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/ShareInboxStoreTests.swift",
           "symbol": "testPublishedRequestIsCompleteAndReadable",
           "covers": "A published durable request is complete and readable without the companion running."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureSurfaceAcceptanceTests.swift",
+          "symbol": "testAnAddWithNothingToDeliverToIsDurableAndReportedAsQueuedOnly",
+          "covers": "An explicit Add with nothing to deliver to publishes the frozen payload durably and reports queued only, never Added and never naming the destination."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureSurfaceAcceptanceTests.swift",
+          "symbol": "testADurableShareRequestIsQueuedWordingAndNamesNoDestination",
+          "covers": "ShareInboxStore.queuedWording is the design's exact sentence, and the published manifest on disk names no destination, workspace, target or principal."
         }
       ],
       "status": "not_executed",
-      "missing_condition": "No test takes the companion offline, and no test asserts the queue wording the person is shown. The design fixes that wording as Queued on this Mac. Open OmniVia Core to send, and requires it never read as Added or name a destination; nothing checks either property.",
-      "limitations": "Durable publication is well covered, but it is covered with delivery stubbed rather than failing from an absent network, so offline is modelled as not-yet-delivered rather than observed.",
+      "missing_condition": "Offline is still not produced, and the wording is only half proven on the surface the person actually sees. No test makes delivery fail from an absent network: the durable-publication tests never attempt delivery at all, so offline is modelled as not-yet-delivered. And the panel's own receipt detail stops at Queued on this Mac.; the design's full sentence, Queued on this Mac. Open OmniVia Core to send, exists only as the ShareInboxStore.queuedWording constant, and no test shows it being displayed, because Extensions/Share is outside the Swift test target.",
+      "limitations": "Durable publication, the never-Added rule and the never-name-a-destination rule are each asserted against the real queue, the real ShareInboxStore manifest and the real panel receipt. Eligibility of the target is not modelled, and the no-destination assertions search only for the workspace name the test configured.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ManualCaptureSubmission.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareInboxStore.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareInboxStore.swift",
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/CapturePanelController.swift",
+        "apps/core-status-menu-macos/Extensions/Share/ShareViewController.swift"
       ]
     },
     {
@@ -620,13 +654,19 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_capture_vertical.py",
           "symbol": "test_document_reprocess_refuses_expired_capture_without_revision",
           "covers": "An expired replay is refused rather than silently re-run."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureSurfaceAcceptanceTests.swift",
+          "symbol": "testATimedOutSubmissionIsShownAsCheckingStatus",
+          "covers": "An unknown delivery outcome projects through the production CaptureActivityStore and FilesAndFoldersModel to the Checking status label, with the activity record preserved rather than cleared."
         }
       ],
       "status": "not_executed",
-      "missing_condition": "No projection test asserts the Checking status the gate requires be shown. MenuState and FilesAndFoldersModel have no case mapping an unknown or timed-out submission to that state, so the user-visible half of the required result is unproven.",
-      "limitations": "The behavioural half, no destructive removal and no new-key resubmission, is well covered on both sides. The displayed state is not.",
+      "missing_condition": "The expired-replay arm has no displayed-state evidence. The Checking status label is now proven for the unknown-outcome arm, through CaptureActivityStore.fact and FilesAndFoldersModel, but an expired replay is refused on the Core side and nothing shows what the companion then displays, so the required state is unproven for one of the three scenarios the gate names.",
+      "limitations": "No destructive removal and no new-key resubmission are covered on both sides, and the displayed state is now asserted against the production projection rather than a rendered view. The timeout itself is stood in for by a transport returning unknown: CLICaptureDelivery's own 25-second deadline is never driven, and the folder window's separate Checking status strings are not covered.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureActivityStore.swift",
         "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift"
       ]
     },
@@ -1219,13 +1259,20 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderOneOffIntakeTests.swift",
           "symbol": "testOneUnreadableChildNeedsAttentionWhileTheOthersStillPublish",
           "covers": "One unreadable member needs attention while its siblings still publish, with per-child outcomes."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureSurfaceAcceptanceTests.swift",
+          "symbol": "testAPreparationFailurePublishesNoneOfTheBatchAndKeepsTheDraft",
+          "covers": "A preparation failure publishes none of the batch, connects no grant and leaves the reviewed draft, its note and its mode intact for the person to correct."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test asserts the draft is retained after a preparation failure. The batch is shown to publish nothing, but whether the reviewed draft survives for the person to correct is never checked, and that retention is the explicit second clause of the first half.",
-      "limitations": "Publishes-none, per-item outcomes and the partial Core case are each covered directly. Draft survival after failure is the one named condition with no assertion behind it.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Publishes-none, draft retention and per-item outcomes are each asserted against the production submission path. The preparation failure is injected by deleting one reviewed file after review, so one failure kind stands for all of them; retention is checked over the draft's display names rather than its URLs; and the partial Core case is a Core-side raster test, not a companion talking to a real service.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CapturePreparationCoordinator.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ManualCaptureSubmission.swift",
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/CapturePanelController.swift",
         "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/CaptureDraft.swift",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/raster_extractors.py"
       ]
@@ -2244,11 +2291,36 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_docx_headers_footers.py",
           "symbol": "test_a_section_places_each_of_the_three_kinds_it_declares",
           "covers": "A section places each of the three header and footer kinds it declares in its own role."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_docx_walker.py",
+          "symbol": "test_move_revisions_over_a_block_reach_every_run_they_cover",
+          "covers": "A w:moveTo and a w:moveFrom over a block reach every run they cover, and the moved-in and moved-out text never share a segment."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_docx_walker.py",
+          "symbol": "test_a_move_out_inside_a_move_in_stays_deleted_and_the_reverse_is_refused",
+          "covers": "A move out nested inside a move in stays deleted, and the contradictory nestings are refused rather than resolved."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_docx_walker.py",
+          "symbol": "test_a_merged_cell_keeps_its_grid_across_a_move_revision",
+          "covers": "A merged cell keeps its grid span across a move revision, which is the merged-table case under revision markup."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_docx_walker.py",
+          "symbol": "test_a_rectangular_merge_carries_both_spans_at_one_anchor",
+          "covers": "A rectangular merge carries both spans at one anchor, with its text emitted once."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_docx_walker.py",
+          "symbol": "test_a_nested_table_keeps_its_own_grid_under_its_cell_path",
+          "covers": "A nested table keeps its own grid under the cell path that holds it."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Move revisions are not covered. The suite handles w:ins and w:del but no test exercises w:moveFrom and w:moveTo, which the gate names explicitly alongside insert and delete. Merged table cells are also not covered as a distinct case in the walker tests.",
-      "limitations": "Everything else the gate names has a direct test against the production walker, and the no-conflation requirement is covered unusually well. Fixtures are synthesised packages with no recorded digest.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Every condition is asserted against the production DOCX walker, and the no-conflation requirement is covered unusually well: inserted, current, deleted, moved-in and moved-out prose each land in their own segment and role. Fixtures are packages synthesised in memory with zipfile and carry no recorded digest, and no application-authored DOCX exists in this repository.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ooxml_extractors.py"
       ]
@@ -2279,11 +2351,41 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_external_links.py",
           "symbol": "test_external_links_are_inert_inventory_after_the_workbook_content",
           "covers": "External links are inert inventory placed after the workbook content, never resolved."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_formula_semantics.py",
+          "symbol": "test_formula_kinds_carry_their_index_and_range",
+          "covers": "An array formula carries its range, and a shared formula carries its index and range, each as its own kind."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_formula_semantics.py",
+          "symbol": "test_an_array_or_shared_formula_without_a_cache_invents_no_saved_value",
+          "covers": "An array or shared formula with no cache records the cache as missing and emits no saved value, so no zero is invented."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_formula_semantics.py",
+          "symbol": "test_a_shared_master_declared_after_its_follower_still_resolves",
+          "covers": "A shared master declared after its own follower still resolves, so follower ordering changes nothing."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_formula_semantics.py",
+          "symbol": "test_every_error_value_is_kept_as_the_error_the_source_wrote",
+          "covers": "All seven error spellings are kept as the error the source wrote, with no numeric anomaly and no number substituted for them."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_formula_semantics.py",
+          "symbol": "test_an_array_formula_cache_can_be_an_error_and_is_not_a_number",
+          "covers": "An array formula's cache can itself be an error, and is then not decoded as a number."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_formula_semantics.py",
+          "symbol": "test_expression_and_saved_cache_stay_separate_and_uncalculated",
+          "covers": "A cache that disagrees with its own expression is preserved beside it rather than recomputed, which is the stale-cache case."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Array and shared formulas are not covered. The XLSX formula-semantics slice records that a shared follower never inherits the master expression, but no test exercises an array formula, and the error-value case is not covered as a distinct value kind either.",
-      "limitations": "The no-calculation and no-invented-zero invariants are well covered, as is the expression-versus-cache separation. Two of the five value kinds the gate enumerates have no test.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Every value kind the gate enumerates is asserted against the production workbook extractor, and the no-calculation and no-invented-zero invariants are covered on each of them. Staleness is only preserved, never classified: the extractor records cache freshness as unknown, so a cache disagreeing with its expression is kept but is not labelled stale. Fixtures are workbooks synthesised in memory with zipfile and carry no recorded digest.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ooxml_extractors.py"
       ]
@@ -2309,11 +2411,36 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ooxml_package_validation.py",
           "symbol": "test_rejects_too_many_members",
           "covers": "Package-level work is bounded by an explicit member count."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_structure_metadata.py",
+          "symbol": "test_a_declared_dimension_decides_nothing_about_the_cells_read",
+          "covers": "Five declared dimensions -- one cell, the whole sheet, an unparsable range, an empty element and none at all -- each read exactly the two cells present."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_structure_metadata.py",
+          "symbol": "test_a_lying_dimension_adds_no_cells_and_hides_none",
+          "covers": "A dimension declaring A1:Z100 over a single written cell adds no cells and changes no visibility."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_structure_metadata.py",
+          "symbol": "test_a_distant_sparse_cell_is_read_without_materialising_the_grid",
+          "covers": "A1 and XFD1048576 are both read with their hidden state correct and nothing between them materialised, and a coordinate past the sheet or a malformed column span is refused."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_comments.py",
+          "symbol": "test_a_comment_stays_an_annotation_whatever_the_sheet_hides",
+          "covers": "A comment on a visible, hidden or very hidden sheet stays an annotation, with the sheet state carried in the locator rather than suppressing it."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_structure_metadata.py",
+          "symbol": "test_very_hidden_sheet_stays_distinguishable_from_a_hidden_one",
+          "covers": "A very hidden sheet stays distinguishable from a hidden one, so retrieval labelling is not collapsed."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Incorrect declared dimensions and distant sparse cells are not covered. No test declares a dimension that disagrees with the cells present, and none places a cell far outside a dense region to show the work stays bounded, which is the specific risk this gate names.",
-      "limitations": "Hidden roles and comments are covered. The sparse and incorrect-dimension half, which is what distinguishes this gate from DOC-03, has no test.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Incorrect dimensions, distant sparse cells, hidden rows, columns and sheets, and comments on each sheet state are all asserted against the production workbook extractor. Bounded work is proven structurally rather than measured: the distant-cell case reads the two corners without materialising the grid between them, and out-of-range coordinates and malformed column spans are refused, but no test counts the work done. Fixtures are workbooks synthesised in memory with no recorded digest.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ooxml_extractors.py"
       ]
@@ -2474,11 +2601,31 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_html_parser_hardening.py",
           "symbol": "test_admission_takes_no_external_action_for_any_source",
           "covers": "The admission parse also takes no external action, so the earlier parse is covered too."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_html_non_body_roles.py",
+          "symbol": "test_a_template_is_a_fragment_the_document_has_not_placed",
+          "covers": "A template's text, its nested markup and its script land in the hidden role rather than in prose, and its image and link stay unresolved references."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_html_non_body_roles.py",
+          "symbol": "test_nested_non_body_roles_neither_leak_nor_double_count",
+          "covers": "A template nested inside another non-body element neither leaks into prose nor is counted twice."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_extractors_html.py",
+          "symbol": "test_an_iframe_is_inventoried_as_its_own_kind_and_never_loaded",
+          "covers": "An iframe is inventoried under its own kind with its scheme and target unresolved, with open, socket and subprocess patched to raise, and a srcdoc iframe yields no reference at all."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_html_non_body_roles.py",
+          "symbol": "test_an_iframe_carries_no_prose_of_its_own",
+          "covers": "An iframe's fallback markup is published as hidden content, so it contributes no body prose."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Template content is not covered. The non-body role tests handle comments, scripts, stylesheets and inline hidden claims, but no test supplies an HTML template element, which the gate names alongside hidden content. The iframe case is also covered only as a generic inventoried reference rather than as its own element kind.",
-      "limitations": "Malformed recovery, spans, hidden roles and no-external-access are all covered directly against the production extractor and are strong. Two of the named content kinds are absent.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Malformed recovery, spans, hidden and template roles, the iframe kind and the no-external-access rule are all asserted against the production extractor, the last by patching open, socket and subprocess to raise. The iframe inventory holds on any CPython 3.11, but the assertion that an iframe carries no prose of its own depends on the interpreter shipping iframe in HTMLParser.CDATA_CONTENT_ELEMENTS, which 3.11.15 does and earlier 3.11 patch releases do not; CI pins only the 3.11 minor. Fixtures are markup written inline with no recorded digest.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py"
       ]
@@ -2524,11 +2671,26 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_extractors_delimited.py",
           "symbol": "test_undeclared_and_malformed_encodings_are_refused",
           "covers": "An undeclared or malformed encoding is refused rather than guessed."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_extractors_delimited.py",
+          "symbol": "test_a_delimiter_is_escaped_by_quoting_and_a_quote_by_doubling_it",
+          "covers": "For CSV and TSV alike, a delimiter escaped by quoting and a quote escaped by doubling both yield the exact field, with a backslash left as an ordinary character."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_extractors_delimited.py",
+          "symbol": "test_a_bom_declared_utf_16_source_reads_exactly_like_its_utf_8_twin",
+          "covers": "A BOM-declared UTF-16 LE or BE source reads the same fields and the same locators as its UTF-8 twin, with the encoding recorded as the declared codec."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_extractors_delimited.py",
+          "symbol": "test_the_first_record_is_data_whatever_its_labels_look_like",
+          "covers": "Repeated and empty labels in the first record keep their source text and their ordinals, recorded as preserved_as_record rather than interpreted as headers."
         }
       ],
       "status": "not_executed",
-      "missing_condition": "Three named conditions are unmet. Undeclared UTF-16 is refused rather than read, so the UTF-16 half of the gate is not satisfied by the current implementation. Duplicate headers cannot be covered because this reader has no header concept at all: the first non-blank record is data. Escaped delimiters are not covered by any test.",
-      "limitations": "Quoted newlines, BOM, ragged rows, formula-like strings, leading zeroes and exact locators are all covered directly against the production reader. The three gaps are implementation boundaries rather than missing tests, and two of them need a design decision before a test could exist.",
+      "missing_condition": "Undeclared UTF-16 is refused rather than read. The reader recognises UTF-16 only from a byte-order mark; BOM-less UTF-16 reaches the NUL guard and is refused as malformed, so the UTF-16 half of the gate is unmet by the implementation and needs a design decision before a test could assert the gate's own wording.",
+      "limitations": "Quoted newlines, escaped delimiters, BOM-declared UTF-16, ragged rows, formula-like strings, leading zeroes and exact fields and locators are each asserted against the production delimited reader. Duplicate headers are covered only as far as this reader can go: it has no header concept at all, so the first non-blank record is data and repeated labels are preserved verbatim with their ordinals. Whether that satisfies the gate's duplicate-headers condition cannot be settled here, because the design document is not in this repository. Fixtures are byte literals with no recorded digest.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py"
       ]
@@ -2750,14 +2912,61 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ooxml_package_validation.py",
           "symbol": "test_external_relationships_are_inventoried_without_any_resolution",
           "covers": "External package relationships, including linked images, are inventoried without resolution."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_docx_walker.py",
+          "symbol": "test_an_embedded_raster_is_recognised_and_anchored_to_the_object_showing_it",
+          "covers": "A DOCX embedded raster is decoded, handed to the resolved recognition catalogue at its own pixel size, and its reading anchored to the image part showing it."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_embedded_images.py",
+          "symbol": "test_an_embedded_raster_is_recognised_and_anchored_to_the_picture_showing_it",
+          "covers": "An XLSX embedded raster is recognised on the same seam and anchored to the picture showing it."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_pptx_embedded_images.py",
+          "symbol": "test_an_embedded_raster_is_recognised_and_anchored_to_the_picture_showing_it",
+          "covers": "A PPTX embedded raster is recognised on the same seam and anchored to the picture showing it."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_rtf_embedded_images.py",
+          "symbol": "test_a_picture_payload_is_recognised_and_anchored_to_the_group_holding_it",
+          "covers": "An RTF picture payload is recognised and anchored to the control group holding it."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_html_embedded_images.py",
+          "symbol": "test_an_inline_payload_is_recognised_and_anchored_to_the_element_showing_it",
+          "covers": "An inline HTML data payload is recognised and anchored to the element showing it."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_rtf_embedded_images.py",
+          "symbol": "test_a_profile_that_examines_no_embedded_image_opens_no_payload",
+          "covers": "With the profile off the payload is never decoded and the outcome names the exclusion, which is the exact-inventory half."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_extractors.py",
+          "symbol": "test_a_docx_embedded_image_is_examined_only_under_settings_that_say_so",
+          "covers": "Through extract_document with a real local engine, a DOCX embedded raster's own words are recovered only when the settings say to examine it."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_extractors.py",
+          "symbol": "test_an_rtf_embedded_image_is_examined_only_under_settings_that_say_so",
+          "covers": "The same holds for an RTF embedded raster through extract_document with a real local engine."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_extractors.py",
+          "symbol": "test_an_html_inline_image_is_examined_only_under_settings_that_say_so",
+          "covers": "The same holds for an HTML inline raster, and its file-scheme reference stays unresolved."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The profile-on half is not covered for any container format. No test takes an embedded raster part out of a DOCX, XLSX, PPTX, RTF or HTML source and runs it through qualified recognition, so the gate's central behaviour has no evidence.",
-      "limitations": "The never-load rule is covered well on both the markup and the package route. The exact-inventory and OCR-the-embedded-bytes halves are covered only for the standalone raster path, not for embedded parts.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The profile-on half runs for all five container formats -- DOCX, XLSX, PPTX, RTF and HTML -- but the unconditional evidence injects a recording engine over digest-pinned stand-in model bytes, so it proves the extracted raster reaches a resolved catalogue at the right size and that the reading is anchored to the right part, not that pixels were read correctly. The cases that recover an embedded image's own words through a real engine exist for every one of the five formats, but their fixture skips wherever no tesseract with the English and orientation models is installed, which includes both CI workflows and scripts/preflight. The HTML unconditional case calls the module-private HTML extractor rather than extract_document. Every raster is drawn with PIL and every package built in memory, with no recorded fixture digest.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/raster_extractors.py",
-        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ooxml_extractors.py"
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ooxml_extractors.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/rtf_extractor.py"
       ]
     },
     {
@@ -3117,14 +3326,20 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderOneOffIntakeTests.swift",
           "symbol": "testOneUnreadableChildNeedsAttentionWhileTheOthersStillPublish",
           "covers": "Individual outcomes are preserved: one unreadable child does not take the others with it."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderOneOffIntakeTests.swift",
+          "symbol": "testAThousandFileRunIsNeverSuccessAtCreationAndDrainsInBoundedBatches",
+          "covers": "A real 1,000-file tree plans every member, publishes only one batch at creation with nothing admitted and the run still adding, then drains in batches each bounded by maximumBatchItems with the unresolved queue cap holding before every batch."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test runs a plan at the 1,000-file scale the gate names, and none asserts that plan creation is not itself reported as success. The batching tests use small trees, so bounded progress is proven as a mechanism rather than at the scale where the bound matters.",
-      "limitations": "Queue caps, progress and per-child outcomes are covered directly. Scale is the gate's distinguishing condition and is absent, so nothing shows the batch bound holding against a large real tree.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The 1,000-file run is a real temporary tree drained through the production coordinator and store, and the unresolved queue cap is asserted before each of the hundred batches. Every child in that run succeeds, so mixed individual outcomes are proven only by the sibling tests at small scale. The grant behind every read is a stub bookmark codec, and the run takes roughly two minutes, which is most of the macOS suite's wall clock.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderBulkRunCoordinator.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderBulkRunStore.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderBulkRunStore.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift"
       ]
     },
     {
@@ -3179,14 +3394,21 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderReconciliationSchedulerTests.swift",
           "symbol": "testTheDesignIntervalsAreFifteenMinutesAndTwentyFourHours",
           "covers": "The 24-hour interval the gate names is the scheduler's content interval."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderCaptureSubmissionTests.swift",
+          "symbol": "testAnOnlyNewAndChangedBaselineMakesNoEvidenceAtCreationRestartOrTheFirstContentPass",
+          "covers": "Creation, a restart over the same state root, and the clock-driven first 24-hour content pass each leave the baseline members with nothing queued and no successful capture, with the content pass's examined count pinned so a pass that read nothing cannot satisfy it."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Only the creation condition is covered. No test restarts and then re-verifies that the baseline members still produce no evidence, and none advances the clock to the first 24-hour content pass to confirm the same, so two of the three moments the gate names have no assertion.",
-      "limitations": "The creation-time baseline is covered directly and is the hardest of the three. The two durability moments are left to the scheduler and executor tests, which do not assert anything about baseline membership.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "All three moments run on the real FolderReconciliationScheduler and FolderReconciliationExecutor through DocumentIntakeEnvironment's reconciliationClock seam, and the content pass pins examined rather than only the complete outcome. There is no Core here: no Core evidence is proven as an empty companion queue and no successful capture id. The restart is a second environment built over the same state root rather than a terminated process, and the grant is a stub bookmark codec.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderCaptureSubmission.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderReconciliationScheduler.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderReconciliationScheduler.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderReconciliationExecutor.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/DocumentIntakeEnvironment.swift"
       ]
     },
     {
@@ -3577,15 +3799,27 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderScopePolicyTests.swift",
           "symbol": "testContainmentIsComponentBoundedNotAStringPrefix",
           "covers": "Containment is component bounded, so a move out of the root is detected structurally."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FilesAndFoldersModelTests.swift",
+          "symbol": "testOnlyAConnectedDirectRouteCountsAsIndependentOfAFolder",
+          "covers": "independentlyRoutedDocuments(routes:) selects only a connected direct-file route, excluding a disconnected one and a root membership."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FilesAndFoldersModelTests.swift",
+          "symbol": "testAChildThatLeftTheRootIsDisclosedAsContinuingThroughItsOwnRoute",
+          "covers": "A child that left the root is disclosed by name as still read through its own link, and a folder whose children have no link of their own says so instead."
         }
       ],
       "status": "not_executed",
-      "missing_condition": "The disclosure half is not covered. No test asserts that a child which also has its own independent route is reported as continuing through that route, so the person is never shown the distinction the gate requires between a stopped root read and a still-live direct one.",
-      "limitations": "The reads-stop and cannot-publish halves are covered directly against real temporary directories. The grant behind them is a stub bookmark codec.",
+      "missing_condition": "The disclosure is proven only over the model itself. independentlyRoutedDocuments(routes:) is driven with NativeAccessDescriptor values built in the test and the detail facts are driven with a hand-written document-id set, so nothing carries real NativeAccessStore routes through DocumentIntakeEnvironment.documentAccessRoutes() into the folder window. No companion flow mints a direct route sharing a folder member's linkedDocumentID either -- every submission path mints a fresh one -- so the pairing the disclosure describes is a capability of the store rather than a state the person can reach.",
+      "limitations": "The reads-stop and cannot-publish halves are covered directly against real temporary directories, and the route filter and both disclosure sentences are asserted against production code. The grant behind them is a stub bookmark codec.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderScopePolicy.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift",
-        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/DocumentIntakeEnvironment.swift",
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift",
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FolderManagementWindowController.swift"
       ]
     },
     {
@@ -3719,14 +3953,20 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/NativeAccessStoreTests.swift",
           "symbol": "testRootMembersShareOnePersistedBookmarkUntilLastOwnerAndMemberRelease",
           "covers": "One grant serves multiple memberships until the last owner releases."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderCaptureSubmissionTests.swift",
+          "symbol": "testOverlappingRootsAndADirectRouteKeepIndependentNonContentIdentities",
+          "covers": "Two genuinely overlapping roots plus a direct route over the same file are configured, and no source identity, document id or scheduling key contains the file's content digest -- a byte-identical twin shares none of them, and rewriting the bytes changes none of them."
         }
       ],
       "status": "not_executed",
-      "missing_condition": "No test asserts that source identity is never derived from a content hash. The no-hash-based-identity clause is an explicit negative requirement with no coverage, and no test configures two genuinely overlapping roots and shows one verified capture emerging with two memberships.",
-      "limitations": "Membership independence and duplicate rejection are covered directly. The overlap configuration itself and the negative identity requirement are not exercised.",
+      "missing_condition": "No capture in the overlap reaches verified, and one capture with multiple memberships is not the structure this production path produces. Overlapping roots each mint their own member, source identity and queued intent, so the overlap test records three distinct operation keys for one file and admits none of them. What one verified source capture per workspace with multiple memberships should mean against that structure needs a design decision before a test could assert it.",
+      "limitations": "The no-hash-based-identity clause is now covered directly: every identity is a random-UUID identifier, the content digest occurs in none of them, and neither a byte-identical twin nor a rewrite changes that. Cross-workspace reuse is covered only as non-coalescing identities and a scheduling-key shape; a second workspace is never configured. Membership independence and duplicate rejection are covered. The grant is a stub bookmark codec.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/AutomaticSchedulingStateMachine.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderSubscriptionStore.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FileMonitoringCoordinator.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift"
       ]
     },
@@ -3799,13 +4039,20 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_intake.py",
           "symbol": "test_a_disconnect_before_first_capture_is_an_owner_scoped_tombstone",
           "covers": "The canonical tombstone is owner scoped."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderCaptureSubmissionTests.swift",
+          "symbol": "testADisconnectedSourceIsNeverRediscoveredByALaterScan",
+          "covers": "A source Disconnect revokes that document's route and no other, and a later reconcileAll over a tree that still holds the file with changed bytes re-enrols nothing, queues nothing for it and refuses the read, while its sibling is still queued."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test shows a disconnected source failing to be rediscovered by a later scan. The prevents-rediscovery clause needs a disconnect followed by a reconciliation pass over a tree still containing that file, and no test composes those two steps.",
-      "limitations": "The revocation scoping of both actions is covered precisely, and that is the harder half. Rediscovery suppression is covered only as a Core-side tombstone, which does not stop the companion from reading again.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Both revocation scopes and the rediscovery suppression are asserted against the production access store and folder coordinator over real temporary directories, including a second scan that queues nothing. Suppression is proven over the companion's own member ledger and its revoked-route skip, not against a grant the person re-authorises afterwards; the Core-side tombstone is owner scoped but does not itself stop a companion read; and the grant is a stub bookmark codec.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderMonitoringCoordinator.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderReconciliationExecutor.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderCaptureSubmission.swift",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py"
       ]
@@ -4044,15 +4291,22 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderScopePolicyTests.swift",
           "symbol": "testAnUnreadableSizeIsUnavailableAndAnEmptyFileIsUnsupported",
           "covers": "An empty file is unsupported rather than a zero-text success."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderCaptureSubmissionTests.swift",
+          "symbol": "testAKnownNegativeOutcomeIsNotReprocessedByRepeatedEventsOrEitherIntervalCheck",
+          "covers": "An unsupported-format failure and a zero-text failure recorded on the queue leave the watch unprocessed across three repeated event passes and across both the 15-minute and the 24-hour check driven on the real scheduler and executor, with the queue byte-identical throughout and no successful capture shown for the new bytes."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The known-failed and zero-text digest cases are not covered. No test records a failed or zero-text outcome against a digest and then drives repeated events and both interval checks to show processing is not repeated, which is the specific suppression this gate requires.",
-      "limitations": "The unchanged-digest short circuit and the unsupported-format refusal are covered. Neither is the negative-outcome memory the gate describes, and the intervals are only pinned as constants.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Both intervals are driven on the real FolderReconciliationScheduler and FolderReconciliationExecutor through the reconciliationClock seam rather than merely pinned as constants, and a control case shows an ordinary watch still being scheduled. The suppression is watch-wide: a failed outcome puts the whole watch in review and clears the member's observed digest, rather than remembering the negative per digest, so what happens to the same bytes after a person resumes the watch is outside this evidence. The two failure codes are written onto the production queue by the test rather than arriving from a Core receipt, and no production logic distinguishes one from the other. The grant is a stub bookmark codec.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FileMonitoringCoordinator.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderMonitoringCoordinator.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderScopePolicy.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderReconciliationScheduler.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderReconciliationScheduler.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderReconciliationExecutor.swift"
       ]
     },
     {
@@ -4410,13 +4664,80 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
           "symbol": "test_an_explicit_text_only_profile_reference_pins_no_ocr_resources",
           "covers": "A text-only profile pins nothing, which bounds what the pin set means."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
+          "symbol": "test_an_install_evicts_another_languages_resource_to_fit",
+          "covers": "An install into a full cache evicts another language's unpinned resource to fit, names what it evicted and deletes its directory."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
+          "symbol": "test_the_victims_are_the_shortest_prefix_of_the_caches_own_order",
+          "covers": "Across every install order, the victims are the shortest prefix of the cache's own stable-key order that covers the shortfall."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
+          "symbol": "test_a_pinned_resource_of_another_language_is_never_evicted",
+          "covers": "A pinned resource is never a victim: the install is refused with language_storage_full and the pin survives."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
+          "symbol": "test_a_leased_resource_is_never_evicted_to_fit_an_installation",
+          "covers": "A leased resource is never a victim either, so a running extraction cannot lose its bytes to an install."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
+          "symbol": "test_a_divergent_resource_is_neither_evicted_nor_counted_as_room",
+          "covers": "A resource whose bytes fail verification is neither evicted nor counted as reclaimable room."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
+          "symbol": "test_a_pinned_resource_is_never_evicted_to_fit_an_installation",
+          "covers": "When eviction cannot free enough, the installation is deferred with the capacity it needed, the pins stay held and the accounted bytes stay at or under the cap."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
+          "symbol": "test_a_capacity_refusal_evicts_nothing",
+          "covers": "A capacity deferral leaves the state document byte-for-byte unchanged, so nothing is spent on a refusal."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
+          "symbol": "test_the_capacity_is_the_designs_512_mib",
+          "covers": "The cap the eviction and deferral arithmetic runs against is the design's 512 MiB."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_coordination.py",
+          "symbol": "test_an_overlap_eviction_cannot_absorb_still_defers_rather_than_overflows",
+          "covers": "Two concurrent processes racing for the same room cannot both spend it: the one eviction cannot absorb defers, and the pinned entry and the cap both survive."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
+          "symbol": "test_a_newer_model_revision_cannot_execute_beneath_an_admitted_capture",
+          "covers": "A newer model revision installed while a capture is queued never reaches it: the frozen profile keeps the admitted model hashes and its digest is unchanged."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
+          "symbol": "test_a_settings_change_and_a_model_change_leave_the_admitted_digest_alone",
+          "covers": "A language-preference change and a model change together leave the queued capture's admitted profile digest alone."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
+          "symbol": "test_a_queued_capture_whose_pin_was_lost_is_paused_not_re_pinned",
+          "covers": "A queued capture whose pin was lost pauses rather than re-pinning, which is the pauses-rather-than-substitutes half."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
+          "symbol": "test_the_resolved_selection_is_held_for_the_whole_extraction",
+          "covers": "During active work the resolved selection is held: a removal attempted mid-extraction is refused as pinned and reconciliation changes nothing."
         }
       ],
-      "status": "not_implemented",
-      "missing_condition": "The managed cache has no eviction or deferral. The resource store module states in its own docstring that installs, eviction and capacity planning are out of scope, so it holds the 512 MiB constant and the pin records but implements neither evicting unpinned resources nor deferring an installation or a new-profile admission when the cache is full. The second half of this gate has no production path to test.",
-      "limitations": "Digest pinning, the no-substitution rule and the pin bookkeeping are covered well, and they are the first half of the gate. No test updates a profile or a resource during queued or active work, so even that half is proven over the store rather than over an in-flight operation.",
+      "status": "not_executed",
+      "missing_condition": "Two conditions remain. New-profile admission is never deferred for capacity: language_storage_full is raised only inside the resource lifecycle, and no admission path maps it, so a new profile meeting a full cache is refused for a resource that is not installed rather than deferred until room exists. And no test asserts the pending input itself is unchanged across a profile or resource update -- the in-flight evidence pins the frozen profile, its model hashes and its digest, not the queued bytes.",
+      "limitations": "Eviction, its three exclusions -- pinned, leased and unverified -- the shortest-prefix victim order, the capacity deferral, and the intactness of both the pins and the cap are each covered against the production lifecycle, including across two processes. Profile and language-resource updates during queued and active work are covered over a real capture runner. The 512 MiB figure is pinned as a constant and the arithmetic reached by writing a large byte_size into the state: every eviction test shrinks the capacity, because evicting against a real 512 MiB cache would mean writing 512 MiB. Model payloads are stand-in bytes pinned by their real digests, not Tesseract data. No test combines a real admission pin with an install that would need eviction. The in-flight evidence lives in a module that imports Pillow at import time, so it needs the declared raster dependencies present to collect at all.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ocr_resource_store.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ocr_resource_lifecycle.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_processing.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ocr_resources.py"
       ]
     },
