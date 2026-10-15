@@ -490,6 +490,139 @@ _XLSX_EXTERNAL_LINK_CLAIMS: Final[dict[str, tuple[tuple[str, str], ...]]] = {
     "ddeLink": (("ddeService", "ddeService"), ("ddeTopic", "ddeTopic")),
     "oleLink": (("progId", "progId"),),
 }
+# The three part types a pivot report is kept in, each beside the two URIs
+# OOXML defines for its relationship -- Transitional and Strict -- and the
+# content type its own part carries. As on every other route here, nothing
+# qualifies by ending the same way: a connections, external-link or query-table
+# relationship reaches no pivot part, and a pivot-cache relationship reaches no
+# pivot table. The content types are compared against ``declared_type``, which
+# case-folds, so they are written folded here rather than in OOXML's own camel
+# case; each is the same under both profiles.
+_XLSX_PIVOT_CACHE_RELATIONSHIPS: Final = frozenset(
+    {
+        (
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            "/pivotCacheDefinition"
+        ),
+        (
+            "http://purl.oclc.org/ooxml/officeDocument/relationships"
+            "/pivotCacheDefinition"
+        ),
+    }
+)
+_XLSX_PIVOT_CACHE_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml"
+    ".pivotcachedefinition+xml"
+)
+_XLSX_PIVOT_RECORDS_RELATIONSHIPS: Final = frozenset(
+    {
+        (
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            "/pivotCacheRecords"
+        ),
+        (
+            "http://purl.oclc.org/ooxml/officeDocument/relationships"
+            "/pivotCacheRecords"
+        ),
+    }
+)
+_XLSX_PIVOT_RECORDS_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml"
+    ".pivotcacherecords+xml"
+)
+_XLSX_PIVOT_TABLE_RELATIONSHIPS: Final = frozenset(
+    {
+        (
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            "/pivotTable"
+        ),
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/pivotTable",
+    }
+)
+_XLSX_PIVOT_TABLE_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.pivottable+xml"
+)
+# The bounds, each taken before the work it bounds: the caches a workbook may
+# declare, the pivot tables one sheet may declare, and the fields one cache
+# definition or one table definition may declare. Every string a record keeps is
+# clipped and no cached value is ever read, so these counts are the whole of
+# what bounds the inventory.
+# ponytail: 256 caches per workbook, 256 tables per sheet, 16384 fields per
+# definition -- the grid's own column ceiling; widen only if a real workbook is
+# refused by one of them.
+_MAX_XLSX_PIVOT_CACHES: Final = 256
+_MAX_XLSX_PIVOT_TABLES: Final = 256
+_MAX_XLSX_PIVOT_FIELDS: Final = 16_384
+# ``ST_SourceType``: where the cache says its data was taken from when it was
+# last saved. Closed, so a type outside the four is refused rather than read as
+# whichever it resembles. Nothing here reaches any of them -- no worksheet is
+# re-read, no consolidation is recomputed, no scenario is replayed and no
+# external source is resolved.
+_XLSX_PIVOT_SOURCE_TYPES: Final = frozenset(
+    {"worksheet", "external", "consolidation", "scenario"}
+)
+# The cache's free-text attributes: who the file says last refreshed it and when
+# it says that happened. Both are the author's own claim about a refresh that
+# happened elsewhere, recorded as written; neither is verified, and
+# ``refreshedDate`` is kept as the text it is rather than decoded into a date,
+# because decoding a serial is a calculation this route does not perform.
+_XLSX_PIVOT_CACHE_TEXT: Final = ("refreshedBy", "refreshedDate")
+# The cache's boolean attributes, read tri-state for the reason a connection's
+# are: SpreadsheetML defaults each, but a default is not a declaration, and a
+# refresh policy a consumer has to reason about is clearer when it says which of
+# the two the file actually wrote. Every one is inert here -- ``refreshOnLoad``
+# and ``enableRefresh`` describe what Excel would do, not what this reader did.
+_XLSX_PIVOT_CACHE_FLAGS: Final = (
+    "invalid",
+    "saveData",
+    "refreshOnLoad",
+    "optimizeMemory",
+    "enableRefresh",
+    "backgroundQuery",
+    "upgradeOnRefresh",
+    "tupleCache",
+    "supportSubquery",
+    "supportAdvancedDrill",
+)
+# The cache's unsigned numeric attributes, each beside the bound of the type the
+# schema gives it: ``recordCount`` is ``xsd:unsignedInt`` and the three versions
+# ``xsd:unsignedByte``. ``recordCount`` is the figure the cache stored, reported
+# as stored and never checked against the records part, because agreeing the two
+# would mean reading the records.
+_XLSX_PIVOT_CACHE_NUMBERS: Final = (
+    ("recordCount", 0xFFFF_FFFF),
+    ("createdVersion", 0xFF),
+    ("refreshedVersion", 0xFF),
+    ("minRefreshableVersion", 0xFF),
+)
+# The table's free-text attributes: the captions the author wrote over the
+# report. None of them is an identity, so each is clipped rather than refused
+# for length, and one written empty stays the empty claim the file made.
+_XLSX_PIVOT_TABLE_TEXT: Final = (
+    "dataCaption",
+    "rowHeaderCaption",
+    "colHeaderCaption",
+    "grandTotalCaption",
+    "errorCaption",
+    "missingCaption",
+)
+_XLSX_PIVOT_TABLE_NUMBERS: Final = (
+    ("createdVersion", 0xFF),
+    ("updatedVersion", 0xFF),
+    ("minRefreshableVersion", 0xFF),
+)
+# The field lists a table definition declares, beside the member counted inside
+# each. Only the counts come out: a field's own items are the cached data this
+# route does not copy, so they are counted and never read. One list of a kind per
+# table, so a second leaves two at one position and nothing here picks between
+# them.
+_XLSX_PIVOT_TABLE_GROUPS: Final = (
+    ("pivotFieldCount", "pivotFields", "pivotField"),
+    ("rowFieldCount", "rowFields", "field"),
+    ("colFieldCount", "colFields", "field"),
+    ("pageFieldCount", "pageFields", "pageField"),
+    ("dataFieldCount", "dataFields", "dataField"),
+)
 # The relationship and content types that together qualify the workbook's own
 # styles part, the one part the cell-format table lives in. As with every other
 # type here, only the two URIs OOXML defines qualify -- Transitional and Strict
@@ -2493,6 +2626,13 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         # workbook, no DDE service, no OLE server -- and no cached value a
         # linked part stored is copied out.
         external_links = _xlsx_external_links(package, workbook)
+        # The pivot caches, likewise the workbook's own declarations, resolved
+        # here for the same reason and before any sheet is read for one more:
+        # the index they return is what lets a sheet's pivot table name the
+        # cache it cites. Nothing is refreshed, no source is reached and no
+        # cached record is read -- only what the saved definition declared.
+        pivot_caches, caches = _xlsx_pivot_caches(package, workbook)
+        pivot_tables = 0
         # The cell-format table and the date system the workbook counts its
         # serials from: both are the workbook's own declarations rather than a
         # sheet's, so they are resolved once and every cell of every sheet
@@ -2718,6 +2858,30 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                     )
                 )
                 _bounded(segments)
+            # The sheet's pivot tables, as inventory. A pivot table lives in its
+            # own part and the sheet declares it in ``pivotTableParts``, so
+            # ``sheetPart`` is provenance for it exactly as it is for a chart.
+            # The report is reported, never rebuilt: no cached record is read,
+            # no source is reached and nothing is refreshed or recalculated.
+            for provenance, record in _xlsx_pivot_tables(package, part, root, caches):
+                pivot_tables += 1
+                segments.append(
+                    ExtractedSegment(
+                        "object_inventory",
+                        _locator(
+                            capture_id,
+                            sheetPart=part,
+                            sheetId=sheet_id,
+                            sheet=sheet_name,
+                            sheetState=state,
+                            **provenance,
+                        ),
+                        structured_value=record,
+                        extraction_method="inventory",
+                        visibility="hidden" if sheet_hidden else "visible",
+                    )
+                )
+                _bounded(segments)
             # A comment is anchored to a reference, not to a cell: nothing here
             # requires the sheet to have written anything at that position, and
             # no cell is materialised for one.
@@ -2817,6 +2981,23 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 )
             )
             _bounded(segments)
+        # Last of all, after the links for the reason they come after the
+        # connections: a pivot cache is the workbook's own declaration and inert
+        # inventory, never content. It is always in sight -- it belongs to the
+        # workbook rather than to a sheet, so there is no sheet state to take
+        # visibility from, and a table on a hidden sheet citing it is hidden
+        # where the table is rather than hiding the cache behind it.
+        for provenance, cache in pivot_caches:
+            segments.append(
+                ExtractedSegment(
+                    "object_inventory",
+                    _locator(capture_id, **provenance),
+                    structured_value=cache,
+                    extraction_method="inventory",
+                    visibility="visible",
+                )
+            )
+            _bounded(segments)
         return OOXMLExtraction(
             tuple(segments),
             "workbook_cell",
@@ -2825,6 +3006,11 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 "sheets": len(sheets),
                 "definedNames": len(defined_names),
                 "connections": len(connections),
+                # The caches the workbook declared and the pivot tables its
+                # sheets related: two figures because a cache may serve several
+                # tables and a workbook may keep one no table cites.
+                "pivotCaches": len(pivot_caches),
+                "pivotTables": pivot_tables,
                 # The links the workbook declared, which is not the
                 # ``externalReferences`` figure beside it: that one counts every
                 # external relationship any part of the package holds, this one
@@ -3502,6 +3688,537 @@ def _xlsx_external_count(
     if not groups:
         return None
     return sum(1 for node in groups[0] if node.tag == f"{{{namespace}}}{member}")
+
+
+def _xlsx_pivot_caches(
+    package: _Package, workbook: ElementTree.Element
+) -> tuple[
+    list[tuple[dict[str, object], dict[str, object]]], dict[int, tuple[str, str]]
+]:
+    """Inventory the workbook's pivot caches and index them by the id they claim.
+
+    A cache is reached on the schema's own route and no other: the
+    ``pivotCaches`` directly below the workbook, a ``pivotCache`` directly below
+    that, both qualified in the workbook root's own namespace, and that
+    element's own relationship id. An unqualified, foreign or further nested
+    lookalike declares nothing and stays transparent, exactly as it does on the
+    defined-name, table, connections and external-link routes. No part path is
+    derived from the workbook's own name, so a member that merely looks like a
+    cache definition is never read.
+
+    ``cacheId`` is the identity a pivot table cites, so a missing one names
+    nothing and a repeated one leaves every table citing it pointing at two
+    caches. It is numeric, so the value rather than the spelling is the
+    identity. Two declarations naming one relationship -- or two relationships
+    resolving to one part -- leave one cache declared twice, and the workbook is
+    refused rather than read with it counted once or twice arbitrarily.
+
+    Nothing is refreshed. The definition is the state the file saved, the record
+    says so outright, and the index that comes back beside the records is what
+    lets a worksheet's pivot table name the cache it was built from without
+    either part being read twice.
+    """
+    namespace, _, _ = workbook.tag.rpartition("}")
+    namespace = namespace.lstrip("{")
+    if namespace not in _SPREADSHEETML:
+        return [], {}
+    declared = [node for node in workbook if node.tag == f"{{{namespace}}}pivotCaches"]
+    if not declared:
+        return [], {}
+    if len(declared) > 1:
+        raise OOXMLInvalid("XLSX workbook declares more than one pivot-cache list")
+    # Counted before the first definition is opened: a workbook's declarations
+    # are the work it asks for whether or not any of them resolves.
+    member = f"{{{namespace}}}pivotCache"
+    entries = [node for node in declared[0] if node.tag == member]
+    if len(entries) > _MAX_XLSX_PIVOT_CACHES:
+        raise OOXMLInvalid("XLSX workbook declares too many pivot caches")
+    records: list[tuple[dict[str, object], dict[str, object]]] = []
+    caches: dict[int, tuple[str, str]] = {}
+    named: set[str] = set()
+    resolved: set[str] = set()
+    for index, entry in enumerate(entries):
+        raw = entry.attrib.get("cacheId")
+        if raw is None or _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
+            raise OOXMLInvalid("XLSX pivot cache id is missing or malformed")
+        cache_id = int(raw)
+        if cache_id in caches:
+            raise OOXMLInvalid("XLSX pivot cache id is repeated")
+        relation_id = _relationship_id(entry.attrib)
+        if not relation_id:
+            raise OOXMLInvalid("XLSX pivot cache names no relationship")
+        if relation_id in named:
+            raise OOXMLInvalid("XLSX pivot cache relationship is repeated")
+        named.add(relation_id)
+        part = _referenced_part(
+            package,
+            "xl/workbook.xml",
+            relation_id,
+            _XLSX_PIVOT_CACHE_RELATIONSHIPS,
+            _XLSX_PIVOT_CACHE_CONTENT_TYPE,
+            "pivot cache",
+            "XLSX",
+        )
+        if part in resolved:
+            raise OOXMLInvalid("XLSX pivot cache part is referenced twice")
+        resolved.add(part)
+        caches[cache_id] = (part, _clip(relation_id, _MAX_META_CHARS))
+        records.append(
+            (
+                {
+                    "part": "xl/workbook.xml",
+                    "pivotCachePart": part,
+                    "pivotCacheRelationshipId": _clip(relation_id, _MAX_META_CHARS),
+                    "pivotCacheIndex": index,
+                    "pivotCacheId": cache_id,
+                },
+                _xlsx_pivot_cache(package, part, cache_id),
+            )
+        )
+    return records, caches
+
+
+def _xlsx_pivot_cache(
+    package: _Package, part: str, cache_id: int
+) -> dict[str, object]:
+    """Read one pivot-cache definition, reporting the state it saved and no more.
+
+    The declared content type says what the part is; the root is where the part
+    says so itself, in one of the two SpreadsheetML namespaces, as the one
+    remaining check that it holds the vocabulary that declaration promised.
+
+    ``cacheSource`` is where the cache says its data came from, and the schema
+    gives a definition exactly one: none describes no source a record could
+    name, and two leave which one it was built from ambiguous. The field list is
+    counted and never read -- a ``cacheField``'s ``sharedItems`` hold the cached
+    values themselves, which is exactly the payload this route does not copy --
+    and its declared count is bounded before the list is collected.
+
+    ``freshness`` is unknown on every record and both standing claims are false,
+    because this reader opened a saved declaration and did none of what it
+    describes: nothing was refreshed, no source was reached, no value was
+    recalculated and ``recordCount`` is reported as the file stored it rather
+    than agreed against anything.
+    """
+    root = package.xml(part)
+    namespace, _, local = root.tag.rpartition("}")
+    namespace = namespace.lstrip("{")
+    if namespace not in _SPREADSHEETML:
+        raise OOXMLInvalid("XLSX pivot cache part uses an unsupported namespace")
+    if local != "pivotCacheDefinition":
+        raise OOXMLInvalid("XLSX pivot cache part is not rooted at its own definition")
+    sources = [node for node in root if node.tag == f"{{{namespace}}}cacheSource"]
+    if len(sources) != 1:
+        raise OOXMLInvalid("XLSX pivot cache does not declare exactly one source")
+    return {
+        "kind": "pivotCache",
+        "cacheId": cache_id,
+        "definitionPart": part,
+        # Stated outright on every record: this reader read a saved declaration
+        # and did nothing it describes.
+        "freshness": "unknown",
+        "refreshPerformed": False,
+        "externalAccessPerformed": False,
+        **_xlsx_pivot_records(package, part, root),
+        **_xlsx_pivot_source(sources[0], namespace),
+        "fieldCount": _xlsx_pivot_fields(root, namespace),
+        **{
+            key: None
+            if (value := root.attrib.get(key)) is None
+            else _clip(value, _MAX_META_CHARS)
+            for key in _XLSX_PIVOT_CACHE_TEXT
+        },
+        **{key: _xlsx_pivot_flag(root, key) for key in _XLSX_PIVOT_CACHE_FLAGS},
+        **{
+            key: _xlsx_pivot_number(root, key, bound)
+            for key, bound in _XLSX_PIVOT_CACHE_NUMBERS
+        },
+    }
+
+
+def _xlsx_pivot_fields(root: ElementTree.Element, namespace: str) -> int | None:
+    """Count the fields one cache definition declared, or None where none is.
+
+    ``cacheFields`` is optional in the schema, so a definition that wrote none
+    declares no field list rather than an empty one, and the two stay
+    distinguishable. Its ``count`` is optional too, so an absent one is the list
+    the definition wrote rather than a refusal; where it is written it has to
+    agree with that list, because a count and a list that disagree name two
+    different widths and nothing here picks between them.
+
+    The declared count is bounded before the list is collected, and the list
+    again after, so neither a width nothing wrote nor a list nothing counted
+    gets past the bound.
+    """
+    holders = [node for node in root if node.tag == f"{{{namespace}}}cacheFields"]
+    if len(holders) > 1:
+        raise OOXMLInvalid("XLSX pivot cache declares its field list twice")
+    if not holders:
+        return None
+    count = holders[0].attrib.get("count")
+    if count is not None and (
+        _INDEX.fullmatch(count) is None or int(count) > _MAX_XLSX_PIVOT_FIELDS
+    ):
+        raise OOXMLInvalid("XLSX pivot cache declares too many fields or no count")
+    # Counted, never read: a field's ``sharedItems`` hold the cached values.
+    fields = [node for node in holders[0] if node.tag == f"{{{namespace}}}cacheField"]
+    if len(fields) > _MAX_XLSX_PIVOT_FIELDS:
+        raise OOXMLInvalid("XLSX pivot cache declares too many fields or no count")
+    if count is not None and len(fields) != int(count):
+        raise OOXMLInvalid("XLSX pivot cache field count does not match its field list")
+    return len(fields)
+
+
+def _xlsx_pivot_records(
+    package: _Package, part: str, root: ElementTree.Element
+) -> dict[str, object]:
+    """Name the cache-records part one definition relates, and count what it stored.
+
+    The relationship is optional -- a cache saved with ``saveData`` off keeps no
+    records part at all -- so an absent id leaves the whole group absent rather
+    than being refused or filled with a part nothing wrote. Where an id is
+    written it resolves only through the definition part's own relationships, so
+    nothing is derived from the part's name and no member is reached by merely
+    looking like the records. The relationship has to be internal and to carry
+    one of the URIs OOXML defines for the type: the records are a member of this
+    package by definition, so an external one contradicts the declaration rather
+    than qualifying it.
+
+    What comes out of the part is its root's own ``count`` and nothing else. The
+    ``r`` records below it are the cached data itself, so they are neither read
+    nor counted here, and the stored count is reported as stored rather than
+    agreed against them.
+    """
+    relation_id = _relationship_id(root.attrib)
+    if not relation_id:
+        return {
+            "recordsPart": None,
+            "recordsRelationshipId": None,
+            "recordsPartCount": None,
+        }
+    records_part = _referenced_part(
+        package,
+        part,
+        relation_id,
+        _XLSX_PIVOT_RECORDS_RELATIONSHIPS,
+        _XLSX_PIVOT_RECORDS_CONTENT_TYPE,
+        "pivot cache records",
+        "XLSX",
+    )
+    records = package.xml(records_part)
+    namespace, _, local = records.tag.rpartition("}")
+    if namespace.lstrip("{") not in _SPREADSHEETML:
+        raise OOXMLInvalid(
+            "XLSX pivot cache records part uses an unsupported namespace"
+        )
+    if local != "pivotCacheRecords":
+        raise OOXMLInvalid(
+            "XLSX pivot cache records part is not rooted at its own records"
+        )
+    return {
+        "recordsPart": records_part,
+        "recordsRelationshipId": _clip(relation_id, _MAX_META_CHARS),
+        "recordsPartCount": _xlsx_pivot_number(records, "count", _MAX_INDEX),
+    }
+
+
+def _xlsx_pivot_source(
+    source: ElementTree.Element, namespace: str
+) -> dict[str, object]:
+    """Report where one cache says its data came from, without going there.
+
+    ``type`` is required and closed, so a source type outside the four OOXML
+    defines is refused rather than read as whichever it resembles. A
+    ``worksheetSource`` belongs to the worksheet type alone, so one written
+    under another type contradicts the declaration, and the schema gives a
+    source one of them, so a second leaves two at one position.
+
+    The worksheet reference is reported only where it parses as a range, for the
+    reason every other range on every other route is: a reference nothing can
+    place names no rectangle. A source naming a defined name instead writes
+    ``name`` and no ``ref``, which is the source it is rather than a refusal.
+
+    ``connectionId`` and the worksheet source's own relationship id are kept as
+    the inert identifiers they are. Neither is resolved: no connection is
+    opened, no external workbook is reached, no query is run and nothing is
+    refreshed.
+    """
+    kind = source.attrib.get("type")
+    if kind not in _XLSX_PIVOT_SOURCE_TYPES:
+        raise OOXMLInvalid("XLSX pivot cache source type is missing or undefined")
+    record: dict[str, object] = {
+        "sourceType": kind,
+        "sourceConnectionId": _xlsx_pivot_number(source, "connectionId", _MAX_INDEX),
+        "sourceSheet": None,
+        "sourceName": None,
+        "sourceRef": None,
+        "sourceRelationshipId": None,
+    }
+    held = [node for node in source if node.tag == f"{{{namespace}}}worksheetSource"]
+    if len(held) > 1:
+        raise OOXMLInvalid("XLSX pivot cache declares its worksheet source twice")
+    if not held:
+        return record
+    if kind != "worksheet":
+        raise OOXMLInvalid(
+            "XLSX pivot cache declares a worksheet source under another source type"
+        )
+    ref = held[0].attrib.get("ref")
+    if ref is not None:
+        _cell_range(ref)
+    relation_id = _relationship_id(held[0].attrib)
+    record.update(
+        {
+            "sourceSheet": None
+            if (sheet := held[0].attrib.get("sheet")) is None
+            else _clip(sheet, _MAX_META_CHARS),
+            "sourceName": None
+            if (name := held[0].attrib.get("name")) is None
+            else _clip(name, _MAX_META_CHARS),
+            "sourceRef": ref,
+            "sourceRelationshipId": _clip(relation_id, _MAX_META_CHARS) or None,
+        }
+    )
+    return record
+
+
+def _xlsx_pivot_tables(
+    package: _Package,
+    part: str,
+    root: ElementTree.Element,
+    caches: dict[int, tuple[str, str]],
+) -> list[tuple[dict[str, object], dict[str, object]]]:
+    """Inventory one sheet's pivot tables, linking each to the cache it cites.
+
+    A pivot table is reached on the schema's own route and no other, exactly as
+    a declared table is: the ``pivotTableParts`` directly below the worksheet, a
+    ``pivotTablePart`` directly below that, both qualified in the worksheet's
+    own SpreadsheetML namespace, and that element's own relationship id. An
+    unqualified, foreign or further nested lookalike declares nothing, and no
+    part path is derived from the sheet's own name. The ``.rels`` file is the
+    resolver, never the route: a pivot-table relationship no ``pivotTablePart``
+    names is inert, because a relationship is how the sheet reaches what it
+    declared and not itself a declaration.
+
+    Order is the order the sheet wrote its declarations, so the inventory is the
+    author's own and the same package reports the same way every time.
+
+    ``count`` is optional on the list, so an absent one is the list the sheet
+    wrote rather than a refusal. Where it is written it is bounded before a
+    single relationship is resolved -- a width nothing wrote is never opened --
+    and then has to agree with the list, because a count and a list that
+    disagree name two different numbers of reports and nothing here picks
+    between them.
+
+    Each declaration names one relationship: a missing id reaches nothing, a
+    repeated id declares one report twice, and two ids resolving to one part
+    leave one report declared twice as well.
+    """
+    # The rest of the sheet reader matches local names, because a sheet's
+    # vocabulary is settled by the part it was reached through. This route opens
+    # another part, so it is held to the sheet's own namespace and that namespace
+    # has to be SpreadsheetML.
+    namespace, _, _ = root.tag.rpartition("}")
+    namespace = namespace.lstrip("{")
+    if namespace not in _SPREADSHEETML:
+        return []
+    declared = [
+        node for node in root if node.tag == f"{{{namespace}}}pivotTableParts"
+    ]
+    if not declared:
+        return []
+    if len(declared) > 1:
+        raise OOXMLInvalid(
+            "XLSX worksheet declares more than one pivot-table-part list"
+        )
+    count = declared[0].attrib.get("count")
+    if count is not None and (
+        _INDEX.fullmatch(count) is None or int(count) > _MAX_XLSX_PIVOT_TABLES
+    ):
+        raise OOXMLInvalid("XLSX worksheet declares too many pivot tables or no count")
+    # Counted before the first part is opened: a sheet's declarations are the
+    # work it asks for whether or not any of them resolves.
+    member = f"{{{namespace}}}pivotTablePart"
+    entries = [node for node in declared[0] if node.tag == member]
+    if len(entries) > _MAX_XLSX_PIVOT_TABLES:
+        raise OOXMLInvalid("XLSX worksheet declares too many pivot tables or no count")
+    if count is not None and len(entries) != int(count):
+        raise OOXMLInvalid(
+            "XLSX worksheet pivot-table count does not match its part list"
+        )
+    records: list[tuple[dict[str, object], dict[str, object]]] = []
+    named: set[str] = set()
+    resolved: set[str] = set()
+    for index, entry in enumerate(entries):
+        relation_id = _relationship_id(entry.attrib)
+        if not relation_id:
+            raise OOXMLInvalid("XLSX pivot table part declaration names no relationship")
+        if relation_id in named:
+            raise OOXMLInvalid("XLSX pivot table part declaration is repeated")
+        named.add(relation_id)
+        table_part = _referenced_part(
+            package,
+            part,
+            relation_id,
+            _XLSX_PIVOT_TABLE_RELATIONSHIPS,
+            _XLSX_PIVOT_TABLE_CONTENT_TYPE,
+            "pivot table",
+            "XLSX",
+        )
+        if table_part in resolved:
+            raise OOXMLInvalid("XLSX pivot table part is referenced twice")
+        resolved.add(table_part)
+        records.append(
+            (
+                {
+                    "pivotTablePart": table_part,
+                    "pivotTableRelationshipId": _clip(relation_id, _MAX_META_CHARS),
+                    "pivotTableIndex": index,
+                },
+                _xlsx_pivot_table(package, table_part, caches),
+            )
+        )
+    return records
+
+
+def _xlsx_pivot_table(
+    package: _Package, part: str, caches: dict[int, tuple[str, str]]
+) -> dict[str, object]:
+    """Read one pivot-table definition, reporting the report it saved, inert.
+
+    The declared content type says what the part is; the root is where the part
+    says so itself, in one of the two SpreadsheetML namespaces, as the one
+    remaining check that it holds the vocabulary that declaration promised.
+
+    ``name`` and ``cacheId`` are both required, so a definition missing either
+    names no report and cites no cache. The cache is linked by the id the table
+    cites, through the index the workbook's own declarations built: where the
+    workbook declared no cache under that id, the link is absent rather than
+    invented, and the table is still the inventory it is -- nothing here derives
+    a cache part from a name or picks one that happens to be in the package.
+
+    Everything else is the authored shape of the report and the counts of the
+    field lists it declared. A field's own items are cached data, so they are
+    counted and never read, and no value, caption text aside, comes out of the
+    part. ``freshness`` is unknown and both standing claims are false for the
+    reason they are on a cache: this reader read a saved declaration and
+    refreshed, recalculated and reached nothing.
+    """
+    root = package.xml(part)
+    namespace, _, local = root.tag.rpartition("}")
+    namespace = namespace.lstrip("{")
+    if namespace not in _SPREADSHEETML:
+        raise OOXMLInvalid("XLSX pivot table part uses an unsupported namespace")
+    if local != "pivotTableDefinition":
+        raise OOXMLInvalid("XLSX pivot table part is not rooted at its own definition")
+    name = root.attrib.get("name")
+    if name is None:
+        raise OOXMLInvalid("XLSX pivot table declares no name")
+    raw = root.attrib.get("cacheId")
+    if raw is None or _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
+        raise OOXMLInvalid("XLSX pivot table cache id is missing or malformed")
+    cache_id = int(raw)
+    linked = caches.get(cache_id)
+    # The schema gives a definition one location and requires its reference, but
+    # the reference is the only thing read off it, so a definition that wrote
+    # none reports no location rather than being refused for it.
+    located = [node for node in root if node.tag == f"{{{namespace}}}location"]
+    if len(located) > 1:
+        raise OOXMLInvalid("XLSX pivot table declares its location twice")
+    location = located[0].attrib.get("ref") if located else None
+    if location is not None:
+        _cell_range(location)
+    return {
+        "kind": "pivotTable",
+        "name": _clip(name, _MAX_META_CHARS),
+        "cacheId": cache_id,
+        "definitionPart": part,
+        "cachePart": None if linked is None else linked[0],
+        "cacheRelationshipId": None if linked is None else linked[1],
+        "location": location,
+        # Stated outright on every record, as on a cache's: this reader read a
+        # saved declaration and did nothing it describes.
+        "freshness": "unknown",
+        "refreshPerformed": False,
+        "externalAccessPerformed": False,
+        **{
+            field: _xlsx_pivot_count(root, namespace, group, item)
+            for field, group, item in _XLSX_PIVOT_TABLE_GROUPS
+        },
+        **{
+            key: None
+            if (value := root.attrib.get(key)) is None
+            else _clip(value, _MAX_META_CHARS)
+            for key in _XLSX_PIVOT_TABLE_TEXT
+        },
+        **{
+            key: _xlsx_pivot_number(root, key, bound)
+            for key, bound in _XLSX_PIVOT_TABLE_NUMBERS
+        },
+    }
+
+
+def _xlsx_pivot_count(
+    holder: ElementTree.Element, namespace: str, group: str, member: str
+) -> int | None:
+    """Count what one declared field list holds, or None where none was declared.
+
+    Presence and a count come out, and nothing inside the list does: a pivot
+    field's items are the cache's own values, and a reader that copied them
+    would be reporting cached data as though the report had been rebuilt.
+
+    The list is matched as a direct child qualified in the definition's own
+    namespace, so a lookalike in a foreign vocabulary, one stripped of its
+    prefix and one nested deeper all declare nothing, and the schema gives a
+    definition one list of a kind, so a second is refused rather than read from
+    whichever was written first. The list is bounded for the reason the cache's
+    fields are.
+    """
+    groups = [node for node in holder if node.tag == f"{{{namespace}}}{group}"]
+    if len(groups) > 1:
+        raise OOXMLInvalid("XLSX pivot table declares a field list twice")
+    if not groups:
+        return None
+    count = sum(1 for node in groups[0] if node.tag == f"{{{namespace}}}{member}")
+    if count > _MAX_XLSX_PIVOT_FIELDS:
+        raise OOXMLInvalid("XLSX pivot table declares too many fields")
+    return count
+
+
+def _xlsx_pivot_flag(element: ElementTree.Element, name: str) -> bool | None:
+    """Read one pivot declaration's boolean attribute, or None where absent.
+
+    ``None`` says the file declared nothing, which is not the same as a declared
+    false, and no default is invented for it. The value is closed, so one
+    outside the type is refused rather than read as whichever of the two it
+    resembles.
+    """
+    value = element.attrib.get(name)
+    if value is None:
+        return None
+    if value in _TRUE_FLAGS:
+        return True
+    if value in _FALSE_FLAGS:
+        return False
+    raise OOXMLInvalid("XLSX pivot flag is malformed")
+
+
+def _xlsx_pivot_number(
+    element: ElementTree.Element, name: str, bound: int
+) -> int | None:
+    """Read one pivot declaration's unsigned numeric attribute, or None if absent.
+
+    Absent stays absent: nothing invents the schema's default, because a version
+    or a count the file never wrote is not one it claimed. The value is unsigned
+    and bounded by its own type, so a negative or oversized one is not a value
+    the type has and is refused rather than clamped into one.
+    """
+    raw = element.attrib.get(name)
+    if raw is None:
+        return None
+    if _INDEX.fullmatch(raw) is None or int(raw) > bound:
+        raise OOXMLInvalid("XLSX pivot numeric attribute is malformed")
+    return int(raw)
 
 
 @dataclass(frozen=True, slots=True)
