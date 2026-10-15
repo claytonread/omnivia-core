@@ -240,6 +240,142 @@ def test_a_docx_whose_embedded_image_cannot_be_read_is_partial_not_a_success(
     ]
 
 
+SPREADSHEETML: Final = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+RELNS: Final = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+SHEET_DRAWING: Final = (
+    "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+)
+DRAWINGML: Final = "http://schemas.openxmlformats.org/drawingml/2006/main"
+XLSX_IMAGE_PARTS: Final = {
+    "xl/workbook.xml": (
+        f'<workbook xmlns="{SPREADSHEETML}" xmlns:r="{RELNS}"><sheets>'
+        '<sheet name="Budget" sheetId="7" r:id="rId1"/></sheets></workbook>'
+    ).encode(),
+    "xl/_rels/workbook.xml.rels": (
+        f'<Relationships><Relationship Id="rId1" Type="{RELNS}/worksheet"'
+        ' Target="worksheets/sheet1.xml"/></Relationships>'
+    ).encode(),
+    "xl/worksheets/sheet1.xml": (
+        f'<worksheet xmlns="{SPREADSHEETML}" xmlns:r="{RELNS}"><sheetData>'
+        '<row r="1"><c r="A1" t="inlineStr"><is><t>Name</t></is></c></row>'
+        '</sheetData><drawing r:id="rIdD"/></worksheet>'
+    ).encode(),
+    "xl/worksheets/_rels/sheet1.xml.rels": (
+        f'<Relationships><Relationship Id="rIdD" Type="{RELNS}/drawing"'
+        ' Target="../drawings/drawing1.xml"/></Relationships>'
+    ).encode(),
+    "xl/drawings/drawing1.xml": (
+        f'<xdr:wsDr xmlns:xdr="{SHEET_DRAWING}" xmlns:a="{DRAWINGML}"'
+        f' xmlns:r="{RELNS}"><xdr:oneCellAnchor>'
+        "<xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff>"
+        "<xdr:row>2</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>"
+        '<xdr:ext cx="914400" cy="457200"/>'
+        '<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="2" name="Picture 2"/>'
+        "<xdr:cNvPicPr/></xdr:nvPicPr>"
+        '<xdr:blipFill><a:blip r:embed="rIdI"/><a:stretch/></xdr:blipFill>'
+        "<xdr:spPr/></xdr:pic>"
+        "<xdr:clientData/></xdr:oneCellAnchor></xdr:wsDr>"
+    ).encode(),
+    "xl/drawings/_rels/drawing1.xml.rels": (
+        f'<Relationships><Relationship Id="rIdI" Type="{RELNS}/image"'
+        ' Target="../media/image1.png"/></Relationships>'
+    ).encode(),
+}
+DRAWING_CT: Final = b"application/vnd.openxmlformats-officedocument.drawing+xml"
+XLSX_IMAGE_TYPES: Final = (
+    PNG_DEFAULT
+    + b'<Override PartName="/xl/drawings/drawing1.xml" ContentType="'
+    + DRAWING_CT
+    + b'"/>'
+)
+
+
+def xlsx_with_image(member: bytes) -> bytes:
+    return office_package(
+        XLSX_IMAGE_PARTS | {"xl/media/image1.png": member},
+        overrides=XLSX_IMAGE_TYPES,
+    )
+
+
+def embedded_image_settings(local_ocr: ExtractionSettings) -> ExtractionSettings:
+    return ExtractionSettings(
+        processing_mode=local_ocr.processing_mode,
+        ocr=local_ocr.ocr,
+        embedded_image_ocr=True,
+    )
+
+
+def test_an_xlsx_embedded_image_is_examined_only_under_settings_that_say_so(
+    local_ocr: ExtractionSettings,
+) -> None:
+    """The trusted settings reach the Excel path too, and nothing else decides
+    it: a profile that examines no embedded image publishes the structural
+    extraction alone, and the same bytes under a profile that does are read with
+    the engine the profile pinned. The cell beside the picture is untouched
+    either way."""
+    image = io.BytesIO()
+    Image.new("RGB", (240, 60), "white").save(image, format="PNG")
+    package = xlsx_with_image(image.getvalue())
+
+    structural = extract_document(
+        package, media_type=XLSX_MEDIA_TYPE, capture_id=CAPTURE
+    )
+    assert structural.state == "succeeded"
+    assert [item.semantic_role for item in structural.segments] == [
+        "table_cell",
+        "object_inventory",
+    ]
+    record = structural.segments[1].structured_value
+    assert (record["imageDecoded"], record["ocrPerformed"]) == (False, False)
+    assert record["ocrOutcome"] == "embedded_image_ocr_disabled"
+
+    examined = extract_document(
+        package,
+        media_type=XLSX_MEDIA_TYPE,
+        capture_id=CAPTURE,
+        settings=embedded_image_settings(local_ocr),
+    )
+    assert examined.state == "succeeded"
+    assert [item.semantic_role for item in examined.segments] == [
+        "table_cell",
+        "object_inventory",
+    ]
+    record = examined.segments[1].structured_value
+    # A blank raster yields no reliable text, and that is a reading of it: the
+    # bytes were decoded and the engine the profile pinned ran over them.
+    assert (record["imageDecoded"], record["ocrPerformed"]) == (True, True)
+    assert examined.limitations["embeddedImages"] == 1
+
+
+def test_an_xlsx_whose_embedded_image_cannot_be_read_is_partial_not_a_success(
+    local_ocr: ExtractionSettings,
+) -> None:
+    """The structural extraction stands and the source is not refused, but a
+    raster the decoder could not read is coverage this workbook never reached,
+    so it is partial and says which coverage was lost. The cell is published."""
+    package = xlsx_with_image(b"\x89PNG\r\n\x1a\nnot really an image")
+
+    result = extract_document(
+        package,
+        media_type=XLSX_MEDIA_TYPE,
+        capture_id=CAPTURE,
+        settings=embedded_image_settings(local_ocr),
+    )
+
+    assert result.state == "partial"
+    assert result.limitations["documentOutcome"] == "partial_coverage"
+    assert result.limitations["embeddedImageOutcomes"] == {
+        "image_could_not_be_decoded": 1
+    }
+    # No *cell* failed, and the cell coverage does not claim one did: the
+    # image's own outcome is reported where its own unit is counted.
+    assert result.coverage["units"][0]["failed"] == 0
+    assert [item.semantic_role for item in result.segments] == [
+        "table_cell",
+        "object_inventory",
+    ]
+
+
 def test_xlsx_preserves_formula_and_saved_cache_as_distinct_values() -> None:
     package = office_package(
         {

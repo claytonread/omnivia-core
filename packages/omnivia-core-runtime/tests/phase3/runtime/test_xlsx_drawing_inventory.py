@@ -26,6 +26,10 @@ from omnivia_core_runtime.service.ooxml_extractors import (
     OOXMLInvalid,
     extract_xlsx,
 )
+from omnivia_core_runtime.service.raster_extractors import (
+    EMBEDDED_DISABLED,
+    EMBEDDED_NOT_EMBEDDED,
+)
 
 CAPTURE = "dcap-" + "a" * 64
 MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -229,6 +233,14 @@ WHERE: dict[str, object] = {
     "drawingObjectIndex": 0,
     "drawingObjectType": "pic",
 }
+# What every picture here states about reading: the default profile examines no
+# embedded image, so nothing was decoded, no engine ran, and the outcome names
+# why. A picture with no embedded part has none to examine in the first place.
+UNEXAMINED: dict[str, object] = {
+    "imageDecoded": False,
+    "ocrPerformed": False,
+    "ocrOutcome": EMBEDDED_NOT_EMBEDDED,
+}
 # What a picture naming no image at all reports, so an embed or a link is
 # visibly the half of the record it filled in.
 NO_IMAGE: dict[str, object] = {
@@ -242,6 +254,7 @@ NO_IMAGE: dict[str, object] = {
     "imageLinkTarget": None,
     "imageLinkScheme": None,
     "imageLinkExternal": None,
+    **UNEXAMINED,
 }
 EMBEDDED: dict[str, object] = NO_IMAGE | {
     "imageEmbedRelationshipId": "rIdI",
@@ -249,6 +262,8 @@ EMBEDDED: dict[str, object] = NO_IMAGE | {
     "imagePart": IMAGE_PART,
     "imageContentType": "image/png",
     "imageBytes": len(IMAGE),
+    # There is a part to examine, and only the profile kept it shut.
+    "ocrOutcome": EMBEDDED_DISABLED,
 }
 NO_ENDS: dict[str, object] = {
     "connectionStartId": None,
@@ -513,7 +528,10 @@ LINKED: dict[str, object] = NO_IMAGE | {
         (
             BOTH_PIC,
             EMBEDDED
-            | {key: value for key, value in LINKED.items() if value is not None},
+            | {key: value for key, value in LINKED.items() if value is not None}
+            # A picture naming both embeds a part, so the link beside it does not
+            # make it a reference with nothing to examine.
+            | {"ocrOutcome": EMBEDDED_DISABLED},
         ),
         (BARE_PIC, NO_IMAGE),
     ],

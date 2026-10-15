@@ -2336,13 +2336,14 @@ class OOXMLExtraction:
 
 @dataclass(slots=True)
 class _EmbeddedImages:
-    """The one bounded embedded-raster pass a DOCX extraction runs.
+    """The one bounded embedded-raster pass an OOXML extraction runs.
 
-    Every story of one document shares it, so the aggregate budget below is the
-    document's and not one story's, and two references to the same image part
-    each pay it. There is deliberately no cache of decoded bytes or readings:
-    one reference is one candidate with its own locator, and a cache keyed by
-    part would grow with whatever a document chose to reference.
+    Every container of one source shares it -- every story of a Word document,
+    every sheet of a workbook -- so the aggregate budget below is the source's
+    and not one container's, and two references to the same image part each pay
+    it. There is deliberately no cache of decoded bytes or readings: one
+    reference is one candidate with its own locator, and a cache keyed by part
+    would grow with whatever a source chose to reference.
     """
 
     settings: ExtractionSettings
@@ -2356,20 +2357,23 @@ class _EmbeddedImages:
     def read(
         self,
         package: _Package,
-        part: str | None,
-        media_type: str | None,
+        part: object,
+        media_type: object,
         locator: dict[str, object],
     ) -> EmbeddedImageResult:
         """Recognise the raster at ``part``, or say truthfully why nothing was.
 
-        A container that named only a reference out of the package has no part
-        here, and nothing opens, fetches or probes that reference. The gate is
-        consulted before the member is read, so a profile that examines no
-        embedded image never touches an image member, and a budget already
-        breached stops before this candidate's member is read at all: the
-        shared ceiling bounds the work done, not merely what is published.
+        ``part`` and ``media_type`` are read straight out of the inventory
+        record the container's own reader built, so a container that named only
+        a reference out of the package -- a link, an external relationship, a
+        picture naming no image at all -- carries no part here, and nothing
+        opens, fetches or probes that reference. The gate is consulted before
+        the member is read, so a profile that examines no embedded image never
+        touches an image member, and a budget already breached stops before this
+        candidate's member is read at all: the shared ceiling bounds the work
+        done, not merely what is published.
         """
-        if part is None or media_type is None:
+        if not isinstance(part, str) or not isinstance(media_type, str):
             result = EmbeddedImageResult(EMBEDDED_NOT_EMBEDDED)
         elif self.gate is not None:
             result = EmbeddedImageResult(self.gate)
@@ -3210,7 +3214,37 @@ def _docx_header_footer_kind(element: ElementTree.Element) -> str:
     return kind
 
 
-def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
+def extract_xlsx(
+    content: bytes,
+    *,
+    capture_id: str,
+    settings: ExtractionSettings | None = None,
+    ocr_engine: OcrEngine = run_tesseract,
+    budget: ExtractionBudget | None = None,
+) -> OOXMLExtraction:
+    """Read one admitted XLSX structurally, and only then its embedded rasters.
+
+    The structural read is what it has always been and is the whole extraction
+    by default: ``settings`` defaults to the explicit text-only profile, so a
+    caller that hands none opens no image member at all.
+
+    An embedded raster is examined only where the trusted settings say to and
+    their pinned models were served, and only one a worksheet drawing's picture
+    directly displays out of the package is a candidate. Every candidate of one
+    workbook shares one aggregate execution budget, and a candidate that is
+    refused, unsupported, malformed or cut short keeps the inventory record it
+    already had and reports exactly why nothing was read out of it.
+
+    ``budget`` is that aggregate ceiling, injectable so a breach can be
+    exercised with a small budget rather than a real allocation.
+    """
+    settings = settings if settings is not None else text_only_settings()
+    images = _EmbeddedImages(
+        settings,
+        ocr_engine,
+        budget if budget is not None else ExtractionBudget(),
+        embedded_image_gate(settings),
+    )
     with _Package(content) as package:
         if "xl/workbook.xml" not in package.names:
             raise OOXMLInvalid("XLSX workbook part is missing")
@@ -3484,24 +3518,61 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
             # worksheet is provenance for it -- and the drawing part, the anchor
             # and the object's own index are all named beside it, so a record
             # says which object on which anchor of which drawing it describes.
+            #
+            # A picture is the one object kind that displays a raster, so it is
+            # the one kind handed to the bounded embedded-image pass. Everything
+            # else the drawing anchored -- a chart, a shape, a graphic frame, a
+            # content part, a connector, an OLE stand-in -- is never a candidate
+            # and is reported exactly as before. What the pass read follows the
+            # record it belongs to, as the separate reading it is, anchored to
+            # that object's own locator rather than joined to any cell.
             for provenance, record in _xlsx_drawing_objects(package, part, root):
+                locator = _locator(
+                    capture_id,
+                    sheetPart=part,
+                    sheetId=sheet_id,
+                    sheet=sheet_name,
+                    sheetState=state,
+                    **provenance,
+                )
+                visibility = "hidden" if sheet_hidden else "visible"
+                read = (
+                    images.read(
+                        package,
+                        record.get("imagePart"),
+                        record.get("imageContentType"),
+                        locator,
+                    )
+                    if provenance["drawingObjectType"] == "pic"
+                    else None
+                )
+                if read is not None:
+                    record["imageDecoded"] = read.decoded
+                    record["ocrPerformed"] = read.performed
+                    record["ocrOutcome"] = read.outcome
                 segments.append(
                     ExtractedSegment(
                         "object_inventory",
-                        _locator(
-                            capture_id,
-                            sheetPart=part,
-                            sheetId=sheet_id,
-                            sheet=sheet_name,
-                            sheetState=state,
-                            **provenance,
-                        ),
+                        locator,
                         structured_value=record,
                         extraction_method="inventory",
-                        visibility="hidden" if sheet_hidden else "visible",
+                        visibility=visibility,
                     )
                 )
                 _bounded(segments)
+                for reading in read.segments if read is not None else ():
+                    segments.append(
+                        # A reading keeps the role, method, language and
+                        # confidence the image path gave it, so an accepted line
+                        # stays searchable text read by OCR and a below-threshold
+                        # observation stays out of ordinary retrieval. A hidden
+                        # sheet hides what was read on it exactly as it hides the
+                        # record above.
+                        replace(reading, visibility=visibility)
+                        if sheet_hidden
+                        else reading
+                    )
+                    _bounded(segments)
             # The sheet's pivot tables, as inventory. A pivot table lives in its
             # own part and the sheet declares it in ``pivotTableParts``, so
             # ``sheetPart`` is provenance for it exactly as it is for a chart.
@@ -3770,40 +3841,46 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 )
             )
             _bounded(segments)
+        limitations: dict[str, object] = {
+            "sheets": len(sheets),
+            "definedNames": len(defined_names),
+            "connections": len(connections),
+            # The caches the workbook declared and the pivot tables its
+            # sheets related: two figures because a cache may serve several
+            # tables and a workbook may keep one no table cites.
+            "pivotCaches": len(pivot_caches),
+            "pivotTables": pivot_tables,
+            # The query tables the sheets and their declared tables related,
+            # which is not the ``connections`` figure beside it: a stored
+            # connection may serve several query tables, or none at all.
+            "queryTables": query_tables,
+            # The unsupported extension entries every part the reader opened
+            # declared, at every owner the schema places a list at in that
+            # part: the SpreadsheetML roots and the shared strings, and the
+            # worksheet drawings and charts in their own DrawingML
+            # vocabularies. Coverage records, counted apart from the cells.
+            # A part the reader never opens is not counted. DrawingML-main
+            # properties inside an opened drawing or chart are counted;
+            # foreign graphics a frame merely carries are not entered.
+            "extensions": extensions,
+            # The links the workbook declared, which is not the
+            # ``externalReferences`` figure beside it: that one counts every
+            # external relationship any part of the package holds, this one
+            # the external links the workbook itself declared.
+            "externalLinks": len(external_links),
+            "packageMembers": len(package.names),
+            "externalReferences": package.external_relationships,
+            **images.to_limitations(),
+        }
+        if images.budget.breach is not None:
+            limitations["limitBreach"] = images.budget.breach
         return OOXMLExtraction(
             tuple(segments),
             "workbook_cell",
             populated,
-            {
-                "sheets": len(sheets),
-                "definedNames": len(defined_names),
-                "connections": len(connections),
-                # The caches the workbook declared and the pivot tables its
-                # sheets related: two figures because a cache may serve several
-                # tables and a workbook may keep one no table cites.
-                "pivotCaches": len(pivot_caches),
-                "pivotTables": pivot_tables,
-                # The query tables the sheets and their declared tables related,
-                # which is not the ``connections`` figure beside it: a stored
-                # connection may serve several query tables, or none at all.
-                "queryTables": query_tables,
-                # The unsupported extension entries every part the reader opened
-                # declared, at every owner the schema places a list at in that
-                # part: the SpreadsheetML roots and the shared strings, and the
-                # worksheet drawings and charts in their own DrawingML
-                # vocabularies. Coverage records, counted apart from the cells.
-                # A part the reader never opens is not counted. DrawingML-main
-                # properties inside an opened drawing or chart are counted;
-                # foreign graphics a frame merely carries are not entered.
-                "extensions": extensions,
-                # The links the workbook declared, which is not the
-                # ``externalReferences`` figure beside it: that one counts every
-                # external relationship any part of the package holds, this one
-                # the external links the workbook itself declared.
-                "externalLinks": len(external_links),
-                "packageMembers": len(package.names),
-                "externalReferences": package.external_relationships,
-            },
+            limitations,
+            failed_units=images.outcomes.count(EMBEDDED_MALFORMED),
+            limit_breach=images.budget.breach,
         )
 
 
@@ -7286,7 +7363,9 @@ def _xlsx_drawing_objects(
     connector's two endpoint claims. Nothing is opened, decoded, rendered,
     OCRed, fetched or resolved past the package's own relationships, no shape
     text is read, and no connection graph is inferred from the endpoints -- a
-    claim about a shape id is a claim, not an edge.
+    claim about a shape id is a claim, not an edge. The caller may hand a
+    picture's named embedded part to the bounded embedded-image pass afterwards;
+    nothing on this route does, and nothing on it ever opens a member.
 
     A graphic frame showing a chart is passed over: the chart route already
     reports that frame, on this same anchor, as the chart records it holds, so
@@ -12054,15 +12133,12 @@ class _DocxWalker:
 
         The candidate carries this object's own locator, so two references to
         one image part stay two readings at two positions. ``part`` and
-        ``media_type`` come from the record just built, which is why a container
-        that named only a reference out of the package passes ``None`` here and
+        ``media_type`` come from the record just built, so a container that
+        named only a reference out of the package carries no part here and
         nothing of that reference is opened, fetched or probed.
         """
         return self._images.read(
-            self._package,
-            part if isinstance(part, str) else None,
-            media_type if isinstance(media_type, str) else None,
-            self._locator(position),
+            self._package, part, media_type, self._locator(position)
         )
 
     def _emit_embedded(self, result: EmbeddedImageResult, state: str) -> None:
