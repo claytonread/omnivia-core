@@ -14,11 +14,18 @@ either the whole old document or the whole new one. The temporary is created
 exclusively under a fresh unguessable name, so no path already sitting in the
 root -- a symlink out of it least of all -- is ever opened or truncated.
 
-Still out of scope here: installs, eviction, capacity planning, catalogue
-integration, networking and update logic. Nothing in this module fetches or
-deletes resource bytes; it only describes the state those operations will later
-agree on. Selection of already-installed models stays in
+Nothing in this module touches resource bytes; it only describes the state the
+operations over them agree on. Installing and removing those bytes, verifying a
+payload against an identity, and the 512 MiB capacity rule belong to
+:mod:`omnivia_core_runtime.service.ocr_resource_lifecycle`, which keeps its
+managed tree beside this document under the same root. Selection of
+already-installed models stays in
 :mod:`omnivia_core_runtime.service.ocr_resources`.
+
+Still out of scope for both: downloading a resource, verifying a signature over
+one, discovering that an update exists, and catalogue or network integration of
+any kind. An identity reaches here from a verified manifest or an explicit
+operator action, never from a fetch.
 """
 
 from __future__ import annotations
@@ -173,9 +180,12 @@ class OcrResourceStoreVersionUnsupported(OcrResourceStoreError):
 class OcrResourcePin:
     """One operation's claim on one installed resource set.
 
-    A pin is the record that stops a later eviction pass from removing bytes an
-    in-flight operation still needs. Nothing consumes it yet; this slice only
-    makes it storable.
+    A pin is the record that stops bytes an in-flight operation still needs from
+    being removed. :mod:`omnivia_core_runtime.service.ocr_resource_lifecycle`
+    enforces it: a pinned identity cannot be removed, and reconciliation will not
+    drop its entry even when the bytes have gone. Nothing here creates or clears
+    a pin -- that belongs to whatever admits and resolves the operation holding
+    it -- so this class only makes one storable.
     """
 
     operation_id: str

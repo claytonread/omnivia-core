@@ -1,0 +1,878 @@
+"""The managed OCR resource lifecycle: install, remove and reconcile.
+
+The properties proved are the ones a later change could silently break, and they
+are the design's rather than the implementation's.
+
+For verification (§18.4, DOC-13): that a payload becomes usable only after its
+length *and* digest equal the declared identity exactly, that a payload longer
+than its declaration is refused while it is still being read rather than after it
+has filled staging, and that a refusal leaves no resource, no staging and no
+change to the state document.
+
+For capacity (§17.3, END-02): that the cap is exactly 512 MiB, that installed
+bytes are accounted exactly, that installing up to the cap is accepted and one
+byte beyond it is refused, and that the refusal names the capacity it needed
+instead of evicting something to make room.
+
+For pins (§18.4, END-02): that a pinned identity cannot be removed and is never
+dropped by reconciliation even when its bytes have gone, and that a pin on one
+identity does not protect another.
+
+For the path boundary (§15.1): that a relative, traversing, symlinked,
+non-regular or inside-the-cache payload is refused, and that no field of an
+identity can reach the filesystem as anything but a fixed-width hexadecimal name.
+
+For crash recovery (§18.4): that bytes are published before the state document
+records them, so an interrupted install leaves unreferenced bytes rather than an
+entry claiming bytes that never arrived; that an interrupted removal leaves bytes
+rather than a lying entry; that reconciliation sweeps abandoned staging and
+unreferenced directories, quarantines an entry whose bytes went missing or
+stopped matching rather than continuing to count it installed, and leaves a
+healthy cache byte-for-byte alone.
+
+And throughout: that a state document from a newer build is refused by every
+operation and left exactly as it stands, because an older build must not
+reconcile away what a newer one recorded.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import stat
+from pathlib import Path
+
+import pytest
+from omnivia_core_runtime.service import ocr_resource_lifecycle as lifecycle_module
+from omnivia_core_runtime.service.ocr_resource_lifecycle import (
+    MANAGED_QUARANTINE_DIRNAME,
+    MANAGED_RESOURCES_DIRNAME,
+    MANAGED_STAGING_DIRNAME,
+    MODEL_SUFFIX,
+    OCR_RESOURCES_DIR,
+    REFUSAL_CAPACITY,
+    REFUSAL_DIVERGENT,
+    REFUSAL_NOT_INSTALLED,
+    REFUSAL_PAYLOAD,
+    REFUSAL_PINNED,
+    REFUSAL_VERIFICATION,
+    ManagedOcrResources,
+    OcrResourceLifecycleRefused,
+    directory_name,
+)
+from omnivia_core_runtime.service.ocr_resource_store import (
+    DEFAULT_OCR_RESOURCE_CAPACITY_BYTES,
+    OcrResourcePin,
+    OcrResourceSetIdentity,
+    OcrResourceStoreError,
+    OcrResourceStoreState,
+    OcrResourceStoreVersionUnsupported,
+)
+
+BODY = b"trained-model-bytes" * 64
+OTHER_BODY = b"another-model-entirely" * 64
+
+
+def _digest(body: bytes) -> str:
+    return hashlib.sha256(body).hexdigest()
+
+
+def _identity(body: bytes = BODY, **overrides: object) -> OcrResourceSetIdentity:
+    fields: dict[str, object] = {
+        "language": "eng",
+        "engine_version": "5.5.3",
+        "model_version": "tessdata_fast-4.1.0",
+        "byte_size": len(body),
+        "sha256": _digest(body),
+    }
+    fields.update(overrides)
+    return OcrResourceSetIdentity(**fields)  # type: ignore[arg-type]
+
+
+def _managed(tmp_path: Path, **overrides: object) -> ManagedOcrResources:
+    return ManagedOcrResources(tmp_path / "managed", **overrides)  # type: ignore[arg-type]
+
+
+def _payload(tmp_path: Path, body: bytes = BODY, name: str = "payload.bin") -> Path:
+    path = tmp_path / "downloads" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    return path
+
+
+def _installed(tmp_path: Path, **overrides: object) -> tuple[ManagedOcrResources, OcrResourceSetIdentity]:
+    """One managed cache with exactly one verified resource installed."""
+    managed = _managed(tmp_path, **overrides)
+    identity = _identity()
+    managed.install(_payload(tmp_path), identity)
+    return managed, identity
+
+
+# --- install
+
+
+def test_install_publishes_the_declared_bytes_under_the_identity(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    published = managed.payload_path(identity)
+    assert published.read_bytes() == BODY
+    assert published.is_file() and not published.is_symlink()
+    assert published.parent == managed.resource_directory(identity)
+
+
+def test_the_published_file_is_named_for_the_recognition_language(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    assert managed.payload_path(identity).name == f"eng{MODEL_SUFFIX}"
+
+
+def test_install_reports_the_outcome_and_the_remaining_capacity(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    identity = _identity()
+    outcome = managed.install(_payload(tmp_path), identity)
+    assert outcome.newly_installed is True
+    assert outcome.identity == identity
+    assert outcome.installed_bytes == len(BODY)
+    assert outcome.available_bytes == DEFAULT_OCR_RESOURCE_CAPACITY_BYTES - len(BODY)
+    assert outcome.payload_path == managed.payload_path(identity)
+
+
+def test_install_records_the_identity_in_the_state_document(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    assert managed.store.load().entries == (identity,)
+
+
+def test_install_does_not_copy_the_payload_away(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    payload = _payload(tmp_path)
+    managed.install(payload, _identity())
+    assert payload.read_bytes() == BODY
+
+
+def test_install_leaves_no_staging_behind(tmp_path: Path) -> None:
+    managed, _ = _installed(tmp_path)
+    assert list(managed.staging_root.iterdir()) == []
+
+
+def test_the_managed_tree_sits_under_the_one_root(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    assert managed.resources_root == managed.root / MANAGED_RESOURCES_DIRNAME
+    assert managed.staging_root == managed.root / MANAGED_STAGING_DIRNAME
+    assert managed.quarantine_root == managed.root / MANAGED_QUARANTINE_DIRNAME
+    assert managed.store.root == managed.root
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_the_managed_tree_and_the_payload_are_owner_only(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    for directory in (managed.root, managed.resources_root, managed.resource_directory(identity)):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700, directory
+    assert stat.S_IMODE(managed.payload_path(identity).stat().st_mode) == 0o600
+
+
+def test_two_model_revisions_of_one_language_coexist(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    first = _identity()
+    second = _identity(OTHER_BODY, model_version="tessdata_fast-4.2.0")
+    managed.install(_payload(tmp_path, BODY, "first.bin"), first)
+    managed.install(_payload(tmp_path, OTHER_BODY, "second.bin"), second)
+    assert managed.payload_path(first).read_bytes() == BODY
+    assert managed.payload_path(second).read_bytes() == OTHER_BODY
+    assert set(managed.store.load().entries) == {first, second}
+
+
+def test_a_second_language_does_not_disturb_the_first(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    first = _identity()
+    second = _identity(OTHER_BODY, language="deu")
+    managed.install(_payload(tmp_path, BODY, "a.bin"), first)
+    managed.install(_payload(tmp_path, OTHER_BODY, "b.bin"), second)
+    assert managed.payload_path(first).read_bytes() == BODY
+    assert managed.payload_path(second).name == f"deu{MODEL_SUFFIX}"
+
+
+def test_install_refuses_something_that_is_not_an_identity(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    with pytest.raises(OcrResourceStoreError):
+        managed.install(_payload(tmp_path), "eng")  # type: ignore[arg-type]
+
+
+# --- idempotency
+
+
+def test_repeating_an_install_publishes_nothing_and_changes_no_state(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    before = managed.store.state_path.read_bytes()
+    outcome = managed.install(_payload(tmp_path), identity)
+    assert outcome.newly_installed is False
+    assert outcome.installed_bytes == len(BODY)
+    assert managed.store.state_path.read_bytes() == before
+    assert managed.payload_path(identity).read_bytes() == BODY
+
+
+def test_repeating_an_install_counts_the_resource_once(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    managed.install(_payload(tmp_path), identity)
+    assert managed.inventory().installed_bytes == len(BODY)
+    assert len(managed.inventory().resources) == 1
+
+
+def test_an_entry_whose_bytes_are_gone_refuses_rather_than_republishing(
+    tmp_path: Path,
+) -> None:
+    managed, identity = _installed(tmp_path)
+    managed.payload_path(identity).unlink()
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(_payload(tmp_path), identity)
+    assert refused.value.code == REFUSAL_DIVERGENT
+    assert managed.store.load().entries == (identity,)
+
+
+# --- verification
+
+
+def test_a_wrong_digest_is_refused(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(_payload(tmp_path), _identity(sha256="b" * 64))
+    assert refused.value.code == REFUSAL_VERIFICATION
+
+
+def test_a_payload_shorter_than_its_declaration_is_refused(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(_payload(tmp_path), _identity(byte_size=len(BODY) + 1))
+    assert refused.value.code == REFUSAL_VERIFICATION
+    assert str(len(BODY)) in str(refused.value)
+
+
+def test_a_payload_longer_than_its_declaration_is_refused(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(_payload(tmp_path), _identity(byte_size=len(BODY) - 1))
+    assert refused.value.code == REFUSAL_VERIFICATION
+    assert "larger than the declared" in str(refused.value)
+
+
+def test_an_oversized_payload_is_refused_without_staging_all_of_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The declared size bounds the copy, so the read stops at the bound."""
+    monkeypatch.setattr(lifecycle_module, "_COPY_BLOCK", 8)
+    body = b"z" * 4096
+    managed = _managed(tmp_path)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(_payload(tmp_path, body), _identity(body, byte_size=16))
+    assert refused.value.code == REFUSAL_VERIFICATION
+    assert list(managed.staging_root.iterdir()) == []
+
+
+def test_a_refused_payload_leaves_no_resource_and_no_staging(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    identity = _identity(sha256="c" * 64)
+    with pytest.raises(OcrResourceLifecycleRefused):
+        managed.install(_payload(tmp_path), identity)
+    assert not managed.resource_directory(identity).exists()
+    assert list(managed.staging_root.iterdir()) == []
+    assert managed.store.load().entries == ()
+
+
+def test_a_refused_install_preserves_an_earlier_resource(tmp_path: Path) -> None:
+    managed, installed = _installed(tmp_path)
+    before = managed.store.state_path.read_bytes()
+    with pytest.raises(OcrResourceLifecycleRefused):
+        managed.install(
+            _payload(tmp_path, OTHER_BODY, "bad.bin"),
+            _identity(OTHER_BODY, language="deu", sha256="d" * 64),
+        )
+    assert managed.store.state_path.read_bytes() == before
+    assert managed.payload_path(installed).read_bytes() == BODY
+
+
+def test_the_same_language_is_never_served_from_another_versions_bytes(
+    tmp_path: Path,
+) -> None:
+    """No substitution: a mismatched payload is refused, not quietly accepted."""
+    managed, _ = _installed(tmp_path)
+    wanted = _identity(OTHER_BODY, model_version="tessdata_fast-4.2.0")
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(_payload(tmp_path, BODY, "wrong.bin"), wanted)
+    assert refused.value.code == REFUSAL_VERIFICATION
+    assert not managed.resource_directory(wanted).exists()
+
+
+# --- capacity
+
+
+def test_the_capacity_is_the_designs_512_mib(tmp_path: Path) -> None:
+    assert DEFAULT_OCR_RESOURCE_CAPACITY_BYTES == 536_870_912
+    assert _managed(tmp_path).capacity_bytes == 536_870_912
+
+
+def test_installed_bytes_are_accounted_exactly(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    managed.install(_payload(tmp_path, BODY, "a.bin"), _identity())
+    managed.install(
+        _payload(tmp_path, OTHER_BODY, "b.bin"), _identity(OTHER_BODY, language="deu")
+    )
+    inventory = managed.inventory()
+    assert inventory.installed_bytes == len(BODY) + len(OTHER_BODY)
+    assert inventory.available_bytes == 536_870_912 - len(BODY) - len(OTHER_BODY)
+
+
+def test_installing_exactly_up_to_the_cap_is_accepted(tmp_path: Path) -> None:
+    """The real 512 MiB cap, reached arithmetically rather than with real bytes."""
+    managed = _managed(tmp_path)
+    body = b"q" * 10
+    bulk = _identity(language="deu", byte_size=536_870_912 - 10, sha256="e" * 64)
+    managed.store.save(OcrResourceStoreState(entries=(bulk,)))
+    outcome = managed.install(_payload(tmp_path, body), _identity(body))
+    assert outcome.newly_installed is True
+    assert outcome.installed_bytes == 536_870_912
+    assert outcome.available_bytes == 0
+
+
+def test_one_byte_past_the_cap_is_refused_with_the_capacity_it_needed(
+    tmp_path: Path,
+) -> None:
+    managed = _managed(tmp_path)
+    body = b"q" * 11
+    bulk = _identity(language="deu", byte_size=536_870_912 - 10, sha256="e" * 64)
+    managed.store.save(OcrResourceStoreState(entries=(bulk,)))
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(_payload(tmp_path, body), _identity(body))
+    assert refused.value.code == REFUSAL_CAPACITY
+    assert refused.value.required_bytes == 11
+    assert refused.value.available_bytes == 10
+
+
+def test_a_capacity_refusal_evicts_nothing(tmp_path: Path) -> None:
+    managed, installed = _installed(tmp_path, capacity_bytes=len(BODY))
+    before = managed.store.state_path.read_bytes()
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(
+            _payload(tmp_path, OTHER_BODY, "b.bin"),
+            _identity(OTHER_BODY, language="deu"),
+        )
+    assert refused.value.code == REFUSAL_CAPACITY
+    assert managed.store.state_path.read_bytes() == before
+    assert managed.payload_path(installed).read_bytes() == BODY
+
+
+def test_a_capacity_refusal_copies_nothing(tmp_path: Path) -> None:
+    managed = _managed(tmp_path, capacity_bytes=len(BODY) - 1)
+    identity = _identity()
+    with pytest.raises(OcrResourceLifecycleRefused):
+        managed.install(_payload(tmp_path), identity)
+    assert not managed.staging_root.exists()
+    assert not managed.resource_directory(identity).exists()
+
+
+def test_removing_a_resource_frees_its_capacity(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path, capacity_bytes=len(BODY))
+    managed.remove(identity)
+    other = _identity(OTHER_BODY, language="deu")
+    managed = ManagedOcrResources(managed.root, capacity_bytes=len(OTHER_BODY))
+    managed.install(_payload(tmp_path, OTHER_BODY, "b.bin"), other)
+    assert managed.inventory().installed_bytes == len(OTHER_BODY)
+
+
+@pytest.mark.parametrize("capacity", [0, -1, True, "512", 1.5, None])
+def test_a_malformed_capacity_is_refused(tmp_path: Path, capacity: object) -> None:
+    with pytest.raises(OcrResourceStoreError):
+        _managed(tmp_path, capacity_bytes=capacity)
+
+
+# --- refused payload paths
+
+
+def test_a_relative_payload_is_refused(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(Path("payload.bin"), _identity())
+    assert refused.value.code == REFUSAL_PAYLOAD
+    assert "absolute" in str(refused.value)
+
+
+def test_a_traversing_payload_is_refused(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    payload = _payload(tmp_path)
+    traversing = payload.parent / ".." / "downloads" / payload.name
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(traversing, _identity())
+    assert refused.value.code == REFUSAL_PAYLOAD
+    assert "traversal" in str(refused.value)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation")
+def test_a_symlinked_payload_is_refused(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    real = _payload(tmp_path)
+    link = tmp_path / "link.bin"
+    link.symlink_to(real)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(link, _identity())
+    assert refused.value.code == REFUSAL_PAYLOAD
+    assert "symlink" in str(refused.value)
+    assert real.read_bytes() == BODY
+
+
+def test_a_directory_payload_is_refused(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    directory = tmp_path / "a-directory"
+    directory.mkdir()
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(directory, _identity())
+    assert refused.value.code == REFUSAL_PAYLOAD
+
+
+def test_a_missing_payload_is_refused(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(tmp_path / "nothing-here.bin", _identity())
+    assert refused.value.code == REFUSAL_PAYLOAD
+
+
+def test_a_payload_inside_the_managed_root_is_refused(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(
+            managed.payload_path(identity),
+            _identity(language="deu"),
+        )
+    assert refused.value.code == REFUSAL_PAYLOAD
+    assert "managed root" in str(refused.value)
+
+
+def test_a_payload_that_is_not_a_path_is_refused(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install("/tmp/payload.bin", _identity())  # type: ignore[arg-type]
+    assert refused.value.code == REFUSAL_PAYLOAD
+
+
+def test_a_relative_managed_root_is_refused() -> None:
+    with pytest.raises(OcrResourceStoreError) as refused:
+        ManagedOcrResources(Path("managed"))
+    assert "absolute" in str(refused.value)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation")
+def test_a_symlinked_managed_root_is_refused(tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    link = tmp_path / "managed"
+    link.symlink_to(elsewhere)
+    with pytest.raises(OcrResourceStoreError) as refused:
+        ManagedOcrResources(link)
+    assert "symlink" in str(refused.value)
+
+
+def test_no_identity_field_can_reach_the_filesystem_as_a_path(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    identity = _identity(language="chi_tra", model_version="4.1.0+rc1")
+    name = managed.resource_directory(identity).name
+    assert re.fullmatch(r"[0-9a-f]{64}", name)
+    assert managed.resource_directory(identity).parent == managed.resources_root
+
+
+def test_every_distinct_identity_gets_a_distinct_directory(tmp_path: Path) -> None:
+    base = _identity()
+    variants = [
+        _identity(language="deu"),
+        _identity(engine_version="5.5.4"),
+        _identity(model_version="tessdata_fast-4.2.0"),
+        _identity(byte_size=len(BODY) + 1),
+        _identity(sha256="f" * 64),
+    ]
+    names = {directory_name(identity) for identity in (base, *variants)}
+    assert len(names) == 6
+
+
+# --- removal and pins
+
+
+def test_removal_drops_the_entry_and_the_bytes(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    managed.remove(identity)
+    assert managed.store.load().entries == ()
+    assert not managed.resource_directory(identity).exists()
+    assert managed.inventory().installed_bytes == 0
+
+
+def test_removal_keeps_every_other_resource(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    first = _identity()
+    second = _identity(OTHER_BODY, language="deu")
+    managed.install(_payload(tmp_path, BODY, "a.bin"), first)
+    managed.install(_payload(tmp_path, OTHER_BODY, "b.bin"), second)
+    managed.remove(first)
+    assert managed.store.load().entries == (second,)
+    assert managed.payload_path(second).read_bytes() == OTHER_BODY
+
+
+def test_removing_an_unknown_identity_is_refused(tmp_path: Path) -> None:
+    managed, _ = _installed(tmp_path)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.remove(_identity(language="deu"))
+    assert refused.value.code == REFUSAL_NOT_INSTALLED
+
+
+def test_removing_an_identity_twice_is_refused_the_second_time(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    managed.remove(identity)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.remove(identity)
+    assert refused.value.code == REFUSAL_NOT_INSTALLED
+
+
+def test_a_pinned_resource_cannot_be_removed(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    state = managed.store.load()
+    managed.store.save(
+        OcrResourceStoreState(
+            entries=state.entries, pins=(OcrResourcePin("op-7", identity),)
+        )
+    )
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.remove(identity)
+    assert refused.value.code == REFUSAL_PINNED
+    assert "op-7" in str(refused.value)
+    assert managed.payload_path(identity).read_bytes() == BODY
+    assert managed.store.load().entries == (identity,)
+
+
+def test_a_pin_on_another_identity_does_not_block_removal(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    first = _identity()
+    second = _identity(OTHER_BODY, language="deu")
+    managed.install(_payload(tmp_path, BODY, "a.bin"), first)
+    managed.install(_payload(tmp_path, OTHER_BODY, "b.bin"), second)
+    managed.store.save(
+        OcrResourceStoreState(
+            entries=managed.store.load().entries,
+            pins=(OcrResourcePin("op-1", second),),
+        )
+    )
+    managed.remove(first)
+    assert managed.store.load().entries == (second,)
+
+
+def test_removal_refuses_something_that_is_not_an_identity(tmp_path: Path) -> None:
+    managed, _ = _installed(tmp_path)
+    with pytest.raises(OcrResourceStoreError):
+        managed.remove("eng")  # type: ignore[arg-type]
+
+
+# --- inventory determinism
+
+
+def test_the_inventory_follows_the_sorted_stable_key_order(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    identities = [
+        _identity(language="zul", sha256="a" * 64, byte_size=11),
+        _identity(language="deu", sha256="b" * 64, byte_size=12),
+        _identity(language="eng", sha256="c" * 64, byte_size=13),
+    ]
+    managed.store.save(OcrResourceStoreState(entries=tuple(identities)))
+    reported = [resource.identity for resource in managed.inventory().resources]
+    assert reported == sorted(identities, key=lambda value: value.stable_key)
+    assert [resource.identity for resource in managed.inventory().resources] == reported
+
+
+def test_the_inventory_reports_pins_sorted_and_deduplicated(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    managed.store.save(
+        OcrResourceStoreState(
+            entries=(identity,),
+            pins=(
+                OcrResourcePin("op-c", identity),
+                OcrResourcePin("op-a", identity),
+                OcrResourcePin("op-b", identity),
+            ),
+        )
+    )
+    resource = managed.inventory().resources[0]
+    assert resource.pinned_by == ("op-a", "op-b", "op-c")
+    assert resource.pinned is True
+
+
+def test_the_inventory_reports_missing_bytes_without_claiming_them(
+    tmp_path: Path,
+) -> None:
+    managed, identity = _installed(tmp_path)
+    managed.payload_path(identity).unlink()
+    resource = managed.inventory().resources[0]
+    assert resource.bytes_present is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation")
+def test_a_symlink_standing_in_for_a_payload_is_not_present(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    published = managed.payload_path(identity)
+    published.unlink()
+    published.symlink_to(_payload(tmp_path, BODY, "decoy.bin"))
+    assert managed.inventory().resources[0].bytes_present is False
+
+
+def test_the_inventory_creates_nothing(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    inventory = managed.inventory()
+    assert inventory.resources == ()
+    assert inventory.installed_bytes == 0
+    assert not managed.root.exists()
+
+
+# --- reconciliation
+
+
+def test_reconcile_leaves_a_healthy_cache_byte_for_byte_alone(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    before = managed.store.state_path.read_bytes()
+    outcome = managed.reconcile()
+    assert outcome.changed is False
+    assert outcome == type(outcome)()
+    assert managed.store.state_path.read_bytes() == before
+    assert managed.payload_path(identity).read_bytes() == BODY
+
+
+def test_reconcile_discards_abandoned_staging(tmp_path: Path) -> None:
+    managed, _ = _installed(tmp_path)
+    abandoned = managed.staging_root / "0123456789abcdef"
+    abandoned.mkdir()
+    (abandoned / f"eng{MODEL_SUFFIX}").write_bytes(b"half a payload")
+    outcome = managed.reconcile()
+    assert outcome.discarded_staging == ("0123456789abcdef",)
+    assert not abandoned.exists()
+    assert outcome.changed is True
+
+
+def test_reconcile_discards_an_unreferenced_resource_directory(tmp_path: Path) -> None:
+    """The crash window between publishing bytes and recording them."""
+    managed, identity = _installed(tmp_path)
+    orphan = _identity(OTHER_BODY, language="deu")
+    orphan_directory = managed.resource_directory(orphan)
+    orphan_directory.mkdir()
+    (orphan_directory / f"deu{MODEL_SUFFIX}").write_bytes(OTHER_BODY)
+    outcome = managed.reconcile()
+    assert outcome.discarded_unreferenced == (directory_name(orphan),)
+    assert not orphan_directory.exists()
+    assert managed.payload_path(identity).read_bytes() == BODY
+
+
+def test_an_interrupted_install_leaves_bytes_that_reconciliation_sweeps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    managed = _managed(tmp_path)
+    identity = _identity()
+
+    def _refuse(_state: object) -> None:
+        raise OcrResourceStoreError("the state document could not be written")
+
+    monkeypatch.setattr(managed.store, "save", _refuse)
+    with pytest.raises(OcrResourceStoreError):
+        managed.install(_payload(tmp_path), identity)
+    monkeypatch.undo()
+    # The publication was undone, so there is nothing usable and nothing claimed.
+    assert not managed.resource_directory(identity).exists()
+    assert managed.store.load().entries == ()
+    assert managed.reconcile().changed is False
+
+
+def test_an_interrupted_install_never_leaves_a_claimed_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bytes lead and state follows, so a crash cannot overstate what is installed."""
+    managed, installed = _installed(tmp_path)
+    identity = _identity(OTHER_BODY, language="deu")
+
+    def _refuse(_state: object) -> None:
+        raise OcrResourceStoreError("interrupted")
+
+    monkeypatch.setattr(managed.store, "save", _refuse)
+    with pytest.raises(OcrResourceStoreError):
+        managed.install(_payload(tmp_path, OTHER_BODY, "b.bin"), identity)
+    monkeypatch.undo()
+    state = managed.store.load()
+    assert state.entries == (installed,)
+    assert managed.inventory().installed_bytes == len(BODY)
+
+
+def test_an_interrupted_removal_leaves_bytes_for_reconciliation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    managed, identity = _installed(tmp_path)
+
+    def _refuse(_path: Path) -> None:
+        raise OSError("the bytes could not be removed")
+
+    monkeypatch.setattr(lifecycle_module, "_discard", _refuse)
+    managed.remove(identity)
+    monkeypatch.undo()
+    # The entry is gone, so nothing claims the bytes; they are merely unreferenced.
+    assert managed.store.load().entries == ()
+    assert managed.payload_path(identity).read_bytes() == BODY
+    outcome = managed.reconcile()
+    assert outcome.discarded_unreferenced == (directory_name(identity),)
+    assert not managed.resource_directory(identity).exists()
+
+
+def test_reconcile_quarantines_tampered_bytes_and_stops_claiming_them(
+    tmp_path: Path,
+) -> None:
+    managed, identity = _installed(tmp_path)
+    managed.payload_path(identity).write_bytes(b"t" * len(BODY))
+    outcome = managed.reconcile()
+    assert outcome.quarantined == (identity,)
+    assert outcome.unrecoverable_pinned == ()
+    assert managed.store.load().entries == ()
+    assert managed.inventory().installed_bytes == 0
+    assert not managed.resource_directory(identity).exists()
+
+
+def test_quarantined_bytes_are_preserved_for_inspection(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    managed.payload_path(identity).write_bytes(b"t" * len(BODY))
+    managed.reconcile()
+    quarantined = (
+        managed.quarantine_root / directory_name(identity) / f"eng{MODEL_SUFFIX}"
+    )
+    assert quarantined.read_bytes() == b"t" * len(BODY)
+
+
+def test_reconcile_quarantines_an_entry_whose_bytes_went_missing(
+    tmp_path: Path,
+) -> None:
+    managed, identity = _installed(tmp_path)
+    managed.payload_path(identity).unlink()
+    outcome = managed.reconcile()
+    assert outcome.quarantined == (identity,)
+    assert managed.store.load().entries == ()
+
+
+def test_quarantine_keeps_an_earlier_specimen(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    existing = managed.quarantine_root / directory_name(identity)
+    existing.mkdir(parents=True)
+    (existing / "earlier.bin").write_bytes(b"the first specimen")
+    managed.payload_path(identity).write_bytes(b"t" * len(BODY))
+    managed.reconcile()
+    assert (existing / "earlier.bin").read_bytes() == b"the first specimen"
+    assert not managed.resource_directory(identity).exists()
+
+
+def test_reconcile_never_drops_a_pinned_entry_and_reports_it(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    managed.store.save(
+        OcrResourceStoreState(
+            entries=(identity,), pins=(OcrResourcePin("op-9", identity),)
+        )
+    )
+    managed.payload_path(identity).unlink()
+    outcome = managed.reconcile()
+    assert outcome.unrecoverable_pinned == (identity,)
+    assert outcome.quarantined == ()
+    assert managed.store.load().entries == (identity,)
+    assert managed.store.load().pins[0].operation_id == "op-9"
+
+
+def test_reconcile_is_idempotent(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    managed.payload_path(identity).write_bytes(b"t" * len(BODY))
+    first = managed.reconcile()
+    assert first.changed is True
+    second = managed.reconcile()
+    assert second.changed is False
+    assert managed.store.load().entries == ()
+
+
+def test_reconcile_keeps_a_healthy_resource_while_quarantining_a_broken_one(
+    tmp_path: Path,
+) -> None:
+    managed = _managed(tmp_path)
+    healthy = _identity()
+    broken = _identity(OTHER_BODY, language="deu")
+    managed.install(_payload(tmp_path, BODY, "a.bin"), healthy)
+    managed.install(_payload(tmp_path, OTHER_BODY, "b.bin"), broken)
+    managed.payload_path(broken).unlink()
+    outcome = managed.reconcile()
+    assert outcome.quarantined == (broken,)
+    assert managed.store.load().entries == (healthy,)
+    assert managed.payload_path(healthy).read_bytes() == BODY
+
+
+def test_reconcile_on_an_absent_cache_does_nothing(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    outcome = managed.reconcile()
+    assert outcome.changed is False
+    assert not managed.root.exists()
+
+
+def test_a_reinstall_after_quarantine_succeeds(tmp_path: Path) -> None:
+    managed, identity = _installed(tmp_path)
+    managed.payload_path(identity).unlink()
+    managed.reconcile()
+    outcome = managed.install(_payload(tmp_path), identity)
+    assert outcome.newly_installed is True
+    assert managed.payload_path(identity).read_bytes() == BODY
+
+
+# --- a newer schema is never rewritten
+
+
+def _write_future_state(managed: ManagedOcrResources) -> bytes:
+    managed.root.mkdir(parents=True, exist_ok=True)
+    payload = (
+        b'{"schemaVersion":99,"entries":[],"pins":[],"somethingNewer":true}\n'
+    )
+    managed.store.state_path.write_bytes(payload)
+    return payload
+
+
+def test_a_newer_schema_refuses_an_install_and_is_left_intact(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    payload = _write_future_state(managed)
+    identity = _identity()
+    with pytest.raises(OcrResourceStoreVersionUnsupported):
+        managed.install(_payload(tmp_path), identity)
+    assert managed.store.state_path.read_bytes() == payload
+    assert not managed.resource_directory(identity).exists()
+
+
+def test_a_newer_schema_refuses_a_removal(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    payload = _write_future_state(managed)
+    with pytest.raises(OcrResourceStoreVersionUnsupported):
+        managed.remove(_identity())
+    assert managed.store.state_path.read_bytes() == payload
+
+
+def test_a_newer_schema_refuses_the_inventory(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    payload = _write_future_state(managed)
+    with pytest.raises(OcrResourceStoreVersionUnsupported):
+        managed.inventory()
+    assert managed.store.state_path.read_bytes() == payload
+
+
+def test_a_newer_schema_refuses_reconciliation_and_sweeps_nothing(
+    tmp_path: Path,
+) -> None:
+    managed = _managed(tmp_path)
+    payload = _write_future_state(managed)
+    staging = managed.staging_root / "abcdef0123456789"
+    staging.mkdir(parents=True)
+    (staging / "half.bin").write_bytes(b"half")
+    with pytest.raises(OcrResourceStoreVersionUnsupported):
+        managed.reconcile()
+    assert managed.store.state_path.read_bytes() == payload
+    assert (staging / "half.bin").read_bytes() == b"half"
+
+
+# --- layout constants
+
+
+def test_the_installation_directory_name_is_stable() -> None:
+    assert OCR_RESOURCES_DIR == "ocr-resources"
+    assert MANAGED_RESOURCES_DIRNAME == "resources"
+    assert MANAGED_STAGING_DIRNAME == "staging"
+    assert MANAGED_QUARANTINE_DIRNAME == "quarantine"
