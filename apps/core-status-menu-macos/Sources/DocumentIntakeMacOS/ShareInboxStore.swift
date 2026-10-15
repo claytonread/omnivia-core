@@ -128,6 +128,11 @@ public final class ShareInboxStore: @unchecked Sendable {
     /// outside process can see. A lock file would be exact; the bound only has
     /// to be longer than the slowest bounded copy.
     public static let abandonedStagingAge: TimeInterval = 60 * 60
+    /// The only sentence a published request is reported with. It is held here
+    /// rather than in the extension so it is compiled and asserted: the words
+    /// are *queued*, never *added*, and no destination, workspace or caller is
+    /// named — a durable local request is all that has happened.
+    public static let queuedWording = "Queued on this Mac. Open OmniVia Core to send."
 
     private let root: URL
     private let staging: URL

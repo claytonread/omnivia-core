@@ -192,11 +192,13 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         let createdAt = ISO8601DateFormatter().string(from: Date())
         var items: [CapturePreparationItem] = []
         var pendingSubscriptions: [FileSubscription] = []
-        var snapshotAccessRefs: [String] = []
+        var adoptedAccessRefs: [String] = []
         defer {
-            for accessRef in snapshotAccessRefs {
-                _ = try? accessStore.disconnect(accessRef: accessRef)
-            }
+            // Every grant this submission adopted goes unless published work now
+            // owns it, so a batch that was refused or failed leaves none behind
+            // and a retry of the same selection cannot pile them up. A snapshot's
+            // grant is owned by nothing, so it always goes.
+            for accessRef in adoptedAccessRefs { releaseGrant(accessRef: accessRef) }
         }
         for candidate in candidates {
             guard let kind = Self.contentKind(for: candidate.url) else {
@@ -229,8 +231,8 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                     selectedURL: candidate.url,
                     route: .directFile
                 )
+                adoptedAccessRefs.append(descriptor.accessRef)
             }
-            if candidate.source.isSnapshot { snapshotAccessRefs.append(descriptor.accessRef) }
             let seed = CaptureIntentSeed(
                 submissionId: submissionID,
                 itemId: itemID,
@@ -293,25 +295,31 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                     needsReconciliation: true,
                     lastCheckedAt: nil
                 )
-                _ = try subscriptions.register(subscription)
                 pendingSubscriptions.append(subscription)
             }
         }
-        let entries = try await preparation.prepareAndPublish(items, binding: binding)
+        // Each watch is registered inside the publication critical section,
+        // once the batch is committed: a preparation that fails must not leave
+        // a subscription saying this Mac is keeping a file updated that was
+        // never added. The baseline facts come from the entry that proves what
+        // was frozen, so a watch is never live without them.
+        let watches = pendingSubscriptions
+        let entries = try await preparation.prepareAndPublish(items, binding: binding) { published in
+            let byItem = Dictionary(uniqueKeysWithValues: published.map { ($0.intent.itemId, $0) })
+            for var watch in watches {
+                if let entry = byItem[watch.baselineItemID] {
+                    watch.lastObservedDigest = entry.intent.localIntegrityDigest
+                    watch.lastObservedByteLength = entry.intent.byteLength
+                    watch.lastObservedAt = entry.intent.createdAt
+                }
+                _ = try self.subscriptions.register(watch)
+            }
+        }
         snapshotStore?.remove(candidates.filter { $0.source.isSnapshot }.map(\.url))
         // Ownership moved to the queue: its intents now hold the originals'
         // grants, and the snapshots' bytes were just consumed. Only the
         // candidate records are released here; no grant is disconnected.
         releaseRecords(of: candidates)
-        let byItem = Dictionary(uniqueKeysWithValues: entries.map { ($0.intent.itemId, $0) })
-        for subscription in pendingSubscriptions {
-            guard let entry = byItem[subscription.baselineItemID] else { continue }
-            _ = try subscriptions.update(id: subscription.subscriptionID) {
-                $0.lastObservedDigest = entry.intent.localIntegrityDigest
-                $0.lastObservedByteLength = entry.intent.byteLength
-                $0.lastObservedAt = entry.intent.createdAt
-            }
-        }
         return entries
     }
 

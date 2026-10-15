@@ -179,12 +179,16 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         subtitle.textColor = .secondaryLabelColor
         root.addArrangedSubview(subtitle)
 
+        // Neither the note nor the keep-updated mode is reset here. Closing the
+        // panel keeps the draft, and the next incoming item — a share, a Finder
+        // action, a status item drop — rebuilds this chrome around it, so
+        // clearing them here would throw away what the person typed and chose.
+        // Only a published group clears them.
         let noteScroll = NSScrollView()
         noteScroll.hasVerticalScroller = true
         noteScroll.borderType = .bezelBorder
         noteScroll.documentView = note
         note.font = .systemFont(ofSize: 14)
-        note.string = ""
         note.isRichText = false
         root.addArrangedSubview(noteScroll)
         noteScroll.heightAnchor.constraint(equalToConstant: 92).isActive = true
@@ -201,7 +205,6 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
         let chooser = NSStackView(views: [chooseFiles, chooseFolder, remove])
         chooser.spacing = 8
         root.addArrangedSubview(chooser)
-        keepUpdated.state = .off
         keepUpdated.toolTip = "Core will add new versions when these files change while OmniVia Core is running."
         root.addArrangedSubview(keepUpdated)
 
@@ -655,7 +658,19 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
             do {
                 // Publication releases the candidates' durable records itself;
                 // the grants they name now belong to the queued captures.
-                let entries = try await submitter.submit(candidates)
+                let entries: [CaptureQueueEntry]
+                var unrecorded: String?
+                do {
+                    entries = try await submitter.submit(candidates)
+                } catch let incomplete as CapturePublicationIncomplete {
+                    // The queue commit cannot be taken back, so this is not a
+                    // failed add: what went unrecorded is keeping these files
+                    // updated. Reporting a failure would invite a retry, which
+                    // would add the same files a second time.
+                    entries = incomplete.published
+                    unrecorded = "Keeping them updated couldn’t be recorded, "
+                        + "so these are queued once only."
+                }
                 // Only the rows just published leave review. A folder row, or a
                 // file added while this was in flight, is not part of this group.
                 draft.removeSubmitted(candidates)
@@ -665,7 +680,12 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                     title: title,
                     submissionID: entries.first?.intent.submissionId,
                     outcome: .queued(queued: entries.count),
-                    detail: entries.count == 1 ? "Queued on this Mac." : "\(entries.count) items queued on this Mac."
+                    detail: [
+                        entries.count == 1
+                            ? "Queued on this Mac."
+                            : "\(entries.count) items queued on this Mac.",
+                        unrecorded,
+                    ].compactMap { $0 }.joined(separator: " ")
                 ))
                 promoteWaitingSelection()
                 refresh()
@@ -740,6 +760,19 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     var reviewItemCount: Int { draft.items.count }
     var reviewItemNames: [String] { draft.items.map(\.displayName) }
     var waitingSelectionCount: Int { waitingSelections.count }
+    /// The note exactly as typed. Nothing here reads it as anything but text: a
+    /// pasted path is characters, never a file this panel opens.
+    var reviewNote: String {
+        get { note.string }
+        set { note.string = newValue }
+    }
+    /// The mode the ordinary-file group would publish under.
+    var reviewKeepUpdated: Bool {
+        get { keepUpdated.state == .on }
+        set { keepUpdated.state = newValue ? .on : .off }
+    }
+    /// The one destination every group in this panel publishes to.
+    var reviewDestinationName: String { workspaceName }
     /// False while review holds a captured copy: a copy has no original to
     /// follow, so it can never be kept updated.
     var reviewAllowsKeepUpdated: Bool { !draft.containsSnapshots }

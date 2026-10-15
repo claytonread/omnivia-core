@@ -151,7 +151,7 @@ final class ShareViewController: NSViewController {
             ))
             published = true
             dismissButton.title = "Done"
-            status.stringValue = "Queued on this Mac. Open OmniVia Core to send."
+            status.stringValue = ShareInboxStore.queuedWording
             detail.stringValue = "\(captured.count) captured copy(ies). Nothing has been added yet."
             await openForReview(store: store, requestID: opened.requestID)
         } catch {
@@ -166,7 +166,7 @@ final class ShareViewController: NSViewController {
             {
                 published = true
                 dismissButton.title = "Done"
-                status.stringValue = "Queued on this Mac. Open OmniVia Core to send."
+                status.stringValue = ShareInboxStore.queuedWording
                 detail.stringValue = "Captured copies are waiting. Nothing has been added yet."
                 await openForReview(store: store, requestID: request.requestID)
                 return
