@@ -571,6 +571,110 @@ final class NativeAccessStoreTests: XCTestCase {
         ) { XCTAssertEqual($0 as? NativeAccessError, .disconnected) }
     }
 
+    /// AT-49: an external broker call against a provisional binding. Design
+    /// §7.2: "A provisional route is not an active linked-file capability. It
+    /// may prepare only its own frozen capture intent … External broker
+    /// Refresh/Open/Reveal requires an active route."
+    ///
+    /// The two halves have to hold together. Preparation must keep working
+    /// while the group is provisional, because that is exactly when
+    /// establishment reads and publishes its reviewed members — a blanket
+    /// provisional refusal would break every folder addition. The three
+    /// explicit user actions must be refused over the same record in the same
+    /// state, and must start working once a durable owner is established.
+    func testProvisionalRootMemberRefusesOriginalActionsButStillPrepares() throws {
+        let state = try temporaryDirectory()
+        let root = state.deletingLastPathComponent().appendingPathComponent("root", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("body".utf8).write(to: root.appendingPathComponent("a.txt"))
+        let store = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        let grant = try store.adoptRoot(
+            rootRef: "root-a",
+            ownerRef: "run-a",
+            selectedURL: root,
+            binding: Self.binding
+        )
+        XCTAssertEqual(grant.state, .provisional)
+        let member = try store.adoptRootMember(
+            accessRef: "access-a",
+            linkedDocumentID: "doc-a",
+            rootRef: "root-a",
+            memberRef: "member-a",
+            relativeComponents: ["a.txt"],
+            expectedRootGeneration: grant.generation
+        )
+
+        // Refresh, Open original and Reveal in Finder all resolve the original
+        // through this one record, so one refusal covers the three.
+        XCTAssertThrowsError(
+            try store.withReadAccess(
+                accessRef: member.accessRef,
+                expectedGeneration: member.generation,
+                expectedRootBindingGeneration: grant.generation,
+                purpose: .originalAction
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .routeNotActive) }
+
+        // The same record, the same generations, the same provisional group:
+        // only the purpose differs, and preparation is what this group is for.
+        XCTAssertEqual(
+            try store.withReadAccess(
+                accessRef: member.accessRef,
+                expectedGeneration: member.generation,
+                expectedRootBindingGeneration: grant.generation
+            ) { try Data(contentsOf: $0) },
+            Data("body".utf8)
+        )
+
+        // A durable owner now exists, which is the whole of what the refusal
+        // was waiting for.
+        try store.activateRoot(rootRef: "root-a", expectedGeneration: grant.generation)
+        XCTAssertEqual(
+            try store.withReadAccess(
+                accessRef: member.accessRef,
+                expectedGeneration: member.generation,
+                expectedRootBindingGeneration: grant.generation,
+                purpose: .originalAction
+            ) { try Data(contentsOf: $0) },
+            Data("body".utf8)
+        )
+    }
+
+    /// The refusal is scoped to what design §7.2 scopes it to. A direct file
+    /// grant has no root group standing between it and its original, so an
+    /// explicit original action over a connected one is served — and a
+    /// disconnected one is still refused for its own reason, not this one.
+    func testOriginalActionOverADirectGrantIsServedAndRefusedOnItsOwnTerms() throws {
+        let state = try temporaryDirectory()
+        let original = state.deletingLastPathComponent().appendingPathComponent("original.txt")
+        try Data("body".utf8).write(to: original)
+        let store = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        let adopted = try store.adopt(
+            accessRef: "access-a",
+            linkedDocumentID: "doc-a",
+            selectedURL: original,
+            route: .directFile
+        )
+
+        XCTAssertEqual(
+            try store.withReadAccess(
+                accessRef: adopted.accessRef,
+                expectedGeneration: adopted.generation,
+                purpose: .originalAction
+            ) { try Data(contentsOf: $0) },
+            Data("body".utf8)
+        )
+
+        try store.disconnect(accessRef: adopted.accessRef)
+        XCTAssertThrowsError(
+            try store.withReadAccess(
+                accessRef: adopted.accessRef,
+                expectedGeneration: adopted.generation,
+                purpose: .originalAction
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .disconnected) }
+    }
+
     func testStaleRootAccessBecomesRepairableAndIsRepairedInPlace() throws {
         let state = try temporaryDirectory()
         let root = state.deletingLastPathComponent().appendingPathComponent("root", isDirectory: true)

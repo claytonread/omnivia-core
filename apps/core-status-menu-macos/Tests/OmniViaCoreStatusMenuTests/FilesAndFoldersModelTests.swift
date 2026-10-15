@@ -541,6 +541,78 @@ final class FilesAndFoldersModelTests: XCTestCase {
         )
     }
 
+    /// AT-50: no provisional active-link row.
+    ///
+    /// A provisional root group is design §7.2's "bound to a destination … but
+    /// no durable run or subscription owns it yet" — a folder addition whose
+    /// canonical establishment is requested and unconfirmed. Design §12.1 maps
+    /// that to progress or attention, so this row must not present as the
+    /// finished one-off import it would be once established, and must not land
+    /// in the stopped-or-complete bucket a reader filters on to see settled
+    /// work.
+    func testAProvisionalRootGroupStaysInProgressUntilItsEstablishmentIsConfirmed() throws {
+        let pending = FilesAndFoldersModel.retainedRoots(
+            groups: [group(state: .provisional)],
+            runs: [run()],
+            folders: []
+        )
+
+        XCTAssertEqual(pending.map(\.isPendingAssociation), [true])
+
+        let subject = model(retainedRoots: pending)
+        let item = try XCTUnwrap(subject.items(segment: .folders).first)
+
+        XCTAssertEqual(item.statusLabel, "Waiting for Core")
+        XCTAssertEqual(item.activityText, "Not confirmed yet")
+        XCTAssertEqual(
+            subject.items(segment: .folders, statusFilter: .activeOrPending).map(\.identifier),
+            ["root-2"]
+        )
+        XCTAssertTrue(
+            subject.items(segment: .folders, statusFilter: .stoppedOrComplete).isEmpty,
+            "an unconfirmed establishment is not settled work"
+        )
+
+        // Nothing here is a linked-file capability either: the row offers no
+        // original action and no updating action.
+        let actions = FilesAndFoldersModel.actions(for: item)
+        XCTAssertFalse(actions.originalActionsEnabled)
+        XCTAssertFalse(actions.pauseEnabled)
+        XCTAssertFalse(actions.stopEnabled)
+        XCTAssertFalse(actions.checkEnabled)
+
+        let values = Dictionary(
+            uniqueKeysWithValues: subject.detail(for: item).map { ($0.label, $0.value) }
+        )
+        XCTAssertEqual(
+            values["Updates"],
+            "Not confirmed. This folder was selected and its scope approved, but no "
+                + "durable run or watch owns it yet, so the addition is unfinished."
+        )
+    }
+
+    /// The same projection for an established group is unchanged, so the rule
+    /// above is a distinction and not a relabelling of every retained root.
+    func testAnEstablishedRetainedRootStillReadsAsAFinishedAddition() throws {
+        let established = FilesAndFoldersModel.retainedRoots(
+            groups: [group(state: .active)],
+            runs: [run()],
+            folders: []
+        )
+
+        XCTAssertEqual(established.map(\.isPendingAssociation), [false])
+
+        let subject = model(retainedRoots: established)
+        let item = try XCTUnwrap(subject.items(segment: .folders).first)
+
+        XCTAssertEqual(item.statusLabel, "Added once")
+        XCTAssertEqual(item.activityText, "Not kept updated")
+        XCTAssertEqual(
+            subject.items(segment: .folders, statusFilter: .stoppedOrComplete).map(\.identifier),
+            ["root-2"]
+        )
+    }
+
     func testRetainedRootsExcludeWatchesDisconnectedRootsAndUnnamedRoots() {
         XCTAssertTrue(
             FilesAndFoldersModel.retainedRoots(

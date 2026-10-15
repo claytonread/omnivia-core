@@ -24,6 +24,11 @@ public enum NativeAccessError: Error, Equatable {
     /// A second, different establishment was presented under the identity of one
     /// already recorded. Only a byte-identical replay is a retry.
     case conflictingEstablishment
+    /// An explicit Refresh, Open original or Reveal in Finder was asked of a
+    /// route whose root group is still only provisional. Preparing that route's
+    /// own frozen capture intent is permitted; acting on the original as a
+    /// linked file needs an established owner.
+    case routeNotActive
 }
 
 /// What a retained root group is allowed to do, mirroring the design's
@@ -36,6 +41,25 @@ public enum NativeRootAuthority: String, Codable, Sendable {
     /// The plan finished. Manual actions on already enrolled members still
     /// work; nothing new can be discovered or added through this group.
     case frozenMembersOnly = "frozen_members_only"
+}
+
+/// Which fixed broker operation (design §9.2) is resolving one original.
+///
+/// The distinction is the whole of design §7.2: "A provisional route is not an
+/// active linked-file capability. It may prepare only its own frozen capture
+/// intent … External broker Refresh/Open/Reveal requires an active route."
+/// Preparation therefore still resolves while a root group is provisional —
+/// establishment reads and publishes its reviewed members before `activateRoot`
+/// promotes the group — and the three explicit user actions do not.
+public enum NativeAccessPurpose: Sendable {
+    /// Preparing this route's own frozen capture intent, under an explicit Add,
+    /// confirmed bulk-run membership or active standing consent. The default,
+    /// because every automatic and submission path is one.
+    case prepareCapture
+    /// An explicit user Refresh, Open original or Reveal in Finder. All three
+    /// resolve the original through this record and current generation (design
+    /// §13.1, §13.2), so one rule gates all three.
+    case originalAction
 }
 
 /// Why the native owner is resolving a root. Discovery is the only purpose
@@ -880,10 +904,20 @@ public final class NativeAccessStore: @unchecked Sendable {
         }
     }
 
+    /// Resolves one original behind a file or member route and hands `body` its
+    /// URL.
+    ///
+    /// `purpose` is the broker operation being served. `.prepareCapture`, the
+    /// default, is every submission, bulk-run and automatic read. `.originalAction`
+    /// is an explicit Refresh, Open original or Reveal in Finder, and design §7.2
+    /// gives those three no capability over a route whose root group is still
+    /// provisional: that group is a submission whose durable run or subscription
+    /// does not exist yet, so it may serve only its own preparation.
     public func withReadAccess<T>(
         accessRef: String,
         expectedGeneration: UInt64,
         expectedRootBindingGeneration: UInt64? = nil,
+        purpose: NativeAccessPurpose = .prepareCapture,
         _ body: (URL) throws -> T
     ) throws -> T {
         let resolvedAccess = try gate.withLock { () throws -> (NativeAccessRecord, Data) in
@@ -901,6 +935,13 @@ public final class NativeAccessStore: @unchecked Sendable {
             case let .rootMember(rootRef, _, _):
                 guard let root = roots[rootRef] else { throw NativeAccessError.generationMismatch }
                 guard root.state.permitsResolution else { throw Self.refusal(root.state) }
+                // Design §7.2: external broker Refresh/Open/Reveal requires an
+                // active route. The member's own preparation is what a
+                // provisional group exists to serve, so only the explicit user
+                // actions are refused here.
+                guard purpose == .prepareCapture || root.state == .active else {
+                    throw NativeAccessError.routeNotActive
+                }
                 guard record.bookmark == nil,
                       let frozenRootGeneration = record.rootBindingGeneration,
                       let expectedRootBindingGeneration,

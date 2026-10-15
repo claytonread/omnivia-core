@@ -27,6 +27,7 @@ final class CoreDocumentHistoryTests: XCTestCase {
             retention: String = "retained",
             processing: String = "settled",
             mediaType: String = "application/pdf",
+            association: String = "active_binding",
             actions: String = """
                 [{"action": "reprocess_captured_copy", "available": true}]
                 """,
@@ -42,7 +43,7 @@ final class CoreDocumentHistoryTests: XCTestCase {
             {"capture_id": "\(id)", "capture_sequence": \(sequence), "evidence_id": "evd-1",
              "source_digest": "sha256:cccc", "source_length_bytes": 11,
              "media_type": "\(mediaType)", "requested_source_identity": "source-1",
-             "intent_kind": "new_capture", "association_kind": "active_binding",
+             "intent_kind": "new_capture", "association_kind": "\(association)",
              "capture_disposition": "\(disposition)", "disposition_reason": "\(reason)",
              "is_current_source": \(current), "retention_state": "\(retention)",
              "capture_retention_generation": 1, "source_removal_generation": 1,
@@ -894,6 +895,94 @@ final class CoreDocumentHistoryTests: XCTestCase {
         Dictionary(
             uniqueKeysWithValues: model.detail(for: .file(CoreHistoryFixtures.file()))
                 .map { ($0.label, $0.value) }
+        )
+    }
+
+    /// AT-50: evidence is retrievable while the requested linkage is pending.
+    ///
+    /// This is the state design §12.1 calls `pending_association`: "where
+    /// evidence exists but canonical linkage is still being recovered. It must
+    /// map to progress or attention, never complete linked-file success."
+    /// Core's answer here is exactly that — a published, retrievable extraction
+    /// over a capture it reports as `snapshot_only`, with no original binding on
+    /// this device. So the surface must offer none of the three original
+    /// actions and must not describe the capture as linked, however complete
+    /// the evidence side is.
+    func testAPendingRequestedLinkageOffersNoOriginalActionAndClaimsNoLink() throws {
+        let pending = try history(
+            Wire.page(
+                binding: "none",
+                captures: [Wire.capture(association: "snapshot_only")]
+            )
+        )
+        let model = subject(.current(pending))
+
+        // Evidence really is retrievable: this is not a test of a missing capture.
+        XCTAssertEqual(pending.extraction.retrievalState, .retrievable)
+        XCTAssertNotNil(pending.extraction.publishedAt)
+
+        let actions = FilesAndFoldersModel.actions(
+            for: .file(CoreHistoryFixtures.file()), coreHistory: model.coreHistory
+        )
+        XCTAssertFalse(
+            actions.originalActionsEnabled,
+            "Refresh, Open original and Reveal in Finder need a confirmed canonical association"
+        )
+        // Reprocessing is a different authority: it works on bytes Core already
+        // holds, so a pending linkage does not bar it.
+        XCTAssertTrue(actions.reprocessEnabled)
+
+        let values = facts(model)
+        XCTAssertEqual(
+            values["Original access"],
+            "None recorded. This document has no original link on this device, so "
+                + "only its captured copies are available. Use Locate to link an original."
+        )
+        XCTAssertTrue(
+            values["Source capture 1"]?.contains(
+                "captured copy only, no confirmed original link"
+            ) ?? false,
+            "\(values["Source capture 1"] ?? "")"
+        )
+    }
+
+    /// The other side of the same rule: once Core confirms the association the
+    /// three actions are offered, and a read that could only be refreshed into
+    /// staleness withdraws them again. Design §12.1 offers original actions
+    /// "only if binding permits", and a stale read permits nothing.
+    func testConfirmedAssociationPermitsOriginalActionsAndAStaleReadWithdrawsThem() throws {
+        let confirmed = try history(Wire.page(binding: "connected"))
+
+        XCTAssertTrue(
+            FilesAndFoldersModel.actions(
+                for: .file(CoreHistoryFixtures.file()),
+                coreHistory: subject(.current(confirmed)).coreHistory
+            ).originalActionsEnabled
+        )
+        XCTAssertFalse(
+            FilesAndFoldersModel.actions(
+                for: .file(CoreHistoryFixtures.file()),
+                coreHistory: subject(.stale(confirmed)).coreHistory
+            ).originalActionsEnabled,
+            "these are the last facts Core reported; they are not a current permission"
+        )
+
+        // A connected binding Core itself reports as unreadable permits nothing
+        // either, so the flag is not just a restatement of the binding word.
+        let blocked = try history(
+            Wire.page(
+                binding: "connected",
+                actions: """
+                    [{"action": "refresh_original", "available": false,
+                      "unavailable_reason": "format_not_qualified"}]
+                    """
+            )
+        )
+        XCTAssertFalse(
+            FilesAndFoldersModel.actions(
+                for: .file(CoreHistoryFixtures.file()),
+                coreHistory: subject(.current(blocked)).coreHistory
+            ).originalActionsEnabled
         )
     }
 

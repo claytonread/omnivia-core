@@ -91,13 +91,34 @@ public struct RetainedRootGroup: Equatable, Sendable {
     public let displayName: String
     public let memberCount: Int
     public let membersFrozen: Bool
+    /// The root grant's own lifecycle, carried rather than collapsed. A group
+    /// whose establishment never completed is still `provisional`: no durable
+    /// run or subscription owns it, so its canonical association is requested
+    /// and unconfirmed. Design §12.1 maps that to progress or attention, which
+    /// is why this row is not projected as a finished one-off import.
+    public let state: NativeRootAccessState
 
-    public init(rootRef: String, displayName: String, memberCount: Int, membersFrozen: Bool) {
+    /// `state` defaults to `.active` because every caller that does not know a
+    /// root's lifecycle is naming a group some durable run already established.
+    /// The projection from the native store passes the recorded state.
+    public init(
+        rootRef: String,
+        displayName: String,
+        memberCount: Int,
+        membersFrozen: Bool,
+        state: NativeRootAccessState = .active
+    ) {
         self.rootRef = rootRef
         self.displayName = displayName
         self.memberCount = memberCount
         self.membersFrozen = membersFrozen
+        self.state = state
     }
+
+    /// Whether this group's establishment is still unconfirmed. Design §7.2: a
+    /// provisional root is "bound to a destination … but no durable run or
+    /// subscription owns it yet".
+    public var isPendingAssociation: Bool { state == .provisional }
 }
 
 /// One Recent additions row: either one frozen folder run or one ordinary
@@ -261,6 +282,13 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
     /// Core has reported that action available for a capture of the selected document --
     /// never from a stale read, and never as a guess about what Core would accept.
     public let reprocessEnabled: Bool
+    /// Refresh, Open original and Reveal in Finder, which design §12.1 offers
+    /// "only if binding permits". One flag because §7.2 gives the three one
+    /// rule: they each read the original through its native route, so each needs
+    /// a canonical association Core has confirmed. A requested but unconfirmed
+    /// linkage, a snapshot-only capture and a stale read all permit none of
+    /// them. Reprocessing is deliberately separate: it works on retained bytes.
+    public let originalActionsEnabled: Bool
 
     public init(
         pauseTitle: String,
@@ -269,7 +297,8 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
         stopEnabled: Bool,
         checkEnabled: Bool,
         revealEnabled: Bool = false,
-        reprocessEnabled: Bool = false
+        reprocessEnabled: Bool = false,
+        originalActionsEnabled: Bool = false
     ) {
         self.pauseTitle = pauseTitle
         self.pauseEnabled = pauseEnabled
@@ -278,6 +307,7 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
         self.checkEnabled = checkEnabled
         self.revealEnabled = revealEnabled
         self.reprocessEnabled = reprocessEnabled
+        self.originalActionsEnabled = originalActionsEnabled
     }
 }
 
@@ -330,7 +360,11 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
         switch self {
         case let .file(value): Self.label(value.state)
         case let .folder(value): Self.label(value.state)
-        case .retainedRoot: "Added once"
+        // An unconfirmed establishment is not an addition that finished. It
+        // says so in the shared "Waiting for Core" wording rather than
+        // claiming the one-off import completed.
+        case let .retainedRoot(value):
+            value.isPendingAssociation ? "Waiting for Core" : "Added once"
         case let .activity(value): Self.statusLabel(value)
         }
     }
@@ -339,7 +373,10 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
         switch self {
         case let .file(value): Self.bucket(value.state)
         case let .folder(value): Self.bucket(value.state)
-        case .retainedRoot: .stoppedOrComplete
+        // Progress persists until the association is confirmed, so a
+        // provisional group never filters as stopped or complete.
+        case let .retainedRoot(value):
+            value.isPendingAssociation ? .activeOrPending : .stoppedOrComplete
         case let .activity(value): Self.bucket(value)
         }
     }
@@ -362,7 +399,8 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
             value.reviewChangeCount.map { "\($0) changes require review" }
                 ?? value.lastCompletedMetadataScanAt
                 ?? "Not scanned yet"
-        case .retainedRoot: "Not kept updated"
+        case let .retainedRoot(value):
+            value.isPendingAssociation ? "Not confirmed yet" : "Not kept updated"
         case let .activity(value): Self.progressText(value)
         }
     }
@@ -661,7 +699,8 @@ public struct FilesAndFoldersModel: Sendable {
                 rootRef: group.rootRef,
                 displayName: name,
                 memberCount: group.memberRefs.count,
-                membersFrozen: group.membersFrozen
+                membersFrozen: group.membersFrozen,
+                state: group.state
             )
         }
     }
@@ -804,15 +843,23 @@ public struct FilesAndFoldersModel: Sendable {
             // reported at least one capture it will accept. Not from a stale read, not
             // from a failed one, and not inferred from the file's local state.
             let reprocessable: Bool
+            let originalActions: Bool
             if case let .current(history) = coreHistory.availability(for: value.linkedDocumentID) {
                 reprocessable = !history.reprocessableCaptures.isEmpty
+                originalActions = Self.permitsOriginalActions(history)
             } else {
                 reprocessable = false
+                // Evidence may well be retrievable, but nothing here has a
+                // current statement that the linkage was confirmed, so the
+                // three original actions are not offered on the strength of a
+                // local row.
+                originalActions = false
             }
             return subscriptionActions(
                 value.state,
                 resumable: [.paused, .needsAccess],
-                reprocessEnabled: reprocessable
+                reprocessEnabled: reprocessable,
+                originalActionsEnabled: originalActions
             )
         case let .folder(value):
             return subscriptionActions(
@@ -875,10 +922,27 @@ public struct FilesAndFoldersModel: Sendable {
         }
     }
 
+    /// Whether Core's own current answer confirms a canonical association this
+    /// Mac may act on as a linked original.
+    ///
+    /// Design §12.1 permits original actions "only if binding permits", and
+    /// §7.2 requires an active route for Refresh, Open original and Reveal in
+    /// Finder. Three separate facts have to hold together: Core says the source
+    /// is active, says this device's original binding is connected, and reports
+    /// no reason reading the original again is unavailable. A document whose
+    /// requested linkage is still pending reports `noRoute` and therefore
+    /// permits nothing, however retrievable its evidence already is.
+    private static func permitsOriginalActions(_ history: CoreDocumentHistory) -> Bool {
+        history.source.sourceState == .active
+            && history.source.originalBindingState == .connected
+            && history.refreshUnavailableReason == nil
+    }
+
     private static func subscriptionActions(
         _ state: FolderSubscriptionState,
         resumable: Set<FolderSubscriptionState>,
-        reprocessEnabled: Bool = false
+        reprocessEnabled: Bool = false,
+        originalActionsEnabled: Bool = false
     ) -> FilesAndFoldersActions {
         FilesAndFoldersActions(
             pauseTitle: state == .reviewRequired
@@ -890,7 +954,8 @@ public struct FilesAndFoldersModel: Sendable {
             checkEnabled: state == .active,
             // Reprocessing works on bytes Core already holds, so a stopped watch or a
             // missing original does not bar it. What bars it is Core saying so.
-            reprocessEnabled: reprocessEnabled
+            reprocessEnabled: reprocessEnabled,
+            originalActionsEnabled: originalActionsEnabled
         )
     }
 
@@ -1080,6 +1145,7 @@ public struct FilesAndFoldersModel: Sendable {
         parts.append(contentsOf: [
             "taken \(capture.capturedAt)",
             intentText(capture.intentKind),
+            associationText(capture.associationKind),
             retentionText(capture),
             processingText(capture.processingState),
             "\(capture.mediaType) · \(capture.sourceLengthBytes) bytes",
@@ -1156,6 +1222,20 @@ public struct FilesAndFoldersModel: Sendable {
         parts.append("profile \(profile.decoderBuild)")
         parts.append("digest \(profile.digest)")
         return parts.joined(separator: " · ")
+    }
+
+    /// What Core says this capture is associated with.
+    ///
+    /// Stated on every capture because design §5.2 requires a requested
+    /// association to be confirmed before linked-capture success: a capture of
+    /// bytes alone is retrievable evidence, and saying so is not the same claim
+    /// as a confirmed original link.
+    private static func associationText(_ association: CoreAssociationKind) -> String {
+        switch association {
+        case .activeBinding: "linked to this device's current original"
+        case .historicalBinding: "linked under an original link that is no longer current"
+        case .snapshotOnly: "captured copy only, no confirmed original link"
+        }
     }
 
     private static func dispositionText(_ reason: CoreDispositionReason) -> String {
@@ -1300,7 +1380,13 @@ public struct FilesAndFoldersModel: Sendable {
         [
             DetailFact(label: "Folder", value: value.displayName),
             DetailFact(label: "Root", value: value.rootRef),
-            DetailFact(label: "Updates", value: "Added once. This folder is not kept updated."),
+            DetailFact(
+                label: "Updates",
+                value: value.isPendingAssociation
+                    ? "Not confirmed. This folder was selected and its scope approved, but no "
+                        + "durable run or watch owns it yet, so the addition is unfinished."
+                    : "Added once. This folder is not kept updated."
+            ),
             DetailFact(
                 label: "Files in this group",
                 value: "\(value.memberCount)"
