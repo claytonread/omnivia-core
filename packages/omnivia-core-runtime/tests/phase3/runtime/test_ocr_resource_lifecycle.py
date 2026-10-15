@@ -76,6 +76,7 @@ from omnivia_core_runtime.service.ocr_resource_lifecycle import (
     REFUSAL_PAYLOAD,
     REFUSAL_PINNED,
     REFUSAL_UNAVAILABLE,
+    REFUSAL_UNPINNED,
     REFUSAL_VERIFICATION,
     ManagedOcrResources,
     OcrResourceLifecycleRefused,
@@ -92,6 +93,9 @@ from omnivia_core_runtime.service.ocr_resource_store import (
 
 BODY = b"trained-model-bytes" * 64
 OTHER_BODY = b"another-model-entirely" * 64
+#: A third installed resource, for the assertions that need every identity in a
+#: claim to be genuinely installed so the only thing wrong is the claim.
+THIRD_BODY = b"a-third-model-again" * 64
 
 
 def _digest(body: bytes) -> str:
@@ -1596,17 +1600,93 @@ def test_a_malformed_reclaim_prefix_is_refused(
         managed.reclaim(prefix, set())  # type: ignore[arg-type]
 
 
+def test_an_assertion_accepts_the_exact_claim_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    """What execution asks, and the one thing it must not do while asking.
+
+    A claim over exactly the selection is confirmed; a claim over a subset or a
+    superset is a claim about another selection and is refused. Either way the
+    state document is byte-identical afterwards: the assertion is a read, so a
+    missing claim cannot be repaired by the operation that needed it.
+    """
+    managed = _managed(tmp_path)
+    first = _identity()
+    second = _identity(OTHER_BODY, language="deu")
+    third = _identity(THIRD_BODY, language="fra")
+    managed.install(_payload(tmp_path, BODY, "first.bin"), first)
+    managed.install(_payload(tmp_path, OTHER_BODY, "second.bin"), second)
+    managed.install(_payload(tmp_path, THIRD_BODY, "third.bin"), third)
+    managed.pin("op-1", (first, second))
+    before = managed.store.state_path.read_bytes()
+
+    # Order is not part of it: a pin names one identity per row.
+    managed.assert_pinned("op-1", (second, first))
+
+    # Every one of these is installed and verifiable, so the only thing wrong is
+    # the claim -- which is exactly what this code is for.
+    for case, operation, selection in (
+        ("subset", "op-1", (first,)),
+        ("superset", "op-1", (first, second, third)),
+        ("another selection", "op-1", (third,)),
+        ("another operation", "op-2", (first, second)),
+    ):
+        with pytest.raises(OcrResourceLifecycleRefused) as refused:
+            managed.assert_pinned(operation, selection)
+        assert refused.value.code == REFUSAL_UNPINNED, case
+    assert managed.store.state_path.read_bytes() == before
+
+
+def test_an_assertion_answers_the_resource_question_before_the_claim(
+    tmp_path: Path,
+) -> None:
+    """Bytes that are gone are a resource condition, however the pin looks.
+
+    The two refusals are recovered from differently -- a language to install, or
+    an operator to ask about a claim that vanished -- and an obligation whose
+    admitted bytes are simply not installed has the first problem whether or not
+    it still holds them. So that question is asked first, and
+    :data:`REFUSAL_UNPINNED` is reserved for bytes that are present and unheld.
+    """
+    managed, identity = _installed(tmp_path)
+    absent = _identity(OTHER_BODY)
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.assert_pinned("op-1", (absent,))
+    assert refused.value.code == REFUSAL_NOT_INSTALLED
+
+    managed.payload_path(identity).write_bytes(BODY[:-1])
+    with pytest.raises(OcrResourceLifecycleRefused) as diverged:
+        managed.assert_pinned("op-1", (identity,))
+    assert diverged.value.code == REFUSAL_DIVERGENT
+
+
+def test_an_assertion_against_an_absent_cache_refuses_rather_than_creating_one(
+    tmp_path: Path,
+) -> None:
+    """A read-shaped operation never brings a cache into existence."""
+    managed = _managed(tmp_path)
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.assert_pinned("op-1", (_identity(),))
+
+    assert refused.value.code == REFUSAL_NOT_INSTALLED
+    assert not managed.root.exists()
+
+
 def test_a_pinned_selection_holds_the_projection_and_keeps_the_claim(
     tmp_path: Path,
 ) -> None:
-    """The execution end: re-assert, then project and hold.
+    """The execution end: check the claim, then project and hold.
 
     Both claims are live inside the block -- the durable pin and the lease -- and
     only the lease ends with it. The pin outlives the invocation because the
     obligation it belongs to has not been settled yet, and settling it is a
-    decision this module does not get to make.
+    decision this module does not get to make. The pin is the admission's, taken
+    before the block, because this end only ever reads it.
     """
     managed, identity = _installed(tmp_path)
+    managed.pin("op-executing", (identity,))
 
     with managed.pinned_selection("op-executing", (identity,)) as directory:
         assert (directory / f"{identity.language}{MODEL_SUFFIX}").read_bytes() == BODY

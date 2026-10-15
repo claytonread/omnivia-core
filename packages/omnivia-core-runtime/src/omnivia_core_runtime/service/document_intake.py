@@ -69,6 +69,10 @@ MAX_DOCUMENT_CAPTURE_BYTES: Final = 50 * 1024 * 1024
 #: resolves to -- a Text-only reference pins no OCR resources -- and the question and
 #: the stored value must be about the same string.
 _LEGACY_PROFILE_REF: Final = "legacy-default"
+#: Its revision, named for the same reason one step further on: the reference and the
+#: revision are both inputs to the profile digest this admission freezes, so the pair
+#: the digest was taken over has to be the pair the row stores.
+_LEGACY_PROFILE_REVISION: Final = "1"
 
 
 class DocumentIntakeRefused(RuntimeError):
@@ -456,11 +460,12 @@ def capture_document_bytes(
             has_captures=sequence > 0,
         )
         capture_id = store.capture_id_for(workspace_id, operation_key)
-        admitted_settings, admitted_resources = _admitted_processing(
+        admitted_settings, admitted_resources, admitted_profile = _admitted_processing(
             runner,
             capture_id=capture_id,
             media_type=media_type,
             profile_ref=_LEGACY_PROFILE_REF,
+            profile_revision=_LEGACY_PROFILE_REVISION,
             resources=ocr_resources,
         )
         try:
@@ -488,7 +493,7 @@ def capture_document_bytes(
             requested_source_identity=operation_key,
             target_binding_revision=operation_key,
             processing_profile_ref=_LEGACY_PROFILE_REF,
-            processing_profile_revision="1",
+            processing_profile_revision=_LEGACY_PROFILE_REVISION,
             consent_json=None,
             bulk_origin_json=None,
             display_name=None,
@@ -511,6 +516,7 @@ def capture_document_bytes(
             created_at_us=now_us,
             processing_settings_json=admitted_settings,
             processing_resources_json=admitted_resources,
+            processing_profile_digest=admitted_profile,
         )
         store.insert_capture(runner.connection, capture, now_us=now_us)
         store.insert_capture_outbox(runner.connection, capture, now_us=now_us)
@@ -525,11 +531,12 @@ def _admitted_processing(
     capture_id: str,
     media_type: str,
     profile_ref: str,
+    profile_revision: str,
     resources: ManagedOcrResources | None,
-) -> tuple[str, str]:
-    """What this capture is admitted under, and against: the two frozen documents.
+) -> tuple[str, str, str]:
+    """What this capture is admitted under, against, and as: its three frozen facts.
 
-    Both read **once**, here, at the instant the capture row is written, and stored
+    All read **once**, here, at the instant the capture row is written, and stored
     on that row -- the preferences as `processing_settings_json` (migration 0071)
     and the exact OCR resource identities as `processing_resources_json`
     (migration 0072). A preference changed, a model updated or a language removed
@@ -559,8 +566,26 @@ def _admitted_processing(
     operation key completes the work -- which is exactly the recovery, and much better
     than a capture permanently frozen out of recognition because an administrator was
     installing a language at that instant.
+
+    The third fact is the ExtractionProfileV1 digest those two documents resolve to,
+    written as `processing_profile_digest` (migration 0072). It is computed from the
+    settings and the identities decided *here*, in this call, and from nothing else:
+    the live preferences are not read a second time and the installation's cache is
+    not consulted again, so the digest cannot describe a decision other than the one
+    being written beside it. What it adds is the one input the row cannot hold --
+    this build's own adapters, decoder builds, engine revision and limits -- so an
+    execution by a later build can compare rather than assume. Every new capture
+    carries one, the text-only captures included.
     """
     assert runner.connection is not None and runner.workspace_id is not None
+    # Imported at use: document_processing imports this module for the admission,
+    # extraction and settlement it drives, so the one thing it owns that an
+    # admission needs -- how a frozen decision becomes a profile -- can only be
+    # reached from here at the call.
+    from omnivia_core_runtime.service.document_processing import (
+        admitted_profile_digest,
+    )
+
     settings, _revision = processing_settings.read_settings(
         runner.connection, workspace_id=runner.workspace_id
     )
@@ -585,6 +610,13 @@ def _admitted_processing(
     return (
         to_canonical_json(settings.to_value()),
         to_canonical_json(admitted.to_value()),
+        admitted_profile_digest(
+            media_type=media_type,
+            profile_ref=profile_ref,
+            revision=profile_revision,
+            settings=settings,
+            admitted=admitted,
+        ),
     )
 
 
@@ -752,11 +784,12 @@ def admit_document_capture_in_transaction(
         has_captures=sequence > 0,
     )
     capture_id = store.capture_id_for(workspace_id, operation_key)
-    admitted_settings, admitted_resources = _admitted_processing(
+    admitted_settings, admitted_resources, admitted_profile = _admitted_processing(
         runner,
         capture_id=capture_id,
         media_type=media_type,
         profile_ref=processing_profile_ref,
+        profile_revision=processing_profile_revision,
         resources=ocr_resources,
     )
     try:
@@ -807,6 +840,7 @@ def admit_document_capture_in_transaction(
         created_at_us=now_us,
         processing_settings_json=admitted_settings,
         processing_resources_json=admitted_resources,
+        processing_profile_digest=admitted_profile,
     )
     store.insert_capture(runner.connection, capture, now_us=now_us)
     store.insert_capture_outbox(runner.connection, capture, now_us=now_us)

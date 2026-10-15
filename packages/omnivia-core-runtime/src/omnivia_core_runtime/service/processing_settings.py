@@ -43,6 +43,14 @@ condition it is -- never resolved to whatever model of that language is installe
 by the time the obligation's turn comes, which is the substitution the whole
 arrangement exists to make impossible.
 
+What the identities decide, the digest seals.
+:meth:`AdmittedResources.served` rebuilds the resources a frozen selection was
+admitted with from the row alone -- no projection, no model read -- which is what
+lets the admission's own profile digest be computed where nothing is projected
+and recomputed at execution from the same row. The identities stay the authority
+and the digest is never consulted to decide what to execute; it catches the one
+input the row cannot hold, which is the build that reads it.
+
 :class:`ManagedSelectionAuthority` also keeps its *language* resolution, used by
 `document.history` and `document.reprocess`, because a reprocess is an explicit
 new decision that resolves against the workspace's current preferences and runs
@@ -77,6 +85,7 @@ from omnivia_core_runtime.service.ocr_resource_lifecycle import (
     OCR_RESOURCES_DIR,
     REFUSAL_DIVERGENT,
     REFUSAL_NOT_INSTALLED,
+    REFUSAL_UNPINNED,
     ManagedOcrInventory,
     ManagedOcrResources,
     OcrResourceLifecycleRefused,
@@ -195,6 +204,14 @@ _RESOURCE_REASONS: Final = (
     REASON_UNVERIFIED,
 )
 
+#: Stands where the published projection's directory would be, in the
+#: admission-time resources :meth:`AdmittedResources.served` rebuilds. A
+#: projection is installation-local and is published at execution, so admission
+#: has no directory to name -- and the profile does not carry one, which is why
+#: naming nothing real here changes no identity. Not a path: nothing may open it,
+#: and anything that tried would fail closed on a model it could not digest.
+_UNPROJECTED_SELECTION: Final = "(selection not projected)"
+
 #: What a capture's pins are named. The workspace digest scopes them: one
 #: installation's managed cache may serve more than one workspace, and a sweep
 #: of one workspace's abandoned pins must not be able to reach another's.
@@ -212,6 +229,34 @@ class ProcessingResourcesInvalid(ValueError):
     for different reasons and an operator reading one of them needs to know which
     document to look at: the preferences the capture was admitted under, or the
     resource identities it was admitted against.
+    """
+
+
+class CaptureNotExecutable(Exception):
+    """This capture cannot be executed as the capture it was admitted as.
+
+    Not a resource condition and not the absence of one: both of those are
+    statements about the installation, and this is a statement about the
+    obligation. Two things reach it, with the same remedy -- an operator looking,
+    or an explicit reprocess -- and the same handling.
+
+    Either the durable claim the capture was admitted with is not there, or is
+    over another selection. The bytes may well still be installed, which is
+    exactly why executing would be wrong: they were removable for the whole
+    window nothing held them, and
+    :meth:`~omnivia_core_runtime.service.ocr_resource_lifecycle.ManagedOcrResources.assert_pinned`
+    refuses rather than writing the claim back.
+
+    Or the frozen documents no longer produce the profile digest the admission
+    recorded, which means this build resolves them to a different extraction
+    profile than the build that admitted them did -- a changed adapter, decoder,
+    engine revision or limit. Settling under the new digest would settle the
+    capture under an identity nobody was offered, and under an operation key
+    derived from it, so the obligation is paused with the digest it was admitted
+    under intact.
+
+    The obligation is left exactly as it was in both cases: its outbox row still
+    pending, its durable pins still held, and no extraction revision admitted.
     """
 
 
@@ -603,6 +648,39 @@ class AdmittedResources:
             reason=value["reason"],
             unavailable_models=tuple(str(model) for model in models),
             detail=value["detail"],
+        )
+
+    def served(self, requested: Sequence[str]) -> OcrResources:
+        """What a frozen selection serves, as the admission resolved it.
+
+        The *admission-time* resources, rebuilt from the row alone: the engine
+        this build invokes, the frozen recognition order, and one pinned model
+        hash per identity the selection names -- which is what
+        :meth:`~omnivia_core_runtime.service.ocr_resources.TrustedOcrCatalogue.resolve`
+        produces over the same identities, because the digest it verifies the
+        bytes against *is* the identity's. That is what lets the profile digest a
+        capture is admitted under be computed without reading a model, and lets
+        execution recompute the same digest from the same row.
+
+        ``tessdata_dir`` is the one member that cannot be rebuilt, and is the one
+        member the profile does not carry:
+        :meth:`~omnivia_core_runtime.service.ocr_resources.OcrResources.to_profile`
+        leaves it out, so a capture's identity does not depend on where an
+        installation happens to publish a projection. The placeholder is
+        therefore inert, and these resources are never handed to an engine -- the
+        resources an extraction runs under come from
+        :meth:`ManagedSelectionAuthority.frozen_resources`, over a directory that
+        exists.
+        """
+        assert self.kind == RESOURCES_FROZEN
+        return OcrResources(
+            engine=TESSERACT_ENGINE,
+            engine_revision=TESSERACT_REVISION,
+            languages=validated_languages(requested),
+            model_hashes=tuple(
+                sorted({f"sha256:{identity.sha256}" for identity in self.selection})
+            ),
+            tessdata_dir=_UNPROJECTED_SELECTION,
         )
 
     def unserved(self, requested: Sequence[str]) -> OcrResources:
@@ -1022,12 +1100,34 @@ class ManagedSelectionAuthority:
         exception: an identity that is no longer installed is a missing language,
         and bytes that no longer match their digest are an unverified model. Both
         are recorded against the extraction and recovered by installing or
-        reinstalling, and neither degrades into a smaller selection. A cache that
-        could not be read at all is the one case that raises, because that is not
-        a condition but the absence of one.
+        reinstalling, and neither degrades into a smaller selection. Two cases
+        raise instead, because neither is a condition: a cache that could not be
+        read at all, which is the absence of an answer, and a durable claim that
+        is not there, which is :class:`CaptureNotExecutable` -- the bytes may be
+        installed and verifiable, and what is missing is the record that this
+        obligation held them, which no installation repairs and which this end
+        deliberately does not write back.
+
+        An identity admitted for an engine revision this build does not invoke
+        raises too, before anything is projected. The alternative would be to
+        serve those bytes and label the profile with the engine that actually
+        ran, which moves the capture's digest -- and therefore its operation key
+        -- away from the one its admission recorded, under an identity nobody was
+        offered. There is no compatible way to serve it here, so it waits for an
+        operator or an explicit reprocess.
         """
         assert admitted.kind == RESOURCES_FROZEN
         order = validated_languages(requested)
+        foreign = tuple(
+            identity.stable_key
+            for identity in admitted.selection
+            if identity.engine_version != TESSERACT_REVISION
+        )
+        if foreign:
+            raise CaptureNotExecutable(
+                f"this capture was admitted against OCR resources for another "
+                f"engine revision than {TESSERACT_REVISION}: {', '.join(foreign)}"
+            )
         with ExitStack() as stack:
             try:
                 directory = stack.enter_context(
@@ -1036,6 +1136,8 @@ class ManagedSelectionAuthority:
                     )
                 )
             except OcrResourceLifecycleRefused as refusal:
+                if refusal.code == REFUSAL_UNPINNED:
+                    raise CaptureNotExecutable(str(refusal)) from refusal
                 if refusal.code not in (REFUSAL_NOT_INSTALLED, REFUSAL_DIVERGENT):
                     raise ResourceStateIndeterminate(str(refusal)) from refusal
                 yield OcrResources(
@@ -1106,6 +1208,7 @@ __all__ = [
     "SETTING_WRITER",
     "TEXT_ONLY_PROFILE_REF",
     "AdmittedResources",
+    "CaptureNotExecutable",
     "ManagedSelectionAuthority",
     "ProcessingResourcesInvalid",
     "ProcessingSettings",

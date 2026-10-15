@@ -29,8 +29,18 @@ survive an unbounded queue wait and a restart. The lease is an OS lock that dies
 with the process, so it covers the minutes between resolving a projection and
 finishing with the engine over it.
 :meth:`~omnivia_core_runtime.service.ocr_resource_lifecycle.ManagedOcrResources.pinned_selection`
-takes both, re-asserting the pin before it resolves, so an obligation never
-invokes the engine over bytes nothing holds.
+takes both, *checking* the pin before it resolves -- read-only, so a pin that is
+not there pauses the obligation instead of being written back under it, and an
+obligation never invokes the engine over bytes nothing holds.
+
+**And the identity is compared, not merely derived.** The profile digest one
+capture was admitted under is stored on its row (migration 0072) and recomputed
+here from the same two frozen documents before any extraction revision is
+admitted. The inputs cannot have moved, so a difference is this build resolving
+them differently from the build that admitted them -- a changed adapter, decoder
+build or engine revision -- and the obligation pauses. Settling under the new
+digest would record an extraction under an identity nobody was offered and
+abandon the operation key the admitted one derives.
 
 **A condition is settled; the absence of one is not.** Resources that are
 demonstrably not there -- an identity no longer installed, bytes that no longer
@@ -113,6 +123,7 @@ from omnivia_core_runtime.service.processing_settings import (
     RESOURCES_UNAVAILABLE,
     TEXT_ONLY_PROFILE_REF,
     AdmittedResources,
+    CaptureNotExecutable,
     ProcessingResourcesInvalid,
     ProcessingSettings,
     ProcessingSettingsInvalid,
@@ -373,6 +384,75 @@ def resolve_settings(
         embedded_image_ocr=(
             settings is not None and settings.embedded_image_ocr_for(media_type)
         ),
+    )
+
+
+def _frozen_ocr_resources(
+    settings: ProcessingSettings | None, admitted: AdmittedResources | None
+) -> OcrResources | None:
+    """The OCR resources one capture row names *by itself*, asking nothing.
+
+    The installation-free half of :func:`capture_resources`, and the same three
+    branches read from the same two frozen documents: a capture that resolves no
+    recognition names none, an unavailable snapshot names the condition it
+    recorded, and a frozen selection names the resources its admission resolved.
+    What is missing is the only part an installation is needed for -- the
+    projected directory the engine opens -- which no profile carries.
+
+    That is what makes an admission-time profile digest computable at admission,
+    where nothing is projected, and recomputable at execution without resolving
+    anything: both ends run this over the same row and get the same answer.
+    """
+    if admitted is None or admitted.kind == RESOURCES_NONE:
+        return None
+    requested = () if settings is None else settings.languages
+    if admitted.kind == RESOURCES_UNAVAILABLE:
+        return admitted.unserved(requested)
+    return admitted.served(requested)
+
+
+def admitted_profile_digest(
+    *,
+    media_type: str,
+    profile_ref: str,
+    revision: str,
+    settings: ProcessingSettings | None,
+    admitted: AdmittedResources | None,
+) -> str:
+    """The ExtractionProfileV1 digest one capture's frozen decision resolves to.
+
+    Computed at admission from the two documents that are about to be written and
+    stored on the row beside them (`processing_profile_digest`, migration 0072),
+    and computed again at execution from the row itself. The inputs are the same
+    both times and nothing mutable is consulted either time -- not the live
+    preferences, not the installation's cache -- so the two agree unless *this
+    build* resolves the same frozen decision to a different profile than the
+    build that admitted it did: a changed adapter, decoder build, engine
+    revision, parser feature or limit.
+
+    When they disagree, the capture's identity would move. The profile digest is
+    the input to the extraction's operation key, so settling under the new one
+    would both record an extraction nobody was offered and break the replay of
+    the one that was. :func:`_process_obligation` therefore pauses the obligation
+    rather than admitting a revision under it, which is the one answer that keeps
+    the stored digest meaningful.
+
+    ``settings=None`` and ``admitted=None`` are the pre-0071 and pre-0072
+    compatibility rows, which carry no stored digest to compare against; the
+    value this returns for them is still the profile they execute under.
+    """
+    return store.profile_digest(
+        portable_profile(
+            media_type=media_type,
+            profile_ref=profile_ref,
+            revision=revision,
+            settings=resolve_settings(
+                media_type=media_type,
+                profile_ref=profile_ref,
+                settings=settings,
+                resources=_frozen_ocr_resources(settings, admitted),
+            ),
+        )
     )
 
 
@@ -763,12 +843,16 @@ def process_capture_outbox(
     that profile's digest is the same key -- which is what makes the replay after
     a restart idempotent rather than a second extraction under a second identity.
 
-    An obligation whose resources cannot be *established* is skipped whole:
-    nothing is resolved, no extraction revision is admitted and nothing is
-    settled, so a later pass replays the same row under the same key. That is the
-    one case in which this returns fewer results than it had obligations, and it
-    is deliberately not an outcome -- an extraction settled on a momentarily
-    unreadable cache would be a terminal answer invented from the absence of one.
+    An obligation that cannot be executed *as the obligation it was admitted as*
+    is skipped whole: nothing is resolved, no extraction revision is admitted,
+    nothing is settled and no pin is released, so a later pass replays the same
+    row under the same key. Three things reach it -- a managed cache that could
+    not be read, a durable pin the capture no longer holds, and a frozen decision
+    this build resolves to a different profile digest than the admission recorded
+    -- and none of them is an outcome: settling on any of them would be a terminal
+    answer invented from a fact about the obligation rather than about the
+    document. That is the one case in which this returns fewer results than it had
+    obligations.
     """
     assert runner.connection is not None and runner.workspace_id is not None
     assert runner.identity is not None and runner.generation is not None
@@ -788,7 +872,7 @@ def process_capture_outbox(
             continue
         try:
             completed.append(_process_obligation(runner, capture, catalogue_for))
-        except ResourceStateIndeterminate:
+        except (CaptureNotExecutable, ResourceStateIndeterminate):
             continue
     return completed
 
@@ -812,8 +896,13 @@ def _process_obligation(
     that could, and settling it without releasing would hold those bytes until the
     next start reclaimed them.
 
+    The decoded row is then checked against the digest its admission recorded,
+    before anything is leased: a build that resolves the same frozen decision to
+    a different profile pauses here, because the alternative is settling the
+    capture under an identity -- and an operation key -- nobody was offered.
+
     It is released only after :func:`_execute_obligation` has settled the outbox
-    row, and therefore never on the path that pauses and never when settling
+    row, and therefore never on either path that pauses and never when settling
     itself failed. A release lost to a crash in that window leaves a pin
     :func:`reclaim_capture_pins` takes back, which is the recoverable direction;
     releasing before the settlement would leave the bytes removable while the
@@ -841,6 +930,7 @@ def _process_obligation(
             unexecutable=unexecutable,
         )
     else:
+        _admitted_digest_holds(capture, settings=settings, admitted=admitted)
         with capture_resources(
             capture,
             settings=settings,
@@ -860,6 +950,42 @@ def _process_obligation(
             )
     _release(source, operation_id)
     return result
+
+
+def _admitted_digest_holds(
+    capture: store.StoredCapture,
+    *,
+    settings: ProcessingSettings | None,
+    admitted: AdmittedResources | None,
+) -> None:
+    """Refuse unless this build still resolves the row to its admitted profile.
+
+    The digest comparison, made before anything is leased and before any
+    extraction revision is admitted, so a capture whose profile has moved beneath
+    it is paused with its outbox row pending and its pins held rather than settled
+    under an identity nobody was offered.
+
+    A ``None`` stored digest is the pre-0072 capture, which recorded none. There
+    is nothing to compare it with and nothing to be gained by inventing one: such
+    a row executes the deterministic compatibility behaviour
+    :func:`capture_resources` documents, exactly as it did before this column
+    existed.
+    """
+    stored = capture.processing_profile_digest
+    if stored is None:
+        return
+    resolved = admitted_profile_digest(
+        media_type=capture.media_type,
+        profile_ref=capture.processing_profile_ref,
+        revision=capture.processing_profile_revision,
+        settings=settings,
+        admitted=admitted,
+    )
+    if resolved != stored:
+        raise CaptureNotExecutable(
+            f"{capture.capture_id} was admitted under the profile {stored} and "
+            f"this build resolves its frozen decision to {resolved}"
+        )
 
 
 def _release(source: CatalogueSource | None, operation_id: str) -> None:

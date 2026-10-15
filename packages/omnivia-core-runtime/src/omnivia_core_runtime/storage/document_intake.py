@@ -398,6 +398,12 @@ class StoredCapture:
     #: Appended after `processing_settings_json` for the column-order reason above,
     #: which is also the order the two migrations added them in.
     processing_resources_json: str | None = None
+    #: The ExtractionProfileV1 digest the two documents above resolved to at the
+    #: instant of admission (migration 0072). Stored rather than only derived so
+    #: execution can prove this build still resolves the same frozen decision to
+    #: the same profile before it admits an extraction revision under it. `None`
+    #: only for a capture admitted before that migration.
+    processing_profile_digest: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

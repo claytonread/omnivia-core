@@ -15,6 +15,11 @@ from omnivia_core_runtime.service.document_intake import (
     owned_workspace,
     register_profile,
 )
+from omnivia_core_runtime.service.document_processing import (
+    portable_profile,
+    resolve_settings,
+)
+from omnivia_core_runtime.service.processing_settings import ProcessingSettings
 from omnivia_core_runtime.service.runner import ServiceRunner
 from omnivia_core_runtime.service.versions import SERVER_VERSION
 from omnivia_core_runtime.service.workspace_init import initialise_workspace
@@ -209,19 +214,28 @@ _RESOURCES_NONE = (
 )
 
 
-def _admitting(
-    monkeypatch: pytest.MonkeyPatch, settings: str | None, resources: str | None
-) -> None:
-    """Admit captures with these two frozen documents, whatever the live state.
+#: A well-formed profile digest, for the tests that are about one of the other two
+#: columns. Spelled out for the same reason `_RESOURCES_NONE` is.
+_DIGEST = "sha256:" + "0" * 64
 
-    The seam is the one function that reads the preferences and resolves the
-    resources, so a test can drive either column's own constraint -- or the
-    pre-migration NULL -- through the production write that fills it.
+
+def _admitting(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: str | None,
+    resources: str | None,
+    digest: str | None = _DIGEST,
+) -> None:
+    """Admit captures with these three frozen facts, whatever the live state.
+
+    The seam is the one function that reads the preferences, resolves the
+    resources and digests the profile they name, so a test can drive any of the
+    three columns' own constraints -- or the pre-migration NULL -- through the
+    production write that fills them.
     """
     monkeypatch.setattr(
         service,
         "_admitted_processing",
-        lambda _runner, **_kwargs: (settings, resources),
+        lambda _runner, **_kwargs: (settings, resources, digest),
     )
 
 
@@ -309,7 +323,7 @@ def test_0071_keeps_a_capture_that_recorded_no_selection(
     Inventing a selection for a capture admitted before this column existed would be a
     claim about what ran, so the column is nullable and absence stays absence.
     """
-    _admitting(monkeypatch, None, None)
+    _admitting(monkeypatch, None, None, None)
     captured = _capture(
         runner, document_id="doc-0071-null", operation_key="cap-0071-null",
         content=b"legacy body",
@@ -432,7 +446,7 @@ def test_0072_keeps_a_capture_that_recorded_no_resources(
     absence; what such a capture then executes is the packaged fail-closed
     catalogue's answer, which pins no model.
     """
-    _admitting(monkeypatch, None, None)
+    _admitting(monkeypatch, None, None, None)
     captured = _capture(
         runner,
         document_id="doc-0072-null",
@@ -440,6 +454,9 @@ def test_0072_keeps_a_capture_that_recorded_no_resources(
         content=b"legacy body",
     )
     assert captured.capture.processing_resources_json is None
+    # Both columns together: a stored digest would be a digest of a decision this
+    # row does not carry, so the pre-migration capture has neither.
+    assert captured.capture.processing_profile_digest is None
     assert runner.connection is not None
     reread = store.read_capture(
         runner.connection,
@@ -447,6 +464,7 @@ def test_0072_keeps_a_capture_that_recorded_no_resources(
         capture_id=captured.capture.capture_id,
     )
     assert reread is not None and reread.processing_resources_json is None
+    assert reread.processing_profile_digest is None
 
 
 @pytest.mark.parametrize(
@@ -478,6 +496,100 @@ def test_0072_refuses_a_snapshot_that_is_not_a_bounded_json_object(
             runner,
             document_id="doc-0072-bad",
             operation_key="cap-0072-bad",
+            content=b"bad body",
+        )
+    assert runner.connection is not None
+    assert (
+        runner.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_document_captures"
+        ).fetchone()[0]
+        == 0
+    )
+
+
+def test_0072_freezes_the_admitted_profile_digest_beside_them(
+    runner: ServiceRunner,
+) -> None:
+    """Every new capture carries the digest its own admission resolved.
+
+    Plain text under the default preferences recognises nothing, and the digest is
+    stored all the same: a text-only profile has an identity too, and it moves
+    under a changed adapter or decoder build exactly as a recognising one does.
+    The value is the real ExtractionProfileV1 digest, not a token -- it is compared
+    with one the worker computes -- and the row it sits on is 0069's append-only
+    row.
+    """
+    captured = _capture(
+        runner,
+        document_id="doc-0072-digest",
+        operation_key="cap-0072-digest",
+        content=b"frozen body",
+    )
+    stored = captured.capture.processing_profile_digest
+    assert stored is not None
+    assert stored == store.profile_digest(
+        portable_profile(
+            media_type=captured.capture.media_type,
+            profile_ref=captured.capture.processing_profile_ref,
+            revision=captured.capture.processing_profile_revision,
+            settings=resolve_settings(
+                media_type=captured.capture.media_type,
+                profile_ref=captured.capture.processing_profile_ref,
+                settings=ProcessingSettings.from_value(
+                    json.loads(captured.capture.processing_settings_json or "")
+                ),
+            ),
+        )
+    )
+    assert runner.connection is not None
+    reread = store.read_capture(
+        runner.connection,
+        workspace_id=runner.workspace_id or "",
+        capture_id=captured.capture.capture_id,
+    )
+    assert reread is not None and reread.processing_profile_digest == stored
+
+    with service._fence(runner), pytest.raises(
+        sqlite3.IntegrityError, match="append-only"
+    ):
+        runner.connection.execute(
+            "UPDATE omnivia_document_captures SET processing_profile_digest = ? "
+            "WHERE workspace_id = ? AND capture_id = ?",
+            (stored, runner.workspace_id, captured.capture.capture_id),
+        )
+
+
+@pytest.mark.parametrize(
+    "digest",
+    [
+        pytest.param("sha256:" + "0" * 63, id="too-short"),
+        pytest.param("sha256:" + "0" * 65, id="too-long"),
+        pytest.param("sha512:" + "0" * 64, id="another-algorithm"),
+        pytest.param("sha256:" + "0" * 63 + "A", id="upper-case-hex"),
+        pytest.param("sha256:" + "0" * 63 + "g", id="not-hex"),
+    ],
+)
+def test_0072_refuses_a_digest_that_is_not_a_profile_digest(
+    runner: ServiceRunner, monkeypatch: pytest.MonkeyPatch, digest: str
+) -> None:
+    """The same shape every other profile digest 0069 stores, enforced here too.
+
+    The stored value is compared with a digest the worker computes over a
+    canonical profile, so a column that accepted some other shape would hold a
+    value that could only ever compare unequal -- a capture that can never
+    execute, discovered at execution instead of where it was written.
+    """
+    _admitting(
+        monkeypatch,
+        '{"embeddedImageOcr":false,"languages":["eng"],"mode":"text_only"}',
+        _RESOURCES_NONE,
+        digest,
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+        _capture(
+            runner,
+            document_id="doc-0072-digest-bad",
+            operation_key="cap-0072-digest-bad",
             content=b"bad body",
         )
     assert runner.connection is not None

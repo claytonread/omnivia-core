@@ -10,7 +10,8 @@ from typing import Any
 
 import pytest
 from _trusted_ocr import catalogue_over, host_models, stand_in_models
-from omnivia_core_runtime.service import document_intake
+from omnivia_core_runtime.service import document_intake, processing_settings
+from omnivia_core_runtime.service import document_processing as processing
 from omnivia_core_runtime.service.document_extractors import (
     DOCX_MEDIA_TYPE,
     XHTML_MEDIA_TYPE,
@@ -54,6 +55,7 @@ from omnivia_core_runtime.service.processing_settings import (
     RESOURCES_NONE,
     RESOURCES_UNAVAILABLE,
     AdmittedResources,
+    CaptureNotExecutable,
     ManagedSelectionAuthority,
     ProcessingSettings,
     capture_pin,
@@ -894,12 +896,22 @@ def test_embedded_image_recognition_reaches_a_source_that_carries_images(
 # --- the compatibility path and its boundary ------------------------------------
 
 
-def legacy_admission(monkeypatch: pytest.MonkeyPatch, *documents: str | None) -> None:
-    """Admit as a build that recorded neither snapshot, or an unreadable one."""
+def legacy_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: str | None,
+    resources: str | None,
+    digest: str | None = None,
+) -> None:
+    """Admit as a build that recorded neither snapshot, or an unreadable one.
+
+    The stored profile digest defaults to ``None`` with them: a build that
+    recorded no decision recorded no digest of one either, and a capture whose
+    frozen documents do not decode has no profile to have digested.
+    """
     monkeypatch.setattr(
         document_intake,
         "_admitted_processing",
-        lambda _runner, **_kwargs: documents,
+        lambda _runner, **_kwargs: (settings, resources, digest),
     )
 
 
@@ -1752,3 +1764,350 @@ def test_reclamation_keeps_the_pin_of_an_obligation_that_is_still_queued(
     with pytest.raises(OcrResourceLifecycleRefused) as refused:
         resources.remove(installed["deu"])
     assert refused.value.code == REFUSAL_PINNED
+
+
+# --- the pin is asserted, and the admitted profile is compared ------------------
+
+
+def stored_digest(runner: ServiceRunner, capture_id: str) -> str:
+    """The profile digest one capture row recorded at admission."""
+    assert runner.connection is not None and runner.workspace_id is not None
+    capture = store.read_capture(
+        runner.connection, workspace_id=runner.workspace_id, capture_id=capture_id
+    )
+    assert capture is not None and capture.processing_profile_digest is not None
+    return capture.processing_profile_digest
+
+
+def paused(runner: ServiceRunner, capture: store.StoredCapture, document_id: str) -> None:
+    """The whole of what pausing one obligation means, asserted in one place.
+
+    Nothing settled, nothing admitted, and the obligation still owed: the outbox
+    row is pending, so a later pass replays the same row under the same key, and
+    no extraction revision exists to be the answer in the meantime.
+    """
+    assert runner.connection is not None
+    outbox = store.read_outbox(
+        runner.connection,
+        workspace_id=runner.workspace_id or "",
+        capture_id=capture.capture_id,
+    )
+    assert outbox is not None and outbox.outbox_state == store.OUTBOX_PENDING
+    assert runner_revisions(runner, document_id) == []
+    assert read_extraction_projection(runner, document_id=document_id) == []
+
+
+def test_a_queued_capture_whose_pin_was_lost_is_paused_not_re_pinned(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    """The exact bytes are still there, and that is not permission to run.
+
+    A durable claim that has gone -- a reclamation that swept a committed
+    admission, an edited state document -- means those bytes were removable for
+    the whole window nothing held them, and the engine must not be invoked over
+    them on the strength of their happening to have survived. Execution asserts
+    the claim rather than writing it: the obligation pauses, the pin stays absent
+    rather than being recreated under it, and no extraction revision is admitted.
+    """
+    authority, resources = managed_installation(
+        tmp_path / "inst-unpinned", tmp_path, "deu", "osd"
+    )
+    installed = installed_identities(resources)
+    set_languages(runner, "deu")
+    capture = admit(
+        runner,
+        document_id="doc-unpinned",
+        content=image_bytes(),
+        media_type="image/png",
+        resources=resources,
+    )
+    assert frozen(runner, capture.capture_id).selection == (
+        installed["deu"],
+        installed["osd"],
+    )
+    assert runner.workspace_id is not None
+    pin = capture_pin(runner.workspace_id, capture.capture_id)
+    resources.release(pin)
+
+    assert process_capture_outbox(runner, catalogue_for=authority) == []
+
+    paused(runner, capture, "doc-unpinned")
+    # The claim was not written back, so the operator's own removal is still
+    # accepted -- the state document says what it said, not what the worker
+    # needed it to say.
+    assert resources.store.load().pins == ()
+    # And the pause is not a dead end: the claim restored, the same row settles
+    # under the digest its admission recorded.
+    resources.pin(pin, (installed["deu"], installed["osd"]))
+
+    results = process_capture_outbox(runner, catalogue_for=authority)
+
+    assert len(results) == 1
+    assert _profile_digest(runner, results[0]) == stored_digest(
+        runner, capture.capture_id
+    )
+
+
+def test_a_pin_over_part_of_the_frozen_selection_is_not_the_claim(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    """Exactly the frozen identities, as a set, or the obligation does not run.
+
+    A claim over some of them is a claim about a different selection: the
+    orientation data here is unheld, and it is a member of the projection the
+    invocation would open. Nothing is served and nothing is written -- the partial
+    claim is left exactly as it was found.
+    """
+    authority, resources = managed_installation(
+        tmp_path / "inst-partial", tmp_path, "deu", "osd"
+    )
+    installed = installed_identities(resources)
+    set_languages(runner, "deu")
+    capture = admit(
+        runner,
+        document_id="doc-partial",
+        content=image_bytes(),
+        media_type="image/png",
+        resources=resources,
+    )
+    assert runner.workspace_id is not None
+    pin = capture_pin(runner.workspace_id, capture.capture_id)
+    resources.pin(pin, (installed["deu"],))
+
+    assert process_capture_outbox(runner, catalogue_for=authority) == []
+
+    paused(runner, capture, "doc-partial")
+    assert [held.identity for held in resources.store.load().pins] == [installed["deu"]]
+    # Named for what it is, rather than as a resource condition: the bytes are
+    # installed and verifiable, and no installation repairs a missing claim.
+    with pytest.raises(CaptureNotExecutable), authority.frozen_resources(
+        operation_id=pin,
+        admitted=frozen(runner, capture.capture_id),
+        requested=("deu",),
+    ):
+        raise AssertionError("an unheld selection was served")
+
+
+def test_an_intact_pin_executes_under_the_admitted_profile(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    """The ordinary case the assertion must not break.
+
+    The claim admission took is the claim execution finds, so the obligation
+    settles normally -- under the digest stored on its own row -- and the pin is
+    released by the settlement rather than left behind. The same property across
+    a real process restart is
+    `test_a_restart_replays_the_same_frozen_work_under_the_same_key`.
+    """
+    authority, resources = managed_installation(
+        tmp_path / "inst-intact", tmp_path, "deu", "osd"
+    )
+    installed = installed_identities(resources)
+    set_languages(runner, "deu")
+    capture = admit(
+        runner,
+        document_id="doc-intact",
+        content=image_bytes(),
+        media_type="image/png",
+        resources=resources,
+    )
+    assert runner.workspace_id is not None
+    pin = capture_pin(runner.workspace_id, capture.capture_id)
+    assert {held.identity for held in resources.store.load().pins} == {
+        installed["deu"],
+        installed["osd"],
+    }
+
+    results = DocumentProcessingExecutor(runner, catalogue_for=authority).run_pending(
+        budget=4, force=True
+    )
+
+    assert len(results) == 1
+    assert _profile_digest(runner, results[0]) == stored_digest(
+        runner, capture.capture_id
+    )
+    assert pin not in {held.operation_id for held in resources.store.load().pins}
+    resources.remove(installed["deu"])
+
+
+def test_a_profile_that_moved_under_the_build_pauses_rather_than_settling(
+    runner: ServiceRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one input the frozen row cannot hold: the build that reads it.
+
+    The adapter version reaches `decoderBuild` and `adapterVersion`, so moving it
+    is exactly what an upgraded adapter does to the profile a row resolves to.
+    Both frozen documents are untouched and the identity the capture would settle
+    under has still moved, which is what the stored digest is for: the obligation
+    pauses with its outbox pending, its pins held and no extraction revision
+    admitted, rather than settling under a digest -- and therefore an operation
+    key -- nobody was offered.
+    """
+    authority, resources = managed_installation(
+        tmp_path / "inst-moved", tmp_path, "deu", "osd"
+    )
+    installed = installed_identities(resources)
+    set_languages(runner, "deu")
+    capture = admit(
+        runner,
+        document_id="doc-moved",
+        content=image_bytes(),
+        media_type="image/png",
+        resources=resources,
+    )
+    admitted = stored_digest(runner, capture.capture_id)
+
+    monkeypatch.setattr(processing, "_ADAPTER_VERSION", "99")
+    assert process_capture_outbox(runner, catalogue_for=authority) == []
+
+    paused(runner, capture, "doc-moved")
+    # The pins are held through the pause, because the obligation is still owed
+    # and the bytes it was admitted against must still be there when it runs.
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        resources.remove(installed["deu"])
+    assert refused.value.code == REFUSAL_PINNED
+    # And the stored digest did not move with the build: the capture is still the
+    # capture it was admitted as, and a build that resolves it to that profile
+    # again settles it normally.
+    assert stored_digest(runner, capture.capture_id) == admitted
+
+    monkeypatch.undo()
+    results = process_capture_outbox(runner, catalogue_for=authority)
+
+    assert len(results) == 1
+    assert _profile_digest(runner, results[0]) == admitted
+
+
+def test_ordinary_preference_and_model_changes_leave_the_stored_digest_alone(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    """The digest comparison must not fire on the changes END-02 already absorbs.
+
+    A preference rewritten and a newer model revision installed are both changes
+    to things the capture row does not read, so the digest the obligation resolves
+    to is the digest its admission stored and the work settles normally. If the
+    comparison were made against anything live, this is the test it would fail.
+    """
+    authority, resources = managed_installation(
+        tmp_path / "inst-unmoved", tmp_path, "deu", "fra", "osd"
+    )
+    set_languages(runner, "deu")
+    capture = admit(
+        runner,
+        document_id="doc-unmoved",
+        content=image_bytes(),
+        media_type="image/png",
+        resources=resources,
+    )
+    admitted = stored_digest(runner, capture.capture_id)
+
+    set_preferences(runner, languages=("fra",), embedded_image_ocr=True)
+    install_revision(resources, tmp_path, "deu", "tessdata_fast-4.2.0")
+
+    results = process_capture_outbox(runner, catalogue_for=authority)
+
+    assert len(results) == 1
+    assert _profile_digest(runner, results[0]) == admitted
+    assert stored_digest(runner, capture.capture_id) == admitted
+
+
+def test_a_text_only_capture_also_carries_the_digest_it_was_admitted_under(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    """A capture that pins nothing still has an identity that can move.
+
+    Text-only resolves no resource and holds no pin, and its profile is as much
+    this build's as a recognising one's -- the adapter, the decoder build, the
+    limits. So the digest is stored for it too, and a build that resolves it
+    differently pauses it rather than settling it under a new identity.
+    """
+    authority, resources = managed_installation(
+        tmp_path / "inst-text-digest", tmp_path, "deu", "osd"
+    )
+    set_preferences(runner, mode=MODE_TEXT_ONLY, languages=("deu",))
+    capture = admit(
+        runner,
+        document_id="doc-text-digest",
+        content=image_bytes(),
+        media_type="image/png",
+        resources=resources,
+    )
+    assert frozen(runner, capture.capture_id).kind == RESOURCES_NONE
+    admitted = stored_digest(runner, capture.capture_id)
+
+    results = process_capture_outbox(runner, catalogue_for=authority)
+
+    assert len(results) == 1
+    assert _profile_digest(runner, results[0]) == admitted
+
+
+def test_an_unavailable_snapshot_carries_the_digest_of_the_condition_it_recorded(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    """The third kind of snapshot, and the one whose profile says so.
+
+    Nothing was installed at admission, so the capture recorded the condition and
+    pinned nothing; the profile it resolves to carries the requested order, no
+    model hash and `resourceState: unavailable`. That profile has a digest like
+    any other and the execution settles under exactly it, so the recorded
+    condition cannot be re-resolved into a different identity later.
+    """
+    _authority, resources = managed_installation(
+        tmp_path / "inst-unavailable-digest", tmp_path, "osd"
+    )
+    set_languages(runner, "deu")
+    capture = admit(
+        runner,
+        document_id="doc-unavailable-digest",
+        content=image_bytes(),
+        media_type="image/png",
+        resources=resources,
+    )
+    assert frozen(runner, capture.capture_id).kind == RESOURCES_UNAVAILABLE
+    admitted = stored_digest(runner, capture.capture_id)
+
+    results = process_capture_outbox(runner, catalogue_for=installation_catalogue(None))
+
+    assert [result.result_state for result in results] == ["failed"]
+    assert _profile_digest(runner, results[0]) == admitted
+    profile = executed_profile(runner, results[0])
+    assert profile["ocr"]["modelHashes"] == []
+    assert profile["ocr"]["resourceState"] == "unavailable"
+
+
+def test_identities_admitted_for_another_engine_revision_are_never_relabelled(
+    runner: ServiceRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An old snapshot is not served under the engine this build happens to invoke.
+
+    Asserted against the authority directly, because this is the narrower of two
+    refusals a worker would reach: the stored digest moves with the engine
+    revision too, so `_process_obligation` pauses on the digest before it ever
+    resolves resources. What this pins is that the resolution itself refuses as
+    well -- the profile would otherwise claim the current engine revision over
+    models admitted for another, which moves the capture's identity.
+    """
+    authority, resources = managed_installation(
+        tmp_path / "inst-engine", tmp_path, "deu", "osd"
+    )
+    set_languages(runner, "deu")
+    capture = admit(
+        runner,
+        document_id="doc-engine",
+        content=image_bytes(),
+        media_type="image/png",
+        resources=resources,
+    )
+    snapshot = frozen(runner, capture.capture_id)
+    assert snapshot.kind == RESOURCES_FROZEN
+    assert runner.workspace_id is not None
+
+    # The build moves on; the snapshot keeps the revision it was admitted for.
+    monkeypatch.setattr(processing_settings, "TESSERACT_REVISION", "9.9.9")
+
+    with pytest.raises(CaptureNotExecutable), authority.frozen_resources(
+        operation_id=capture_pin(runner.workspace_id, capture.capture_id),
+        admitted=snapshot,
+        requested=("deu",),
+    ):
+        raise AssertionError("a foreign engine revision was served")

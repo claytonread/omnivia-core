@@ -142,6 +142,16 @@ drops the rest. Nothing here guesses which pins are stale -- a durable record is
 precisely the thing this module cannot know the liveness of, so the component that
 wrote it says.
 
+**And the pin is read where it is relied on, never rewritten there.** Admission is
+the only normal writer: :meth:`ManagedOcrResources.assert_pinned` is what an
+execution calls, and it is read-only, so a pin that was lost -- to a crash, to a
+reclamation of an admission that in fact committed, to an edited state document --
+stops that operation with :data:`REFUSAL_UNPINNED` instead of being recreated
+beneath it. Recreating it would be the worst of both: the claim would say an
+admission established something it did not, and the bytes it names were removable
+for the whole window in which nothing claimed them, so the invocation that
+followed would be exactly the unheld invocation the pin exists to prevent.
+
 **And a hold that cannot be read is not a hold that is absent.** Discovering
 which selections are held is itself a read of the filesystem, and every one of
 those reads can fail. An absent ``leases/`` means no lease, because nothing but
@@ -313,6 +323,14 @@ REFUSAL_NOT_INSTALLED: Final = "ocr_resource_not_installed"
 #: alternative is an install silently destroying bytes an operator may want to
 #: look at.
 REFUSAL_DIVERGENT: Final = "ocr_resource_state_divergent"
+
+#: The bytes are installed, but the operation that was supposed to hold them does
+#: not: :meth:`ManagedOcrResources.assert_pinned` found no pin under that operation
+#: identifier, or one over a different selection. Deliberately not a resource
+#: condition -- nothing about the installation is wrong and installing something
+#: would not repair it -- and deliberately not repaired by writing the missing pin,
+#: because a claim this module invents is a claim nothing established.
+REFUSAL_UNPINNED: Final = "ocr_resource_not_pinned"
 
 #: Another process holds the coordination lock, so this operation would have had
 #: to act on a view someone else is already changing. Retrying later is the whole
@@ -1481,18 +1499,16 @@ class ManagedOcrResources:
 
         One operation's pins are exactly one selection, so a second call for the
         same ``operation_id`` *replaces* what the first claimed rather than adding
-        to it. Re-pinning the same selection therefore writes the same document
-        and is a no-op, which is what lets execution re-assert its own claim
-        before it runs without having to know whether admission's claim survived.
+        to it, and re-pinning the same selection writes the same document.
 
-        Refuses, rather than claiming what it cannot: an identity no state entry
-        names is :data:`REFUSAL_NOT_INSTALLED`, and one whose payload is missing
-        or the wrong length is :data:`REFUSAL_DIVERGENT`. The length is the same
-        cheap check :attr:`ManagedOcrResource.bytes_present` makes and
-        deliberately not a digest -- a pin is a claim on an identity the store
-        says is installed, and proving the bytes belongs to the resolution that
-        is about to hand them to the engine, which digests them twice. Pinning
-        every capture's models at admission would otherwise read them all.
+        It is the admission's writer and nothing else's. Execution deliberately
+        does not call this: :meth:`assert_pinned` checks the claim instead, so a
+        pin that was lost or never written stops the work rather than being
+        quietly recreated under it.
+
+        Refuses, rather than claiming what it cannot: :meth:`_claimable` names the
+        two ways, and neither is repaired here. Pinning every capture's models at
+        admission would otherwise read them all.
 
         Pins occupy no capacity and are never a reason to install anything, so
         this cannot exceed the managed cap. What it does is make the identities
@@ -1508,10 +1524,21 @@ class ManagedOcrResources:
                 )
             self._pin(operation_id, selection)
 
-    def _pin(
-        self, operation_id: str, selection: tuple[OcrResourceSetIdentity, ...]
+    def _claimable(
+        self,
+        state: OcrResourceStoreState,
+        selection: tuple[OcrResourceSetIdentity, ...],
     ) -> None:
-        state = self._store.load()
+        """Refuse unless every identity in `selection` is installed right now.
+
+        The one definition of "these bytes are still there to be claimed", used
+        both where a claim is written and where one is asserted, so a selection
+        that could be pinned cannot be a selection whose assertion reports
+        something else. The length is the same cheap check
+        :attr:`ManagedOcrResource.bytes_present` makes and deliberately not a
+        digest: proving the bytes belongs to the resolution that is about to hand
+        them to the engine, which digests them twice.
+        """
         for identity in selection:
             if identity not in state.entries:
                 raise OcrResourceLifecycleRefused(
@@ -1528,6 +1555,12 @@ class ManagedOcrResources:
                     f"managed OCR resources before pinning it",
                     identities=(identity,),
                 )
+
+    def _pin(
+        self, operation_id: str, selection: tuple[OcrResourceSetIdentity, ...]
+    ) -> None:
+        state = self._store.load()
+        self._claimable(state, selection)
         try:
             # The pin's own validation of the operation identifier: a token no
             # longer than a stable key's field, so an identifier assembled from a
@@ -1541,6 +1574,54 @@ class ManagedOcrResources:
         self._store.save(
             OcrResourceStoreState(entries=state.entries, pins=(*kept, *claimed))
         )
+
+    def assert_pinned(
+        self, operation_id: str, identities: Sequence[OcrResourceSetIdentity]
+    ) -> None:
+        """Confirm this operation already holds exactly these installed identities.
+
+        Read-only, and that is the whole of it: it writes nothing, creates
+        nothing, and repairs nothing. An operation that was admitted with a
+        durable claim either still has that claim or must not run, so the one
+        thing this must never do is make the claim true by writing it -- a pin
+        this module invented would say an admission established something it did
+        not, and the bytes it names were removable for the whole window in which
+        the pin was absent.
+
+        Two questions in the order their answers matter. Whether the bytes are
+        still installed is the resource question, and it is asked first because
+        it has a recovery an operator can act on: :data:`REFUSAL_NOT_INSTALLED`
+        is a language to install and :data:`REFUSAL_DIVERGENT` a model to
+        reinstall, whichever way the pin then looks. Whether the claim is there
+        is asked second, and :data:`REFUSAL_UNPINNED` is nobody's resource
+        condition -- the bytes are present and verifiable, and what is missing is
+        the record that they were held, which no installation repairs.
+
+        *Exactly* these identities, as a set: a claim over some of them, or over
+        them plus another, is a claim about a different selection and is refused
+        rather than read as this one. Order is not part of it, because a pin names
+        one identity per row and the state document sorts them.
+        """
+        selection = self._validated_selection(identities)
+        with self.coordinated(create=False) as coordinated:
+            if not coordinated:
+                raise OcrResourceLifecycleRefused(
+                    REFUSAL_NOT_INSTALLED,
+                    "this installation has no managed OCR resources to serve",
+                )
+            state = self._store.load()
+            self._claimable(state, selection)
+            held = frozenset(
+                pin.identity for pin in state.pins if pin.operation_id == operation_id
+            )
+            if held != frozenset(selection):
+                raise OcrResourceLifecycleRefused(
+                    REFUSAL_UNPINNED,
+                    f"{operation_id} does not durably hold the "
+                    f"{len(selection)} managed OCR resource identities it was "
+                    f"admitted against; it holds {len(held)}",
+                    identities=selection,
+                )
 
     def release(self, operation_id: str) -> None:
         """Drop every pin one operation holds, once it has reached a terminal state.
@@ -1629,22 +1710,23 @@ class ManagedOcrResources:
     def pinned_selection(
         self, operation_id: str, identities: Sequence[OcrResourceSetIdentity]
     ) -> Iterator[Path]:
-        """Re-assert one operation's claim, then project and hold what it claims.
+        """Check one operation's claim, then project and hold what it claims.
 
         The execution half of a durable pin: an operation that is about to invoke
-        the engine over the identities it was admitted against asserts the claim
-        again and only then resolves them. Both steps refuse rather than
+        the engine over the identities it was admitted against proves it still
+        holds them and only then resolves them. Both steps refuse rather than
         substitute, so an identity that is no longer installed, or whose bytes no
         longer match, stops the invocation instead of being quietly replaced by
         whatever model of that language is installed now.
 
-        Re-asserting is what closes the gap between a pin that should be there
-        and one that is. :meth:`pin` replaces this operation's claim with exactly
-        this selection, so a claim that survived is confirmed, a claim lost with
-        an interrupted admission is restored, and either way the engine is never
-        invoked over bytes nothing holds. It costs one state-document write per
-        obligation, which is the price of not having to trust that the pin
-        written hours earlier is still there.
+        The check is :meth:`assert_pinned` and is deliberately not a write. An
+        execution that re-pinned would also *recreate* a claim that had been lost
+        -- to a rolled-back admission's reclamation, to an edited state document
+        -- and go on to run as though nothing had happened, over bytes that were
+        removable for the whole window the claim was gone. The pin's absence is
+        evidence about this obligation, so it refuses with
+        :data:`REFUSAL_UNPINNED` and leaves the obligation for an operator rather
+        than writing the evidence away.
 
         The two coordinated blocks are deliberately *not* nested, and the hold is
         taken in the second one: coordination is released while the caller's
@@ -1654,7 +1736,7 @@ class ManagedOcrResources:
         between, because by then the durable pin already refuses it.
         """
         selection = self._validated_selection(identities)
-        self.pin(operation_id, selection)
+        self.assert_pinned(operation_id, selection)
         with self.leased_selection(selection) as directory:
             yield directory
 
@@ -1974,6 +2056,7 @@ __all__ = [
     "REFUSAL_PAYLOAD",
     "REFUSAL_PINNED",
     "REFUSAL_UNAVAILABLE",
+    "REFUSAL_UNPINNED",
     "REFUSAL_VERIFICATION",
     "ManagedOcrInstallation",
     "ManagedOcrInventory",
