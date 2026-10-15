@@ -2434,6 +2434,13 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 # evaluated, and a cache is still never checked against the
                 # expression that wrote it.
                 numeric = _xlsx_numeric(cell_type, value)
+                # The temporal reading of that same number, built once for the
+                # same reason and merged after it: the cell's own format says
+                # whether its serial names a point in time, so the ordinary
+                # record and a formula's saved cache read it alike. A formula's
+                # expression is not a stored number and keeps only the
+                # provenance it already had.
+                temporal = _xlsx_temporal(provenance, numeric, value)
                 if formula is not None:
                     segments.append(
                         ExtractedSegment(
@@ -2458,6 +2465,7 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                                     "freshness": "unknown",
                                     **provenance,
                                     **numeric,
+                                    **temporal,
                                 },
                                 visibility=visibility,
                             )
@@ -2479,6 +2487,7 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                                 "cellType": cell_type,
                                 **provenance,
                                 **numeric,
+                                **temporal,
                             },
                             visibility=visibility,
                         )
@@ -8343,6 +8352,45 @@ def _xlsx_temporal_serial(
         "decodedKind": kind,
         **anomaly,
     }
+
+
+def _xlsx_temporal(
+    provenance: dict[str, object], numeric: dict[str, object], raw: str | None
+) -> dict[str, object]:
+    """Read one cell's stored number as a time, where its format says to.
+
+    This is the gate between the two readings the cell already has: the number
+    decoded from its text and the format provenance resolved for it. All four
+    conditions must hold before a serial is decoded at all -- a finite number
+    was decoded, the file wrote the text it came from, the resolved format
+    classifies as a date, a time or a datetime, and the workbook's epoch is one
+    this reader counts from. Anything else is no temporal reading rather than a
+    guessed one, which is what keeps a string, a boolean, an error, a malformed
+    or non-finite value, an elapsed duration and every ambiguous, general or
+    numeric format exactly as they already were.
+
+    What comes back is merged after the numeric metadata, so a successful
+    decode moves the number to ``serial`` and replaces ``decoded`` with the
+    literal it names, while an anomaly-only result adds the anomaly and leaves
+    the numeric ``decoded`` in place.
+    """
+    decoded = numeric.get("decoded")
+    format_id = provenance["numberFormatId"]
+    code = provenance["numberFormatCode"]
+    system = provenance["dateSystem"]
+    if (
+        raw is None
+        or not isinstance(decoded, int | float)
+        or not isinstance(format_id, int)
+        or not (code is None or isinstance(code, str))
+        or not isinstance(system, str)
+        or system not in _XLSX_EPOCHS
+    ):
+        return {}
+    kind = _xlsx_temporal_kind(format_id, code)
+    if kind is None or kind not in _XLSX_TEMPORAL_KINDS:
+        return {}
+    return _xlsx_temporal_serial(raw, decoded, kind, system)
 
 
 def _xlsx_value(
