@@ -1776,6 +1776,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "workspace", ("memory:write",), "create", "evidence.write",
         "evidence", "DocumentCapture", "DOCUMENT_CAPTURE", False,
     ),
+    "document.history": FrozenOperation(
+        "workspace", ("memory:read",), "none", "evidence.read",
+        "evidence", "DocumentHistory", "POINT_READ", True,
+    ),
     "document.reprocess": FrozenOperation(
         "workspace", ("memory:write",), "create", "evidence.write",
         "evidence", "DocumentReprocess", "DOCUMENT_REPROCESS", False,

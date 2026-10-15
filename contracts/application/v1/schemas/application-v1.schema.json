@@ -503,8 +503,18 @@
     "DocumentCaptureInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureInput"},
     "DocumentCaptureResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureResult"},
     "DocumentExtractionBase": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentExtractionBase"},
+    "DocumentReprocessProfileSelection": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessProfileSelection"},
     "DocumentReprocessInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessInput"},
     "DocumentReprocessResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessResult"},
+    "DocumentHistoryInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentHistoryInput"},
+    "DocumentHistoryAction": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentHistoryAction"},
+    "DocumentReprocessProfileOption": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessProfileOption"},
+    "DocumentExtractionProfileSummary": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentExtractionProfileSummary"},
+    "DocumentCaptureHistoryEntry": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureHistoryEntry"},
+    "DocumentExtractionHistoryEntry": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentExtractionHistoryEntry"},
+    "DocumentSourceHeadState": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentSourceHeadState"},
+    "DocumentExtractionHeadState": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentExtractionHeadState"},
+    "DocumentHistoryResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentHistoryResult"},
     "GovernanceRationale": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/GovernanceRationale"
     },

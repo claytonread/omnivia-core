@@ -6,16 +6,22 @@ import base64
 from types import SimpleNamespace
 from typing import Any
 
-from omnivia_core_runtime.service.document_intake import expire_capture, read_retained_source
+from omnivia_core_runtime.service.document_intake import (
+    expire_capture,
+    read_retained_source,
+)
+from omnivia_core_runtime.service.document_processing import (
+    approved_reprocess_profiles,
+)
 from omnivia_core_runtime.service.document_transfer import (
     DocumentTransferRefused,
     stage_document_bytes,
 )
+from omnivia_core_runtime.service.handlers import document_capture as document_handlers
 from omnivia_core_runtime.service.handlers.document_capture import (
     DOCUMENT_CAPTURE_OPERATION,
     DOCUMENT_REPROCESS_OPERATION,
 )
-from omnivia_core_runtime.service.handlers import document_capture as document_handlers
 from omnivia_core_runtime.storage import document_intake as store
 from test_evidence_capture_vertical import (
     Served,
@@ -31,7 +37,10 @@ from omnivia_core.contracts.v1 import (
     SuccessResponseEnvelope,
     get_operation_metadata,
 )
-from omnivia_core.contracts.v1.generated import DocumentCaptureResult, DocumentReprocessResult
+from omnivia_core.contracts.v1.generated import (
+    DocumentCaptureResult,
+    DocumentReprocessResult,
+)
 
 pytest_plugins = ("test_evidence_capture_vertical",)
 
@@ -64,19 +73,35 @@ def request(*, request_id: str, content: bytes = b"native document body") -> Req
     )
 
 
+def approved_selection(media_type: str = "text/plain") -> dict[str, Any]:
+    """The one approved selection for this media type, as Core itself resolves it.
+
+    A reprocess names a reference, a revision *and* the immutable profile identity that pair
+    was reported to resolve to. All three come from `approved_reprocess_profiles`, because a
+    selection this build did not approve, or a digest it did not compute, is refused before
+    anything runs -- which is the point of the field.
+    """
+    option = approved_reprocess_profiles(media_type=media_type)[0]
+    return {
+        "profile_ref": option.profile_ref,
+        "revision": option.revision,
+        "expected_profile_digest": option.profile_digest,
+    }
+
+
 def reprocess_request(
     *,
     capture_id: str,
     request_id: str,
     key: str = "idem-document-reprocess-1",
-    revision: str = "revision-2",
+    profile: dict[str, Any] | None = None,
     expected: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> RequestEnvelope:
     entry = get_operation_metadata(DOCUMENT_REPROCESS_OPERATION)
     body: dict[str, Any] = {
         "capture_id": capture_id,
-        "processing_profile": {"profile_ref": "profile-reprocess", "revision": revision},
+        "processing_profile": approved_selection() if profile is None else profile,
         "expected_base": {} if expected is None else {"extraction_id": expected},
     }
     if extra:
@@ -253,9 +278,17 @@ def test_document_reprocess_publishes_retained_bytes_and_exact_replay(
     assert count(owned, "omnivia_extraction_results") == 1
 
 
-def test_document_reprocess_changed_profile_is_idempotency_conflict_without_extraction(
+def test_document_reprocess_changed_request_is_idempotency_conflict_without_extraction(
     owned: Served, monkeypatch: Any
 ) -> None:
+    """One key covers one request, and the frozen base is part of that request.
+
+    The varied field is the frozen extraction base rather than the profile revision: an
+    ordinary document has exactly one approved selection, so a changed revision is now
+    refused as an unapproved selection before the key is ever consulted. The property under
+    test is unchanged -- a key reused for a different request conflicts, and conflicts
+    without extracting anything a second time.
+    """
     dispatcher = build_dispatcher(owned, tag="document-reprocess-conflict")
     source = captured(dispatcher)
     first = dispatcher.dispatch(
@@ -271,12 +304,38 @@ def test_document_reprocess_changed_profile_is_idempotency_conflict_without_extr
         reprocess_request(
             capture_id=source.capture_id,
             request_id="req-reprocess-2",
-            revision="revision-3",
+            expected=DocumentReprocessResult.from_wire(
+                first.result
+            ).extraction_revision_id,
         )
     )
     assert isinstance(conflict, ErrorResponseEnvelope), conflict
     assert conflict.error.code == ERROR_CODE_IDEMPOTENCY_CONFLICT
     assert count(owned, "omnivia_extraction_revisions") == 1
+
+
+def test_document_reprocess_refuses_a_selection_it_never_approved(owned: Served) -> None:
+    """A reference, revision or digest Core did not report is refused before execution."""
+    dispatcher = build_dispatcher(owned, tag="document-reprocess-unapproved")
+    source = captured(dispatcher)
+    approved = approved_selection()
+    for profile in (
+        {**approved, "profile_ref": "profile-reprocess"},
+        {**approved, "revision": "revision-3"},
+        {**approved, "expected_profile_digest": "sha256:" + "0" * 64},
+    ):
+        response = dispatcher.dispatch(
+            reprocess_request(
+                capture_id=source.capture_id,
+                request_id="req-reprocess-unapproved",
+                key=f"idem-unapproved-{profile['profile_ref']}-{profile['revision']}"
+                f"-{profile['expected_profile_digest'][7:11]}",
+                profile=profile,
+            )
+        )
+        assert isinstance(response, ErrorResponseEnvelope), response
+        assert response.error.code == "conflict"
+    assert count(owned, "omnivia_extraction_revisions") == 0
 
 
 def test_document_reprocess_stale_expected_head_is_historical(owned: Served) -> None:
@@ -293,7 +352,6 @@ def test_document_reprocess_stale_expected_head_is_historical(owned: Served) -> 
             capture_id=source.capture_id,
             request_id="req-reprocess-stale",
             key="idem-document-reprocess-stale",
-            revision="revision-3",
             expected=None,
         )
     )

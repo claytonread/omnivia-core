@@ -221,7 +221,21 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 bulkCoordinator: environment.folderBulkCoordinator,
                 activityStore: environment.captureActivity,
                 observeActivity: { try environment.recordCaptureActivity() },
-                rootGroups: { environment.rootAccessGroups() }
+                rootGroups: { environment.rootAccessGroups() },
+                // The same authenticated application-operation client `document capture`
+                // is delivered through, for the two canonical document operations the
+                // management window reads and authorises. Absent when no client could be
+                // resolved, which the detail pane states.
+                historyTransport: resolvedExecutable.map {
+                    CLICoreDocumentHistoryTransport(
+                        executable: $0,
+                        installationState: configuration.installationState,
+                        workspaceRef: configuration.workspaceID
+                    )
+                },
+                locateOriginal: { [weak self] in
+                    self?.capturePanelController?.openOriginalChooser()
+                }
             )
             let companionBinding = CaptureDeliveryBinding.installedCompanion(
                 installationState: configuration.installationState,

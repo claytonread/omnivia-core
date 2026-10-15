@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -61,6 +61,14 @@ OCR_MEDIA_TYPES = frozenset(
 )
 #: The profile reference that selects the explicit faster Text-only profile.
 TEXT_ONLY_PROFILE_REF = "text-only"
+#: The profile reference that selects the product default: Text and local OCR where the
+#: media type qualifies for it, and direct text everywhere else. Named here, rather than
+#: left to whatever string a caller sends, because `document.history` reports the exact
+#: approved selections a reprocess may name and a caller must not synthesise its own.
+DEFAULT_PROFILE_REF = "document-default"
+#: The one approved revision of both references in this build. It is part of the profile's
+#: content address through `decoderBuild`, so changing it is a new profile identity.
+APPROVED_PROFILE_REVISION = "1"
 #: Bumped with the raster/OCR adapter's geometry, dedup and coverage contract.
 _ADAPTER_VERSION = "2"
 #: The limitation code a Needs OCR language outcome carries.
@@ -232,6 +240,68 @@ def portable_profile(
         "unknownFeaturePolicy": "partial",
         "completenessPolicy": "explicit_unit_coverage",
     }
+
+
+@dataclass(frozen=True, slots=True)
+class ReprocessProfileOption:
+    """One approved profile selection, resolved exactly once.
+
+    `settings` and `profile` are the *same* objects the reprocess handler executes and
+    records, not a second resolution of the same reference: the digest a caller is offered
+    is therefore the digest of the settings that ran, and a text-only selection cannot be
+    reported as text-only and then executed under the default. The digest is not a promise
+    about resources -- whether the pinned OCR models were served is recorded in the profile
+    itself and reported in the extraction's own outcome.
+    """
+
+    profile_ref: str
+    revision: str
+    processing_mode: str
+    profile_digest: str
+    settings: ExtractionSettings
+    profile: Mapping[str, Any]
+
+
+def approved_reprocess_profiles(*, media_type: str) -> tuple[ReprocessProfileOption, ...]:
+    """The profile selections Core will accept for a reprocess of this media type.
+
+    One option for an ordinary document, because Text-only and the default resolve to the
+    same processing for it and offering two identical choices would be a false choice. Two
+    for a media type that qualifies for local OCR, which is the product's stated pair: Text
+    and local OCR as the default, Text only as the explicit alternate. An unqualified format
+    has no option at all rather than one that would be refused.
+
+    This is the single place a reprocess profile is resolved. `document.history` reports what
+    it returns and `document.reprocess` executes what it returns, so neither can name a
+    selection the other would resolve differently.
+    """
+    references = (
+        (DEFAULT_PROFILE_REF, TEXT_ONLY_PROFILE_REF)
+        if media_type in OCR_MEDIA_TYPES
+        else (DEFAULT_PROFILE_REF,)
+    )
+    options: list[ReprocessProfileOption] = []
+    for reference in references:
+        settings = resolve_settings(media_type=media_type, profile_ref=reference)
+        profile = portable_profile(
+            media_type=media_type,
+            profile_ref=reference,
+            revision=APPROVED_PROFILE_REVISION,
+            settings=settings,
+        )
+        if profile["adapter"] == "unsupported":
+            return ()
+        options.append(
+            ReprocessProfileOption(
+                profile_ref=reference,
+                revision=APPROVED_PROFILE_REVISION,
+                processing_mode=str(profile["processingMode"]),
+                profile_digest=store.profile_digest(profile),
+                settings=settings,
+                profile=profile,
+            )
+        )
+    return tuple(options)
 
 
 def _profile_limits(

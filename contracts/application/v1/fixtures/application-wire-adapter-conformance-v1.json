@@ -1136,7 +1136,8 @@
       "request": {
         "input": {
           "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "processing_profile": {"profile_ref": "profile-2", "revision": "revision-1"},
+          "processing_profile": {"profile_ref": "profile-2", "revision": "revision-1",
+                                 "expected_profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
           "expected_base": {}
         },
         "metadata": {
@@ -1159,6 +1160,102 @@
           "publication_disposition": "promoted",
           "became_head": true,
           "output_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "description": "document.history reads one page of a document's two separate histories: one immutable source capture, which is the current source head and offers reprocessing, and one extraction revision, which is the current extraction head. A continuation token is issued because at least one history has more to read.",
+      "expect": {"branch": "success"},
+      "id": "document.history/primary-success",
+      "operation": "document.history",
+      "request": {
+        "input": {"document_id": "doc-1", "limit": 1},
+        "metadata": {
+          "request_id": "req-document.history-success",
+          "required_capabilities": [{"id": "evidence.read", "minimum_version": "1.0", "required": true}],
+          "scopes": ["memory:read"],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.history"
+      },
+      "response": {
+        "metadata": {"audit_reference": "audit-document.history", "request_id": "req-document.history-success"},
+        "result": {
+          "document_id": "doc-1",
+          "created_at": "2026-10-05T09:00:00Z",
+          "source": {
+            "source_state": "active",
+            "source_removal_generation": 1,
+            "current_capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "capture_head_sequence": 1,
+            "original_binding_state": "connected",
+            "updated_at": "2026-10-05T09:02:00Z"
+          },
+          "extraction": {
+            "current_extraction_id": "dext-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "extraction_head_ordinal": 1,
+            "retrieval_state": "retrievable",
+            "published_at": "2026-10-05T09:02:00Z"
+          },
+          "captures": [
+            {
+              "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "capture_sequence": 1,
+              "evidence_id": "evd-1",
+              "source_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "source_length_bytes": 11,
+              "media_type": "text/plain",
+              "requested_source_identity": "source-1",
+              "intent_kind": "new_capture",
+              "association_kind": "active_binding",
+              "capture_disposition": "head_eligible",
+              "disposition_reason": "eligible",
+              "is_current_source": true,
+              "retention_state": "retained",
+              "capture_retention_generation": 1,
+              "source_removal_generation": 1,
+              "requested_profile": {"profile_ref": "document-default", "revision": "1"},
+              "processing_state": "settled",
+              "captured_at": "2026-10-05T09:00:30Z",
+              "retention_changed_at": "2026-10-05T09:00:30Z",
+              "actions": [{"action": "reprocess_captured_copy", "available": true}],
+              "reprocess_profiles": [
+                {
+                  "profile_ref": "document-default",
+                  "revision": "1",
+                  "processing_mode": "text_only",
+                  "profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              ]
+            }
+          ],
+          "capture_count": 2,
+          "extractions": [
+            {
+              "extraction_revision_id": "dext-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "document_ordinal": 1,
+              "extraction_sequence": 1,
+              "profile": {
+                "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "decoder_build": "document-default:1:plain-text-2",
+                "processing_mode": "text_only",
+                "embedded_image_ocr": false,
+                "ocr_languages": []
+              },
+              "head_eligible": true,
+              "is_current_extraction": true,
+              "result_state": "succeeded",
+              "publication_disposition": "promoted",
+              "output_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "worker_build": "core-portable-text-1",
+              "admitted_at": "2026-10-05T09:01:00Z",
+              "completed_at": "2026-10-05T09:02:00Z"
+            }
+          ],
+          "extraction_count": 2,
+          "actions": [{"action": "refresh_original", "available": true}],
+          "page": {"continuation_token": "cursor-document.history-1"}
         }
       }
     },
@@ -3684,7 +3781,8 @@
       "request": {
         "input": {
           "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "processing_profile": {"profile_ref": "profile-2", "revision": "revision-1"},
+          "processing_profile": {"profile_ref": "profile-2", "revision": "revision-1",
+                                 "expected_profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
           "expected_base": {}
         },
         "metadata": {
@@ -3713,7 +3811,8 @@
       "request": {
         "input": {
           "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "processing_profile": {"profile_ref": "profile-2", "revision": "revision-2"},
+          "processing_profile": {"profile_ref": "profile-2", "revision": "revision-2",
+                                 "expected_profile_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
           "expected_base": {}
         },
         "metadata": {
@@ -5178,6 +5277,101 @@
         "metadata": {
           "audit_reference": "audit-workspace.create",
           "request_id": "req-workspace.create-conflict"
+        }
+      }
+    },
+    {
+      "description": "document.history second page: the request presents exactly the continuation token the first page issued. Both histories advance independently to their next member, the heads are restated unchanged, and no further token is issued because both are now exhausted. The second capture is historical-only and the second extraction is a reverse-order completion over it, so neither is current.",
+      "expect": {
+        "branch": "success",
+        "page_of": "document.history/primary-success"
+      },
+      "id": "document.history/page-2",
+      "operation": "document.history",
+      "request": {
+        "input": {"document_id": "doc-1", "limit": 1, "page": {"continuation_token": "cursor-document.history-1"}},
+        "metadata": {
+          "request_id": "req-document.history-page2",
+          "required_capabilities": [{"id": "evidence.read", "minimum_version": "1.0", "required": true}],
+          "scopes": ["memory:read"],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.history"
+      },
+      "response": {
+        "metadata": {"audit_reference": "audit-document.history-page2", "request_id": "req-document.history-page2"},
+        "result": {
+          "document_id": "doc-1",
+          "created_at": "2026-10-05T09:00:00Z",
+          "source": {
+            "source_state": "active",
+            "source_removal_generation": 1,
+            "current_capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "capture_head_sequence": 1,
+            "original_binding_state": "connected",
+            "updated_at": "2026-10-05T09:02:00Z"
+          },
+          "extraction": {
+            "current_extraction_id": "dext-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "extraction_head_ordinal": 1,
+            "retrieval_state": "retrievable",
+            "published_at": "2026-10-05T09:02:00Z"
+          },
+          "captures": [
+            {
+              "capture_id": "dcap-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "capture_sequence": 2,
+              "evidence_id": "evd-2",
+              "source_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "source_length_bytes": 12,
+              "media_type": "text/plain",
+              "requested_source_identity": "source-1",
+              "intent_kind": "refresh",
+              "association_kind": "active_binding",
+              "capture_disposition": "historical_only",
+              "disposition_reason": "stale_base",
+              "is_current_source": false,
+              "retention_state": "expired",
+              "capture_retention_generation": 2,
+              "source_removal_generation": 1,
+              "requested_profile": {"profile_ref": "document-default", "revision": "1"},
+              "processing_state": "settled",
+              "expected_base_capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "captured_at": "2026-10-05T09:03:00Z",
+              "retention_changed_at": "2026-10-05T09:05:00Z",
+              "actions": [
+                {"action": "reprocess_captured_copy", "available": false, "unavailable_reason": "source_not_retained"}
+              ],
+              "reprocess_profiles": []
+            }
+          ],
+          "capture_count": 2,
+          "extractions": [
+            {
+              "extraction_revision_id": "dext-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "capture_id": "dcap-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "document_ordinal": 2,
+              "extraction_sequence": 1,
+              "profile": {
+                "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "decoder_build": "document-default:1:plain-text-2",
+                "processing_mode": "text_only",
+                "embedded_image_ocr": false,
+                "ocr_languages": []
+              },
+              "head_eligible": false,
+              "is_current_extraction": false,
+              "result_state": "succeeded",
+              "publication_disposition": "historical_only",
+              "output_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "worker_build": "core-portable-text-1",
+              "admitted_at": "2026-10-05T09:03:30Z",
+              "completed_at": "2026-10-05T09:04:00Z"
+            }
+          ],
+          "extraction_count": 2,
+          "actions": [{"action": "refresh_original", "available": true}],
+          "page": {}
         }
       }
     },

@@ -546,7 +546,7 @@ final class FilesAndFoldersModelTests: XCTestCase {
         XCTAssertTrue(model().detail(for: nil).isEmpty)
     }
 
-    func testFileDetailStatesDurableFactsAndDefersCaptureHistoryToCore() {
+    func testFileDetailStatesDurableFactsAndSaysCoreHistoryIsNotReadYet() {
         let facts = model().detail(for: .file(file(lastObservedAt: nil)))
         let values = Dictionary(uniqueKeysWithValues: facts.map { ($0.label, $0.value) })
 
@@ -557,10 +557,13 @@ final class FilesAndFoldersModelTests: XCTestCase {
         XCTAssertEqual(values["Status"], "Watching")
         XCTAssertEqual(values["Last checked"], "2026-10-15T09:00:00Z")
         XCTAssertEqual(values["Last change seen"], "No change recorded yet")
+        // No read has been asked for, so the pane says that rather than printing a
+        // history it does not hold or implying there is none.
         XCTAssertEqual(
             values["Capture history"],
-            "Capture, extraction and profile history is available from Core after admission."
+            "Not read yet. Core holds the capture, extraction and profile history for this file."
         )
+        XCTAssertNil(values["Document in Core"], "nothing canonical is claimed before a read")
         XCTAssertNil(values["Already added files"], "nothing is retained while the file is watched")
     }
 
@@ -693,9 +696,11 @@ final class FilesAndFoldersModelTests: XCTestCase {
                 + "local receipts only: queued work and its recovery keys, original links, running "
                 + "watches, folder run manifests and anything already in Core are untouched."
         )
+        // An addition is not one document, so it carries no one document's history.
         XCTAssertEqual(
             values["Capture history"],
-            "Capture, extraction and profile history is available from Core after admission."
+            "Capture, extraction and profile history is held per file in Core. Select a "
+                + "file to see its own history."
         )
     }
 

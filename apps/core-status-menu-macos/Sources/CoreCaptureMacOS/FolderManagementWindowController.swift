@@ -22,6 +22,13 @@ public final class FolderManagementWindowController: NSWindowController,
     /// Retained root groups. Read through a closure so the window never holds the
     /// access store, which owns bookmarks this surface has no business seeing.
     private let rootGroups: () -> [NativeRootAccessDescriptor]
+    /// The authenticated application-operation transport for the two canonical document
+    /// operations this surface uses. `nil` when no client could be resolved, which is a
+    /// state the detail pane states rather than a reason to show nothing.
+    private let historyTransport: CoreDocumentHistoryTransport?
+    /// Re-choosing the original through the existing native access flow. The window owns
+    /// no picker and no bookmark: this is the one owner's own entry point, invoked.
+    private let locateOriginal: (() -> Void)?
     private let segments = NSSegmentedControl(
         labels: FilesAndFoldersSegment.allCases.map(\.title),
         trackingMode: .selectOne,
@@ -39,10 +46,21 @@ public final class FolderManagementWindowController: NSWindowController,
     private let checkButton = NSButton(title: "Check now", target: nil, action: nil)
     private let revealButton = NSButton(title: "Show recovery details", target: nil, action: nil)
     private let clearButton = NSButton(title: "Clear completed activity", target: nil, action: nil)
+    private let reprocessButton = NSButton(
+        title: "Reprocess captured copy…", target: nil, action: nil
+    )
+    private let locateButton = NSButton(title: "Locate…", target: nil, action: nil)
     private var segment = FilesAndFoldersSegment.files
     private var statusFilter = FilesAndFoldersStatusFilter.all
     private var model: FilesAndFoldersModel
     private var items: [FilesAndFoldersItem] = []
+    /// What Core last said about the selected document. Held here rather than rebuilt
+    /// from the stores, because no store holds it.
+    private var historyState = CoreHistoryState.notRequested
+    /// Which read the answer in hand belongs to. A selection change bumps it, so an
+    /// answer that arrives after the user moved on is dropped instead of rendered
+    /// against the wrong file.
+    private var historyGeneration = 0
 
     public init(
         workspaceName: String,
@@ -54,7 +72,9 @@ public final class FolderManagementWindowController: NSWindowController,
         bulkCoordinator: FolderBulkRunCoordinator,
         activityStore: CaptureActivityStore,
         observeActivity: @escaping () throws -> [CaptureActivityRecord],
-        rootGroups: @escaping () -> [NativeRootAccessDescriptor]
+        rootGroups: @escaping () -> [NativeRootAccessDescriptor],
+        historyTransport: CoreDocumentHistoryTransport? = nil,
+        locateOriginal: (() -> Void)? = nil
     ) {
         self.workspaceName = workspaceName
         self.folderStore = folderStore
@@ -66,6 +86,8 @@ public final class FolderManagementWindowController: NSWindowController,
         self.activityStore = activityStore
         self.observeActivity = observeActivity
         self.rootGroups = rootGroups
+        self.historyTransport = historyTransport
+        self.locateOriginal = locateOriginal
         model = FilesAndFoldersModel(workspaceName: workspaceName)
         super.init(window: nil)
     }
@@ -99,7 +121,10 @@ public final class FolderManagementWindowController: NSWindowController,
         return field
     }
 
-    public func tableViewSelectionDidChange(_ notification: Notification) { updateControls() }
+    public func tableViewSelectionDidChange(_ notification: Notification) {
+        loadCoreHistory()
+        updateControls()
+    }
 
     public func controlTextDidChange(_ notification: Notification) { applyFilters() }
 
@@ -166,6 +191,12 @@ public final class FolderManagementWindowController: NSWindowController,
         revealButton.action = #selector(showRecoveryDetails)
         clearButton.target = self
         clearButton.action = #selector(clearCompletedActivity)
+        reprocessButton.target = self
+        reprocessButton.action = #selector(reprocessCapturedCopy)
+        reprocessButton.setAccessibilityLabel("Reprocess captured copy")
+        locateButton.target = self
+        locateButton.action = #selector(locateOriginalFile)
+        locateButton.setAccessibilityLabel("Locate the original file")
 
         let searchSpacer = NSView()
         searchSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -176,8 +207,8 @@ public final class FolderManagementWindowController: NSWindowController,
         actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let actions = NSStackView(
             views: [
-                statusLabel, actionSpacer, clearButton, revealButton, checkButton,
-                pauseResumeButton, stopButton,
+                statusLabel, actionSpacer, clearButton, revealButton, locateButton,
+                reprocessButton, checkButton, pauseResumeButton, stopButton,
             ]
         )
         actions.orientation = .horizontal
@@ -238,7 +269,8 @@ public final class FolderManagementWindowController: NSWindowController,
             ),
             runs: runs,
             activity: activity,
-            activityAvailability: availability
+            activityAvailability: availability,
+            coreHistory: historyState
         )
         applyFilters()
     }
@@ -263,7 +295,8 @@ public final class FolderManagementWindowController: NSWindowController,
         let selected = self.selected
         let actions = FilesAndFoldersModel.actions(
             for: selected,
-            activity: model.activityAvailability
+            activity: model.activityAvailability,
+            coreHistory: historyState
         )
         pauseResumeButton.title = actions.pauseTitle
         pauseResumeButton.isEnabled = actions.pauseEnabled
@@ -274,6 +307,13 @@ public final class FolderManagementWindowController: NSWindowController,
         revealButton.isEnabled = actions.revealEnabled
         clearButton.isHidden = segment != .recentAdditions
         clearButton.isEnabled = model.canMutateActivity && model.clearableActivityCount > 0
+        // Both canonical controls belong to one file, so neither appears on a surface
+        // that is not listing files. Reprocess is enabled only when Core reported the
+        // action available; Locate only when the one owner of native access is wired.
+        reprocessButton.isHidden = segment != .files
+        reprocessButton.isEnabled = actions.reprocessEnabled
+        locateButton.isHidden = segment != .files
+        locateButton.isEnabled = locateOriginal != nil && isFileSelected
         detailView.string = model.detail(for: selected)
             .map { "\($0.label): \($0.value)" }
             .joined(separator: "\n")
@@ -408,6 +448,187 @@ public final class FolderManagementWindowController: NSWindowController,
         detailView.string = (model.detail(for: selected) + recovery)
             .map { "\($0.label): \($0.value)" }
             .joined(separator: "\n")
+    }
+
+    private var isFileSelected: Bool {
+        if case .file = selected { return true }
+        return false
+    }
+
+    /// Reads the selected file's canonical history from Core, off the main actor.
+    ///
+    /// One read per selection, and the answer is applied only if the selection has not
+    /// moved since. A failed read after a good one keeps the good one and marks it stale,
+    /// which is what lets the detail pane keep saying something true while saying that it
+    /// may have moved on. A selection that is not a linked file holds no history at all.
+    private func loadCoreHistory() {
+        guard case let .file(value)? = selected else {
+            historyGeneration += 1
+            historyState = .notRequested
+            model = model.replacingCoreHistory(.notRequested)
+            return
+        }
+        guard let historyTransport else {
+            historyState = CoreHistoryState(
+                documentID: value.linkedDocumentID, availability: .unavailable(.unavailable)
+            )
+            model = model.replacingCoreHistory(historyState)
+            return
+        }
+        historyGeneration += 1
+        let generation = historyGeneration
+        let documentID = value.linkedDocumentID
+        let previous = historyState.availability(for: documentID).history
+        historyState = CoreHistoryState(documentID: documentID, availability: .loading)
+        model = model.replacingCoreHistory(historyState)
+        let reader = CoreDocumentHistoryReader(transport: historyTransport)
+        Task.detached(priority: .userInitiated) {
+            let outcome = reader.read(documentID: documentID)
+            await MainActor.run { [weak self] in
+                guard let self, self.historyGeneration == generation else { return }
+                switch outcome {
+                case let .success(history):
+                    self.historyState = CoreHistoryState(
+                        documentID: documentID, availability: .current(history)
+                    )
+                case let .failure(error):
+                    self.historyState = CoreHistoryState(
+                        documentID: documentID,
+                        availability: previous.map { .stale($0) } ?? .unavailable(error)
+                    )
+                }
+                self.model = self.model.replacingCoreHistory(self.historyState)
+                self.updateControls()
+            }
+        }
+    }
+
+    /// Processes one retained capture again, with the exact profile Core approved for it.
+    ///
+    /// Everything sent comes out of the history read: the capture, the profile reference
+    /// and revision, and the extraction head the read observed. Nothing is composed here,
+    /// the original is never read, and the outcome shown is the receipt's own -- a
+    /// historical-only result says so rather than reading as a success.
+    @objc private func reprocessCapturedCopy() {
+        guard let selected, let historyTransport,
+              let chosen = chooseReprocess(selected, name: selected.displayName),
+              let intent = model.reprocessIntent(
+                  for: selected,
+                  captureID: chosen.captureID,
+                  profileDigest: chosen.profileDigest
+              )
+        else { return }
+        let alert = NSAlert()
+        alert.messageText = "Process this captured copy of \(selected.displayName) again?"
+        alert.informativeText = intent.confirmationMessage
+        alert.addButton(withTitle: "Reprocess captured copy")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        statusLabel.stringValue = "Processing the captured copy of \(selected.displayName)…"
+        reprocessButton.isEnabled = false
+        Task.detached(priority: .userInitiated) { [historyTransport, intent] in
+            let outcome = historyTransport.reprocess(
+                captureID: intent.capture.captureID,
+                profileRef: intent.profile.profileRef,
+                revision: intent.profile.revision,
+                expectedProfileDigest: intent.profile.profileDigest,
+                expectedBaseExtractionID: intent.expectedBaseExtractionID,
+                operationKey: intent.operationKey
+            )
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                let sentence: String
+                switch outcome {
+                case let .success(receipt):
+                    sentence = receipt.outcomeSentence
+                case let .failure(error):
+                    sentence = Self.reprocessRefusal(error)
+                }
+                // Re-read before reporting, so the detail pane and the sentence state the
+                // same facts and neither is this surface's own memory of them.
+                self.loadCoreHistory()
+                self.reload()
+                self.statusLabel.stringValue = sentence
+            }
+        }
+    }
+
+    /// What a refused or unanswered reprocess actually proves. A conflict is Core's
+    /// decision and says what changed; an unanswered call says the outcome is unknown and
+    /// offers no new key.
+    private static func reprocessRefusal(_ error: CoreHistoryError) -> String {
+        switch error {
+        case .unavailable:
+            return "Core could not be reached from this Mac. Nothing was processed."
+        case .timedOut:
+            return "Checking status… Core did not answer in time. This request is "
+                + "reconciled under its existing key; nothing new was sent."
+        case .unreadable:
+            return "Update required. Core answered with a document this version cannot read."
+        case let .refused(code):
+            switch code {
+            case "conflict":
+                return "Not processed. The captured copy or its source changed in Core "
+                    + "since this history was read. The history has been re-read."
+            case "idempotency_conflict":
+                return "Checking status… this request was already sent with different "
+                    + "details. Its original outcome stands."
+            case "not_found":
+                return "Not processed. Core holds no such captured copy."
+            case "workspace_not_granted", "authorization_denied", "authentication_required",
+                 "capability_not_granted":
+                return "Access to this workspace is required before a captured copy can be "
+                    + "processed again."
+            default:
+                return "Not processed. Core refused the request (\(code))."
+            }
+        }
+    }
+
+    /// The exact capture and the exact approved profile, chosen explicitly.
+    ///
+    /// One list of (captured copy, approved processing) pairs, built by the model so the
+    /// pairing is tested rather than assembled here. There is no free text and nothing
+    /// composed: every pair is a capture Core reports as retained and reprocessable with
+    /// one of that capture's own approved selections.
+    private func chooseReprocess(
+        _ item: FilesAndFoldersItem,
+        name: String
+    ) -> (captureID: String, profileDigest: String)? {
+        let pairs = model.reprocessOptions(for: item)
+        guard !pairs.isEmpty else { return nil }
+        let choice = NSPopUpButton()
+        choice.setAccessibilityLabel("Captured copy and processing to use")
+        choice.addItems(
+            withTitles: pairs.map {
+                FilesAndFoldersModel.reprocessOptionTitle(capture: $0.capture, profile: $0.profile)
+            }
+        )
+        let label = NSTextField(labelWithString: "Captured copy and processing")
+        let accessory = NSStackView(views: [label, choice])
+        accessory.orientation = .vertical
+        accessory.alignment = .leading
+        accessory.spacing = 4
+        accessory.frame = NSRect(x: 0, y: 0, width: 460, height: 56)
+        let alert = NSAlert()
+        alert.messageText = "Choose the captured copy of \(name) to process again"
+        alert.informativeText = "Only copies Core reports as retained are listed, each with "
+            + "the processing it approves for that copy. The original file is not read."
+        alert.accessoryView = accessory
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn,
+              pairs.indices.contains(choice.indexOfSelectedItem)
+        else { return nil }
+        let chosen = pairs[choice.indexOfSelectedItem]
+        return (chosen.capture.captureID, chosen.profile.profileDigest)
+    }
+
+    /// Hands the selection to the one owner of native access. This window chooses no
+    /// file, holds no bookmark and replaces no frozen key.
+    @objc private func locateOriginalFile() {
+        guard isFileSelected, let locateOriginal else { return }
+        locateOriginal()
     }
 
     @objc private func clearCompletedActivity() {

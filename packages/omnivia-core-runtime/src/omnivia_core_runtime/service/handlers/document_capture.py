@@ -1,12 +1,32 @@
-"""Governed application handlers for document capture and retained-copy reprocessing."""
+"""Governed application handlers for document capture, retained-copy reprocessing and the
+authoritative intake history the two of them write.
+
+`document_history` is the read, and it is at the bottom of this module with its own long
+comment. Two properties belong here because they are properties of the *family* rather than
+of any one handler:
+
+**The history is derived from the heads, never from the order it reads rows in.** A capture
+and an extraction are each append-only and each carry an ordering number, and neither number
+says which member is current. `omnivia_document_heads` says, in two independent columns that
+move through two independent writes, and the read copies those columns rather than inferring
+them. A page of history that implied currentness from its last row would contradict the one
+transaction that decides it.
+
+**What a caller may reprocess is Core's statement, not the caller's.** The retained capture,
+the approved profile selections and the frozen extraction base all come back from the read,
+and `document.reprocess` accepts exactly those. Nothing in the read invites a caller to
+compose a profile of its own, and nothing in the mutation accepts one.
+"""
 
 from __future__ import annotations
 
 import base64
 import binascii
 import hashlib
-from collections.abc import Mapping
+import sqlite3
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -15,15 +35,31 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     ERROR_CODE_INTERNAL_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
+    ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     ContractDecodeError,
+    ContractSemanticError,
+    decode_document_history_input,
     idempotency_equivalence,
+    validate_document_history_result,
 )
 from omnivia_core.contracts.v1.generated import (
+    DocumentCaptureHistoryEntry,
     DocumentCaptureInput,
     DocumentCaptureResult,
+    DocumentExtractionHeadState,
+    DocumentExtractionHistoryEntry,
+    DocumentExtractionProfileSummary,
+    DocumentHistoryAction,
+    DocumentHistoryInput,
+    DocumentHistoryResult,
+    DocumentProcessingProfileInput,
     DocumentReprocessInput,
+    DocumentReprocessProfileOption,
     DocumentReprocessResult,
+    DocumentSourceHeadState,
+    PageMetadata,
+    is_evidence_checksum,
 )
 from omnivia_core_runtime.ownership.fencing import read_guard
 from omnivia_core_runtime.ownership.identity import Clock
@@ -47,7 +83,9 @@ from omnivia_core_runtime.service.document_intake import (
     complete_reprocess_in_transaction,
     read_retained_source,
 )
-from omnivia_core_runtime.service.document_processing import portable_profile
+from omnivia_core_runtime.service.document_processing import (
+    approved_reprocess_profiles,
+)
 from omnivia_core_runtime.service.document_transfer import (
     DocumentTransferRefused,
     read_staged_document,
@@ -57,10 +95,16 @@ from omnivia_core_runtime.service.mutation import (
     execute_mutation,
     issue_mutation_grant,
 )
+from omnivia_core_runtime.service.ocr_resources import OcrSelectionInvalid
 from omnivia_core_runtime.service.operations import (
     AuditedOperationResult,
     OperationContext,
     OperationError,
+)
+from omnivia_core_runtime.service.pagination import (
+    PROCESS_CONTINUATION_TOKENS,
+    ContinuationTokenCodec,
+    token_digest,
 )
 from omnivia_core_runtime.service.source_capture import (
     SourceCaptureRefused,
@@ -73,6 +117,7 @@ from omnivia_core_runtime.workspace.blob_publication import BlobPublicationRefus
 
 DOCUMENT_CAPTURE_OPERATION: Final = "document.capture"
 DOCUMENT_REPROCESS_OPERATION: Final = "document.reprocess"
+DOCUMENT_HISTORY_OPERATION: Final = "document.history"
 _MAX_INLINE_BYTES: Final = 3 * 1024 * 1024 - 64 * 1024
 _MAX_ENCODED_BYTES: Final = 4 * ((_MAX_INLINE_BYTES + 2) // 3)
 _MESSAGE_INVALID: Final = "the request payload is not a valid document capture"
@@ -101,9 +146,46 @@ _REPROCESS_TOP_LEVEL_KEYS: Final = frozenset(
     {"capture_id", "processing_profile", "expected_base"}
 )
 _REPROCESS_NESTED_KEYS: Final[dict[str, frozenset[str]]] = {
-    "processing_profile": frozenset({"profile_ref", "revision"}),
+    "processing_profile": frozenset(
+        {"profile_ref", "revision", "expected_profile_digest"}
+    ),
     "expected_base": frozenset({"extraction_id"}),
 }
+#: Why a reprocess was refused before anything ran. Kept distinct from the decode refusal
+#: because this one is about the *world* having moved, which is what a caller re-reads
+#: history to recover from, rather than about a payload it could correct on its own.
+_MESSAGE_REPROCESS_SUBSTITUTED: Final = (
+    "the selected processing profile is no longer the approved profile this capture "
+    "resolves to"
+)
+_MESSAGE_HISTORY_INVALID: Final = "the request payload is not a valid document history read"
+_MESSAGE_HISTORY_NOT_FOUND: Final = "this workspace holds no such document"
+_MESSAGE_HISTORY_UNREADABLE: Final = "this document's recorded intake history is not readable"
+_HISTORY_TOP_LEVEL_KEYS: Final = frozenset({"document_id", "limit", "page"})
+_HISTORY_NESTED_KEYS: Final[dict[str, frozenset[str]]] = {
+    "page": frozenset({"continuation_token"})
+}
+_MESSAGE_HISTORY_MOVED: Final = (
+    "this document changed since the page this continuation was issued for; read the "
+    "history again from its first page"
+)
+#: The continuation token's exact key set: the request binding, the state snapshot, the two
+#: independent offsets and the version. A token carrying anything else, or missing one of
+#: these, is refused.
+_HISTORY_TOKEN_KEYS: Final = frozenset({"b", "c", "s", "v", "x"})
+#: The page a request that names no limit gets. Well under the catalogue's `max_page_size`,
+#: and stated here so a page's size is always a decision this build made.
+DEFAULT_HISTORY_PAGE_LIMIT: Final = 20
+#: The ceiling this handler serves, whatever larger limit the catalogue's schema admits.
+MAX_HISTORY_PAGE_LIMIT: Final = store.MAX_HISTORY_PAGE
+_ACTION_REPROCESS: Final = "reprocess_captured_copy"
+_ACTION_REFRESH: Final = "refresh_original"
+_REASON_SOURCE_REMOVED: Final = "source_removed"
+_REASON_NOT_RETAINED: Final = "source_not_retained"
+_REASON_NOT_QUALIFIED: Final = "format_not_qualified"
+_REASON_NO_BINDING: Final = "no_original_binding"
+_REASON_DISCONNECTED: Final = "original_disconnected"
+_PROCESSING_NOT_QUEUED: Final = "not_queued"
 
 
 def _closed(payload: object) -> bool:
@@ -124,6 +206,142 @@ def _closed_reprocess(payload: object) -> bool:
         if value is not None and (not isinstance(value, Mapping) or not set(value) <= allowed):
             return False
     return True
+
+
+def _closed_history(payload: object) -> bool:
+    """Whether the wire payload carries only this v1 read's declared fields.
+
+    The generated decoder is deliberately tolerant of an unknown field so a newer peer's
+    additive release still decodes. This read is not: an unrecognised selector is a request
+    this build cannot answer as asked, and answering it under the fields it does recognise
+    would silently serve a different read.
+    """
+    if not isinstance(payload, Mapping) or not set(payload) <= _HISTORY_TOP_LEVEL_KEYS:
+        return False
+    for name, allowed in _HISTORY_NESTED_KEYS.items():
+        value = payload.get(name)
+        if value is not None and (not isinstance(value, Mapping) or not set(value) <= allowed):
+            return False
+    return True
+
+
+def _history_snapshot(
+    *,
+    document: store.StoredDocument,
+    head: store.DocumentHead,
+    binding_state: str,
+    published_at_us: int | None,
+    captures: Sequence[tuple[Any, ...]],
+    extractions: Sequence[tuple[Any, ...]],
+) -> str:
+    """One digest of every fact that can change what a page of this history says.
+
+    Not a cheap proxy for one. The two heads decide every `is_current_*` flag; the two
+    fingerprint lists decide the totals, each capture's retention and processing state and
+    each revision's outcome and disposition; the binding aggregate and the published
+    projection decide the document-level action and the retrieval state. A caller continuing
+    under this digest is continuing within one state of all of them, and a page that would
+    have been answered from any other state is refused instead.
+
+    `fencing_generation` is in here as well: it is not read into the result, but a document
+    whose ownership generation advanced was written to by another owner, which is not a state
+    a half-read history should be stitched across.
+
+    What this digest does *not* do is hold the statements of one page to one instant. The
+    service connection is shared with the instance's other threads and `BEGIN IMMEDIATE`
+    does not nest, so a read handler here does not open a transaction of its own -- the same
+    posture every other read in this build takes. The digest therefore binds a *series* of
+    pages: a document that moved while one page was being assembled refuses the next
+    continuation rather than extending the series, so the caller re-reads instead of
+    stitching.
+    """
+    return token_digest(
+        {
+            "binding_state": binding_state,
+            "captures": [list(row) for row in captures],
+            "created_at_us": document.created_at_us,
+            "extractions": [list(row) for row in extractions],
+            "fencing_generation": document.fencing_generation,
+            "head": [
+                head.source_state,
+                head.source_removal_generation,
+                head.current_capture_id,
+                head.capture_head_sequence,
+                head.current_extraction_id,
+                head.extraction_head_ordinal,
+                head.updated_at_us,
+            ],
+            "published_at_us": published_at_us,
+            "snapshot_version": 1,
+        }
+    )
+
+
+def _history_offsets(
+    supplied: Mapping[str, Any] | None, snapshot: str
+) -> tuple[int, int]:
+    """The two offsets this page starts at, once the snapshot it was issued for is known.
+
+    A first page starts at zero. A continuation starts where its token says, but only if the
+    document is still in the state that token was issued from: otherwise the pages either
+    side of the change would describe a history no instant ever held, and the caller is told
+    to read again from the beginning rather than handed a composite.
+    """
+    if supplied is None:
+        return 0, 0
+    if supplied.get("s") != snapshot:
+        raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_HISTORY_MOVED)
+    return int(supplied["c"]), int(supplied["x"])
+
+
+def _timestamp(value: int) -> str:
+    """One durable microsecond instant as the contract's RFC 3339 `Timestamp`."""
+    moment = datetime.fromtimestamp(value / 1_000_000, tz=UTC)
+    milliseconds = moment.microsecond // 1000
+    if milliseconds == 0:
+        return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{milliseconds:03d}Z"
+
+
+def _action(name: str, reason: str | None) -> DocumentHistoryAction:
+    """One action, available exactly when nothing makes it unavailable."""
+    return DocumentHistoryAction(
+        action=name, available=reason is None, unavailable_reason=reason
+    )
+
+
+def _reprocess_refusal(
+    *, source_active: bool, retained: bool, options: Sequence[Any]
+) -> str | None:
+    """Why this capture cannot be reprocessed, or `None` when it can.
+
+    Order is the order Core itself refuses in: a removed logical source stops every capture
+    under it, a capture whose bytes are gone cannot be read again whatever the source says,
+    and a format with no qualified adapter has no profile to run.
+    """
+    if not source_active:
+        return _REASON_SOURCE_REMOVED
+    if not retained:
+        return _REASON_NOT_RETAINED
+    if not options:
+        return _REASON_NOT_QUALIFIED
+    return None
+
+
+def _refresh_refusal(*, source_active: bool, binding_state: str) -> str | None:
+    """Why this document's original cannot be read again, or `None` when it can.
+
+    Core's half of the answer only. It says whether a live route is recorded and the source
+    is not removed; whether the native owner can still resolve that route is the owner's own
+    check, which no canonical row can make on its behalf.
+    """
+    if not source_active:
+        return _REASON_SOURCE_REMOVED
+    if binding_state == store.BINDING_NONE:
+        return _REASON_NO_BINDING
+    if binding_state == store.BINDING_DISCONNECTED:
+        return _REASON_DISCONNECTED
+    return None
 
 
 def _decode_content(value: str) -> bytes:
@@ -202,6 +420,393 @@ class DocumentCaptureHandlers:
     binding: ServiceBinding
     clock: Clock
     allocate_identifier: IdentifierAllocator
+    token_codec: ContinuationTokenCodec = PROCESS_CONTINUATION_TOKENS
+
+    def document_history(self, context: OperationContext) -> Mapping[str, Any]:
+        """Answer one `document.history` for one document of the authorized workspace.
+
+        Read-only in the literal sense: no fenced transaction, no mutation grant, no
+        identifier allocation and no write of any kind. The live guard is read once, for the
+        same reason the other reads in this build read it -- an instance that is not serving
+        authoritative storage must refuse rather than answer from nothing.
+
+        **The workspace is the authorized one.** `context.workspace_id` comes from the
+        session grant and the endpoint binding after the authorization seam refused every
+        workspace they disagreed on. `DocumentHistoryInput` carries no workspace field by
+        contract, and none is read: a document of another workspace is `not_found` here, not
+        a denial that would confirm it exists.
+
+        **Pagination is two independent offsets under one token.** The two histories are
+        separate facts with separate lengths, so one cursor would have to interleave them and
+        the result would stop being two histories. The token carries both offsets, a digest
+        of the request it was issued for, and a digest of the *state* the first page was
+        answered from, so it cannot be replayed against another document, another principal,
+        another workspace, another page size, or a document that has moved since.
+
+        **A continuation series is one snapshot or it is refused.** Append-only tables make
+        the offsets stable, but that is not enough on its own: the heads, the totals, each
+        capture's retention and processing obligation, each revision's result and
+        disposition, the binding aggregate and the published projection can all move between
+        two pages, and every one of them changes what a page says -- which member is current,
+        which action is offered, which profiles are approved. Pages stitched across two such
+        states would be a history no instant ever held. `_history_snapshot` digests every one
+        of those facts for the whole document, the token carries that digest, and a
+        continuation whose recomputed digest differs is refused so the caller re-reads from
+        the first page rather than assembling a composite.
+
+        **Nothing derived is inferred.** `is_current_source` and `is_current_extraction` are
+        read from `omnivia_document_heads`; the per-capture reprocess availability is the
+        same retention and source-state check `complete_reprocess_in_transaction` makes; and
+        the offered profiles come from the same `approved_reprocess_profiles` call the
+        reprocess handler resolves its execution from, so the digest a caller is shown is
+        the digest of the settings that will run.
+
+        **What is not here.** No source bytes, no blob path, no original filesystem path,
+        bookmark or owner reference, no credential, no consent or bulk lineage, no caller
+        display claim, no operation key or request digest, and no profile body. The original
+        routes reach the result only as one aggregate word.
+        """
+        request = self._decode_history(context)
+        connection = getattr(self.service, "connection", None)
+        guard = None if connection is None else read_guard(connection)
+        if connection is None or guard is None:
+            raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
+        workspace_id = context.workspace_id
+
+        limit = (
+            DEFAULT_HISTORY_PAGE_LIMIT
+            if request.limit is None
+            else min(int(request.limit), MAX_HISTORY_PAGE_LIMIT)
+        )
+        binding_digest = token_digest(
+            {
+                "binding_version": 1,
+                "document": request.document_id,
+                "limit": limit,
+                "operation": DOCUMENT_HISTORY_OPERATION,
+                "principal": context.principal,
+                "workspace": workspace_id,
+            }
+        )
+        supplied = self._history_token(request, binding_digest)
+
+        document = store.read_document(
+            connection, workspace_id=workspace_id, document_id=request.document_id
+        )
+        if document is None:
+            raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_HISTORY_NOT_FOUND)
+        head = store.read_head(
+            connection, workspace_id=workspace_id, document_id=request.document_id
+        )
+        if head is None:
+            # Every document gets its head row in the same transaction that creates it, so
+            # one without a head is a broken invariant rather than a caller's mistake.
+            raise OperationError(
+                ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_HISTORY_UNREADABLE
+            )
+
+        unreadable = False
+        try:
+            capture_facts = store.capture_fingerprints(
+                connection, workspace_id=workspace_id, document_id=request.document_id
+            )
+            extraction_facts = store.extraction_fingerprints(
+                connection, workspace_id=workspace_id, document_id=request.document_id
+            )
+            binding_state = store.document_binding_state(
+                connection, workspace_id=workspace_id, document_id=request.document_id
+            )
+            published_at_us = store.projection_published_at(
+                connection, workspace_id=workspace_id, document_id=request.document_id
+            )
+            # Both totals come from the same read the snapshot digest was taken over, so a
+            # page's totals and its continuation can never describe two different instants.
+            capture_count = len(capture_facts)
+            extraction_count = len(extraction_facts)
+            snapshot = _history_snapshot(
+                document=document,
+                head=head,
+                binding_state=binding_state,
+                published_at_us=published_at_us,
+                captures=capture_facts,
+                extractions=extraction_facts,
+            )
+            capture_offset, extraction_offset = _history_offsets(supplied, snapshot)
+            if capture_offset > capture_count or extraction_offset > extraction_count:
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_HISTORY_INVALID)
+            capture_rows = store.read_capture_history(
+                connection,
+                workspace_id=workspace_id,
+                document_id=request.document_id,
+                offset=capture_offset,
+                limit=limit,
+            )
+            extraction_rows = store.read_extraction_history(
+                connection,
+                workspace_id=workspace_id,
+                document_id=request.document_id,
+                offset=extraction_offset,
+                limit=limit,
+            )
+            extractions = tuple(
+                self._extraction_entry(connection, row, head=head, workspace_id=workspace_id)
+                for row in extraction_rows
+            )
+            source_active = head.source_state == store.SOURCE_ACTIVE
+            captures = tuple(
+                self._capture_entry(row, head=head, source_active=source_active)
+                for row in capture_rows
+            )
+        except (store.DocumentIntakeInvalid, OcrSelectionInvalid, sqlite3.Error):
+            # Contained rather than chained: a storage refusal names rows, digests and
+            # generations, and this refusal becomes a wire error a caller reads. An invalid
+            # recognition selection lands here too: there is then no approved profile to
+            # report, and reporting one anyway is exactly the substitution this read refuses.
+            unreadable = True
+        if unreadable:
+            raise OperationError(
+                ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_HISTORY_UNREADABLE
+            )
+
+        next_capture = capture_offset + len(captures)
+        next_extraction = extraction_offset + len(extractions)
+        continuation = None
+        if next_capture < capture_count or next_extraction < extraction_count:
+            continuation = self.token_codec.encode(
+                {
+                    "b": binding_digest,
+                    "c": next_capture,
+                    "s": snapshot,
+                    "v": 1,
+                    "x": next_extraction,
+                }
+            )
+        result = DocumentHistoryResult(
+            document_id=document.document_id,
+            created_at=_timestamp(document.created_at_us),
+            source=DocumentSourceHeadState(
+                source_state=head.source_state,
+                source_removal_generation=head.source_removal_generation,
+                current_capture_id=head.current_capture_id,
+                capture_head_sequence=head.capture_head_sequence,
+                original_binding_state=binding_state,
+                updated_at=_timestamp(head.updated_at_us),
+            ),
+            extraction=DocumentExtractionHeadState(
+                current_extraction_id=head.current_extraction_id,
+                extraction_head_ordinal=head.extraction_head_ordinal,
+                retrieval_state=(
+                    "retrievable" if published_at_us is not None else "none"
+                ),
+                published_at=(
+                    None if published_at_us is None else _timestamp(published_at_us)
+                ),
+            ),
+            captures=captures,
+            capture_count=capture_count,
+            extractions=extractions,
+            extraction_count=extraction_count,
+            actions=(
+                _action(
+                    _ACTION_REFRESH,
+                    _refresh_refusal(
+                        source_active=source_active, binding_state=binding_state
+                    ),
+                ),
+            ),
+            page=PageMetadata(continuation_token=continuation),
+        )
+        # The result is held to the request and to itself before it is served. A build that
+        # assembled an untruthful page -- a current flag that disagrees with the head, an
+        # unavailable action without its reason, a pending extraction claiming an outcome --
+        # refuses here rather than publishing that claim to a caller.
+        invalid = False
+        try:
+            validate_document_history_result(result, request, document.document_id)
+        except ContractSemanticError:
+            invalid = True
+        if invalid:
+            raise OperationError(
+                ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_HISTORY_UNREADABLE
+            )
+        return result.to_wire()
+
+    def _decode_history(self, context: OperationContext) -> DocumentHistoryInput:
+        """The payload as a validated history input, or a refusal that quotes nothing.
+
+        Sentinel-then-raise, this directory's convention and load-bearing here: both
+        contract errors quote the payload they rejected, and raising inside the `except`
+        would leave that text reachable through `__context__` on the error a caller catches.
+        """
+        decoded: DocumentHistoryInput | None
+        try:
+            if not _closed_history(context.request.input):
+                raise DocumentIntakeRefused("the history request is not closed")
+            decoded = decode_document_history_input(context.request.input)
+        except (ContractDecodeError, ContractSemanticError, DocumentIntakeRefused):
+            decoded = None
+        if decoded is None:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_HISTORY_INVALID)
+        return decoded
+
+    def _history_token(
+        self, request: DocumentHistoryInput, binding_digest: str
+    ) -> Mapping[str, Any] | None:
+        """This request's continuation token, verified against the request alone.
+
+        Split from the snapshot check on purpose. Everything checkable without touching
+        storage is checked here: the signature, the exact key set, the version, the request
+        binding and the two offsets. A token moved to another document, another principal,
+        another workspace or another page size is therefore refused *before* any row is
+        read, so a tampered token cannot be used to find out whether another document
+        exists. The snapshot is the one part that needs the document's current state, and
+        `_history_offsets` applies it once that state has been read.
+
+        Every failure is the same `invalid_request`: which check a tampered token failed is
+        not a caller's business.
+        """
+        if request.page is None:
+            return None
+        token = request.page.continuation_token
+        assert token is not None
+        supplied: Mapping[str, Any] | None = None
+        try:
+            supplied = self.token_codec.decode(token)
+        except (ValueError, ContractDecodeError, ContractSemanticError):
+            supplied = None
+        if (
+            supplied is None
+            or set(supplied) != _HISTORY_TOKEN_KEYS
+            or supplied.get("v") != 1
+            or supplied.get("b") != binding_digest
+            or not isinstance(supplied.get("s"), str)
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_HISTORY_INVALID)
+        for key in ("c", "x"):
+            value = supplied.get(key)
+            if type(value) is not int or value < 0:
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_HISTORY_INVALID)
+        if (supplied["c"], supplied["x"]) == (0, 0):
+            # This server never issues a token for the first page, so one that asks to
+            # continue from the beginning was not issued by it.
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_HISTORY_INVALID)
+        return supplied
+
+    def _capture_entry(
+        self,
+        row: store.CaptureHistoryRow,
+        *,
+        head: store.DocumentHead,
+        source_active: bool,
+    ) -> DocumentCaptureHistoryEntry:
+        """One capture as history, with the actions Core will actually accept for it."""
+        capture = row.capture
+        retained = row.retention_state == store.RETENTION_RETAINED
+        options = (
+            approved_reprocess_profiles(media_type=capture.media_type)
+            if source_active and retained
+            else ()
+        )
+        refusal = _reprocess_refusal(
+            source_active=source_active, retained=retained, options=options
+        )
+        return DocumentCaptureHistoryEntry(
+            capture_id=capture.capture_id,
+            capture_sequence=capture.capture_sequence,
+            evidence_id=capture.evidence_id,
+            source_digest=capture.source_digest,
+            source_length_bytes=capture.source_length_bytes,
+            media_type=capture.media_type,
+            requested_source_identity=capture.requested_source_identity,
+            intent_kind=capture.intent_kind,
+            association_kind=capture.association_kind,
+            capture_disposition=capture.disposition,
+            disposition_reason=capture.disposition_reason,
+            # From the head's own column. Not the greatest sequence, not the latest
+            # `created_at_us`, and not this page's last row.
+            is_current_source=capture.capture_id == head.current_capture_id,
+            retention_state=row.retention_state,
+            capture_retention_generation=row.capture_retention_generation,
+            source_removal_generation=capture.source_removal_generation,
+            requested_profile=DocumentProcessingProfileInput(
+                profile_ref=capture.processing_profile_ref,
+                revision=capture.processing_profile_revision,
+            ),
+            processing_state=(
+                _PROCESSING_NOT_QUEUED if row.outbox_state is None else row.outbox_state
+            ),
+            expected_base_capture_id=capture.expected_base_capture_id,
+            captured_at=_timestamp(capture.created_at_us),
+            retention_changed_at=_timestamp(row.retention_changed_at_us),
+            actions=(_action(_ACTION_REPROCESS, refusal),),
+            reprocess_profiles=tuple(
+                DocumentReprocessProfileOption(
+                    profile_ref=option.profile_ref,
+                    revision=option.revision,
+                    processing_mode=option.processing_mode,
+                    profile_digest=option.profile_digest,
+                )
+                for option in (options if refusal is None else ())
+            ),
+        )
+
+    def _extraction_entry(
+        self,
+        connection: Any,
+        row: store.ExtractionHistoryRow,
+        *,
+        head: store.DocumentHead,
+        workspace_id: str,
+    ) -> DocumentExtractionHistoryEntry:
+        """One extraction revision as history, with the profile facts a reader can act on.
+
+        `read_profile` recomputes the stored profile's own digest and canonicality, so a
+        summary is built only from a profile that still verifies as the one this revision
+        names. A row that does not verify raises, and the caller turns that into one refusal
+        rather than a page that quietly describes a different profile.
+        """
+        revision = row.revision
+        result = row.result
+        profile = store.read_profile(
+            connection, workspace_id=workspace_id, digest=revision.profile_digest
+        )
+        if profile is None:
+            raise store.DocumentIntakeInvalid(
+                "an extraction revision names a profile this workspace does not hold"
+            )
+        ocr = profile.get("ocr")
+        languages = ocr.get("languages", ()) if isinstance(ocr, Mapping) else ()
+        return DocumentExtractionHistoryEntry(
+            extraction_revision_id=revision.extraction_revision_id,
+            capture_id=revision.capture_id,
+            document_ordinal=revision.document_ordinal,
+            extraction_sequence=revision.extraction_sequence,
+            profile=DocumentExtractionProfileSummary(
+                digest=revision.profile_digest,
+                decoder_build=str(profile["decoderBuild"]),
+                processing_mode=str(profile["processingMode"]),
+                embedded_image_ocr=bool(profile["embeddedImageOcr"]),
+                ocr_languages=tuple(str(language) for language in languages),
+            ),
+            expected_base_extraction_id=revision.expected_base_extraction_id,
+            head_eligible=bool(revision.head_eligible),
+            # From the head's own column, which moves only through its own write and only
+            # to a promoted revision. An older capture's new extraction never reads as
+            # current merely because it finished last.
+            is_current_extraction=(
+                revision.extraction_revision_id == head.current_extraction_id
+            ),
+            result_state=None if result is None else result.result_state,
+            publication_disposition=(
+                None if result is None else result.publication_disposition
+            ),
+            output_digest=None if result is None else result.output_digest,
+            worker_build=None if result is None else result.worker_build,
+            admitted_at=_timestamp(revision.created_at_us),
+            completed_at=(
+                None if result is None else _timestamp(result.completed_at_us)
+            ),
+        )
 
     def document_capture(self, context: OperationContext) -> AuditedOperationResult:
         request: DocumentCaptureInput | None = None
@@ -347,6 +952,12 @@ class DocumentCaptureHandlers:
             _identifier(request.capture_id, "capture id")
             _identifier(request.processing_profile.profile_ref, "profile reference")
             _identifier(request.processing_profile.revision, "profile revision")
+            if not is_evidence_checksum(
+                request.processing_profile.expected_profile_digest
+            ):
+                raise DocumentIntakeRefused(
+                    "expected profile digest is outside the accepted checksum domain"
+                )
             expected = request.expected_base.extraction_id
             if expected is not None:
                 _identifier(expected, "expected extraction")
@@ -393,11 +1004,37 @@ class DocumentCaptureHandlers:
         )
         if capture is None:
             raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_REPROCESS_INVALID)
-        profile = portable_profile(
-            media_type=capture.media_type,
-            profile_ref=request.processing_profile.profile_ref,
-            revision=request.processing_profile.revision,
+        # The selection is resolved against the one function `document.history` offered it
+        # from, so the reference, the revision, the resolved settings and the digest are a
+        # single decision rather than four that could disagree. A selection this build does
+        # not approve for this capture's media type, and a selection whose profile identity
+        # has moved since it was offered, are the same refusal: Core will not quietly run a
+        # different profile beneath a request that named this one.
+        selection = request.processing_profile
+        try:
+            options = approved_reprocess_profiles(media_type=capture.media_type)
+        except OcrSelectionInvalid as error:
+            # The installation's recognition selection is not a selection at all, so there
+            # is no approved profile to resolve. Refusing is the only honest answer: the
+            # text-only profile would run, and that is not what was asked for.
+            raise OperationError(
+                ERROR_CODE_CONFLICT, _MESSAGE_REPROCESS_SUBSTITUTED
+            ) from error
+        approved = next(
+            (
+                option
+                for option in options
+                if option.profile_ref == selection.profile_ref
+                and option.revision == selection.revision
+            ),
+            None,
         )
+        if (
+            approved is None
+            or approved.profile_digest != selection.expected_profile_digest
+        ):
+            raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_REPROCESS_SUBSTITUTED)
+        profile = dict(approved.profile)
         expected = request.expected_base.extraction_id
         existing = store.read_revision_by_key(
             connection,
@@ -412,6 +1049,10 @@ class DocumentCaptureHandlers:
                     content,
                     media_type=capture.media_type,
                     capture_id=capture.capture_id,
+                    # The same settings the recorded profile was built from. Without this
+                    # the worker would resolve its own default, and a text-only selection
+                    # would execute Text and local OCR under a text-only receipt.
+                    settings=approved.settings,
                 )
             except DocumentExtractionUnsupported:
                 extraction_outcome = _terminal_outcome("unsupported", "format_not_qualified")

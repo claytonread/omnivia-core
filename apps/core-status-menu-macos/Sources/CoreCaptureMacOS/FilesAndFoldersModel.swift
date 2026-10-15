@@ -150,6 +150,103 @@ public struct DetailFact: Equatable, Sendable {
     }
 }
 
+/// What this surface currently knows about one document's canonical Core history.
+///
+/// Four states and no fifth: a read that has not happened, one in flight, an answer, and
+/// a last answer that a later read could not refresh. `stale` exists so a detail pane can
+/// keep showing what Core last said while saying plainly that it may have moved on --
+/// which is a different claim from `current`, and neither is `unavailable`.
+public enum CoreHistoryAvailability: Equatable, Sendable {
+    case notRequested
+    case loading
+    case current(CoreDocumentHistory)
+    case stale(CoreDocumentHistory)
+    case unavailable(CoreHistoryError)
+
+    /// The history itself, when there is one to show at all.
+    public var history: CoreDocumentHistory? {
+        switch self {
+        case let .current(value), let .stale(value): value
+        case .notRequested, .loading, .unavailable: nil
+        }
+    }
+
+    /// Whether what is shown is the answer to the most recent read.
+    public var isCurrent: Bool {
+        if case .current = self { return true }
+        return false
+    }
+}
+
+/// One document's history and the document it is the history of.
+///
+/// The pairing is load-bearing: a detail pane holding the previous selection's history
+/// must not render it against this one, so the document is compared before anything is
+/// shown rather than assumed to match.
+public struct CoreHistoryState: Equatable, Sendable {
+    public let documentID: String?
+    public let availability: CoreHistoryAvailability
+
+    public static let notRequested = CoreHistoryState(
+        documentID: nil, availability: .notRequested
+    )
+
+    public init(documentID: String?, availability: CoreHistoryAvailability) {
+        self.documentID = documentID
+        self.availability = availability
+    }
+
+    /// The history of exactly `documentID`, or nothing.
+    public func availability(for documentID: String) -> CoreHistoryAvailability {
+        self.documentID == documentID ? availability : .notRequested
+    }
+}
+
+/// One confirmed reprocess, built only from values Core reported.
+///
+/// Every field here came out of a `document.history` answer: the capture Core reports as
+/// retained and reprocessable, a profile selection from that capture's own approved list,
+/// and the extraction head exactly as the read observed it -- including its absence. The
+/// operation key is derived from those four, so a repeat of the same confirmed intent
+/// replays rather than admitting a second extraction.
+public struct CoreReprocessIntent: Equatable, Sendable {
+    public let documentID: String
+    public let capture: CoreSourceCapture
+    public let profile: CoreReprocessProfile
+    public let expectedBaseExtractionID: String?
+    public let operationKey: String
+
+    public init(
+        documentID: String,
+        capture: CoreSourceCapture,
+        profile: CoreReprocessProfile,
+        expectedBaseExtractionID: String?
+    ) {
+        self.documentID = documentID
+        self.capture = capture
+        self.profile = profile
+        self.expectedBaseExtractionID = expectedBaseExtractionID
+        operationKey = CoreDocumentHistoryReader.reprocessOperationKey(
+            captureID: capture.captureID,
+            profileRef: profile.profileRef,
+            revision: profile.revision,
+            expectedProfileDigest: profile.profileDigest,
+            expectedBaseExtractionID: expectedBaseExtractionID
+        )
+    }
+
+    /// The confirmation sentence. It names the exact capture and the exact profile, says
+    /// that the original is not read, and says what the result can and cannot replace.
+    public var confirmationMessage: String {
+        "Capture \(capture.captureSequence) of this file, taken \(capture.capturedAt), will be "
+            + "processed again with \(profile.title) (profile \(profile.profileRef) "
+            + "revision \(profile.revision)).\n\nThe original file is not read and no new "
+            + "capture is made. The current searchable version stays available until the new "
+            + "result is verified, and if a newer version becomes current first this result is "
+            + "kept as history only."
+    }
+}
+
 /// The enablement and titles of the row actions, for exactly one selection.
 public struct FilesAndFoldersActions: Equatable, Sendable {
     public let pauseTitle: String
@@ -160,6 +257,10 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
     /// Reveals the frozen recovery identity of an item whose outcome is
     /// unknown. It reads durable state and allocates nothing.
     public let revealEnabled: Bool
+    /// Reprocesses one retained capture Core reports as reprocessable. Enabled only when
+    /// Core has reported that action available for a capture of the selected document --
+    /// never from a stale read, and never as a guess about what Core would accept.
+    public let reprocessEnabled: Bool
 
     public init(
         pauseTitle: String,
@@ -167,7 +268,8 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
         stopTitle: String,
         stopEnabled: Bool,
         checkEnabled: Bool,
-        revealEnabled: Bool = false
+        revealEnabled: Bool = false,
+        reprocessEnabled: Bool = false
     ) {
         self.pauseTitle = pauseTitle
         self.pauseEnabled = pauseEnabled
@@ -175,6 +277,7 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
         self.stopEnabled = stopEnabled
         self.checkEnabled = checkEnabled
         self.revealEnabled = revealEnabled
+        self.reprocessEnabled = reprocessEnabled
     }
 }
 
@@ -371,6 +474,10 @@ public struct FilesAndFoldersModel: Sendable {
     /// Whether that activity is the current durable record or the last thing
     /// this process managed to read.
     public let activityAvailability: CaptureActivityAvailability
+    /// The canonical Core history of at most one document: the selected one. It is kept
+    /// in its own field, never folded into `activity`, because the two answer different
+    /// questions and one of them is not this Mac's to answer.
+    public let coreHistory: CoreHistoryState
 
     public init(
         workspaceName: String,
@@ -379,7 +486,8 @@ public struct FilesAndFoldersModel: Sendable {
         retainedRoots: [RetainedRootGroup] = [],
         runs: [FolderBulkRun] = [],
         activity: [CaptureActivityRecord] = [],
-        activityAvailability: CaptureActivityAvailability = .current
+        activityAvailability: CaptureActivityAvailability = .current,
+        coreHistory: CoreHistoryState = .notRequested
     ) {
         self.workspaceName = workspaceName
         self.files = files
@@ -388,7 +496,96 @@ public struct FilesAndFoldersModel: Sendable {
         self.runs = runs
         self.activity = activity
         self.activityAvailability = activityAvailability
+        self.coreHistory = coreHistory
         activityGroups = Self.activityGroups(records: activity, runs: runs)
+    }
+
+    /// The same projection with one new canonical history, so the window can advance a
+    /// read without re-reading every durable store behind it.
+    public func replacingCoreHistory(_ history: CoreHistoryState) -> FilesAndFoldersModel {
+        FilesAndFoldersModel(
+            workspaceName: workspaceName,
+            files: files,
+            folders: folders,
+            retainedRoots: retainedRoots,
+            runs: runs,
+            activity: activity,
+            activityAvailability: activityAvailability,
+            coreHistory: history
+        )
+    }
+
+    /// The canonical history to show for one selection, or `.notRequested` when the
+    /// selection is not a linked file or the held history belongs to another document.
+    public func coreHistoryAvailability(
+        for item: FilesAndFoldersItem?
+    ) -> CoreHistoryAvailability {
+        guard case let .file(value)? = item else { return .notRequested }
+        return coreHistory.availability(for: value.linkedDocumentID)
+    }
+
+    /// The retained captures the reprocess control may offer for one selection, newest
+    /// first, and the extraction head to bind against.
+    ///
+    /// Empty from a stale or failed read, on purpose: reprocessing binds an exact
+    /// extraction head, and a head this surface is no longer sure of is not one to bind.
+    public func reprocessChoices(
+        for item: FilesAndFoldersItem?
+    ) -> (captures: [CoreSourceCapture], expectedBaseExtractionID: String?)? {
+        guard case let .file(value)? = item,
+              case let .current(history) = coreHistory.availability(for: value.linkedDocumentID),
+              !history.reprocessableCaptures.isEmpty
+        else { return nil }
+        return (history.reprocessableCaptures, history.extraction.currentExtractionID)
+    }
+
+    /// Every (retained capture, approved processing) pair the reprocess control may offer
+    /// for one selection, newest capture first.
+    ///
+    /// One flat list rather than two dependent choices: two can disagree, and a profile
+    /// chosen against a capture the user changed afterwards would send a selection other
+    /// than the one its label described. Every pair here is a capture Core reports as
+    /// reprocessable paired with one of that capture's own approved selections.
+    public func reprocessOptions(
+        for item: FilesAndFoldersItem?
+    ) -> [(capture: CoreSourceCapture, profile: CoreReprocessProfile)] {
+        guard let choices = reprocessChoices(for: item) else { return [] }
+        return choices.captures.flatMap { capture in
+            capture.reprocessProfiles.map { (capture: capture, profile: $0) }
+        }
+    }
+
+    /// How one pair reads in the chooser: the exact capture, whether it is still the
+    /// current source, and the exact approved processing.
+    public static func reprocessOptionTitle(
+        capture: CoreSourceCapture,
+        profile: CoreReprocessProfile
+    ) -> String {
+        "Capture \(capture.captureSequence) · \(capture.capturedAt) · "
+            + (capture.isCurrentSource ? "current source" : "historical only")
+            + " · \(profile.title) · profile \(profile.profileRef) "
+            + "revision \(profile.revision)"
+    }
+
+    /// One confirmed reprocess for a selection, or `nil` when Core reports none available.
+    public func reprocessIntent(
+        for item: FilesAndFoldersItem?,
+        captureID: String,
+        profileDigest: String
+    ) -> CoreReprocessIntent? {
+        guard case let .file(value)? = item,
+              let choices = reprocessChoices(for: item),
+              let capture = choices.captures.first(where: { $0.captureID == captureID }),
+              let profile = capture.reprocessProfiles.first(where: {
+                  $0.profileDigest == profileDigest
+              })
+        else { return nil }
+        return CoreReprocessIntent(
+            documentID: value.linkedDocumentID,
+            capture: capture,
+            profile: profile,
+            expectedBaseExtractionID: choices.expectedBaseExtractionID
+        )
     }
 
     /// Activity that clearing would remove. Unresolved work is never counted:
@@ -567,7 +764,8 @@ public struct FilesAndFoldersModel: Sendable {
     /// The file and folder rows come from their own stores and are unaffected.
     public static func actions(
         for item: FilesAndFoldersItem?,
-        activity: CaptureActivityAvailability = .current
+        activity: CaptureActivityAvailability = .current,
+        coreHistory: CoreHistoryState = .notRequested
     ) -> FilesAndFoldersActions {
         guard let item else {
             return FilesAndFoldersActions(
@@ -580,7 +778,20 @@ public struct FilesAndFoldersModel: Sendable {
         }
         switch item {
         case let .file(value):
-            return subscriptionActions(value.state, resumable: [.paused, .needsAccess])
+            // Reprocessing is offered only when a *current* read of this exact document
+            // reported at least one capture it will accept. Not from a stale read, not
+            // from a failed one, and not inferred from the file's local state.
+            let reprocessable: Bool
+            if case let .current(history) = coreHistory.availability(for: value.linkedDocumentID) {
+                reprocessable = !history.reprocessableCaptures.isEmpty
+            } else {
+                reprocessable = false
+            }
+            return subscriptionActions(
+                value.state,
+                resumable: [.paused, .needsAccess],
+                reprocessEnabled: reprocessable
+            )
         case let .folder(value):
             return subscriptionActions(
                 value.state,
@@ -644,7 +855,8 @@ public struct FilesAndFoldersModel: Sendable {
 
     private static func subscriptionActions(
         _ state: FolderSubscriptionState,
-        resumable: Set<FolderSubscriptionState>
+        resumable: Set<FolderSubscriptionState>,
+        reprocessEnabled: Bool = false
     ) -> FilesAndFoldersActions {
         FilesAndFoldersActions(
             pauseTitle: state == .reviewRequired
@@ -653,7 +865,10 @@ public struct FilesAndFoldersModel: Sendable {
             pauseEnabled: [.active, .paused, .needsAccess, .reviewRequired].contains(state),
             stopTitle: "Stop updating",
             stopEnabled: state != .stopped,
-            checkEnabled: state == .active
+            checkEnabled: state == .active,
+            // Reprocessing works on bytes Core already holds, so a stopped watch or a
+            // missing original does not bar it. What bars it is Core saying so.
+            reprocessEnabled: reprocessEnabled
         )
     }
 
@@ -679,8 +894,321 @@ public struct FilesAndFoldersModel: Sendable {
         if value.state == .stopped {
             facts.append(Self.retainedLinksFact)
         }
-        facts.append(Self.coreHistoryFact)
+        facts += coreHistoryFacts(documentID: value.linkedDocumentID)
         return facts
+    }
+
+    /// The canonical Core history of one document, as rows, or the exact reason there is
+    /// none to show.
+    ///
+    /// Two separately labelled histories, because they are two histories: the immutable
+    /// source captures Core admitted, and the extraction revisions over them. Each row
+    /// says whether it is current or historical-only from Core's own head statement, and
+    /// no row is promoted to "current" by being last. Local delivery activity is named as
+    /// a separate record and is never listed among these rows.
+    private func coreHistoryFacts(documentID: String) -> [DetailFact] {
+        switch coreHistory.availability(for: documentID) {
+        case .notRequested:
+            return [Self.coreHistoryNotReadFact]
+        case .loading:
+            return [
+                DetailFact(
+                    label: "Capture history",
+                    value: "Reading the capture and extraction history from Core."
+                ),
+            ]
+        case let .unavailable(error):
+            return [
+                DetailFact(label: "Capture history", value: Self.historyUnavailable(error)),
+            ]
+        case let .current(history):
+            return Self.historyFacts(history, stale: false)
+        case let .stale(history):
+            return Self.historyFacts(history, stale: true)
+        }
+    }
+
+    private static func historyFacts(
+        _ history: CoreDocumentHistory,
+        stale: Bool
+    ) -> [DetailFact] {
+        var facts: [DetailFact] = []
+        if stale {
+            facts.append(
+                DetailFact(
+                    label: "Capture history",
+                    value: "These are the last facts Core reported and may be out of date. "
+                        + "Reprocessing is unavailable until they can be read again."
+                )
+            )
+        }
+        facts += [
+            DetailFact(label: "Document in Core", value: history.documentID),
+            DetailFact(label: "First added to Core", value: history.createdAt),
+            DetailFact(label: "Source state", value: sourceStateText(history)),
+            DetailFact(label: "Original access", value: bindingText(history)),
+            DetailFact(label: "Current searchable version", value: retrievalText(history)),
+            DetailFact(
+                label: "Source capture history",
+                value: countText(
+                    shown: history.captures.count,
+                    total: history.captureCount,
+                    complete: history.complete,
+                    noun: "source capture"
+                )
+            ),
+        ]
+        facts += history.captures
+            .sorted { $0.captureSequence > $1.captureSequence }
+            .map { capture in
+                DetailFact(
+                    label: "Source capture \(capture.captureSequence)",
+                    value: captureText(capture)
+                )
+            }
+        facts.append(
+            DetailFact(
+                label: "Extraction and profile history",
+                value: countText(
+                    shown: history.extractions.count,
+                    total: history.extractionCount,
+                    complete: history.complete,
+                    noun: "extraction"
+                )
+            )
+        )
+        facts += history.extractions
+            .sorted { $0.documentOrdinal > $1.documentOrdinal }
+            .map { revision in
+                DetailFact(
+                    label: "Extraction \(revision.documentOrdinal)",
+                    value: extractionText(revision)
+                )
+            }
+        facts.append(Self.localActivityBoundaryFact)
+        return facts
+    }
+
+    private static func sourceStateText(_ history: CoreDocumentHistory) -> String {
+        switch history.source.sourceState {
+        case .removed:
+            return "Removed in Core. No new capture of this source is admitted and no "
+                + "captured copy can be processed again."
+        case .active:
+            guard let current = history.source.currentCaptureID else {
+                return "Active, with no successful capture yet."
+            }
+            return "Active. Capture \(history.source.captureHeadSequence) is the current "
+                + "source (\(current))."
+        }
+    }
+
+    private static func bindingText(_ history: CoreDocumentHistory) -> String {
+        let reason = history.refreshUnavailableReason
+        switch history.source.originalBindingState {
+        case .connected:
+            return reason == nil
+                ? "Connected on this device. The original can be read again."
+                : "Connected, but Core reports that reading the original again is "
+                    + "unavailable: \(unavailableText(reason))."
+        case .disconnected:
+            return "Disconnected. The original is not read again; captured copies in Core "
+                + "are kept and can still be inspected. Use Locate to choose the file again."
+        case .noRoute:
+            return "None recorded. This document has no original link on this device, so "
+                + "only its captured copies are available. Use Locate to link an original."
+        }
+    }
+
+    private static func retrievalText(_ history: CoreDocumentHistory) -> String {
+        switch history.extraction.retrievalState {
+        case .notRetrievable:
+            return "None published. No extraction of this document is currently searchable."
+        case .retrievable:
+            guard let current = history.extraction.currentExtractionID,
+                  let published = history.extraction.publishedAt
+            else { return "Published." }
+            let revision = history.extractions.first { $0.extractionRevisionID == current }
+            let profile = revision.map {
+                " · \(profileText($0.profile))"
+            } ?? ""
+            return "Extraction \(history.extraction.extractionHeadOrdinal), published "
+                + "\(published)\(profile)"
+        }
+    }
+
+    private static func countText(
+        shown: Int,
+        total: UInt64,
+        complete: Bool,
+        noun: String
+    ) -> String {
+        let plural = total == 1 ? noun : "\(noun)s"
+        guard !complete || UInt64(shown) != total else { return "\(total) \(plural)" }
+        return "Showing \(shown) of \(total) \(plural)"
+    }
+
+    /// One capture's proven facts. Current versus historical-only is Core's head
+    /// statement; retention is this capture's own and moves independently of it.
+    private static func captureText(_ capture: CoreSourceCapture) -> String {
+        var parts = [capture.isCurrentSource ? "Current source" : "Historical only"]
+        if !capture.isCurrentSource {
+            parts.append("reason \(dispositionText(capture.dispositionReason))")
+        }
+        parts.append(contentsOf: [
+            "taken \(capture.capturedAt)",
+            intentText(capture.intentKind),
+            retentionText(capture),
+            processingText(capture.processingState),
+            "\(capture.mediaType) · \(capture.sourceLengthBytes) bytes",
+            "requested \(capture.requestedProfile.profileRef) "
+                + "revision \(capture.requestedProfile.revision)",
+            "capture \(capture.captureID)",
+        ])
+        if let reason = capture.reprocessUnavailableReason {
+            parts.append("reprocessing unavailable: \(unavailableText(reason))")
+        } else if capture.reprocessAvailable {
+            parts.append(
+                "can be processed again as "
+                    + capture.reprocessProfiles.map(\.title).joined(separator: " or ")
+            )
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// One extraction revision's proven facts. A revision with no terminal result is
+    /// pending, which is not a failure; a revision that is not the head is historical
+    /// only, whatever order it completed in.
+    private static func extractionText(_ revision: CoreExtractionRevision) -> String {
+        var parts: [String] = []
+        if revision.isPending {
+            parts.append("Processing")
+        } else {
+            parts.append(resultText(revision))
+        }
+        parts.append(contentsOf: [
+            "capture \(revision.captureID)",
+            profileText(revision.profile),
+            "admitted \(revision.admittedAt)",
+        ])
+        if let completed = revision.completedAt { parts.append("completed \(completed)") }
+        if let build = revision.workerBuild { parts.append("worker \(build)") }
+        parts.append("extraction \(revision.extractionRevisionID)")
+        return parts.joined(separator: " · ")
+    }
+
+    private static func resultText(_ revision: CoreExtractionRevision) -> String {
+        let outcome: String
+        switch revision.resultState {
+        case .succeeded: outcome = "Searchable text extracted"
+        case .partial: outcome = "Added with limitations"
+        case .unsupported: outcome = "Not supported by this processing"
+        case .failed: outcome = "Processing failed"
+        case nil: outcome = "Processing"
+        }
+        if revision.isCurrentExtraction { return "\(outcome) · current searchable version" }
+        switch revision.publicationDisposition {
+        case .promoted: return outcome
+        case .superseded: return "\(outcome) · historical only, a newer extraction is current"
+        case .historicalOnly:
+            return "\(outcome) · historical only, it was based on a version that is no "
+                + "longer current"
+        case .fencedRemoval:
+            return "\(outcome) · historical only, the source was removed before publication"
+        case .fencedRetention:
+            return "\(outcome) · historical only, the captured copy stopped being retained "
+                + "before publication"
+        case .notPublished: return "\(outcome) · nothing was replaced"
+        case nil: return outcome
+        }
+    }
+
+    private static func profileText(_ profile: CoreProfileSummary) -> String {
+        var parts = [
+            profile.processingMode == .textOnly ? "Text only" : "Text and local OCR",
+        ]
+        if !profile.ocrLanguages.isEmpty {
+            parts.append("languages \(profile.ocrLanguages.joined(separator: ", "))")
+        }
+        if profile.embeddedImageOcr { parts.append("embedded images examined") }
+        parts.append("profile \(profile.decoderBuild)")
+        parts.append("digest \(profile.digest)")
+        return parts.joined(separator: " · ")
+    }
+
+    private static func dispositionText(_ reason: CoreDispositionReason) -> String {
+        switch reason {
+        case .eligible: "eligible"
+        case .removedSource: "the source was removed"
+        case .supersededGeneration: "its original link had been superseded"
+        case .disconnectedGeneration: "its original link had been disconnected"
+        case .creationConflict: "the document already existed"
+        case .staleBase: "a newer capture was already current"
+        }
+    }
+
+    private static func intentText(_ intent: CoreIntentKind) -> String {
+        switch intent {
+        case .newCapture: "first addition"
+        case .refresh: "manual refresh"
+        case .automaticCapture: "automatic update"
+        case .folderCapture: "folder addition"
+        }
+    }
+
+    private static func retentionText(_ capture: CoreSourceCapture) -> String {
+        let changed = capture.retentionChangedAt.map { " since \($0)" } ?? ""
+        switch capture.retentionState {
+        case .retained: return "copy retained"
+        case .expired: return "copy no longer available\(changed)"
+        case .deleted: return "copy deleted\(changed)"
+        }
+    }
+
+    private static func processingText(_ state: CoreProcessingState) -> String {
+        switch state {
+        case .pending: "processing pending in Core"
+        case .settled: "processing settled"
+        case .notQueued: "no processing recorded"
+        }
+    }
+
+    private static func unavailableText(_ reason: CoreHistoryUnavailableReason?) -> String {
+        switch reason {
+        case .sourceRemoved: "this source was removed in Core"
+        case .sourceNotRetained: "the captured copy is no longer retained"
+        case .formatNotQualified: "this file type has no supported processing"
+        case .noOriginalBinding: "no original is linked on this device"
+        case .originalDisconnected: "the original link was disconnected"
+        case nil: "Core reported no reason"
+        }
+    }
+
+    private static func historyUnavailable(_ error: CoreHistoryError) -> String {
+        switch error {
+        case .unavailable:
+            return "Unavailable. Core could not be reached from this Mac, so no capture or "
+                + "extraction history is shown. Nothing already in Core is affected."
+        case .timedOut:
+            return "Unavailable. Core did not answer in time. Nothing already in Core is "
+                + "affected."
+        case .unreadable:
+            return "Unavailable. Core answered with a document this version cannot read. "
+                + "Update required before capture history can be shown."
+        case let .refused(code):
+            switch code {
+            case "not_found":
+                return "No history. This workspace holds no document for this file yet."
+            case "workspace_not_granted", "authorization_denied", "authentication_required",
+                 "capability_not_granted":
+                return "Access to this workspace is required before its capture history can "
+                    + "be shown."
+            case "incompatible_version", "upgrade_required":
+                return "Update required before capture history can be shown."
+            default:
+                return "Unavailable. Core refused the request (\(code))."
+            }
+        }
     }
 
     private func folderDetail(_ value: FolderSubscription) -> [DetailFact] {
@@ -832,11 +1360,30 @@ public struct FilesAndFoldersModel: Sendable {
         value: "Still in Core and still linked, so they can be refreshed manually."
     )
 
-    /// This side holds no capture, extraction or profile history, so the detail
-    /// names where that history lives rather than inventing one.
+    /// What a folder, a retained root or an addition can say about capture history:
+    /// nothing of its own. Those rows are not one document, so there is no one document's
+    /// history to show for them -- the files under them each have their own.
     private static let coreHistoryFact = DetailFact(
         label: "Capture history",
-        value: "Capture, extraction and profile history is available from Core after admission."
+        value: "Capture, extraction and profile history is held per file in Core. Select a "
+            + "file to see its own history."
+    )
+
+    /// Said before any read has been asked for, and after a selection changes.
+    private static let coreHistoryNotReadFact = DetailFact(
+        label: "Capture history",
+        value: "Not read yet. Core holds the capture, extraction and profile history for "
+            + "this file."
+    )
+
+    /// The boundary, said once at the end of the canonical rows. Without it a reader has
+    /// no way to tell which of two records they are looking at, and the two are not
+    /// interchangeable: one is what Core did, the other is what this Mac did.
+    private static let localActivityBoundaryFact = DetailFact(
+        label: "Local delivery activity",
+        value: "Listed separately under Recent additions. Those are this Mac's own delivery "
+            + "receipts, not Core's record, and a local receipt is never a capture or an "
+            + "extraction."
     )
 
     private static func matches(_ item: FilesAndFoldersItem, query: String) -> Bool {

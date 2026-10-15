@@ -71,6 +71,11 @@ ROUTE_ROOT_MEMBER: Final = "root_member"
 ROUTE_KINDS: Final = frozenset({ROUTE_DIRECT_FILE, ROUTE_ROOT_MEMBER})
 BINDING_CONNECTED: Final = "connected"
 BINDING_DISCONNECTED: Final = "disconnected"
+#: Not a stored `connection_state`: the aggregate a document with no recorded route at all has.
+BINDING_NONE: Final = "none"
+
+#: The largest page one bounded history read serves, for captures and for revisions alike.
+MAX_HISTORY_PAGE: Final = 200
 
 OUTBOX_CAPTURE_PROCESSING: Final = "capture_processing"
 OUTBOX_PENDING: Final = "pending"
@@ -313,6 +318,14 @@ def profile_digest(profile: dict[str, Any]) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredDocument:
+    workspace_id: str
+    document_id: str
+    fencing_generation: int
+    created_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentHead:
     workspace_id: str
     document_id: str
@@ -322,6 +335,7 @@ class DocumentHead:
     capture_head_sequence: int
     current_extraction_id: str | None
     extraction_head_ordinal: int
+    updated_at_us: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -489,6 +503,19 @@ def _select(
     return None if row is None else cls(*row)
 
 
+def read_document(
+    connection: sqlite3.Connection, *, workspace_id: str, document_id: str
+) -> StoredDocument | None:
+    """The logical document row, which is the authority on whether this workspace owns it."""
+    return _select(
+        connection,
+        StoredDocument,
+        "omnivia_documents",
+        "workspace_id = ? AND document_id = ?",
+        (workspace_id, document_id),
+    )
+
+
 def read_head(connection: sqlite3.Connection, *, workspace_id: str, document_id: str) -> DocumentHead | None:
     return _select(
         connection,
@@ -650,6 +677,204 @@ def read_projection(
         tuple(params),
     ).fetchall()
     return [ProjectedSegment(*row) for row in rows]
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureHistoryRow:
+    """One capture with the two facts stored beside it rather than on it.
+
+    Retention and the processing obligation live in their own tables and move on their own
+    generations, so they are read with the capture rather than inferred from it. `outbox_state`
+    is `None` when no obligation was ever recorded, which is not the same fact as a settled one.
+    """
+
+    capture: StoredCapture
+    retention_state: str
+    capture_retention_generation: int
+    retention_changed_at_us: int
+    outbox_state: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionHistoryRow:
+    """One extraction revision with its terminal result, which is absent until it has one."""
+
+    revision: StoredRevision
+    result: StoredResult | None
+
+
+def _page_bounds(offset: int, limit: int) -> None:
+    for name, value, low in (("offset", offset, 0), ("limit", limit, 1)):
+        if not isinstance(value, int) or isinstance(value, bool) or value < low:
+            raise DocumentIntakeInvalid(f"a history {name} is outside its bound")
+    if limit > MAX_HISTORY_PAGE:
+        raise DocumentIntakeInvalid(f"a history read is bounded to {MAX_HISTORY_PAGE} rows")
+
+
+def capture_fingerprints(
+    connection: sqlite3.Connection, *, workspace_id: str, document_id: str
+) -> list[tuple[Any, ...]]:
+    """Every capture fact a later write can still change, for the whole document.
+
+    The immutable capture columns are deliberately absent: a capture is never edited, so its
+    identity and its ordering number are the whole of what detects one appearing. What does
+    move is retention, the generation and instant that moved it, and the processing
+    obligation -- and each of those changes what a page of history says about a capture that
+    an earlier page already returned. The row count is the document's complete capture total,
+    so a separate `COUNT(*)` would be a second statement of the same fact read at a second
+    instant.
+    """
+    return [
+        tuple(row)
+        for row in connection.execute(
+            "SELECT c.capture_id, c.capture_sequence, c.source_removal_generation, "
+            "r.retention_state, r.capture_retention_generation, r.changed_at_us, "
+            "o.outbox_state FROM omnivia_document_captures c "
+            "LEFT JOIN omnivia_document_capture_retention r "
+            "  ON r.workspace_id = c.workspace_id AND r.capture_id = c.capture_id "
+            "LEFT JOIN omnivia_document_capture_outbox o "
+            "  ON o.workspace_id = c.workspace_id AND o.capture_id = c.capture_id "
+            "  AND o.kind = ? "
+            "WHERE c.workspace_id = ? AND c.document_id = ? ORDER BY c.capture_sequence",
+            (OUTBOX_CAPTURE_PROCESSING, workspace_id, document_id),
+        ).fetchall()
+    ]
+
+
+def read_capture_history(
+    connection: sqlite3.Connection, *, workspace_id: str, document_id: str, offset: int, limit: int
+) -> list[CaptureHistoryRow]:
+    """One bounded page of a document's immutable captures, in ascending admission sequence.
+
+    `(workspace_id, document_id, capture_sequence)` is unique, so that order is total and a
+    page is stable: captures are append-only, so a later page cannot renumber an earlier one.
+    """
+    _page_bounds(offset, limit)
+    names = _names(StoredCapture)
+    columns = ", ".join(f"c.{name}" for name in names)
+    rows = connection.execute(
+        f"SELECT {columns}, r.retention_state, r.capture_retention_generation, r.changed_at_us, "
+        "o.outbox_state FROM omnivia_document_captures c "
+        # Both joins are LEFT joins, and the retention one is checked below rather than
+        # relied on: an inner join would silently drop a capture whose retention row is
+        # missing, and a page short by one row is a page whose totals and continuation
+        # would then never agree. A missing row is refused instead.
+        "LEFT JOIN omnivia_document_capture_retention r "
+        "  ON r.workspace_id = c.workspace_id AND r.capture_id = c.capture_id "
+        "LEFT JOIN omnivia_document_capture_outbox o "
+        "  ON o.workspace_id = c.workspace_id AND o.capture_id = c.capture_id AND o.kind = ? "
+        "WHERE c.workspace_id = ? AND c.document_id = ? "
+        "ORDER BY c.capture_sequence LIMIT ? OFFSET ?",
+        (OUTBOX_CAPTURE_PROCESSING, workspace_id, document_id, limit, offset),
+    ).fetchall()
+    width = len(names)
+    history: list[CaptureHistoryRow] = []
+    for row in rows:
+        if row[width] is None:
+            raise DocumentIntakeInvalid("a capture holds no retention row")
+        history.append(
+            CaptureHistoryRow(
+                capture=StoredCapture(*row[:width]),
+                retention_state=str(row[width]),
+                capture_retention_generation=int(row[width + 1]),
+                retention_changed_at_us=int(row[width + 2]),
+                outbox_state=None if row[width + 3] is None else str(row[width + 3]),
+            )
+        )
+    return history
+
+
+def extraction_fingerprints(
+    connection: sqlite3.Connection, *, workspace_id: str, document_id: str
+) -> list[tuple[Any, ...]]:
+    """Every extraction-revision fact a later write can still change, for the whole document.
+
+    A revision is immutable once admitted, but the result beside it arrives afterwards and
+    turns a pending revision into a terminal one with an outcome, a disposition and a digest.
+    As with the captures, the row count is the document's complete revision total.
+    """
+    return [
+        tuple(row)
+        for row in connection.execute(
+            "SELECT v.extraction_revision_id, v.document_ordinal, v.extraction_sequence, "
+            "v.head_eligible, v.profile_digest, x.result_state, x.publication_disposition, "
+            "x.output_digest, x.worker_build, x.completed_at_us "
+            "FROM omnivia_extraction_revisions v LEFT JOIN omnivia_extraction_results x "
+            "  ON x.workspace_id = v.workspace_id "
+            "  AND x.extraction_revision_id = v.extraction_revision_id "
+            "WHERE v.workspace_id = ? AND v.document_id = ? ORDER BY v.document_ordinal",
+            (workspace_id, document_id),
+        ).fetchall()
+    ]
+
+
+def read_extraction_history(
+    connection: sqlite3.Connection, *, workspace_id: str, document_id: str, offset: int, limit: int
+) -> list[ExtractionHistoryRow]:
+    """One bounded page of a document's extraction revisions, in ascending document ordinal.
+
+    `(workspace_id, document_id, document_ordinal)` is unique, so that order is total across
+    every capture of the document. The ordinal is an ordering fact only: which revision is
+    current is `omnivia_document_heads.current_extraction_id` and nothing else.
+    """
+    _page_bounds(offset, limit)
+    revision_names = _names(StoredRevision)
+    result_names = _names(StoredResult)
+    columns = ", ".join(
+        [*(f"v.{name}" for name in revision_names), *(f"x.{name}" for name in result_names)]
+    )
+    rows = connection.execute(
+        f"SELECT {columns} FROM omnivia_extraction_revisions v "
+        "LEFT JOIN omnivia_extraction_results x "
+        "  ON x.workspace_id = v.workspace_id AND x.extraction_revision_id = v.extraction_revision_id "
+        "WHERE v.workspace_id = ? AND v.document_id = ? "
+        "ORDER BY v.document_ordinal LIMIT ? OFFSET ?",
+        (workspace_id, document_id, limit, offset),
+    ).fetchall()
+    width = len(revision_names)
+    return [
+        ExtractionHistoryRow(
+            revision=StoredRevision(*row[:width]),
+            result=None if row[width] is None else StoredResult(*row[width:]),
+        )
+        for row in rows
+    ]
+
+
+def document_binding_state(
+    connection: sqlite3.Connection, *, workspace_id: str, document_id: str
+) -> str:
+    """Whether this document has a connected original route, only disconnected ones, or none.
+
+    An aggregate over the opaque routes, never one of them: no owner reference, root, member
+    or generation leaves this function, because none of those is a fact a reader of history
+    needs and every one of them is native-owner material.
+    """
+    row = connection.execute(
+        "SELECT COUNT(*), COALESCE(SUM(connection_state = ?), 0) "
+        "FROM omnivia_document_original_bindings WHERE workspace_id = ? AND document_id = ?",
+        (BINDING_CONNECTED, workspace_id, document_id),
+    ).fetchone()
+    if int(row[0]) == 0:
+        return BINDING_NONE
+    return BINDING_CONNECTED if int(row[1]) > 0 else BINDING_DISCONNECTED
+
+
+def projection_published_at(
+    connection: sqlite3.Connection, *, workspace_id: str, document_id: str
+) -> int | None:
+    """When this document's current retrieval projection was published, or `None` if nothing is.
+
+    `replace_projection` writes every row of one promotion with the same instant, so the
+    maximum is that instant. `None` means retrieval holds nothing for this document now --
+    which a pending, failed or historical-only extraction leaves exactly as it found it.
+    """
+    row = connection.execute(
+        "SELECT MAX(published_at_us) FROM omnivia_document_extraction_projection "
+        "WHERE workspace_id = ? AND document_id = ?",
+        (workspace_id, document_id),
+    ).fetchone()
+    return None if row is None or row[0] is None else int(row[0])
 
 
 def read_profile(

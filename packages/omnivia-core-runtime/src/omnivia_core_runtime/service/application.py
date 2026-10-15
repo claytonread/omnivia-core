@@ -98,6 +98,7 @@ from omnivia_core_runtime.service.handlers.decisions import (
 )
 from omnivia_core_runtime.service.handlers.document_capture import (
     DOCUMENT_CAPTURE_OPERATION,
+    DOCUMENT_HISTORY_OPERATION,
     DOCUMENT_REPROCESS_OPERATION,
     DocumentCaptureHandlers,
 )
@@ -360,9 +361,15 @@ MEMORY_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 #: and a read-only local owner holding a mutation is precisely the failure that
 #: constructor exists to prevent. The seven authority families are unchanged.
 JOB_OBSERVATION_PURPOSE: Final = "job_observation"
+#: Reading a document's canonical capture and extraction history is an observation, which
+#: is not what a caller authors a capture or authorises a reprocess under. It is its own
+#: purpose rather than `job_observation`, because a document's intake history outlives every
+#: job that contributed to it and is read long after the last one settled.
+DOCUMENT_OBSERVATION_PURPOSE: Final = "document_observation"
 INGESTION_FAMILY_OPERATIONS: Final[frozenset[str]] = JOB_FAMILY_OPERATIONS | {
     EVIDENCE_CAPTURE_OPERATION,
     DOCUMENT_CAPTURE_OPERATION,
+    DOCUMENT_HISTORY_OPERATION,
     DOCUMENT_REPROCESS_OPERATION,
 }
 JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
@@ -371,6 +378,7 @@ JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         EVIDENCE_CAPTURE_OPERATION: MUTATION_PURPOSES[EVIDENCE_CAPTURE_OPERATION],
         DOCUMENT_CAPTURE_OPERATION: MUTATION_PURPOSES[DOCUMENT_CAPTURE_OPERATION],
         DOCUMENT_REPROCESS_OPERATION: MUTATION_PURPOSES[DOCUMENT_REPROCESS_OPERATION],
+        DOCUMENT_HISTORY_OPERATION: DOCUMENT_OBSERVATION_PURPOSE,
         JOB_GET_OPERATION: JOB_OBSERVATION_PURPOSE,
         JOB_CANCEL_OPERATION: MUTATION_PURPOSES[JOB_CANCEL_OPERATION],
         JOB_RETRY_OPERATION: MUTATION_PURPOSES[JOB_RETRY_OPERATION],
@@ -842,12 +850,12 @@ def build_job_registry(
     evidence: EvidenceHandlers,
     documents: DocumentCaptureHandlers,
 ) -> ApplicationOperationRegistry:
-    """The content-ingestion family's six handlers, from their two owning modules.
+    """The content-ingestion family's nine handlers, from their two owning modules.
 
     Two handler objects rather than one: `evidence.capture` is written in the evidence
     handler family beside `evidence.search`, which is where a reader looks for it and
     where the projection barrier the two share belongs. What this registry states is the
-    *authority* boundary -- the six operations one session and one binding cover -- and
+    *authority* boundary -- the nine operations one session and one binding cover -- and
     that is a different question from which module implements each of them.
     """
     registry = ApplicationOperationRegistry()
@@ -864,6 +872,10 @@ def build_job_registry(
     registry.register(
         DOCUMENT_REPROCESS_OPERATION,
         cast(OperationHandler, documents.document_reprocess),
+    )
+    registry.register(
+        DOCUMENT_HISTORY_OPERATION,
+        cast(OperationHandler, documents.document_history),
     )
     registry.register(JOB_GET_OPERATION, cast(OperationHandler, handlers.job_get))
     registry.register(JOB_CANCEL_OPERATION, cast(OperationHandler, handlers.job_cancel))
@@ -2566,7 +2578,7 @@ def build_job_application_dispatcher(
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the exact six-operation S3 content-ingestion family around the router."""
+    """Compose the exact nine-operation S3 content-ingestion family around the router."""
     session = job_family_session(
         principal_id=principal_id,
         installation_id=installation_id,
@@ -2597,6 +2609,9 @@ def build_job_application_dispatcher(
         binding=binding,
         clock=resolved_clock,
         allocate_identifier=allocate_identifier,
+        token_codec=(
+            HmacContinuationTokenCodec.secure() if token_codec is None else token_codec
+        ),
     )
     registry = build_job_registry(handlers, evidence, documents)
     return ApplicationDispatcher(
@@ -2767,6 +2782,7 @@ __all__ = [
     "CHANNEL_TRUST",
     "CONTEXT_PACK_BUILD_OPERATION",
     "CONTINUITY_HANDOFF_PURPOSE",
+    "DOCUMENT_OBSERVATION_PURPOSE",
     "ENGINEERING_CONTEXT_PURPOSE",
     "ENGINEERING_EXPAND_PURPOSE",
     "ENGINEERING_FAMILY_OPERATIONS",

@@ -104,7 +104,7 @@ def _corpus_document() -> dict[str, Any]:
 def test_the_corpus_loads_and_is_internally_coherent(
     corpus: tuple[AdapterConformanceCase, ...],
 ) -> None:
-    assert len(corpus) == 215
+    assert len(corpus) == 217
     assert len(validate_case_collection(corpus)) == len(corpus)
     assert all(case.operation in CATALOGUE for case in corpus)
 
@@ -116,7 +116,7 @@ def test_the_corpus_declares_its_format() -> None:
 def test_the_amended_corpus_has_the_accepted_byte_identity() -> None:
     corpus_path = CANONICAL_FIXTURES_DIR / ADAPTER_CONFORMANCE_CORPUS_FILE
     assert hashlib.sha256(corpus_path.read_bytes()).hexdigest() == (
-        "7c765c7227d0e45f0ee1f9e2bb2446c790f204afdd371ee52cbfdcf0765550aa"
+        "aac9800344c11bbfdbbaa068dbdafcc304c84b1b9cbfcf2c6b148ca15154edef"
     )
 
 
@@ -246,7 +246,7 @@ def test_every_paginated_operation_has_a_two_page_scenario(
     corpus: tuple[AdapterConformanceCase, ...],
 ) -> None:
     paginated = {n for n, e in CATALOGUE.items() if e.pagination.paginated}
-    assert len(paginated) == 10
+    assert len(paginated) == 11
     assert {case.operation for case in corpus if case.page_of is not None} == paginated
 
 

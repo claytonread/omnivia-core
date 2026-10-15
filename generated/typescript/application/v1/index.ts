@@ -5363,6 +5363,35 @@ export interface DocumentProcessingProfileInput {
 }
 
 /**
+ * One approved processing-profile selection a caller takes verbatim from `document.history` and
+ * sends back in `document.reprocess`. It is a separate type from
+ * `DocumentProcessingProfileInput` because it carries a third field that only a reprocess can
+ * have: the exact immutable profile the selection was reported to resolve to. A capture has no
+ * such digest to name -- its profile is resolved after admission -- so that input keeps its two
+ * fields. `expected_profile_digest` is a precondition, not a preference: Core recomputes the
+ * profile from the named reference, revision, the capture's media type and the installation's
+ * resources, and refuses the request before any execution when the recomputed identity differs,
+ * so a newer profile or newer resources are never substituted beneath a request that named this
+ * one.
+ */
+export interface DocumentReprocessProfileSelection {
+  /**
+   * Immutable processing-profile reference, exactly as `document.history` reported it approved
+   * for this capture.
+   */
+  readonly profile_ref: Identifier;
+  /**
+   * Exact approved profile revision reported with that reference.
+   */
+  readonly revision: Identifier;
+  /**
+   * The immutable profile identity Core reported this selection resolves to. Core refuses
+   * rather than executing a different one.
+   */
+  readonly expected_profile_digest: EvidenceChecksum;
+}
+
+/**
  * Standing-consent lineage required for automatic capture.
  */
 export interface DocumentConsentInput {
@@ -5486,6 +5515,156 @@ export interface DocumentReprocessResult {
    * Digest of the qualified extraction output when the terminal state produced one.
    */
   readonly output_digest?: EvidenceChecksum;
+}
+
+/**
+ * One action Core states the availability of, with the exact reason when it is unavailable. A
+ * caller offers a control only for an action reported `available`, and otherwise shows the
+ * stated reason rather than a control that cannot work. v1 reports `reprocess_captured_copy`
+ * against one retained capture and `refresh_original` against the document. An action code this
+ * build does not recognise is preserved and not offered.
+ */
+export interface DocumentHistoryAction {
+  /**
+   * Open code naming the action, such as `reprocess_captured_copy` or `refresh_original`.
+   */
+  readonly action: OpenCode;
+  /**
+   * Whether Core will accept this action now.
+   */
+  readonly available: boolean;
+  /**
+   * Open code naming why the action is unavailable, present exactly when `available` is false
+   * -- enforcing that is a semantic-validation concern, not a wire-shape one.
+   */
+  readonly unavailable_reason?: OpenCode;
+}
+
+/**
+ * One processing-profile selection Core reports as approved and available for reprocessing this
+ * exact retained capture, and will accept in a `document.reprocess` request naming that capture.
+ * `profile_digest` is the immutable profile the selection resolves to for this capture's media
+ * type now, so a caller can prove the revision it was offered is the revision that ran, and a
+ * newer profile or newer resources are never substituted beneath a request that named this one.
+ * A caller never synthesises a reference or revision of its own.
+ */
+export interface DocumentReprocessProfileOption {
+  /**
+   * Immutable processing-profile reference to send in `document.reprocess`.
+   */
+  readonly profile_ref: Identifier;
+  /**
+   * Exact approved profile revision to send with that reference.
+   */
+  readonly revision: Identifier;
+  /**
+   * Closed value `text_only` or `text_and_local_ocr`, as this capture's media type resolves
+   * the selection.
+   */
+  readonly processing_mode: OpenCode;
+  /**
+   * Core-computed identity of the immutable profile this selection resolves to for this
+   * capture.
+   */
+  readonly profile_digest: EvidenceChecksum;
+}
+
+/**
+ * The immutable processing profile one extraction revision was produced under. `digest` is the
+ * profile's canonical identity and the only field a caller may compare for sameness.
+ * `decoder_build` is the exact decoder-build string the profile records, which carries the
+ * profile reference and revision the admitting request froze. The profile body itself -- its
+ * resource ceilings, pinned model hashes, parser feature list and unknown-feature rules -- is
+ * not exposed.
+ */
+export interface DocumentExtractionProfileSummary {
+  /**
+   * Core-computed identity of the immutable profile.
+   */
+  readonly digest: EvidenceChecksum;
+  /**
+   * The profile's exact recorded decoder build, including the frozen profile reference and
+   * revision.
+   */
+  readonly decoder_build: string;
+  /**
+   * Closed value `text_only` or `text_and_local_ocr`.
+   */
+  readonly processing_mode: OpenCode;
+  /**
+   * Whether this profile examined qualified embedded raster images for text.
+   */
+  readonly embedded_image_ocr: boolean;
+  /**
+   * The ordered recognition languages this profile selected, at most three. Empty when the
+   * profile ran no local OCR. Three is the normative maximum a selection may hold, so a
+   * summary naming a fourth describes a selection Core would itself have refused.
+   */
+  readonly ocr_languages: readonly OpenCode[];
+}
+
+/**
+ * The document's source side: its current successful capture when it has one, and the Core-owned
+ * generation that governs removal and suppression. Independent of the extraction head -- a new
+ * capture does not move the extraction head and a new extraction does not move this one.
+ * `original_binding_state` is a route fact only; it carries no opaque owner reference, no path
+ * and no bookmark material, and it is not a statement about whether any capture is retrievable.
+ */
+export interface DocumentSourceHeadState {
+  /**
+   * Closed value `active` or `removed` for the logical source.
+   */
+  readonly source_state: OpenCode;
+  /**
+   * Core-owned generation that advances on removal, suppression change and authorised
+   * restoration.
+   */
+  readonly source_removal_generation: number;
+  /**
+   * The document's current successful capture, absent when it explicitly has none.
+   */
+  readonly current_capture_id?: Identifier;
+  /**
+   * The sequence of the current successful capture, zero when there is none.
+   */
+  readonly capture_head_sequence: number;
+  /**
+   * Closed value `connected` when at least one original route for this document is connected,
+   * `disconnected` when routes exist but none is connected, or `none` when Core records no
+   * original route at all.
+   */
+  readonly original_binding_state: OpenCode;
+  /**
+   * When either head or the source state last changed.
+   */
+  readonly updated_at: Timestamp;
+}
+
+/**
+ * The document's extraction side: its current retrieval head when it has one, and whether
+ * retrieval rows are actually published for it. Independent of the source head.
+ * `retrieval_state` is `retrievable` only when Core currently publishes retrieval rows for this
+ * document; a pending, failed or historical-only extraction leaves whatever was already
+ * published in place rather than replacing it.
+ */
+export interface DocumentExtractionHeadState {
+  /**
+   * The document's current successful extraction, absent when it explicitly has none.
+   */
+  readonly current_extraction_id?: Identifier;
+  /**
+   * The document ordinal of the current successful extraction, zero when there is none.
+   */
+  readonly extraction_head_ordinal: number;
+  /**
+   * Closed value `retrievable` when Core publishes retrieval rows for this document now,
+   * otherwise `none`.
+   */
+  readonly retrieval_state: OpenCode;
+  /**
+   * When the published retrieval projection was written, absent when nothing is published.
+   */
+  readonly published_at?: Timestamp;
 }
 
 /**
@@ -9543,9 +9722,10 @@ export interface DocumentCaptureInput {
 
 /**
  * Closed input for `document.reprocess`. Selects one already-retained immutable capture, one
- * exact approved processing-profile revision and the observed successful extraction head. It
- * accepts no source bytes, original path, URL, bookmark, parser implementation, arbitrary
- * profile JSON, principal or workspace override.
+ * exact approved processing-profile revision together with the immutable profile identity that
+ * revision was reported to resolve to, and the observed successful extraction head. It accepts
+ * no source bytes, original path, URL, bookmark, parser implementation, arbitrary profile JSON,
+ * principal or workspace override.
  */
 export interface DocumentReprocessInput {
   /**
@@ -9553,13 +9733,222 @@ export interface DocumentReprocessInput {
    */
   readonly capture_id: Identifier;
   /**
-   * Exact approved processing profile selected for the new extraction revision.
+   * Exact approved processing profile selected for the new extraction revision, with the
+   * profile identity it must resolve to.
    */
-  readonly processing_profile: DocumentProcessingProfileInput;
+  readonly processing_profile: DocumentReprocessProfileSelection;
   /**
    * Frozen successful-extraction-head precondition.
    */
   readonly expected_base: DocumentExtractionBase;
+}
+
+/**
+ * Closed input for `document.history`. Selects exactly one logical document owned by the request
+ * envelope's selected workspace; it carries no second workspace identifier and no path,
+ * bookmark, credential, principal, parser name or workspace override, and no selector that could
+ * widen the read past that one document. Pagination is deterministic: `limit` bounds each of the
+ * two returned histories separately, and `page` resumes an earlier read at the exact position it
+ * reached.
+ */
+export interface DocumentHistoryInput {
+  /**
+   * Logical document whose canonical intake history is read.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Bounded maximum number of source captures, and of extraction revisions, to return in this
+   * page. Absent means the server's default.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Continuation position from a prior page, when paging.
+   */
+  readonly page?: PageMetadata;
+}
+
+/**
+ * One immutable source capture of this document, exactly as Core admitted it.
+ * `is_current_source` is read from the document's own source head and is never inferred from
+ * `capture_sequence`, from arrival order or from any timestamp. Retention is this capture's own
+ * disposition and moves independently of the document's source state. A capture that is not the
+ * current source keeps its full attribution rather than losing it. No source bytes, original
+ * filesystem path, bookmark material, credential or caller-supplied display claim appears here.
+ */
+export interface DocumentCaptureHistoryEntry {
+  /**
+   * Canonical immutable capture identifier, exactly as `document.reprocess` accepts it.
+   */
+  readonly capture_id: Identifier;
+  /**
+   * This capture's admission sequence within the document. An ordering fact, never a
+   * currentness claim.
+   */
+  readonly capture_sequence: number;
+  /**
+   * Retained canonical evidence artifact holding the captured bytes.
+   */
+  readonly evidence_id: EvidenceId;
+  /**
+   * Core-computed identity of the admitted bytes.
+   */
+  readonly source_digest: EvidenceChecksum;
+  /**
+   * Core-computed snapshot byte length.
+   */
+  readonly source_length_bytes: number;
+  /**
+   * Validated media type of the captured snapshot.
+   */
+  readonly media_type: MediaType;
+  /**
+   * Stable caller-selected source identity this capture was admitted under.
+   */
+  readonly requested_source_identity: Identifier;
+  /**
+   * Closed capture intent kind: `new_capture`, `refresh`, `automatic_capture` or
+   * `folder_capture`.
+   */
+  readonly intent_kind: OpenCode;
+  /**
+   * Closed value `snapshot_only`, `active_binding` or `historical_binding`.
+   */
+  readonly association_kind: OpenCode;
+  /**
+   * Closed value `head_eligible` or `historical_only`, as admission decided it.
+   */
+  readonly capture_disposition: OpenCode;
+  /**
+   * Closed reason the disposition was assigned: `eligible`, `removed_source`,
+   * `superseded_generation`, `disconnected_generation`, `creation_conflict` or `stale_base`.
+   */
+  readonly disposition_reason: OpenCode;
+  /**
+   * Whether this exact capture is the document's current source head, read from the head
+   * itself.
+   */
+  readonly is_current_source: boolean;
+  /**
+   * Closed value `retained`, `expired` or `deleted` for this capture's bytes.
+   */
+  readonly retention_state: OpenCode;
+  /**
+   * Core-owned generation of this capture's retained/eligible disposition.
+   */
+  readonly capture_retention_generation: number;
+  /**
+   * The logical-source removal generation frozen at this capture's admission.
+   */
+  readonly source_removal_generation: number;
+  /**
+   * The processing profile this capture requested when it was admitted. Its extractions are
+   * reported separately and may name a different profile.
+   */
+  readonly requested_profile: DocumentProcessingProfileInput;
+  /**
+   * Closed value `pending` while Core still owns an unsettled processing obligation for this
+   * capture, `settled` once that obligation has settled, or `not_queued` when none was
+   * recorded. Never a retrieval claim.
+   */
+  readonly processing_state: OpenCode;
+  /**
+   * The successful capture head this capture froze as its base, absent when it observed none.
+   */
+  readonly expected_base_capture_id?: Identifier;
+  /**
+   * When Core admitted this capture.
+   */
+  readonly captured_at: Timestamp;
+  /**
+   * When this capture's retention state last changed, absent when Core records no retention
+   * row.
+   */
+  readonly retention_changed_at?: Timestamp;
+  /**
+   * The actions Core states the availability of for this exact capture.
+   */
+  readonly actions: readonly DocumentHistoryAction[];
+  /**
+   * The approved profile selections Core will accept for reprocessing this capture. Empty when
+   * reprocessing is unavailable, in which case `actions` carries the reason.
+   */
+  readonly reprocess_profiles: readonly DocumentReprocessProfileOption[];
+}
+
+/**
+ * One immutable extraction revision over one of this document's captures.
+ * `is_current_extraction` is read from the document's own extraction head and is never inferred
+ * from `document_ordinal`, from arrival order or from any timestamp. The extraction head is
+ * independent of the source head: a revision over an older capture can never make that capture
+ * the current source, and a revision that reaches a terminal state without being promoted is
+ * historical-only rather than a success. `result_state` and `publication_disposition` are absent
+ * while no terminal result exists, which is a pending extraction and not a failed one.
+ */
+export interface DocumentExtractionHistoryEntry {
+  /**
+   * Canonical immutable extraction revision identifier, exactly as `document.reprocess`
+   * expects as a base.
+   */
+  readonly extraction_revision_id: Identifier;
+  /**
+   * The exact capture whose retained bytes this revision read.
+   */
+  readonly capture_id: Identifier;
+  /**
+   * This revision's ordering position among all of the document's extractions. An ordering
+   * fact, never a currentness claim.
+   */
+  readonly document_ordinal: number;
+  /**
+   * This revision's ordering position among the extractions of its own capture.
+   */
+  readonly extraction_sequence: number;
+  /**
+   * The exact immutable profile this revision ran under.
+   */
+  readonly profile: DocumentExtractionProfileSummary;
+  /**
+   * The successful extraction head this revision froze as its base, absent when it observed
+   * none.
+   */
+  readonly expected_base_extraction_id?: Identifier;
+  /**
+   * Whether admission found this revision's frozen base still current, which is the only way
+   * it could ever be promoted.
+   */
+  readonly head_eligible: boolean;
+  /**
+   * Whether this exact revision is the document's current retrieval head, read from the head
+   * itself.
+   */
+  readonly is_current_extraction: boolean;
+  /**
+   * Closed terminal state `succeeded`, `partial`, `unsupported` or `failed`. Absent while the
+   * revision has no terminal result.
+   */
+  readonly result_state?: OpenCode;
+  /**
+   * Closed value `promoted`, `superseded`, `historical_only`, `fenced_removal`,
+   * `fenced_retention` or `not_published`. Absent while the revision has no terminal result.
+   */
+  readonly publication_disposition?: OpenCode;
+  /**
+   * Digest of the qualified extraction output, present only when the terminal state produced
+   * one.
+   */
+  readonly output_digest?: EvidenceChecksum;
+  /**
+   * The worker build that produced the terminal result, absent while there is none.
+   */
+  readonly worker_build?: string;
+  /**
+   * When Core admitted this extraction revision.
+   */
+  readonly admitted_at: Timestamp;
+  /**
+   * When this revision reached its terminal result, absent while it has none.
+   */
+  readonly completed_at?: Timestamp;
 }
 
 /**
@@ -11325,6 +11714,62 @@ export interface RequestEnvelope {
    * Opaque operation payload.
    */
   readonly input: JsonObject;
+}
+
+/**
+ * Result of `document.history`: the authoritative Core intake history of one logical document.
+ * Immutable source captures and extraction revisions are reported as two separate histories with
+ * two separate heads, because they move independently; neither list's order states which member
+ * is current, and the two head states are the only statements of currentness. `capture_count`
+ * and `extraction_count` are the complete totals, so a caller paging through the histories can
+ * say truthfully how much it has seen. Nothing here carries source bytes, an original filesystem
+ * path, bookmark material, a credential, a raw profile body or any locally held delivery
+ * receipt: local activity remains a separate, non-canonical record.
+ */
+export interface DocumentHistoryResult {
+  /**
+   * The logical document this history describes.
+   */
+  readonly document_id: Identifier;
+  /**
+   * When Core created the logical document.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * The independent source head and source state.
+   */
+  readonly source: DocumentSourceHeadState;
+  /**
+   * The independent extraction head and retrieval state.
+   */
+  readonly extraction: DocumentExtractionHeadState;
+  /**
+   * This page of the document's immutable source captures, in ascending `capture_sequence`
+   * order.
+   */
+  readonly captures: readonly DocumentCaptureHistoryEntry[];
+  /**
+   * Total number of source captures this document has, across every page.
+   */
+  readonly capture_count: number;
+  /**
+   * This page of the document's immutable extraction revisions, in ascending
+   * `document_ordinal` order.
+   */
+  readonly extractions: readonly DocumentExtractionHistoryEntry[];
+  /**
+   * Total number of extraction revisions this document has, across every page.
+   */
+  readonly extraction_count: number;
+  /**
+   * The document-level actions Core states the availability of.
+   */
+  readonly actions: readonly DocumentHistoryAction[];
+  /**
+   * Continuation position for the next page. A continuation token means at least one of the
+   * two histories has more to read; `{}` means both are exhausted.
+   */
+  readonly page: PageMetadata;
 }
 
 /**
@@ -16137,6 +16582,36 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "upgrade_required",
       "workspace_busy",
       "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.history",
+    scope: { required_scopes: ["memory:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentHistoryInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentHistoryResult",
+    required_capability: { id: "evidence.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: true, max_page_size: 1000 },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",
     ],
