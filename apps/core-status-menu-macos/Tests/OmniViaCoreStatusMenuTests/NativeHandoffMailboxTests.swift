@@ -283,6 +283,50 @@ final class NativeHandoffMailboxTests: XCTestCase {
         XCTAssertThrowsError(try mailbox.decodeOffer(mutated, now: now))
     }
 
+    /// The mailbox's half of the migration round trip: a rolled-back companion
+    /// that is handed an offer from a schema it does not know refuses it whole
+    /// and leaves the offer it already holds exactly as it was written.
+    func testAnOfferFromANewerSchemaIsBlockedWithoutRewritingTheMailbox() throws {
+        let root = try temporaryDirectory()
+        let mailbox = try NativeHandoffMailbox(root: root)
+        let now = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
+        let nonce = UUID().uuidString.lowercased()
+        let offer = NativeHandoffOfferV1(
+            requestNonce: nonce,
+            expectedOwnerBundleID: NativeHandoffMailbox.companionBundleID,
+            senderBundleID: NativeHandoffMailbox.finderBundleID,
+            surface: .finderQuickAction,
+            createdAt: now,
+            expiresAt: now.addingTimeInterval(60),
+            slots: [NativeHandoffSlotV1(
+                slotID: UUID().uuidString.lowercased(),
+                displayName: "brief.pdf",
+                sourceKind: .originalBookmark,
+                bookmark: Data("bookmark".utf8)
+            )]
+        )
+        try mailbox.storeAuthenticatedOffer(offer, now: now)
+        let stored = root
+            .appendingPathComponent("offers", isDirectory: true)
+            .appendingPathComponent("\(nonce).json", isDirectory: false)
+        let bytes = try Data(contentsOf: stored)
+
+        let newer = Data(
+            String(decoding: try mailbox.encodedOffer(offer, now: now), as: UTF8.self)
+                .replacingOccurrences(
+                    of: "omnivia.native-handoff.offer.v1",
+                    with: "omnivia.native-handoff.offer.v2"
+                )
+                .utf8
+        )
+
+        XCTAssertThrowsError(try mailbox.decodeOffer(newer, now: now)) {
+            XCTAssertEqual($0 as? NativeHandoffMailboxError, .invalidOffer)
+        }
+        XCTAssertEqual(try Data(contentsOf: stored), bytes)
+        XCTAssertEqual(mailbox.pendingOffers(now: now), [offer])
+    }
+
     func testAnExtensionCompletesOnlyOnAdoptionOfEveryOfferedSlot() {
         let offered = (0..<3).map { _ in UUID().uuidString.lowercased() }
 

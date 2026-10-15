@@ -333,6 +333,96 @@ final class CaptureIntentQueueTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: manifest), futureBytes)
     }
 
+    /// The queue's half of the same round trip: a v1 manifest is upgraded to v2,
+    /// then the install is rolled back and the older reader meets what a later
+    /// one left behind. The queued request keeps its canonical identity — the
+    /// same item, the same canonical digest, the same operation key and the same
+    /// attempt key derived from it — and a manifest this build does not fully
+    /// understand is refused with its bytes untouched.
+    func testV1QueueUpgradeSurvivesADowngradeThatBlocksANewerManifest() throws {
+        let root = try temporaryQueue()
+        let payload = Data("pdf-body".utf8)
+        let queued = try intent(payload: payload)
+        let canonicalDigest = try queued.requestDigest()
+        do {
+            let queue = try CaptureIntentQueue(root: root)
+            _ = try queue.enqueue(intent: queued, payload: payload)
+            _ = try queue.beginStage(
+                itemID: "item-1",
+                requestDigest: digest(Data("request".utf8)),
+                descriptorDigest: digest(Data("descriptor".utf8))
+            )
+        }
+        let manifest = root.appendingPathComponent("capture-queue-v1.json")
+        var legacy = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any]
+        )
+        legacy["schema"] = "omnivia.macos.capture-queue.v1"
+        var entries = try XCTUnwrap(legacy["entries"] as? [[String: Any]])
+        entries[0].removeValue(forKey: "attempts")
+        legacy["entries"] = entries
+        try JSONSerialization.data(withJSONObject: legacy, options: [.sortedKeys]).write(to: manifest)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifest.path)
+
+        let upgraded = try CaptureIntentQueue(root: root)
+        let entry = try XCTUnwrap(upgraded.allEntries().first)
+        let upgradedBytes = try Data(contentsOf: manifest)
+        XCTAssertEqual(
+            try XCTUnwrap(
+                JSONSerialization.jsonObject(with: upgradedBytes) as? [String: Any]
+            )["schema"] as? String,
+            "omnivia.macos.capture-queue.v2"
+        )
+        // Nothing about the request is restated by the upgrade: the canonical
+        // digest the load path checks is the one it was enqueued under, and the
+        // reconstructed attempt carries the key derived from the parent
+        // operation key rather than a replacement.
+        XCTAssertEqual(entry.intent.itemId, "item-1")
+        XCTAssertEqual(entry.intent.operationKey, "operation-item-1")
+        XCTAssertEqual(entry.intent.payloadRef, "payload-item-1")
+        XCTAssertEqual(entry.intentDigest, canonicalDigest)
+        XCTAssertEqual(try entry.intent.requestDigest(), canonicalDigest)
+        XCTAssertEqual(entry.state, .unknownOutcome)
+        XCTAssertEqual(
+            entry.attempts.map(\.operationKey),
+            [CaptureAttemptRecord.childOperationKey(parent: "operation-item-1", generation: 1)]
+        )
+
+        // Both shapes a later full solution can leave behind: an entry field
+        // this build does not define under the schema name it does know, and a
+        // schema name it does not know at all.
+        var newer = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: upgradedBytes) as? [String: Any]
+        )
+        var newerEntries = try XCTUnwrap(newer["entries"] as? [[String: Any]])
+        newerEntries[0]["admissionWindow"] = ["expiresAt": "2026-10-16T00:00:00Z"]
+        newer["entries"] = newerEntries
+        var future = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: upgradedBytes) as? [String: Any]
+        )
+        future["schema"] = "omnivia.macos.capture-queue.v3"
+        for document in [newer, future] {
+            let bytes = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+            try bytes.write(to: manifest)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: manifest.path
+            )
+            XCTAssertThrowsError(try CaptureIntentQueue(root: root)) {
+                XCTAssertEqual($0 as? CaptureQueueError, .incompatibleSchema)
+            }
+            XCTAssertEqual(try Data(contentsOf: manifest), bytes)
+        }
+
+        // Rolled back to the upgraded manifest, the older reader still holds the
+        // same queued request under the same keys, and rewrites nothing.
+        try upgradedBytes.write(to: manifest)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifest.path)
+        let downgraded = try CaptureIntentQueue(root: root)
+        XCTAssertEqual(downgraded.allEntries(), [entry])
+        XCTAssertEqual(try Data(contentsOf: manifest), upgradedBytes)
+    }
+
     func testRestartTurnsInterruptedStageIntoUnknownInsteadOfBlindRetry() throws {
         let root = try temporaryQueue()
         let payload = Data("pdf-body".utf8)

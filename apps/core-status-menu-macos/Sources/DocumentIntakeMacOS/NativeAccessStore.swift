@@ -342,6 +342,40 @@ private struct NativeAccessDocument: Codable {
     /// no such key. An absent key is an empty set, which is what that file
     /// meant; nothing else about v3 changed, so the schema name has not.
     let pending: [PendingFolderSubmission]?
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schema
+        case records
+        case roots
+        case pending
+    }
+
+    init(
+        schema: String,
+        records: [NativeAccessRecord],
+        roots: [NativeRootAccessRecord],
+        pending: [PendingFolderSubmission]?
+    ) {
+        self.schema = schema
+        self.records = records
+        self.roots = roots
+        self.pending = pending
+    }
+
+    init(from decoder: Decoder) throws {
+        // `pending` was added to v3 without a new schema name, so a later build
+        // can add a section of its own the same way. Reading such a document as
+        // the subset this build understands would drop that section on the next
+        // write, so it is refused instead and its bytes are left for the build
+        // that wrote them. This is the document's own key set: a field added
+        // inside a record is still read as a subset.
+        try rejectUnknownKeys(decoder, CodingKeys.self)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try container.decode(String.self, forKey: .schema)
+        records = try container.decode([NativeAccessRecord].self, forKey: .records)
+        roots = try container.decode([NativeRootAccessRecord].self, forKey: .roots)
+        pending = try container.decodeIfPresent([PendingFolderSubmission].self, forKey: .pending)
+    }
 }
 
 private struct LegacyNativeAccessRecord: Codable {

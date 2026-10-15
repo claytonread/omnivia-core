@@ -376,6 +376,139 @@ final class NativeAccessStoreTests: XCTestCase {
         ) { XCTAssertEqual($0 as? NativeAccessError, .invalidState) }
     }
 
+    /// The whole round trip: a v1 store is upgraded, then the install is rolled
+    /// back and the older reader meets what the newer one left behind. Every
+    /// original grant keeps the exact reference, document, generation and route
+    /// it was recorded under, the upgraded group acquires no watch consent, and
+    /// a document this build does not fully understand is refused with its
+    /// bytes untouched rather than read as a subset and rewritten.
+    func testV1AccessUpgradeSurvivesADowngradeThatBlocksANewerDocument() throws {
+        let state = try temporaryDirectory()
+        let root = state.deletingLastPathComponent().appendingPathComponent("legacy", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("a".utf8).write(to: root.appendingPathComponent("a.txt"))
+        let original = state.deletingLastPathComponent().appendingPathComponent("original.txt")
+        try Data("body".utf8).write(to: original)
+        let stateFile = state.appendingPathComponent("native-access-v1.json")
+        try JSONSerialization.data(withJSONObject: [
+            "schema": "omnivia.native-access.v1",
+            "records": [
+                [
+                    "accessRef": "access-a", "linkedDocumentID": "doc-a", "generation": 3,
+                    "state": "connected",
+                    "bookmark": Data(root.path.utf8).base64EncodedString(),
+                    "route": [
+                        "kind": "root_member", "rootRef": "root-a", "memberRef": "member-a",
+                        "relativeComponents": ["a.txt"],
+                    ],
+                ],
+                [
+                    "accessRef": "access-file", "linkedDocumentID": "doc-file", "generation": 2,
+                    "state": "connected",
+                    "bookmark": Data(original.path.utf8).base64EncodedString(),
+                    "route": ["kind": "direct_file"],
+                ],
+            ],
+        ]).write(to: stateFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
+
+        let upgraded = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        let grants = upgraded.descriptors()
+        let group = try XCTUnwrap(upgraded.rootDescriptors().first)
+        let upgradedBytes = try Data(contentsOf: stateFile)
+        XCTAssertEqual(grants.map(\.accessRef), ["access-a", "access-file"])
+        XCTAssertEqual(grants.map(\.linkedDocumentID), ["doc-a", "doc-file"])
+        // The upgrade carries each request's own identity across: no grant is
+        // re-minted under a fresh reference or a reset generation.
+        XCTAssertEqual(grants.map(\.generation), [3, 2])
+        XCTAssertEqual(grants.map(\.rootBindingGeneration), [1, nil])
+        XCTAssertEqual(
+            grants.map(\.route),
+            [
+                .rootMember(rootRef: "root-a", memberRef: "member-a", relativeComponents: ["a.txt"]),
+                .directFile,
+            ]
+        )
+        // Upgrading a retained manual route is not consent to watch its folder:
+        // the migrated group holds no durable owner, cannot enumerate, and
+        // cannot enrol a sibling that appears later.
+        XCTAssertEqual(group.authority, .frozenMembersOnly)
+        XCTAssertTrue(group.membersFrozen)
+        XCTAssertEqual(group.ownerRefs, [])
+        XCTAssertEqual(group.memberRefs, ["member-a"])
+        XCTAssertThrowsError(
+            try upgraded.withRootReadAccess(
+                rootRef: "root-a",
+                expectedGeneration: group.generation,
+                purpose: .memberDiscovery
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .discoveryNotPermitted) }
+        XCTAssertThrowsError(
+            try upgraded.adoptRootMember(
+                accessRef: "access-b",
+                linkedDocumentID: "doc-b",
+                rootRef: "root-a",
+                memberRef: "member-b",
+                relativeComponents: ["b.txt"],
+                expectedRootGeneration: group.generation
+            )
+        ) { XCTAssertEqual($0 as? NativeAccessError, .membershipFrozen) }
+
+        // Reopening an already upgraded store migrates nothing a second time.
+        let reopened = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        XCTAssertEqual(reopened.descriptors(), grants)
+        XCTAssertEqual(try Data(contentsOf: stateFile), upgradedBytes)
+
+        // What a later full solution leaves behind, in both shapes it can take:
+        // a section this build does not define under the schema name it does
+        // know, and a schema name it does not know at all. Each is refused
+        // whole, and neither is downgraded, stripped or rewritten on disk.
+        var newer = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: upgradedBytes) as? [String: Any]
+        )
+        newer["watchConsents"] = [["rootRef": "root-a", "consentGeneration": 1]]
+        let future: [String: Any] = [
+            "schema": "omnivia.native-access.v4",
+            "records": [[String: Any]](),
+            "roots": [[String: Any]](),
+        ]
+        for document in [newer, future] {
+            let bytes = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+            try bytes.write(to: stateFile)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: stateFile.path
+            )
+            XCTAssertThrowsError(
+                try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+            ) { XCTAssertEqual($0 as? NativeAccessError, .invalidState) }
+            XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
+        }
+
+        // Rolled back to the upgraded document, the older reader still holds
+        // exactly the grants the upgrade produced, and still no watch consent.
+        try upgradedBytes.write(to: stateFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
+        let downgraded = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        XCTAssertEqual(downgraded.descriptors(), grants)
+        XCTAssertEqual(downgraded.rootDescriptors(), [group])
+        XCTAssertEqual(
+            try downgraded.withReadAccess(
+                accessRef: "access-a",
+                expectedGeneration: 3,
+                expectedRootBindingGeneration: 1
+            ) { try String(contentsOf: $0, encoding: .utf8) },
+            "a"
+        )
+        XCTAssertThrowsError(
+            try downgraded.withRootReadAccess(
+                rootRef: "root-a",
+                expectedGeneration: group.generation,
+                purpose: .memberDiscovery
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .discoveryNotPermitted) }
+    }
+
     func testRootAuthorityIsProvisionalUntilItsDurableOwnerIsEstablished() throws {
         let state = try temporaryDirectory()
         let root = state.deletingLastPathComponent().appendingPathComponent("root", isDirectory: true)
