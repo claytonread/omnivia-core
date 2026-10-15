@@ -135,6 +135,9 @@ def inventory(content: bytes) -> list[object]:
         item.structured_value
         for item in extract_xlsx(content, capture_id=CAPTURE).segments
         if item.semantic_role == "object_inventory"
+        # A worksheet's own ``extLst`` is reported as extension coverage, which
+        # is not a table; the "nested" lookalike below really is one.
+        and (item.structured_value or {}).get("kind") != "unsupportedExtension"
     ]
 
 
