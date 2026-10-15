@@ -6,11 +6,11 @@ schema has no element for, and this reader understands none of it, so each entry
 the worksheet or the workbook declares is reported as an entry: which part owns
 it, where it sits in the authored list, and its URI where the URI is a GUID.
 
-The contract is deliberately narrow. Only the two roots are read, directly, in
-the root's own SpreadsheetML namespace; every other owner's ``extLst`` (a query
-table's, a comment list's) is admitted and left alone where that owner is
-parsed, and is not counted here. Nothing inside an entry is walked, so no body
-text, attribute, formula, query, target or cached value ever leaves the part.
+Every part the reader reaches by a validated relationship reports the extension
+lists its own vocabulary allows (``_XLSX_EXTENSION_VOCABULARY``), once per part,
+each entry told apart by its owner part, the structural path of its list and
+its authored position. Nothing inside an entry is walked, so no body text,
+attribute, formula, query, target or cached value ever leaves the part.
 """
 
 from __future__ import annotations
@@ -133,6 +133,7 @@ def test_a_worksheet_extension_is_reported_with_exact_provenance() -> None:
     assert where == {
         "captureId": CAPTURE,
         "part": SHEET_PART,
+        "ownerPath": "/",
         "extensionIndex": 0,
         "sheetId": "1",
         "sheet": "S1",
@@ -144,6 +145,8 @@ def test_a_worksheet_extension_is_reported_with_exact_provenance() -> None:
         "kind": "unsupportedExtension",
         "owner": "worksheet",
         "ownerPart": SHEET_PART,
+        "ownerPath": "/",
+        "scope": "sheet",
         "extensionIndex": 0,
         "uri": G1,
         "uriForm": "guid",
@@ -227,6 +230,7 @@ def test_a_workbook_extension_is_reported_last_and_always_visible() -> None:
     assert dict(entries[-1].source_locator) == {
         "captureId": CAPTURE,
         "part": "xl/workbook.xml",
+        "ownerPath": "/",
         "extensionIndex": 0,
     }
     assert entries[-1].structured_value["owner"] == "workbook"
@@ -343,37 +347,6 @@ def test_lookalikes_inside_the_grid_or_an_entry_are_not_entries() -> None:
     # A list nested in an entry's own body is payload, not a second entry.
     nested = ext_list(ext(G1, ext_list(ext(G2), ext(G3))))
     assert uris(xlsx(nested)) == [G1]
-
-
-def test_known_owners_extension_lists_are_not_double_counted() -> None:
-    """A query table's ``extLst`` is admitted by its own owner, not reported here."""
-    query = (
-        f'<queryTable xmlns="{MAIN}" connectionId="3" name="Q">'
-        + ext_list(ext("urn:test:mashup", LEAKY_BODY))
-        + "</queryTable>"
-    )
-    content = xlsx(
-        ext_list(ext(G1)),
-        rels=(
-            "<Relationships>"
-            '<Relationship Id="rIdQ" Target="../queryTables/queryTable1.xml"'
-            f' Type="{RELNS}/queryTable"/></Relationships>'
-        ),
-        extra={"xl/queryTables/queryTable1.xml": query},
-    )
-    # The package validates the declared type, so declare it.
-    with zipfile.ZipFile(io.BytesIO(content)) as package:
-        members = {name: package.read(name).decode() for name in package.namelist()}
-    members["[Content_Types].xml"] = (
-        '<Types><Override PartName="/xl/queryTables/queryTable1.xml"'
-        ' ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml'
-        '.queryTable+xml"/></Types>'
-    )
-    result = extract_xlsx(archive(members), capture_id=CAPTURE)
-
-    assert result.limitations["queryTables"] == 1
-    assert result.limitations["extensions"] == 1
-    assert uris(archive(members)) == [G1]
 
 
 def test_a_second_extension_list_is_refused() -> None:

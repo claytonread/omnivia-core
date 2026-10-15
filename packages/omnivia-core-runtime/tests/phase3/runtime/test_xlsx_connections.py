@@ -270,7 +270,13 @@ def test_two_connections_are_inventoried_in_source_order() -> None:
 
 def test_connections_are_inert_inventory_after_the_workbook_content() -> None:
     """Each is visible inventory, carries no text, and comes after the cells."""
-    segments = extract_xlsx(xlsx(), capture_id=CAPTURE).segments
+    # The connection's own extension list is reported as coverage beside them,
+    # which is not a connection and is pinned by the extension tests.
+    segments = [
+        item
+        for item in extract_xlsx(xlsx(), capture_id=CAPTURE).segments
+        if (item.structured_value or {}).get("kind") != "unsupportedExtension"
+    ]
     roles = [item.semantic_role for item in segments]
     assert roles == ["table_cell", "object_inventory", "object_inventory"]
     for item in segments[1:]:
