@@ -181,6 +181,7 @@ EXPECTED_ALLOCATION = (
     (67, "0067_knowledge_shares.sql", "Agent Runtime", "candidate"),
     (68, "0068_task_context_outcomes.sql", "Agent Runtime", "candidate"),
     (69, "0069_document_intake.sql", "Evidence Runtime", "candidate"),
+    (70, "0070_app_settings.sql", "Core Settings", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -272,6 +273,10 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # hardening 8742d1fc, its located-segment publication 484ef1c1, then to
     # governed capture persistence f495200b, which is where its current content lives.
     69: "f495200b0178a38a7b597d526d2bfb0989e45075",
+    # 0070 is the Core Settings app-settings candidate. The settings branch
+    # authored it as 0043; it is pinned to the commit that ported it onto this
+    # branch's head, which is where its content lives here.
+    70: "429cc4ef1d75ccd58691b5dedb0e818830ce3ad0",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

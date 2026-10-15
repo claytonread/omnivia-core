@@ -81,12 +81,13 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ServiceR
 def test_0069_is_the_unique_successor_to_0068() -> None:
     found = [migration for migration in load_migrations() if migration.version == 69]
     assert [migration.name for migration in found] == [MIGRATION_FILENAME]
-    assert max(migration.version for migration in load_migrations()) == 69
+    # 0070 (app settings) is the head; 0069 is still the only migration at 69.
+    assert max(migration.version for migration in load_migrations()) == 70
 
 
 def test_0069_applies_all_document_intake_tables_and_guards(runner: ServiceRunner) -> None:
     assert runner.connection is not None
-    assert max(applied_migrations(runner.connection)) == 69
+    assert max(applied_migrations(runner.connection)) == 70
     expected_tables = {
         "omnivia_documents",
         "omnivia_document_original_bindings",
