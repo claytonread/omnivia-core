@@ -65,7 +65,23 @@ MainActor.assumeIsolated {
             configurationRevision: "1"
         )
     )
-    let controller = SettingsWindowController(coordinator: coordinator, mcp: mcp)
+    // Optional, so the Document processing pane can be exercised against a
+    // real installation's managed OCR cache:
+    //   --service-cli <path to omnivia-core-service> --installation-state <path>
+    // Without them the pane says it has no route to the service, which is the
+    // truth here. There is no stub: a fabricated language inventory in a
+    // screenshot would be a claim about installed bytes.
+    let ocr = (argument("--service-cli").map { URL(fileURLWithPath: $0) })
+        .flatMap { service in
+            argument("--installation-state").flatMap { state in
+                OcrResourceCommandRunner(
+                    executable: service,
+                    installationState: URL(fileURLWithPath: state)
+                )
+            }
+        }
+
+    let controller = SettingsWindowController(coordinator: coordinator, mcp: mcp, ocr: ocr)
 
     // Optional, so the sidebar footer's service states can be looked at
     // without a companion to report them:

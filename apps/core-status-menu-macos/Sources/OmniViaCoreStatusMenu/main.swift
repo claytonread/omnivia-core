@@ -135,6 +135,11 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     /// Settings window can administer installed MCP hosts through it; nil when
     /// the CLI could not be found, which the Access pane then states.
     private let mcp: McpAdministering?
+    /// The packaged `omnivia-core-service`, resolved through the same path as
+    /// the CLI. It owns this installation's managed OCR resource cache, which
+    /// the Document processing pane administers; nil when it is not installed
+    /// beside the companion, which that pane then states.
+    private let ocr: OcrResourceAdministering?
 
     init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
         self.configuration = configuration
@@ -161,6 +166,16 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             runner = UnavailableLifecycleRunner()
         }
         self.mcp = mcp
+        // Resolved by name, not from `--cli`: that override names the CLI, and
+        // the managed resource cache is administered by the service executable.
+        // Absent, the pane says it has no route rather than guessing a path.
+        self.ocr = (try? CLIResolver().resolve(
+            override: nil, executableName: "omnivia-core-service"
+        )).flatMap {
+            OcrResourceCommandRunner(
+                executable: $0, installationState: configuration.installationState
+            )
+        }
         coordinator = LifecycleCoordinator(runner: runner)
         super.init()
         let intakeRoot = configuration.installationState.deletingLastPathComponent()
@@ -618,7 +633,8 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             )
             settingsWindowController = SettingsWindowController(
                 coordinator: ReadinessCoordinator(context: context),
-                mcp: mcp
+                mcp: mcp,
+                ocr: ocr
             )
         }
         if let lastSnapshot { reportServiceState(lastSnapshot) }

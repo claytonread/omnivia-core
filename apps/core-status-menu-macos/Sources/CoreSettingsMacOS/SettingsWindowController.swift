@@ -396,6 +396,11 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var mcpBusy: String?        // the host a write is in flight for
     private var mcpLoaded = false
 
+    // MARK: Managed OCR resources (the Document processing pane's languages)
+    /// Every decision about installed languages that is not drawing. The pane
+    /// renders this; the model runs the service and holds the states.
+    private let languages: OcrLanguageModel
+
     // Pane selection
     /// Order and labels follow `NAV` in the design's `core-settings.js`. That
     /// list is seven items: the readiness and Local Decisions amendments both
@@ -469,7 +474,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         coordinator: ReadinessCoordinator,
         navigator: SettingsNavigator = SettingsNavigator(componentName: "OmniVia Core"),
         notificationCenter: UNUserNotificationCenter? = nil,
-        mcp: McpAdministering? = nil
+        mcp: McpAdministering? = nil,
+        ocr: OcrResourceAdministering? = nil
     ) {
         self.coordinator = coordinator
         self.navigator = navigator
@@ -477,6 +483,9 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         // executable is the companion's job and its resolver lives in the
         // companion target. Nil means the pane says so instead of guessing.
         self.mcp = mcp
+        // The same arrangement for the packaged `omnivia-core-service`, which
+        // is the authority over the managed OCR resource cache.
+        languages = OcrLanguageModel(administering: ocr)
         // Resolve lazily and bundle-guarded: UNUserNotificationCenter.current()
         // raises when the process has no bundle identity (§13.2 honest states).
         if let notificationCenter {
@@ -487,6 +496,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             self.notificationCenter = nil
         }
         super.init()
+        languages.onChange = { [weak self] in self?.render() }
         // Pick up the stored preference rather than starting from false every
         // launch. The companion's own preferences stay machine-local: they
         // must work while Core is stopped, and they should not travel with a
@@ -530,6 +540,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         coordinator.scheduleRefresh(.windowOpened)
         loadMcpStatus()
+        loadOcrInventory()
     }
 
     // MARK: Window controls
@@ -1936,28 +1947,239 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             status: "Not in this build"
         )
 
-        // Language packs. The design installs up to three; the sizes below are
-        // the design's own figures and are shown as the catalogue, not as a
-        // claim about what is on this Mac.
-        let languages = card(content, header: "Languages")
-        let packs: [(String, String)] = [
-            ("English", "18 MiB"),
-            ("French", "48 MiB"),
-            ("German", "41 MiB"),
-            ("Spanish", "39 MiB"),
-            ("Japanese", "Not available for this version"),
-        ]
-        for (name, size) in packs {
+        renderInstalledLanguages(content)
+        renderLanguageSelection(content)
+    }
+
+    /// Installed language resources: what the service says is in the managed
+    /// cache, how much of the cap it uses, and the two owner-local levers over
+    /// it (remove one unpinned set, repair the cache).
+    ///
+    /// Everything shown is read from `--ocr-resources status`. The design calls
+    /// English a bundled language; this build's OCR resource selection is
+    /// "unconfigured and fails closed" and installs no model, so an empty
+    /// inventory is reported as empty rather than as English present.
+    private func renderInstalledLanguages(_ content: NSStackView) {
+        let card = card(content, header: "Installed languages")
+
+        let inventory: OcrResourceInventory
+        switch languages.state {
+        case .noAdministrator:
             notBuiltRow(
-                into: languages,
-                title: name,
-                detail: size,
-                status: "Not in this build"
+                into: card,
+                title: "Installed languages can’t be read here",
+                detail: "Recognition languages are installed into this installation’s managed "
+                    + "resource cache. This window was opened without a route to the packaged "
+                    + "Core service, so it cannot read what is installed.",
+                status: "Not available here",
+                tone: .neutral
+            )
+            return
+        case .loading:
+            notBuiltRow(
+                into: card,
+                title: "Reading installed languages…",
+                detail: "Asking Core which recognition languages this installation has installed.",
+                status: "Checking…",
+                tone: .checking
+            )
+            return
+        case .unavailable(let error):
+            notBuiltRow(
+                into: card,
+                title: "Installed languages could not be read",
+                detail: Self.ocrFailure(error),
+                status: "Unavailable",
+                tone: .blocked
+            )
+            languageActions(into: content)
+            return
+        case .ready(let reading):
+            inventory = reading
+        }
+
+        if inventory.resources.isEmpty {
+            notBuiltRow(
+                into: card,
+                title: "No languages installed",
+                detail: "Core reports an empty managed resource cache, so no recognition "
+                    + "language is installed on this Mac, including English. Text that is "
+                    + "already text is still read; an image of text is not recognised.",
+                status: "None installed",
+                tone: .neutral
             )
         }
+        for resource in inventory.resources {
+            languageRow(resource, into: card)
+        }
+
+        // Capacity, from the document rather than from a constant here.
+        let used = OcrResourceInventory.describeBytes(inventory.installedBytes)
+        let free = OcrResourceInventory.describeBytes(inventory.availableBytes)
+        let capacity = OcrResourceInventory.describeBytes(inventory.capacityBytes)
+        let storage = row(
+            into: card,
+            title: "Language storage",
+            detail: "\(used) used of \(capacity). \(free) available."
+        )
+        storage.addArrangedSubview(ovSpacer(1))
+        storage.addArrangedSubview(
+            inventory.availableBytes > 0
+                ? chip("Space available", tone: .ok)
+                : chip("Language storage is full", tone: .attention)
+        )
+
+        if let stale = languages.staleError {
+            content.addArrangedSubview(
+                note(
+                    "The last reading failed, so these figures are the previous one. "
+                        + Self.ocrFailure(stale),
+                    symbol: .clock,
+                    attn: true
+                )
+            )
+        }
+        if !inventory.needingRepair.isEmpty {
+            content.addArrangedSubview(
+                note(
+                    "\(inventory.needingRepair.count) installed language "
+                        + "\(inventory.needingRepair.count == 1 ? "set is" : "sets are") "
+                        + "recorded but their bytes are missing or no longer match. Repair "
+                        + "language storage checks every set and reports what it found.",
+                    symbol: .alertTriangle,
+                    attn: true
+                )
+            )
+        }
+        languageActions(into: content)
+    }
+
+    /// One installed resource set. The exact identity is shown because it is
+    /// the identity a removal names — two model revisions of one language can
+    /// both be installed, and §18.4 forbids treating one as the other.
+    private func languageRow(_ resource: OcrInstalledResource, into card: NSStackView) {
+        let identity = resource.identity
+        let key = OcrLanguageModel.operationKey(for: identity)
+        var trailing: NSView?
+        if languages.busy == key {
+            trailing = chip("Working…", tone: .checking)
+        } else if OcrLanguageModel.canRemove(resource) {
+            let remove = button(
+                "Remove…",
+                style: .dangerText,
+                action: #selector(removeLanguage(_:)),
+                subject: "\(identity.displayLanguage), model \(identity.modelVersion)"
+            )
+            remove.identifier = NSUserInterfaceItemIdentifier(key)
+            remove.isEnabled = languages.canAct
+            trailing = remove
+        }
+
+        let body = row(
+            into: card,
+            title: "\(identity.displayLanguage) (\(identity.language))",
+            detail: "\(OcrResourceInventory.describeBytes(identity.byteSize)) · engine "
+                + "\(identity.engineVersion) · model \(identity.modelVersion) · SHA-256 "
+                + "\(identity.sha256)",
+            trailing: trailing
+        )
+        body.addArrangedSubview(ovSpacer(1))
+
+        if !resource.bytesPresent {
+            body.addArrangedSubview(chip("Recorded, bytes not confirmed", tone: .attention))
+        } else {
+            body.addArrangedSubview(chip("Installed", tone: .ok))
+        }
+        if resource.pinned {
+            // Not a styling of the Remove button: there is no Remove button on
+            // a pinned set, and the row says why rather than leaving a disabled
+            // control to be guessed at.
+            let pinnedBy = resource.pinnedBy.joined(separator: ", ")
+            body.addArrangedSubview(
+                chip(
+                    "Cannot be removed: in use by \(resource.pinnedBy.count) "
+                        + "\(resource.pinnedBy.count == 1 ? "operation" : "operations") "
+                        + "(\(pinnedBy))",
+                    tone: .off
+                )
+            )
+        }
+    }
+
+    /// The two pane actions under the card: the install posture and the repair.
+    private func languageActions(into content: NSStackView) {
+        let actions = card(content, header: nil)
+
+        // §14.5 installs from the managed resource owner's trusted manifest.
+        // There is no such manifest, catalogue or downloader in this build, so
+        // the action is shown in its finished shape and marked unavailable with
+        // the actual reason — not offered as a path-and-digest form, which
+        // would make whoever filled it in the release authority.
+        notBuiltRow(
+            into: actions,
+            title: "Install language…",
+            detail: OcrInstallAvailability.unavailableNoTrustedCatalogue.reason,
+            status: "Not available in this build",
+            tone: .notBuilt
+        )
+
+        let repair = button(
+            "Repair language storage…",
+            style: .bordered,
+            action: #selector(repairLanguageStorage),
+            subject: "managed OCR resources"
+        )
+        repair.isEnabled = languages.canAct
+        let repairRow = row(
+            into: actions,
+            title: "Repair language storage",
+            detail: "Checks every installed language against its recorded size and digest. "
+                + "Bytes that no longer match are quarantined and unfinished installations "
+                + "are discarded. Languages in use are never removed.",
+            trailing: repair
+        )
+        if let outcome = languages.lastRepair {
+            repairRow.addArrangedSubview(ovSpacer(1))
+            repairRow.addArrangedSubview(
+                chip(Self.describeReconcile(outcome), tone: outcome.changed ? .attention : .ok)
+            )
+        } else if languages.busy == OcrLanguageModel.repairOperation {
+            repairRow.addArrangedSubview(ovSpacer(1))
+            repairRow.addArrangedSubview(chip("Checking language storage…", tone: .checking))
+        }
+    }
+
+    /// The language selection contract, stated without pretending it is held.
+    ///
+    /// §17.3 allows at most three selected recognition languages per profile.
+    /// Selecting them is a *profile* setting, and this build has no durable
+    /// settings owner the window can reach: the application-settings store
+    /// exists in Core's storage layer but no service operation, CLI or handler
+    /// exposes it. So the contract is stated and nothing is offered that would
+    /// imply a selection was saved or is in force.
+    private func renderLanguageSelection(_ content: NSStackView) {
+        let selection = card(content, header: "Recognition language selection")
+        let installed = languages.inventory?.resources.map(\.identity.displayLanguage) ?? []
+        notBuiltRow(
+            into: selection,
+            title: "Languages used for recognition",
+            detail: installed.isEmpty
+                ? "Up to three installed languages are used for each recognition profile. "
+                    + "There is no installed language to choose, and this build has no durable "
+                    + "settings owner to record a choice in, so no selection is in force."
+                : "Up to three installed languages are used for each recognition profile. "
+                    + "Installed and available to choose from: "
+                    + ListFormatter.localizedString(byJoining: installed) + ". "
+                    + "This build has no durable settings owner to record a choice in, so no "
+                    + "selection is in force and nothing below is saved.",
+            status: "No settings owner in this build",
+            tone: .notBuilt
+        )
         content.addArrangedSubview(
             note(
-                "Choose up to three. Language resources are downloaded, verified and installed by the capture feature, which is not installed in this build — so nothing here can be selected or downloaded yet.",
+                "Installing and removing languages is administration of this installation. "
+                    + "Choosing which installed languages a profile recognises is a separate "
+                    + "setting, and changing it would affect future captures only."
             )
         )
     }
@@ -2811,8 +3033,148 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         reloadMcpStatus()
     }
 
+    // MARK: Managed OCR resource actions
+
+    /// Read the managed cache. Passive: `--ocr-resources status` serves
+    /// nothing and starts nothing, so it is safe on window open (§A2).
+    private func loadOcrInventory() {
+        Task { @MainActor in await languages.load() }
+    }
+
+    @objc private func removeLanguage(_ sender: NSButton) {
+        guard let window, let key = sender.identifier?.rawValue,
+              let resource = languages.inventory?.resources.first(where: {
+                  OcrLanguageModel.operationKey(for: $0.identity) == key
+              })
+        else { return }
+        // Belt and braces with the row, which offers no button for a pinned
+        // set. The model refuses one too, and so does the service.
+        guard OcrLanguageModel.canRemove(resource) else { return }
+        let identity = resource.identity
+
+        let sheet = ConfirmSheet(
+            title: "Remove \(identity.displayLanguage) from this Mac?",
+            subtitle: "Model \(identity.modelVersion), engine \(identity.engineVersion)",
+            body: "This deletes \(OcrResourceInventory.describeBytes(identity.byteSize)) of "
+                + "installed recognition data for \(identity.displayLanguage). Documents "
+                + "Core has already read keep their extracted text; future captures will "
+                + "not recognise \(identity.displayLanguage) in images until it is "
+                + "installed again. No other version of this language is touched.",
+            confirm: "Remove language"
+        ) { [weak self] in
+            guard let self else { return }
+            self.confirmSheet?.showWorking("Removing \(identity.displayLanguage)…")
+            Task { @MainActor in
+                // The model marks itself busy, runs the removal and re-reads
+                // the cache before this returns.
+                switch await self.languages.remove(resource) {
+                case .success:
+                    self.confirmSheet?.close()
+                    self.toast("\(identity.displayLanguage) removed")
+                case .failure(let error):
+                    self.confirmSheet?.showFailure(Self.ocrFailure(error))
+                }
+                self.render()
+            }
+        }
+        confirmSheet = sheet
+        sheet.present(in: window, appearance: Self.targetAppearance)
+    }
+
+    /// The repair pass can quarantine bytes and discard an unfinished
+    /// installation, so it is confirmed and says so in those words.
+    @objc private func repairLanguageStorage() {
+        guard let window, languages.canAct else { return }
+        let sheet = ConfirmSheet(
+            title: "Repair language storage?",
+            subtitle: "Workspace: \(workspaceName)",
+            body: "Core checks every installed language against its recorded size and "
+                + "digest. Data that no longer matches is moved aside into quarantine and "
+                + "stops being used, an unfinished installation is discarded, and data no "
+                + "installed language refers to is deleted. Languages in use by unfinished "
+                + "work are never removed; if one of those is damaged, Core reports it "
+                + "instead. Nothing is downloaded.",
+            confirm: "Repair language storage"
+        ) { [weak self] in
+            guard let self else { return }
+            self.confirmSheet?.showWorking("Checking language storage…")
+            Task { @MainActor in
+                switch await self.languages.repair() {
+                case .success(let outcome):
+                    self.confirmSheet?.close()
+                    self.toast(Self.describeReconcile(outcome))
+                case .failure(let error):
+                    self.confirmSheet?.showFailure(Self.ocrFailure(error))
+                }
+                self.render()
+            }
+        }
+        confirmSheet = sheet
+        sheet.present(in: window, appearance: Self.targetAppearance)
+    }
+
+    /// What a repair actually did, in the terms it reported.
+    private static func describeReconcile(_ outcome: OcrReconcileOutcome) -> String {
+        guard outcome.changed else { return "Checked: nothing needed repair" }
+        var parts: [String] = []
+        if !outcome.quarantined.isEmpty {
+            parts.append("\(outcome.quarantined.count) quarantined")
+        }
+        if !outcome.discardedStaging.isEmpty {
+            parts.append("\(outcome.discardedStaging.count) unfinished installation(s) discarded")
+        }
+        if !outcome.discardedUnreferenced.isEmpty {
+            parts.append("\(outcome.discardedUnreferenced.count) unreferenced item(s) deleted")
+        }
+        if !outcome.unrecoverablePinned.isEmpty {
+            parts.append("\(outcome.unrecoverablePinned.count) in use and damaged, left in place")
+        }
+        return "Repaired: " + parts.joined(separator: ", ")
+    }
+
+    /// One sentence per failure, naming the stable refusal code where the
+    /// service gave one. The code is the thing to branch on and the thing a
+    /// report should carry, so it is shown rather than translated away.
+    static func ocrFailure(_ error: OcrResourceError) -> String {
+        switch error {
+        case .unavailable:
+            return "The packaged Core service could not be run from this window."
+        case .timedOut:
+            return "Core did not answer in time. Nothing was changed by this window."
+        case .outputTooLarge:
+            return "Core’s answer was larger than this window will read, so it was not used."
+        case .unreadableOutput:
+            return "Core’s answer was not in the form this window understands, so it was "
+                + "not used."
+        case .unsupportedSchema(let version):
+            return "Core answered with result format \(version), which this version of the "
+                + "window does not know how to read. Update OmniVia Core."
+        case .usageFault(let sentence):
+            return "Core rejected the request: \(sentence)"
+        case .refused(let code, let reason):
+            switch code {
+            case OcrResourceError.storageFull:
+                return "Language storage is full (\(code)). \(reason) Remove a language that "
+                    + "is not in use, or wait for pending processing to finish, then try again."
+            case OcrResourceError.pinned:
+                return "That language is in use by unfinished work and was not removed "
+                    + "(\(code)). \(reason)"
+            case OcrResourceError.notInstalled:
+                return "That exact language version is not installed (\(code)). \(reason)"
+            case OcrResourceError.divergent:
+                return "Core’s record of that language no longer matches its data (\(code)). "
+                    + "\(reason) Repair language storage reports what it found."
+            default:
+                return "Core refused the request (\(code)). \(reason)"
+            }
+        case .processFailed(let code):
+            return "The Core service exited with status \(code) and nothing was changed."
+        }
+    }
+
     @objc private func refreshStatus() {
         reloadMcpStatus()
+        Task { @MainActor in await languages.refresh() }
         coordinator.scheduleRefresh(.explicitRefresh)
     }
 

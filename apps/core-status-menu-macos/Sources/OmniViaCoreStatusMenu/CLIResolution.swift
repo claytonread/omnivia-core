@@ -169,14 +169,14 @@ struct CompanionConfiguration: Equatable {
 
 enum CLIResolutionError: LocalizedError, Equatable {
     case overrideIsNotExecutable(String)
-    case executableNotFound
+    case executableNotFound(String)
 
     var errorDescription: String? {
         switch self {
         case let .overrideIsNotExecutable(path):
             return "the --cli path is not executable: \(path)"
-        case .executableNotFound:
-            return "could not find the fixed 'omnivia' executable"
+        case let .executableNotFound(name):
+            return "could not find the fixed '\(name)' executable"
         }
     }
 }
@@ -190,8 +190,14 @@ struct CLIResolver {
         self.isExecutable = isExecutable
     }
 
+    /// `executableName` is the packaged executable to find. The companion
+    /// resolves two of them through this one path: the `omnivia` CLI, and the
+    /// `omnivia-core-service` that owns installation-local administration.
+    /// `override` is the `--cli` path and names the CLI only, so a service
+    /// lookup passes nil and takes the same candidate order.
     func resolve(
         override: URL?,
+        executableName: String = "omnivia",
         bundleURL: URL? = Bundle.main.bundleURL,
         companionExecutableURL: URL? = Bundle.main.executableURL,
         pathEnvironment: String? = ProcessInfo.processInfo.environment["PATH"],
@@ -210,22 +216,23 @@ struct CLIResolver {
                 bundleURL
                     .appendingPathComponent("Contents", isDirectory: true)
                     .appendingPathComponent("Resources", isDirectory: true)
-                    .appendingPathComponent("omnivia")
+                    .appendingPathComponent(executableName)
             )
         }
         if let companionExecutableURL {
             candidates.append(
-                companionExecutableURL.deletingLastPathComponent().appendingPathComponent("omnivia")
+                companionExecutableURL.deletingLastPathComponent()
+                    .appendingPathComponent(executableName)
             )
         }
-        candidates.append(URL(fileURLWithPath: "/opt/homebrew/bin/omnivia"))
-        candidates.append(URL(fileURLWithPath: "/usr/local/bin/omnivia"))
+        candidates.append(URL(fileURLWithPath: "/opt/homebrew/bin/\(executableName)"))
+        candidates.append(URL(fileURLWithPath: "/usr/local/bin/\(executableName)"))
 
         if let pathEnvironment {
             for entry in pathEnvironment.split(separator: ":", omittingEmptySubsequences: false) {
                 let directory = entry.isEmpty ? workingDirectory.path : String(entry)
                 let base = URL(fileURLWithPath: directory, relativeTo: workingDirectory)
-                candidates.append(base.appendingPathComponent("omnivia").standardizedFileURL)
+                candidates.append(base.appendingPathComponent(executableName).standardizedFileURL)
             }
         }
 
@@ -237,7 +244,7 @@ struct CLIResolver {
                 return URL(fileURLWithPath: path)
             }
         }
-        throw CLIResolutionError.executableNotFound
+        throw CLIResolutionError.executableNotFound(executableName)
     }
 }
 
