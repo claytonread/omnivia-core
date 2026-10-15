@@ -248,6 +248,72 @@ final class DocumentProcessingCommandRunnerTests: XCTestCase {
         }
     }
 
+    /// The ordered selection is one member, and the order is sent as chosen —
+    /// not sorted, not deduplicated on the way out, and not accompanied by the
+    /// members the user did not touch.
+    func testTheOrderedSelectionIsSentAsOneMemberInItsOrder() async throws {
+        let process = RecordingProcessRunner(
+            stdout: envelope(languages: "[\"deu\", \"eng\"]", revision: 5)
+        )
+        let change = try XCTUnwrap(DocumentProcessingChange.selecting(["deu", "eng"]))
+        let result = await runner(process).update(revision: 4, change: change)
+
+        XCTAssertEqual(process.invocations[0], [
+            "--installation-state", installationState.path,
+            "--workspace-id", workspace,
+            "--timeout-ms", "55000",
+            "document", "configure",
+            "--input-json", "{\"recognition_languages\":[\"deu\",\"eng\"],\"revision\":4}",
+            "--json",
+            "--idempotency-key", "docproc-4-languages-deu-eng",
+        ])
+        XCTAssertEqual((try? result.get())?.recognitionLanguages, ["deu", "eng"])
+        let arguments = process.invocations[0]
+        XCTAssertFalse(arguments.contains { $0.contains("\"mode\"") })
+        XCTAssertFalse(arguments.contains { $0.contains("embedded_image_ocr") })
+    }
+
+    /// The same languages in another order is a different selection, so it is a
+    /// different key: equal keys with different inputs are refused by Core.
+    func testOrderIsPartOfTheSelectionsIdempotencyKey() {
+        let forward = DocumentProcessingCommandRunner.idempotencyKey(
+            revision: 2, change: .recognitionLanguages(["eng", "deu"])
+        )
+        let reversed = DocumentProcessingCommandRunner.idempotencyKey(
+            revision: 2, change: .recognitionLanguages(["deu", "eng"])
+        )
+        XCTAssertEqual(forward, "docproc-2-languages-eng-deu")
+        XCTAssertNotEqual(forward, reversed)
+        for key in [forward, reversed] {
+            XCTAssertLessThanOrEqual(key.count, 128)
+            XCTAssertTrue(key.allSatisfy { character in
+                character.isASCII
+                    && (character.isLetter || character.isNumber || "._:-".contains(character))
+            })
+        }
+    }
+
+    /// One to three unique codes of the bounded token shape, and nothing else.
+    func testASelectionOutsideItsBoundsIsNotAChangeAtAll() {
+        XCTAssertNil(DocumentProcessingChange.selecting([]))
+        XCTAssertNil(DocumentProcessingChange.selecting(["eng", "deu", "fra", "ita"]))
+        XCTAssertNil(DocumentProcessingChange.selecting(["eng", "eng"]))
+        XCTAssertNil(DocumentProcessingChange.selecting(["eng", "ENG"]))
+        XCTAssertNil(DocumentProcessingChange.selecting(["--input-json"]))
+        XCTAssertNil(DocumentProcessingChange.selecting(["eng", ""]))
+        // Three codes of the token shape's full length would overrun the
+        // idempotency key the change is spent as.
+        XCTAssertNil(DocumentProcessingChange.selecting([String(repeating: "e", count: 120)]))
+
+        XCTAssertEqual(
+            DocumentProcessingChange.selecting(["eng"]), .recognitionLanguages(["eng"])
+        )
+        XCTAssertEqual(
+            DocumentProcessingChange.selecting(["chi_sim", "eng", "deu"]),
+            .recognitionLanguages(["chi_sim", "eng", "deu"])
+        )
+    }
+
     /// Nothing on this surface installs a resource. The two leaves it can name
     /// are the settings pair, and no invocation carries an install flag.
     func testTheClientNeverRunsAnInstall() async {
@@ -645,6 +711,205 @@ final class DocumentProcessingModelTests: XCTestCase {
             settings(languages: ["zxx"]), installed: inventory([])
         )
         XCTAssertEqual(selected[0].displayName, "zxx")
+    }
+
+    // MARK: Changing the selection
+
+    /// What a slot may offer: the installed languages, by name, each once.
+    /// English is not among them unless the cache reports English installed.
+    func testOnlyInstalledLanguagesAreSelectable() {
+        let selectable = DocumentProcessingModel.selectableLanguages(
+            installed: inventory(["eng", "deu", "chi_sim"])
+        )
+        XCTAssertEqual(selectable.map(\.code), ["chi_sim", "eng", "deu"])
+        XCTAssertEqual(selectable.map(\.availability), [.installed, .installed, .installed])
+
+        XCTAssertTrue(
+            DocumentProcessingModel.selectableLanguages(installed: inventory([])).isEmpty
+        )
+    }
+
+    /// An inventory that could not be read offers nothing to select: the
+    /// settings authority accepts a selection only against installed
+    /// languages, and this window cannot prove one is on the strength of not
+    /// having been able to look.
+    func testAnUnreadableInventoryOffersNothingToSelect() async {
+        XCTAssertTrue(DocumentProcessingModel.selectableLanguages(installed: nil).isEmpty)
+
+        let stub = StubAdministrator(reads: [.success(settings())])
+        let model = DocumentProcessingModel(administering: stub)
+        await model.load()
+
+        let refused = await model.selectLanguages(["eng"], installed: nil)
+        XCTAssertEqual(refused.failure, .unselectable)
+        XCTAssertEqual(model.lastWriteError, .unselectable)
+        XCTAssertEqual(stub.calls, [.read])
+        XCTAssertEqual(model.settings?.recognitionLanguages, ["eng"])
+    }
+
+    /// Recorded bytes that are not present are not an installed language, so
+    /// they are not selectable either — and a selection naming one is refused
+    /// here rather than sent for Core to refuse.
+    func testAMissingResourceIsNeitherSelectableNorSendable() async {
+        let recorded = OcrResourceInventory(
+            capacityBytes: 536_870_912,
+            installedBytes: 0,
+            availableBytes: 536_870_912,
+            resources: [
+                OcrInstalledResource(
+                    identity: OcrResourceIdentity(
+                        language: "deu", engineVersion: "5.5.3",
+                        modelVersion: "tessdata_fast-4.1.0", byteSize: 4_113_088,
+                        sha256: String(repeating: "a", count: 64)
+                    ),
+                    pinned: false, pinnedBy: [], bytesPresent: false
+                ),
+            ]
+        )
+        XCTAssertTrue(DocumentProcessingModel.selectableLanguages(installed: recorded).isEmpty)
+
+        // The stored selection stays visible and stays as it is.
+        let stub = StubAdministrator(reads: [.success(settings(languages: ["deu"]))])
+        let model = DocumentProcessingModel(administering: stub)
+        await model.load()
+        let refused = await model.selectLanguages(["deu"], installed: recorded)
+        XCTAssertEqual(refused.failure, .unselectable)
+        XCTAssertEqual(stub.calls, [.read])
+        XCTAssertEqual(
+            DocumentProcessingModel.selectedLanguages(
+                model.settings!, installed: recorded
+            ).map(\.availability),
+            [.notInstalled]
+        )
+    }
+
+    /// A selection this window may not send never reaches the client: more than
+    /// three, a duplicate, an empty one, or a language that is not installed.
+    func testAnUnsendableSelectionIsRefusedBeforeAnythingIsSent() async {
+        let stub = StubAdministrator(reads: [.success(settings())])
+        let model = DocumentProcessingModel(administering: stub)
+        await model.load()
+        let installed = inventory(["eng", "deu", "fra", "ita"])
+
+        for codes in [[], ["eng", "deu", "fra", "ita"], ["eng", "eng"], ["eng", "jpn"]] {
+            let refused = await model.selectLanguages(codes, installed: installed)
+            XCTAssertEqual(refused.failure, .unselectable, "\(codes)")
+        }
+        XCTAssertEqual(stub.calls, [.read])
+        XCTAssertTrue(model.lastWriteError!.sentence.contains("one to three"))
+    }
+
+    func testAnOrderedSelectionIsWrittenUnderTheReadRevisionAndReadBack() async {
+        let stored = settings(languages: ["deu", "eng"], revision: 4)
+        let stub = StubAdministrator(
+            reads: [.success(settings(revision: 3)), .success(stored)],
+            writes: [.success(stored)]
+        )
+        let model = DocumentProcessingModel(administering: stub)
+        await model.load()
+
+        let result = await model.selectLanguages(
+            ["deu", "eng"], installed: inventory(["eng", "deu"])
+        )
+        XCTAssertNotNil(try? result.get())
+        XCTAssertEqual(stub.calls, [
+            .read,
+            .update(revision: 3, change: .recognitionLanguages(["deu", "eng"])),
+            .read,
+        ])
+        XCTAssertEqual(model.settings?.recognitionLanguages, ["deu", "eng"])
+        XCTAssertNil(model.lastWriteError)
+    }
+
+    /// A refused write leaves Core's stored selection on screen, from a fresh
+    /// read rather than from the list that was chosen and never saved.
+    func testARefusedSelectionRevertsToTheStoredValue() async {
+        let stored = settings(languages: ["eng"], revision: 3)
+        let stub = StubAdministrator(
+            reads: [.success(stored), .success(stored)],
+            writes: [.failure(.refused(code: DocumentProcessingError.conflict))]
+        )
+        let model = DocumentProcessingModel(administering: stub)
+        await model.load()
+
+        let result = await model.selectLanguages(
+            ["deu", "eng"], installed: inventory(["eng", "deu"])
+        )
+        XCTAssertEqual(result.failure, .refused(code: DocumentProcessingError.conflict))
+        XCTAssertEqual(model.lastWriteError, .refused(code: DocumentProcessingError.conflict))
+        XCTAssertEqual(model.settings?.recognitionLanguages, ["eng"])
+        XCTAssertEqual(stub.calls, [
+            .read,
+            .update(revision: 3, change: .recognitionLanguages(["deu", "eng"])),
+            .read,
+        ])
+    }
+
+    /// A write that timed out may have landed, so the selection on screen comes
+    /// from a fresh read either way.
+    func testATimedOutSelectionIsStillFollowedByAFreshRead() async {
+        let landed = settings(languages: ["deu"], revision: 4)
+        let stub = StubAdministrator(
+            reads: [.success(settings(revision: 3)), .success(landed)],
+            writes: [.failure(.timedOut)]
+        )
+        let model = DocumentProcessingModel(administering: stub)
+        await model.load()
+        await model.selectLanguages(["deu"], installed: inventory(["deu"]))
+
+        XCTAssertEqual(model.lastWriteError, .timedOut)
+        XCTAssertEqual(model.state, .ready(landed))
+    }
+
+    /// Choosing the list that is already stored sends nothing: a popup fires on
+    /// the item that was already showing.
+    func testASelectionAlreadyInForceIsNotWritten() async {
+        let stub = StubAdministrator(reads: [.success(settings(languages: ["eng", "deu"]))])
+        let model = DocumentProcessingModel(administering: stub)
+        await model.load()
+
+        await model.selectLanguages(["eng", "deu"], installed: inventory(["eng", "deu"]))
+        XCTAssertEqual(stub.calls, [.read])
+    }
+
+    /// The three ordered slots over one list: a slot takes the chosen code, a
+    /// cleared slot closes the order up, and a code appears once.
+    func testTheSlotsComposeTheOrderedList() {
+        let compose = DocumentProcessingModel.selection
+        XCTAssertEqual(compose(["eng"], 1, "deu"), ["eng", "deu"])
+        XCTAssertEqual(compose(["eng", "deu"], 0, "fra"), ["fra", "deu"])
+        XCTAssertEqual(compose(["eng", "deu", "fra"], 1, nil), ["eng", "fra"])
+        XCTAssertEqual(compose(["eng", "deu"], 1, nil), ["eng"])
+        // A hole rather than an append: the third slot's choice closes up.
+        XCTAssertEqual(compose(["eng"], 2, "deu"), ["eng", "deu"])
+        // A duplicate cannot survive the composition, whatever reaches it.
+        XCTAssertEqual(compose(["eng", "deu"], 1, "eng"), ["eng"])
+        // Out of the slot range changes nothing.
+        XCTAssertEqual(compose(["eng"], 3, "deu"), ["eng"])
+        XCTAssertEqual(compose(["eng"], -1, "deu"), ["eng"])
+    }
+
+    /// Selecting a language reaches the settings authority and nothing else: no
+    /// managed-resource call, so no install can be a side effect of it.
+    func testSelectingALanguageInstallsNothing() async {
+        let resources = InertResourceAdministrator()
+        let languages = OcrLanguageModel(administering: resources)
+        await languages.load()
+
+        let stored = settings(languages: ["deu"], revision: 1)
+        let stub = StubAdministrator(
+            reads: [.success(settings()), .success(stored)],
+            writes: [.success(stored)]
+        )
+        let model = DocumentProcessingModel(administering: stub)
+        await model.load()
+        await model.selectLanguages(["deu"], installed: inventory(["deu"]))
+
+        // The one passive read the pane opens with, and nothing more.
+        XCTAssertEqual(resources.calls, ["status"])
+        XCTAssertEqual(stub.calls, [
+            .read, .update(revision: 0, change: .recognitionLanguages(["deu"])), .read,
+        ])
     }
 
     // MARK: What the pane states

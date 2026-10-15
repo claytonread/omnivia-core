@@ -20,8 +20,10 @@
 //   change is a replay and two different changes can never share a key.
 // * An update is a *partial* change: a member it does not name is held. One user
 //   action names one member, which is why `DocumentProcessingChange` is a closed
-//   pair rather than a whole settings document — re-sending the members the user
-//   did not touch would overwrite a preference this build may not understand.
+//   set of single members rather than a whole settings document — re-sending the
+//   members the user did not touch would overwrite a preference this build may
+//   not understand. The language selection is one member even though the pane
+//   offers it as three ordered slots: the service holds the list.
 // * The preferences decide what a *future* capture is admitted under and nothing
 //   else. An already captured document keeps the snapshot it was admitted with,
 //   so changing a preference here never reprocesses anything. See
@@ -99,6 +101,33 @@ public struct DocumentProcessingSettings: Sendable, Equatable {
 public enum DocumentProcessingChange: Sendable, Equatable {
     case mode(DocumentProcessingMode)
     case embeddedImageOcr(Bool)
+    /// The whole ordered selection, which is one member and therefore one
+    /// change: the service holds the list, not three slots. Build it through
+    /// `selecting(_:)` so a list the contract would refuse is never sent.
+    case recognitionLanguages([String])
+
+    /// At most three, in order (§17.3), and the contract's own bound.
+    public static let maximumLanguages = 3
+
+    /// The selection as a change, or nil when it is not one that may be sent:
+    /// one to three codes, no duplicates, each of the bounded token shape.
+    ///
+    /// Whether the languages are *installed* is a separate question and not one
+    /// this type can answer — `DocumentProcessingModel.selectLanguages` asks it
+    /// of the managed inventory before calling here.
+    public static func selecting(_ codes: [String]) -> DocumentProcessingChange? {
+        guard (1...maximumLanguages).contains(codes.count),
+              Set(codes).count == codes.count,
+              codes.allSatisfy(DocumentProcessingCommandRunner.isOpenCode)
+        else { return nil }
+        let change = DocumentProcessingChange.recognitionLanguages(codes)
+        // The key is spent as the idempotency key, which the contract bounds at
+        // 128 characters after a `docproc-<revision>-` prefix. Three codes of
+        // the shape's full length would overrun it, and a truncated key would
+        // make two different selections one replay of each other.
+        guard change.key.count <= 100 else { return nil }
+        return change
+    }
 
     /// The busy key, and the tail of the idempotency key. Stable for one
     /// change and different for every other, which is what the key needs.
@@ -106,6 +135,10 @@ public enum DocumentProcessingChange: Sendable, Equatable {
         switch self {
         case .mode(let mode): return "mode-\(mode.rawValue)"
         case .embeddedImageOcr(let on): return "embedded-\(on ? "on" : "off")"
+        // The order is part of the change, so it is part of the key: the same
+        // three languages in another order is a different selection.
+        case .recognitionLanguages(let codes):
+            return "languages-\(codes.joined(separator: "-"))"
         }
     }
 
@@ -114,15 +147,18 @@ public enum DocumentProcessingChange: Sendable, Equatable {
         switch self {
         case .mode(let mode): return ("mode", mode.rawValue)
         case .embeddedImageOcr(let on): return ("embedded_image_ocr", on)
+        case .recognitionLanguages(let codes): return ("recognition_languages", codes)
         }
     }
 
     /// Whether `settings` already says this, so there is nothing to write. A
-    /// two-segment control fires on the segment that is already selected.
+    /// two-segment control fires on the segment that is already selected, and a
+    /// popup fires on the item that was already showing.
     public func isAlreadyInForce(in settings: DocumentProcessingSettings) -> Bool {
         switch self {
         case .mode(let mode): return settings.modeCode == mode.rawValue
         case .embeddedImageOcr(let on): return settings.embeddedImageOcr == on
+        case .recognitionLanguages(let codes): return settings.recognitionLanguages == codes
         }
     }
 }
@@ -144,6 +180,9 @@ public enum DocumentProcessingError: Error, Sendable, Equatable {
     /// The service answered, and the answer was a refusal carrying this frozen
     /// error code.
     case refused(code: String)
+    /// The selection this window was asked to send is not one it may send, so
+    /// nothing was sent. Local, and never a claim about what Core holds.
+    case unselectable
 
     /// `conflict`: the settings changed between the read and the write.
     public static let conflict = "conflict"
@@ -208,6 +247,11 @@ public enum DocumentProcessingError: Error, Sendable, Equatable {
             default:
                 return "Core refused the call (\(code)). Nothing was read or changed."
             }
+        case .unselectable:
+            return "A recognition language can be selected only while Core reports it "
+                + "installed on this Mac, and one to three may be selected in order. That "
+                + "selection is not one of those, so nothing was sent and the stored "
+                + "selection is unchanged."
         }
     }
 }
@@ -404,6 +448,78 @@ public final class DocumentProcessingModel {
                 availability: availability
             )
         }
+    }
+
+    /// The languages this window may put *into* a selection: the ones the
+    /// managed cache reports installed, by name, each code once.
+    ///
+    /// Nothing else is here, and that is the whole rule. An inventory that
+    /// could not be read yields none, because a selection is accepted only
+    /// against languages that are installed and this window cannot prove one is
+    /// on the strength of not having been able to look. A stored selection whose
+    /// resource is missing stays *visible* above — it is what Core holds — but
+    /// it is not offered as something to select, since the settings authority
+    /// refuses a selection naming a language it has not got.
+    ///
+    /// English is not among these unless the cache reports English installed.
+    public static func selectableLanguages(
+        installed: OcrResourceInventory?
+    ) -> [DocumentProcessingLanguage] {
+        guard let installed else { return [] }
+        // A set, because two model revisions of one language can both be
+        // installed and a selection names the language, not the identity.
+        let codes = Set(installed.resources.filter(\.bytesPresent).map(\.identity.language))
+        return codes
+            .map { code in
+                DocumentProcessingLanguage(
+                    code: code,
+                    displayName: OcrResourceIdentity.displayName(for: code),
+                    availability: .installed
+                )
+            }
+            .sorted { ($0.displayName, $0.code) < ($1.displayName, $1.code) }
+    }
+
+    /// The ordered selection one slot change produces.
+    ///
+    /// The service holds a list, and the pane offers it as three ordered slots.
+    /// A cleared slot closes up rather than leaving a hole, and a code appears
+    /// once: the menus already exclude the other slots' codes, and this holds
+    /// whatever reaches it.
+    public static func selection(
+        _ current: [String], slot: Int, code: String?
+    ) -> [String] {
+        let bound = DocumentProcessingChange.maximumLanguages
+        var slots: [String?] = (0..<bound).map { $0 < current.count ? current[$0] : nil }
+        guard slots.indices.contains(slot) else { return current }
+        slots[slot] = code
+        var chosen: [String] = []
+        for entry in slots.compactMap({ $0 }) where !chosen.contains(entry) {
+            chosen.append(entry)
+        }
+        return chosen
+    }
+
+    /// Send one ordered selection, if it is one this window may send.
+    ///
+    /// Two gates, and neither of them installs anything: the change's own shape
+    /// bound, and every code being a language the managed inventory reports
+    /// installed. A selection that fails either is refused here — locally,
+    /// before any call — and the refusal is shown beside the stored selection,
+    /// which is unchanged.
+    @discardableResult
+    public func selectLanguages(
+        _ codes: [String], installed: OcrResourceInventory?
+    ) async -> Result<Void, DocumentProcessingError> {
+        let selectable = Set(Self.selectableLanguages(installed: installed).map(\.code))
+        guard let change = DocumentProcessingChange.selecting(codes),
+              codes.allSatisfy(selectable.contains)
+        else {
+            lastWriteError = .unselectable
+            onChange?()
+            return .failure(.unselectable)
+        }
+        return await apply(change)
     }
 }
 

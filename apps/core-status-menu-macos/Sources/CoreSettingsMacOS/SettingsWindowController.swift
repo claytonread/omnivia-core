@@ -1950,6 +1950,12 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         renderTextRecognition(content)
         renderInstalledLanguages(content)
         renderLanguageSelection(content)
+        // One note for the pane, because `lastWriteError` is one piece of state
+        // for all three controls: whichever write did not take effect, the
+        // reason sits under the values Core actually holds.
+        if let failed = processing.lastWriteError {
+            content.addArrangedSubview(note(failed.sentence, symbol: .alertTriangle, attn: true))
+        }
         content.addArrangedSubview(note(DocumentProcessingModel.futureCapturesNote))
     }
 
@@ -2009,9 +2015,6 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                     attn: true
                 )
             )
-        }
-        if let failed = processing.lastWriteError {
-            content.addArrangedSubview(note(failed.sentence, symbol: .alertTriangle, attn: true))
         }
     }
 
@@ -2303,7 +2306,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// The selected recognition languages, in their selection order.
+    /// The selected recognition languages, in their selection order, and the
+    /// three ordered slots that change them.
     ///
     /// §17.3 allows at most three per profile, and the selection is Core's own
     /// durable preference — read here, never composed from what happens to be
@@ -2350,16 +2354,126 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             }
         }
 
-        // Read-only on purpose. The selection is Core's to hold and this pane
-        // reports it; the window offers no editor for it because installing a
-        // language is unavailable in this build (see `languageActions`), so a
-        // selection control could only ever reorder one entry.
+        // The editor: three ordered slots over the installed inventory. One
+        // slot change sends the whole list as one compare-and-swap update,
+        // because the list is one settings member.
+        let selectable = DocumentProcessingModel.selectableLanguages(
+            installed: languages.inventory
+        )
+        guard !selectable.isEmpty else {
+            // Three different reasons there is nothing to select from, and the
+            // one in force is named: an empty cache is not an unread one, and
+            // neither of those is "still reading".
+            let status: String
+            let tone: ChipTone
+            switch languages.state {
+            case .loading:
+                status = "Reading installed languages…"
+                tone = .checking
+            case .ready:
+                status = "No installed language to select"
+                tone = .neutral
+            case .noAdministrator, .unavailable:
+                status = "Installed languages couldn’t be read"
+                tone = .neutral
+            }
+            notBuiltRow(
+                into: selection,
+                title: "Changing the selection",
+                detail: "A language can be selected only while Core reports it installed on "
+                    + "this Mac, and this window has no reading of an installed one. The "
+                    + "selection above is what Core holds and stays as it is. "
+                    + DocumentProcessingModel.noInstallNote,
+                status: status,
+                tone: tone
+            )
+            return
+        }
+        for slot in 0..<DocumentProcessingChange.maximumLanguages {
+            languageSlotRow(slot, into: selection, settings: settings, selectable: selectable)
+        }
         row(
             into: selection,
             title: "Changing the selection",
-            detail: "Up to three languages may be selected, in order. This window shows the "
-                + "selection Core holds and does not change it. "
+            detail: "Up to three languages may be selected, in order, from the ones installed "
+                + "on this Mac. Clearing a slot closes the order up. "
                 + DocumentProcessingModel.noInstallNote
+        )
+    }
+
+    /// One ordered slot. A popup rather than a drag list: it is the native
+    /// control, so it is keyboard operable and announced by VoiceOver without
+    /// anything here having to re-implement either.
+    ///
+    /// The menu offers the installed languages the other slots are not using,
+    /// so a duplicate cannot be chosen; the slots after the first also offer
+    /// None. A stored language whose resource is missing is shown as the slot's
+    /// current item and cannot be chosen — Core refuses a selection naming a
+    /// language it has not got, and offering one would be offering a refusal.
+    private func languageSlotRow(
+        _ slot: Int,
+        into card: NSStackView,
+        settings: DocumentProcessingSettings,
+        selectable: [DocumentProcessingLanguage]
+    ) {
+        let titles = ["First language", "Second language", "Third language"]
+        let current = slot < settings.recognitionLanguages.count
+            ? settings.recognitionLanguages[slot]
+            : nil
+        let others = Set(settings.recognitionLanguages.enumerated().filter { $0.offset != slot }
+            .map(\.element))
+
+        var trailing: NSView
+        if processing.busy?.hasPrefix(Self.languageSelectionBusyPrefix) == true {
+            trailing = chip("Saving…", tone: .checking)
+        } else {
+            let picker = NSPopUpButton(frame: .zero, pullsDown: false)
+            func add(_ title: String, code: String?, enabled: Bool = true) {
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                item.attributedTitle = NSAttributedString(
+                    string: title,
+                    attributes: [.font: OvFont.sans(12.5), .foregroundColor: Ov.textPrimary]
+                )
+                item.representedObject = code
+                item.isEnabled = enabled
+                picker.menu?.addItem(item)
+            }
+            // The first slot has no None: a selection names at least one
+            // language, and the service refuses an empty one.
+            if slot > 0 { add("None", code: nil) }
+            for language in selectable where !others.contains(language.code) {
+                add("\(language.displayName) (\(language.code))", code: language.code)
+            }
+            if let current, !selectable.contains(where: { $0.code == current }) {
+                // Shown, so the control is not lying about what is stored, and
+                // disabled, so it cannot be re-selected into a changed list.
+                add(
+                    "\(OcrResourceIdentity.displayName(for: current)) (\(current)) — "
+                        + "selected, not installed",
+                    code: current,
+                    enabled: false
+                )
+            }
+            picker.selectItem(at: picker.itemArray.firstIndex {
+                $0.representedObject as? String == current
+            } ?? 0)
+            picker.target = self
+            picker.action = #selector(changeLanguageSlot(_:))
+            picker.identifier = NSUserInterfaceItemIdentifier(
+                "\(Self.languageSlotIdentifierPrefix)\(slot)"
+            )
+            picker.isEnabled = processing.canAct
+            picker.setAccessibilityLabel("\(titles[slot]) for recognition")
+            trailing = AddApplicationSheet.selectBox(picker, width: 240, height: 26)
+        }
+
+        row(
+            into: card,
+            title: titles[slot],
+            detail: slot == 0
+                ? "Recognition is attempted in the selected order, this one first."
+                : nil,
+            trailing: trailing
         )
     }
 
@@ -3252,6 +3366,40 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     @objc private func toggleEmbeddedImageOcr(_ sender: NSSwitch) {
         changeProcessing(.embeddedImageOcr(sender.state == .on))
+    }
+
+    /// Which slot a popup is, and the busy key every language change shares.
+    /// The change's own key carries the chosen codes, so the pane matches on
+    /// the prefix rather than enumerating the selections it could be saving.
+    static let languageSlotIdentifierPrefix = "docproc-language-slot-"
+    static let languageSelectionBusyPrefix = "languages-"
+
+    /// One slot change is the whole ordered list, under the revision that was
+    /// read. The model refuses a list this window may not send — more than
+    /// three, a duplicate, or a language the managed cache does not report
+    /// installed — before anything is sent, and nothing here installs one.
+    @objc private func changeLanguageSlot(_ sender: NSPopUpButton) {
+        guard processing.canAct, let settings = processing.settings,
+              let raw = sender.identifier?.rawValue,
+              let slot = Int(raw.dropFirst(Self.languageSlotIdentifierPrefix.count))
+        else { return }
+        let chosen = DocumentProcessingModel.selection(
+            settings.recognitionLanguages,
+            slot: slot,
+            code: sender.selectedItem?.representedObject as? String
+        )
+        // The popup fires on the item that was already showing.
+        guard chosen != settings.recognitionLanguages else { return }
+        Task { @MainActor in
+            let result = await processing.selectLanguages(chosen, installed: languages.inventory)
+            if case .success = result {
+                toast("Saved. This applies to captures from now on.")
+            }
+            // A failure is already on the pane as `lastWriteError`, beside the
+            // selection Core actually holds, and the slots are drawn from that
+            // reading — so a refused choice is not left showing.
+            render()
+        }
     }
 
     @objc private func removeLanguage(_ sender: NSButton) {
