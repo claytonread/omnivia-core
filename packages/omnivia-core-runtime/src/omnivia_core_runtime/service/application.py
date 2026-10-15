@@ -102,6 +102,11 @@ from omnivia_core_runtime.service.handlers.document_capture import (
     DOCUMENT_REPROCESS_OPERATION,
     DocumentCaptureHandlers,
 )
+from omnivia_core_runtime.service.handlers.document_settings import (
+    DOCUMENT_SETTINGS_GET_OPERATION,
+    DOCUMENT_SETTINGS_UPDATE_OPERATION,
+    DocumentSettingsHandlers,
+)
 from omnivia_core_runtime.service.handlers.engineering import EngineeringHandlers
 from omnivia_core_runtime.service.handlers.evidence import (
     EVIDENCE_CAPTURE_OPERATION,
@@ -366,11 +371,18 @@ JOB_OBSERVATION_PURPOSE: Final = "job_observation"
 #: purpose rather than `job_observation`, because a document's intake history outlives every
 #: job that contributed to it and is read long after the last one settled.
 DOCUMENT_OBSERVATION_PURPOSE: Final = "document_observation"
+#: Reading this workspace's durable document-processing preferences. Its own purpose, and
+#: not `document_observation`: a document's intake history and the settings a future
+#: capture will be admitted under are different facts, and a grant to read one is not a
+#: grant to read the other.
+DOCUMENT_SETTINGS_PURPOSE: Final = "document_settings"
 INGESTION_FAMILY_OPERATIONS: Final[frozenset[str]] = JOB_FAMILY_OPERATIONS | {
     EVIDENCE_CAPTURE_OPERATION,
     DOCUMENT_CAPTURE_OPERATION,
     DOCUMENT_HISTORY_OPERATION,
     DOCUMENT_REPROCESS_OPERATION,
+    DOCUMENT_SETTINGS_GET_OPERATION,
+    DOCUMENT_SETTINGS_UPDATE_OPERATION,
 }
 JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -379,6 +391,10 @@ JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         DOCUMENT_CAPTURE_OPERATION: MUTATION_PURPOSES[DOCUMENT_CAPTURE_OPERATION],
         DOCUMENT_REPROCESS_OPERATION: MUTATION_PURPOSES[DOCUMENT_REPROCESS_OPERATION],
         DOCUMENT_HISTORY_OPERATION: DOCUMENT_OBSERVATION_PURPOSE,
+        DOCUMENT_SETTINGS_GET_OPERATION: DOCUMENT_SETTINGS_PURPOSE,
+        DOCUMENT_SETTINGS_UPDATE_OPERATION: MUTATION_PURPOSES[
+            DOCUMENT_SETTINGS_UPDATE_OPERATION
+        ],
         JOB_GET_OPERATION: JOB_OBSERVATION_PURPOSE,
         JOB_CANCEL_OPERATION: MUTATION_PURPOSES[JOB_CANCEL_OPERATION],
         JOB_RETRY_OPERATION: MUTATION_PURPOSES[JOB_RETRY_OPERATION],
@@ -849,14 +865,17 @@ def build_job_registry(
     handlers: JobHandlers,
     evidence: EvidenceHandlers,
     documents: DocumentCaptureHandlers,
+    settings: DocumentSettingsHandlers,
 ) -> ApplicationOperationRegistry:
-    """The content-ingestion family's nine handlers, from their two owning modules.
+    """The content-ingestion family's eleven handlers, from their three owning modules.
 
-    Two handler objects rather than one: `evidence.capture` is written in the evidence
+    Three handler objects rather than one: `evidence.capture` is written in the evidence
     handler family beside `evidence.search`, which is where a reader looks for it and
-    where the projection barrier the two share belongs. What this registry states is the
-    *authority* boundary -- the nine operations one session and one binding cover -- and
-    that is a different question from which module implements each of them.
+    where the projection barrier the two share belongs, and the two processing-settings
+    operations are written beside the store they read rather than beside the captures
+    they will later govern. What this registry states is the *authority* boundary -- the
+    eleven operations one session and one binding cover -- and that is a different
+    question from which module implements each of them.
     """
     registry = ApplicationOperationRegistry()
     registry.register(
@@ -876,6 +895,14 @@ def build_job_registry(
     registry.register(
         DOCUMENT_HISTORY_OPERATION,
         cast(OperationHandler, documents.document_history),
+    )
+    registry.register(
+        DOCUMENT_SETTINGS_GET_OPERATION,
+        cast(OperationHandler, settings.document_settings_get),
+    )
+    registry.register(
+        DOCUMENT_SETTINGS_UPDATE_OPERATION,
+        cast(OperationHandler, settings.document_settings_update),
     )
     registry.register(JOB_GET_OPERATION, cast(OperationHandler, handlers.job_get))
     registry.register(JOB_CANCEL_OPERATION, cast(OperationHandler, handlers.job_cancel))
@@ -2613,7 +2640,14 @@ def build_job_application_dispatcher(
             HmacContinuationTokenCodec.secure() if token_codec is None else token_codec
         ),
     )
-    registry = build_job_registry(handlers, evidence, documents)
+    document_settings = DocumentSettingsHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=resolved_clock,
+        allocate_identifier=allocate_identifier,
+    )
+    registry = build_job_registry(handlers, evidence, documents, document_settings)
     return ApplicationDispatcher(
         registry=registry,
         session=session,
@@ -2783,6 +2817,7 @@ __all__ = [
     "CONTEXT_PACK_BUILD_OPERATION",
     "CONTINUITY_HANDOFF_PURPOSE",
     "DOCUMENT_OBSERVATION_PURPOSE",
+    "DOCUMENT_SETTINGS_PURPOSE",
     "ENGINEERING_CONTEXT_PURPOSE",
     "ENGINEERING_EXPAND_PURPOSE",
     "ENGINEERING_FAMILY_OPERATIONS",

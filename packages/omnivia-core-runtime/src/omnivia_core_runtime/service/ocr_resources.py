@@ -180,6 +180,39 @@ class OcrResources:
         return detail
 
 
+def validated_languages(requested: Sequence[str] = ()) -> tuple[str, ...]:
+    """The ordered recognition selection `requested` names, or the reason it is not one.
+
+    One definition of a well-formed selection, used both where a selection is
+    *stored* and where it is *resolved* against installed models. Keeping them
+    apart would let the settings surface accept an order the engine path would
+    then refuse -- a preference the user could save and never see take effect.
+
+    English is the selection when nothing is requested, which is what makes an
+    unconfigured installation ask for a language rather than for nothing.
+    """
+    languages = tuple(requested) or (DEFAULT_LANGUAGE,)
+    if len(languages) > MAX_LANGUAGES:
+        raise OcrSelectionInvalid(
+            f"at most {MAX_LANGUAGES} recognition languages may be selected"
+        )
+    if len(set(languages)) != len(languages):
+        raise OcrSelectionInvalid("the recognition language order repeats a language")
+    for language in languages:
+        if (
+            not isinstance(language, str)
+            or _LANGUAGE_PATTERN.fullmatch(language) is None
+        ):
+            raise OcrSelectionInvalid(
+                "a recognition language is outside the accepted code domain"
+            )
+        if language == ORIENTATION_MODEL:
+            raise OcrSelectionInvalid(
+                "orientation/script data is not a recognition language"
+            )
+    return languages
+
+
 def _model_digest(directory: str, name: str) -> str | None:
     """The SHA-256 of one *selected* model file, or ``None`` when it is unusable.
 
@@ -252,27 +285,7 @@ class TrustedOcrCatalogue:
         model file is read and digested before the engine sees it, so no
         unverified host model can be presented as a packaged one.
         """
-        languages = tuple(requested) or (DEFAULT_LANGUAGE,)
-        if len(languages) > MAX_LANGUAGES:
-            raise OcrSelectionInvalid(
-                f"at most {MAX_LANGUAGES} recognition languages may be selected"
-            )
-        if len(set(languages)) != len(languages):
-            raise OcrSelectionInvalid(
-                "the recognition language order repeats a language"
-            )
-        for language in languages:
-            if (
-                not isinstance(language, str)
-                or _LANGUAGE_PATTERN.fullmatch(language) is None
-            ):
-                raise OcrSelectionInvalid(
-                    "a recognition language is outside the accepted code domain"
-                )
-            if language == ORIENTATION_MODEL:
-                raise OcrSelectionInvalid(
-                    "orientation/script data is not a recognition language"
-                )
+        languages = validated_languages(requested)
         if self.tessdata_dir is None or not self.installed:
             # An explicitly requested language is absent here just as surely as
             # it is from a configured catalogue, and installing it is what
@@ -459,4 +472,5 @@ __all__ = [
     "local_ocr_settings",
     "run_tesseract",
     "text_only_settings",
+    "validated_languages",
 ]

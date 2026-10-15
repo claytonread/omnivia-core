@@ -322,6 +322,11 @@ __all__ = [
     "DocumentHistoryResult",
     "DocumentOriginalBindingInput",
     "DocumentProcessingProfileInput",
+    "DocumentProcessingSettings",
+    "DocumentProcessingSettingsGetInput",
+    "DocumentProcessingSettingsGetResult",
+    "DocumentProcessingSettingsUpdateInput",
+    "DocumentProcessingSettingsUpdateResult",
     "DocumentReprocessInput",
     "DocumentReprocessProfileOption",
     "DocumentReprocessProfileSelection",
@@ -3615,6 +3620,38 @@ mandate a specific algorithm.
 
 MediaType: TypeAlias = str
 """An IANA-style `type/subtype` media type string, such as `text/plain` or `application/json`."""
+
+@dataclass(frozen=True, slots=True)
+class DocumentProcessingSettingsGetInput:
+    """Input for `document.settings.get`. The caller names nothing: the settings read are those
+    of the request envelope's selected workspace, and this payload carries no second
+    workspace identifier, no principal and no selector of any kind. Passive -- it reads no
+    document, opens no capture and changes nothing.
+    """
+
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentProcessingSettingsGetInput"
+    ) -> DocumentProcessingSettingsGetInput:
+        """Decode a wire payload into a DocumentProcessingSettingsGetInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        _require_mapping(payload, path)
+        return cls(
+        )
+
 
 GraphDirection: TypeAlias = str
 """Open, dot-namespaced code naming which direction a traversal follows relations in: `outbound`,
@@ -9149,6 +9186,154 @@ class DocumentExtractionHeadState:
             extraction_head_ordinal=field_extraction_head_ordinal,
             retrieval_state=field_retrieval_state,
             published_at=field_published_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentProcessingSettings:
+    """This workspace's durable document-processing preferences, as Core currently holds them.
+    They decide what a *future* capture is admitted under and nothing else: a capture already
+    admitted carries the exact settings snapshot it was admitted with, and changing these
+    values never alters its queued work, its immutable profile or the identity that
+    `document.history` reports for it. An already captured retained source changes only
+    through the explicit `reprocess_captured_copy` action. `revision` is the compare-and-swap
+    token: it is what `document.settings.update` must name, and it advances by one on every
+    accepted change. Zero means nothing is stored and the reported values are the product
+    defaults.
+    """
+
+    mode: OpenCode
+    recognition_languages: tuple[OpenCode, ...]
+    embedded_image_ocr: bool
+    revision: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["mode"] = self.mode
+        wire["recognition_languages"] = list(self.recognition_languages)
+        wire["embedded_image_ocr"] = self.embedded_image_ocr
+        wire["revision"] = self.revision
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentProcessingSettings"
+    ) -> DocumentProcessingSettings:
+        """Decode a wire payload into a DocumentProcessingSettings.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_mode = _decode_str(_require_field(mapping, "mode", path), f"{path}.mode")
+        field_recognition_languages_items = _decode_sequence(
+            _require_field(mapping, "recognition_languages", path),
+            f"{path}.recognition_languages",
+        )
+        field_recognition_languages = tuple(
+            _decode_str(item, f"{path}.recognition_languages[{index}]")
+            for index, item in enumerate(field_recognition_languages_items)
+        )
+        field_embedded_image_ocr = _decode_bool(
+            _require_field(mapping, "embedded_image_ocr", path),
+            f"{path}.embedded_image_ocr",
+        )
+        field_revision = _decode_int(_require_field(mapping, "revision", path), f"{path}.revision")
+        return cls(
+            mode=field_mode,
+            recognition_languages=field_recognition_languages,
+            embedded_image_ocr=field_embedded_image_ocr,
+            revision=field_revision,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentProcessingSettingsUpdateInput:
+    """Closed input for `document.settings.update`: one compare-and-swap change to this
+    workspace's document-processing preferences. `revision` must equal the value the caller
+    last read, so a change made since that read is refused as a conflict rather than silently
+    overwritten; zero asserts that nothing is stored yet. Every other member is optional and
+    an absent member leaves that preference exactly as it stands -- this is a partial update,
+    not a replacement, so a caller cannot reset a preference it does not know about. The
+    change takes effect for captures admitted after it, and never for one already admitted.
+    """
+
+    revision: int
+    mode: OpenCode | None = None
+    recognition_languages: tuple[OpenCode, ...] | None = None
+    embedded_image_ocr: bool | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["revision"] = self.revision
+        if self.mode is not None:
+            wire["mode"] = self.mode
+        if self.recognition_languages is not None:
+            wire["recognition_languages"] = list(self.recognition_languages)
+        if self.embedded_image_ocr is not None:
+            wire["embedded_image_ocr"] = self.embedded_image_ocr
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentProcessingSettingsUpdateInput"
+    ) -> DocumentProcessingSettingsUpdateInput:
+        """Decode a wire payload into a DocumentProcessingSettingsUpdateInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_revision = _decode_int(_require_field(mapping, "revision", path), f"{path}.revision")
+        field_mode: OpenCode | None = None
+        if "mode" in mapping:
+            raw_mode = mapping["mode"]
+            if raw_mode is None:
+                raise ContractDecodeError(
+                    f"{path}.mode: null is not a valid value"
+                )
+            field_mode = _decode_str(raw_mode, f"{path}.mode")
+        field_recognition_languages: tuple[OpenCode, ...] | None = None
+        if "recognition_languages" in mapping:
+            raw_recognition_languages = mapping["recognition_languages"]
+            if raw_recognition_languages is None:
+                raise ContractDecodeError(
+                    f"{path}.recognition_languages: null is not a valid value"
+                )
+            field_recognition_languages_items = _decode_sequence(
+                raw_recognition_languages,
+                f"{path}.recognition_languages",
+            )
+            field_recognition_languages = tuple(
+                _decode_str(item, f"{path}.recognition_languages[{index}]")
+                for index, item in enumerate(field_recognition_languages_items)
+            )
+        field_embedded_image_ocr: bool | None = None
+        if "embedded_image_ocr" in mapping:
+            raw_embedded_image_ocr = mapping["embedded_image_ocr"]
+            if raw_embedded_image_ocr is None:
+                raise ContractDecodeError(
+                    f"{path}.embedded_image_ocr: null is not a valid value"
+                )
+            field_embedded_image_ocr = _decode_bool(
+                raw_embedded_image_ocr,
+                f"{path}.embedded_image_ocr",
+            )
+        return cls(
+            revision=field_revision,
+            mode=field_mode,
+            recognition_languages=field_recognition_languages,
+            embedded_image_ocr=field_embedded_image_ocr,
         )
 
 
@@ -19167,6 +19352,80 @@ class DocumentExtractionHistoryEntry:
             worker_build=field_worker_build,
             admitted_at=field_admitted_at,
             completed_at=field_completed_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentProcessingSettingsGetResult:
+    """Wraps one DocumentProcessingSettings document. The `revision` it carries is the one a
+    subsequent `document.settings.update` must name.
+    """
+
+    settings: DocumentProcessingSettings
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["settings"] = self.settings.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentProcessingSettingsGetResult"
+    ) -> DocumentProcessingSettingsGetResult:
+        """Decode a wire payload into a DocumentProcessingSettingsGetResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_settings = DocumentProcessingSettings.from_wire(
+            _require_field(mapping, "settings", path),
+            f"{path}.settings",
+        )
+        return cls(
+            settings=field_settings,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentProcessingSettingsUpdateResult:
+    """Wraps one DocumentProcessingSettings document: the settings as they now stand, carrying
+    the advanced `revision` the next update must name.
+    """
+
+    settings: DocumentProcessingSettings
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["settings"] = self.settings.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentProcessingSettingsUpdateResult"
+    ) -> DocumentProcessingSettingsUpdateResult:
+        """Decode a wire payload into a DocumentProcessingSettingsUpdateResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_settings = DocumentProcessingSettings.from_wire(
+            _require_field(mapping, "settings", path),
+            f"{path}.settings",
+        )
+        return cls(
+            settings=field_settings,
         )
 
 
@@ -31572,6 +31831,111 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
         result_schema_ref=(
             "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
             "#/$defs/DocumentReprocessResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="document.settings.get",
+        scope=OperationScope(
+            required_scopes=("memory:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentProcessingSettingsGetInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentProcessingSettingsGetResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="document.settings.update",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentProcessingSettingsUpdateInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentProcessingSettingsUpdateResult"
         ),
         required_capability=CapabilityRequirement(
             id="evidence.write",

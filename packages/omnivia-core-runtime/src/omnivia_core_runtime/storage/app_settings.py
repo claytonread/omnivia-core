@@ -37,6 +37,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "AppSetting",
     "AppSettingsError",
+    "apply_setting",
     "delete_setting",
     "list_settings",
     "read_setting",
@@ -191,55 +192,87 @@ def write_setting(
     read to have a concurrent change refused rather than silently overwritten,
     or None for last-writer-wins. Pass 0 to require that nothing is stored yet.
     """
+    with fenced_transaction(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ):
+        return apply_setting(
+            connection,
+            workspace_id=workspace_id,
+            key=key,
+            value=value,
+            updated_at_us=updated_at_us,
+            updated_by=updated_by,
+            expected_version=expected_version,
+        )
+
+
+def apply_setting(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    key: str,
+    value: Any,
+    updated_at_us: int,
+    updated_by: str,
+    expected_version: int | None = None,
+) -> AppSetting:
+    """`write_setting`'s body, for a caller that already owns the transaction.
+
+    A governed application mutation opens one fenced transaction for its audit
+    row, its idempotency outcome and its domain rows together, and
+    `BEGIN IMMEDIATE` does not nest -- so such a caller cannot reach the store
+    through `write_setting` at all. It passes its own fenced connection here
+    instead, which keeps a settings change and the operation that made it a
+    single unit that rolls back together.
+
+    The caller must be inside `fenced_transaction` (or an equivalent authorised
+    mutation grant). Called without one, the table's own triggers refuse the
+    write, which is the fail-closed behaviour and not something this function
+    tries to improve on.
+    """
     checked = _checked_key(key)
     writer = _checked_writer(updated_by)
     encoded = _encoded(value)
     if not isinstance(updated_at_us, int) or updated_at_us <= 0:
         raise AppSettingsError("updated_at_us must be a positive integer")
 
-    with (
-        fenced_transaction(
-            connection,
-            identity,
-            workspace_id=workspace_id,
-            fencing_generation=fencing_generation,
-        ),
-        authorised(connection, mutations=True),
-    ):
-        current = connection.execute(
-            "SELECT version, updated_at_us FROM omnivia_app_settings "
+    current = connection.execute(
+        "SELECT version, updated_at_us FROM omnivia_app_settings "
+        "WHERE workspace_id = ? AND setting_key = ?",
+        (workspace_id, checked),
+    ).fetchone()
+    found = None if current is None else int(current[0])
+
+    if expected_version is not None and expected_version != (found or 0):
+        raise AppSettingsError(
+            f"setting {checked!r} changed since it was read "
+            f"(expected version {expected_version}, found {found or 0})"
+        )
+
+    if current is None:
+        connection.execute(
+            "INSERT INTO omnivia_app_settings "
+            "(workspace_id, setting_key, value_json, schema_version, "
+            " version, updated_at_us, updated_by) VALUES (?, ?, ?, ?, 1, ?, ?)",
+            (workspace_id, checked, encoded, SCHEMA_VERSION, updated_at_us, writer),
+        )
+        version = 1
+        stamped = updated_at_us
+    else:
+        # The trigger refuses a regressing timestamp, which a clock that
+        # stepped backwards would otherwise turn into a failed write for
+        # a user who only clicked a toggle. Hold the previous instant.
+        stamped = max(updated_at_us, int(current[1]))
+        version = found + 1  # type: ignore[operator]
+        connection.execute(
+            "UPDATE omnivia_app_settings SET value_json = ?, version = ?, "
+            "updated_at_us = ?, updated_by = ? "
             "WHERE workspace_id = ? AND setting_key = ?",
-            (workspace_id, checked),
-        ).fetchone()
-        found = None if current is None else int(current[0])
-
-        if expected_version is not None and expected_version != (found or 0):
-            raise AppSettingsError(
-                f"setting {checked!r} changed since it was read "
-                f"(expected version {expected_version}, found {found or 0})"
-            )
-
-        if current is None:
-            connection.execute(
-                "INSERT INTO omnivia_app_settings "
-                "(workspace_id, setting_key, value_json, schema_version, "
-                " version, updated_at_us, updated_by) VALUES (?, ?, ?, ?, 1, ?, ?)",
-                (workspace_id, checked, encoded, SCHEMA_VERSION, updated_at_us, writer),
-            )
-            version = 1
-            stamped = updated_at_us
-        else:
-            # The trigger refuses a regressing timestamp, which a clock that
-            # stepped backwards would otherwise turn into a failed write for
-            # a user who only clicked a toggle. Hold the previous instant.
-            stamped = max(updated_at_us, int(current[1]))
-            version = found + 1  # type: ignore[operator]
-            connection.execute(
-                "UPDATE omnivia_app_settings SET value_json = ?, version = ?, "
-                "updated_at_us = ?, updated_by = ? "
-                "WHERE workspace_id = ? AND setting_key = ?",
-                (encoded, version, stamped, writer, workspace_id, checked),
-            )
+            (encoded, version, stamped, writer, workspace_id, checked),
+        )
 
     return AppSetting(
         key=checked,

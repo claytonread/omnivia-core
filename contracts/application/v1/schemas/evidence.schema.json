@@ -630,6 +630,72 @@
         "page"
       ],
       "unevaluatedProperties": false
+    },
+    "DocumentProcessingSettings": {
+      "title": "DocumentProcessingSettings",
+      "description": "This workspace's durable document-processing preferences, as Core currently holds them. They decide what a *future* capture is admitted under and nothing else: a capture already admitted carries the exact settings snapshot it was admitted with, and changing these values never alters its queued work, its immutable profile or the identity that `document.history` reports for it. An already captured retained source changes only through the explicit `reprocess_captured_copy` action. `revision` is the compare-and-swap token: it is what `document.settings.update` must name, and it advances by one on every accepted change. Zero means nothing is stored and the reported values are the product defaults.",
+      "type": "object",
+      "properties": {
+        "mode": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Closed value `text_and_local_ocr` -- the default, which reads native text and recognises text in pages and images of a qualifying capture -- or `text_only`, the explicit faster alternate that recognises nothing. A media type that does not qualify for local OCR resolves to direct text under either value."},
+        "recognition_languages": {
+          "type": "array",
+          "description": "The ordered recognition languages a future local-OCR capture selects, at most three and duplicate-free. Order is the selection order and is preserved into the immutable profile. `eng` alone is the product default. A selected language the managed installation has not installed is kept as selected and reported as unavailable by the extraction that needed it; it is never silently replaced by another language.",
+          "items": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode"},
+          "minItems": 1,
+          "maxItems": 3
+        },
+        "embedded_image_ocr": {"type": "boolean", "description": "Whether a future capture examines raster images embedded inside a Word, PowerPoint, Excel, RTF or local HTML source for text. False is the default. It applies to those formats only and to images carried inside the captured bytes only: a linked or external image is never loaded, and a media type that is itself an image or a PDF is covered by `mode` instead."},
+        "revision": {"type": "integer", "minimum": 0, "description": "The compare-and-swap token for these settings. Zero when nothing is stored."}
+      },
+      "required": ["mode", "recognition_languages", "embedded_image_ocr", "revision"],
+      "unevaluatedProperties": false
+    },
+    "DocumentProcessingSettingsGetInput": {
+      "title": "DocumentProcessingSettingsGetInput",
+      "description": "Input for `document.settings.get`. The caller names nothing: the settings read are those of the request envelope's selected workspace, and this payload carries no second workspace identifier, no principal and no selector of any kind. Passive -- it reads no document, opens no capture and changes nothing.",
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "unevaluatedProperties": false
+    },
+    "DocumentProcessingSettingsGetResult": {
+      "title": "DocumentProcessingSettingsGetResult",
+      "description": "Wraps one DocumentProcessingSettings document. The `revision` it carries is the one a subsequent `document.settings.update` must name.",
+      "type": "object",
+      "properties": {
+        "settings": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettings", "description": "DocumentProcessingSettings -- this workspace's durable document-processing preferences, which decide what a future capture is admitted under and never alter an admitted one."}
+      },
+      "required": ["settings"],
+      "unevaluatedProperties": false
+    },
+    "DocumentProcessingSettingsUpdateInput": {
+      "title": "DocumentProcessingSettingsUpdateInput",
+      "description": "Closed input for `document.settings.update`: one compare-and-swap change to this workspace's document-processing preferences. `revision` must equal the value the caller last read, so a change made since that read is refused as a conflict rather than silently overwritten; zero asserts that nothing is stored yet. Every other member is optional and an absent member leaves that preference exactly as it stands -- this is a partial update, not a replacement, so a caller cannot reset a preference it does not know about. The change takes effect for captures admitted after it, and never for one already admitted.",
+      "type": "object",
+      "properties": {
+        "revision": {"type": "integer", "minimum": 0, "description": "The settings revision the caller last observed. Zero asserts nothing is stored."},
+        "mode": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "New processing mode, `text_and_local_ocr` or `text_only`. Absent leaves it unchanged."},
+        "recognition_languages": {
+          "type": "array",
+          "description": "The new ordered recognition-language selection, at most three and duplicate-free. Absent leaves the selection unchanged; an empty array is refused rather than read as `eng`, because clearing a selection and selecting the default are different intents and only one of them is expressible.",
+          "items": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode"},
+          "minItems": 1,
+          "maxItems": 3
+        },
+        "embedded_image_ocr": {"type": "boolean", "description": "Whether a future capture examines images embedded in a Word, PowerPoint, Excel, RTF or local HTML source. Absent leaves it unchanged."}
+      },
+      "required": ["revision"],
+      "unevaluatedProperties": false
+    },
+    "DocumentProcessingSettingsUpdateResult": {
+      "title": "DocumentProcessingSettingsUpdateResult",
+      "description": "Wraps one DocumentProcessingSettings document: the settings as they now stand, carrying the advanced `revision` the next update must name.",
+      "type": "object",
+      "properties": {
+        "settings": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettings", "description": "DocumentProcessingSettings -- this workspace's durable document-processing preferences, which decide what a future capture is admitted under and never alter an admitted one."}
+      },
+      "required": ["settings"],
+      "unevaluatedProperties": false
     }
   }
 }

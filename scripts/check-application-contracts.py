@@ -1229,6 +1229,11 @@ _DOCUMENT_CAPTURE: tuple[str, ...] = tuple(
     sorted((*_CREATE_MUT, "conflict", "size_limit_exceeded"))
 )
 _DOCUMENT_REPROCESS: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
+#: One compare-and-swap change to this workspace's document-processing preferences.
+#: `conflict` is the revision mismatch the caller re-reads and re-decides against. No
+#: `not_found`: an unstored preference is revision zero and the product defaults, not a
+#: missing record, so there is nothing for this operation to fail to find.
+_DOCUMENT_SETTINGS_UPDATE: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
 #: Deliberately excludes ``conflict``: a state-based cancel/retry refusal is a
 #: successful explicit disposition returning the unchanged handle, not an error.
 _JOB_CONTROL: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
@@ -1358,6 +1363,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "EVIDENCE_CAPTURE": _EVIDENCE_CAPTURE,
     "DOCUMENT_CAPTURE": _DOCUMENT_CAPTURE,
     "DOCUMENT_REPROCESS": _DOCUMENT_REPROCESS,
+    "DOCUMENT_SETTINGS_UPDATE": _DOCUMENT_SETTINGS_UPDATE,
     "GOV_MUT": _GOV_MUT,
     "CHAT_MUT": _CHAT_MUT,
     "IMPORT_START": _IMPORT_START,
@@ -1783,6 +1789,14 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "document.reprocess": FrozenOperation(
         "workspace", ("memory:write",), "create", "evidence.write",
         "evidence", "DocumentReprocess", "DOCUMENT_REPROCESS", False,
+    ),
+    "document.settings.get": FrozenOperation(
+        "workspace", ("memory:read",), "none", "evidence.read",
+        "evidence", "DocumentProcessingSettingsGet", "POINT_READ", False,
+    ),
+    "document.settings.update": FrozenOperation(
+        "workspace", ("memory:write",), "update", "evidence.write",
+        "evidence", "DocumentProcessingSettingsUpdate", "DOCUMENT_SETTINGS_UPDATE", False,
     ),
 }
 

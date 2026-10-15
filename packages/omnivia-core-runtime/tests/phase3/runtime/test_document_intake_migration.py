@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -17,6 +18,7 @@ from omnivia_core_runtime.service.document_intake import (
 from omnivia_core_runtime.service.runner import ServiceRunner
 from omnivia_core_runtime.service.versions import SERVER_VERSION
 from omnivia_core_runtime.service.workspace_init import initialise_workspace
+from omnivia_core_runtime.storage import document_intake as store
 from omnivia_core_runtime.storage.migrations import applied_migrations, load_migrations
 
 MIGRATION_FILENAME = "0069_document_intake.sql"
@@ -81,13 +83,14 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ServiceR
 def test_0069_is_the_unique_successor_to_0068() -> None:
     found = [migration for migration in load_migrations() if migration.version == 69]
     assert [migration.name for migration in found] == [MIGRATION_FILENAME]
-    # 0070 (app settings) is the head; 0069 is still the only migration at 69.
-    assert max(migration.version for migration in load_migrations()) == 70
+    # 0071 (capture processing settings) is the head; 0069 is still the only
+    # migration at 69.
+    assert max(migration.version for migration in load_migrations()) == 71
 
 
 def test_0069_applies_all_document_intake_tables_and_guards(runner: ServiceRunner) -> None:
     assert runner.connection is not None
-    assert max(applied_migrations(runner.connection)) == 70
+    assert max(applied_migrations(runner.connection)) == 71
     expected_tables = {
         "omnivia_documents",
         "omnivia_document_original_bindings",
@@ -192,3 +195,138 @@ def test_0069_binding_and_outbox_rows_only_move_forward(runner: ServiceRunner) -
             "DELETE FROM omnivia_document_capture_outbox WHERE capture_id = ?",
             (capture.capture.capture_id,),
         )
+
+
+# --- 0071: the preference snapshot one capture was admitted under ---------------
+
+
+def _capture(
+    runner: ServiceRunner, *, document_id: str, operation_key: str, content: bytes
+) -> service.DocumentCaptureResult:
+    """One admitted capture of `content`, with its own binding and source file."""
+    assert runner.connection is not None
+    binding = service.connect_original(
+        runner, document_id=document_id, owner_ref="owner-0071", route_kind="direct_file"
+    )
+    source = runner.layout.root / f"{operation_key}.txt"
+    source.write_bytes(content)
+    return service.capture_document(
+        runner,
+        source_path=source,
+        document_id=document_id,
+        expected_base_capture_id=None,
+        operation_key=operation_key,
+        media_type="text/plain",
+        intent_kind="new_capture",
+        binding=service.BindingClaim(
+            "owner-0071", binding.binding_generation, "direct_file"
+        ),
+    )
+
+
+def test_0071_adds_the_snapshot_column_to_the_capture_table(runner: ServiceRunner) -> None:
+    assert runner.connection is not None
+    columns = {
+        str(row[1])
+        for row in runner.connection.execute(
+            "PRAGMA table_info(omnivia_document_captures)"
+        )
+    }
+    assert "processing_settings_json" in columns
+
+
+def test_0071_freezes_the_admitted_preferences_on_an_append_only_row(
+    runner: ServiceRunner,
+) -> None:
+    """A new capture always carries a snapshot, and the row it sits on never changes.
+
+    The immutability is 0069's, not this migration's: `omnivia_document_captures`
+    refuses every UPDATE unconditionally, so a value written at INSERT is frozen by
+    construction and the column needs no guard of its own. Asserted here because that
+    is the property the whole freeze-at-admission design rests on.
+    """
+    captured = _capture(
+        runner, document_id="doc-0071-frozen", operation_key="cap-0071-frozen",
+        content=b"frozen body",
+    )
+    stored = captured.capture.processing_settings_json
+    assert stored is not None
+    assert json.loads(stored) == {
+        "embeddedImageOcr": False,
+        "languages": ["eng"],
+        "mode": "text_and_local_ocr",
+    }
+    # The canonical form, not merely an equal document: the snapshot is compared and
+    # digested as text downstream, so its byte form is part of what is frozen.
+    assert stored == (
+        '{"embeddedImageOcr":false,"languages":["eng"],"mode":"text_and_local_ocr"}'
+    )
+    reread = store.read_capture(
+        runner.connection,
+        workspace_id=runner.workspace_id or "",
+        capture_id=captured.capture.capture_id,
+    )
+    assert reread is not None and reread.processing_settings_json == stored
+
+    with service._fence(runner), pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        runner.connection.execute(
+            "UPDATE omnivia_document_captures SET processing_settings_json = ? "
+            "WHERE workspace_id = ? AND capture_id = ?",
+            ('{"mode":"text_only"}', runner.workspace_id, captured.capture.capture_id),
+        )
+
+
+def test_0071_keeps_a_capture_that_recorded_no_selection(
+    runner: ServiceRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NULL is the pre-migration capture, and it is stored rather than back-filled.
+
+    Inventing a selection for a capture admitted before this column existed would be a
+    claim about what ran, so the column is nullable and absence stays absence.
+    """
+    monkeypatch.setattr(service, "_admitted_settings", lambda _runner: None)
+    captured = _capture(
+        runner, document_id="doc-0071-null", operation_key="cap-0071-null",
+        content=b"legacy body",
+    )
+    assert captured.capture.processing_settings_json is None
+    reread = store.read_capture(
+        runner.connection,
+        workspace_id=runner.workspace_id or "",
+        capture_id=captured.capture.capture_id,
+    )
+    assert reread is not None and reread.processing_settings_json is None
+
+
+@pytest.mark.parametrize(
+    "frozen",
+    [
+        pytest.param('"text_only"', id="not-an-object"),
+        pytest.param("[]", id="array"),
+        pytest.param("{", id="not-json"),
+        pytest.param("{}" + " " * 4096, id="over-the-bound"),
+        pytest.param('{"mode":"text\u0000only"}', id="embedded-nul"),
+    ],
+)
+def test_0071_refuses_a_snapshot_that_is_not_a_bounded_json_object(
+    runner: ServiceRunner, monkeypatch: pytest.MonkeyPatch, frozen: str
+) -> None:
+    """The column's own CHECK, exercised through the admission path that writes it.
+
+    The snapshot is read back and parsed by a later worker, so a value that is not a
+    bounded JSON object must be refused where it is written rather than discovered when
+    something tries to act on it.
+    """
+    monkeypatch.setattr(service, "_admitted_settings", lambda _runner: frozen)
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+        _capture(
+            runner, document_id="doc-0071-bad", operation_key="cap-0071-bad",
+            content=b"bad body",
+        )
+    assert runner.connection is not None
+    assert (
+        runner.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_document_captures"
+        ).fetchone()[0]
+        == 0
+    )

@@ -515,6 +515,11 @@
     "DocumentSourceHeadState": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentSourceHeadState"},
     "DocumentExtractionHeadState": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentExtractionHeadState"},
     "DocumentHistoryResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentHistoryResult"},
+    "DocumentProcessingSettings": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettings"},
+    "DocumentProcessingSettingsGetInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsGetInput"},
+    "DocumentProcessingSettingsGetResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsGetResult"},
+    "DocumentProcessingSettingsUpdateInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsUpdateInput"},
+    "DocumentProcessingSettingsUpdateResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsUpdateResult"},
     "GovernanceRationale": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/GovernanceRationale"
     },

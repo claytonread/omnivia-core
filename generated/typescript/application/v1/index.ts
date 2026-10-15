@@ -1430,6 +1430,15 @@ export function isMediaType(value: unknown): value is MediaType {
 }
 
 /**
+ * Input for `document.settings.get`. The caller names nothing: the settings read are those of
+ * the request envelope's selected workspace, and this payload carries no second workspace
+ * identifier, no principal and no selector of any kind. Passive -- it reads no document, opens
+ * no capture and changes nothing.
+ */
+export interface DocumentProcessingSettingsGetInput {
+}
+
+/**
  * Open, dot-namespaced code naming which direction a traversal follows relations in: `outbound`,
  * `inbound`, or `both`. Wire-open by shape, but trust-sensitive: only the known values are
  * accepted by semantic validation, and an unrecognized value fails closed rather than being
@@ -5665,6 +5674,77 @@ export interface DocumentExtractionHeadState {
    * When the published retrieval projection was written, absent when nothing is published.
    */
   readonly published_at?: Timestamp;
+}
+
+/**
+ * This workspace's durable document-processing preferences, as Core currently holds them. They
+ * decide what a *future* capture is admitted under and nothing else: a capture already admitted
+ * carries the exact settings snapshot it was admitted with, and changing these values never
+ * alters its queued work, its immutable profile or the identity that `document.history` reports
+ * for it. An already captured retained source changes only through the explicit
+ * `reprocess_captured_copy` action. `revision` is the compare-and-swap token: it is what
+ * `document.settings.update` must name, and it advances by one on every accepted change. Zero
+ * means nothing is stored and the reported values are the product defaults.
+ */
+export interface DocumentProcessingSettings {
+  /**
+   * Closed value `text_and_local_ocr` -- the default, which reads native text and recognises
+   * text in pages and images of a qualifying capture -- or `text_only`, the explicit faster
+   * alternate that recognises nothing. A media type that does not qualify for local OCR
+   * resolves to direct text under either value.
+   */
+  readonly mode: OpenCode;
+  /**
+   * The ordered recognition languages a future local-OCR capture selects, at most three and
+   * duplicate-free. Order is the selection order and is preserved into the immutable profile.
+   * `eng` alone is the product default. A selected language the managed installation has not
+   * installed is kept as selected and reported as unavailable by the extraction that needed
+   * it; it is never silently replaced by another language.
+   */
+  readonly recognition_languages: readonly OpenCode[];
+  /**
+   * Whether a future capture examines raster images embedded inside a Word, PowerPoint, Excel,
+   * RTF or local HTML source for text. False is the default. It applies to those formats only
+   * and to images carried inside the captured bytes only: a linked or external image is never
+   * loaded, and a media type that is itself an image or a PDF is covered by `mode` instead.
+   */
+  readonly embedded_image_ocr: boolean;
+  /**
+   * The compare-and-swap token for these settings. Zero when nothing is stored.
+   */
+  readonly revision: number;
+}
+
+/**
+ * Closed input for `document.settings.update`: one compare-and-swap change to this workspace's
+ * document-processing preferences. `revision` must equal the value the caller last read, so a
+ * change made since that read is refused as a conflict rather than silently overwritten; zero
+ * asserts that nothing is stored yet. Every other member is optional and an absent member leaves
+ * that preference exactly as it stands -- this is a partial update, not a replacement, so a
+ * caller cannot reset a preference it does not know about. The change takes effect for captures
+ * admitted after it, and never for one already admitted.
+ */
+export interface DocumentProcessingSettingsUpdateInput {
+  /**
+   * The settings revision the caller last observed. Zero asserts nothing is stored.
+   */
+  readonly revision: number;
+  /**
+   * New processing mode, `text_and_local_ocr` or `text_only`. Absent leaves it unchanged.
+   */
+  readonly mode?: OpenCode;
+  /**
+   * The new ordered recognition-language selection, at most three and duplicate-free. Absent
+   * leaves the selection unchanged; an empty array is refused rather than read as `eng`,
+   * because clearing a selection and selecting the default are different intents and only one
+   * of them is expressible.
+   */
+  readonly recognition_languages?: readonly OpenCode[];
+  /**
+   * Whether a future capture examines images embedded in a Word, PowerPoint, Excel, RTF or
+   * local HTML source. Absent leaves it unchanged.
+   */
+  readonly embedded_image_ocr?: boolean;
 }
 
 /**
@@ -9949,6 +10029,30 @@ export interface DocumentExtractionHistoryEntry {
    * When this revision reached its terminal result, absent while it has none.
    */
   readonly completed_at?: Timestamp;
+}
+
+/**
+ * Wraps one DocumentProcessingSettings document. The `revision` it carries is the one a
+ * subsequent `document.settings.update` must name.
+ */
+export interface DocumentProcessingSettingsGetResult {
+  /**
+   * DocumentProcessingSettings -- this workspace's durable document-processing preferences,
+   * which decide what a future capture is admitted under and never alter an admitted one.
+   */
+  readonly settings: DocumentProcessingSettings;
+}
+
+/**
+ * Wraps one DocumentProcessingSettings document: the settings as they now stand, carrying the
+ * advanced `revision` the next update must name.
+ */
+export interface DocumentProcessingSettingsUpdateResult {
+  /**
+   * DocumentProcessingSettings -- this workspace's durable document-processing preferences,
+   * which decide what a future capture is admitted under and never alter an admitted one.
+   */
+  readonly settings: DocumentProcessingSettings;
 }
 
 /**
@@ -16621,6 +16725,69 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
     scope: { required_scopes: ["memory:write"], side_effect: "create", scope_kind: "workspace" },
     input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessInput",
     result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessResult",
+    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.settings.get",
+    scope: { required_scopes: ["memory:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsGetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsGetResult",
+    required_capability: { id: "evidence.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.settings.update",
+    scope: { required_scopes: ["memory:write"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsUpdateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsUpdateResult",
     required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
     job: { completion_mode: "synchronous" },
     pagination: { paginated: false },

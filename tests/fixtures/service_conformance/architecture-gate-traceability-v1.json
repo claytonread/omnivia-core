@@ -241,7 +241,9 @@
         "project.context.switch",
         "document.capture",
         "document.history",
-        "document.reprocess"
+        "document.reprocess",
+        "document.settings.get",
+        "document.settings.update"
       ]
     },
     {
@@ -387,7 +389,8 @@
         "outcome.request.create",
         "project.context.switch",
         "document.capture",
-        "document.reprocess"
+        "document.reprocess",
+        "document.settings.update"
       ]
     },
     {
@@ -442,7 +445,8 @@
         "outcome.request.create",
         "project.context.switch",
         "document.capture",
-        "document.reprocess"
+        "document.reprocess",
+        "document.settings.update"
       ]
     },
     {
@@ -560,7 +564,9 @@
         "project.context.switch",
         "document.capture",
         "document.history",
-        "document.reprocess"
+        "document.reprocess",
+        "document.settings.get",
+        "document.settings.update"
       ]
     },
     {
@@ -651,7 +657,9 @@
         "project.context.switch",
         "document.capture",
         "document.history",
-        "document.reprocess"
+        "document.reprocess",
+        "document.settings.get",
+        "document.settings.update"
       ]
     },
     {

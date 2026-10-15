@@ -13933,6 +13933,187 @@
           "retry_class": "non_retryable"
         }
       }
+    },
+    {
+      "id": "document.settings.get/primary-success",
+      "operation": "document.settings.get",
+      "description": "document.settings.get reports this workspace's durable document-processing preferences. Revision zero means nothing is stored and the values reported are the product defaults.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.settings.get-primary-success",
+          "required_capabilities": [
+            {
+              "id": "evidence.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.settings.get",
+        "input": {}
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.settings.get-primary-success",
+          "audit_reference": "audit-document.settings.get"
+        },
+        "result": {
+          "settings": {
+            "mode": "text_and_local_ocr",
+            "recognition_languages": [
+              "eng"
+            ],
+            "embedded_image_ocr": false,
+            "revision": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "document.settings.update/primary-success",
+      "operation": "document.settings.update",
+      "description": "document.settings.update changes one preference under the revision the caller last read. The members it does not name are held, and the returned revision is the one the next update must state.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.settings.update-primary-success",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.settings.update"
+        },
+        "operation": "document.settings.update",
+        "input": {
+          "revision": 0,
+          "mode": "text_only"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.settings.update-primary-success",
+          "audit_reference": "audit-document.settings.update"
+        },
+        "result": {
+          "settings": {
+            "mode": "text_only",
+            "recognition_languages": [
+              "eng"
+            ],
+            "embedded_image_ocr": false,
+            "revision": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "document.settings.update/honest-replay",
+      "operation": "document.settings.update",
+      "description": "document.settings.update repeated with the same idempotency key and the same change: the recorded settings are returned without advancing the revision a second time.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "document.settings.update/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.settings.update-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.settings.update"
+        },
+        "operation": "document.settings.update",
+        "input": {
+          "revision": 0,
+          "mode": "text_only"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.settings.update-honest-replay",
+          "audit_reference": "audit-document.settings.update"
+        },
+        "result": {
+          "settings": {
+            "mode": "text_only",
+            "recognition_languages": [
+              "eng"
+            ],
+            "embedded_image_ocr": false,
+            "revision": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "document.settings.update/idempotency-conflict",
+      "operation": "document.settings.update",
+      "description": "document.settings.update reusing one idempotency key for a different change: refused rather than resolved to the first change's answer.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "document.settings.update/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.settings.update-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.settings.update"
+        },
+        "operation": "document.settings.update",
+        "input": {
+          "revision": 0,
+          "embedded_image_ocr": true
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.settings.update-idempotency-conflict",
+          "audit_reference": "audit-document.settings.update"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
     }
   ],
   "contract_version": "1.0",

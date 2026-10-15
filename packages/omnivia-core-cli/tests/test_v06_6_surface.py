@@ -45,6 +45,8 @@ EXPECTED_COMMANDS = (
     (("document", "capture"), "document.capture", "content_ingestion"),
     (("document", "reprocess"), "document.reprocess", "content_ingestion"),
     (("document", "history"), "document.history", "document_observation"),
+    (("document", "settings"), "document.settings.get", "document_settings"),
+    (("document", "configure"), "document.settings.update", "document_configuration"),
     (("evidence", "search"), "evidence.search", "knowledge_retrieval"),
     (("knowledge", "search"), "knowledge.search", "knowledge_retrieval"),
     (("governance", "propose"), "knowledge.propose", "knowledge_governance"),
@@ -187,7 +189,7 @@ def test_the_eighty_two_application_commands_are_declared_in_order() -> None:
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 82
+    assert len(APPLICATION_COMMANDS) == 84
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

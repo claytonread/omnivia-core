@@ -42,6 +42,7 @@ from typing import Any, Final
 
 from omnivia_core.contracts.v1 import to_canonical_json
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
+from omnivia_core_runtime.service import processing_settings
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
 from omnivia_core_runtime.service.source_capture import (
     _IDENTIFIER,
@@ -488,12 +489,35 @@ def capture_document_bytes(
             ),
             fencing_generation=runner.generation,
             created_at_us=now_us,
+            processing_settings_json=_admitted_settings(runner),
         )
         store.insert_capture(runner.connection, capture, now_us=now_us)
         store.insert_capture_outbox(runner.connection, capture, now_us=now_us)
         if eligible:
             store.advance_capture_head(runner.connection, capture, now_us=now_us)
     return DocumentCaptureResult(CAPTURE_STATUS_CAPTURED, capture, eligible)
+
+
+def _admitted_settings(runner: ServiceRunner) -> str:
+    """The processing preferences this capture is admitted under, as one frozen document.
+
+    Read **once**, here, at the instant the capture row is written, and stored on that row
+    (migration 0071). A preference changed after this point cannot reach this capture: the
+    queued obligation, the profile a worker will execute and the identity `document.history`
+    reports for it all derive from this snapshot rather than from whatever the live setting
+    says when the obligation is finally picked up.
+
+    Nothing is resolved against the installation here -- no model is looked for, nothing is
+    downloaded and no language is substituted. What is frozen is the *intent*: which mode,
+    which ordered languages, whether embedded images are examined. Whether the bytes to
+    honour that intent are installed is settled at execution, which is the only moment at
+    which that question has a true answer.
+    """
+    assert runner.connection is not None and runner.workspace_id is not None
+    settings, _revision = processing_settings.read_settings(
+        runner.connection, workspace_id=runner.workspace_id
+    )
+    return to_canonical_json(settings.to_value())
 
 
 def _captured_replay(
@@ -691,6 +715,7 @@ def admit_document_capture_in_transaction(
         ),
         fencing_generation=runner.generation,
         created_at_us=now_us,
+        processing_settings_json=_admitted_settings(runner),
     )
     store.insert_capture(runner.connection, capture, now_us=now_us)
     store.insert_capture_outbox(runner.connection, capture, now_us=now_us)

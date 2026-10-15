@@ -385,6 +385,12 @@ class StoredCapture:
     request_digest: str
     fencing_generation: int
     created_at_us: int
+    #: The processing preferences this capture was admitted under, as the canonical
+    #: JSON of one settings document (migration 0071). `None` only for a capture
+    #: admitted before that migration, which recorded no selection. The field is
+    #: last because `_insert`/`_select` derive their column lists from the field
+    #: order, and a defaulted field cannot precede an undefaulted one.
+    processing_settings_json: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

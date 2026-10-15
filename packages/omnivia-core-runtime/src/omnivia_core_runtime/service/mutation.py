@@ -111,6 +111,10 @@ WORKFLOW_EXECUTION_PURPOSE: Final = "workflow_execution"
 WORKFLOW_CONTROL_PURPOSE: Final = "workflow_control"
 DECISION_EVALUATION_PURPOSE: Final = "decision_evaluation"
 DECISION_CONFIGURATION_PURPOSE: Final = "decision_configuration"
+#: Changing this workspace's durable document-processing preferences. Deliberately not
+#: `CONTENT_INGESTION_PURPOSE`: a grant to bring one document in is not a grant to change
+#: what every future document is read under, and the two are issued for different acts.
+DOCUMENT_CONFIGURATION_PURPOSE: Final = "document_configuration"
 #: Engineering memory (SPEC-CORE-ENGMEM-001). Continuity bindings and their final
 #: close are one session-level act; checkpoint appends are their own purpose because
 #: they write durable L0 evidence, not session bookkeeping.
@@ -162,6 +166,7 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "evidence.capture": CONTENT_INGESTION_PURPOSE,
         "document.capture": CONTENT_INGESTION_PURPOSE,
         "document.reprocess": CONTENT_INGESTION_PURPOSE,
+        "document.settings.update": DOCUMENT_CONFIGURATION_PURPOSE,
         "job.cancel": JOB_CONTROL_PURPOSE,
         "job.retry": JOB_CONTROL_PURPOSE,
         "chat.command": CHAT_AUTHORING_PURPOSE,
@@ -231,6 +236,9 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "evidence.capture": WORKSPACE_CONTRIBUTOR_ROLE,
         "document.capture": WORKSPACE_CONTRIBUTOR_ROLE,
         "document.reprocess": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Choosing how this workspace reads future documents is contributor work: it
+        # reviews nothing, administers nothing and reaches no other workspace.
+        "document.settings.update": WORKSPACE_CONTRIBUTOR_ROLE,
         "job.cancel": WORKSPACE_CONTRIBUTOR_ROLE,
         "job.retry": WORKSPACE_CONTRIBUTOR_ROLE,
         # A chat command authors conversation content in one workspace; it reviews

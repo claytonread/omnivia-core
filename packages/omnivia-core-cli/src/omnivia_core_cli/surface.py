@@ -7,8 +7,8 @@ maps to. It dispatches nothing and calls nothing.
 
 Three properties are held here rather than left to a reader:
 
-*Bijection with the catalogue.* The eighty-two application commands map onto the
-eighty-two operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
+*Bijection with the catalogue.* The eighty-four application commands map onto the
+eighty-four operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
 command reaching an operation the contract does not publish -- or an operation
 published with no command reaching it -- is an import-time refusal, not a
 runtime surprise. That also closes the door on the legacy `core.*` operation names,
@@ -115,6 +115,18 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ),
     ApplicationCommand(
         ("document", "history"), "document.history", "document_observation"
+    ),
+    # This workspace's durable document-processing preferences. Reading them and
+    # changing them are separate acts under separate purposes, as the decision family's
+    # settings pair is, so a grant to read what a future capture will do is never a
+    # grant to change it.
+    ApplicationCommand(
+        ("document", "settings"), "document.settings.get", "document_settings"
+    ),
+    ApplicationCommand(
+        ("document", "configure"),
+        "document.settings.update",
+        "document_configuration",
     ),
     ApplicationCommand(
         ("evidence", "search"), "evidence.search", "knowledge_retrieval"
