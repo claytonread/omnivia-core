@@ -6,7 +6,9 @@ import base64
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from omnivia_core_runtime.service.document_intake import (
+    DocumentIntakeRefused,
     expire_capture,
     read_retained_source,
 )
@@ -23,6 +25,7 @@ from omnivia_core_runtime.service.handlers.document_capture import (
     DOCUMENT_REPROCESS_OPERATION,
 )
 from omnivia_core_runtime.storage import document_intake as store
+from omnivia_core_runtime.workspace.blob_publication import BlobPublicationRefused
 from test_evidence_capture_vertical import (
     Served,
     _metadata,
@@ -32,6 +35,8 @@ from test_evidence_capture_vertical import (
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_IDEMPOTENCY_CONFLICT,
+    ERROR_CODE_INTERNAL_RECOVERABLE,
+    RETRY_CLASS_RETRYABLE,
     ErrorResponseEnvelope,
     RequestEnvelope,
     SuccessResponseEnvelope,
@@ -246,6 +251,40 @@ def test_staged_transfer_key_cannot_be_rebound_to_changed_bytes(owned: Served) -
         pass
     else:
         raise AssertionError("changed bytes rebound an immutable transfer key")
+
+
+@pytest.mark.parametrize(
+    ("target", "refusal"),
+    (
+        ("admit_document_capture_in_transaction", DocumentIntakeRefused),
+        ("publish_blob", BlobPublicationRefused),
+    ),
+)
+def test_temporarily_unavailable_capture_work_is_served_as_retryable(
+    owned: Served, monkeypatch: Any, target: str, refusal: type[Exception]
+) -> None:
+    """A capture that could not be preserved *yet* must not tell the caller to stop.
+
+    Admission and blob publication both refuse this way while the workspace is momentarily
+    unable to take the bytes, and resending the identical request is the recovery. The code
+    says so -- `internal_recoverable` is frozen retryable -- so a refusal built with the
+    default `non_retryable` contradicts its own code, and the response validator answers
+    that contradiction with a bare `internal_non_recoverable`: the opposite instruction,
+    carrying none of the original message.
+    """
+    dispatcher = build_dispatcher(owned, tag="document-unavailable")
+
+    def unavailable(*args: Any, **kwargs: Any) -> Any:
+        raise refusal("the workspace cannot take these bytes right now")
+
+    monkeypatch.setattr(document_handlers, target, unavailable)
+    response = dispatcher.dispatch(request(request_id="req-document-unavailable"))
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == ERROR_CODE_INTERNAL_RECOVERABLE
+    assert response.error.retry_class == RETRY_CLASS_RETRYABLE
+    assert response.error.message == "the transferred document could not be preserved"
+    assert count(owned, "omnivia_document_captures") == 0
 
 
 def test_document_reprocess_publishes_retained_bytes_and_exact_replay(

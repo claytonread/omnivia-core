@@ -1040,7 +1040,15 @@ class DocumentCaptureHandlers:
             if failure == "conflict":
                 raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_INVALID)
             if failure == "unavailable":
-                raise OperationError(ERROR_CODE_INTERNAL_RECOVERABLE, _MESSAGE_UNAVAILABLE)
+                # Same frozen class as the history race above: `internal_recoverable` is
+                # retryable, and the default `non_retryable` contradicts it, which the
+                # response validator turns into a bare `internal_non_recoverable` telling
+                # the caller to stop over work that resending would complete.
+                raise OperationError(
+                    ERROR_CODE_INTERNAL_RECOVERABLE,
+                    _MESSAGE_UNAVAILABLE,
+                    retry_class=RETRY_CLASS_RETRYABLE,
+                )
             assert admitted is not None
             capture = admitted.capture
             return DocumentCaptureResult(
