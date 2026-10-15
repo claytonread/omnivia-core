@@ -601,6 +601,17 @@
       "sha256": "f74b2de82896ed21f2ebf023827d7d25c7386530db96adf1dbee801123375c21",
       "introduced_commit": "6aba714a1772b468d607a7bc205f7363cb6fbca6",
       "accepted_commit": null
+    },
+    {
+      "number": 72,
+      "filename": "0072_capture_processing_resources.sql",
+      "owner": "Evidence Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 71,
+      "sha256": "70c2f4f0ef9df7d14f0f7e7f2d12210ad0d72b757210282afb02573e877d1290",
+      "introduced_commit": "be5a744e1a9f09ed29f46b48dccca0c84781f820",
+      "accepted_commit": null
     }
   ]
 }

@@ -188,6 +188,12 @@ EXPECTED_ALLOCATION = (
         "Evidence Runtime",
         "candidate",
     ),
+    (
+        72,
+        "0072_capture_processing_resources.sql",
+        "Evidence Runtime",
+        "candidate",
+    ),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -286,6 +292,9 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0071 freezes the processing preferences one capture was admitted under onto
     # the capture row, pinned to the commit that introduced its SQL.
     71: "6aba714a1772b468d607a7bc205f7363cb6fbca6",
+    # 0072 freezes the exact OCR resource identities one capture was admitted
+    # *against* beside them, pinned to the commit that introduced its SQL.
+    72: "be5a744e1a9f09ed29f46b48dccca0c84781f820",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
