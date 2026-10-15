@@ -623,6 +623,79 @@ _XLSX_PIVOT_TABLE_GROUPS: Final = (
     ("pageFieldCount", "pageFields", "pageField"),
     ("dataFieldCount", "dataFields", "dataField"),
 )
+# The relationship and content types that together qualify one query-table part:
+# the part the saved state of a data query over a range is kept in. As on every
+# other route here, nothing qualifies by ending the same way -- a connections,
+# external-link or pivot-cache relationship reaches no query table -- and the
+# content type is compared against ``declared_type``, which case-folds, so it is
+# written folded here rather than in OOXML's own camel case. Both are the same
+# under either profile apart from the two relationship URIs OOXML defines.
+_XLSX_QUERY_TABLE_RELATIONSHIPS: Final = frozenset(
+    {
+        (
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            "/queryTable"
+        ),
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/queryTable",
+    }
+)
+_XLSX_QUERY_TABLE_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.querytable+xml"
+)
+# The bounds, each taken before the work it bounds: the query tables one sheet's
+# own route and its declared tables may together reach, counted before any of
+# their parts is opened, and the fields one saved refresh may declare. Every
+# string a record keeps is clipped and no field name, parameter or cached value
+# is ever read, so these counts are the whole of what bounds the inventory.
+# ponytail: 256 query tables per sheet -- the sheet's own table ceiling -- and
+# 16384 fields per refresh, the grid's own column ceiling; widen only if a real
+# workbook is refused by one of them.
+_MAX_XLSX_QUERY_TABLES: Final = 256
+_MAX_XLSX_QUERY_TABLE_FIELDS: Final = 16_384
+# ``ST_GrowShrinkType``: what the saved query says would happen to the range
+# around it if a refresh ever returned a different number of rows. Closed, so a
+# type outside the three is refused rather than read as whichever it resembles.
+# Nothing here refreshes, so nothing is inserted, cleared or overwritten.
+_XLSX_QUERY_GROW_SHRINK: Final = frozenset(
+    {"insertDelete", "insertClear", "overwriteClear"}
+)
+# The query table's boolean attributes, read tri-state for the reason a
+# connection's and a pivot cache's are: SpreadsheetML defaults each, but a
+# default is not a declaration, and a refresh policy a consumer has to reason
+# about is clearer when it says which of the two the file actually wrote.
+#
+# Every one is inert here. The first group is what Excel would do with the query
+# and its results -- ``refreshOnLoad``, ``disableRefresh`` and
+# ``removeDataOnSave`` describe its behaviour, not this reader's -- and the
+# ``apply*Formats`` group is formatting policy for a refresh that never happens.
+_XLSX_QUERY_TABLE_FLAGS: Final = (
+    "headers",
+    "rowNumbers",
+    "disableRefresh",
+    "backgroundRefresh",
+    "firstBackgroundRefresh",
+    "refreshOnLoad",
+    "fillFormulas",
+    "removeDataOnSave",
+    "disableEdit",
+    "preserveFormatting",
+    "adjustColumnWidth",
+    "intermediate",
+    "applyNumberFormats",
+    "applyBorderFormats",
+    "applyFontFormats",
+    "applyPatternFormats",
+    "applyAlignmentFormats",
+    "applyWidthHeightFormats",
+)
+# The field lists one saved refresh declares, beside the member counted inside
+# each and the field its summary is reported in. Only the counts come out: a
+# field's name is the query's own column header and a deleted field's is what
+# the query returned before, so both are counted and neither is read.
+_XLSX_QUERY_TABLE_GROUPS: Final = (
+    ("refreshFieldCount", "queryTableFields", "queryTableField"),
+    ("refreshDeletedFieldCount", "queryTableDeletedFields", "deletedField"),
+)
 # The relationship and content types that together qualify the workbook's own
 # styles part, the one part the cell-format table lives in. As with every other
 # type here, only the two URIs OOXML defines qualify -- Transitional and Strict
@@ -2618,8 +2691,9 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         # The stored data connections, likewise the workbook's own part rather
         # than a sheet's, and resolved here for the reason the defined names
         # are: a malformed list is refused before a package's worth of work.
-        # Nothing it names is opened and no refresh is performed.
-        connections = _xlsx_connections(package)
+        # Nothing it names is opened and no refresh is performed. The index is
+        # what lets a sheet's query table name the connection it cites.
+        connections, declared_connections = _xlsx_connections(package)
         # The external links, likewise the workbook's own declarations, and
         # resolved here for the same reason: a malformed link is refused before
         # a package's worth of work. Nothing it names is opened -- no linked
@@ -2633,6 +2707,7 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         # cached record is read -- only what the saved definition declared.
         pivot_caches, caches = _xlsx_pivot_caches(package, workbook)
         pivot_tables = 0
+        query_tables = 0
         # The cell-format table and the date system the workbook counts its
         # serials from: both are the workbook's own declarations rather than a
         # sheet's, so they are resolved once and every cell of every sheet
@@ -2882,6 +2957,35 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                     )
                 )
                 _bounded(segments)
+            # The query tables the sheet and its declared tables reach, as
+            # inventory. A query table has no declaration in the sheet's own
+            # markup -- the qualifying relationship is the declaration -- so
+            # ``sheetPart`` is provenance for it as it is for a pivot table, and
+            # a record reached through a declared table names that table beside
+            # it. The saved state is reported, never run: no query is executed,
+            # no connection or Power Query source is opened, and nothing is
+            # refreshed or recalculated.
+            for provenance, record in _xlsx_query_tables(
+                package, part, tables, declared_connections
+            ):
+                query_tables += 1
+                segments.append(
+                    ExtractedSegment(
+                        "object_inventory",
+                        _locator(
+                            capture_id,
+                            sheetPart=part,
+                            sheetId=sheet_id,
+                            sheet=sheet_name,
+                            sheetState=state,
+                            **provenance,
+                        ),
+                        structured_value=record,
+                        extraction_method="inventory",
+                        visibility="hidden" if sheet_hidden else "visible",
+                    )
+                )
+                _bounded(segments)
             # A comment is anchored to a reference, not to a cell: nothing here
             # requires the sheet to have written anything at that position, and
             # no cell is materialised for one.
@@ -3011,6 +3115,10 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 # tables and a workbook may keep one no table cites.
                 "pivotCaches": len(pivot_caches),
                 "pivotTables": pivot_tables,
+                # The query tables the sheets and their declared tables related,
+                # which is not the ``connections`` figure beside it: a stored
+                # connection may serve several query tables, or none at all.
+                "queryTables": query_tables,
                 # The links the workbook declared, which is not the
                 # ``externalReferences`` figure beside it: that one counts every
                 # external relationship any part of the package holds, this one
@@ -3259,7 +3367,9 @@ def _xlsx_defined_names(
 
 def _xlsx_connections(
     package: _Package,
-) -> list[tuple[dict[str, object], dict[str, object]]]:
+) -> tuple[
+    list[tuple[dict[str, object], dict[str, object]]], dict[int, tuple[str, int]]
+]:
     """Inventory the workbook's stored data connections without opening one.
 
     The connections list is the workbook's own part, reached only through the
@@ -3293,6 +3403,11 @@ def _xlsx_connections(
     says so outright. No ``sourceFile`` or ``odcFile`` is opened, resolved or
     fetched, no query is run, no network or filesystem target is reached past
     the package's own members, and nothing is recalculated.
+
+    The index that comes back is where each declared id sits, so a sheet's query
+    table can name the connection it cites without deriving a part from it. A
+    workbook relating no connections part at all indexes nothing, which is what
+    leaves a cited id explicitly unlinked rather than resolved by guesswork.
     """
     resolved = _related_part(
         package,
@@ -3304,7 +3419,7 @@ def _xlsx_connections(
         label="XLSX",
     )
     if resolved is None:
-        return []
+        return [], {}
     relation_id, connections_part = resolved
     root = package.xml(connections_part)
     namespace, _, local = root.tag.rpartition("}")
@@ -3319,6 +3434,7 @@ def _xlsx_connections(
     if len(entries) > _MAX_XLSX_CONNECTIONS:
         raise OOXMLInvalid("XLSX workbook declares too many connections")
     records: list[tuple[dict[str, object], dict[str, object]]] = []
+    declared: dict[int, tuple[str, int]] = {}
     seen: set[int] = set()
     for index, entry in enumerate(entries):
         # The id is the connection's identity: a query table or a pivot cache
@@ -3332,6 +3448,7 @@ def _xlsx_connections(
         if identity in seen:
             raise OOXMLInvalid("XLSX connection id is repeated")
         seen.add(identity)
+        declared[identity] = (connections_part, index)
         # Closed, so a mode outside the type is refused rather than read as
         # whichever of the four it resembles.
         credentials = entry.attrib.get("credentials")
@@ -3382,7 +3499,7 @@ def _xlsx_connections(
                 },
             )
         )
-    return records
+    return records, declared
 
 
 def _xlsx_connection_flag(entry: ElementTree.Element, name: str) -> bool | None:
@@ -4219,6 +4336,308 @@ def _xlsx_pivot_number(
     if _INDEX.fullmatch(raw) is None or int(raw) > bound:
         raise OOXMLInvalid("XLSX pivot numeric attribute is malformed")
     return int(raw)
+
+
+def _xlsx_query_table_routes(package: _Package, source: str) -> list[tuple[str, str]]:
+    """Return every query-table route ``source`` relates, in the authored order.
+
+    The singular ``_related_part`` is wrong for this one type: it refuses a
+    second qualifying relationship, because the parts it resolves are the ones
+    OOXML gives a source at most one of. A query table is not one of those --
+    a worksheet carries one per range a query was written over, and a table
+    definition may do the same -- so every qualifying relationship is a route.
+
+    Order is the relationship part's own: the ids are taken in the order the
+    part authored them and never sorted, so an owner whose ids happen to sort
+    the other way still reports its query tables the way it wrote them. A
+    repeated ``Id`` was already refused when the relationship part was
+    validated, so the authored order holds one position per route.
+
+    Each route is held to what the singular helper holds its one to: internal,
+    carrying one of the URIs OOXML defines for the type, and resolving to a
+    part the package declares as a query table. A relationship of another type
+    is inert. All of it happens here, before the caller opens any part.
+    """
+    rels = posixpath.join(
+        posixpath.dirname(source), "_rels", posixpath.basename(source) + ".rels"
+    )
+    routes: list[tuple[str, str]] = []
+    for relation_id, kind in package.relationship_types.get(rels, {}).items():
+        if not _is_defined_relationship(kind, _XLSX_QUERY_TABLE_RELATIONSHIPS):
+            continue
+        target, external = package.relationships[rels][relation_id]
+        if external:
+            raise OOXMLInvalid("XLSX query table relationship is external")
+        if package.declared_type(target) != _XLSX_QUERY_TABLE_CONTENT_TYPE:
+            raise OOXMLInvalid(
+                "XLSX query table relationship does not name a query table part"
+            )
+        routes.append((relation_id, target))
+    return routes
+
+
+def _xlsx_query_tables(
+    package: _Package,
+    part: str,
+    tables: list[dict[str, object]],
+    connections: dict[int, tuple[str, int]],
+) -> list[tuple[dict[str, object], dict[str, object]]]:
+    """Inventory the query tables one sheet reaches, linking each to its connection.
+
+    A query table is the one XLSX route with no declaration in the worksheet's
+    own markup: SpreadsheetML gives it no container beside ``tableParts`` or
+    ``pivotTableParts``, so the qualifying relationship *is* the declaration.
+    Two kinds of owner may hold them: the worksheet itself, for a query written
+    over a range of the sheet, and a declared table definition, for a table
+    whose rows a query returns. Either may hold several -- a sheet carries one
+    query table per range a query was written over -- so every qualifying
+    relationship an owner holds is a route, not only the first or the only one.
+
+    All are reached on the owner's own relationships and no other route. A
+    table definition counts only where the worksheet already declared it on its
+    authored ``tableParts`` route, so a table part the sheet never declared
+    reaches nothing here, and no part path is derived from a sheet or table
+    name: a member that merely looks like a query table is inert however it is
+    named or typed. An owner relating no qualifying relationship reaches no
+    query table, which is the absent route rather than a refusal, and a
+    relationship of another type qualifies as nothing, exactly as it does on the
+    styles and connections routes.
+
+    Order is the owner's: the sheet's own query tables first, then its declared
+    tables' in the order the sheet wrote its ``tableParts``, and within one
+    owner the order that owner's relationship part authored them in. Nothing
+    sorts relationship ids to stand in for either, so the same package reports
+    the same way every time.
+
+    The invariant on a part two routes reach is that it is one query table, not
+    two: the second route is refused, and refused while the routes are still
+    being collected, so no query table is opened at all. One id cannot reach it
+    twice -- a repeated ``Id`` is refused when the relationship part is
+    validated -- so what this catches is two distinct routes naming one part.
+    It is the sheet's own invariant, as a pivot table's duplicate check is -- a
+    table definition belongs to the sheet that declared it -- so a part two
+    *sheets* relate is reported once under each, and every record names the
+    owner it was reached through.
+
+    Nothing here runs a query, opens a connection, resolves a Power Query
+    source, reaches a network or filesystem target past the package's own
+    members, or refreshes or recalculates anything. Every record says so.
+    """
+    # The owner's relationships are the route, so there is no declaration in the
+    # sheet's markup to hold to the sheet's namespace: the part's own root
+    # carries that check instead, which is why an unqualified or foreign
+    # worksheet reaches its query table the same way a conformant one does.
+    owners: list[tuple[str, dict[str, object]]] = [(part, {})]
+    for table in tables:
+        owners.append(
+            (
+                str(table["tablePart"]),
+                {
+                    "tablePart": table["tablePart"],
+                    "tableRelationshipId": table["relationshipId"],
+                },
+            )
+        )
+    routes: list[tuple[dict[str, object], str, str]] = []
+    resolved: set[str] = set()
+    for owner, provenance in owners:
+        for relation_id, query_part in _xlsx_query_table_routes(package, owner):
+            if query_part in resolved:
+                raise OOXMLInvalid("XLSX query table part is referenced twice")
+            resolved.add(query_part)
+            routes.append((provenance, relation_id, query_part))
+    # Counted before the first part is opened: what a sheet and its tables
+    # relate is the work they ask for whether or not any of it is readable.
+    if len(routes) > _MAX_XLSX_QUERY_TABLES:
+        raise OOXMLInvalid("XLSX worksheet reaches too many query tables")
+    return [
+        (
+            {
+                **provenance,
+                "queryTablePart": query_part,
+                "queryTableRelationshipId": _clip(relation_id, _MAX_META_CHARS),
+                "queryTableIndex": index,
+            },
+            _xlsx_query_table(package, query_part, connections),
+        )
+        for index, (provenance, relation_id, query_part) in enumerate(routes)
+    ]
+
+
+def _xlsx_query_table(
+    package: _Package, part: str, connections: dict[int, tuple[str, int]]
+) -> dict[str, object]:
+    """Read one query table, reporting the state it saved and nothing it would do.
+
+    The declared content type says what the part is; the root is where the part
+    says so itself, in one of the two SpreadsheetML namespaces, as the one
+    remaining check that it holds the vocabulary that declaration promised.
+
+    ``connectionId`` is the one identity a query table has to declare -- it is
+    the whole of what the saved query names, and a query table citing no
+    connection references nothing -- so a definition missing or malforming it is
+    refused. The connection is linked by that id through the index the
+    workbook's own connections part built: where the workbook declared no
+    connection under it, the link is absent rather than invented, and the query
+    table is still the inventory it is. Nothing here derives a connections part
+    from an id, picks a connection that happens to be in the package, or opens
+    the one it linked.
+
+    ``name`` is not an identity here -- nothing cites a query table by it -- so
+    it is clipped as the free text it is, and one written empty stays the empty
+    claim the file made.
+
+    Everything else is declared policy for a refresh that does not happen, and
+    ``freshness`` is unknown with both standing claims false for the reason they
+    are on a connection: this reader read a saved declaration and did none of
+    what it describes.
+    """
+    root = package.xml(part)
+    namespace, _, local = root.tag.rpartition("}")
+    namespace = namespace.lstrip("{")
+    if namespace not in _SPREADSHEETML:
+        raise OOXMLInvalid("XLSX query table part uses an unsupported namespace")
+    if local != "queryTable":
+        raise OOXMLInvalid("XLSX query table part is not rooted at its own query table")
+    raw = root.attrib.get("connectionId")
+    if raw is None or _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
+        raise OOXMLInvalid("XLSX query table connection id is missing or malformed")
+    connection_id = int(raw)
+    linked = connections.get(connection_id)
+    grow = root.attrib.get("growShrinkType")
+    if grow is not None and grow not in _XLSX_QUERY_GROW_SHRINK:
+        raise OOXMLInvalid("XLSX query table grow-shrink type is not a defined value")
+    # ``xsd:unsignedInt``, and absent stays absent: a format index the file never
+    # wrote is not one it claimed, and nothing is applied on account of it.
+    auto_format = root.attrib.get("autoFormatId")
+    if auto_format is not None and (
+        _INDEX.fullmatch(auto_format) is None or int(auto_format) > 0xFFFF_FFFF
+    ):
+        raise OOXMLInvalid("XLSX query table numeric attribute is malformed")
+    name = root.attrib.get("name")
+    return {
+        "kind": "queryTable",
+        "name": None if name is None else _clip(name, _MAX_META_CHARS),
+        "connectionId": connection_id,
+        "connectionsPart": None if linked is None else linked[0],
+        "connectionIndex": None if linked is None else linked[1],
+        "definitionPart": part,
+        "growShrinkType": grow,
+        "autoFormatId": None if auto_format is None else int(auto_format),
+        # Stated outright on every record, as on a connection's and a pivot
+        # report's: this reader read a saved declaration and did nothing it
+        # describes. Power Query and data connections are never refreshed.
+        "freshness": "unknown",
+        "refreshPerformed": False,
+        "externalAccessPerformed": False,
+        **{key: _xlsx_query_flag(root, key) for key in _XLSX_QUERY_TABLE_FLAGS},
+        **_xlsx_query_refresh(root, namespace),
+    }
+
+
+def _xlsx_query_refresh(
+    root: ElementTree.Element, namespace: str
+) -> dict[str, object]:
+    """Summarise the refresh state a query table saved, as presence and counts.
+
+    The schema gives a query table one refresh state and one extension point, so
+    a second of either leaves two at one position and nothing here picks between
+    them. Both are matched as direct children qualified in the part's own
+    namespace, so a lookalike written in a foreign vocabulary, one stripped of
+    its prefix and one nested deeper all declare nothing, exactly as they do on
+    the pivot and declared-table routes.
+
+    Only presence and counts come out. Everything the refresh state actually
+    holds is the query's own: the field names are the columns it returned, the
+    sort state is the order it returned them in, and the extension payload is
+    where a Power Query definition and its parameters live. None of it is read,
+    so no query text, parameter, credential, external target, cached value or
+    formula can leave the part through here.
+    """
+    declared: ElementTree.Element | None = None
+    extension = False
+    for node in root:
+        if node.tag == f"{{{namespace}}}queryTableRefresh":
+            if declared is not None:
+                raise OOXMLInvalid("XLSX query table declares its refresh state twice")
+            declared = node
+        elif node.tag == f"{{{namespace}}}extLst":
+            extension = _xlsx_extension_list(extension, "query table")
+    if declared is None:
+        return {
+            "refreshDeclared": False,
+            "refreshSortDeclared": None,
+            **{field: None for field, _group, _member in _XLSX_QUERY_TABLE_GROUPS},
+        }
+    sorts = 0
+    nested = False
+    for node in declared:
+        if node.tag == f"{{{namespace}}}sortState":
+            sorts += 1
+            if sorts > 1:
+                raise OOXMLInvalid("XLSX query table declares its sort state twice")
+        elif node.tag == f"{{{namespace}}}extLst":
+            nested = _xlsx_extension_list(nested, "query table refresh")
+    return {
+        "refreshDeclared": True,
+        "refreshSortDeclared": bool(sorts),
+        **{
+            field: _xlsx_query_count(declared, namespace, group, member)
+            for field, group, member in _XLSX_QUERY_TABLE_GROUPS
+        },
+    }
+
+
+def _xlsx_query_count(
+    holder: ElementTree.Element, namespace: str, group: str, member: str
+) -> int | None:
+    """Count what one declared field list holds, or None where none was declared.
+
+    The list is matched as a direct child qualified in the part's own namespace,
+    for the reason the refresh state itself is, and the schema gives a refresh
+    one list of a kind, so a second is refused rather than read from whichever
+    was written first.
+
+    ``count`` is optional, so an absent one is the list the file wrote. Where it
+    is written it is bounded before the list is counted -- a width nothing wrote
+    is never walked -- and then has to agree with the list, because a count and a
+    list that disagree name two different numbers of fields and nothing here
+    picks between them.
+    """
+    groups = [node for node in holder if node.tag == f"{{{namespace}}}{group}"]
+    if len(groups) > 1:
+        raise OOXMLInvalid("XLSX query table refresh declares a field list twice")
+    if not groups:
+        return None
+    count = groups[0].attrib.get("count")
+    if count is not None and (
+        _INDEX.fullmatch(count) is None or int(count) > _MAX_XLSX_QUERY_TABLE_FIELDS
+    ):
+        raise OOXMLInvalid("XLSX query table declares too many fields or no count")
+    held = sum(1 for node in groups[0] if node.tag == f"{{{namespace}}}{member}")
+    if held > _MAX_XLSX_QUERY_TABLE_FIELDS:
+        raise OOXMLInvalid("XLSX query table declares too many fields or no count")
+    if count is not None and held != int(count):
+        raise OOXMLInvalid("XLSX query table field count does not match its field list")
+    return held
+
+
+def _xlsx_query_flag(element: ElementTree.Element, name: str) -> bool | None:
+    """Read one query table's boolean attribute, or None where absent.
+
+    ``None`` says the file declared nothing, which is not the same as a declared
+    false, and no default is invented for it. The value is closed, so one
+    outside the type is refused rather than read as whichever of the two it
+    resembles.
+    """
+    value = element.attrib.get(name)
+    if value is None:
+        return None
+    if value in _TRUE_FLAGS:
+        return True
+    if value in _FALSE_FLAGS:
+        return False
+    raise OOXMLInvalid("XLSX query table flag is malformed")
 
 
 @dataclass(frozen=True, slots=True)
