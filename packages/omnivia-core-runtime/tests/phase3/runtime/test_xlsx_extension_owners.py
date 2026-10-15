@@ -8,9 +8,11 @@ the extension lists its own vocabulary allows, once per part, addressed by the
 structural path of the owning element and never by anything the source wrote.
 The nested owners of the workbook and of every sheet kind are pinned too.
 
-Not covered, and deliberately not asserted as covered: drawing and chart parts
-(their lists are DrawingML), and the parts the reader never opens (revision
-logs, the calculation chain, cell metadata, volatile types, single-cell XML).
+The drawing and chart parts are DrawingML rather than SpreadsheetML, so they are
+pinned next door in ``test_xlsx_drawing_extensions.py``. Not covered, and
+deliberately not asserted as covered: the parts the reader never opens
+(revision logs, the calculation chain, cell metadata, volatile types,
+single-cell XML).
 """
 
 from __future__ import annotations

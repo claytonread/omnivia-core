@@ -31,7 +31,11 @@ from typing import Any
 
 import pytest
 import test_application_audit_idempotency_migration as m1
-from omnivia_core_runtime.ownership.fencing import close_guard, fenced_transaction
+from omnivia_core_runtime.ownership.fencing import (
+    StaleGeneration,
+    close_guard,
+    fenced_transaction,
+)
 from omnivia_core_runtime.storage.app_settings import (
     AppSettingsError,
     delete_setting,
@@ -168,7 +172,7 @@ def test_the_store_refuses_a_write_once_the_guard_is_closed(owned: m1.Owned) -> 
     """The same withdrawal, through the public store rather than raw SQL."""
     _write(owned, "backup.schedule", "daily")
     close_guard(owned.connection)
-    with pytest.raises(Exception):
+    with pytest.raises(StaleGeneration, match="no mutation guard is open"):
         _write(owned, "backup.schedule", "weekly", at=T0 + 1)
 
 
@@ -176,20 +180,22 @@ def test_the_store_refuses_a_write_once_the_guard_is_closed(owned: m1.Owned) -> 
 
 
 def test_first_version_must_be_one(owned: m1.Owned) -> None:
-    with fenced_transaction(
-        owned.connection,
-        owned.identity,
-        workspace_id=WORKSPACE_ID,
-        fencing_generation=owned.generation,
+    with (
+        fenced_transaction(
+            owned.connection,
+            owned.identity,
+            workspace_id=WORKSPACE_ID,
+            fencing_generation=owned.generation,
+        ),
+        authorised(owned.connection, mutations=True),
+        pytest.raises(sqlite3.DatabaseError, match="starts at version 1"),
     ):
-        with authorised(owned.connection, mutations=True):
-            with pytest.raises(sqlite3.DatabaseError, match="starts at version 1"):
-                owned.connection.execute(
-                    f"INSERT INTO {TABLE} (workspace_id, setting_key, value_json, "
-                    "schema_version, version, updated_at_us, updated_by) "
-                    "VALUES (?, ?, ?, 1, 7, ?, ?)",
-                    (WORKSPACE_ID, "backup.schedule", '"daily"', T0, WRITER),
-                )
+        owned.connection.execute(
+            f"INSERT INTO {TABLE} (workspace_id, setting_key, value_json, "
+            "schema_version, version, updated_at_us, updated_by) "
+            "VALUES (?, ?, ?, 1, 7, ?, ?)",
+            (WORKSPACE_ID, "backup.schedule", '"daily"', T0, WRITER),
+        )
 
 
 def test_identity_is_immutable_and_version_advances_by_one(owned: m1.Owned) -> None:
@@ -199,20 +205,19 @@ def test_identity_is_immutable_and_version_advances_by_one(owned: m1.Owned) -> N
         owned.identity,
         workspace_id=WORKSPACE_ID,
         fencing_generation=owned.generation,
-    ):
-        with authorised(owned.connection, mutations=True):
-            with pytest.raises(sqlite3.DatabaseError, match="identity is immutable"):
-                owned.connection.execute(
-                    f"UPDATE {TABLE} SET setting_key = ?, version = version + 1 "
-                    "WHERE setting_key = ?",
-                    ("backup.other", "backup.schedule"),
-                )
-            with pytest.raises(sqlite3.DatabaseError, match="must advance by one"):
-                owned.connection.execute(
-                    f"UPDATE {TABLE} SET value_json = ?, version = version + 2 "
-                    "WHERE setting_key = ?",
-                    ('"weekly"', "backup.schedule"),
-                )
+    ), authorised(owned.connection, mutations=True):
+        with pytest.raises(sqlite3.DatabaseError, match="identity is immutable"):
+            owned.connection.execute(
+                f"UPDATE {TABLE} SET setting_key = ?, version = version + 1 "
+                "WHERE setting_key = ?",
+                ("backup.other", "backup.schedule"),
+            )
+        with pytest.raises(sqlite3.DatabaseError, match="must advance by one"):
+            owned.connection.execute(
+                f"UPDATE {TABLE} SET value_json = ?, version = version + 2 "
+                "WHERE setting_key = ?",
+                ('"weekly"', "backup.schedule"),
+            )
 
 
 @pytest.mark.parametrize(
@@ -317,14 +322,13 @@ def test_a_value_written_outside_the_store_is_reported_not_returned(
         owned.identity,
         workspace_id=WORKSPACE_ID,
         fencing_generation=owned.generation,
-    ):
-        with authorised(owned.connection, mutations=True):
-            owned.connection.execute(
-                f"INSERT INTO {TABLE} (workspace_id, setting_key, value_json, "
-                "schema_version, version, updated_at_us, updated_by) "
-                "VALUES (?, ?, ?, 1, 1, ?, ?)",
-                (WORKSPACE_ID, "backup.schedule", "not json", T0, WRITER),
-            )
+    ), authorised(owned.connection, mutations=True):
+        owned.connection.execute(
+            f"INSERT INTO {TABLE} (workspace_id, setting_key, value_json, "
+            "schema_version, version, updated_at_us, updated_by) "
+            "VALUES (?, ?, ?, 1, 1, ?, ?)",
+            (WORKSPACE_ID, "backup.schedule", "not json", T0, WRITER),
+        )
     with pytest.raises(AppSettingsError, match="not valid JSON"):
         read_setting(owned.connection, workspace_id=WORKSPACE_ID, key="backup.schedule")
 

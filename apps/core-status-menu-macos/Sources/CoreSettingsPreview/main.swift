@@ -20,7 +20,7 @@ import CoreSettingsMacOS
 // Top-level code runs on the process's main thread; the settings types are
 // MainActor-isolated, so state that rather than hopping through an async
 // entry point.
-try MainActor.assumeIsolated {
+MainActor.assumeIsolated {
     let application = NSApplication.shared
     application.setActivationPolicy(.regular)
     // The brand app icon (Resources/brand/omnivia-appicon.svg).

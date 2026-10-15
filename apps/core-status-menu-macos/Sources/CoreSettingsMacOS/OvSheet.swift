@@ -35,7 +35,9 @@ class OvSheet: NSObject {
     private var appearance = NSAppearance.currentDrawing()
 
     /// `.ai-sheet-b` inner width: 520 less the band's 18pt gutters.
-    static let contentWidth: CGFloat = 484
+    /// `nonisolated` so it can be a default argument, which is evaluated in the
+    /// caller's context rather than this class's.
+    nonisolated static let contentWidth: CGFloat = 484
 
     init(title: String, subtitle: String) {
         self.title = title
