@@ -42,6 +42,39 @@ private let pinnedResource = """
 "pinned": true, "pinnedBy": ["op-7", "op-9"]}]
 """
 
+/// One `resources` row, with the key order `sort_keys=True` produces. Rows are
+/// built rather than edited by substitution where a test needs two of them, or
+/// a size the arithmetic has to account for.
+private func row(
+    language: String = "eng",
+    engine: String = "5.5.3",
+    model: String = "tessdata_fast-4.1.0",
+    size: Int = 4_113_088,
+    sha: String = digest,
+    pinnedBy: [String] = [],
+    bytesPresent: Bool = true
+) -> String {
+    let pins = pinnedBy.map { "\"\($0)\"" }.joined(separator: ", ")
+    return """
+    {"bytesPresent": \(bytesPresent), "identity": {"byteSize": \(size), \
+    "engineVersion": "\(engine)", "language": "\(language)", "modelVersion": "\(model)", \
+    "sha256": "\(sha)"}, "pinned": \(pinnedBy.isEmpty ? "false" : "true"), \
+    "pinnedBy": [\(pins)]}
+    """
+}
+
+/// A `status` document whose three figures agree with the rows it carries: the
+/// service derives `installedBytes` from the declared sizes and `availableBytes`
+/// from the capacity, so a fixture that wants to isolate one invariant has to
+/// satisfy the rest.
+private func consistentDocument(_ rows: [String], installed: Int) -> String {
+    statusDocument(
+        resources: "[\(rows.joined(separator: ", "))]",
+        installed: installed,
+        available: 536_870_912 - installed
+    )
+}
+
 private let englishIdentity = OcrResourceIdentity(
     language: "eng",
     engineVersion: "5.5.3",
@@ -452,6 +485,122 @@ final class OcrResourceAdministrationTests: XCTestCase {
         XCTAssertNil(OcrResourceCommandRunner.Decoding.inventory(contradictory, action: "status"))
     }
 
+    // MARK: The inventory's own arithmetic
+
+    /// The control for the arithmetic tests below: two rows in the store's
+    /// stable-key order, summing to the figure the document reports.
+    func testTwoResourcesInStableKeyOrderDecode() throws {
+        let document = consistentDocument(
+            [row(), row(language: "fra", sha: otherDigest)], installed: 8_226_176
+        )
+        let inventory = try XCTUnwrap(
+            OcrResourceCommandRunner.Decoding.inventory(document, action: "status")
+        ).get()
+        XCTAssertEqual(inventory.resources.map(\.identity.language), ["eng", "fra"])
+        XCTAssertEqual(inventory.installedBytes, 8_226_176)
+    }
+
+    /// The store sorts its entries by stable key, so a document that does not
+    /// is not the one it wrote — and order is what the pane lists rows in.
+    func testResourcesOutOfStableKeyOrderAreRejected() {
+        let document = consistentDocument(
+            [row(language: "fra", sha: otherDigest), row()], installed: 8_226_176
+        )
+        XCTAssertNil(OcrResourceCommandRunner.Decoding.inventory(document, action: "status"))
+    }
+
+    /// The same identity twice would be counted twice against the cap and
+    /// offer one set of bytes for removal from two rows. The sum still matches
+    /// here, so nothing but the duplicate check rejects it.
+    func testADuplicateResourceIdentityIsRejected() {
+        let document = consistentDocument([row(), row()], installed: 8_226_176)
+        XCTAssertNil(OcrResourceCommandRunner.Decoding.inventory(document, action: "status"))
+    }
+
+    /// Free space cannot be negative. `installedBytes + availableBytes` still
+    /// equals the capacity here and the declared size still matches, so this is
+    /// the sign check alone.
+    func testANegativeAvailableIsRejected() {
+        let document = statusDocument(
+            resources: "[\(row(size: 536_870_913))]",
+            installed: 536_870_913,
+            available: -1
+        )
+        XCTAssertNil(OcrResourceCommandRunner.Decoding.inventory(document, action: "status"))
+    }
+
+    /// `availableBytes` is `capacityBytes - installedBytes` at the service. One
+    /// byte out and the pane would show free space the cache does not have.
+    func testTheCapacityMustEqualInstalledPlusAvailable() {
+        let document = statusDocument(
+            resources: "[\(row())]", installed: 4_113_088, available: 532_757_825
+        )
+        XCTAssertNil(OcrResourceCommandRunner.Decoding.inventory(document, action: "status"))
+    }
+
+    /// `installedBytes` is the sum of the declared sizes. The two figures agree
+    /// with the capacity here, so only the row's own size disagrees.
+    func testInstalledMustEqualTheDeclaredSizes() {
+        let document = statusDocument(
+            resources: "[\(row(size: 4_113_000))]", installed: 4_113_088, available: 532_757_824
+        )
+        XCTAssertNil(OcrResourceCommandRunner.Decoding.inventory(document, action: "status"))
+    }
+
+    /// Both sums are checked rather than computed: unguarded, these two
+    /// documents trap rather than return a wrong figure.
+    func testAnOverflowingTotalIsRejectedRatherThanTrapping() {
+        let occupied = statusDocument(
+            resources: "[]", installed: Int.max, available: 1
+        )
+        XCTAssertNil(OcrResourceCommandRunner.Decoding.inventory(occupied, action: "status"))
+
+        let sizes = consistentDocument(
+            [row(size: Int.max), row(language: "fra", size: Int.max, sha: otherDigest)],
+            installed: 0
+        )
+        XCTAssertNil(OcrResourceCommandRunner.Decoding.inventory(sizes, action: "status"))
+    }
+
+    /// An integer above `Int.max` arrives as an unsigned `NSNumber`, which is
+    /// not a float, and `intValue` would wrap it to a negative byte count.
+    func testAnIntegerBeyondIntIsNotRead() {
+        let document = statusDocument().replacingOccurrences(
+            of: "\"capacityBytes\": 536870912",
+            with: "\"capacityBytes\": 9223372036854775808"
+        )
+        XCTAssertNil(OcrResourceCommandRunner.Decoding.inventory(document, action: "status"))
+
+        let huge = statusDocument().replacingOccurrences(
+            of: "\"availableBytes\": 536870912",
+            with: "\"availableBytes\": 18446744073709551615"
+        )
+        XCTAssertNil(OcrResourceCommandRunner.Decoding.inventory(huge, action: "status"))
+
+        XCTAssertNil(OcrResourceCommandRunner.Decoding.integer(
+            NSNumber(value: UInt64(Int.max) + 1)
+        ))
+        XCTAssertEqual(
+            OcrResourceCommandRunner.Decoding.integer(NSNumber(value: UInt64(Int.max))), Int.max
+        )
+    }
+
+    /// Each row's pins are sorted and one claim per operation, so a repeated or
+    /// unordered operation id is not the document the lifecycle wrote.
+    func testPinnedByMustBeSortedAndUnique() {
+        for pins in [["op-9", "op-7"], ["op-7", "op-7"]] {
+            let document = consistentDocument([row(pinnedBy: pins)], installed: 4_113_088)
+            XCTAssertNil(
+                OcrResourceCommandRunner.Decoding.inventory(document, action: "status"),
+                "pins of \(pins) must not decode"
+            )
+        }
+        let sorted = consistentDocument(
+            [row(pinnedBy: ["op-7", "op-9"])], installed: 4_113_088
+        )
+        XCTAssertNotNil(OcrResourceCommandRunner.Decoding.inventory(sorted, action: "status"))
+    }
+
     // MARK: Forged data
 
     /// The identity goes back out as arguments, so it is accepted only in a
@@ -538,6 +687,77 @@ final class OcrResourceAdministrationTests: XCTestCase {
     }
 
     // MARK: The production runner
+    //
+    // These run real children, because what is under test is the runner's
+    // ownership of them. The behaviours needed — a child that writes to both
+    // streams, one that ignores SIGTERM, one that floods both pipes — are not
+    // in `/bin`, so `/bin/sh` is the test seam that produces them. It is the
+    // *child*: the runner still spawns by argument vector, and each fixture
+    // below is deterministic rather than timing-dependent.
+
+    private static let shell = URL(fileURLWithPath: "/bin/sh")
+
+    /// Normal completion: both streams collected whole and the child's own
+    /// exit status reported, with nothing truncated.
+    func testTheSystemRunnerReportsANormalCompletionOnBothStreams() async throws {
+        let result = try await SystemOcrProcessRunner().run(
+            executable: Self.shell,
+            arguments: ["-c", "printf 'the document'; printf 'the sentence' 1>&2; exit 3"],
+            timeout: 20,
+            stdoutLimit: 1 << 16,
+            stderrLimit: 1 << 16
+        ).get()
+        XCTAssertEqual(result.stdout, "the document")
+        XCTAssertEqual(result.stderr, "the sentence")
+        XCTAssertEqual(result.code, 3)
+        XCTAssertFalse(result.truncated)
+    }
+
+    /// Both pipes filled at once. Each is 64 KiB of kernel buffer, so a runner
+    /// that drained them one after the other — or drained one and waited —
+    /// would block the child and this test would never return.
+    func testTheSystemRunnerDrainsBothFullStreamsWithoutDeadlock() async throws {
+        let result = try await SystemOcrProcessRunner().run(
+            executable: Self.shell,
+            arguments: [
+                "-c",
+                "dd if=/dev/zero bs=1024 count=256 2>/dev/null & "
+                    + "dd if=/dev/zero bs=1024 count=256 1>&2 2>/dev/null; wait",
+            ],
+            timeout: 60,
+            stdoutLimit: 1 << 20,
+            stderrLimit: 1 << 20
+        ).get()
+        XCTAssertEqual(result.code, 0)
+        XCTAssertEqual(result.stdout.utf8.count, 262_144)
+        XCTAssertEqual(result.stderr.utf8.count, 262_144)
+        XCTAssertFalse(result.truncated)
+    }
+
+    /// A child that ignores SIGTERM is killed and still joined: the call
+    /// returns a timeout rather than hanging, and it returns once the child is
+    /// gone rather than while workers are still running against it.
+    func testTheSystemRunnerKillsAChildThatIgnoresTermination() async {
+        let started = DispatchTime.now()
+        let result = await SystemOcrProcessRunner().run(
+            executable: Self.shell,
+            // Ignores SIGTERM and never blocks, so nothing but SIGKILL ends it
+            // and no grandchild is left holding the pipe.
+            arguments: ["-c", "trap '' TERM; while :; do :; done"],
+            timeout: 0.5,
+            stdoutLimit: 1 << 16,
+            stderrLimit: 1 << 16
+        )
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds)
+            / 1_000_000_000
+        guard case .failure(.timedOut) = result else {
+            return XCTFail("expected a timeout, got \(result)")
+        }
+        // The wait, the grace, the kill and the joins — not the drain's own
+        // deadline, which only a descendant holding the pipe could reach.
+        XCTAssertGreaterThan(elapsed, 0.5 + SystemOcrProcessRunner.terminationGrace)
+        XCTAssertLessThan(elapsed, 0.5 + SystemOcrProcessRunner.drainGrace + 10)
+    }
 
     /// The real runner takes an argument vector, so nothing in it is parsed by
     /// a shell: the metacharacters below arrive as one argument.
@@ -554,6 +774,10 @@ final class OcrResourceAdministrationTests: XCTestCase {
         XCTAssertFalse(result.truncated)
     }
 
+    /// Oversized output on either stream is bounded and reported as bounded.
+    /// The child still runs to completion — reading continues past the bound so
+    /// it is never blocked on a full pipe — and what is kept is exactly the
+    /// bound, not whatever chunk the bound fell inside.
     func testTheSystemRunnerCapsOutput() async throws {
         let result = try await SystemOcrProcessRunner().run(
             executable: URL(fileURLWithPath: "/bin/dd"),
@@ -564,6 +788,19 @@ final class OcrResourceAdministrationTests: XCTestCase {
         ).get()
         XCTAssertTrue(result.truncated)
         XCTAssertEqual(result.stdout.utf8.count, 1024)
+        XCTAssertEqual(result.code, 0)
+
+        let diagnostics = try await SystemOcrProcessRunner().run(
+            executable: Self.shell,
+            arguments: ["-c", "dd if=/dev/zero bs=1024 count=64 1>&2 2>/dev/null"],
+            timeout: 20,
+            stdoutLimit: 1 << 16,
+            stderrLimit: 1024
+        ).get()
+        XCTAssertTrue(diagnostics.truncated)
+        XCTAssertEqual(diagnostics.stderr.utf8.count, 1024)
+        XCTAssertEqual(diagnostics.stdout, "")
+        XCTAssertEqual(diagnostics.code, 0)
     }
 
     func testTheSystemRunnerStopsAChildThatOverrunsItsTime() async {

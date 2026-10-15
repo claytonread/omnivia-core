@@ -385,12 +385,52 @@ public protocol OcrProcessRunning: Sendable {
 
 /// `Process` with an argument vector, no shell, no inherited stdin, bounded
 /// output on both streams and a bounded wait.
+///
+/// Three workers run per call — one per stream, one on the child — and all
+/// three are joined before `execute` returns, so nothing it started can still
+/// be running when its result is handed back. That is why the collected bytes
+/// live in `DrainedStream` rather than in `execute`'s frame: a worker writing
+/// into the frame that already returned is the defect this shape removes, not
+/// a race the joins happen to hide.
 public struct SystemOcrProcessRunner: OcrProcessRunning {
     public init() {}
 
+    /// Concurrent: a run is a blocking call that can last as long as
+    /// `reconcileTimeout`, and a serial queue would put a cheap `status` read
+    /// behind it.
     private static let queue = DispatchQueue(
-        label: "com.omnivia.core-settings.ocr", qos: .userInitiated
+        label: "com.omnivia.core-settings.ocr", qos: .userInitiated, attributes: .concurrent
     )
+
+    /// How long a child gets to honour SIGTERM after the bounded wait expired,
+    /// before it is killed outright.
+    static let terminationGrace: TimeInterval = 2
+    /// How long past the bounded wait a drain keeps reading before it stops of
+    /// its own accord. Longer than `terminationGrace`, so the kill has already
+    /// happened; finite, so a descendant holding the write end open cannot make
+    /// a drain unjoinable.
+    static let drainGrace: TimeInterval = 5
+
+    /// One stream's collected bytes, owned by a lock rather than by the caller's
+    /// frame. Written once by the drain, read once after it is joined.
+    private final class DrainedStream: @unchecked Sendable {
+        private let lock = NSLock()
+        private var collected = Data()
+        private var truncated = false
+
+        func store(_ bytes: Data, truncated: Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            collected = bytes
+            self.truncated = truncated
+        }
+
+        var value: (bytes: Data, truncated: Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (collected, truncated)
+        }
+    }
 
     public func run(
         executable: URL,
@@ -436,58 +476,119 @@ public struct SystemOcrProcessRunner: OcrProcessRunning {
             return .failure(.spawnFailed)
         }
 
-        // Drain both streams before waiting: a full pipe buffer would deadlock
-        // the child against our own wait.
-        var outcome = (Data(), false)
-        var diagnostics = (Data(), false)
+        // Drain both streams while waiting, never after: a full pipe buffer on
+        // either one would block the child against our own wait. Both drains
+        // stop by `drainDeadline` whatever the child does, so both can be
+        // joined unconditionally below.
+        let deadline = DispatchTime.now() + timeout
+        let drainDeadline = deadline + Self.drainGrace
+        let outcome = DrainedStream()
+        let diagnostics = DrainedStream()
         let outDrained = DispatchSemaphore(value: 0)
         let errDrained = DispatchSemaphore(value: 0)
+        let outDescriptor = out.fileHandleForReading.fileDescriptor
+        let errDescriptor = err.fileHandleForReading.fileDescriptor
         DispatchQueue.global().async {
-            outcome = readCapped(out.fileHandleForReading, limit: stdoutLimit)
+            let read = drain(outDescriptor, limit: stdoutLimit, deadline: drainDeadline)
+            outcome.store(read.bytes, truncated: read.truncated)
             outDrained.signal()
         }
         DispatchQueue.global().async {
-            diagnostics = readCapped(err.fileHandleForReading, limit: stderrLimit)
+            let read = drain(errDescriptor, limit: stderrLimit, deadline: drainDeadline)
+            diagnostics.store(read.bytes, truncated: read.truncated)
             errDrained.signal()
         }
 
         let finished = DispatchSemaphore(value: 0)
         DispatchQueue.global().async { process.waitUntilExit(); finished.signal() }
-        if finished.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            if finished.wait(timeout: .now() + 5) == .timedOut {
-                kill(process.processIdentifier, SIGKILL)
-                _ = finished.wait(timeout: .now() + 5)
-            }
-            _ = outDrained.wait(timeout: .now() + 2)
-            _ = errDrained.wait(timeout: .now() + 2)
-            return .failure(.timedOut)
-        }
-        _ = outDrained.wait(timeout: .now() + 5)
-        _ = errDrained.wait(timeout: .now() + 5)
 
+        var overran = false
+        if finished.wait(timeout: deadline) == .timedOut {
+            overran = true
+            send(SIGTERM, to: process)
+            if finished.wait(timeout: .now() + Self.terminationGrace) == .timedOut {
+                // A child that ignores SIGTERM cannot ignore this one, so the
+                // wait below ends however stubborn it was.
+                send(SIGKILL, to: process)
+                finished.wait()
+            }
+        }
+        // Join everything this call started before reading anything it wrote.
+        // The waiter has settled, so `terminationStatus` is the child's; the
+        // drains have settled, so the descriptors are nobody's to read and the
+        // handles can be closed here rather than left to a deinit.
+        outDrained.wait()
+        errDrained.wait()
+        try? out.fileHandleForReading.close()
+        try? err.fileHandleForReading.close()
+
+        if overran { return .failure(.timedOut) }
+        let collected = outcome.value
+        let reported = diagnostics.value
         return .success(OcrProcessResult(
-            stdout: String(decoding: outcome.0, as: UTF8.self),
-            stderr: String(decoding: diagnostics.0, as: UTF8.self),
+            stdout: String(decoding: collected.bytes, as: UTF8.self),
+            stderr: String(decoding: reported.bytes, as: UTF8.self),
             code: process.terminationStatus,
-            truncated: outcome.1 || diagnostics.1
+            truncated: collected.truncated || reported.truncated
         ))
     }
 
-    /// Read to EOF, keeping at most `limit` bytes. Reading continues past the
-    /// bound so the child is never blocked on a full pipe — the excess is
-    /// counted and discarded.
-    private static func readCapped(_ handle: FileHandle, limit: Int) -> (Data, Bool) {
+    /// Signal the child, and only the child.
+    ///
+    /// `kill(0, …)` signals this process' whole group and a reaped pid can have
+    /// been handed to something else, so a signal goes out only while `Process`
+    /// still reports a live child with a positive pid. The check and the send
+    /// cannot be one atomic step — nothing in `Process` offers that — but a
+    /// child that exits in between is one `Process` has not yet reaped, so the
+    /// pid is still its own.
+    private static func send(_ number: Int32, to process: Process) {
+        let pid = process.processIdentifier
+        guard process.isRunning, pid > 0 else { return }
+        _ = kill(pid, number)
+    }
+
+    /// Read to EOF, keeping at most `limit` bytes and returning by `deadline`
+    /// whatever the writer does.
+    ///
+    /// Reading continues past the bound so the child is never blocked on a full
+    /// pipe — the excess is counted and discarded. `poll` on a non-blocking
+    /// descriptor rather than `FileHandle.availableData`, for two reasons: a
+    /// descendant of a killed child can hold the write end open for ever, and
+    /// an uninterruptible read would then make this worker impossible to join;
+    /// and `availableData` raises an exception on a closed descriptor instead
+    /// of returning.
+    private static func drain(
+        _ descriptor: Int32, limit: Int, deadline: DispatchTime
+    ) -> (bytes: Data, truncated: Bool) {
+        let flags = fcntl(descriptor, F_GETFL)
+        if flags >= 0 { _ = fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) }
         var collected = Data()
         var truncated = false
+        var buffer = [UInt8](repeating: 0, count: 64 << 10)
         while true {
-            let chunk = handle.availableData
-            if chunk.isEmpty { break }
-            let room = limit - collected.count
-            if room > 0 {
-                collected.append(chunk.prefix(room))
+            let now = DispatchTime.now()
+            guard now < deadline else { break }
+            let waiting = (deadline.uptimeNanoseconds - now.uptimeNanoseconds) / 1_000_000
+            var watched = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&watched, 1, Int32(max(1, min(waiting, UInt64(Int32.max)))))
+            if ready < 0 {
+                if errno == EINTR { continue }
+                break
             }
-            if chunk.count > max(room, 0) { truncated = true }
+            // Nothing arrived before the deadline. The writer is still holding
+            // the pipe, so this is as much as there is to read.
+            if ready == 0 { break }
+            let count = buffer.withUnsafeMutableBytes {
+                read(descriptor, $0.baseAddress, $0.count)
+            }
+            if count < 0 {
+                if errno == EINTR || errno == EAGAIN { continue }
+                break
+            }
+            if count == 0 { break }
+            let room = limit - collected.count
+            if room > 0 { collected.append(contentsOf: buffer[0..<min(room, count)]) }
+            if count > max(room, 0) { truncated = true }
         }
         return (collected, truncated)
     }
@@ -785,13 +886,26 @@ public struct OcrResourceCommandRunner: OcrResourceAdministering {
         }
 
         /// The capacity and resource half every accepted document carries.
+        ///
+        /// The three figures are checked against each other and against the
+        /// sizes the same document declares, because that is how the service
+        /// derives them: `availableBytes` is `capacityBytes - installedBytes`
+        /// and `installedBytes` is the sum of the installed entries' declared
+        /// sizes. A document whose arithmetic disagrees with itself is not a
+        /// reading of one cache, and the pane would render the disagreement as
+        /// free space. Every sum is checked for overflow rather than computed:
+        /// the alternative to a refusal here is a trap, not a wrong figure.
         private static func inventoryBody(_ root: [String: Any]) -> OcrResourceInventory? {
             guard let capacity = integer(root["capacityBytes"]), capacity > 0,
                   let installed = integer(root["installedBytes"]), installed >= 0,
-                  let available = integer(root["availableBytes"]),
+                  let available = integer(root["availableBytes"]), available >= 0,
                   let rows = root["resources"] as? [Any]
             else { return nil }
+            let (occupied, occupiedOverflowed) = installed.addingReportingOverflow(available)
+            guard !occupiedOverflowed, occupied == capacity else { return nil }
             var resources: [OcrInstalledResource] = []
+            var declared = 0
+            var previousKey = ""
             for row in rows {
                 guard let row = row as? [String: Any],
                       Set(row.keys) == ["identity", "pinned", "pinnedBy", "bytesPresent"],
@@ -803,16 +917,49 @@ public struct OcrResourceCommandRunner: OcrResourceAdministering {
                 // The service reports both; a row claiming no pin while naming
                 // the operations that hold one is not a row to render.
                 guard pinned == !pinnedBy.isEmpty else { return nil }
+                // The lifecycle holds one claim per (operation, resource set)
+                // and sorts each row's pins, so a repeated or unordered
+                // operation id is not the document it wrote.
+                guard zip(pinnedBy, pinnedBy.dropFirst()).allSatisfy({ precedes($0.0, $0.1) })
+                else { return nil }
+                // Entries arrive in the store's stable-key order, which is
+                // total over the five fields, so strictly ascending is both
+                // the ordering rule and the duplicate rule. Two rows for one
+                // identity would otherwise be counted twice against the cap
+                // and offer the same bytes for removal twice.
+                let key = stableKey(identity)
+                guard precedes(previousKey, key) else { return nil }
+                previousKey = key
+                let (sum, sumOverflowed) = declared.addingReportingOverflow(identity.byteSize)
+                guard !sumOverflowed else { return nil }
+                declared = sum
                 resources.append(OcrInstalledResource(
                     identity: identity, pinned: pinned, pinnedBy: pinnedBy, bytesPresent: present
                 ))
             }
+            guard declared == installed else { return nil }
             return OcrResourceInventory(
                 capacityBytes: capacity,
                 installedBytes: installed,
                 availableBytes: available,
                 resources: resources
             )
+        }
+
+        /// The store's own stable key: the five identity fields joined by a
+        /// separator the token shape excludes, so distinct identities cannot
+        /// collide and this is the order the service sorted by.
+        static func stableKey(_ identity: OcrResourceIdentity) -> String {
+            [
+                identity.language, identity.engineVersion, identity.modelVersion,
+                String(identity.byteSize), identity.sha256,
+            ].joined(separator: "|")
+        }
+
+        /// Code-point order, which is what the service's `sorted()` produced.
+        /// UTF-8 compares in code-point order; `String`'s own `<` does not.
+        private static func precedes(_ lhs: String, _ rhs: String) -> Bool {
+            lhs.utf8.lexicographicallyPrecedes(rhs.utf8)
         }
 
         private static func identities(_ any: Any?) -> [OcrResourceIdentity]? {
@@ -872,14 +1019,27 @@ public struct OcrResourceCommandRunner: OcrResourceAdministering {
             return number.boolValue
         }
 
-        /// A JSON integer. Rejects booleans and any value written as a float —
-        /// a byte count is counted, not measured.
+        /// A JSON integer, exactly, or nothing.
+        ///
+        /// Rejects booleans and any value written as a float — a byte count is
+        /// counted, not measured — and any value with no exact `Int`. The last
+        /// is not theoretical: `JSONSerialization` hands back an *unsigned*
+        /// `NSNumber` for a literal above `Int.max`, which passes a float
+        /// check, and `intValue` then wraps it to a negative figure. A forged
+        /// `9223372036854775808` must be unreadable, not minus nine quintillion.
         static func integer(_ any: Any?) -> Int? {
             guard let number = any as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID()
             else { return nil }
-            let encoding = String(cString: number.objCType)
-            guard encoding != "d", encoding != "f" else { return nil }
-            return number.intValue
+            switch String(cString: number.objCType) {
+            case "d", "f":
+                return nil
+            case "Q":
+                let unsigned = number.uint64Value
+                guard unsigned <= UInt64(Int.max) else { return nil }
+                return Int(unsigned)
+            default:
+                return Int(exactly: number.int64Value)
+            }
         }
     }
 }
