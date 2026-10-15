@@ -361,6 +361,135 @@ _XLSX_CONNECTION_CHILDREN: Final = (
     "parameters",
     "extLst",
 )
+# The relationship and content types that together qualify one external-link
+# part: the part a workbook keeps a single link to another workbook, to a DDE
+# server or to an OLE server in. As with every other type here, only the two
+# URIs OOXML defines qualify -- Transitional and Strict -- so nothing reaches one
+# by ending the same way, and a connections, query-table or pivot-cache
+# relationship reaches no external link at all. The content type is compared
+# against ``declared_type``, which case-folds, so the type is written folded
+# here rather than in OOXML's own camel case; it is the same under both
+# profiles.
+_XLSX_EXTERNAL_LINK_RELATIONSHIPS: Final = frozenset(
+    {
+        (
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            "/externalLink"
+        ),
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/externalLink",
+    }
+)
+_XLSX_EXTERNAL_LINK_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.externallink+xml"
+)
+# ``EG_ExternalLinkChoice``: the three forms an external link takes, each beside
+# the relationship types OOXML defines for the target it names and whether the
+# schema requires the form to name one. An ``externalBook`` names the workbook
+# it links to by an ``externalLinkPath`` relationship and an ``oleLink`` the
+# server document it links to by an ``oleObject`` one; a ``ddeLink`` names a
+# running service and topic by name and relates no target at all, which is why
+# its entry is None rather than an empty set.
+#
+# ``CT_OleLink`` requires its ``r:id`` and ``CT_ExternalBook`` leaves it
+# optional, so a cached-only workbook link -- one that stored sheet names and
+# values but no path -- is the inventory it is rather than a refusal. Where a
+# relationship is named it has to be external, because both name something
+# outside the package by definition and an internal one contradicts the
+# declaration rather than qualifying it. Nothing here opens, resolves, fetches,
+# launches or refreshes either.
+_XLSX_EXTERNAL_LINK_KINDS: Final[dict[str, tuple[frozenset[str], bool] | None]] = {
+    "externalBook": (
+        frozenset(
+            {
+                (
+                    "http://schemas.openxmlformats.org/officeDocument/2006"
+                    "/relationships/externalLinkPath"
+                ),
+                (
+                    "http://purl.oclc.org/ooxml/officeDocument/relationships"
+                    "/externalLinkPath"
+                ),
+            }
+        ),
+        False,
+    ),
+    "ddeLink": None,
+    "oleLink": (
+        frozenset(
+            {
+                (
+                    "http://schemas.openxmlformats.org/officeDocument/2006"
+                    "/relationships/oleObject"
+                ),
+                "http://purl.oclc.org/ooxml/officeDocument/relationships/oleObject",
+            }
+        ),
+        True,
+    ),
+}
+# The workbook's own bound: the external links it may declare, counted before
+# any of their parts is opened. Every string a record keeps is clipped, so the
+# count is the whole of what bounds the inventory.
+# ponytail: 256 external links per workbook; widen only if a real workbook is
+# refused by it.
+_MAX_XLSX_EXTERNAL_LINKS: Final = 256
+# What one external link's record carries, defaulted so a workbook link, a DDE
+# link and an OLE link are shaped alike, exactly as the picture-media and
+# legacy-object records are. ``target`` is the text the relationship holds and
+# ``targetScheme`` the scheme that text names; reporting either opens nothing.
+# A link that named no target -- which only an ``externalBook`` may do -- leaves
+# the whole group absent rather than carrying an invented one.
+#
+# The three groups after it are the inert metadata each form declares: how many
+# sheet names, defined names and cached sheet blocks a linked workbook's part
+# stored, the service and topic a DDE link names, and the ``ProgID`` an OLE link
+# names. Only counts come out of the groups -- the cached values under
+# ``sheetDataSet`` are the other workbook's own content, and copying them would
+# report data as though the link had been followed.
+#
+# ``refreshPerformed`` and ``externalAccessPerformed`` are the two standing
+# claims on every record, for the reason a stored connection's record carries
+# them: this reader read a declaration and did none of what it describes.
+_XLSX_EXTERNAL_LINK_RECORD: Final[dict[str, object]] = {
+    "kind": "externalLink",
+    "linkKind": None,
+    "refreshPerformed": False,
+    "externalAccessPerformed": False,
+    "targetRelationshipId": None,
+    "targetRelationshipType": None,
+    "target": None,
+    "targetExternal": None,
+    "targetScheme": None,
+    "sheetNameCount": None,
+    "definedNameCount": None,
+    "cachedSheetCount": None,
+    "ddeService": None,
+    "ddeTopic": None,
+    "ddeItemCount": None,
+    "progId": None,
+    "oleItemCount": None,
+}
+# The declared group each form holds its items in, beside the member counted
+# inside it. One group of a kind per link, so a second leaves two at one
+# position and nothing here picks between them.
+_XLSX_EXTERNAL_LINK_GROUPS: Final[dict[str, tuple[tuple[str, str, str], ...]]] = {
+    "externalBook": (
+        ("sheetNameCount", "sheetNames", "sheetName"),
+        ("definedNameCount", "definedNames", "definedName"),
+        ("cachedSheetCount", "sheetDataSet", "sheetData"),
+    ),
+    "ddeLink": (("ddeItemCount", "ddeItems", "ddeItem"),),
+    "oleLink": (("oleItemCount", "oleItems", "oleItem"),),
+}
+# The claims each form is required to declare, beside the field its record keeps
+# them in. A DDE link names the service and the topic it would talk to and an
+# OLE link the server that would open its document; all three are text the
+# author wrote, and nothing here looks one up, resolves it or launches anything.
+_XLSX_EXTERNAL_LINK_CLAIMS: Final[dict[str, tuple[tuple[str, str], ...]]] = {
+    "externalBook": (),
+    "ddeLink": (("ddeService", "ddeService"), ("ddeTopic", "ddeTopic")),
+    "oleLink": (("progId", "progId"),),
+}
 # The relationship and content types that together qualify the workbook's own
 # styles part, the one part the cell-format table lives in. As with every other
 # type here, only the two URIs OOXML defines qualify -- Transitional and Strict
@@ -2358,6 +2487,12 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         # are: a malformed list is refused before a package's worth of work.
         # Nothing it names is opened and no refresh is performed.
         connections = _xlsx_connections(package)
+        # The external links, likewise the workbook's own declarations, and
+        # resolved here for the same reason: a malformed link is refused before
+        # a package's worth of work. Nothing it names is opened -- no linked
+        # workbook, no DDE service, no OLE server -- and no cached value a
+        # linked part stored is copied out.
+        external_links = _xlsx_external_links(package, workbook)
         # The cell-format table and the date system the workbook counts its
         # serials from: both are the workbook's own declarations rather than a
         # sheet's, so they are resolved once and every cell of every sheet
@@ -2665,6 +2800,23 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 )
             )
             _bounded(segments)
+        # Last of the workbook's own declarations, after the connections for the
+        # same reason they come after the sheets: an external link is inert
+        # inventory, never content. It is always in sight -- it belongs to the
+        # workbook rather than to a sheet, so there is no sheet state to take
+        # visibility from. Nothing it names was opened and nothing was
+        # refreshed, and each record says so.
+        for provenance, link in external_links:
+            segments.append(
+                ExtractedSegment(
+                    "object_inventory",
+                    _locator(capture_id, **provenance),
+                    structured_value=link,
+                    extraction_method="inventory",
+                    visibility="visible",
+                )
+            )
+            _bounded(segments)
         return OOXMLExtraction(
             tuple(segments),
             "workbook_cell",
@@ -2673,6 +2825,11 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 "sheets": len(sheets),
                 "definedNames": len(defined_names),
                 "connections": len(connections),
+                # The links the workbook declared, which is not the
+                # ``externalReferences`` figure beside it: that one counts every
+                # external relationship any part of the package holds, this one
+                # the external links the workbook itself declared.
+                "externalLinks": len(external_links),
                 "packageMembers": len(package.names),
                 "externalReferences": package.external_relationships,
             },
@@ -3112,6 +3269,239 @@ def _xlsx_connection_payloads(
             1 for node in parameters[0] if node.tag == f"{{{namespace}}}parameter"
         ),
     }
+
+
+def _xlsx_external_links(
+    package: _Package, workbook: ElementTree.Element
+) -> list[tuple[dict[str, object], dict[str, object]]]:
+    """Inventory the workbook's external links without following one.
+
+    An external link is reached on the schema's own route and no other: the
+    ``externalReferences`` directly below the workbook, an ``externalReference``
+    directly below that, both qualified in the workbook root's own namespace,
+    and that element's own relationship id. An unqualified, foreign or further
+    nested lookalike declares nothing and stays transparent, exactly as it does
+    on the defined-name, table and connections routes, so a workbook that wrote
+    no namespace reports no external links rather than being read for whatever
+    spells the same local name. No part path is derived from the workbook's own
+    name, so a member that merely looks like an external-link part is never
+    read.
+
+    Each reference names its own part, so two references naming one relationship
+    -- or two relationships resolving to one part -- leave one link declared
+    twice and the workbook is refused rather than read with it counted once or
+    twice arbitrarily.
+
+    What comes back is the declaration and nothing it points at: the link's
+    kind, the relationship and part the workbook reached it by, the target
+    string exactly as the relationship holds it, and the inert metadata the form
+    declares beside it. No external workbook is opened, no DDE service is
+    contacted, no OLE server is launched, no cached value is copied out, and
+    every record says so outright.
+    """
+    namespace, _, _ = workbook.tag.rpartition("}")
+    namespace = namespace.lstrip("{")
+    if namespace not in _SPREADSHEETML:
+        return []
+    declared = [
+        node for node in workbook if node.tag == f"{{{namespace}}}externalReferences"
+    ]
+    if not declared:
+        return []
+    if len(declared) > 1:
+        raise OOXMLInvalid(
+            "XLSX workbook declares more than one external-reference list"
+        )
+    # Counted before the first part is opened: a workbook's declarations are the
+    # work it asks for whether or not any of them resolves.
+    member = f"{{{namespace}}}externalReference"
+    entries = [node for node in declared[0] if node.tag == member]
+    if len(entries) > _MAX_XLSX_EXTERNAL_LINKS:
+        raise OOXMLInvalid("XLSX workbook declares too many external links")
+    records: list[tuple[dict[str, object], dict[str, object]]] = []
+    named: set[str] = set()
+    resolved: set[str] = set()
+    for index, entry in enumerate(entries):
+        relation_id = _relationship_id(entry.attrib)
+        if not relation_id:
+            raise OOXMLInvalid("XLSX external reference names no relationship")
+        if relation_id in named:
+            raise OOXMLInvalid("XLSX external reference is repeated")
+        named.add(relation_id)
+        part = _referenced_part(
+            package,
+            "xl/workbook.xml",
+            relation_id,
+            _XLSX_EXTERNAL_LINK_RELATIONSHIPS,
+            _XLSX_EXTERNAL_LINK_CONTENT_TYPE,
+            "external link",
+            "XLSX",
+        )
+        if part in resolved:
+            raise OOXMLInvalid("XLSX external link part is referenced twice")
+        resolved.add(part)
+        records.append(
+            (
+                {
+                    "part": "xl/workbook.xml",
+                    "externalLinkPart": part,
+                    "externalLinkRelationshipId": _clip(relation_id, _MAX_META_CHARS),
+                    "externalLinkIndex": index,
+                },
+                _xlsx_external_link(package, part),
+            )
+        )
+    return records
+
+
+def _xlsx_external_link(package: _Package, part: str) -> dict[str, object]:
+    """Read one external-link part, reporting what it declares and no more.
+
+    The declared content type says what the part is; the root is where the part
+    says so itself, in one of the two SpreadsheetML namespaces, as the one
+    remaining check that it holds the vocabulary that declaration promised.
+
+    ``EG_ExternalLinkChoice`` gives the part exactly one link, so a part
+    declaring none declares nothing a record could describe, and two -- two of a
+    kind, or one of each -- leave which one the workbook links to ambiguous.
+    Neither is guessed at. The choice is matched as a direct child qualified in
+    the root's own namespace, so a lookalike in a foreign vocabulary, one
+    stripped of its prefix and one nested deeper all declare nothing.
+    """
+    root = package.xml(part)
+    namespace, _, local = root.tag.rpartition("}")
+    namespace = namespace.lstrip("{")
+    if namespace not in _SPREADSHEETML:
+        raise OOXMLInvalid("XLSX external link part uses an unsupported namespace")
+    if local != "externalLink":
+        raise OOXMLInvalid("XLSX external link part is not rooted at its own link")
+    kinds = {f"{{{namespace}}}{kind}": kind for kind in _XLSX_EXTERNAL_LINK_KINDS}
+    declarations = [(kinds[node.tag], node) for node in root if node.tag in kinds]
+    if not declarations:
+        raise OOXMLInvalid("XLSX external link part declares no link")
+    if len(declarations) > 1:
+        raise OOXMLInvalid("XLSX external link part declares more than one link")
+    kind, node = declarations[0]
+    record = dict(_XLSX_EXTERNAL_LINK_RECORD)
+    record["linkKind"] = kind
+    relates = _XLSX_EXTERNAL_LINK_KINDS[kind]
+    if relates is not None:
+        defined, required = relates
+        record.update(
+            _xlsx_external_target(package, part, node, defined, required=required)
+        )
+    record.update(
+        {
+            field: _xlsx_external_claim(node, name)
+            for field, name in _XLSX_EXTERNAL_LINK_CLAIMS[kind]
+        }
+    )
+    record.update(
+        {
+            field: _xlsx_external_count(node, namespace, group, item)
+            for field, group, item in _XLSX_EXTERNAL_LINK_GROUPS[kind]
+        }
+    )
+    return record
+
+
+def _xlsx_external_target(
+    package: _Package,
+    part: str,
+    node: ElementTree.Element,
+    defined: frozenset[str],
+    *,
+    required: bool,
+) -> dict[str, object]:
+    """Report the external target one link names, without reaching it.
+
+    ``CT_OleLink`` requires the id and ``CT_ExternalBook`` does not, so a
+    workbook link that named no path declares a cached link and nothing more:
+    the whole target group stays absent rather than being refused or filled
+    with a path nothing wrote.
+
+    Where an id is written it resolves only through the link part's own
+    relationships, so nothing is derived from the part's name and no member is
+    reached by merely looking like the target. The relationship has to carry one
+    of the URIs OOXML defines for the link's own kind, and it has to be
+    external: the target is another workbook or a server document by
+    definition, so an internal one contradicts the declaration rather than
+    qualifying it, and is refused instead of opened as a package member.
+
+    What comes out is the relationship's own text, clipped to the bound every
+    other target on every other route is clipped to, beside the scheme that text
+    names. Nothing resolves it against the filesystem, normalises it into a
+    path, mounts it, opens it, fetches it or refreshes anything from it, and the
+    scheme is read off the string rather than used to reach anything.
+    """
+    relation_id = _relationship_id(node.attrib)
+    if not relation_id:
+        if not required:
+            return {}
+        raise OOXMLInvalid("XLSX external link names no target relationship")
+    rels = posixpath.join(
+        posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels"
+    )
+    entry = package.relationships.get(rels, {}).get(relation_id)
+    if entry is None:
+        raise OOXMLInvalid("XLSX external link names a missing target relationship")
+    kind = package.relationship_types.get(rels, {}).get(relation_id, "")
+    if not _is_defined_relationship(kind, defined):
+        raise OOXMLInvalid(
+            "XLSX external link names a target relationship of another type"
+        )
+    target, external = entry
+    if not external:
+        raise OOXMLInvalid("XLSX external link target relationship is not external")
+    match = _SCHEME.match(target)
+    return {
+        "targetRelationshipId": _clip(relation_id, _MAX_META_CHARS),
+        "targetRelationshipType": _clip(kind, _MAX_TARGET_CHARS),
+        "target": _clip(target, _MAX_TARGET_CHARS),
+        "targetExternal": True,
+        "targetScheme": match.group(1).casefold() if match else None,
+    }
+
+
+def _xlsx_external_claim(element: ElementTree.Element, name: str) -> str:
+    """Read one claim a DDE or OLE link is required to declare, clipped.
+
+    The schema requires each, so a link that wrote none declares no service,
+    topic or server and is refused rather than reported under a claim nothing
+    made. An authored empty one is kept exactly as written, for the reason a
+    person's empty display name is: the type is ``ST_Xstring``, so the empty
+    string is a claim the file made and not an absent one.
+
+    The value is not an identity anything here resolves, so it is clipped
+    rather than refused for length.
+    """
+    value = element.attrib.get(name)
+    if value is None:
+        raise OOXMLInvalid("XLSX external link declaration is missing a required claim")
+    return _clip(value, _MAX_META_CHARS)
+
+
+def _xlsx_external_count(
+    holder: ElementTree.Element, namespace: str, group: str, member: str
+) -> int | None:
+    """Count what one declared group holds, or None where none was declared.
+
+    Presence and a count come out, and nothing inside the group does. The cached
+    values under ``sheetDataSet`` are the linked workbook's own content, and a
+    reader that copied them would be reporting the other workbook's data as
+    though this one's link had been followed -- so they are counted, never read.
+
+    The group is matched as a direct child qualified in the link part's own
+    namespace, for the reason the link itself is, and the schema gives a link one
+    group of a kind, so a second leaves two at one position and is refused rather
+    than read from whichever was written first.
+    """
+    groups = [node for node in holder if node.tag == f"{{{namespace}}}{group}"]
+    if len(groups) > 1:
+        raise OOXMLInvalid("XLSX external link declares a group twice")
+    if not groups:
+        return None
+    return sum(1 for node in groups[0] if node.tag == f"{{{namespace}}}{member}")
 
 
 @dataclass(frozen=True, slots=True)
