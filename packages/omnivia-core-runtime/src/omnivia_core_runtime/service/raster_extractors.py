@@ -24,10 +24,11 @@ import re
 import statistics
 import time
 import warnings
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
-from typing import Any, Final
+from typing import Any, Final, Self
 
 import PIL
 import pillow_heif
@@ -51,6 +52,7 @@ from omnivia_core_runtime.service.ocr_resources import (
     OcrEngine,
     local_ocr_settings,
     run_tesseract,
+    text_only_settings,
 )
 
 MAX_SOURCE_BYTES: Final = 50 * 1024 * 1024
@@ -781,6 +783,124 @@ def extract_embedded_image(
             if isinstance(unit, Mapping)
         ),
     )
+
+
+@dataclass
+class EmbeddedImagePass:
+    """The one bounded embedded-raster pass an extraction runs over one source.
+
+    Every container of one source shares it -- every story of a Word document,
+    every sheet of a workbook, every picture group of an RTF source, every
+    inline data URL of a page -- so the aggregate budget below is the source's
+    and not one container's, and two references to the same image each pay it.
+    There is deliberately no cache of decoded bytes or readings: one reference
+    is one candidate with its own locator, and a cache keyed by the bytes would
+    grow with whatever a source chose to repeat.
+
+    The gate is settled once from the trusted settings, before any candidate is
+    built, so a profile that examines no embedded image never reads an image
+    payload: the refusal is a property of the settings and never of the
+    document. ``may_read`` is what a caller asks before it collects a payload at
+    all, so a breached ceiling stops the work and not merely the publishing.
+    """
+
+    settings: ExtractionSettings
+    ocr_engine: OcrEngine
+    budget: ExtractionBudget
+    #: Why no candidate may be opened at all, settled once from the settings.
+    gate: str | None
+    #: One outcome per embedded image the source declared, in source order.
+    outcomes: list[str] = field(default_factory=list)
+
+    @classmethod
+    def over(
+        cls,
+        settings: ExtractionSettings | None,
+        *,
+        ocr_engine: OcrEngine = run_tesseract,
+        budget: ExtractionBudget | None = None,
+    ) -> Self:
+        """The pass one extraction runs, defaulting to the text-only profile.
+
+        A caller that hands no settings opens no embedded image at all, which is
+        what keeps an existing caller's extraction structural.
+        """
+        settings = settings if settings is not None else text_only_settings()
+        return cls(
+            settings,
+            ocr_engine,
+            budget if budget is not None else ExtractionBudget(),
+            embedded_image_gate(settings),
+        )
+
+    def may_read(self) -> bool:
+        """Whether a candidate's bytes may be collected and opened at all."""
+        return self.gate is None and self.budget.breach is None
+
+    def refusal(self) -> EmbeddedImageResult | None:
+        """Record why this candidate may not be opened, or ``None`` if it may.
+
+        Recording here is the point: a candidate refused before its payload is
+        read still counts as an embedded image the source declared, and the
+        reason it was not examined is this image's outcome.
+        """
+        if self.gate is not None:
+            return self.record(self.gate)
+        if self.budget.breach is not None:
+            return self.record(EMBEDDED_TRUNCATED)
+        return None
+
+    def record(self, outcome: str) -> EmbeddedImageResult:
+        """Record one declared image nothing was read out of, and say why."""
+        self.outcomes.append(outcome)
+        return EmbeddedImageResult(outcome)
+
+    def read(
+        self,
+        content: bytes,
+        media_type: str,
+        part: str,
+        locator: Mapping[str, Any],
+    ) -> EmbeddedImageResult:
+        """Recognise one candidate's already-validated bytes, or refuse them.
+
+        The gate is consulted before the bytes are opened and a budget already
+        breached stops before this candidate is decoded, so the shared ceiling
+        bounds the work done and not merely what is published. ``content`` is
+        never read when either refuses, so a caller that could not collect a
+        payload under a refusal may hand none.
+        """
+        if self.gate is not None:
+            return self.record(self.gate)
+        if self.budget.breach is not None:
+            return self.record(EMBEDDED_TRUNCATED)
+        result = extract_embedded_image(
+            EmbeddedImageCandidate(content, media_type, part, locator),
+            settings=self.settings,
+            budget=self.budget,
+            ocr_engine=self.ocr_engine,
+        )
+        self.outcomes.append(result.outcome)
+        return result
+
+    @property
+    def failed_units(self) -> int:
+        """Embedded rasters whose bytes were opened and could not be read."""
+        return self.outcomes.count(EMBEDDED_MALFORMED)
+
+    @property
+    def limit_breach(self) -> str | None:
+        """The aggregate budget this pass exhausted, if any."""
+        return self.budget.breach
+
+    def to_limitations(self) -> dict[str, Any]:
+        counts = Counter(self.outcomes)
+        return {
+            "embeddedImages": len(self.outcomes),
+            "embeddedImageOutcomes": {
+                name: counts[name] for name in EMBEDDED_OUTCOMES if counts[name]
+            },
+        }
 
 
 def _extract_pdf_page(
@@ -1665,6 +1785,7 @@ __all__ = [
     "UNIT_PDF_PAGE",
     "WORKER_BUILD",
     "EmbeddedImageCandidate",
+    "EmbeddedImagePass",
     "EmbeddedImageResult",
     "ExtractionBudget",
     "RasterExtraction",

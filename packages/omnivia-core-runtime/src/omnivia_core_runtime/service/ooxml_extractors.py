@@ -10,7 +10,6 @@ import re
 import stat
 import unicodedata
 import zipfile
-from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -22,18 +21,13 @@ from omnivia_core_runtime.service.ocr_resources import (
     ExtractionSettings,
     OcrEngine,
     run_tesseract,
-    text_only_settings,
 )
 from omnivia_core_runtime.service.raster_extractors import (
     EMBEDDED_MALFORMED,
     EMBEDDED_NOT_EMBEDDED,
-    EMBEDDED_OUTCOMES,
-    EMBEDDED_TRUNCATED,
-    EmbeddedImageCandidate,
+    EmbeddedImagePass,
     EmbeddedImageResult,
     ExtractionBudget,
-    embedded_image_gate,
-    extract_embedded_image,
 )
 
 MAX_SOURCE_BYTES: Final = 50 * 1024 * 1024
@@ -2334,27 +2328,17 @@ class OOXMLExtraction:
     limit_breach: str | None = None
 
 
-@dataclass(slots=True)
-class _EmbeddedImages:
-    """The one bounded embedded-raster pass an OOXML extraction runs.
+@dataclass
+class _EmbeddedImages(EmbeddedImagePass):
+    """The shared bounded embedded-raster pass, reading out of one package.
 
-    Every container of one source shares it -- every story of a Word document,
-    every sheet of a workbook -- so the aggregate budget below is the source's
-    and not one container's, and two references to the same image part each pay
-    it. There is deliberately no cache of decoded bytes or readings: one
-    reference is one candidate with its own locator, and a cache keyed by part
-    would grow with whatever a source chose to reference.
+    The pass itself -- the gate, the one aggregate budget every container of the
+    source shares, the outcome list and the per-image limitations -- is
+    :class:`EmbeddedImagePass`. All this adds is where an OOXML candidate's
+    bytes come from.
     """
 
-    settings: ExtractionSettings
-    ocr_engine: OcrEngine
-    budget: ExtractionBudget
-    #: Why no candidate may be opened at all, settled once from the settings.
-    gate: str | None
-    #: One outcome per embedded image the document declared, in source order.
-    outcomes: list[str] = field(default_factory=list)
-
-    def read(
+    def member(
         self,
         package: _Package,
         part: object,
@@ -2374,37 +2358,18 @@ class _EmbeddedImages:
         done, not merely what is published.
         """
         if not isinstance(part, str) or not isinstance(media_type, str):
-            result = EmbeddedImageResult(EMBEDDED_NOT_EMBEDDED)
-        elif self.gate is not None:
-            result = EmbeddedImageResult(self.gate)
-        elif self.budget.breach is not None:
-            result = EmbeddedImageResult(EMBEDDED_TRUNCATED)
-        else:
-            try:
-                content = package.bytes(part, limit=MAX_MEMBER_BYTES)
-            except OOXMLInvalid:
-                # The member is the package's own and was validated, so this is
-                # an image too large for the image path rather than a package
-                # fault: it is this image's outcome and not the document's.
-                result = EmbeddedImageResult(EMBEDDED_MALFORMED)
-            else:
-                result = extract_embedded_image(
-                    EmbeddedImageCandidate(content, media_type, part, locator),
-                    settings=self.settings,
-                    budget=self.budget,
-                    ocr_engine=self.ocr_engine,
-                )
-        self.outcomes.append(result.outcome)
-        return result
-
-    def to_limitations(self) -> dict[str, object]:
-        counts = Counter(self.outcomes)
-        return {
-            "embeddedImages": len(self.outcomes),
-            "embeddedImageOutcomes": {
-                name: counts[name] for name in EMBEDDED_OUTCOMES if counts[name]
-            },
-        }
+            return self.record(EMBEDDED_NOT_EMBEDDED)
+        refused = self.refusal()
+        if refused is not None:
+            return refused
+        try:
+            content = package.bytes(part, limit=MAX_MEMBER_BYTES)
+        except OOXMLInvalid:
+            # The member is the package's own and was validated, so this is
+            # an image too large for the image path rather than a package
+            # fault: it is this image's outcome and not the document's.
+            return self.record(EMBEDDED_MALFORMED)
+        return self.read(content, media_type, part, locator)
 
 
 class _Package:
@@ -2727,13 +2692,8 @@ def extract_docx(
     ``budget`` is that aggregate ceiling, injectable so a breach can be
     exercised with a small budget rather than a real allocation.
     """
-    settings = settings if settings is not None else text_only_settings()
-    images = _EmbeddedImages(
-        settings,
-        ocr_engine,
-        budget if budget is not None else ExtractionBudget(),
-        embedded_image_gate(settings),
-    )
+    images = _EmbeddedImages.over(settings, ocr_engine=ocr_engine, budget=budget)
+    settings = images.settings
     with _Package(content) as package:
         if "word/document.xml" not in package.names:
             raise OOXMLInvalid("DOCX main document part is missing")
@@ -2820,15 +2780,15 @@ def extract_docx(
             "documentSections": section_count,
             **images.to_limitations(),
         }
-        if images.budget.breach is not None:
-            limitations["limitBreach"] = images.budget.breach
+        if images.limit_breach is not None:
+            limitations["limitBreach"] = images.limit_breach
         return OOXMLExtraction(
             tuple(segments),
             "document_block",
             blocks,
             limitations,
-            failed_units=images.outcomes.count(EMBEDDED_MALFORMED),
-            limit_breach=images.budget.breach,
+            failed_units=images.failed_units,
+            limit_breach=images.limit_breach,
         )
 
 
@@ -3238,13 +3198,8 @@ def extract_xlsx(
     ``budget`` is that aggregate ceiling, injectable so a breach can be
     exercised with a small budget rather than a real allocation.
     """
-    settings = settings if settings is not None else text_only_settings()
-    images = _EmbeddedImages(
-        settings,
-        ocr_engine,
-        budget if budget is not None else ExtractionBudget(),
-        embedded_image_gate(settings),
-    )
+    images = _EmbeddedImages.over(settings, ocr_engine=ocr_engine, budget=budget)
+    settings = images.settings
     with _Package(content) as package:
         if "xl/workbook.xml" not in package.names:
             raise OOXMLInvalid("XLSX workbook part is missing")
@@ -3537,7 +3492,7 @@ def extract_xlsx(
                 )
                 visibility = "hidden" if sheet_hidden else "visible"
                 read = (
-                    images.read(
+                    images.member(
                         package,
                         record.get("imagePart"),
                         record.get("imageContentType"),
@@ -3872,15 +3827,15 @@ def extract_xlsx(
             "externalReferences": package.external_relationships,
             **images.to_limitations(),
         }
-        if images.budget.breach is not None:
-            limitations["limitBreach"] = images.budget.breach
+        if images.limit_breach is not None:
+            limitations["limitBreach"] = images.limit_breach
         return OOXMLExtraction(
             tuple(segments),
             "workbook_cell",
             populated,
             limitations,
-            failed_units=images.outcomes.count(EMBEDDED_MALFORMED),
-            limit_breach=images.budget.breach,
+            failed_units=images.failed_units,
+            limit_breach=images.limit_breach,
         )
 
 
@@ -12212,7 +12167,7 @@ class _DocxWalker:
         named only a reference out of the package carries no part here and
         nothing of that reference is opened, fetched or probed.
         """
-        return self._images.read(
+        return self._images.member(
             self._package, part, media_type, self._locator(position)
         )
 
