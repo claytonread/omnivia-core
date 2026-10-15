@@ -1,0 +1,121 @@
+{
+  "format": "omnivia.qualification-plan.v1",
+  "task": "TECH-CORE-RETRIEVAL-CODE-001",
+  "spec_version": "1.0",
+  "recorded_on": "2026-10-16",
+  "baseline_commit": "fa660a5970f75929faf914af3415ac636504b56c",
+  "status": "PREDECLARED",
+  "rule": "Nothing in this plan has run. Every artifact hash, result and verdict is null until a run records it. Pass criteria come from TECH-CORE-RETRIEVAL-CODE-001 v1.0; this plan does not restate or invent thresholds.",
+  "fixed_repository_facts": {
+    "normalization": "core_l2_unit_v1, unit-norm tolerance 1e-6, validated never repaired",
+    "representation": "float32 little-endian, metric cosine or dot",
+    "fusion": "rrf.v1, k=60, one-based ranks",
+    "tie_break": "score_desc.evidence_id_utf8.v1",
+    "per_lane_candidate_budget_max": 200,
+    "result_limit_default": 10,
+    "result_limit_max": 50,
+    "exact_oracle": "qualification/semantic_index/q1/oracle.py",
+    "q1_synthetic_campaign": "qualification/semantic_index/q1/README.md (768 dimensions, k in {1,10,50}, at most 10,000 active records; noncanonical synthetic)"
+  },
+  "runs": [
+    {
+      "id": "QP-01",
+      "name": "Real embedding profile and execution qualification",
+      "status": "NOT_RUN",
+      "preconditions": [
+        "A SemanticEmbedder implementation outside this repository's model-free code, approved for install",
+        "Declared SemanticEmbeddingProfile and ExecutionProvenance with an explicit CompatibilityDecision"
+      ],
+      "evidence_to_collect": [
+        "profile digest, execution digest, representation digest, generation digest",
+        "model artifact identity and hashes as recorded by the run",
+        "every produced vector accepted by encode_vector with no renormalization",
+        "query-time decide_compatibility outcome against the index execution"
+      ],
+      "artifact_hashes": null,
+      "result": null,
+      "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
+    },
+    {
+      "id": "QP-02",
+      "name": "Exact backend parity and scale",
+      "status": "NOT_RUN",
+      "preconditions": [
+        "QP-01 profile available or the q1 synthetic campaign generated"
+      ],
+      "evidence_to_collect": [
+        "rank_semantic output equal to the q1 oracle over the full campaign frontier for each k",
+        "full-frontier scoring confirmed before retention at frontier sizes above the 200 lane budget",
+        "latency and memory measurements at the specification's declared scale"
+      ],
+      "artifact_hashes": null,
+      "result": null,
+      "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
+    },
+    {
+      "id": "QP-03",
+      "name": "Content-bearing canonical input",
+      "status": "NOT_RUN",
+      "preconditions": [
+        "A canonical-input version that composes stored content, replacing the identity-surface-only input"
+      ],
+      "evidence_to_collect": [
+        "new canonical_input_version identifier and its input digests",
+        "rebuild and activation under the new profile, old generation refused as incompatible"
+      ],
+      "artifact_hashes": null,
+      "result": null,
+      "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
+    },
+    {
+      "id": "QP-04",
+      "name": "Python and TypeScript code-analysis producers",
+      "status": "NOT_RUN",
+      "preconditions": [
+        "Use the existing graph/governance authority selected by TECH-CORE-RETRIEVAL-CODE-001 decisions D19-D20",
+        "Bind candidate import and snapshot activation to the existing runtime owner before implementation",
+        "Approved parser dependencies"
+      ],
+      "evidence_to_collect": [
+        "producer build identities and parser versions",
+        "VerifiedCodeAnalysisBatch bound to one sealed snapshot with exact file digests",
+        "fail-closed behaviour for unresolved or mixed-resolution edges on real repositories"
+      ],
+      "artifact_hashes": null,
+      "result": null,
+      "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
+    },
+    {
+      "id": "QP-05",
+      "name": "Transport and client exposure",
+      "status": "NOT_RUN",
+      "preconditions": [
+        "A contract decision for a public hybrid mode on an existing or new operation",
+        "Catalogue, adapter, CLI/MCP/HTTP changes authorised"
+      ],
+      "evidence_to_collect": [
+        "wire shape for lane status and reasons",
+        "parity between in-process and transport results for each mode",
+        "partial and unavailable statuses visible to clients without lexical substitution"
+      ],
+      "artifact_hashes": null,
+      "result": null,
+      "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
+    },
+    {
+      "id": "QP-06",
+      "name": "Packaging, required CI rows and release",
+      "status": "NOT_RUN",
+      "preconditions": [
+        "QP-01 through QP-05 as the specification requires"
+      ],
+      "evidence_to_collect": [
+        "./scripts/preflight clean pass",
+        "Core acceptance and the three Phase 2 platform rows green on the pull request"
+      ],
+      "artifact_hashes": null,
+      "result": null,
+      "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
+    }
+  ]
+}

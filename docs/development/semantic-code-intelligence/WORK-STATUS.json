@@ -1,0 +1,941 @@
+{
+  "format": "omnivia.work-status.v1",
+  "task": "TECH-CORE-RETRIEVAL-CODE-001",
+  "spec_version": "1.0",
+  "slice": "P1 hybrid-lane contract and repository binding evidence",
+  "recorded_on": "2026-10-16",
+  "baseline": {
+    "branch": "codex/core-semantic-code-intelligence",
+    "commit": "fa660a5970f75929faf914af3415ac636504b56c",
+    "initial_state": "clean"
+  },
+  "slice_state": "reviewed and committed on codex/core-semantic-code-intelligence; the implementation commit is the Git commit containing this file",
+  "status_vocabulary": [
+    "PASS",
+    "PARTIAL",
+    "NOT_RUN",
+    "FAIL",
+    "BLOCKED",
+    "NOT_APPLICABLE"
+  ],
+  "evidence_levels": {
+    "repository_local_unit": "pure-value pytest, no storage",
+    "repository_local_integration_real_sqlite_fixture_embedder": "pytest over a real migrated SQLite workspace with a deterministic model-free fixture embedder",
+    "diff_inspection": "git diff review",
+    "none": "no evidence collected"
+  },
+  "binding_rule": "Work and acceptance IDs are bound to the supplied TECH-SPEC.md and ACCEPTANCE-MATRIX.md. PASS is used only where this slice meets the complete named scenario at its required evidence level; PARTIAL means useful repository-local evidence exists but the complete scenario or evidence level has not been met; NOT_RUN means no qualifying run was performed.",
+  "environment": {
+    "python": "/Users/claytonread/Projects/omnivia-core/.venv/bin/python (3.11.15, main checkout venv; this worktree has no .venv)",
+    "pythonpath": "PYTHONPATH=$W/src:$W/services/omnivia-memory/src:$W/packages/omnivia-core-runtime/src:$W/packages/omnivia-core-cli/src:$W/packages/omnivia-core-mcp/src:$W/packages/omnivia-core-client/src:$W/packages/omnivia-core-runtime/tests",
+    "ruff": "0.16.1",
+    "mypy": "2.3.0"
+  },
+  "commands": [
+    {
+      "command": "PYTHONPATH=$W/src:$W/services/omnivia-memory/src:$W/packages/omnivia-core-runtime/src:$W/packages/omnivia-core-cli/src:$W/packages/omnivia-core-mcp/src:$W/packages/omnivia-core-client/src:$W/packages/omnivia-core-runtime/tests /Users/claytonread/Projects/omnivia-core/.venv/bin/python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_projection_lifecycle.py packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py -q",
+      "outcome": "27 passed"
+    },
+    {
+      "command": "PYTHONPATH=$W/src:$W/services/omnivia-memory/src:$W/packages/omnivia-core-runtime/src:$W/packages/omnivia-core-cli/src:$W/packages/omnivia-core-mcp/src:$W/packages/omnivia-core-client/src:$W/packages/omnivia-core-runtime/tests /Users/claytonread/Projects/omnivia-core/.venv/bin/python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py -q",
+      "outcome": "5 passed"
+    },
+    {
+      "command": "PYTHONPATH=$W/src:$W/services/omnivia-memory/src:$W/packages/omnivia-core-runtime/src:$W/packages/omnivia-core-cli/src:$W/packages/omnivia-core-mcp/src:$W/packages/omnivia-core-client/src:$W/packages/omnivia-core-runtime/tests /Users/claytonread/Projects/omnivia-core/.venv/bin/python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_projection_lifecycle.py packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py tests/test_migration_allocations.py -q",
+      "outcome": "105 passed"
+    },
+    {
+      "command": "/Users/claytonread/Projects/omnivia-core/.venv/bin/python -m ruff check packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/semantic_vectors.py packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/projections/semantic.py packages/omnivia-core-runtime/src/omnivia_core_runtime/service/semantic_search.py packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_projection_lifecycle.py packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py",
+      "outcome": "All checks passed"
+    },
+    {
+      "command": "/Users/claytonread/Projects/omnivia-core/.venv/bin/python -m mypy --strict packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/semantic_vectors.py packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/projections/semantic.py packages/omnivia-core-runtime/src/omnivia_core_runtime/service/semantic_search.py",
+      "outcome": "Success: no issues found in 3 source files"
+    },
+    {
+      "command": "python -m json.tool docs/development/semantic-code-intelligence/WORK-STATUS.json",
+      "outcome": "valid"
+    },
+    {
+      "command": "python -m json.tool docs/development/semantic-code-intelligence/QUALIFICATION-PLAN.json",
+      "outcome": "valid"
+    },
+    {
+      "command": "PYTHON=/Users/claytonread/Projects/omnivia-core/.venv/bin/python OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT=499e8b3667b707dca58f097cd099d27a23882026 ./scripts/preflight",
+      "outcome": "FAIL before repository test suite: isolated MCP wheel tool document differs from the source-tree generated document (source manifest_version 2.0, wheel 2.8, plus unrelated catalogue drift)",
+      "note": "Package boundaries, 53 boundary tests, migration allocation and distribution build/install passed first. This slice changes no MCP, application-contract or generated-schema file, so unrelated regeneration was not folded into this implementation."
+    },
+    {
+      "command": "ad-hoc source mutations (eight), each restored byte-for-byte and the git diff digest re-checked",
+      "outcome": "every mutation failed at least one focused test",
+      "mutations": [
+        "semantic mode runs the lexical lane: 7 failed",
+        "checksum recompute removed: 1 failed",
+        "ordered membership check removed: 1 failed",
+        "empty input reads semantic state: 1 failed",
+        "missing vector raised as no-generation: 1 failed",
+        "truncation before ranking: 1 failed",
+        "zero-based semantic RRF rank: 4 failed",
+        "input digest replaced: 6 failed"
+      ],
+      "note": "Supporting evidence only. The mutation script was not retained in the repository."
+    }
+  ],
+  "properties": [
+    {
+      "id": "P01",
+      "statement": "Lexical retrieval runs with no model, no model loading and no semantic state",
+      "status": "PASS",
+      "evidence_level": "repository_local_integration_real_sqlite_fixture_embedder",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_keyword_mode_needs_no_model_and_no_semantic_state",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_empty_query_and_empty_frontier_are_deterministic_no_match"
+      ],
+      "note": "Keyword mode is run against a closed sqlite3 connection, so any semantic-state read would raise."
+    },
+    {
+      "id": "P02",
+      "statement": "Both lanes rank only the same frozen frontier: lexical ProjectedFrontier workspace, checksum, recomputed contract checksum and ordered membership are verified, and the lexical lane is ranked internally by rank_projected",
+      "status": "PASS",
+      "evidence_level": "repository_local_integration_real_sqlite_fixture_embedder",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_both_lanes_must_rank_the_same_frozen_frontier"
+      ]
+    },
+    {
+      "id": "P03",
+      "statement": "Internal modes keyword/semantic/combined with typed lane outcomes ok/no_match/unavailable(reason) and overall complete/partial/unavailable",
+      "status": "PASS",
+      "evidence_level": "repository_local_integration_real_sqlite_fixture_embedder",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_keyword_mode_needs_no_model_and_no_semantic_state",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_combined_ranks_both_lanes_with_one_based_rrf_and_carries_provenance",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_semantic_mode_reports_no_match_rather_than_lexical_hits",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_missing_generation_and_missing_query_embedding_fall_back"
+      ]
+    },
+    {
+      "id": "P04",
+      "statement": "Semantic mode never returns lexical hits as semantic success",
+      "status": "PASS",
+      "evidence_level": "repository_local_integration_real_sqlite_fixture_embedder",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_semantic_mode_reports_no_match_rather_than_lexical_hits",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_missing_generation_and_missing_query_embedding_fall_back",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_stale_generation_falls_back",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_incompatible_profile_and_execution_fall_back",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_generation_recorded_incompatible_falls_back",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_missing_vector_for_an_active_generation_is_incomplete_coverage",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_corrupt_stored_vector_falls_back_and_is_named"
+      ]
+    },
+    {
+      "id": "P05",
+      "statement": "Combined mode returns the exact keyword-mode lexical result with status partial for each known semantic unavailability: no_active_generation, stale_generation, incompatible_profile, incompatible_execution (query-side and recorded), incomplete_coverage, corrupt_state, query_not_embedded",
+      "status": "PASS",
+      "evidence_level": "repository_local_integration_real_sqlite_fixture_embedder",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_missing_generation_and_missing_query_embedding_fall_back",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_stale_generation_falls_back",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_incompatible_profile_and_execution_fall_back",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_generation_recorded_incompatible_falls_back",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_missing_vector_for_an_active_generation_is_incomplete_coverage",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_corrupt_stored_vector_falls_back_and_is_named"
+      ]
+    },
+    {
+      "id": "P06",
+      "statement": "A missing vector for an otherwise active generation is incomplete coverage (IncompleteSemanticCoverage), distinct from no generation",
+      "status": "PASS",
+      "evidence_level": "repository_local_integration_real_sqlite_fixture_embedder",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_missing_vector_for_an_active_generation_is_incomplete_coverage"
+      ]
+    },
+    {
+      "id": "P07",
+      "statement": "Empty query or empty authorized frontier gives deterministic no_match for every requested lane without reading semantic state",
+      "status": "PASS",
+      "evidence_level": "repository_local_integration_real_sqlite_fixture_embedder",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_empty_query_and_empty_frontier_are_deterministic_no_match"
+      ]
+    },
+    {
+      "id": "P08",
+      "statement": "Unexpected errors are not hidden as unavailability (malformed query vector, storage error, unknown mode)",
+      "status": "PASS",
+      "evidence_level": "repository_local_integration_real_sqlite_fixture_embedder",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_unexpected_errors_are_not_hidden_as_unavailability",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_malformed_query_vector_is_rejected_before_empty_or_unavailable_state"
+      ]
+    },
+    {
+      "id": "P09",
+      "statement": "Exact exhaustive scoring over the complete authorized semantic frontier before retention; no frontier-size cap; per-lane hard maximum 200; final result limit default 10, hard maximum 50",
+      "status": "PASS",
+      "evidence_level": "repository_local_unit",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py::test_ranking_scores_the_whole_frontier_before_retaining_the_budget",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py::test_policy_bounds_lane_budget_at_200_and_result_limit_at_50",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_lane_budget_and_final_limit_apply_after_full_ranking",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py::test_exact_ranking_matches_independent_qualification_oracle"
+      ],
+      "note": "Exactness shown at 300 members (above the 200 budget). Not a scale or latency qualification."
+    },
+    {
+      "id": "P10",
+      "statement": "rrf.v1: one-based ranks, k=60, absent lanes contribute zero, duplicates and gapped ranks refused, ties broken by UTF-8 evidence id",
+      "status": "PASS",
+      "evidence_level": "repository_local_unit",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py::test_rrf_v1_is_one_based_with_k_60_and_absent_lanes_contribute_zero",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py::test_fusion_refuses_duplicates_gapped_ranks_and_conflicting_artifacts",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py::test_rrf_is_versioned_deterministic_and_preserves_semantic_zero",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_combined_ranks_both_lanes_with_one_based_rrf_and_carries_provenance"
+      ]
+    },
+    {
+      "id": "P11",
+      "statement": "A zero semantic score is a real score: kept, ranked and reported",
+      "status": "PASS",
+      "evidence_level": "repository_local_unit",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py::test_exact_ranking_keeps_zero_and_uses_utf8_id_tie_break",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py::test_rrf_is_versioned_deterministic_and_preserves_semantic_zero",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_combined_ranks_both_lanes_with_one_based_rrf_and_carries_provenance"
+      ]
+    },
+    {
+      "id": "P12",
+      "statement": "Occurrence-level provenance: the stored occurrence input_digest reaches ProjectedSemanticCandidate, SemanticHit and FusedHit.semantic_input_digest without exposing vector bytes",
+      "status": "PASS",
+      "evidence_level": "repository_local_integration_real_sqlite_fixture_embedder",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_projection_lifecycle.py::test_build_activate_and_project_only_the_authorized_frontier",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_combined_ranks_both_lanes_with_one_based_rrf_and_carries_provenance",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py::test_ranking_scores_the_whole_frontier_before_retaining_the_budget",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py::test_projected_candidate_requires_a_digest_shaped_input_identity"
+      ]
+    },
+    {
+      "id": "P13",
+      "statement": "The internal result carries policy digest and authorization frontier checksum; generation/profile digests are None when the semantic lane resolved no generation",
+      "status": "PASS",
+      "evidence_level": "repository_local_integration_real_sqlite_fixture_embedder",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_keyword_mode_needs_no_model_and_no_semantic_state",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_combined_ranks_both_lanes_with_one_based_rrf_and_carries_provenance",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_missing_generation_and_missing_query_embedding_fall_back",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_empty_query_and_empty_frontier_are_deterministic_no_match"
+      ]
+    },
+    {
+      "id": "P14",
+      "statement": "Hidden/excluded evidence never reaches either lane; semantic exclusion is exercised directly and lexical ranking is structurally limited to the projected authorized frontier",
+      "status": "PASS",
+      "evidence_level": "repository_local_integration_real_sqlite_fixture_embedder",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_hidden_evidence_never_reaches_or_influences_either_lane"
+      ],
+      "note": "The fixture directly proves semantic exclusion. This slice does not rerun the full add/remove rare-term and long-text BM25 statistics matrix."
+    },
+    {
+      "id": "P15",
+      "statement": "No new public operation, contract catalogue entry, handler, CLI, MCP, HTTP or adapter",
+      "status": "PASS",
+      "evidence_level": "diff_inspection",
+      "tests": [],
+      "note": "git diff --stat names only the allowed files; no catalogue, adapter, migration or contract file changed."
+    },
+    {
+      "id": "P16",
+      "statement": "Code candidate binding values (storage.code_analysis_candidates) remain as committed",
+      "status": "PASS",
+      "evidence_level": "repository_local_unit",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py::test_batch_identity_is_order_independent_but_instances_are_revision_bound",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py::test_edges_fail_closed_for_mixed_or_implicit_resolution",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py::test_verified_batch_maps_only_to_proposed_memory_inputs",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py::test_binding_requires_one_complete_sealed_snapshot_and_exact_file_digests",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py::test_module_has_no_graph_or_governance_writer_imports"
+      ],
+      "note": "Unchanged by this slice; re-run only."
+    },
+    {
+      "id": "P17",
+      "statement": "Real embedding model, provider runtime and backend qualification",
+      "status": "NOT_RUN",
+      "evidence_level": "none",
+      "tests": [],
+      "note": "No model, dependency or artifact was installed or loaded. See QUALIFICATION-PLAN.json QP-01/QP-02."
+    },
+    {
+      "id": "P18",
+      "statement": "Semantic input composed from stored content rather than the identity surface",
+      "status": "NOT_RUN",
+      "evidence_level": "none",
+      "tests": [],
+      "note": "projections/semantic._append_occurrences still embeds kind, native id and locator only."
+    },
+    {
+      "id": "P19",
+      "statement": "Python/TypeScript code-analysis producers and code graph import",
+      "status": "NOT_RUN",
+      "evidence_level": "none",
+      "tests": [],
+      "note": "Producer and governed-import work is outside this P1 slice. The supplied design already assigns accepted import and activation to the existing graph/governance authority; no new authority decision is required."
+    },
+    {
+      "id": "P20",
+      "statement": "Transport, client, native, MCP, CLI or HTTP exposure of hybrid search",
+      "status": "NOT_RUN",
+      "evidence_level": "none",
+      "tests": [],
+      "note": "Internal composition seam only."
+    },
+    {
+      "id": "P21",
+      "statement": "Scale, latency and memory qualification of exhaustive scoring",
+      "status": "NOT_RUN",
+      "evidence_level": "none",
+      "tests": []
+    },
+    {
+      "id": "P22",
+      "statement": "Packaging and release qualification",
+      "status": "NOT_RUN",
+      "evidence_level": "none",
+      "tests": []
+    },
+    {
+      "id": "P23",
+      "statement": "Repository preflight and full suite",
+      "status": "FAIL",
+      "evidence_level": "none",
+      "tests": [],
+      "note": "Preflight failed at the isolated MCP source/wheel tool-document comparison after package build/install. The full repository suite was therefore not reached. The mismatch is outside this slice's changed files."
+    }
+  ],
+  "work_items": {
+    "W00": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P15"
+      ],
+      "note": "Owner/symbol and changed-file bindings are recorded, but a complete fresh regression baseline was not run for this slice."
+    },
+    "W01": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P17"
+      ],
+      "note": "Model-neutral profile, execution and vector contracts exist; no qualified local model, resource lifecycle or real encoder run exists."
+    },
+    "W02": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P01",
+        "P14",
+        "P18"
+      ],
+      "note": "Lexical identity remains model-independent and authority precedes ranking; content chunking and semantic span mapping are not implemented here."
+    },
+    "W03": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P12",
+        "P13",
+        "P18"
+      ],
+      "note": "Workspace/generation/occurrence identities and provenance exist; content-bearing canonical inputs and full reuse qualification remain."
+    },
+    "W04": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P06",
+        "P13"
+      ],
+      "note": "Staged generation and active projection foundations exist; crash, fence, cancellation and restart qualification remain."
+    },
+    "W05": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P02",
+        "P06",
+        "P07",
+        "P08",
+        "P09",
+        "P14",
+        "P17",
+        "P21"
+      ],
+      "note": "The model-free exact reference is implemented; the real database adapter, real-model and scale qualification are not."
+    },
+    "W06": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P01",
+        "P02",
+        "P03",
+        "P04",
+        "P05",
+        "P07",
+        "P08",
+        "P10",
+        "P11",
+        "P13",
+        "P14"
+      ],
+      "note": "Independent internal lanes, deterministic fusion and typed degradation are implemented; timeout/disabled states and public integration remain."
+    },
+    "W07": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "Evidence hydration, delivery reauthorization, disclosure and bounded task-context integration were not implemented in this slice."
+    },
+    "W08": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P03",
+        "P05",
+        "P06",
+        "P13"
+      ],
+      "note": "Internal readiness/refusal states and generation provenance exist; lifecycle receipts, resource admission, migration and rollback remain."
+    },
+    "W09": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P16"
+      ],
+      "note": "Revision-bound candidate-batch verification exists; repository admission and immutable snapshot acquisition are not implemented."
+    },
+    "W10": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "No Python producer was implemented or run."
+    },
+    "W11": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "No TypeScript/JavaScript producer was implemented or run."
+    },
+    "W12": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P16",
+        "P19"
+      ],
+      "note": "Verified candidates map to proposed memory inputs without writer authority; governed import, acceptance and atomic graph activation remain."
+    },
+    "W13": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "No snapshot-bound code query or graph-context vertical slice was run."
+    },
+    "W14": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "No code-oriented retrieval/source-navigation implementation was run."
+    },
+    "W15": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "No client integration was implemented or run."
+    },
+    "W16": {
+      "status": "NOT_RUN",
+      "property_refs": [
+        "P17",
+        "P20",
+        "P21",
+        "P22",
+        "P23"
+      ],
+      "note": "Real-model, resource, transport, packaging and release qualification were not run."
+    }
+  },
+  "acceptance": {
+    "A01": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P15"
+      ],
+      "note": "Owner/symbol and changed-file binding report exists, but the complete W00 regression baseline was not rerun."
+    },
+    "A02": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P15"
+      ],
+      "note": "The implementation used a clean dedicated worktree and records the scoped changed-file inventory; a standalone before/after status artifact for the unrelated canonical checkout was not retained."
+    },
+    "A03": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P01",
+        "P07"
+      ],
+      "note": "Keyword and empty-input model independence are covered; fresh-workspace capture/extraction is outside this slice."
+    },
+    "A04": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "A05": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "A06": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "A07": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "A08": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "A09": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "A10": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "A11": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "A12": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P08",
+        "P09",
+        "P12"
+      ],
+      "note": "Strict vector width/value/norm and identity checks exist; no real provider batch/order integration was run."
+    },
+    "A13": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "A14": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P13"
+      ],
+      "note": "Retrieval policy identity is separate from generation identity; enqueue/migration behaviour was not exercised."
+    },
+    "A15": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P05",
+        "P13"
+      ],
+      "note": "Execution provenance and compatibility refusal exist; real cross-execution qualification was not run."
+    },
+    "A16": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P12"
+      ],
+      "note": "Occurrence provenance is distinct from vector input identity; call-counting content reuse was not run."
+    },
+    "A17": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P12"
+      ],
+      "note": "Workspace is part of occurrence and generation scope; two-workspace content-cache isolation was not run."
+    },
+    "B01": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P01",
+        "P12"
+      ],
+      "note": "Keyword retrieval is model-independent; full evidence-unit/span stability across tokenizer replacement was not run."
+    },
+    "B02": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "B03": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "B04": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P02",
+        "P09"
+      ],
+      "note": "Semantic ranking uses the full authorized frontier and synthetic vectors can surface nonlexical items; real-model evidence is absent."
+    },
+    "B05": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P01",
+        "P04",
+        "P05"
+      ],
+      "note": "Lexical results survive absent query embeddings and lanes are independent; the exact-identifier scenario was not run."
+    },
+    "B06": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P02",
+        "P14"
+      ],
+      "note": "Semantic exclusion is directly tested and lexical ranking is structurally limited to the authorized projection; the full add/remove rare-term and long-text statistics matrix was not run."
+    },
+    "B07": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P02",
+        "P14"
+      ],
+      "note": "Only authorized frontier members are scored; mixed-support-span publication behaviour was not run."
+    },
+    "B08": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P07",
+        "P09"
+      ],
+      "note": "The exact Python reference matches an independent oracle; no real database adapter was qualified."
+    },
+    "B09": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P09"
+      ],
+      "note": "Full-frontier scoring above the lane budget is covered at 300 items; backend batching/limit exhaustion was not run."
+    },
+    "B10": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "B11": {
+      "status": "PASS",
+      "property_refs": [
+        "P10"
+      ],
+      "note": "Exact expected-value tests cover one-based RRF k=60, absent-lane zero, duplicate refusal and stable tie-breaking."
+    },
+    "B12": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P03",
+        "P04",
+        "P05",
+        "P06",
+        "P07",
+        "P08"
+      ],
+      "note": "Unavailable, partial and no-match plus semantic non-substitution are covered; disabled and timed-out lanes are not."
+    },
+    "B13": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P10",
+        "P11"
+      ],
+      "note": "Zero scores and rank-score semantics are covered; reranking is disabled and not applicable to this slice."
+    },
+    "B14": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "B15": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "B16": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "B17": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "B18": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "B19": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "B20": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "C01": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "C02": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "C03": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "C04": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "C05": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "C06": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "C07": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P05",
+        "P06"
+      ],
+      "note": "Stale/incomplete semantic generations degrade without suppressing lexical results; per-source lexical-head publication was not run."
+    },
+    "C08": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "C09": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P05",
+        "P13"
+      ],
+      "note": "Generation/profile/execution mismatch is refused; concurrent model migration and atomic encoder/index switching were not run."
+    },
+    "C10": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "C11": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "C12": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "C13": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "C14": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "C15": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D01": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P16"
+      ],
+      "note": "Candidate batches bind to one sealed snapshot and exact file digests; actual repository snapshot acquisition was not run."
+    },
+    "D02": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D03": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P16"
+      ],
+      "note": "Completeness and diagnostics are represented in the candidate contract; real producer unsupported-language scenarios were not run."
+    },
+    "D04": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D05": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D06": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D07": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D08": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D09": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P16"
+      ],
+      "note": "Snapshot, locator, endpoint and relationship checks exist on candidate batches; the real governed import path was not run."
+    },
+    "D10": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D11": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P16"
+      ],
+      "note": "Deterministic candidate and batch identities exist; real import replay/conflict reconciliation was not run."
+    },
+    "D12": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D13": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D14": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D15": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D16": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D17": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D18": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D19": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "D20": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "E01": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "E02": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "E03": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "E04": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "E05": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "E06": {
+      "status": "NOT_RUN",
+      "property_refs": [],
+      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+    },
+    "E07": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P15",
+        "P23"
+      ],
+      "note": "Commands, environment and limitations are recorded, but full logs, host facts and release evidence are incomplete."
+    },
+    "E08": {
+      "status": "PARTIAL",
+      "property_refs": [
+        "P15",
+        "P17",
+        "P18",
+        "P19",
+        "P20",
+        "P21",
+        "P22",
+        "P23"
+      ],
+      "note": "This closeout names partial and not-run work, but the overall W00-W16 program remains incomplete."
+    }
+  }
+}

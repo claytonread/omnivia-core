@@ -5,13 +5,19 @@ import importlib.util
 import math
 import struct
 import sys
+from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 import pytest
 from omnivia_core_runtime.storage.retrieval import EvidenceCandidate
 from omnivia_core_runtime.storage.semantic_vectors import (
+    DEFAULT_CANDIDATE_BUDGET,
+    DEFAULT_RESULT_LIMIT,
     FUSION_RRF_V1,
+    MAX_CANDIDATE_BUDGET,
+    MAX_RESULT_LIMIT,
     METRIC_COSINE,
     ProjectedSemanticCandidate,
     ProjectedSemanticFrontier,
@@ -19,9 +25,11 @@ from omnivia_core_runtime.storage.semantic_vectors import (
     SemanticRetrievalPolicy,
     SemanticVectorError,
     UnsupportedSemanticVersion,
+    canonical_model_input,
     decode_vector,
     encode_vector,
     fuse_ranked,
+    input_digest,
     rank_semantic,
 )
 
@@ -64,6 +72,10 @@ def _candidate(evidence_id: str) -> EvidenceCandidate:
     )
 
 
+def _input(evidence_id: str) -> str:
+    return input_digest(canonical_model_input(f"input {evidence_id}"))
+
+
 def _frontier(*items: tuple[str, tuple[float, ...]]) -> ProjectedSemanticFrontier:
     return ProjectedSemanticFrontier(
         workspace_id="workspace-test",
@@ -75,6 +87,7 @@ def _frontier(*items: tuple[str, tuple[float, ...]]) -> ProjectedSemanticFrontie
             ProjectedSemanticCandidate(
                 candidate=_candidate(evidence_id),
                 vector=encode_vector(vector, dimensions=len(vector)),
+                input_digest=_input(evidence_id),
             )
             for evidence_id, vector in items
         ),
@@ -115,8 +128,8 @@ def test_rrf_is_versioned_deterministic_and_preserves_semantic_zero() -> None:
     first = _candidate("evidence-a")
     second = _candidate("evidence-b")
     semantic = (
-        SemanticHit(candidate=second, score=0.0, rank=1),
-        SemanticHit(candidate=first, score=-1.0, rank=2),
+        SemanticHit(candidate=second, score=0.0, rank=1, input_digest=_input("evidence-b")),
+        SemanticHit(candidate=first, score=-1.0, rank=2, input_digest=_input("evidence-a")),
     )
     one = fuse_ranked((first, second), semantic, version=FUSION_RRF_V1, limit=2)
     two = fuse_ranked((first, second), semantic, version=FUSION_RRF_V1, limit=2)
@@ -125,6 +138,117 @@ def test_rrf_is_versioned_deterministic_and_preserves_semantic_zero() -> None:
     assert one[1].semantic_score == 0.0
     with pytest.raises(UnsupportedSemanticVersion):
         fuse_ranked((first,), semantic, version="rrf.future", limit=1)
+
+
+def _hit(evidence_id: str, rank: int, score: float = 0.5) -> SemanticHit:
+    return SemanticHit(
+        candidate=_candidate(evidence_id), score=score, rank=rank, input_digest=_input(evidence_id)
+    )
+
+
+def test_rrf_v1_is_one_based_with_k_60_and_absent_lanes_contribute_zero() -> None:
+    a, b, c = (_candidate(name) for name in ("evidence-a", "evidence-b", "evidence-c"))
+    fused = fuse_ranked(
+        (a, b), (_hit("evidence-b", 1), _hit("evidence-c", 2)), version=FUSION_RRF_V1, limit=10
+    )
+    assert [
+        (hit.candidate.evidence_id, hit.rank_score, hit.lexical_rank, hit.semantic_rank)
+        for hit in fused
+    ] == [
+        ("evidence-b", float(Fraction(1, 62) + Fraction(1, 61)), 2, 1),
+        ("evidence-a", float(Fraction(1, 61)), 1, None),
+        ("evidence-c", float(Fraction(1, 62)), None, 2),
+    ]
+    assert [hit.semantic_input_digest for hit in fused] == [
+        _input("evidence-b"),
+        None,
+        _input("evidence-c"),
+    ]
+    # One lane alone keeps its own order; equal scores break on the UTF-8 evidence id.
+    only = fuse_ranked((), (_hit("evidence-z", 1),), version=FUSION_RRF_V1, limit=10)
+    assert [(hit.candidate.evidence_id, hit.rank_score) for hit in only] == [
+        ("evidence-z", float(Fraction(1, 61)))
+    ]
+    tie = fuse_ranked((c,), (_hit("evidence-a", 1),), version=FUSION_RRF_V1, limit=10)
+    assert [hit.candidate.evidence_id for hit in tie] == ["evidence-a", "evidence-c"]
+
+
+def test_fusion_refuses_duplicates_gapped_ranks_and_conflicting_artifacts() -> None:
+    a = _candidate("evidence-a")
+    with pytest.raises(SemanticVectorError, match="lexical result appears twice"):
+        fuse_ranked((a, a), (), version=FUSION_RRF_V1, limit=10)
+    with pytest.raises(SemanticVectorError, match="semantic result appears twice"):
+        fuse_ranked(
+            (), (_hit("evidence-a", 1), _hit("evidence-a", 2)), version=FUSION_RRF_V1, limit=10
+        )
+    with pytest.raises(SemanticVectorError, match="one-based"):
+        fuse_ranked((), (_hit("evidence-a", 0),), version=FUSION_RRF_V1, limit=10)
+    with pytest.raises(SemanticVectorError, match="one-based"):
+        fuse_ranked(
+            (), (_hit("evidence-a", 1), _hit("evidence-b", 3)), version=FUSION_RRF_V1, limit=10
+        )
+    other = replace(a, content_checksum="sha256:" + "f" * 64)
+    with pytest.raises(SemanticVectorError, match="two different artifacts"):
+        fuse_ranked((other,), (_hit("evidence-a", 1),), version=FUSION_RRF_V1, limit=10)
+
+
+def test_policy_bounds_lane_budget_at_200_and_result_limit_at_50() -> None:
+    assert MAX_CANDIDATE_BUDGET == 200
+    assert MAX_RESULT_LIMIT == 50
+    assert SemanticRetrievalPolicy().candidate_budget == DEFAULT_CANDIDATE_BUDGET == 50
+    policy = SemanticRetrievalPolicy(candidate_budget=200)
+    assert policy.result_limit == DEFAULT_RESULT_LIMIT == 10
+    assert SemanticRetrievalPolicy(candidate_budget=1, result_limit=50).result_limit == 50
+    for bad in ({"candidate_budget": 201}, {"candidate_budget": 0}):
+        with pytest.raises(SemanticVectorError, match="candidate_budget"):
+            SemanticRetrievalPolicy(**bad)
+    for limit in (0, 51, True):
+        with pytest.raises(SemanticVectorError, match="result_limit"):
+            SemanticRetrievalPolicy(candidate_budget=10, result_limit=limit)
+    assert policy.digest != replace(policy, result_limit=11).digest
+    many = tuple(_candidate(f"evidence-{index:03d}") for index in range(60))
+    assert len(fuse_ranked(many, (), version=FUSION_RRF_V1, limit=50)) == 50
+    with pytest.raises(SemanticVectorError, match="limit"):
+        fuse_ranked(many, (), version=FUSION_RRF_V1, limit=51)
+
+
+def test_ranking_scores_the_whole_frontier_before_retaining_the_budget() -> None:
+    # 300 members, more than the 200 hard budget, with the single best match last.
+    items: list[tuple[str, tuple[float, ...]]] = []
+    for index in range(299):
+        angle = 0.5 + index / 1000
+        items.append((f"evidence-{index:03d}", (math.cos(angle), math.sin(angle))))
+    items.append(("evidence-zzz", (1.0, 0.0)))
+    projected = _frontier(*items)
+    query = encode_vector((1.0, 0.0), dimensions=2)
+    top = rank_semantic(
+        projected, query, metric=METRIC_COSINE, policy=SemanticRetrievalPolicy(candidate_budget=1)
+    )
+    assert [(hit.candidate.evidence_id, hit.rank) for hit in top] == [("evidence-zzz", 1)]
+    full = rank_semantic(
+        projected, query, metric=METRIC_COSINE, policy=SemanticRetrievalPolicy(candidate_budget=200)
+    )
+    assert len(full) == 200
+    expected = sorted(
+        projected.candidates,
+        key=lambda member: (
+            -decode_vector(member.vector, dimensions=2)[0],
+            member.candidate.evidence_id.encode(),
+        ),
+    )[:200]
+    assert [hit.candidate.evidence_id for hit in full] == [
+        member.candidate.evidence_id for member in expected
+    ]
+    assert [hit.input_digest for hit in full] == [member.input_digest for member in expected]
+
+
+def test_projected_candidate_requires_a_digest_shaped_input_identity() -> None:
+    with pytest.raises(SemanticVectorError, match="input_digest"):
+        ProjectedSemanticCandidate(
+            candidate=_candidate("evidence-a"),
+            vector=encode_vector((1.0, 0.0), dimensions=2),
+            input_digest="not-a-digest",
+        )
 
 
 def _load_oracle() -> Any:

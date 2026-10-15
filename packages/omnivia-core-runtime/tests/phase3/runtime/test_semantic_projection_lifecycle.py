@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator, Sequence
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 import test_blobs_staged_sources_and_evidence_migration as m2
-from omnivia_core_runtime.service.semantic_search import search_authorized_frontier
 from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
 from omnivia_core_runtime.storage.projections import semantic
 from omnivia_core_runtime.storage.repository import read_evidence_candidates
@@ -28,8 +26,8 @@ from omnivia_core_runtime.storage.semantic_vectors import (
     ExecutionProvenance,
     RepresentationIdentity,
     SemanticEmbeddingProfile,
-    SemanticRetrievalPolicy,
-    encode_vector,
+    canonical_model_input,
+    input_digest,
 )
 
 WORKSPACE_ID = m2.WORKSPACE_ID
@@ -117,29 +115,10 @@ def test_build_activate_and_project_only_the_authorized_frontier(owned: m2.Owned
     ]
     assert projected.profile_digest == embedder.profile.digest
     assert projected.generation_digest == generation.identity.digest
-
-    result = search_authorized_frontier(
-        owned.connection,
-        frozen,
-        encode_vector((1.0, 0.0), dimensions=2),
-        query_profile=embedder.profile,
-        query_execution=embedder.execution,
-        policy=SemanticRetrievalPolicy(candidate_budget=10),
-        generation=generation,
-    )
-    assert [hit.candidate.evidence_id for hit in result.semantic_hits] == [
-        candidate.evidence_id for candidate in frozen.candidates
+    # The occurrence's stored encoder-input identity, recomputed independently.
+    assert [item.input_digest for item in projected.candidates] == [
+        input_digest(canonical_model_input("filesystem.archive doc-1 archive://doc.md"))
     ]
-    with pytest.raises(semantic.IncompatibleSemanticGeneration, match="profile differs"):
-        search_authorized_frontier(
-            owned.connection,
-            frozen,
-            encode_vector((1.0, 0.0), dimensions=2),
-            query_profile=replace(embedder.profile, weights_id="weights.other.v1"),
-            query_execution=embedder.execution,
-            policy=SemanticRetrievalPolicy(candidate_budget=10),
-            generation=generation,
-        )
 
     repeat = semantic.build_semantic_projection(
         owned.connection,

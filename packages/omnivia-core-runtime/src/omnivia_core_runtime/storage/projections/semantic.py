@@ -61,6 +61,7 @@ from omnivia_core_runtime.storage.semantic_vectors import (
     SemanticEmbeddingProfile,
     SemanticVectorError,
     canonical_model_input,
+    decode_vector,
     encode_vector,
     identity_digest,
     input_digest,
@@ -89,7 +90,7 @@ class SemanticProjectionError(StorageError):
 
 
 class SemanticProjectionUnavailable(SemanticProjectionError):
-    """No semantic generation is activated, or it has no vector for an authorized id."""
+    """No semantic generation is activated."""
 
 
 class StaleSemanticProjection(SemanticProjectionError):
@@ -101,7 +102,11 @@ class IncompatibleSemanticGeneration(SemanticProjectionError):
 
 
 class IncompleteSemanticCoverage(SemanticProjectionError):
-    """A run's occurrences do not cover its in-scope evidence exactly."""
+    """A run's occurrences do not cover its in-scope evidence, or an authorized id, exactly."""
+
+
+class CorruptSemanticState(SemanticProjectionError):
+    """A stored semantic identity fails its digest, or a vector fails the strict codec."""
 
 
 class SemanticEmbedder(Protocol):
@@ -196,7 +201,7 @@ def active_generation(
     if row is None:
         return None
     if row[5] is None or row[12] is None:
-        raise SemanticProjectionError(
+        raise CorruptSemanticState(
             "the activated semantic run has no recorded profile or execution"
         )
     try:
@@ -232,14 +237,14 @@ def active_generation(
             compatibility_status=execution.compatibility.status,
         )
     except SemanticVectorError as exc:
-        raise SemanticProjectionError("the stored semantic identity is malformed") from exc
+        raise CorruptSemanticState("the stored semantic identity is malformed") from exc
     if (
         profile.digest != str(row[4])
         or execution.digest != str(row[24])
         or representation.digest != str(row[25])
         or identity.digest != str(row[26])
     ):
-        raise SemanticProjectionError(
+        raise CorruptSemanticState(
             "the stored semantic identity does not match its recorded digests"
         )
     return SemanticGeneration(
@@ -306,8 +311,9 @@ def project_semantic(
     """Narrow the activated generation to exactly the frozen frontier's ids.
 
     Reads by address (`evidence_id IN (...)`), never by scan, so an excluded artifact's
-    vector is never touched. Freshness is proven first. A member with no occurrence is a
-    refusal -- the frontier and the generation disagree about what exists.
+    vector is never touched. Freshness is proven first. A member with no occurrence is
+    incomplete coverage -- the frontier and the generation disagree about what exists --
+    and a stored vector the strict codec refuses is corrupt state. Neither is skipped.
     """
     require_current(connection, workspace_id=frontier.workspace_id, generation=generation)
     ids = tuple(candidate.evidence_id for candidate in frontier.candidates)
@@ -315,7 +321,7 @@ def project_semantic(
         rows = execute_in_rows(
             fenced,
             select=(
-                f"SELECT o.evidence_id, v.vector FROM {OCCURRENCES_TABLE} o "
+                f"SELECT o.evidence_id, v.vector, o.input_digest FROM {OCCURRENCES_TABLE} o "
                 f"JOIN {VECTORS_TABLE} v "
                 "  ON v.workspace_id = o.workspace_id AND v.projection_id = o.projection_id "
                 " AND v.run_id = o.run_id AND v.input_digest = o.input_digest"
@@ -326,15 +332,24 @@ def project_semantic(
             ids=ids,
             order_key=lambda row: row[0],
         )
-    vectors = {str(evidence_id): bytes(vector) for evidence_id, vector in rows}
+    stored = {str(row[0]): (bytes(row[1]), str(row[2])) for row in rows}
+    dimensions = generation.profile.dimensions
     members: list[ProjectedSemanticCandidate] = []
     for candidate in frontier.candidates:
-        vector = vectors.get(candidate.evidence_id)
-        if vector is None:
-            raise SemanticProjectionUnavailable(
+        found = stored.get(candidate.evidence_id)
+        if found is None:
+            raise IncompleteSemanticCoverage(
                 "the activated semantic generation has no vector for an authorized candidate"
             )
-        members.append(ProjectedSemanticCandidate(candidate=candidate, vector=vector))
+        vector, digest = found
+        try:
+            decode_vector(vector, dimensions=dimensions)
+            member = ProjectedSemanticCandidate(
+                candidate=candidate, vector=vector, input_digest=digest
+            )
+        except SemanticVectorError as exc:
+            raise CorruptSemanticState("a stored semantic vector is malformed") from exc
+        members.append(member)
     return ProjectedSemanticFrontier(
         workspace_id=frontier.workspace_id,
         checksum=frontier.checksum,
@@ -918,8 +933,6 @@ def _validate_run(
     if orphans:
         raise IncompleteSemanticCoverage(f"{orphans} vector(s) have no occurrence")
     vector_hasher = hashlib.sha256()
-    from omnivia_core_runtime.storage.semantic_vectors import decode_vector
-
     for digest, vector in vectors:
         decode_vector(bytes(vector), dimensions=int(run[3]))
         vector_hasher.update(
@@ -1127,6 +1140,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "VECTORS_TABLE",
     "BuildOutcome",
+    "CorruptSemanticState",
     "IncompatibleSemanticGeneration",
     "IncompleteSemanticCoverage",
     "SemanticEmbedder",

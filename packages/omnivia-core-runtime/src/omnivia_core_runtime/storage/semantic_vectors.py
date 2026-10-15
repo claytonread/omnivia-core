@@ -19,8 +19,8 @@ model silently serves queries embedded by another:
   evidence, not meaning; it never changes the profile digest.
 * `RepresentationIdentity` / `GenerationIdentity` -- *how the numbers are stored* (exact
   float32 little-endian, metric, codec and index version) and *which run holds them*.
-* `SemanticRetrievalPolicy` -- *how a request uses them*: candidate budget, threshold,
-  fusion version and tie-break version.
+* `SemanticRetrievalPolicy` -- *how a request uses them*: per-lane candidate budget,
+  threshold, fusion version, tie-break version and final result limit.
 
 **The codec refuses rather than repairs.** A vector is exactly `dimensions` finite float32
 components, little-endian, with no negative zero (a second spelling of zero that changes a
@@ -88,8 +88,14 @@ COMPATIBLE: Final = "compatible"
 INCOMPATIBLE: Final = "incompatible"
 COMPATIBILITY_STATUSES: Final[tuple[str, ...]] = (COMPATIBLE, INCOMPATIBLE)
 
-#: Upper bound on a request's semantic candidate budget.
-MAX_CANDIDATE_BUDGET: Final = 1000
+#: Hard maximum on each lane's retained candidates. Applied after exhaustive scoring,
+#: never as a cap on the frontier that is scored.
+MAX_CANDIDATE_BUDGET: Final = 200
+DEFAULT_CANDIDATE_BUDGET: Final = 50
+
+#: Hard maximum and default for the final fused result list.
+MAX_RESULT_LIMIT: Final = 50
+DEFAULT_RESULT_LIMIT: Final = 10
 
 _TOKEN: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}")
 _DIGEST: Final = re.compile(r"sha256:[0-9a-f]{64}")
@@ -308,15 +314,21 @@ class GenerationIdentity:
 
 @dataclass(frozen=True, slots=True)
 class SemanticRetrievalPolicy:
-    """How a request uses a generation. `threshold=None` means no score floor."""
+    """How a request uses a generation. `threshold=None` means no score floor.
 
-    candidate_budget: int
+    `candidate_budget` is each lane's retained top-N after full scoring; `result_limit`
+    is the length of the final fused list.
+    """
+
+    candidate_budget: int = DEFAULT_CANDIDATE_BUDGET
     threshold: float | None = None
     fusion_version: str = FUSION_RRF_V1
     tie_break_version: str = TIE_BREAK_V1
+    result_limit: int = DEFAULT_RESULT_LIMIT
 
     def __post_init__(self) -> None:
         _int_in(self.candidate_budget, "candidate_budget", 1, MAX_CANDIDATE_BUDGET)
+        _int_in(self.result_limit, "result_limit", 1, MAX_RESULT_LIMIT)
         if self.threshold is not None:
             threshold = self.threshold
             if (
@@ -347,6 +359,7 @@ class SemanticRetrievalPolicy:
                 "threshold": self.threshold,
                 "fusion_version": self.fusion_version,
                 "tie_break_version": self.tie_break_version,
+                "result_limit": self.result_limit,
             },
         )
 
@@ -433,10 +446,19 @@ def encode_vector(values: Sequence[float], *, dimensions: int) -> bytes:
 
 @dataclass(frozen=True, slots=True)
 class ProjectedSemanticCandidate:
-    """One authorized candidate and its stored vector bytes."""
+    """One authorized candidate, its stored vector bytes and that vector's exact input.
+
+    `input_digest` is the stored occurrence's encoder-input identity, so two occurrences
+    sharing one deduplicated vector stay distinguishable without exposing vector bytes.
+    """
 
     candidate: EvidenceCandidate
     vector: bytes
+    input_digest: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.input_digest, str) or _DIGEST.fullmatch(self.input_digest) is None:
+            raise SemanticVectorError("input_digest must be a sha256: digest")
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,6 +498,7 @@ class SemanticHit:
     candidate: EvidenceCandidate
     score: float
     rank: int
+    input_digest: str
 
 
 def _sort_key(evidence_id: str) -> bytes:
@@ -515,16 +538,21 @@ def rank_semantic(
         raise UnsupportedSemanticVersion(f"metric must be one of {list(METRICS)!r}")
     query = decode_vector(query_vector, dimensions=projected.dimensions)
     scored = [
-        (item.candidate, _similarity(query, decode_vector(item.vector, dimensions=projected.dimensions), metric))
+        (
+            item,
+            _similarity(query, decode_vector(item.vector, dimensions=projected.dimensions), metric),
+        )
         for item in projected.candidates
     ]
     if policy.threshold is not None:
         floor = policy.threshold
         scored = [pair for pair in scored if pair[1] >= floor]
-    scored.sort(key=lambda pair: (-pair[1], _sort_key(pair[0].evidence_id)))
+    scored.sort(key=lambda pair: (-pair[1], _sort_key(pair[0].candidate.evidence_id)))
     return tuple(
-        SemanticHit(candidate=candidate, score=score, rank=rank)
-        for rank, (candidate, score) in enumerate(scored[: policy.candidate_budget], start=1)
+        SemanticHit(
+            candidate=item.candidate, score=score, rank=rank, input_digest=item.input_digest
+        )
+        for rank, (item, score) in enumerate(scored[: policy.candidate_budget], start=1)
     )
 
 
@@ -542,6 +570,7 @@ class FusedHit:
     lexical_rank: int | None
     semantic_rank: int | None
     semantic_score: float | None
+    semantic_input_digest: str | None
 
 
 def fuse_ranked(
@@ -554,20 +583,23 @@ def fuse_ranked(
     """Fuse a lexical ranking with a semantic ranking under an explicit version.
 
     `rrf.v1`: each list contributes `1 / (60 + rank)` for a 1-based rank; a member in one
-    list scores that one term. Sums are computed as exact fractions and ordered by
-    (score descending, UTF-8 evidence id ascending), so equal scores -- the common case,
-    e.g. rank 1 in either list alone -- break on identity and never on arrival order.
-    Both inputs must already be members of one authorized frontier; membership is the
-    caller's proof, and a member present in both lists must be the same artifact.
+    list scores that one term, and an absent lane contributes zero. Sums are computed as
+    exact fractions and ordered by (score descending, UTF-8 evidence id ascending), so
+    equal scores -- the common case, e.g. rank 1 in either list alone -- break on identity
+    and never on arrival order. Semantic ranks must be exactly 1..n in order, so a
+    re-ordered or gapped list is refused rather than fused. Both inputs must already be
+    members of one authorized frontier; membership is the caller's proof, and a member
+    present in both lists must be the same artifact.
     """
     if version not in FUSION_VERSIONS:
         raise UnsupportedSemanticVersion(f"fusion version must be one of {list(FUSION_VERSIONS)!r}")
-    _int_in(limit, "limit", 1, 10_000)
+    _int_in(limit, "limit", 1, MAX_RESULT_LIMIT)
     candidates: dict[str, EvidenceCandidate] = {}
     scores: dict[str, Fraction] = {}
     lexical_rank: dict[str, int] = {}
     semantic_rank: dict[str, int] = {}
     semantic_score: dict[str, float] = {}
+    semantic_input: dict[str, str] = {}
 
     def admit(candidate: EvidenceCandidate) -> None:
         known = candidates.setdefault(candidate.evidence_id, candidate)
@@ -582,13 +614,16 @@ def fuse_ranked(
         scores[candidate.evidence_id] = scores.get(candidate.evidence_id, Fraction(0)) + Fraction(
             1, RRF_V1_K + rank
         )
-    for hit in semantic:
+    for position, hit in enumerate(semantic, start=1):
         evidence_id = hit.candidate.evidence_id
         if evidence_id in semantic_rank:
             raise SemanticVectorError("a semantic result appears twice")
+        if hit.rank != position:
+            raise SemanticVectorError("semantic ranks must be one-based and consecutive")
         admit(hit.candidate)
         semantic_rank[evidence_id] = hit.rank
         semantic_score[evidence_id] = hit.score
+        semantic_input[evidence_id] = hit.input_digest
         scores[evidence_id] = scores.get(evidence_id, Fraction(0)) + Fraction(
             1, RRF_V1_K + hit.rank
         )
@@ -600,6 +635,7 @@ def fuse_ranked(
             lexical_rank=lexical_rank.get(evidence_id),
             semantic_rank=semantic_rank.get(evidence_id),
             semantic_score=semantic_score.get(evidence_id),
+            semantic_input_digest=semantic_input.get(evidence_id),
         )
         for evidence_id in ordered[:limit]
     )
@@ -611,11 +647,14 @@ __all__ = [
     "CANONICAL_INPUT_VERSIONS",
     "COMPATIBILITY_STATUSES",
     "COMPATIBLE",
+    "DEFAULT_CANDIDATE_BUDGET",
+    "DEFAULT_RESULT_LIMIT",
     "FUSION_RRF_V1",
     "FUSION_VERSIONS",
     "INCOMPATIBLE",
     "MAX_CANDIDATE_BUDGET",
     "MAX_DIMENSIONS",
+    "MAX_RESULT_LIMIT",
     "METRICS",
     "METRIC_COSINE",
     "METRIC_DOT",
