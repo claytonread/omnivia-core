@@ -7,6 +7,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import ModuleType
 
@@ -258,17 +259,47 @@ def _component(manifest: dict[str, object], role: str) -> dict[str, object]:
     raise AssertionError(f"no {role} component")
 
 
-def _evidence(module: ModuleType, **overrides: object) -> dict[str, object]:
-    record = {
-        "authority": "Developer ID Application: Example (TEAMID1234)",
-        "cdhash": "a" * 40,
-        "notarized": True,
-        "team_identifier": "TEAMID1234",
-    }
-    return {
-        policy.bundle_id: {**record, **overrides}
-        for policy in module.COMPONENT_SET
-    }
+TEAM_ID = "TEAMID1234"
+REQUIREMENT = f'anchor apple generic and certificate leaf[subject.OU] = "{TEAM_ID}"'
+
+
+def _authority(module: ModuleType, **overrides: str) -> object:
+    return module.SigningAuthority(
+        **{"team_identifier": TEAM_ID, "requirement": REQUIREMENT, **overrides}
+    )
+
+
+def _runner(
+    *,
+    refuses: str | None = None,
+    unavailable: str | None = None,
+    team: str = TEAM_ID,
+    cdhash: bool = True,
+) -> tuple[Callable[[Sequence[str]], tuple[int, str]], list[list[str]]]:
+    """A stand-in for the platform signing authorities, with its call log.
+
+    `refuses` and `unavailable` name a substring of the argv whose command exits
+    non-zero or cannot be run at all. Everything else succeeds, and
+    `codesign --display` answers in the form the real tool writes.
+    """
+
+    calls: list[list[str]] = []
+
+    def run(command: Sequence[str]) -> tuple[int, str]:
+        calls.append(list(command))
+        joined = " ".join(command)
+        if unavailable is not None and unavailable in joined:
+            raise FileNotFoundError(command[0])
+        if refuses is not None and refuses in joined:
+            return 1, "test refusal"
+        if "--display" in command:
+            lines = [f"TeamIdentifier={team}", "Authority=Developer ID Application: Example"]
+            if cdhash:
+                lines.append("CDHash=" + "a" * 40)
+            return 0, "\n".join(lines) + "\n"
+        return 0, ""
+
+    return run, calls
 
 
 def test_manifest_binds_the_companion_and_both_extensions_as_one_component_set(
@@ -281,14 +312,30 @@ def test_manifest_binds_the_companion_and_both_extensions_as_one_component_set(
     assert manifest["compatibility_id"] == module.COMPONENT_SET_COMPATIBILITY_ID
     assert manifest["version"] == manifest["build_version"] == "0.6.5"
     assert manifest["minimum_macos"] == "13.0"
-    # No independent updater, and the installed-product installer is owned
-    # outside this repository.
+    # No independent updater, and no invented owner: the app's update owner is
+    # unbound, the existing channel does not cover this set, and the installer
+    # is owned outside this repository (WP-00 binding ledger row 13).
     assert manifest["update_owner"] == {
-        "id": "omnivia-core-product-release",
+        "app_update_owner": "externally_unbound",
+        "authority": (
+            "docs/development/"
+            "omnivia-core-macos-document-intake-wp-00-binding-ledger-2026-10-13.md#13"
+        ),
+        "existing_channel_covers_component_set": False,
         "independent_updater": False,
         "installer_owner_in_this_repository": False,
-        "updates_component_set_as_one_unit": True,
     }
+    assert module.APP_UPDATE_OWNER_BOUND is False
+    # Every field the manifest carries is a field this schema binds, and every
+    # field it binds is present: nothing in a passing manifest is ignored.
+    assert set(manifest) == set(module.MANIFEST_FIELDS)
+    for entry in manifest["components"]:
+        assert set(entry) == set(module.COMPONENT_FIELDS)
+    # The top-level identity and digest fields are the companion's own.
+    assert manifest["bundle_name"] == "OmniVia Core"
+    assert manifest["bundle_path"] == "OmniVia Core.app"
+    assert manifest["executable"] == "omnivia-core-status-menu"
+    assert manifest["executable_sha256"] == _component(manifest, "companion")["executable_sha256"]
     # The build never certifies itself.
     assert manifest["production_release_eligible"] is False
     assert manifest["signature_status"] == "unsigned"
@@ -315,84 +362,242 @@ def test_manifest_binds_the_companion_and_both_extensions_as_one_component_set(
     assert len({entry["registration"] for entry in components}) == 3
 
 
-def test_verifier_accepts_a_coherent_set_and_never_calls_it_release_eligible(
+def test_verifier_accepts_a_coherent_unsigned_set_without_calling_it_releasable(
     tmp_path: Path,
 ) -> None:
     module = _module()
     report = module.verify_candidate(_candidate(tmp_path, module))
     assert report.findings == ()
     assert report.ok is True
-    # Unsigned. Nothing read a signature, so nothing claims one.
+    # Coherence is the local verdict and it is clean. Release eligibility is a
+    # strictly narrower question and the answer is no.
+    assert report.coherence_ok is True
     assert report.signature_status == "unverified"
     assert report.release_eligible is False
 
 
-def test_release_qualification_refuses_an_unsigned_candidate(tmp_path: Path) -> None:
+def test_release_qualification_names_every_blocker_on_an_unsigned_candidate(
+    tmp_path: Path,
+) -> None:
     module = _module()
     report = module.verify_candidate(
         _candidate(tmp_path, module), require_release_eligible=True
     )
-    assert report.findings == ("candidate is not release eligible",)
+    assert report.coherence_ok is True
+    assert report.findings == (
+        (
+            "not release eligible: signing is not verified by the platform "
+            "authorities over this candidate"
+        ),
+        "not release eligible: the app update owner is not bound by repository authority",
+    )
     assert report.release_eligible is False
 
 
-def test_release_eligibility_requires_checked_evidence_for_every_component(
+def test_signing_verification_runs_the_platform_authorities_over_the_candidate(
     tmp_path: Path,
+) -> None:
+    """The verdict is the exit status of real commands over the real bundles."""
+    module = _module()
+    candidate = _candidate(tmp_path, module)
+    run, calls = _runner()
+
+    status, signed, findings = module._verify_signing(candidate, _authority(module), run)
+    assert (status, signed, findings) == ("verified", True, [])
+
+    programs = [call[0] for call in calls]
+    assert programs.count("codesign") == 9  # three commands for each of three components
+    assert programs[-2:] == ["spctl", "xcrun"]
+    # Every command named a path inside this candidate, never a declared string.
+    for call in calls:
+        assert any(str(candidate) in argument for argument in call)
+    app = str(candidate / "OmniVia Core.app")
+    assert ["codesign", "--verify", "--deep", "--strict", app] in calls
+    assert ["codesign", "--verify", f"-R={REQUIREMENT}", app] in calls
+    assert ["codesign", "--display", "--verbose=4", app] in calls
+    assert ["spctl", "--assess", "--type", "exec", "--verbose=4", app] in calls
+    assert ["xcrun", "stapler", "validate", app] in calls
+    appex = str(candidate / "OmniVia Core.app/Contents/PlugIns/Share to OmniVia Core.appex")
+    assert ["codesign", "--verify", "--deep", "--strict", appex] in calls
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "finding"),
+    [
+        ({"refuses": "--deep"}, "signing authority refused the candidate: seal companion"),
+        (
+            {"refuses": "-R="},
+            "signing authority refused the candidate: designated requirement companion",
+        ),
+        (
+            {"refuses": "spctl"},
+            "signing authority refused the candidate: Gatekeeper assessment",
+        ),
+        (
+            {"refuses": "stapler"},
+            "signing authority refused the candidate: notarisation staple",
+        ),
+        ({"unavailable": "codesign"}, "signing authority unavailable: seal companion"),
+        ({"unavailable": "spctl"}, "signing authority unavailable: Gatekeeper assessment"),
+        ({"team": "OTHERTEAM1"}, "signing team identifier mismatch: companion"),
+        ({"cdhash": False}, "signing reports no code directory hash: companion"),
+    ],
+)
+def test_a_failing_platform_authority_is_an_explicit_finding(
+    tmp_path: Path, kwargs: dict[str, object], finding: str
 ) -> None:
     module = _module()
     candidate = _candidate(tmp_path, module)
+    run, _ = _runner(**kwargs)  # type: ignore[arg-type]
 
-    full = _evidence(module)
     report = module.verify_candidate(
-        candidate, signature_evidence=full, require_release_eligible=True
+        candidate, signing_authority=_authority(module), run=run
+    )
+    assert finding in report.findings
+    assert report.signature_status == "unverified"
+    assert report.release_eligible is False
+    # The candidate itself is still coherent: a signing failure is not that.
+    assert report.coherence_ok is True
+
+
+def test_verified_signing_still_cannot_qualify_an_unbound_update_owner(
+    tmp_path: Path,
+) -> None:
+    """Every platform authority succeeded, and the candidate is still refused.
+
+    WP-00 row 13 leaves the app's update and installer owner unestablished, so
+    there is no release eligibility to grant yet.
+    """
+    module = _module()
+    candidate = _candidate(tmp_path, module)
+    run, _ = _runner()
+
+    report = module.verify_candidate(
+        candidate,
+        signing_authority=_authority(module),
+        require_release_eligible=True,
+        run=run,
+    )
+    assert report.signature_status == "verified"
+    assert report.coherence_ok is True
+    assert report.release_eligible is False
+    assert report.findings == (
+        "not release eligible: the app update owner is not bound by repository authority",
+    )
+
+
+def test_eligibility_needs_coherence_signing_and_a_bound_update_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the update owner bound by authority, the other two still gate."""
+    module = _module()
+    candidate = _candidate(tmp_path, module)
+    monkeypatch.setattr(module, "APP_UPDATE_OWNER_BOUND", True)
+    run, _ = _runner()
+
+    report = module.verify_candidate(
+        candidate,
+        signing_authority=_authority(module),
+        require_release_eligible=True,
+        run=run,
     )
     assert report.findings == ()
-    assert report.signature_status == "verified"
     assert report.release_eligible is True
 
-    partial = dict(full)
-    del partial["com.omnivia.core.share"]
-    report = module.verify_candidate(candidate, signature_evidence=partial)
-    assert report.findings == (
-        "signing evidence missing for component: com.omnivia.core.share",
+    # Signing alone removed.
+    refusing, _ = _runner(refuses="stapler")
+    report = module.verify_candidate(
+        candidate, signing_authority=_authority(module), run=refusing
     )
+    assert report.release_eligible is False
+
+    # Coherence alone removed.
+    (candidate / "OmniVia Core.app/Contents/MacOS/omnivia-core-status-menu").write_bytes(
+        b"tampered"
+    )
+    report = module.verify_candidate(
+        candidate,
+        signing_authority=_authority(module),
+        require_release_eligible=True,
+        run=run,
+    )
+    assert report.coherence_ok is False
+    assert report.signature_status == "verified"
+    assert report.release_eligible is False
+    assert report.findings == (
+        "component executable digest mismatch: companion",
+        "not release eligible: the candidate is not coherent",
+    )
+
+
+def test_declarative_signing_evidence_has_no_path_into_the_verdict(
+    tmp_path: Path,
+) -> None:
+    """A forged JSON record is not checked signing evidence.
+
+    There is no parameter that accepts one, and planting one in the candidate
+    only trips the symlink-and-manifest walk's own checks -- it never reports a
+    signature.
+    """
+    module = _module()
+    candidate = _candidate(tmp_path, module)
+    forged = {
+        policy.bundle_id: {
+            "authority": "Developer ID Application: Example (TEAMID1234)",
+            "cdhash": "a" * 40,
+            "notarized": True,
+            "team_identifier": TEAM_ID,
+        }
+        for policy in module.COMPONENT_SET
+    }
+    with pytest.raises(TypeError):
+        module.verify_candidate(candidate, signature_evidence=forged)
+
+    (candidate / "signature-evidence.json").write_text(json.dumps(forged), encoding="ascii")
+    report = module.verify_candidate(candidate, require_release_eligible=True)
+    assert report.signature_status == "unverified"
+    assert report.release_eligible is False
+    assert report.findings == (
+        (
+            "not release eligible: signing is not verified by the platform "
+            "authorities over this candidate"
+        ),
+        "not release eligible: the app update owner is not bound by repository authority",
+    )
+
+
+def test_no_signing_authority_runs_no_command_and_claims_nothing(tmp_path: Path) -> None:
+    module = _module()
+    run, calls = _runner()
+    report = module.verify_candidate(_candidate(tmp_path, module), run=run)
+    assert calls == []
     assert report.signature_status == "unverified"
     assert report.release_eligible is False
 
-    report = module.verify_candidate(
-        candidate, signature_evidence=_evidence(module, notarized=False)
-    )
-    assert all("not notarized" in finding for finding in report.findings)
-    assert len(report.findings) == 3
-    assert report.release_eligible is False
 
-    stranger = dict(full)
-    stranger["com.omnivia.core.status"] = {**stranger["com.omnivia.core.status"]}
-    stranger["com.omnivia.core.status"]["team_identifier"] = "OTHERTEAM1"
-    report = module.verify_candidate(candidate, signature_evidence=stranger)
-    assert "signing evidence spans more than one team identifier" in report.findings
-    assert report.release_eligible is False
-
-    extra = dict(full)
-    extra["com.omnivia.core.unmanaged"] = full["com.omnivia.core.share"]
-    report = module.verify_candidate(candidate, signature_evidence=extra)
-    assert report.findings == (
-        "signing evidence for unmanaged component: com.omnivia.core.unmanaged",
-    )
+def test_the_production_runner_fails_closed_off_macos_and_on_a_missing_tool() -> None:
+    """The default runner is the only thing production signing can go through."""
+    module = _module()
+    if sys.platform == "darwin":
+        with pytest.raises(FileNotFoundError):
+            module._run_signing_command(["omnivia-no-such-signing-tool"])
+        status, _ = module._run_signing_command(["false"])
+        assert status != 0
+    else:
+        with pytest.raises(OSError, match="only on macOS"):
+            module._run_signing_command(["codesign", "--version"])
 
 
-def test_a_coherence_finding_does_not_make_verified_signing_evidence_unread(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("team", "requirement"),
+    [("", REQUIREMENT), ("teamid1234", REQUIREMENT), ("TEAMID12345", REQUIREMENT), (TEAM_ID, "  ")],
+)
+def test_an_expected_identity_must_be_a_real_team_and_requirement(
+    team: str, requirement: str
 ) -> None:
     module = _module()
-    candidate = _candidate(tmp_path, module)
-    (candidate / "OmniVia Core.app" / "Contents" / "MacOS" / "omnivia-core-status-menu").write_bytes(
-        b"tampered"
-    )
-    report = module.verify_candidate(candidate, signature_evidence=_evidence(module))
-    assert report.findings == ("component executable digest mismatch: companion",)
-    assert report.signature_status == "verified"
-    assert report.release_eligible is False
+    with pytest.raises(module.PackagingError, match="refused"):
+        module.SigningAuthority(team_identifier=team, requirement=requirement)
 
 
 @pytest.mark.parametrize(
@@ -605,24 +810,41 @@ def test_verifier_refuses_a_candidate_whose_manifest_certifies_itself(
 
     report = module.verify_candidate(candidate)
     assert report.findings == (
+        "manifest signature_status mismatch",
         "manifest certifies its own release eligibility",
-        "manifest claims a signature this build cannot produce",
     )
+    assert report.coherence_ok is False
 
 
 @pytest.mark.parametrize(
-    ("key", "value", "finding"),
+    ("key", "value"),
     [
+        # Every security- and release-significant top-level field is bound, so
+        # none of them is decorative data a candidate can edit freely.
+        ("bundle_id", "com.example.other"),
+        ("bundle_name", "Other"),
+        ("bundle_path", "Other.app"),
+        ("executable", "other-executable"),
+        ("executable_sha256", "0" * 64),
+        ("compatibility_id", "omnivia-core-companion-component-set/9"),
+        ("candidate_status", "production"),
+        ("notarization_status", "notarized"),
+        ("update_owner", {"id": "own-updater"}),
         (
-            "compatibility_id",
-            "omnivia-core-companion-component-set/9",
-            "component set compatibility identifier mismatch",
+            "update_owner",
+            {
+                "app_update_owner": "omnivia-core-product-release",
+                "authority": "docs/development/"
+                "omnivia-core-macos-document-intake-wp-00-binding-ledger-2026-10-13.md#13",
+                "existing_channel_covers_component_set": True,
+                "independent_updater": False,
+                "installer_owner_in_this_repository": False,
+            },
         ),
-        ("update_owner", {"id": "own-updater"}, "update owner declaration mismatch"),
     ],
 )
-def test_verifier_refuses_a_foreign_set_or_updater_declaration(
-    tmp_path: Path, key: str, value: object, finding: str
+def test_verifier_refuses_top_level_tampering(
+    tmp_path: Path, key: str, value: object
 ) -> None:
     module = _module()
     candidate = _candidate(tmp_path, module)
@@ -630,7 +852,50 @@ def test_verifier_refuses_a_foreign_set_or_updater_declaration(
     manifest[key] = value
     _rewrite(candidate, manifest)
 
-    assert module.verify_candidate(candidate).findings == (finding,)
+    report = module.verify_candidate(candidate)
+    assert report.coherence_ok is False
+    if key == "executable_sha256":
+        assert report.findings == (
+            "manifest executable_sha256 is not the companion component digest",
+        )
+    else:
+        assert report.findings == (f"manifest {key} mismatch",)
+
+
+def test_verifier_refuses_unknown_and_missing_manifest_fields(tmp_path: Path) -> None:
+    """Same-schema future authority is refused, not silently ignored."""
+    module = _module()
+    candidate = _candidate(tmp_path, module)
+    manifest = _manifest(candidate)
+    manifest["release_approved_by"] = "someone"
+    manifest["signing_evidence"] = {"notarized": True}
+    _rewrite(candidate, manifest)
+    report = module.verify_candidate(candidate)
+    assert report.findings == (
+        "manifest field not bound by this schema: release_approved_by",
+        "manifest field not bound by this schema: signing_evidence",
+    )
+    assert report.coherence_ok is False
+
+    manifest = _manifest(candidate)
+    del manifest["release_approved_by"]
+    del manifest["signing_evidence"]
+    del manifest["bundle_name"]
+    _rewrite(candidate, manifest)
+    report = module.verify_candidate(candidate)
+    assert report.findings == (
+        "manifest field missing: bundle_name",
+        "manifest bundle_name mismatch",
+    )
+
+    # And inside a component declaration.
+    manifest = _manifest(candidate)
+    manifest["bundle_name"] = "OmniVia Core"
+    _component(manifest, "share_extension")["signature_verified"] = True
+    _rewrite(candidate, manifest)
+    assert module.verify_candidate(candidate).findings == (
+        "component field not bound by this schema: share_extension.signature_verified",
+    )
 
 
 def test_verifier_refuses_a_component_declared_outside_its_managed_path(
@@ -764,6 +1029,7 @@ def test_verifier_cli_is_fail_closed_and_reports_without_rewriting(tmp_path: Pat
     )
     assert clean.returncode == 0, clean.stderr
     assert json.loads(clean.stdout) == {
+        "coherence_ok": True,
         "findings": [],
         "release_eligible": False,
         "signature_status": "unverified",
@@ -776,37 +1042,62 @@ def test_verifier_cli_is_fail_closed_and_reports_without_rewriting(tmp_path: Pat
         check=False,
     )
     assert required.returncode == 1
-    assert "candidate is not release eligible" in required.stderr
+    assert "signing is not verified by the platform authorities" in required.stderr
+    assert "the app update owner is not bound by repository authority" in required.stderr
 
-    evidence = tmp_path / "evidence.json"
-    evidence.write_text(json.dumps(_evidence(module)), encoding="utf-8")
-    signed = subprocess.run(
+    # The expected identity is the release owner's, and both halves of it are
+    # required together.
+    half = subprocess.run(
+        [sys.executable, "-I", str(cli), str(candidate), "--expected-team-id", TEAM_ID],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert half.returncode == 2
+    assert "go together" in half.stderr
+
+    bogus = subprocess.run(
         [
             sys.executable,
             "-I",
             str(cli),
             str(candidate),
-            "--signature-evidence",
-            str(evidence),
-            "--require-release-eligible",
-            "--json",
+            "--expected-team-id",
+            "not-a-team",
+            "--expected-requirement",
+            REQUIREMENT,
         ],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert signed.returncode == 0, signed.stderr
-    assert json.loads(signed.stdout)["release_eligible"] is True
+    assert bogus.returncode == 2
+    assert "expected signing identity refused" in bogus.stderr
 
-    evidence.write_text("[]", encoding="utf-8")
-    malformed = subprocess.run(
-        [sys.executable, "-I", str(cli), str(candidate), "--signature-evidence", str(evidence)],
+    # There is no flag by which a caller-authored file can report a signature.
+    forged = tmp_path / "evidence.json"
+    forged.write_text(
+        json.dumps(
+            {
+                policy.bundle_id: {
+                    "authority": "Developer ID Application: Example",
+                    "cdhash": "a" * 40,
+                    "notarized": True,
+                    "team_identifier": TEAM_ID,
+                }
+                for policy in module.COMPONENT_SET
+            }
+        ),
+        encoding="utf-8",
+    )
+    rejected = subprocess.run(
+        [sys.executable, "-I", str(cli), str(candidate), "--signature-evidence", str(forged)],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert malformed.returncode == 1
-    assert "signature evidence unreadable" in malformed.stderr
+    assert rejected.returncode == 2
+    assert "unrecognized arguments" in rejected.stderr
 
 
 def test_verifier_refuses_every_malformed_manifest_shape(tmp_path: Path) -> None:

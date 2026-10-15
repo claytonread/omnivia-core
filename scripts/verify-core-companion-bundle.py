@@ -7,23 +7,33 @@ directory -- the output of `scripts/build-core-companion-app.py` -- and refuses
 it unless every member is present exactly once, at its declared path, with the
 declared identity, version, build version, minimum macOS and executable digest.
 
-Fail-closed and bounded. Any finding, any unreadable input and any unknown
-manifest schema exits non-zero. There is no skip path and no partial pass, and
-nothing here rewrites the candidate or its manifest.
+Fail-closed and bounded. Any finding, any unreadable input, any unknown manifest
+schema and any manifest field this schema does not bind exits non-zero. There is
+no skip path and no partial pass, and nothing here rewrites the candidate or its
+manifest.
 
-Signing and notarisation are reported only from evidence a caller supplies with
-`--signature-evidence`: a JSON object mapping each managed bundle identifier to
-the `authority`, `team_identifier`, `cdhash` and `notarized` record of a real
-`codesign`/notarisation run. This gate runs neither tool. Without that evidence
-the signature status is `unverified` and the candidate is never release
-eligible; `--require-release-eligible` turns that into a finding, which is how
-release qualification is run against the same gate used locally.
+Coherence and release eligibility are reported separately, because only the
+first can be answered locally. Signing and notarisation are never read from a
+file: pass `--expected-team-id` and `--expected-requirement`, the identity the
+real release owner says this candidate must carry, and this gate runs `codesign
+--verify --deep --strict`, `codesign --verify -R=`, `codesign --display` on
+every component and then `spctl --assess` and `xcrun stapler validate` on the
+containing app. Only all of those succeeding reports `verified`. Off macOS, or
+with a tool missing, every one of them fails and the candidate stays unverified.
+
+A coherent, verified candidate is still not release eligible today: no
+repository authority binds an owner for the app's update, so the manifest
+declares that owner unbound and this gate refuses eligibility until an explicit
+repository authority changes that binding (WP-00 binding ledger row 13).
+`--require-release-eligible` turns each remaining blocker into a finding, which
+is how release qualification is run against the same gate used locally.
 
     scripts/verify-core-companion-bundle.py CANDIDATE
-        [--signature-evidence FILE] [--require-release-eligible] [--json]
+        [--expected-team-id TEAMID --expected-requirement REQ]
+        [--require-release-eligible] [--json]
 
 Exit codes: ``0`` clean, ``1`` findings or unusable input, ``2`` bad usage.
-Standard library only, entirely offline.
+Standard library only; it reaches no network.
 """
 
 from __future__ import annotations
@@ -32,7 +42,6 @@ import argparse
 import importlib.util
 import json
 import sys
-from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
 
@@ -60,40 +69,44 @@ def _builder() -> ModuleType:
     return module
 
 
-def _evidence(path: Path) -> Mapping[str, object]:
-    loaded = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(loaded, dict):
-        raise TypeError("signature evidence must be a JSON object")
-    return loaded
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("candidate", type=Path)
-    parser.add_argument("--signature-evidence", type=Path)
+    parser.add_argument("--expected-team-id")
+    parser.add_argument("--expected-requirement")
     parser.add_argument("--require-release-eligible", action="store_true")
     parser.add_argument("--json", action="store_true")
     arguments = parser.parse_args(argv)
 
-    evidence: Mapping[str, object] | None = None
-    if arguments.signature_evidence is not None:
+    builder = _builder()
+    authority = None
+    if (arguments.expected_team_id is None) != (arguments.expected_requirement is None):
+        # Half an expected identity is not an expected identity: a requirement
+        # without a team, or a team without a requirement, would check less than
+        # the release owner asked for.
+        parser.error("--expected-team-id and --expected-requirement go together")
+    if arguments.expected_team_id is not None:
         try:
-            evidence = _evidence(arguments.signature_evidence)
-        except (OSError, TypeError, UnicodeDecodeError, ValueError) as error:
-            print(f"signature evidence unreadable: {error}", file=sys.stderr)
-            return 1
+            authority = builder.SigningAuthority(
+                team_identifier=arguments.expected_team_id,
+                requirement=arguments.expected_requirement,
+            )
+        except builder.PackagingError as error:
+            print(f"expected signing identity refused: {error}", file=sys.stderr)
+            return 2
 
-    report = _builder().verify_candidate(
+    report = builder.verify_candidate(
         # Absolute, not resolved: resolving would follow a symlinked candidate
         # root, which the verifier exists to refuse.
         arguments.candidate.absolute(),
-        signature_evidence=evidence,
+        signing_authority=authority,
         require_release_eligible=arguments.require_release_eligible,
     )
     if arguments.json:
         print(
             json.dumps(
                 {
+                    "coherence_ok": report.coherence_ok,
                     "findings": list(report.findings),
                     "release_eligible": report.release_eligible,
                     "signature_status": report.signature_status,
@@ -106,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         for finding in report.findings:
             print(finding, file=sys.stderr)
         print(
+            f"coherence: {'ok' if report.coherence_ok else 'failed'}; "
             f"signature: {report.signature_status}; "
             f"release eligible: {report.release_eligible}"
         )

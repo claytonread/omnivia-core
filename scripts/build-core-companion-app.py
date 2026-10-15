@@ -5,6 +5,12 @@ The build also writes the component-set manifest that binds the companion and
 both managed extensions as one coherent unit (section 18.1 to 18.4, WP-14).
 `verify_candidate` checks an assembled candidate against that manifest and is
 the fail-closed gate behind `scripts/verify-core-companion-bundle.py`.
+
+That gate reports two separate verdicts. Coherence is local and answerable here.
+Release eligibility is not: it needs `codesign`, `spctl` and `stapler` to
+succeed over the exact candidate against an expected identity the release owner
+supplies, and an app update owner that repository authority has bound. Neither
+can be declared in the manifest or in any caller-authored file.
 """
 
 from __future__ import annotations
@@ -16,7 +22,9 @@ import os
 import plistlib
 import re
 import shutil
-from collections.abc import Mapping
+import subprocess
+import sys
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -71,7 +79,10 @@ SHARE_EXTENSION_ACTIVATION_RULE: Final = {
     "NSExtensionActivationSupportsWebURLWithMaxCount": SHARE_EXTENSION_MAX_ITEMS,
 }
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
-_CDHASH = re.compile(r"^[0-9a-f]{40,64}$")
+_TEAM_IDENTIFIER = re.compile(r"^[A-Z0-9]{10}$")
+# Parsed out of `codesign --display --verbose=4`, which writes them one per line.
+_TEAM_LINE = re.compile(r"^TeamIdentifier=(.+)$", re.MULTILINE)
+_CDHASH_LINE = re.compile(r"^CDHash=[0-9a-f]{40,64}$", re.MULTILINE)
 
 MANIFEST_NAME: Final = "companion-manifest.json"
 MANIFEST_SCHEMA_VERSION: Final = 2
@@ -83,19 +94,74 @@ SUPPORTED_MANIFEST_SCHEMA_VERSIONS: Final = frozenset({MANIFEST_SCHEMA_VERSION})
 # when the component set itself changes -- a member added, removed or renamed --
 # so a manifest from a different set is refused rather than partially matched.
 COMPONENT_SET_COMPATIBILITY_ID: Final = "omnivia-core-companion-component-set/1"
-# This feature introduces no updater. The manifest declares who owns the update
-# instead, and a candidate claiming its own updater is refused (section 18.3).
-# The installed-product installer is not owned by this repository; see the WP-00
-# binding ledger row 13.
+# This feature introduces no updater, and no owner of the app's update is named
+# here, because no repository authority binds one. WP-00 binding ledger row 13:
+# the existing channel (`scripts/publish-update-channel.py`) carries five Python
+# wheels and not the app, "the companion has no update path", and "which
+# repository owns the signed installer and the app bundle is not established
+# here". The manifest records that absence rather than inventing an owner
+# (section 18.3).
 UPDATE_OWNER: Final = {
-    "id": "omnivia-core-product-release",
+    "app_update_owner": "externally_unbound",
+    "authority": (
+        "docs/development/"
+        "omnivia-core-macos-document-intake-wp-00-binding-ledger-2026-10-13.md#13"
+    ),
+    "existing_channel_covers_component_set": False,
     "independent_updater": False,
     "installer_owner_in_this_repository": False,
-    "updates_component_set_as_one_unit": True,
 }
+# Derived, so it cannot drift from the declaration above. Release eligibility
+# stays refused while the app's update owner is unbound: binding it is a
+# reviewed change to `UPDATE_OWNER` citing a repository authority, never a value
+# a candidate manifest can carry in on its own.
+APP_UPDATE_OWNER_BOUND: Final = UPDATE_OWNER["app_update_owner"] != "externally_unbound"
+# Every top-level manifest field this schema binds. A manifest carrying a field
+# outside this set is refused: a passing manifest holds no field that a reader
+# ignores, so no field can be decorative mutable data (section 18.3).
+MANIFEST_FIELDS: Final = frozenset(
+    {
+        "bundle_id",
+        "bundle_name",
+        "bundle_path",
+        "build_version",
+        "candidate_status",
+        "compatibility_id",
+        "components",
+        "executable",
+        "executable_sha256",
+        "minimum_macos",
+        "notarization_status",
+        "production_release_eligible",
+        "schema_version",
+        "signature_status",
+        "update_owner",
+        "version",
+    }
+)
+COMPONENT_FIELDS: Final = frozenset(
+    {
+        "bundle_id",
+        "bundle_path",
+        "build_version",
+        "executable",
+        "executable_path",
+        "executable_sha256",
+        "minimum_macos",
+        "registration",
+        "role",
+        "version",
+    }
+)
+CANDIDATE_STATUS: Final = "qualification_only"
+NOTARIZATION_STATUS: Final = "not_notarized"
+SIGNATURE_STATUS: Final = "unsigned"
 # A bound on the candidate walk so an unreadable or hostile tree cannot make the
 # gate run unbounded. A real candidate holds a few dozen entries.
 MAX_CANDIDATE_ENTRIES: Final = 4096
+# A bound on each platform signing authority, so a wedged tool cannot hang the
+# gate. Verification of a real app bundle takes well under a second.
+SIGNING_COMMAND_TIMEOUT_SECONDS: Final = 120
 
 
 @dataclass(frozen=True)
@@ -307,7 +373,7 @@ def build_companion_app(
         "bundle_name": BUNDLE_NAME,
         "bundle_path": f"{BUNDLE_NAME}.app",
         "build_version": version,
-        "candidate_status": "qualification_only",
+        "candidate_status": CANDIDATE_STATUS,
         "compatibility_id": COMPONENT_SET_COMPATIBILITY_ID,
         "components": [
             {
@@ -328,12 +394,14 @@ def build_companion_app(
         "executable": EXECUTABLE_NAME,
         "executable_sha256": digests[COMPONENT_SET[0].role],
         "minimum_macos": MINIMUM_MACOS,
-        # The build never certifies itself. Release eligibility is reported by
-        # `verify_candidate` and only against checked signing evidence.
-        "notarization_status": "not_notarized",
+        # The build never certifies itself, and these three record only what the
+        # build produced. Release eligibility is decided by `verify_candidate`
+        # running the platform signing authorities over the candidate; it is
+        # never read out of this file.
+        "notarization_status": NOTARIZATION_STATUS,
         "production_release_eligible": False,
         "schema_version": MANIFEST_SCHEMA_VERSION,
-        "signature_status": "unsigned",
+        "signature_status": SIGNATURE_STATUS,
         "update_owner": UPDATE_OWNER,
         "version": version,
     }
@@ -344,17 +412,68 @@ def build_companion_app(
 
 
 @dataclass(frozen=True)
+class SigningAuthority:
+    """What the release owner says this candidate must be signed as.
+
+    Both halves come from the real release owner, never from the candidate: the
+    expected Apple Team ID and the designated-requirement expression that
+    `codesign -R=` must be satisfied by. A candidate cannot supply, weaken or
+    imply either one.
+    """
+
+    team_identifier: str
+    requirement: str
+
+    def __post_init__(self) -> None:
+        if _TEAM_IDENTIFIER.fullmatch(self.team_identifier) is None:
+            raise PackagingError("expected team identifier refused")
+        if not self.requirement.strip():
+            raise PackagingError("expected designated requirement refused")
+
+
+# One platform signing authority: the argv to run, and the exit status and
+# combined output it produced. Injectable so unit tests can drive the parsing
+# and the refusal paths; production always uses `_run_signing_command`, which is
+# the only thing that can make a candidate release eligible.
+CommandRunner = Callable[[Sequence[str]], tuple[int, str]]
+
+
+def _run_signing_command(command: Sequence[str]) -> tuple[int, str]:
+    """Run one real platform signing authority.
+
+    Fail-closed: off macOS, and when the tool is absent or wedged, this raises
+    and the caller turns that into a finding. There is no path by which an
+    unavailable authority reports success.
+    """
+
+    if sys.platform != "darwin":
+        raise OSError("platform signing authorities exist only on macOS")
+    completed = subprocess.run(
+        list(command),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=SIGNING_COMMAND_TIMEOUT_SECONDS,
+    )
+    return completed.returncode, completed.stdout + completed.stderr
+
+
+@dataclass(frozen=True)
 class VerificationReport:
     """The verdict on one assembled candidate.
 
-    `findings` empty means the candidate matches its manifest and the declared
-    component set. `signature_status` is `unverified` whenever no caller-supplied
-    signing evidence was checked, and `release_eligible` is never true in that
-    case: an unsigned candidate is not release eligible and this gate does not
-    pretend otherwise.
+    `coherence_ok` is the local question: does the candidate match its manifest
+    and the declared component set. It is the useful verdict for an unsigned
+    qualification build and says nothing about release.
+
+    `release_eligible` is the release question, and it is a strictly narrower
+    one: coherent, *and* signing verified by the platform authorities run over
+    this candidate, *and* an app update owner bound by repository authority.
+    `signature_status` is `unverified` unless those commands all succeeded.
     """
 
     findings: tuple[str, ...]
+    coherence_ok: bool
     signature_status: str
     release_eligible: bool
 
@@ -364,7 +483,7 @@ class VerificationReport:
 
 
 def _refused(finding: str) -> VerificationReport:
-    return VerificationReport((finding,), "unverified", False)
+    return VerificationReport((finding,), False, "unverified", False)
 
 
 def _read_plist(path: Path) -> dict[str, object] | None:
@@ -413,64 +532,87 @@ def _registrations(plist: Mapping[str, object]) -> list[str]:
     return found
 
 
-def _check_signature_evidence(
-    evidence: Mapping[str, object] | None, findings: list[str]
-) -> tuple[str, bool]:
-    """Report signing only from evidence a caller supplied and this gate read.
+def _verify_signing(
+    candidate: Path, authority: SigningAuthority | None, run: CommandRunner
+) -> tuple[str, bool, list[str]]:
+    """Verify signing by running the platform authorities over this candidate.
 
-    Nothing here runs `codesign` or `spctl`; the evidence is the record of a run
-    that did. Absent evidence is not a finding -- a local qualification candidate
-    is legitimately unsigned -- but it can never report `verified`.
+    Nothing is taken on a caller's word. The verdict is the exit status of
+    `codesign`, `spctl` and `stapler` run over the exact bundles inside
+    `candidate`: a static seal and designated-identity check on every component
+    against the release owner's expected Team ID and designated requirement,
+    then the Gatekeeper assessment and the notarisation staple on the containing
+    app. Every failure, and every authority that could not be run at all, is an
+    explicit finding; none of them can report `verified`.
+
+    No authority to check against is not a finding -- a local qualification
+    candidate is legitimately unsigned -- but it reports `unverified`.
     """
 
-    if evidence is None:
-        return "unverified", False
-    # Scoped to this evidence: a coherence finding elsewhere in the candidate
-    # does not make the signing record unread, and an unread signing record is
-    # not hidden by a clean candidate.
-    own: list[str] = []
-    expected = {policy.bundle_id for policy in COMPONENT_SET}
-    covered = set(evidence)
-    for bundle_id in sorted(expected - covered):
-        own.append(f"signing evidence missing for component: {bundle_id}")
-    for bundle_id in sorted(covered - expected):
-        own.append(f"signing evidence for unmanaged component: {bundle_id}")
-    teams: set[str] = set()
-    for bundle_id in sorted(expected & covered):
-        record = evidence[bundle_id]
-        if not isinstance(record, Mapping):
-            own.append(f"signing evidence malformed: {bundle_id}")
+    if authority is None:
+        return "unverified", False, []
+    findings: list[str] = []
+
+    def check(command: list[str], label: str) -> str | None:
+        try:
+            status, output = run(command)
+        except (OSError, subprocess.SubprocessError):
+            # Off macOS, tool absent, or wedged past the bound. Fail closed.
+            findings.append(f"signing authority unavailable: {label}")
+            return None
+        if status != 0:
+            findings.append(f"signing authority refused the candidate: {label}")
+            return None
+        return output
+
+    for policy in COMPONENT_SET:
+        bundle = str(candidate / policy.bundle_path)
+        role = policy.role
+        if check(["codesign", "--verify", "--deep", "--strict", bundle], f"seal {role}") is None:
             continue
-        authority = record.get("authority")
-        team = record.get("team_identifier")
-        cdhash = record.get("cdhash")
-        if not isinstance(authority, str) or not authority:
-            own.append(f"signing evidence has no authority: {bundle_id}")
-        if not isinstance(team, str) or not team:
-            own.append(f"signing evidence has no team identifier: {bundle_id}")
-        else:
-            teams.add(team)
-        if not isinstance(cdhash, str) or _CDHASH.fullmatch(cdhash) is None:
-            own.append(f"signing evidence has no code directory hash: {bundle_id}")
-        if record.get("notarized") is not True:
-            own.append(f"signing evidence is not notarized: {bundle_id}")
-    if len(teams) > 1:
-        own.append("signing evidence spans more than one team identifier")
-    findings.extend(own)
-    return ("verified", True) if not own else ("unverified", False)
+        if (
+            check(
+                ["codesign", "--verify", f"-R={authority.requirement}", bundle],
+                f"designated requirement {role}",
+            )
+            is None
+        ):
+            continue
+        details = check(["codesign", "--display", "--verbose=4", bundle], f"identity {role}")
+        if details is None:
+            continue
+        team = _TEAM_LINE.search(details)
+        if team is None or team.group(1).strip() != authority.team_identifier:
+            findings.append(f"signing team identifier mismatch: {role}")
+        if _CDHASH_LINE.search(details) is None:
+            findings.append(f"signing reports no code directory hash: {role}")
+
+    app = str(candidate / COMPONENT_SET[0].bundle_path)
+    check(["spctl", "--assess", "--type", "exec", "--verbose=4", app], "Gatekeeper assessment")
+    check(["xcrun", "stapler", "validate", app], "notarisation staple")
+
+    if findings:
+        return "unverified", False, findings
+    return "verified", True, []
 
 
 def verify_candidate(
     candidate: Path,
     *,
-    signature_evidence: Mapping[str, object] | None = None,
+    signing_authority: SigningAuthority | None = None,
     require_release_eligible: bool = False,
+    run: CommandRunner | None = None,
 ) -> VerificationReport:
     """Validate an assembled candidate against its component-set manifest.
 
     Fail-closed and bounded: every unreadable input, every mismatch and every
     unmanaged or duplicated member is a finding, and there is no skip path. No
     finding reproduces bytes; each names a component role or a relative path.
+
+    `signing_authority` is the release owner's expected identity. Supplying it
+    makes this gate run the platform signing authorities over the candidate;
+    omitting it leaves the signature `unverified`. `run` exists so unit tests can
+    drive those authorities' outcomes.
     """
 
     if not candidate.is_absolute() or candidate.is_symlink() or not candidate.is_dir():
@@ -491,14 +633,34 @@ def verify_candidate(
         return _refused(f"manifest schema unsupported: {schema!r}")
 
     findings: list[str] = []
-    if manifest.get("compatibility_id") != COMPONENT_SET_COMPATIBILITY_ID:
-        findings.append("component set compatibility identifier mismatch")
-    if manifest.get("update_owner") != UPDATE_OWNER:
-        findings.append("update owner declaration mismatch")
+    # Strict in both directions at this schema: an unbound field is refused
+    # rather than ignored, so same-schema future authority cannot slip a field
+    # past this reader, and a missing field cannot pass as absent-is-fine. A
+    # *newer* schema was already refused whole above, unread and unmodified.
+    for field in sorted(set(manifest) - MANIFEST_FIELDS):
+        findings.append(f"manifest field not bound by this schema: {field}")
+    for field in sorted(MANIFEST_FIELDS - set(manifest)):
+        findings.append(f"manifest field missing: {field}")
+
+    companion_policy = COMPONENT_SET[0]
+    for field, pinned in (
+        # The top-level identity and path fields are the companion's, and they
+        # are pinned to the same constants its component entry is, so they
+        # cannot disagree with it or be edited into something decorative.
+        ("bundle_id", BUNDLE_ID),
+        ("bundle_name", BUNDLE_NAME),
+        ("bundle_path", companion_policy.bundle_path),
+        ("executable", EXECUTABLE_NAME),
+        ("compatibility_id", COMPONENT_SET_COMPATIBILITY_ID),
+        ("candidate_status", CANDIDATE_STATUS),
+        ("notarization_status", NOTARIZATION_STATUS),
+        ("signature_status", SIGNATURE_STATUS),
+        ("update_owner", UPDATE_OWNER),
+    ):
+        if manifest.get(field) != pinned:
+            findings.append(f"manifest {field} mismatch")
     if manifest.get("production_release_eligible") is not False:
         findings.append("manifest certifies its own release eligibility")
-    if manifest.get("signature_status") != "unsigned":
-        findings.append("manifest claims a signature this build cannot produce")
     if _SEMVER.fullmatch(str(manifest.get("version"))) is None:
         # The same version form the build refuses, so the two gates cannot
         # disagree about what a release version is.
@@ -530,6 +692,11 @@ def verify_candidate(
             findings.append(f"component declared twice: {role}")
         else:
             declared[role] = entry
+    companion_entry = declared.get(companion_policy.role)
+    if companion_entry is None or manifest.get("executable_sha256") != companion_entry.get(
+        "executable_sha256"
+    ):
+        findings.append("manifest executable_sha256 is not the companion component digest")
     policies = {policy.role: policy for policy in COMPONENT_SET}
     for role in sorted(set(policies) - set(declared)):
         findings.append(f"managed component missing: {role}")
@@ -572,6 +739,8 @@ def verify_candidate(
         if entry is None:
             continue
         coherent.add(tuple(entry.get(field) for field in COHERENT_FIELDS))
+        for field in sorted(set(entry) - COMPONENT_FIELDS):
+            findings.append(f"component field not bound by this schema: {role}.{field}")
         for field, expected in (
             ("bundle_id", policy.bundle_id),
             ("bundle_path", policy.bundle_path),
@@ -611,11 +780,32 @@ def verify_candidate(
     if len(coherent) > 1:
         findings.append("component version skew across the set")
 
-    signature_status, signed = _check_signature_evidence(signature_evidence, findings)
-    release_eligible = signed and not findings
-    if require_release_eligible and not release_eligible:
-        findings.append("candidate is not release eligible")
-    return VerificationReport(tuple(findings), signature_status, release_eligible)
+    # Coherence is settled here, before signing is looked at: a signing failure
+    # is not an incoherent candidate, and a clean candidate does not excuse one.
+    coherence_ok = not findings
+    signature_status, signed, signing_findings = _verify_signing(
+        candidate, signing_authority, run or _run_signing_command
+    )
+    findings.extend(signing_findings)
+
+    blockers: list[str] = []
+    if not coherence_ok:
+        blockers.append("not release eligible: the candidate is not coherent")
+    if not signed:
+        blockers.append(
+            "not release eligible: signing is not verified by the platform "
+            "authorities over this candidate"
+        )
+    if not APP_UPDATE_OWNER_BOUND:
+        blockers.append(
+            "not release eligible: the app update owner is not bound by repository authority"
+        )
+    release_eligible = not blockers
+    if require_release_eligible:
+        findings.extend(blockers)
+    return VerificationReport(
+        tuple(findings), coherence_ok, signature_status, release_eligible
+    )
 
 
 def main() -> int:

@@ -68,9 +68,12 @@ The result embeds `Add to OmniVia Core.appex` and `Share to OmniVia Core.appex`
 under `Contents/PlugIns`, and `companion-manifest.json` beside the app binds all
 three as one component set: bundle identifiers, marketing and build version,
 minimum macOS, executable digests, each component's single service or extension
-registration, the component-set compatibility identifier and the update owner.
-There is no second updater; the manifest names the existing product release
-owner, and the installed-product installer is owned outside this repository.
+registration, the component-set compatibility identifier and the update-owner
+declaration. There is no second updater, and the manifest names no owner for the
+app's update, because no repository authority binds one: it records
+`app_update_owner: externally_unbound`, that the existing update channel does
+not cover this component set, and that the installed-product installer is owned
+outside this repository (WP-00 binding ledger row 13).
 
 Verify an assembled candidate against that manifest before it goes anywhere:
 
@@ -81,16 +84,38 @@ python scripts/verify-core-companion-bundle.py /absolute/path/to/candidate
 It is fail-closed: a missing or extra managed extension, a duplicate bundle
 identifier or service registration, any version, build-version or minimum-macOS
 skew between the companion and either extension, a tampered executable, a
-symlink, a declared path outside the set, or an unknown manifest schema all exit
-non-zero. An unknown schema is refused whole and left exactly as written.
+symlink, a declared path outside the set, a top-level identity, digest or status
+field that disagrees with the component set, a manifest field this schema does
+not bind, or an unknown manifest schema all exit non-zero. An unknown schema is
+refused whole and left exactly as written.
 
-Signing and notarisation are reported only from evidence supplied with
-`--signature-evidence FILE` — a JSON object mapping each managed bundle
-identifier to the `authority`, `team_identifier`, `cdhash` and `notarized`
-record of a real `codesign`/notarisation run. The gate runs neither tool.
-Without that evidence the signature status is `unverified` and the candidate is
-never release eligible; release qualification adds
-`--require-release-eligible`, which turns that into a finding.
+That is the *coherence* verdict, and it is the useful one for an unsigned
+qualification build: a clean unsigned candidate exits `0` with `coherence_ok`
+true and `release_eligible` false.
+
+Signing and notarisation are never read from a file. Pass the identity the real
+release owner says the candidate must carry, and the gate runs the platform
+authorities over the exact candidate:
+
+```bash
+python scripts/verify-core-companion-bundle.py /absolute/path/to/candidate \
+  --expected-team-id TEAMID1234 \
+  --expected-requirement 'anchor apple generic and certificate leaf[subject.OU] = "TEAMID1234"' \
+  --require-release-eligible
+```
+
+Per component it runs `codesign --verify --deep --strict`, `codesign --verify
+-R=<requirement>` and `codesign --display --verbose=4` (whose `TeamIdentifier`
+must equal the expected one), then `spctl --assess` and `xcrun stapler validate`
+on the containing app. Only all of those succeeding reports `verified`. Off
+macOS, or with any of those tools missing, each one fails and the candidate
+stays `unverified`.
+
+A coherent, verified candidate is still **not** release eligible today: the
+app's update owner is unbound, so the gate refuses eligibility until an explicit
+repository authority binds one and `UPDATE_OWNER` is changed to match.
+`--require-release-eligible` turns each remaining blocker into a finding and a
+non-zero exit.
 
 The bundle remains explicitly `qualification_only` until each
 extension and the containing app are signed with the entitlements under
