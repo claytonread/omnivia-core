@@ -348,7 +348,7 @@ public actor CaptureDeliveryCoordinator {
         // A pause this cannot persist does not stop delivery: the send boundary
         // below refuses the same mismatch on its own, and the pass is owed again
         // on the next tick.
-        try? pauseWorkUnderChangedIdentity()
+        _ = try? pauseWorkUnderChangedIdentity()
         var outcomes: [CaptureQueueEntry] = []
         for entry in queue.allEntries() where entry.state == .pending {
             // The same comparison the pass above reported, applied again here as
