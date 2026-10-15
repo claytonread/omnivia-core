@@ -52,7 +52,8 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
         reader: any CoordinatedOriginalReading = SystemCoordinatedOriginalReader(),
         monotonicClock: (@Sendable () -> Int64)? = nil,
         // Wall clock for the periodic folder schedule, whose intervals are 15 minutes and 24
-        // hours. A test moves it by hand rather than waiting one out; production reads `Date`.
+        // hours, and for the monitoring scan's five-minute add/change burst window. A test moves
+        // it by hand rather than waiting one out; production reads `Date`.
         reconciliationClock: (@Sendable () -> Date)? = nil
     ) throws {
         self.reader = reader
@@ -112,7 +113,8 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             queue: queue,
             subscriptions: folderSubscriptions,
             reader: reader,
-            controlledStores: controlledStores
+            controlledStores: controlledStores,
+            clock: reconciliationClock ?? { Date() }
         )
         folderReconciliationExecutor = FolderReconciliationExecutor(
             accessStore: accessStore,

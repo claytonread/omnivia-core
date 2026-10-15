@@ -17,7 +17,7 @@ public enum FolderMonitoringError: Error, Equatable {
     case scopeCoverageIncomplete
 }
 
-private struct MonitoredCandidate: Sendable {
+struct MonitoredCandidate: Sendable {
     let url: URL
     let relativeComponents: [String]
     let displayName: String
@@ -36,6 +36,16 @@ public actor FolderMonitoringCoordinator {
     private let reader: any CoordinatedOriginalReading
     /// Core/native-owned stores every scan excludes; see `DocumentIntakeEnvironment`.
     private let controlledStores: [URL]
+    /// Wall clock for the observation timestamp and the add/change burst window.
+    /// Production reads `Date`; a test moves it rather than waiting the window out.
+    private let clock: @Sendable () -> Date
+
+    /// The two unusual-change thresholds, and the rolling window the add/change
+    /// one is a rate over. These are the design's values and are read nowhere else.
+    static let changeBurstThreshold = 100
+    static let changeBurstWindow: TimeInterval = 5 * 60
+    static let disappearanceThreshold = 20
+    static let disappearanceSharePercent = 10
 
     init(
         accessStore: NativeAccessStore,
@@ -43,8 +53,10 @@ public actor FolderMonitoringCoordinator {
         queue: CaptureIntentQueue,
         subscriptions: FolderSubscriptionStore,
         reader: any CoordinatedOriginalReading,
-        controlledStores: [URL] = []
+        controlledStores: [URL] = [],
+        clock: @escaping @Sendable () -> Date = { Date() }
     ) {
+        self.clock = clock
         self.accessStore = accessStore
         self.preparation = preparation
         self.queue = queue
@@ -325,14 +337,42 @@ public actor FolderMonitoringCoordinator {
         let credibleDisappearances = subscription.members.filter {
             $0.state == .present && !candidateKeys.contains(Self.pathKey($0.relativeComponents))
         }
-        let disappearanceThresholdCrossed = credibleDisappearances.count >= 20
-            && credibleDisappearances.count * 10 >= max(1, subscription.members.count)
+        let now = clock()
+        let observedAt = ISO8601DateFormatter().string(from: now)
+        // The add/change threshold is a rate, not a running total: credible
+        // observations accumulate inside one rolling five-minute window, and a
+        // window that has run out starts again at this pass's own count. Changes
+        // spread wider than the window therefore never add up to a burst, while
+        // several quick passes inside one do. The count is that rate signal and
+        // not an audit: a pass that returns for review leaves its own changes
+        // undrained, so the pass after it sees them again.
+        let windowStart = subscription.changeBurstWindowStartedAt.flatMap(Self.timestamp(from:))
+        let windowOpen = windowStart.map {
+            now >= $0 && now.timeIntervalSince($0) <= Self.changeBurstWindow
+        } ?? false
+        let burstCount = (windowOpen ? (subscription.changeBurstCount ?? 0) : 0)
+            + credibleChanges.count
+        let burstWindowStartedAt = windowOpen ? subscription.changeBurstWindowStartedAt : observedAt
+        let changeBurstCrossed = burstCount >= Self.changeBurstThreshold
+        // Both disappearance conditions are required, and the share is of the
+        // inventory that was actually present: a member already recorded absent is
+        // long gone and cannot disappear again, so counting it in the denominator
+        // would only hide a real bulk loss. Neither condition is reachable without
+        // complete coverage, because an incomplete scan never gets here (see `scan`).
+        let presentCount = subscription.members.filter { $0.state == .present }.count
+        let disappearanceThresholdCrossed = credibleDisappearances.count >= Self.disappearanceThreshold
+            && credibleDisappearances.count * Self.disappearanceSharePercent >= max(1, presentCount)
         let reviewSignature = Self.reviewSignature(
+            subscription: subscription,
             changes: credibleChanges,
             disappearances: credibleDisappearances
         )
-        if (credibleChanges.count >= 100 || disappearanceThresholdCrossed),
-           subscription.approvedReviewSignature == nil
+        // An approval is exact: it exempts the one reviewed inventory under the
+        // configuration and consent it was given for, and nothing else. A further
+        // material change signs differently, so the scope returns to review with
+        // the new counts rather than draining on the earlier approval.
+        if (changeBurstCrossed || disappearanceThresholdCrossed),
+           subscription.approvedReviewSignature != reviewSignature
         {
             let examples = credibleChanges.map(\.displayName)
                 + credibleDisappearances.map { $0.displayName + " (missing)" }
@@ -340,8 +380,14 @@ public actor FolderMonitoringCoordinator {
                 value.state = .reviewRequired
                 value.needsFullReconciliation = true
                 value.pendingReviewSignature = reviewSignature
+                // A stale approval is not left standing beside the new pending
+                // one: this scope's only live approval is the one a person gives
+                // for what is on the screen now.
+                value.approvedReviewSignature = nil
                 value.reviewChangeCount = credibleChanges.count + credibleDisappearances.count
                 value.reviewExamples = Array(examples.prefix(10))
+                value.changeBurstWindowStartedAt = burstWindowStartedAt
+                value.changeBurstCount = burstCount
             }
             return FolderMonitoringReport(
                 subscriptionID: reviewed.subscriptionID,
@@ -354,7 +400,6 @@ public actor FolderMonitoringCoordinator {
         }
         let bulkRunID = Self.identifier(prefix: "bulk")
         let manifestRevision = Self.identifier(prefix: "manifest")
-        let observedAt = ISO8601DateFormatter().string(from: Date())
         var updated = subscription
         var queued = 0
         var unchanged = 0
@@ -519,6 +564,11 @@ public actor FolderMonitoringCoordinator {
             }
         }
         updated.lastCompletedMetadataScanAt = observedAt
+        // The window survives a completing pass. Resetting it here would mean
+        // several quick passes, each below the threshold, never adding up to the
+        // burst they are.
+        updated.changeBurstWindowStartedAt = burstWindowStartedAt
+        updated.changeBurstCount = burstCount
         updated.needsFullReconciliation = capacityDeferred
         if !capacityDeferred {
             updated.pendingReviewSignature = nil
@@ -649,11 +699,20 @@ public actor FolderMonitoringCoordinator {
         "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func reviewSignature(
+    /// What an approval is bound to: the exact reviewed inventory — every changed
+    /// member at the size it was reviewed at, and every member reviewed as missing
+    /// — under the subscription, configuration and consent the review was shown
+    /// for. Any of those moving on makes the approval stale rather than wider.
+    static func reviewSignature(
+        subscription: FolderSubscription,
         changes: [MonitoredCandidate],
         disappearances: [FolderSubscriptionMember]
     ) -> String {
-        let material = (changes.map {
+        let material = ([
+            "subscription\u{1f}\(subscription.subscriptionID)",
+            "config\u{1f}\(subscription.configGeneration)",
+            "consent\u{1f}\(subscription.consentGeneration)",
+        ] + changes.map {
             "changed\u{1f}\(pathKey($0.relativeComponents))\u{1f}\($0.byteLength)"
         } + disappearances.map {
             "missing\u{1f}\(pathKey($0.relativeComponents))"
@@ -661,6 +720,10 @@ public actor FolderMonitoringCoordinator {
             .sorted()
             .joined(separator: "\u{1e}")
         return digest(Data(material.utf8))
+    }
+
+    private static func timestamp(from value: String) -> Date? {
+        ISO8601DateFormatter().date(from: value)
     }
 
     private static func identifier(prefix: String) -> String {

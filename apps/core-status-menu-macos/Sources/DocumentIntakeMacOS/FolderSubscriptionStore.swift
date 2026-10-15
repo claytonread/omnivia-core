@@ -56,6 +56,12 @@ public struct FolderSubscription: Codable, Equatable, Sendable {
     public var approvedReviewSignature: String?
     public var reviewChangeCount: Int?
     public var reviewExamples: [String]?
+    /// The rolling add/change burst window: when it opened, and how many credible
+    /// add/change observations have landed inside it. The threshold is a rate, so
+    /// the count alone means nothing without the window it was counted in. See
+    /// `FolderMonitoringCoordinator.changeBurstWindow`.
+    public var changeBurstWindowStartedAt: String?
+    public var changeBurstCount: Int?
     public var members: [FolderSubscriptionMember]
 }
 
@@ -228,6 +234,8 @@ public final class FolderSubscriptionStore: @unchecked Sendable {
               !value.rootDisplayName.contains("\0"),
               (value.reviewChangeCount.map { $0 >= 0 } ?? true),
               (value.reviewExamples?.count ?? 0) <= 10,
+              (value.changeBurstCount.map { $0 >= 0 } ?? true),
+              (value.changeBurstWindowStartedAt.map { !$0.isEmpty && $0.count <= 64 } ?? true),
               (value.pendingReviewSignature.map(validDigest) ?? true),
               (value.approvedReviewSignature.map(validDigest) ?? true),
               Set(value.members.map(\.memberID)).count == value.members.count,

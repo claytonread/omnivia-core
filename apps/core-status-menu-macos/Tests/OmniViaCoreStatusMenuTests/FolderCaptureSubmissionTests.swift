@@ -944,6 +944,268 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         XCTAssertTrue(subscription.reviewExamples?.allSatisfy { $0.hasSuffix("(missing)") } == true)
     }
 
+    /// MON-34: the add/change burst threshold is a hundred items inside five
+    /// minutes, and both halves of that are load-bearing. Ninety-nine additions
+    /// are read and published without review. One more inside the same window is
+    /// the hundredth and pauses the scope. The same hundredth item once the
+    /// window has run out is not a burst at all.
+    func testAnAddBurstReachesReviewOnlyAtAHundredChangesInsideFiveMinutes() async throws {
+        let root = try temporaryDirectory()
+        let watched = try watchedFolder(in: root)
+        try Data("baseline".utf8).write(to: watched.appendingPathComponent("baseline.txt"))
+        let clock = Clock(Date(timeIntervalSince1970: 1_760_000_000))
+        let watch = try await activeWatch(root: root, clock: clock)
+
+        // One short of the threshold: no review, and every one of them published.
+        try writeFiles(99, into: watched, prefix: "first")
+        let belowThreshold = await watch.environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(belowThreshold.map(\.state), [.active])
+        XCTAssertEqual(belowThreshold.map(\.queued), [99])
+        var subscription = try XCTUnwrap(watch.environment.folderSubscriptions.all().first)
+        XCTAssertNil(subscription.reviewChangeCount)
+        XCTAssertEqual(subscription.changeBurstCount, 99)
+        let firstWindow = try XCTUnwrap(subscription.changeBurstWindowStartedAt)
+
+        // Past five minutes the window has run out, so the hundredth item is
+        // counted as the first of a new one rather than as the top of the old.
+        clock.advance(301)
+        try Data("late".utf8).write(to: watched.appendingPathComponent("hundredth.txt"))
+        let outsideTheWindow = await watch.environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(outsideTheWindow.map(\.state), [.active])
+        XCTAssertEqual(outsideTheWindow.map(\.queued), [1])
+        subscription = try XCTUnwrap(watch.environment.folderSubscriptions.all().first)
+        XCTAssertEqual(subscription.changeBurstCount, 1)
+        XCTAssertNotEqual(subscription.changeBurstWindowStartedAt, firstWindow)
+
+        // Inside that new window the count accumulates across passes, and the
+        // hundredth observation pauses the scope before anything else is read.
+        clock.advance(60)
+        try writeFiles(99, into: watched, prefix: "second")
+        let crossed = await watch.environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(crossed.map(\.state), [.reviewRequired])
+        XCTAssertEqual(crossed.map(\.queued), [0])
+        XCTAssertEqual(watch.environment.queue.allEntries().count, 100)
+        subscription = try XCTUnwrap(watch.environment.folderSubscriptions.all().first)
+        XCTAssertEqual(subscription.changeBurstCount, 100)
+        XCTAssertEqual(subscription.reviewChangeCount, 99)
+        XCTAssertNotNil(subscription.pendingReviewSignature)
+    }
+
+    /// MON-34 and MON-37: an approved backfill is exact. It exempts the one
+    /// reviewed inventory and nothing else, so a reviewed member arriving at a
+    /// size nobody approved sends the scope back to review with refreshed counts
+    /// instead of riding in on the earlier approval.
+    func testAnApprovedBackfillExemptionCoversOnlyTheExactReviewedInventory() async throws {
+        let root = try temporaryDirectory()
+        let watched = try watchedFolder(in: root)
+        let edited = watched.appendingPathComponent("edited.txt")
+        try Data("baseline".utf8).write(to: edited)
+        let clock = Clock(Date(timeIntervalSince1970: 1_760_000_000))
+        let watch = try await activeWatch(root: root, clock: clock)
+
+        // Ninety-nine additions and one edit are a hundred credible changes.
+        try writeFiles(99, into: watched, prefix: "added")
+        try Data("baseline rewritten once".utf8).write(to: edited)
+        let paused = await watch.environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(paused.map(\.state), [.reviewRequired])
+        let review = try XCTUnwrap(watch.environment.folderSubscriptions.all().first)
+        XCTAssertEqual(review.reviewChangeCount, 100)
+        let reviewedInventory = try XCTUnwrap(review.pendingReviewSignature)
+
+        // The approval is recorded against exactly what was reviewed.
+        _ = try await watch.environment.folderMonitoring.resume(subscriptionID: watch.subscriptionID)
+        XCTAssertEqual(
+            watch.environment.folderSubscriptions.all().first?.approvedReviewSignature,
+            reviewedInventory
+        )
+
+        // One reviewed member is now a different size. That is a materially
+        // changed review scope: it is refreshed and reviewed again, nothing is
+        // published, and the approval it outran does not stay on record.
+        try Data("baseline rewritten once more".utf8).write(to: edited)
+        let refreshed = await watch.environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(refreshed.map(\.state), [.reviewRequired])
+        XCTAssertEqual(refreshed.map(\.queued), [0])
+        XCTAssertTrue(watch.environment.queue.allEntries().isEmpty)
+        let second = try XCTUnwrap(watch.environment.folderSubscriptions.all().first)
+        XCTAssertEqual(second.reviewChangeCount, 100)
+        XCTAssertNil(second.approvedReviewSignature)
+        XCTAssertNotEqual(second.pendingReviewSignature, reviewedInventory)
+
+        // Approving what is actually on the screen now drains exactly that.
+        _ = try await watch.environment.folderMonitoring.resume(subscriptionID: watch.subscriptionID)
+        let approved = await watch.environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(approved.map(\.state), [.active])
+        XCTAssertEqual(approved.map(\.queued), [100])
+        XCTAssertEqual(watch.environment.queue.allEntries().count, 100)
+        let drained = try XCTUnwrap(watch.environment.folderSubscriptions.all().first)
+        XCTAssertNil(drained.approvedReviewSignature)
+        XCTAssertNil(drained.pendingReviewSignature)
+    }
+
+    /// MON-35: a disappearance needs both twenty items and a tenth of the
+    /// inventory, and the tenth is of the inventory that was present. Either
+    /// condition alone is an ordinary absence, recorded without review.
+    func testADisappearanceNeedsBothTwentyItemsAndATenthOfThePresentInventory() async throws {
+        let root = try temporaryDirectory()
+        let watched = try watchedFolder(in: root)
+        try writeFiles(300, into: watched, prefix: "member")
+        let clock = Clock(Date(timeIntervalSince1970: 1_760_000_000))
+        let watch = try await activeWatch(root: root, clock: clock)
+        XCTAssertEqual(watch.environment.folderSubscriptions.all().first?.members.count, 300)
+
+        // Twenty items without the tenth: ordinary absence.
+        try remove(20, named: "member", from: watched, startingAt: 0)
+        let twentyOnly = await watch.environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(twentyOnly.map(\.state), [.active])
+        XCTAssertEqual(twentyOnly.map(\.absent), [20])
+        var subscription = try XCTUnwrap(watch.environment.folderSubscriptions.all().first)
+        XCTAssertNil(subscription.reviewChangeCount)
+        XCTAssertEqual(subscription.members.filter { $0.state == .absent }.count, 20)
+
+        // Twenty-eight is both twenty items and a tenth of the two hundred and
+        // eighty still present — though not a tenth of the three hundred ever
+        // enrolled, which is what makes the share one of the present inventory.
+        try remove(28, named: "member", from: watched, startingAt: 20)
+        let bothConditions = await watch.environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(bothConditions.map(\.state), [.reviewRequired])
+        subscription = try XCTUnwrap(watch.environment.folderSubscriptions.all().first)
+        XCTAssertEqual(subscription.reviewChangeCount, 28)
+        XCTAssertEqual(subscription.members.filter { $0.state == .absent }.count, 20)
+
+        // A tenth without twenty items: also ordinary absence. Fifteen of a
+        // hundred and fifty is exactly a tenth and still one item short.
+        let smallRoot = try temporaryDirectory()
+        let small = try watchedFolder(in: smallRoot)
+        try writeFiles(150, into: small, prefix: "member")
+        let smallWatch = try await activeWatch(root: smallRoot, clock: clock)
+        try remove(15, named: "member", from: small, startingAt: 0)
+        let tenthOnly = await smallWatch.environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(tenthOnly.map(\.state), [.active])
+        XCTAssertEqual(tenthOnly.map(\.absent), [15])
+        XCTAssertNil(smallWatch.environment.folderSubscriptions.all().first?.reviewChangeCount)
+    }
+
+    /// MON-35: coverage comes first. A scan that could not read part of the
+    /// folder, and a root that is not there at all, both leave every membership
+    /// exactly as it stands — so neither a partial scan nor a remount failure can
+    /// present itself as a bulk disappearance.
+    func testAPartialScanOrAnUnavailableRootMarksNothingAbsent() async throws {
+        let root = try temporaryDirectory()
+        let watched = try watchedFolder(in: root)
+        try writeFiles(100, into: watched, prefix: "member")
+        let nested = watched.appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try Data("nested".utf8).write(to: nested.appendingPathComponent("brief.pdf"))
+        let clock = Clock(Date(timeIntervalSince1970: 1_760_000_000))
+        let watch = try await activeWatch(root: root, clock: clock)
+        XCTAssertEqual(watch.environment.folderSubscriptions.all().first?.members.count, 101)
+
+        // Thirty of a hundred and one gone is well past both thresholds, so this
+        // would be a reviewed bulk disappearance if the scan were complete.
+        try remove(30, named: "member", from: watched, startingAt: 0)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o000],
+            ofItemAtPath: nested.path
+        )
+        let partial = await watch.environment.folderMonitoring.reconcileAll()
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: nested.path
+        )
+
+        XCTAssertEqual(partial.map(\.state), [.needsAccess])
+        XCTAssertEqual(partial.map(\.absent), [0])
+        var subscription = try XCTUnwrap(watch.environment.folderSubscriptions.all().first)
+        XCTAssertEqual(subscription.members.filter { $0.state == .absent }.count, 0)
+        XCTAssertNil(subscription.reviewChangeCount)
+
+        // The same again with no root at all, which is what a volume that did not
+        // come back looks like from here.
+        _ = try await watch.environment.folderMonitoring.resume(subscriptionID: watch.subscriptionID)
+        try FileManager.default.moveItem(
+            at: watched,
+            to: root.appendingPathComponent("unmounted", isDirectory: true)
+        )
+        let unavailable = await watch.environment.folderMonitoring.reconcileAll()
+
+        XCTAssertEqual(unavailable.map(\.state), [.needsAccess])
+        XCTAssertEqual(unavailable.map(\.absent), [0])
+        subscription = try XCTUnwrap(watch.environment.folderSubscriptions.all().first)
+        XCTAssertEqual(subscription.members.filter { $0.state == .absent }.count, 0)
+        XCTAssertNil(subscription.reviewChangeCount)
+        XCTAssertTrue(watch.environment.queue.allEntries().isEmpty)
+    }
+
+    /// MON-37: what an approval is signed against. The reviewed inventory — each
+    /// changed member at the size it was shown at, and each member shown as
+    /// missing — under the subscription, configuration and consent the review was
+    /// shown for. None of those is interchangeable, so an approval cannot be
+    /// replayed onto another scope, a reconfigured one, or a later size.
+    func testAReviewApprovalIsSignedAgainstItsInventoryConfigurationAndConsent() throws {
+        let reviewed = Self.reviewedSubscription()
+        let changed = MonitoredCandidate(
+            url: URL(fileURLWithPath: "/watched/report.pdf"),
+            relativeComponents: ["report.pdf"],
+            displayName: "report.pdf",
+            contentKind: .pdf,
+            byteLength: 4096
+        )
+        let missing = Self.reviewedMember()
+        let signature = FolderMonitoringCoordinator.reviewSignature(
+            subscription: reviewed,
+            changes: [changed],
+            disappearances: [missing]
+        )
+
+        XCTAssertEqual(
+            signature,
+            FolderMonitoringCoordinator.reviewSignature(
+                subscription: reviewed,
+                changes: [changed],
+                disappearances: [missing]
+            ),
+            "the same reviewed inventory under the same configuration signs the same way"
+        )
+        for other in [
+            Self.reviewedSubscription(subscriptionID: "subscription-2"),
+            Self.reviewedSubscription(configGeneration: 2),
+            Self.reviewedSubscription(consentGeneration: 2),
+        ] {
+            XCTAssertNotEqual(
+                signature,
+                FolderMonitoringCoordinator.reviewSignature(
+                    subscription: other,
+                    changes: [changed],
+                    disappearances: [missing]
+                )
+            )
+        }
+        let resized = MonitoredCandidate(
+            url: changed.url,
+            relativeComponents: changed.relativeComponents,
+            displayName: changed.displayName,
+            contentKind: changed.contentKind,
+            byteLength: changed.byteLength + 1
+        )
+        XCTAssertNotEqual(
+            signature,
+            FolderMonitoringCoordinator.reviewSignature(
+                subscription: reviewed,
+                changes: [resized],
+                disappearances: [missing]
+            )
+        )
+        XCTAssertNotEqual(
+            signature,
+            FolderMonitoringCoordinator.reviewSignature(
+                subscription: reviewed,
+                changes: [changed],
+                disappearances: []
+            )
+        )
+    }
+
     func testWatchDoesNotReadOrQueueChangesBeforeBaselineAdmission() async throws {
         let root = try temporaryDirectory()
         let watched = root.appendingPathComponent("watch.txt")
@@ -1113,6 +1375,116 @@ final class FolderCaptureSubmissionTests: XCTestCase {
             itemID: entry.intent.itemId,
             attemptGeneration: staging.attemptGeneration,
             captureID: captureID
+        )
+    }
+
+    /// The watched root, kept beside the state store rather than over it, so a
+    /// test may make it unreadable or move it away without touching the store.
+    private func watchedFolder(in root: URL) throws -> URL {
+        let watched = root.appendingPathComponent("watched", isDirectory: true)
+        try FileManager.default.createDirectory(at: watched, withIntermediateDirectories: true)
+        return watched
+    }
+
+    /// A watch in `keepUpdated` + `onlyNewAndChanged` mode, active from the start
+    /// with every existing member recorded locally. A later scan's credible
+    /// changes are therefore exactly what happened after this call.
+    private func activeWatch(
+        root: URL,
+        clock: Clock
+    ) async throws -> (environment: DocumentIntakeEnvironment, subscriptionID: String) {
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec(),
+            reconciliationClock: { clock.now }
+        )
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        let plan = try submission.plan(
+            root: root.appendingPathComponent("watched", isDirectory: true),
+            policy: FolderCapturePolicy(
+                mode: .keepUpdated,
+                recursive: true,
+                includeHidden: false,
+                watchInitialContent: .onlyNewAndChanged
+            )
+        )
+        let submitted = try await submission.submit(plan)
+        XCTAssertTrue(submitted.isEmpty)
+        let subscription = try XCTUnwrap(environment.folderSubscriptions.all().first)
+        XCTAssertEqual(subscription.state, .active)
+        return (environment, subscription.subscriptionID)
+    }
+
+    private func writeFiles(_ count: Int, into directory: URL, prefix: String) throws {
+        for index in 0..<count {
+            try Data("\(prefix) \(index)".utf8).write(
+                to: directory.appendingPathComponent(
+                    String(format: "%@-%03d.txt", prefix, index)
+                )
+            )
+        }
+    }
+
+    private func remove(_ count: Int, named prefix: String, from directory: URL, startingAt first: Int) throws {
+        for index in first..<(first + count) {
+            try FileManager.default.removeItem(
+                at: directory.appendingPathComponent(String(format: "%@-%03d.txt", prefix, index))
+            )
+        }
+    }
+
+    private static func reviewedSubscription(
+        subscriptionID: String = "subscription-1",
+        configGeneration: UInt64 = 1,
+        consentGeneration: UInt64 = 1
+    ) -> FolderSubscription {
+        FolderSubscription(
+            subscriptionID: subscriptionID,
+            rootRef: "root-1",
+            rootDisplayName: "Watched",
+            targetRef: "target-1",
+            workspaceRef: "workspace-1",
+            targetBindingRevision: "binding-1",
+            callerContextBinding: CallerContextBinding(
+                clientContextRef: "client-1",
+                principalRef: "principal-1",
+                contextRevision: "context-1"
+            ),
+            recursive: true,
+            includeHidden: false,
+            configGeneration: configGeneration,
+            consentGeneration: consentGeneration,
+            consentRecordedAt: "2026-10-16T00:00:00Z",
+            observationEpoch: "epoch-1",
+            state: .active,
+            needsFullReconciliation: false,
+            lastCompletedMetadataScanAt: nil,
+            pendingReviewSignature: nil,
+            approvedReviewSignature: nil,
+            reviewChangeCount: nil,
+            reviewExamples: nil,
+            members: []
+        )
+    }
+
+    private static func reviewedMember() -> FolderSubscriptionMember {
+        FolderSubscriptionMember(
+            memberID: "member-1",
+            accessRef: "access-1",
+            linkedDocumentID: "doc-1",
+            requestedSourceIdentity: "source-1",
+            relativeComponents: ["gone.txt"],
+            displayName: "gone.txt",
+            contentKind: .text,
+            membershipGeneration: 1,
+            baselineItemID: nil,
+            currentSuccessfulCaptureID: nil,
+            lastObservedDigest: "sha256:" + String(repeating: "a", count: 64),
+            lastObservedByteLength: 8,
+            lastObservedAt: "2026-10-16T00:00:00Z",
+            lastQueuedItemID: nil,
+            dirtyEpoch: 1,
+            state: .present
         )
     }
 
