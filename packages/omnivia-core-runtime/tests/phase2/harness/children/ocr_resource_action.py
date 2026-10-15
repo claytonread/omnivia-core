@@ -114,6 +114,9 @@ def _perform(spec: dict[str, object], managed: ManagedOcrResources) -> dict[str,
         "newlyInstalled": installed.newly_installed,
         "installedBytes": installed.installed_bytes,
         "availableBytes": installed.available_bytes,
+        # By stable key, because a parent comparing two children's reports needs
+        # something it can write down rather than five fields per victim.
+        "evicted": [entry.stable_key for entry in installed.evicted],
     }
 
 

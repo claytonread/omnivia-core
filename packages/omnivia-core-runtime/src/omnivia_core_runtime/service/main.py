@@ -1161,6 +1161,11 @@ def _ocr_performed_document(
         "newlyInstalled": installed.newly_installed,
         "installedBytes": installed.installed_bytes,
         "availableBytes": installed.available_bytes,
+        # What fitting this install cost, if anything: the installed sets it
+        # reclaimed, of any language. Reported rather than left to be noticed in
+        # `resources`, because a deletion an operator did not ask for is the one
+        # outcome of an accepted install they have to be told about.
+        "evicted": [_ocr_identity_document(entry) for entry in installed.evicted],
         "resources": _ocr_status_document(managed.inventory())["resources"],
         "capacityBytes": managed.capacity_bytes,
     }

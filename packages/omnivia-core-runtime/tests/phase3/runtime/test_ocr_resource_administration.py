@@ -8,8 +8,9 @@ surface will consume.
 What is proved here: that the action vocabulary is closed, that the mode is
 mutually exclusive with the other maintenance modes, that the versioned result
 document is the whole of stdout and renders identically for the same cache, that
-every lifecycle refusal arrives with its stable code and exit 1 while a usage
-fault exits 2 having written no document at all, and that the managed cache is
+an accepted install always names what it had to reclaim to fit, that every
+lifecycle refusal arrives with its stable code and exit 1 while a usage fault
+exits 2 having written no document at all, and that the managed cache is
 installation-local -- this mode owns no workspace and starts nothing.
 
 And the boundary that matters most: these commands are **not** an operation.
@@ -232,6 +233,56 @@ def test_install_verifies_and_publishes_the_payload(
     assert admin.managed().payload_path(_identity()).read_bytes() == BODY
 
 
+def test_an_install_that_reclaimed_no_room_says_so(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The key is always there, so a caller reads it rather than tests for it."""
+    admin = _Admin(tmp_path)
+    _, out, _ = admin.install(capsys, admin.payload())
+    assert json.loads(out)["evicted"] == []
+
+
+def test_an_install_that_reclaimed_room_names_what_it_evicted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deletion the operator did not ask for is reported, not left to be noticed.
+
+    The cap is shrunk to one resource's worth, because evicting against the real
+    512 MiB would mean writing 512 MiB. The second install is a different
+    language, which is exactly the case that used to be refused.
+    """
+    admin = _Admin(tmp_path)
+    monkeypatch.setattr(
+        main_module,
+        "ManagedOcrResources",
+        lambda root: ManagedOcrResources(root, capacity_bytes=len(BODY)),
+    )
+    admin.install(capsys, admin.payload(), language="deu")
+    other = BODY[:-1] + b"!"
+
+    code, out, err = admin.install(
+        capsys,
+        admin.payload(other, "other.bin"),
+        language="eng",
+        sha256=hashlib.sha256(other).hexdigest(),
+    )
+
+    assert code == 0, err
+    document = json.loads(out)
+    assert document["evicted"] == [
+        {
+            "language": "deu",
+            "engineVersion": "5.5.3",
+            "modelVersion": "tessdata_fast-4.1.0",
+            "byteSize": len(BODY),
+            "sha256": DIGEST,
+        }
+    ]
+    assert [
+        resource["identity"]["language"] for resource in document["resources"]
+    ] == ["eng"]
+
+
 def test_repeating_an_install_reports_that_nothing_changed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -240,6 +291,7 @@ def test_repeating_an_install_reports_that_nothing_changed(
     code, out, _ = admin.install(capsys, admin.payload())
     assert code == 0
     assert json.loads(out)["newlyInstalled"] is False
+    assert json.loads(out)["evicted"] == []
 
 
 def test_status_lists_the_installed_resource_with_its_pins(

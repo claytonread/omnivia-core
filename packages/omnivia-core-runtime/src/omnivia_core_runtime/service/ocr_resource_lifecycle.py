@@ -29,7 +29,12 @@ existence is what says a resource is installed.
 records it, and removal records the absence before the bytes go. A crash
 therefore leaves unreferenced bytes rather than a state entry claiming bytes that
 are not there: the state document never overstates what is installed.
-:meth:`ManagedOcrResources.reconcile` sweeps the other side.
+:meth:`ManagedOcrResources.reconcile` sweeps the other side. An installation that
+had to evict obeys both halves at once: the new payload is published first, one
+state write then drops the evicted entries and adds the new one, and only then do
+the evicted bytes go -- so every crash window leaves bytes nothing references
+rather than an entry over bytes that are gone, and the accounted total is never
+above the cap at any instant a reader could observe.
 
 **One operation at a time, across processes.** Every operation here spans two
 things -- resource bytes and the state document -- and neither alone is a coherent
@@ -69,22 +74,46 @@ arriving immediately after creates the root and completes, and the empty answer
 remains an accurate *before*. Reading the root after that decision is what would
 be incoherent, because the read would land in the middle of the install.
 
-**There is no eviction here, by choice.** §18.4 permits evicting *verified
-unpinned* resources, but names no ordering over them, and the state document
-records no recency or use that a deterministic policy could rank by. Inventing
-one would mean deleting a resource the operator installed on a rule the design
-never specified. So a full cache refuses the installation with
-:data:`REFUSAL_CAPACITY` -- §18.4's "defer the requested installation/update" and
-§14.5's **Language storage is full** -- and reports the capacity it needed.
-:meth:`ManagedOcrResources.remove` is the operator's explicit lever instead.
+**Eviction is bounded by what holds a set, not by what it is.** §18.4 permits
+evicting *verified unpinned* resource sets to make room, and that is every
+installed set, not only the older model revisions of the language arriving.
+Reclaiming only the superseded revisions would defer installations §18.4 says
+should proceed -- a language the operator has not recognised in months is exactly
+as evictable as yesterday's revision of this one -- and would make whether an
+install fits depend on which language it happens to be.
 
-That is also, exactly, why pinned resources never need defending from the cap:
-the only thing that could evict one is an eviction policy, and there is none.
-Capacity is spent by installing and reclaimed by removing, a pin occupies none of
-it and never causes an install, and a cache whose remaining room is held by pinned
-entries defers the next installation rather than taking those entries away. No
-path here cancels a pin to make room, and none exceeds the 512 MiB cap to avoid
-having to.
+§18.4 names no preference over the candidates, and the state document records no
+recency and no use to build one from. So the order is the one the cache already
+has: :attr:`~omnivia_core_runtime.service.ocr_resource_store.OcrResourceSetIdentity.stable_key`,
+which every state document is sorted by. That is arbitrary as a *preference* and
+is not dressed up as one; what it is instead is total, derived from the
+identities alone and therefore identical in every process, so the same cache
+always evicts the same sets. Not model-revision order, because a revision token
+such as ``5.5.3-rc1`` carries no ordering this module may assume, and not by
+timestamp, because a payload's mtime is not a thing this module wrote.
+
+So :meth:`ManagedOcrResources.install` reserves the declared size before it
+copies anything, and when the cap is in the way it takes the **shortest prefix**
+of the eligible candidates in that order whose bytes cover the shortfall. Never
+more sets than that prefix, and the prefix is a function of the cache and the
+installation alone. :meth:`ManagedOcrResources.remove` stays the operator's lever
+for taking a specific set away on purpose.
+
+A candidate is only a candidate once it is **verified** -- its bytes are read and
+digested before it is chosen, so a divergent or missing set is never spent as
+room it cannot supply and never silently deleted as though it were sound; the
+repair for one of those stays :meth:`ManagedOcrResources.reconcile`. And only
+once nothing holds it: a §18.4 pin and a live selection lease each make an exact
+identity unevictable, and no path here cancels either to make room. A pin
+occupies no capacity and never causes an install, so an installation blocked by
+pinned bytes is deferred rather than allowed to cancel the claim.
+
+When the safe reclaim is still not enough, the installation is deferred with
+:data:`REFUSAL_CAPACITY` -- §18.4's "defer the requested installation/update" and
+§14.5's **Language storage is full** -- carrying the bytes it needed and the
+bytes it could actually have had: the free capacity *plus* what it verified as
+reclaimable, rather than a figure that ignores either. The cap is never exceeded
+to avoid that refusal, and a deferral deletes nothing.
 
 **One selection, one directory.** The managed layout keeps each identity's bytes
 in their own directory so two model revisions of one language can coexist, which
@@ -305,7 +334,8 @@ REFUSAL_PAYLOAD: Final = "ocr_resource_payload_refused"
 #: The payload's length or digest is not the declared identity's.
 REFUSAL_VERIFICATION: Final = "ocr_resource_verification_failed"
 
-#: Installing would exceed the managed cap. §14.5's **Language storage is full**.
+#: Installing would exceed the managed cap and no eviction this module is allowed
+#: to make covers the shortfall. §14.5's **Language storage is full**.
 REFUSAL_CAPACITY: Final = "language_storage_full"
 
 #: An operation holds this exact identity, so its bytes may not be removed --
@@ -420,6 +450,12 @@ class ManagedOcrInstallation:
     ``newly_installed`` is false when the exact identity was already installed
     with matching bytes: that call published nothing and changed no state, which
     is what makes repeating an install safe.
+
+    ``evicted`` names the installed sets this call reclaimed to fit, in the order
+    it took them -- any language, not only the ones this identity supersedes.
+    Usually empty; never silent, because a resource the operator installed and
+    did not ask to have deleted is the one outcome of an accepted install they
+    have to be told about.
     """
 
     identity: OcrResourceSetIdentity
@@ -427,6 +463,7 @@ class ManagedOcrInstallation:
     newly_installed: bool
     installed_bytes: int
     available_bytes: int
+    evicted: tuple[OcrResourceSetIdentity, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1259,14 +1296,24 @@ class ManagedOcrResources:
         first, so a capacity refusal costs no copying.
 
         Nothing is substituted: the installation either serves this exact identity
-        or refuses. Another model version of the same language, installed or not,
-        is a different resource set and is neither consulted nor replaced.
+        or refuses. Another model version of the same language is a different
+        resource set and is never served in this one's place.
 
-        The whole of it -- the capacity check, the staging, the publication and
-        the state write -- runs under the coordination lock, which is what makes
-        the reservation a reservation. The arguments are validated first, so a
-        caller's malformed payload path is refused without contending for
-        anything and without creating a cache.
+        Any installed set may, however, be *reclaimed* for it. When the
+        reservation does not fit, :meth:`_reserve` takes the shortest prefix of
+        the eligible sets -- verified, unpinned and unleased, in stable-key order,
+        whatever their language -- whose bytes cover the shortfall, and the
+        installation is deferred with :data:`REFUSAL_CAPACITY` when no prefix
+        does. The victims are chosen before the payload is copied and dropped
+        only after it is published, so a payload that fails its own verification
+        leaves every installed set exactly where it stood, and whatever was
+        reclaimed is named in the result rather than deleted silently.
+
+        The whole of it -- the capacity check, the eviction, the staging, the
+        publication and the state write -- runs under the coordination lock, which
+        is what makes the reservation a reservation. The arguments are validated
+        first, so a caller's malformed payload path is refused without contending
+        for anything and without creating a cache.
         """
         if not isinstance(identity, OcrResourceSetIdentity):
             raise OcrResourceStoreError("identity must be an OcrResourceSetIdentity")
@@ -1283,15 +1330,19 @@ class ManagedOcrResources:
 
         installed_bytes = _installed_bytes(state)
         remaining = self._capacity_bytes - installed_bytes
+        evicted: tuple[OcrResourceSetIdentity, ...] = ()
+        live: set[str] = set()
         if identity.byte_size > remaining:
-            raise OcrResourceLifecycleRefused(
-                REFUSAL_CAPACITY,
-                f"installing {identity.byte_size} bytes would exceed the managed "
-                f"OCR resource cap of {self._capacity_bytes} bytes; "
-                f"{remaining} bytes remain",
-                required_bytes=identity.byte_size,
-                available_bytes=remaining,
-            )
+            # The lease view is settled before anything is chosen and reused for
+            # the projections below, which is safe because a lease is only ever
+            # taken under the coordination lock this call holds. It is read here
+            # rather than at the top because an installation that fits touches
+            # nothing a lease could be covering.
+            live = self._live_leases()
+            evicted = self._reserve(state, identity, remaining, live)
+            reclaimed = sum(entry.byte_size for entry in evicted)
+            installed_bytes -= reclaimed
+            remaining += reclaimed
 
         self._prepare(self._root)
         self._prepare(self.resources_root)
@@ -1328,25 +1379,129 @@ class ManagedOcrResources:
                 _discard(staging)
 
         try:
+            # One write for both halves of an eviction. The evicted entries stop
+            # being installed in the same document that starts installing this
+            # one, so the accounted total never passes through a value above the
+            # cap and a crash cannot leave the pair half applied. The pins are
+            # carried across untouched: a victim is unpinned by construction, and
+            # an installation that cancelled a pin to fit is exactly what §18.4
+            # forbids.
             self._store.save(
                 OcrResourceStoreState(
-                    entries=(*state.entries, identity), pins=state.pins
+                    entries=(
+                        *(entry for entry in state.entries if entry not in evicted),
+                        identity,
+                    ),
+                    pins=state.pins,
                 )
             )
         except BaseException:
             # The publication is undone, so a failed install leaves no usable
             # resource, and the state document is replaced atomically or not at
-            # all, so the previous state stands either way.
+            # all, so the previous state stands either way -- the evicted entries
+            # included, whose bytes are still exactly where they were.
             with suppress(OSError):
                 _discard(target)
             raise
+        if evicted:
+            # The entries are gone, so these bytes are already unreferenced and a
+            # failure here is work for reconciliation rather than a failed
+            # install. Every unheld projection goes first, for the reason
+            # :meth:`_remove` discards them: one holds a *hard link* to an evicted
+            # payload, which would both keep the reclaimed inode alive and leave
+            # the engine pointable at a resource set this cache no longer has.
+            self._discard_projections(live)
+            for entry in evicted:
+                with suppress(OSError):
+                    _discard(self.resource_directory(entry))
         return ManagedOcrInstallation(
             identity=identity,
             payload_path=self.payload_path(identity),
             newly_installed=True,
             installed_bytes=installed_bytes + identity.byte_size,
             available_bytes=remaining - identity.byte_size,
+            evicted=evicted,
         )
+
+    def _reserve(
+        self,
+        state: OcrResourceStoreState,
+        identity: OcrResourceSetIdentity,
+        remaining: int,
+        live: set[str],
+    ) -> tuple[OcrResourceSetIdentity, ...]:
+        """Which installed sets to reclaim so `identity` fits, or refuse.
+
+        Chooses only; nothing is deleted here, which is what lets a payload that
+        then fails its own verification leave the cache untouched.
+
+        The shortest prefix of :meth:`_reclaimable`'s order whose bytes cover the
+        shortfall, which is exactly what stopping at the first candidate that
+        covers it yields: one more candidate is only ever taken because the ones
+        before it were not enough. A shortfall no prefix covers is §18.4's
+        deferral, and it reports what an operator can act on: the bytes the
+        installation needed, and the bytes it could actually have had -- the free
+        capacity plus everything this call *verified* as reclaimable. Unverified
+        bytes are counted into neither, because room that cannot be proven is not
+        room -- which is why a deferral is the one path that digests every
+        installed set: an honest "could have had" has to have tried them all.
+        """
+        needed = identity.byte_size - remaining
+        chosen: list[OcrResourceSetIdentity] = []
+        reclaimable = 0
+        for candidate in self._reclaimable(state, live):
+            chosen.append(candidate)
+            reclaimable += candidate.byte_size
+            if reclaimable >= needed:
+                return tuple(chosen)
+        raise OcrResourceLifecycleRefused(
+            REFUSAL_CAPACITY,
+            f"installing {identity.byte_size} bytes would exceed the managed OCR "
+            f"resource cap of {self._capacity_bytes} bytes; {remaining} bytes "
+            f"remain and {reclaimable} further bytes could be reclaimed from "
+            f"installed resources nothing holds",
+            required_bytes=identity.byte_size,
+            available_bytes=remaining + reclaimable,
+        )
+
+    def _reclaimable(
+        self, state: OcrResourceStoreState, live: set[str]
+    ) -> Iterator[OcrResourceSetIdentity]:
+        """The sets it is safe to evict, in the order to take them.
+
+        Every installed set is a candidate, whatever its language: §18.4 makes
+        *verified unpinned* the whole of the test, and a cache that would only
+        reclaim the revisions an installation supersedes would defer installs the
+        design says should proceed. The identity being installed is not among
+        them -- an install of something already installed returned before this was
+        reached -- so nothing here can choose to delete the bytes it is making
+        room for.
+
+        The order is ``state.entries``' own, which
+        :class:`~omnivia_core_runtime.service.ocr_resource_store.OcrResourceStoreState`
+        sorts by stable key at construction: total, identity-derived and
+        therefore the same in every process reading the same cache.
+
+        Three exclusions, each of them a thing the design says is unevictable. A
+        §18.4 pin means a queued or executing operation durably holds the exact
+        identity. A live selection lease means an extraction is between resolving
+        those exact bytes and finishing with them. And a set whose bytes are
+        missing or no longer match its digest is *not* a safe victim: deleting it
+        would destroy the evidence :meth:`reconcile` quarantines for inspection,
+        and counting it as room would promise capacity its bytes cannot supply.
+
+        Verified last, because it is the only expensive test: the digest is read
+        over the whole payload, and this generator is consumed lazily, so a
+        shortfall covered by the first candidate costs one digest rather than one
+        per installed set.
+        """
+        pinned = {pin.identity for pin in state.pins}
+        leased = self._leased_inodes(live)
+        for entry in state.entries:
+            if entry in pinned or self._leased(entry, leased):
+                continue
+            if self._payload_matches(entry):
+                yield entry
 
     def _already_installed(
         self, identity: OcrResourceSetIdentity, state: OcrResourceStoreState
@@ -1511,9 +1666,11 @@ class ManagedOcrResources:
         admission would otherwise read them all.
 
         Pins occupy no capacity and are never a reason to install anything, so
-        this cannot exceed the managed cap. What it does is make the identities
-        unevictable, which is why a full cache then defers an installation with
-        :data:`REFUSAL_CAPACITY` rather than taking pinned bytes away to fit.
+        this cannot exceed the managed cap. What it does is make the exact
+        identities **unevictable**: :meth:`_reclaimable` excludes a pinned set
+        from the room an installation may reclaim, so an installation that cannot
+        fit around one is deferred with :data:`REFUSAL_CAPACITY` rather than
+        cancelling the claim to make space for itself.
         """
         selection = self._validated_selection(identities)
         with self.coordinated(create=False) as coordinated:

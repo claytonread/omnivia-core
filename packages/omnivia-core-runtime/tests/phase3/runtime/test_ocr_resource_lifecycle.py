@@ -10,9 +10,19 @@ has filled staging, and that a refusal leaves no resource, no staging and no
 change to the state document.
 
 For capacity (§17.3, END-02): that the cap is exactly 512 MiB, that installed
-bytes are accounted exactly, that installing up to the cap is accepted and one
-byte beyond it is refused, and that the refusal names the capacity it needed
-instead of evicting something to make room.
+bytes are accounted exactly, and that installing up to the cap is accepted.
+
+For eviction (§18.4, END-02): that an installation which does not fit reclaims
+*any* verified unpinned unleased set rather than only the revisions it
+supersedes; that the victims are the shortest prefix of the cache's own
+stable-key order, so the same cache always evicts the same sets whatever order
+it was built in and never one set more than the shortfall needed; that a pinned
+set, a leased set and a set whose bytes no longer match are each left alone and
+that the last of those is not counted as room either; that a shortfall no prefix
+covers defers the installation with the bytes it needed and the bytes it could
+actually have had, deleting nothing; that a payload which fails verification and
+a state write which fails leave every chosen victim installed with its bytes;
+and that repeating an install of something already installed reclaims nothing.
 
 For pins (§18.4, END-02): that a pinned identity cannot be removed and is never
 dropped by reconciliation even when its bytes have gone, and that a pin on one
@@ -370,6 +380,13 @@ def test_one_byte_past_the_cap_is_refused_with_the_capacity_it_needed(
 
 
 def test_a_capacity_refusal_evicts_nothing(tmp_path: Path) -> None:
+    """A deferral deletes nothing, even from an eligible candidate.
+
+    The installed set is verified, unpinned and unleased, so it is a legitimate
+    victim -- it is simply not a big enough one. An installation that cannot be
+    made to fit leaves the cache exactly as it found it rather than reclaiming
+    what it could and failing anyway.
+    """
     managed, installed = _installed(tmp_path, capacity_bytes=len(BODY))
     before = managed.store.state_path.read_bytes()
     with pytest.raises(OcrResourceLifecycleRefused) as refused:
@@ -404,6 +421,257 @@ def test_removing_a_resource_frees_its_capacity(tmp_path: Path) -> None:
 def test_a_malformed_capacity_is_refused(tmp_path: Path, capacity: object) -> None:
     with pytest.raises(OcrResourceStoreError):
         _managed(tmp_path, capacity_bytes=capacity)
+
+
+# --- eviction
+
+
+def _body(marker: str, size: int) -> bytes:
+    """Exactly `size` bytes, distinct for every marker these tests use."""
+    return (marker.encode("ascii") * size)[:size]
+
+
+def _filled(
+    tmp_path: Path, capacity: int, sizes: dict[str, int]
+) -> tuple[ManagedOcrResources, dict[str, OcrResourceSetIdentity]]:
+    """A cache of `capacity` bytes holding one verified set per named language.
+
+    The languages are what the stable key sorts by -- it begins with the language
+    token -- so a test names its expected victims by choosing their letters.
+    """
+    managed = _managed(tmp_path, capacity_bytes=capacity)
+    installed: dict[str, OcrResourceSetIdentity] = {}
+    for language, size in sizes.items():
+        body = _body(language, size)
+        identity = _identity(body, language=language)
+        managed.install(_payload(tmp_path, body, f"{language}.bin"), identity)
+        installed[language] = identity
+    return managed, installed
+
+
+def test_an_install_evicts_another_languages_resource_to_fit(tmp_path: Path) -> None:
+    """§18.4's test is *verified and unpinned*, not *the same language*.
+
+    Nothing about `deu` supersedes it or is superseded by `eng`; it is simply the
+    unheld room the cache has. Reclaiming only the revisions an installation
+    supersedes would defer this install with a cache full of resources nothing
+    was using.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+    body = _body("eng", 300)
+    arriving = _identity(body, language="eng")
+
+    outcome = managed.install(_payload(tmp_path, body, "arriving.bin"), arriving)
+
+    assert outcome.newly_installed is True
+    assert outcome.evicted == (installed["deu"],)
+    assert managed.store.load().entries == (arriving,)
+    assert managed.payload_path(arriving).read_bytes() == body
+    assert not managed.resource_directory(installed["deu"]).exists()
+    assert outcome.installed_bytes == 300
+    assert outcome.available_bytes == 100
+
+
+def test_an_install_takes_every_victim_the_shortfall_needs(tmp_path: Path) -> None:
+    """More than one, when one is not enough -- and no more than that."""
+    managed, installed = _filled(tmp_path, 400, {"ara": 100, "deu": 100, "eng": 100})
+    body = _body("spa", 250)
+    arriving = _identity(body, language="spa")
+
+    outcome = managed.install(_payload(tmp_path, body, "spa.bin"), arriving)
+
+    assert outcome.evicted == (installed["ara"], installed["deu"])
+    assert managed.store.load().entries == (installed["eng"], arriving)
+    assert managed.payload_path(installed["eng"]).read_bytes() == _body("eng", 100)
+    assert outcome.installed_bytes == 350
+    assert outcome.available_bytes == 50
+
+
+def test_the_victims_are_the_shortest_prefix_of_the_caches_own_order(
+    tmp_path: Path,
+) -> None:
+    """Stable-key order, taken until the shortfall is covered. Nothing cleverer.
+
+    `spa` alone would cover it in a single victim and leave more room, which is
+    what a size-aware policy would choose; there is no size-aware policy, because
+    the design names no preference and the state document records nothing to
+    build one from. What there is instead is an order every process reading this
+    cache computes identically -- so the same cache evicts the same two sets
+    whatever order an operator happened to install them in -- and a stop at the
+    first candidate that covers the shortfall, so the third is never taken.
+    """
+    sizes = {"ara": 50, "deu": 50, "spa": 300}
+    for index, order in enumerate(permutations(sizes)):
+        managed, installed = _filled(
+            tmp_path / f"run-{index}", 500, {name: sizes[name] for name in order}
+        )
+        body = _body("eng", 180)
+        arriving = _identity(body, language="eng")
+
+        outcome = managed.install(
+            _payload(tmp_path, body, f"eng-{index}.bin"), arriving
+        )
+
+        assert outcome.evicted == (installed["ara"], installed["deu"]), order
+        assert managed.store.load().entries == (arriving, installed["spa"]), order
+        assert outcome.installed_bytes == 480
+
+
+def test_a_pinned_resource_of_another_language_is_never_evicted(
+    tmp_path: Path,
+) -> None:
+    """The pin is what makes the identity unevictable, and it is not cancelled.
+
+    `deu` is the only candidate and the cache is exactly full without it, so the
+    installation is deferred -- the cap is not exceeded to avoid that, and the
+    claim the pin records is still there afterwards.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+    managed.pin("op-queued", (installed["deu"],))
+    body = _body("eng", 300)
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(
+            _payload(tmp_path, body, "eng.bin"), _identity(body, language="eng")
+        )
+
+    assert refused.value.code == REFUSAL_CAPACITY
+    assert refused.value.required_bytes == 300
+    assert refused.value.available_bytes == 100
+    assert managed.payload_path(installed["deu"]).read_bytes() == _body("deu", 300)
+    assert [pin.operation_id for pin in managed.store.load().pins] == ["op-queued"]
+
+
+def test_a_leased_resource_is_never_evicted_to_fit_an_installation(
+    tmp_path: Path,
+) -> None:
+    """An extraction holding these exact bytes outranks an install that wants them.
+
+    And the hold is the whole of the obstruction: the same installation fits the
+    moment the lease ends, which is what makes this a hold rather than a veto.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+    body = _body("eng", 300)
+    arriving = _identity(body, language="eng")
+
+    with managed.leased_selection([installed["deu"]]) as directory:
+        with pytest.raises(OcrResourceLifecycleRefused) as refused:
+            managed.install(_payload(tmp_path, body, "eng.bin"), arriving)
+        assert refused.value.code == REFUSAL_CAPACITY
+        assert refused.value.available_bytes == 100
+        assert directory.is_dir()
+        assert managed.payload_path(installed["deu"]).read_bytes() == _body("deu", 300)
+
+    outcome = managed.install(_payload(tmp_path, body, "eng.bin"), arriving)
+    assert outcome.evicted == (installed["deu"],)
+
+
+def test_a_divergent_resource_is_neither_evicted_nor_counted_as_room(
+    tmp_path: Path,
+) -> None:
+    """Bytes that stopped matching their digest are evidence, not capacity.
+
+    Deleting them would destroy exactly what reconciliation quarantines for
+    inspection, and counting them as reclaimable would promise room their bytes
+    cannot supply -- so the deferral reports only the free capacity.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+    tampered = _body("x", 300)
+    managed.payload_path(installed["deu"]).write_bytes(tampered)
+    body = _body("eng", 300)
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(
+            _payload(tmp_path, body, "eng.bin"), _identity(body, language="eng")
+        )
+
+    assert refused.value.code == REFUSAL_CAPACITY
+    assert refused.value.required_bytes == 300
+    assert refused.value.available_bytes == 100
+    assert managed.store.load().entries == (installed["deu"],)
+    assert managed.payload_path(installed["deu"]).read_bytes() == tampered
+
+
+def test_a_deferral_reports_the_bytes_it_could_actually_have_had(
+    tmp_path: Path,
+) -> None:
+    """Free capacity *plus* what was verified as reclaimable, not either alone.
+
+    An operator told "100 bytes available" would free one more resource and try
+    again; the honest figure is that even reclaiming everything unheld leaves
+    this installation short.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+    body = _body("eng", 420)
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(
+            _payload(tmp_path, body, "eng.bin"), _identity(body, language="eng")
+        )
+
+    assert refused.value.required_bytes == 420
+    assert refused.value.available_bytes == 400
+    assert managed.store.load().entries == (installed["deu"],)
+
+
+def test_a_payload_that_fails_verification_leaves_its_victims_installed(
+    tmp_path: Path,
+) -> None:
+    """The victims are chosen before the copy and dropped only after it is published."""
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+    body = _body("eng", 300)
+    arriving = _identity(body, language="eng")
+    before = managed.store.state_path.read_bytes()
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(_payload(tmp_path, _body("z", 300), "wrong.bin"), arriving)
+
+    assert refused.value.code == REFUSAL_VERIFICATION
+    assert managed.store.state_path.read_bytes() == before
+    assert managed.payload_path(installed["deu"]).read_bytes() == _body("deu", 300)
+    assert not managed.resource_directory(arriving).exists()
+
+
+def test_a_failed_state_write_leaves_its_victims_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One write carries both halves, so a failed one applies neither.
+
+    The arriving publication is undone and every victim is still installed with
+    its bytes -- never a cache that reclaimed the room and then lost the resource
+    it reclaimed it for.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+    body = _body("eng", 300)
+    arriving = _identity(body, language="eng")
+
+    def _refuse(_state: object) -> None:
+        raise OcrResourceStoreError("the state document could not be written")
+
+    monkeypatch.setattr(managed.store, "save", _refuse)
+    with pytest.raises(OcrResourceStoreError):
+        managed.install(_payload(tmp_path, body, "eng.bin"), arriving)
+    monkeypatch.undo()
+
+    assert managed.store.load().entries == (installed["deu"],)
+    assert managed.payload_path(installed["deu"]).read_bytes() == _body("deu", 300)
+    assert not managed.resource_directory(arriving).exists()
+    assert managed.inventory().installed_bytes == 300
+
+
+def test_repeating_an_install_of_a_full_cache_evicts_nothing(tmp_path: Path) -> None:
+    """Idempotence survives the cap: the exact identity is already there."""
+    managed, installed = _filled(tmp_path, 400, {"deu": 300, "eng": 100})
+    before = managed.store.state_path.read_bytes()
+
+    outcome = managed.install(
+        _payload(tmp_path, _body("deu", 300), "deu-again.bin"), installed["deu"]
+    )
+
+    assert outcome.newly_installed is False
+    assert outcome.evicted == ()
+    assert managed.store.state_path.read_bytes() == before
+    assert managed.payload_path(installed["eng"]).read_bytes() == _body("eng", 100)
 
 
 # --- refused payload paths

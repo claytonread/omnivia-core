@@ -8,10 +8,12 @@ each is stated as an outcome an unserialised build cannot produce:
 - two simultaneous installs of *different* resources both survive, rather than the
   second writing back a state document that never knew about the first (§18.4's
   state document never overstating or understating what is installed);
-- simultaneous installs against a cache with room for one of them end with exactly
-  one accepted and one **Language storage is full**, so the 512 MiB cap is never
-  silently exceeded by two callers each spending the same remaining capacity
-  (§17.3, §18.4, END-02);
+- simultaneous installs against a cache with room for one of them leave one
+  entry, because the second reclaims the first's bytes rather than adding to
+  them -- and when a pin puts the shortfall out of reclaiming reach, the second
+  is deferred with **Language storage is full** instead. Either way the 512 MiB
+  cap is never silently exceeded by two callers each spending the same remaining
+  capacity (§17.3, §18.4, END-02);
 - simultaneous installs of the *same* identity are deterministic: one publishes,
   the other reports that nothing changed, and neither destroys the other's
   publication nor reports the divergence refusal;
@@ -78,6 +80,10 @@ from phase2.harness import Barrier, ChildResult, spawn, wait
 #: last far longer than the barrier release that starts both children.
 BODY = b"managed-model-" * 4681
 OTHER_BODY = b"different-model" * 4369
+
+#: A small set installed and pinned before a race, so the room the children
+#: contend for is exactly what the other child has not taken.
+PINNED_BODY = b"pinned-model" * 2
 
 #: How long a contender is given to refuse, and the ceiling a bounded refusal has
 #: to come in under. Generously wider than the wait itself: the assertion is that
@@ -215,11 +221,18 @@ def test_two_simultaneous_distinct_installs_both_survive(tmp_path: Path) -> None
 def test_simultaneous_installs_cannot_both_spend_the_same_capacity(
     tmp_path: Path,
 ) -> None:
-    """Room for one: exactly one is accepted and the other is told it is full.
+    """Room for one: the second reclaims the first's bytes rather than adding to them.
 
-    Unserialised, both children read the same remaining capacity and both reserve
-    it, which is precisely §18.4's "never silently exceed the cap". The refusal is
-    the evidence that the second one saw the first's reservation.
+    Unserialised, both children read the same remaining capacity, neither sees
+    anything to evict and both install against it -- which is precisely §18.4's
+    "never silently exceed the cap" being broken, and would leave two entries
+    summing to nearly twice the cap. Serialised, whichever runs second finds the
+    first's entry, reclaims exactly it, and the cache ends with one.
+
+    The eviction is the evidence that the second one saw the first's reservation,
+    and it is the same evidence the refusal used to be before an installation
+    could reclaim anything: either way the second child acted on a cache the
+    first had already changed.
     """
     race = _Race(tmp_path)
     first = _identity(BODY)
@@ -241,16 +254,66 @@ def test_simultaneous_installs_cannot_both_spend_the_same_capacity(
     )
     reports = _reports(race.release_both(one, two, names=("one", "two")))
 
+    assert all(report.get("ok") for report in reports), reports
+    evicting = [report for report in reports if report.get("evicted")]
+    assert len(evicting) == 1, reports
+    loser, winner = (first, second) if evicting[0]["child"] == "two" else (second, first)
+    assert evicting[0]["evicted"] == [loser.stable_key], reports
+
+    managed = race.managed(capacity_bytes=capacity)
+    assert managed.store.load().entries == (winner,)
+    assert managed.inventory().installed_bytes <= capacity
+    assert not managed.resource_directory(loser).exists()
+
+
+def test_an_overlap_eviction_cannot_absorb_still_defers_rather_than_overflows(
+    tmp_path: Path,
+) -> None:
+    """Room for the smaller one only, and a pinned entry holding the rest.
+
+    The pinned set is unevictable, so the only room either child can reclaim is
+    the other child's entry -- and that is one byte short of what `two` needs.
+    So `two` is deferred with **Language storage is full** whichever order they
+    run in: it refuses outright when it goes first, and refuses against `one`'s
+    entry when it goes second, which is the ordering an unserialised build would
+    have let through by spending room `one` had already taken.
+    """
+    race = _Race(tmp_path)
+    first = _identity(BODY)
+    second = _identity(OTHER_BODY, language="deu")
+    sitting = _identity(PINNED_BODY, language="fra")
+    capacity = len(PINNED_BODY) + len(BODY)
+    managed = race.managed(capacity_bytes=capacity)
+    managed.install(_payload(tmp_path, PINNED_BODY, "pinned.bin"), sitting)
+    managed.pin("op-queued", (sitting,))
+
+    one = race.start(
+        "one",
+        action="install",
+        capacity=capacity,
+        payload=str(_payload(tmp_path, BODY, "a.bin")),
+        identity=_identity_fields(first),
+    )
+    two = race.start(
+        "two",
+        action="install",
+        capacity=capacity,
+        payload=str(_payload(tmp_path, OTHER_BODY, "b.bin")),
+        identity=_identity_fields(second),
+    )
+    reports = _reports(race.release_both(one, two, names=("one", "two")))
+
     accepted = [report for report in reports if report.get("ok")]
     refused = [report for report in reports if not report.get("ok")]
     assert len(accepted) == 1, reports
     assert len(refused) == 1, reports
     assert refused[0].get("code") == REFUSAL_CAPACITY, refused
+    assert accepted[0].get("evicted") == [], reports
 
     managed = race.managed(capacity_bytes=capacity)
-    entries = managed.store.load().entries
-    assert len(entries) == 1, entries
+    assert set(managed.store.load().entries) == {sitting, first}
     assert managed.inventory().installed_bytes <= capacity
+    assert managed.payload_path(sitting).read_bytes() == PINNED_BODY
 
 
 def test_simultaneous_installs_of_one_identity_are_deterministic(
