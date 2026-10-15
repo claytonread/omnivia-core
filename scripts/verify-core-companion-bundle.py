@@ -14,22 +14,26 @@ manifest.
 
 Coherence and release eligibility are reported separately, because only the
 first can be answered locally. Signing and notarisation are never read from a
-file: pass `--expected-team-id` and `--expected-requirement`, the identity the
-real release owner says this candidate must carry, and this gate runs `codesign
---verify --deep --strict`, `codesign --verify -R=`, `codesign --display` on
-every component and then `spctl --assess` and `xcrun stapler validate` on the
-containing app. Only all of those succeeding reports `verified`. Off macOS, or
-with a tool missing, every one of them fails and the candidate stays unverified.
+file, and the identity a candidate is checked against is never taken from this
+command line: it is `REPOSITORY_SIGNING_AUTHORITY` in the packaging module,
+reviewed configuration owned by the repository. There is no flag by which a
+caller nominates the Team ID or designated requirement its own candidate must
+satisfy, because a caller-chosen expected identity verifies nothing.
 
-A coherent, verified candidate is still not release eligible today: no
-repository authority binds an owner for the app's update, so the manifest
-declares that owner unbound and this gate refuses eligibility until an explicit
-repository authority changes that binding (WP-00 binding ledger row 13).
+That constant is `None` today -- no designated signing identity exists in this
+repository, and no repository authority binds an owner for the app's update
+(WP-00 binding ledger row 13). So the platform authorities are not run at all,
+signing verification reports `unavailable`, and no candidate is release
+eligible. A reviewed change binding both makes this gate run `codesign --verify
+--deep --strict`, `codesign --verify -R=`, `codesign --display` on every
+component and then `spctl --assess` and `xcrun stapler validate` on the
+containing app; only all of those succeeding reports `verified`, and off macOS
+or with a tool missing every one of them fails.
+
 `--require-release-eligible` turns each remaining blocker into a finding, which
 is how release qualification is run against the same gate used locally.
 
     scripts/verify-core-companion-bundle.py CANDIDATE
-        [--expected-team-id TEAMID --expected-requirement REQ]
         [--require-release-eligible] [--json]
 
 Exit codes: ``0`` clean, ``1`` findings or unusable input, ``2`` bad usage.
@@ -72,34 +76,15 @@ def _builder() -> ModuleType:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("candidate", type=Path)
-    parser.add_argument("--expected-team-id")
-    parser.add_argument("--expected-requirement")
     parser.add_argument("--require-release-eligible", action="store_true")
     parser.add_argument("--json", action="store_true")
     arguments = parser.parse_args(argv)
 
     builder = _builder()
-    authority = None
-    if (arguments.expected_team_id is None) != (arguments.expected_requirement is None):
-        # Half an expected identity is not an expected identity: a requirement
-        # without a team, or a team without a requirement, would check less than
-        # the release owner asked for.
-        parser.error("--expected-team-id and --expected-requirement go together")
-    if arguments.expected_team_id is not None:
-        try:
-            authority = builder.SigningAuthority(
-                team_identifier=arguments.expected_team_id,
-                requirement=arguments.expected_requirement,
-            )
-        except builder.PackagingError as error:
-            print(f"expected signing identity refused: {error}", file=sys.stderr)
-            return 2
-
     report = builder.verify_candidate(
         # Absolute, not resolved: resolving would follow a symlinked candidate
         # root, which the verifier exists to refuse.
         arguments.candidate.absolute(),
-        signing_authority=authority,
         require_release_eligible=arguments.require_release_eligible,
     )
     if arguments.json:

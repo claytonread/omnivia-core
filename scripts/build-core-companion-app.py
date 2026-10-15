@@ -8,9 +8,13 @@ the fail-closed gate behind `scripts/verify-core-companion-bundle.py`.
 
 That gate reports two separate verdicts. Coherence is local and answerable here.
 Release eligibility is not: it needs `codesign`, `spctl` and `stapler` to
-succeed over the exact candidate against an expected identity the release owner
-supplies, and an app update owner that repository authority has bound. Neither
-can be declared in the manifest or in any caller-authored file.
+succeed over the exact candidate against the expected identity
+`REPOSITORY_SIGNING_AUTHORITY` declares, and an app update owner that repository
+authority has bound. Neither can be declared in the manifest, in any
+caller-authored file, or in any argument a caller passes: the expected identity
+is reviewed configuration in this module and nothing else, and today it is
+`None`, so signing verification is unavailable and no candidate is release
+eligible.
 """
 
 from __future__ import annotations
@@ -415,10 +419,12 @@ def build_companion_app(
 class SigningAuthority:
     """What the release owner says this candidate must be signed as.
 
-    Both halves come from the real release owner, never from the candidate: the
-    expected Apple Team ID and the designated-requirement expression that
-    `codesign -R=` must be satisfied by. A candidate cannot supply, weaken or
-    imply either one.
+    Both halves come from the real release owner, never from the candidate and
+    never from a caller: the expected Apple Team ID and the
+    designated-requirement expression that `codesign -R=` must be satisfied by.
+    The only instance this gate verifies against is
+    `REPOSITORY_SIGNING_AUTHORITY` below. Constructing one elsewhere -- in a
+    test, in a one-off script -- checks nothing and reaches no verdict.
     """
 
     team_identifier: str
@@ -431,10 +437,41 @@ class SigningAuthority:
             raise PackagingError("expected designated requirement refused")
 
 
+# The expected signing identity this gate checks against, and the only identity
+# it will ever check against: repository-owned reviewed configuration, with the
+# provenance of the binding recorded here. It is `None` because no such identity
+# exists to record. WP-00 binding ledger row 13: "No designated signing identity
+# or production signing exists in this repository: the bundle is unsigned and
+# qualification-only", and signing identities and the production signing
+# pipeline are established outside this repository.
+#
+# So there is nothing to verify a candidate against, and `verify_candidate`
+# takes no argument by which a caller could supply one. Binding this is the same
+# reviewed change, citing the same repository authority, that binds
+# `UPDATE_OWNER`: an expected identity is the release owner's statement, and
+# row 13 leaves that owner unestablished.
+REPOSITORY_SIGNING_AUTHORITY: Final[SigningAuthority | None] = None
+
+
+def _repository_signing_authority() -> SigningAuthority | None:
+    """The identity to verify against, or `None` when there is none.
+
+    The two bindings go together or not at all: while the app's update owner is
+    externally unbound there is no release owner to have named an expected
+    identity, so signing verification stays unavailable even if this constant
+    were populated on its own.
+    """
+
+    if not APP_UPDATE_OWNER_BOUND:
+        return None
+    return REPOSITORY_SIGNING_AUTHORITY
+
+
 # One platform signing authority: the argv to run, and the exit status and
-# combined output it produced. Injectable so unit tests can drive the parsing
-# and the refusal paths; production always uses `_run_signing_command`, which is
-# the only thing that can make a candidate release eligible.
+# combined output it produced. A parameter of the private `_verify_signing`
+# only, so unit tests can drive the parsing and the refusal paths. No public
+# function takes one: `verify_candidate` always runs `_run_signing_command`,
+# which is the only thing that can make a candidate release eligible.
 CommandRunner = Callable[[Sequence[str]], tuple[int, str]]
 
 
@@ -469,7 +506,12 @@ class VerificationReport:
     `release_eligible` is the release question, and it is a strictly narrower
     one: coherent, *and* signing verified by the platform authorities run over
     this candidate, *and* an app update owner bound by repository authority.
-    `signature_status` is `unverified` unless those commands all succeeded.
+
+    `signature_status` is `unavailable` when no repository-bound expected
+    identity exists to check against, so the authorities were never run -- the
+    state this repository is in today. It is `unverified` when they ran and any
+    one of them failed or could not be reached, and `verified` only when all of
+    them succeeded.
     """
 
     findings: tuple[str, ...]
@@ -483,7 +525,7 @@ class VerificationReport:
 
 
 def _refused(finding: str) -> VerificationReport:
-    return VerificationReport((finding,), False, "unverified", False)
+    return VerificationReport((finding,), False, "unavailable", False)
 
 
 def _read_plist(path: Path) -> dict[str, object] | None:
@@ -540,17 +582,18 @@ def _verify_signing(
     Nothing is taken on a caller's word. The verdict is the exit status of
     `codesign`, `spctl` and `stapler` run over the exact bundles inside
     `candidate`: a static seal and designated-identity check on every component
-    against the release owner's expected Team ID and designated requirement,
+    against the repository-bound expected Team ID and designated requirement,
     then the Gatekeeper assessment and the notarisation staple on the containing
     app. Every failure, and every authority that could not be run at all, is an
     explicit finding; none of them can report `verified`.
 
     No authority to check against is not a finding -- a local qualification
-    candidate is legitimately unsigned -- but it reports `unverified`.
+    candidate is legitimately unsigned -- but nothing is run and nothing is
+    claimed: it reports `unavailable`.
     """
 
     if authority is None:
-        return "unverified", False, []
+        return "unavailable", False, []
     findings: list[str] = []
 
     def check(command: list[str], label: str) -> str | None:
@@ -597,11 +640,7 @@ def _verify_signing(
 
 
 def verify_candidate(
-    candidate: Path,
-    *,
-    signing_authority: SigningAuthority | None = None,
-    require_release_eligible: bool = False,
-    run: CommandRunner | None = None,
+    candidate: Path, *, require_release_eligible: bool = False
 ) -> VerificationReport:
     """Validate an assembled candidate against its component-set manifest.
 
@@ -609,10 +648,13 @@ def verify_candidate(
     unmanaged or duplicated member is a finding, and there is no skip path. No
     finding reproduces bytes; each names a component role or a relative path.
 
-    `signing_authority` is the release owner's expected identity. Supplying it
-    makes this gate run the platform signing authorities over the candidate;
-    omitting it leaves the signature `unverified`. `run` exists so unit tests can
-    drive those authorities' outcomes.
+    The candidate path and `require_release_eligible` are the whole input. The
+    expected signing identity is not a parameter: it comes from
+    `REPOSITORY_SIGNING_AUTHORITY` and the update-owner binding, so no caller
+    can nominate the identity its own candidate is checked against, and neither
+    can a caller substitute the commands that check it. While that constant is
+    `None` the platform authorities are not run, the signature is `unavailable`
+    and no candidate is release eligible.
     """
 
     if not candidate.is_absolute() or candidate.is_symlink() or not candidate.is_dir():
@@ -784,14 +826,21 @@ def verify_candidate(
     # is not an incoherent candidate, and a clean candidate does not excuse one.
     coherence_ok = not findings
     signature_status, signed, signing_findings = _verify_signing(
-        candidate, signing_authority, run or _run_signing_command
+        candidate, _repository_signing_authority(), _run_signing_command
     )
     findings.extend(signing_findings)
 
     blockers: list[str] = []
     if not coherence_ok:
         blockers.append("not release eligible: the candidate is not coherent")
-    if not signed:
+    if signature_status == "unavailable":
+        # Nothing was run, so nothing failed; what is missing is the expected
+        # identity itself, and only a reviewed repository change supplies it.
+        blockers.append(
+            "not release eligible: signing verification is unavailable -- no "
+            "repository authority binds an expected signing identity"
+        )
+    elif not signed:
         blockers.append(
             "not release eligible: signing is not verified by the platform "
             "authorities over this candidate"

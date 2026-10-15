@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import plistlib
 import shutil
@@ -269,6 +270,30 @@ def _authority(module: ModuleType, **overrides: str) -> object:
     )
 
 
+def _bind_repository_authority(
+    module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    run: Callable[[Sequence[str]], tuple[int, str]] | None = None,
+    *,
+    owner: bool = True,
+    authority: bool = True,
+) -> None:
+    """Stand in for the reviewed repository change that binds a release owner.
+
+    Both halves are module constants, and that is the whole point: a test can
+    only reach them the way a reviewer does -- by changing this repository --
+    never through an argument, a keyword or a flag. `run` stands in for the
+    platform tools, which cannot be made to report a real Developer ID
+    signature in a test, and it is likewise reachable only from here.
+    """
+
+    monkeypatch.setattr(module, "APP_UPDATE_OWNER_BOUND", owner)
+    if authority:
+        monkeypatch.setattr(module, "REPOSITORY_SIGNING_AUTHORITY", _authority(module))
+    if run is not None:
+        monkeypatch.setattr(module, "_run_signing_command", run)
+
+
 def _runner(
     *,
     refuses: str | None = None,
@@ -372,7 +397,8 @@ def test_verifier_accepts_a_coherent_unsigned_set_without_calling_it_releasable(
     # Coherence is the local verdict and it is clean. Release eligibility is a
     # strictly narrower question and the answer is no.
     assert report.coherence_ok is True
-    assert report.signature_status == "unverified"
+    # No repository authority binds an expected identity, so nothing was run.
+    assert report.signature_status == "unavailable"
     assert report.release_eligible is False
 
 
@@ -386,8 +412,8 @@ def test_release_qualification_names_every_blocker_on_an_unsigned_candidate(
     assert report.coherence_ok is True
     assert report.findings == (
         (
-            "not release eligible: signing is not verified by the platform "
-            "authorities over this candidate"
+            "not release eligible: signing verification is unavailable -- no "
+            "repository authority binds an expected signing identity"
         ),
         "not release eligible: the app update owner is not bound by repository authority",
     )
@@ -444,15 +470,17 @@ def test_signing_verification_runs_the_platform_authorities_over_the_candidate(
     ],
 )
 def test_a_failing_platform_authority_is_an_explicit_finding(
-    tmp_path: Path, kwargs: dict[str, object], finding: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kwargs: dict[str, object],
+    finding: str,
 ) -> None:
     module = _module()
     candidate = _candidate(tmp_path, module)
     run, _ = _runner(**kwargs)  # type: ignore[arg-type]
+    _bind_repository_authority(module, monkeypatch, run)
 
-    report = module.verify_candidate(
-        candidate, signing_authority=_authority(module), run=run
-    )
+    report = module.verify_candidate(candidate)
     assert finding in report.findings
     assert report.signature_status == "unverified"
     assert report.release_eligible is False
@@ -460,67 +488,66 @@ def test_a_failing_platform_authority_is_an_explicit_finding(
     assert report.coherence_ok is True
 
 
-def test_verified_signing_still_cannot_qualify_an_unbound_update_owner(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("owner", "authority"),
+    [(False, False), (True, False), (False, True)],
+)
+def test_only_the_repository_bound_authority_can_reach_eligibility(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner: bool, authority: bool
 ) -> None:
-    """Every platform authority succeeded, and the candidate is still refused.
+    """Partly bound is unavailable, with the platform tools reporting success.
 
-    WP-00 row 13 leaves the app's update and installer owner unestablished, so
-    there is no release eligibility to grant yet.
+    The runner below says every authority passed. It changes nothing: without
+    both the expected identity and the update owner bound by repository
+    authority there is nothing to check a candidate against, so the commands
+    are never run and no signature is reported. `(False, False)` is this
+    repository today (WP-00 binding ledger row 13).
     """
     module = _module()
     candidate = _candidate(tmp_path, module)
-    run, _ = _runner()
+    run, calls = _runner()
+    _bind_repository_authority(
+        module, monkeypatch, run, owner=owner, authority=authority
+    )
 
-    report = module.verify_candidate(
-        candidate,
-        signing_authority=_authority(module),
-        require_release_eligible=True,
-        run=run,
-    )
-    assert report.signature_status == "verified"
+    report = module.verify_candidate(candidate, require_release_eligible=True)
+    assert calls == []
     assert report.coherence_ok is True
+    assert report.signature_status == "unavailable"
     assert report.release_eligible is False
-    assert report.findings == (
-        "not release eligible: the app update owner is not bound by repository authority",
-    )
+    assert (
+        "not release eligible: signing verification is unavailable -- no "
+        "repository authority binds an expected signing identity"
+    ) in report.findings
 
 
 def test_eligibility_needs_coherence_signing_and_a_bound_update_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With the update owner bound by authority, the other two still gate."""
+    """With both bindings made by authority, coherence and signing still gate."""
     module = _module()
     candidate = _candidate(tmp_path, module)
-    monkeypatch.setattr(module, "APP_UPDATE_OWNER_BOUND", True)
     run, _ = _runner()
+    _bind_repository_authority(module, monkeypatch, run)
 
-    report = module.verify_candidate(
-        candidate,
-        signing_authority=_authority(module),
-        require_release_eligible=True,
-        run=run,
-    )
+    report = module.verify_candidate(candidate, require_release_eligible=True)
     assert report.findings == ()
+    assert report.signature_status == "verified"
     assert report.release_eligible is True
 
     # Signing alone removed.
     refusing, _ = _runner(refuses="stapler")
-    report = module.verify_candidate(
-        candidate, signing_authority=_authority(module), run=refusing
-    )
+    monkeypatch.setattr(module, "_run_signing_command", refusing)
+    report = module.verify_candidate(candidate)
+    assert report.signature_status == "unverified"
     assert report.release_eligible is False
 
     # Coherence alone removed.
+    monkeypatch.setattr(module, "_run_signing_command", run)
     (candidate / "OmniVia Core.app/Contents/MacOS/omnivia-core-status-menu").write_bytes(
         b"tampered"
     )
-    report = module.verify_candidate(
-        candidate,
-        signing_authority=_authority(module),
-        require_release_eligible=True,
-        run=run,
-    )
+    report = module.verify_candidate(candidate, require_release_eligible=True)
     assert report.coherence_ok is False
     assert report.signature_status == "verified"
     assert report.release_eligible is False
@@ -528,6 +555,47 @@ def test_eligibility_needs_coherence_signing_and_a_bound_update_owner(
         "component executable digest mismatch: companion",
         "not release eligible: the candidate is not coherent",
     )
+
+
+def test_the_expected_signing_identity_is_not_caller_selectable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller cannot nominate the identity its own candidate is checked against.
+
+    There is no keyword for an expected identity and none for the commands that
+    check it, so the two injection paths a production caller could reach are
+    gone. Constructing a `SigningAuthority` is still possible -- it is how the
+    repository declares its own -- and a caller's instance verifies nothing.
+    """
+    module = _module()
+    candidate = _candidate(tmp_path, module)
+    run, calls = _runner()
+
+    assert set(inspect.signature(module.verify_candidate).parameters) == {
+        "candidate",
+        "require_release_eligible",
+    }
+    for rejected in (
+        {"signing_authority": _authority(module)},
+        {"expected_team_id": TEAM_ID, "expected_requirement": REQUIREMENT},
+        {"run": run},
+        {"authority": _authority(module), "run": run},
+    ):
+        with pytest.raises(TypeError):
+            module.verify_candidate(candidate, **rejected)
+    assert calls == []
+
+    # The repository's own constant is what is read, and it is unbound; a
+    # caller's instance of the same type is inert even with the update owner
+    # bound and the platform tools reporting success.
+    assert module.REPOSITORY_SIGNING_AUTHORITY is None
+    assert module._repository_signing_authority() is None
+    _bind_repository_authority(module, monkeypatch, run, authority=False)
+    assert module._repository_signing_authority() is None
+    report = module.verify_candidate(candidate, require_release_eligible=True)
+    assert calls == []
+    assert report.signature_status == "unavailable"
+    assert report.release_eligible is False
 
 
 def test_declarative_signing_evidence_has_no_path_into_the_verdict(
@@ -555,23 +623,26 @@ def test_declarative_signing_evidence_has_no_path_into_the_verdict(
 
     (candidate / "signature-evidence.json").write_text(json.dumps(forged), encoding="ascii")
     report = module.verify_candidate(candidate, require_release_eligible=True)
-    assert report.signature_status == "unverified"
+    assert report.signature_status == "unavailable"
     assert report.release_eligible is False
     assert report.findings == (
         (
-            "not release eligible: signing is not verified by the platform "
-            "authorities over this candidate"
+            "not release eligible: signing verification is unavailable -- no "
+            "repository authority binds an expected signing identity"
         ),
         "not release eligible: the app update owner is not bound by repository authority",
     )
 
 
-def test_no_signing_authority_runs_no_command_and_claims_nothing(tmp_path: Path) -> None:
+def test_no_signing_authority_runs_no_command_and_claims_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = _module()
     run, calls = _runner()
-    report = module.verify_candidate(_candidate(tmp_path, module), run=run)
+    monkeypatch.setattr(module, "_run_signing_command", run)
+    report = module.verify_candidate(_candidate(tmp_path, module))
     assert calls == []
-    assert report.signature_status == "unverified"
+    assert report.signature_status == "unavailable"
     assert report.release_eligible is False
 
 
@@ -1032,7 +1103,7 @@ def test_verifier_cli_is_fail_closed_and_reports_without_rewriting(tmp_path: Pat
         "coherence_ok": True,
         "findings": [],
         "release_eligible": False,
-        "signature_status": "unverified",
+        "signature_status": "unavailable",
     }
 
     required = subprocess.run(
@@ -1042,37 +1113,43 @@ def test_verifier_cli_is_fail_closed_and_reports_without_rewriting(tmp_path: Pat
         check=False,
     )
     assert required.returncode == 1
-    assert "signing is not verified by the platform authorities" in required.stderr
+    assert "signing verification is unavailable" in required.stderr
     assert "the app update owner is not bound by repository authority" in required.stderr
 
-    # The expected identity is the release owner's, and both halves of it are
-    # required together.
-    half = subprocess.run(
-        [sys.executable, "-I", str(cli), str(candidate), "--expected-team-id", TEAM_ID],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert half.returncode == 2
-    assert "go together" in half.stderr
-
-    bogus = subprocess.run(
+    # There is no flag by which a caller names the identity its own candidate is
+    # checked against, with or without the release-eligibility demand.
+    for nominated in (
+        ["--expected-team-id", TEAM_ID],
+        ["--expected-requirement", REQUIREMENT],
+        ["--expected-team-id", TEAM_ID, "--expected-requirement", REQUIREMENT],
         [
-            sys.executable,
-            "-I",
-            str(cli),
-            str(candidate),
+            "--require-release-eligible",
             "--expected-team-id",
-            "not-a-team",
+            TEAM_ID,
             "--expected-requirement",
             REQUIREMENT,
         ],
+    ):
+        refused = subprocess.run(
+            [sys.executable, "-I", str(cli), str(candidate), *nominated],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert refused.returncode == 2
+        assert "unrecognized arguments" in refused.stderr
+        assert "verified" not in refused.stdout
+
+    # Nor does the help text offer one.
+    helped = subprocess.run(
+        [sys.executable, "-I", str(cli), "--help"],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert bogus.returncode == 2
-    assert "expected signing identity refused" in bogus.stderr
+    assert helped.returncode == 0
+    assert "--expected-team-id" not in helped.stdout
+    assert "--expected-requirement" not in helped.stdout
 
     # There is no flag by which a caller-authored file can report a signature.
     forged = tmp_path / "evidence.json"

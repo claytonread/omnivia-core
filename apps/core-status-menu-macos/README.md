@@ -93,29 +93,39 @@ That is the *coherence* verdict, and it is the useful one for an unsigned
 qualification build: a clean unsigned candidate exits `0` with `coherence_ok`
 true and `release_eligible` false.
 
-Signing and notarisation are never read from a file. Pass the identity the real
-release owner says the candidate must carry, and the gate runs the platform
-authorities over the exact candidate:
+Signing and notarisation are never read from a file, and the expected identity
+is never taken from the caller. There is no flag for a Team ID or a designated
+requirement: an identity the invoking caller chooses verifies nothing, so the
+only identity the gate checks against is `REPOSITORY_SIGNING_AUTHORITY` in
+`scripts/build-core-companion-app.py` — reviewed configuration owned by this
+repository, with the provenance of the binding recorded beside it.
+
+That constant is `None` today, because no designated signing identity exists in
+this repository (WP-00 binding ledger row 13). So **signing verification is
+unavailable**: the platform authorities are not run at all, the gate reports
+`signature_status: unavailable`, and no candidate is release eligible. Binding
+it is the same reviewed change, citing the same repository authority, that binds
+`UPDATE_OWNER`; while the app's update owner stays `externally_unbound`, signing
+verification stays unavailable even if the constant were populated on its own.
+
+Once both are bound by that authority, the gate runs the platform authorities
+over the exact candidate: per component `codesign --verify --deep --strict`,
+`codesign --verify -R=<requirement>` and `codesign --display --verbose=4` (whose
+`TeamIdentifier` must equal the expected one), then `spctl --assess` and `xcrun
+stapler validate` on the containing app. Only all of those succeeding reports
+`verified`. Off macOS, or with any of those tools missing, each one fails and the
+candidate stays `unverified`.
+
+Release eligibility is therefore unreachable here today, by design:
 
 ```bash
 python scripts/verify-core-companion-bundle.py /absolute/path/to/candidate \
-  --expected-team-id TEAMID1234 \
-  --expected-requirement 'anchor apple generic and certificate leaf[subject.OU] = "TEAMID1234"' \
   --require-release-eligible
 ```
 
-Per component it runs `codesign --verify --deep --strict`, `codesign --verify
--R=<requirement>` and `codesign --display --verbose=4` (whose `TeamIdentifier`
-must equal the expected one), then `spctl --assess` and `xcrun stapler validate`
-on the containing app. Only all of those succeeding reports `verified`. Off
-macOS, or with any of those tools missing, each one fails and the candidate
-stays `unverified`.
-
-A coherent, verified candidate is still **not** release eligible today: the
-app's update owner is unbound, so the gate refuses eligibility until an explicit
-repository authority binds one and `UPDATE_OWNER` is changed to match.
-`--require-release-eligible` turns each remaining blocker into a finding and a
-non-zero exit.
+`--require-release-eligible` turns each remaining blocker — the unavailable
+signing verification and the unbound update owner — into a finding and a
+non-zero exit. That is the same gate release qualification runs.
 
 The bundle remains explicitly `qualification_only` until each
 extension and the containing app are signed with the entitlements under
