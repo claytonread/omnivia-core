@@ -247,16 +247,201 @@ final class CaptureActivityStoreTests: XCTestCase {
         let records = try subject.observe(queue: queue.allEntries(), runs: [frozen], now: now)
 
         XCTAssertEqual(records.map(\.fact), [.processing, .failed, .planned, .stopped])
-        XCTAssertEqual(records.filter { $0.fact.isResolved }.count, 3)
+        XCTAssertEqual(
+            records.filter { $0.fact.isResolved }.count,
+            2,
+            "an item Core merely accepted for processing has resolved nothing here"
+        )
         XCTAssertEqual(
             records.filter(\.isReceipt).map(\.itemID),
-            ["item-run-1-0", "item-run-1-3"],
-            "a failed member its run can retry is unresolved work, not a receipt"
+            ["item-run-1-3"],
+            "an accepted item and a failed member its run can retry are both unresolved work"
         )
         XCTAssertEqual(records.filter { $0.fact.needsAttention }.map(\.itemID), ["item-run-1-1"])
     }
 
+    /// A queue holding one item Core has accepted for processing.
+    private func acceptedQueue(at root: URL, item: String = "item-1") throws -> CaptureIntentQueue {
+        let queue = try CaptureIntentQueue(root: root, gate: PublicationGate())
+        let payload = Data("payload".utf8)
+        try queue.enqueue(intent: try intent(item: item, payload: payload), payload: payload)
+        _ = try queue.beginStage(
+            itemID: item,
+            requestDigest: stageDigest,
+            descriptorDigest: descriptorDigest
+        )
+        _ = try queue.markAdmitted(itemID: item, attemptGeneration: 1, captureID: captureID)
+        return queue
+    }
+
+    // MARK: - Ledger disagreement
+
+    func testAMemberTheQueueDoesNotHoldIsAnUnknownOutcomeRatherThanAPlan() throws {
+        let subject = try store(at: try temporaryDirectory("activity"))
+        // The run ledger says these two were published and admitted, but the
+        // queue holds no entry for either. Nothing here can say what was sent.
+        let frozen = run(members: [
+            member(index: 0, state: .published),
+            member(index: 1, state: .admitted),
+            member(index: 2, state: .planned),
+        ])
+
+        let records = try subject.observe(queue: [], runs: [frozen], now: now)
+
+        XCTAssertEqual(
+            records.map(\.fact),
+            [.checking, .checking, .planned],
+            "a missing queue entry is a disagreement, not proof that nothing was sent"
+        )
+        XCTAssertEqual(
+            records.filter { $0.fact.needsAttention }.map(\.itemID),
+            ["item-run-1-0", "item-run-1-1"]
+        )
+        XCTAssertTrue(records.allSatisfy { !$0.isReceipt })
+        XCTAssertTrue(records.allSatisfy { !$0.fact.isResolved })
+        // The frozen identity is kept exactly, and no attempt, capture id or
+        // replacement key is invented for a disagreement this side cannot settle.
+        XCTAssertEqual(records[0].itemID, "item-run-1-0")
+        XCTAssertEqual(records[0].operationKey, "operation-run-1-0")
+        XCTAssertEqual(records[0].memberID, "member-run-1-0")
+        XCTAssertEqual(records[0].manifestRevision, "manifest-1")
+        XCTAssertEqual(records[0].attemptGeneration, 0)
+        XCTAssertNil(records[0].attemptOperationKey)
+        XCTAssertNil(records[0].admittedCaptureID)
+        XCTAssertNil(records[0].resolvedAt)
+        // Clearing and both retention bounds leave it alone.
+        XCTAssertEqual(try subject.clearReceipts(), 0)
+        XCTAssertEqual(
+            try subject.observe(
+                queue: [],
+                runs: [frozen],
+                now: now.addingTimeInterval(31 * 24 * 60 * 60)
+            ).map(\.fact),
+            [.checking, .checking, .planned]
+        )
+    }
+
+    // MARK: - Accepted for processing
+
+    func testAnAcceptedItemIsNotAReceiptAndSurvivesClearingAndARestart() throws {
+        let directory = try temporaryDirectory("activity")
+        let queue = try acceptedQueue(at: try temporaryDirectory("queue"))
+        let subject = try store(at: directory)
+        let records = try subject.observe(queue: queue.allEntries(), runs: [], now: now)
+
+        XCTAssertEqual(records.map(\.fact), [.processing])
+        XCTAssertFalse(
+            try XCTUnwrap(records.first).isReceipt,
+            "acceptance proves no searchable publication, retrieval readiness or receipt"
+        )
+        XCTAssertNil(records.first?.resolvedAt)
+        XCTAssertEqual(subject.receiptCount(), 0)
+        XCTAssertEqual(try subject.clearReceipts(), 0, "Clear completed activity removes nothing")
+        XCTAssertEqual(subject.all().map(\.fact), [.processing])
+
+        // A new process over the same file still holds it as unfinished work.
+        let reopened = try store(at: directory)
+        XCTAssertEqual(reopened.all().map(\.fact), [.processing])
+        XCTAssertNil(reopened.all().first?.resolvedAt)
+        XCTAssertEqual(try reopened.clearReceipts(), 0)
+        XCTAssertEqual(reopened.all().map(\.itemID), ["item-1"])
+        XCTAssertEqual(reopened.all().first?.admittedCaptureID, captureID)
+    }
+
+    func testAnAcceptedItemSurvivesTheThirtyDayBound() throws {
+        let directory = try temporaryDirectory("activity")
+        let queue = try acceptedQueue(at: try temporaryDirectory("queue"))
+        let subject = try store(at: directory)
+        _ = try subject.observe(queue: queue.allEntries(), runs: [], now: now)
+
+        let later = now.addingTimeInterval(400 * 24 * 60 * 60)
+        XCTAssertEqual(
+            try subject.observe(queue: queue.allEntries(), runs: [], now: later).map(\.fact),
+            [.processing],
+            "no bound applies to work Core still owes a publication and a terminal receipt"
+        )
+
+        // And the same after a restart, which re-applies the bound on load.
+        let reopened = try store(at: directory)
+        XCTAssertEqual(
+            try reopened.observe(queue: queue.allEntries(), runs: [], now: later).map(\.fact),
+            [.processing]
+        )
+    }
+
+    func testAnAcceptedItemSurvivesTheHundredReceiptBoundWithoutCountingTowardsIt() throws {
+        let directory = try temporaryDirectory("activity")
+        let queue = try acceptedQueue(at: try temporaryDirectory("queue"))
+        let subject = try store(at: directory)
+        // The accepted item is recorded first, so it is the oldest record: were
+        // it counted as a receipt, it is the one the bound would drop.
+        _ = try subject.observe(queue: queue.allEntries(), runs: [], now: now)
+        var members = (0..<101).map { member(index: $0) }
+        _ = try subject.observe(queue: queue.allEntries(), runs: [run(members: members)], now: now)
+        for index in members.indices { members[index].state = .stopped }
+
+        let records = try subject.observe(
+            queue: queue.allEntries(),
+            runs: [run(members: members)],
+            now: now
+        )
+
+        XCTAssertEqual(records.filter(\.isReceipt).count, CaptureActivityStore.maximumRetainedReceipts)
+        XCTAssertEqual(
+            records.filter { !$0.isReceipt }.map(\.itemID),
+            ["item-1"],
+            "the accepted item is the only unresolved record and it is not pruned"
+        )
+        XCTAssertEqual(records.first?.itemID, "item-1")
+        XCTAssertEqual(records.count, 101)
+
+        // A restart re-applies the bound over the same file and keeps it.
+        let reopened = try store(at: directory)
+        XCTAssertEqual(reopened.record(itemID: "item-1")?.fact, .processing)
+    }
+
     // MARK: - Durability
+
+    func testActivityThatCouldNotBePersistedIsNotRecorded() throws {
+        let directory = try temporaryDirectory("activity")
+        let subject = try store(at: directory)
+        _ = try subject.observe(queue: [], runs: [run(members: [member(index: 0)])], now: now)
+        let before = subject.all()
+        var frozen = run(members: [member(index: 0), member(index: 1)])
+        frozen.members[0].state = .stopped
+        // Nothing can be published into this directory any more.
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500],
+            ofItemAtPath: directory.path
+        )
+        addTeardownBlock {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: directory.path
+            )
+        }
+
+        XCTAssertThrowsError(try subject.observe(queue: [], runs: [frozen], now: now)) { error in
+            XCTAssertEqual(error as? CaptureActivityError, .stateUnavailable)
+        }
+
+        XCTAssertEqual(
+            subject.all(),
+            before,
+            "the in-memory record is never advanced past the file it failed to write"
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: directory.path
+        )
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: directory.path),
+            ["capture-activity-v1.json"],
+            "a publication that could not complete leaves no temporary file behind"
+        )
+        // What a new process reads is exactly what was last durably recorded.
+        XCTAssertEqual(try store(at: directory).all(), before)
+    }
 
     func testActivitySurvivesARestartWithItsFactsAndIdentitiesIntact() throws {
         let directory = try temporaryDirectory("activity")
@@ -458,24 +643,25 @@ final class CaptureActivityStoreTests: XCTestCase {
         _ = try subject.observe(queue: queue.allEntries(), runs: runStore.all(), now: now)
         let queueBefore = queue.allEntries()
         let runsBefore = runStore.all()
-        XCTAssertEqual(subject.receiptCount(), 3)
+        XCTAssertEqual(subject.receiptCount(), 2)
 
         let removed = try subject.clearReceipts()
         let remaining = try subject.observe(queue: queue.allEntries(), runs: runStore.all(), now: now)
 
         XCTAssertEqual(
             removed,
-            3,
-            "the accepted item, the failed ordinary item and the stopped member"
+            2,
+            "the failed ordinary item and the stopped member"
         )
         XCTAssertEqual(
             remaining.map(\.itemID),
-            ["item-run-1-0", "item-run-1-2", "item-2"]
+            ["item-run-1-0", "item-run-1-2", "item-0", "item-2"]
         )
         XCTAssertEqual(
             remaining.map(\.fact),
-            [.planned, .failed, .checking],
-            "an unstarted member, a member its run can retry and an unknown outcome all stay"
+            [.planned, .failed, .processing, .checking],
+            "an unstarted member, a member its run can retry, an item Core only accepted "
+                + "for processing and an unknown outcome all stay"
         )
         // Nothing else moved: the queue keeps every entry, key and attempt, and
         // the run ledger keeps its frozen membership.
@@ -591,7 +777,7 @@ final class CaptureActivityStoreTests: XCTestCase {
                 intent: try intent(item: "item-1", payload: payload, name: "Invoice.pdf"),
                 payload: payload
             )
-            let recorded = environment.recordCaptureActivity()
+            let recorded = try environment.recordCaptureActivity()
             XCTAssertEqual(recorded.map(\.itemID), ["item-1"])
             XCTAssertEqual(recorded.map(\.fact), [.queued])
             _ = try environment.queue.beginStage(
@@ -604,7 +790,7 @@ final class CaptureActivityStoreTests: XCTestCase {
                 attemptGeneration: 1,
                 captureID: captureID
             )
-            XCTAssertEqual(environment.recordCaptureActivity().map(\.fact), [.processing])
+            XCTAssertEqual(try environment.recordCaptureActivity().map(\.fact), [.processing])
         }
 
         // A new process over the same state root reads the activity from disk,
@@ -613,10 +799,15 @@ final class CaptureActivityStoreTests: XCTestCase {
         XCTAssertEqual(reopened.captureActivity.all().map(\.itemID), ["item-1"])
         XCTAssertEqual(reopened.captureActivity.all().map(\.fact), [.processing])
 
-        let again = reopened.recordCaptureActivity()
+        let again = try reopened.recordCaptureActivity()
         XCTAssertEqual(again.map(\.itemID), ["item-1"])
         XCTAssertEqual(again.first?.sequence, 1)
         XCTAssertEqual(again.first?.admittedCaptureID, captureID)
+        XCTAssertNil(
+            again.first?.resolvedAt,
+            "acceptance for processing is not an outcome, so no resolution time is stated"
+        )
+        XCTAssertFalse(again.first?.isReceipt ?? true)
     }
 
     // MARK: - Adoption

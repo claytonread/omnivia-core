@@ -160,10 +160,16 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     /// submitted item and applies the terminal retention bound. Called before
     /// and after every delivery pass, so a published item is recorded while it
     /// is still queued and its outcome is recorded as soon as it is known.
+    ///
+    /// It throws rather than falling back to whatever this process already
+    /// holds. A caller that cannot persist what the owners now prove has not
+    /// recorded anything, and must say so instead of presenting stale facts as
+    /// current: a background delivery tick ignores the failure and claims
+    /// nothing, while a surface that displays these facts reports them as
+    /// unavailable and offers no action over them.
     @discardableResult
-    public func recordCaptureActivity() -> [CaptureActivityRecord] {
-        (try? captureActivity.observe(queue: queue.allEntries(), runs: folderBulkRuns.all()))
-            ?? captureActivity.all()
+    public func recordCaptureActivity() throws -> [CaptureActivityRecord] {
+        try captureActivity.observe(queue: queue.allEntries(), runs: folderBulkRuns.all())
     }
 
     /// The retained root groups, as projections that carry no bookmark and no

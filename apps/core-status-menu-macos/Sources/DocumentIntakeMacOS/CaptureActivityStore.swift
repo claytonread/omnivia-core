@@ -4,10 +4,11 @@ import Foundation
 /// What is proven about one submitted item on this Mac.
 ///
 /// These are separate facts, not stages of one collapsed progress enum.
-/// `queued` never means added, and `processing` means only that Core returned a
-/// capture id and owns the accepted source and job state — it is not a claim
-/// that a searchable capture, an extraction or a retrieval barrier exists. This
-/// side holds no canonical capture or extraction history at all.
+/// `queued` never means added, and `processing` means only that Core accepted
+/// source and job state and returned a capture id — it is not a claim that a
+/// searchable publication, an extraction, retrieval readiness or a terminal
+/// canonical receipt exists. This side holds no canonical capture or extraction
+/// history at all.
 public enum CaptureActivityFact: String, Codable, Equatable, Sendable {
     /// A frozen folder manifest names this member. No bytes are staged for it yet.
     case planned
@@ -17,26 +18,35 @@ public enum CaptureActivityFact: String, Codable, Equatable, Sendable {
     case sending
     /// An attempt may already have committed; its outcome is unknown.
     case checking
-    /// Core returned a capture id and owns the accepted source and job state.
+    /// Core accepted source and job state and returned a capture id. The
+    /// addition is not finished: no searchable publication, extraction,
+    /// retrieval readiness or terminal canonical receipt is proven here, and
+    /// this side will never learn of one. It is therefore unresolved work that
+    /// nothing local may clear, age out or count against a retention bound.
     case processing
     /// A known failed outcome for this item.
     case failed
     /// An unstarted member was cancelled before anything was sent.
     case stopped
 
-    /// This item reached an outcome: nothing further happens to it locally
-    /// without a new explicit action. Whether that outcome is a receipt that
-    /// may be bounded or cleared is a separate question — see
-    /// `CaptureActivityRecord.isReceipt`.
+    /// This item reached a local outcome: nothing further happens to it on this
+    /// Mac without a new explicit action, and nothing further will be learned
+    /// about it here. `processing` is deliberately not one — Core still owes it
+    /// a publication and a terminal receipt this store cannot see — so it has
+    /// no resolution time and no retention bound applies to it.
+    ///
+    /// Whether a resolved outcome is a receipt that may be cleared is a
+    /// separate question — see `CaptureActivityRecord.isReceipt`.
     public var isResolved: Bool {
         switch self {
-        case .planned, .queued, .sending, .checking: false
-        case .processing, .failed, .stopped: true
+        case .planned, .queued, .sending, .checking, .processing: false
+        case .failed, .stopped: true
         }
     }
 
     /// An unknown outcome needs a decision as much as a known failure does:
-    /// neither resolves on its own.
+    /// neither resolves on its own. A run ledger that disagrees with the queue
+    /// reaches `checking` for the same reason.
     public var needsAttention: Bool { self == .checking || self == .failed }
 }
 
@@ -74,15 +84,21 @@ public struct CaptureActivityRecord: Codable, Equatable, Sendable {
     /// A receipt is a resolved item no authority here can still act on. Only a
     /// receipt is bounded by retention or removed by clearing.
     ///
-    /// A known failure inside a folder run is deliberately not one: that run can
-    /// retry exactly that member under its frozen identity, so the record is the
-    /// handle on unresolved work and must survive both. A failed ordinary
-    /// submission is a receipt, because no authority can return it to pending
-    /// work and its recovery copy and key stay in the queue regardless.
+    /// An item Core accepted for processing is deliberately not one: acceptance
+    /// is not a searchable publication, retrieval readiness or a terminal
+    /// canonical receipt, and nothing here will ever see that receipt arrive, so
+    /// dropping the record would present unfinished work as finished and then
+    /// lose it.
+    ///
+    /// A known failure inside a folder run is deliberately not one either: that
+    /// run can retry exactly that member under its frozen identity, so the
+    /// record is the handle on unresolved work and must survive both. A failed
+    /// ordinary submission is a receipt, because no authority can return it to
+    /// pending work and its recovery copy and key stay in the queue regardless.
     public var isReceipt: Bool {
         switch fact {
-        case .planned, .queued, .sending, .checking: false
-        case .processing, .stopped: true
+        case .planned, .queued, .sending, .checking, .processing: false
+        case .stopped: true
         case .failed: runID == nil
         }
     }
@@ -363,11 +379,12 @@ public final class CaptureActivityStore: @unchecked Sendable {
     }
 
     /// Removes receipts and nothing else. Unresolved work stays — including an
-    /// unknown outcome and a folder member its run can still retry — and no
-    /// other owner is touched: the queue keeps every recovery copy and key,
-    /// run manifests keep their frozen membership, and already added files stay
-    /// linked in Core. Sequence numbering is not rewound, so a cleared item can
-    /// never be confused with a later one.
+    /// item Core has only accepted for processing, an unknown outcome and a
+    /// folder member its run can still retry — and no other owner is touched:
+    /// the queue keeps every recovery copy and key, run manifests keep their
+    /// frozen membership, and already added files stay linked in Core. Sequence
+    /// numbering is not rewound, so a cleared item can never be confused with a
+    /// later one.
     @discardableResult
     public func clearReceipts() throws -> Int {
         try lock.withLock {
@@ -475,15 +492,20 @@ public final class CaptureActivityStore: @unchecked Sendable {
     }
 
     /// Only the member states that exist before the queue holds the item.
-    /// `published` and `admitted` always have a queue entry, so reaching them
-    /// here means the ledgers disagree; the honest reading is that the item is
-    /// not yet proven sent.
+    ///
+    /// `published` and `admitted` always have a queue entry that proves what was
+    /// actually sent, so reaching them here means the required entry is missing
+    /// and the two ledgers disagree. Nothing local can then say whether anything
+    /// was sent, so this is neither planned nor waiting: it is an unknown
+    /// outcome, which keeps the member's frozen identity for reconciliation,
+    /// shows as needing attention, allocates no replacement and is never
+    /// resolved, cleared or pruned.
     private static func memberFact(_ member: FolderBulkRunMember) -> CaptureActivityFact {
         switch member.state {
         case .planned: .planned
         case .stopped: .stopped
         case .needsAttention: .failed
-        case .published, .admitted: .planned
+        case .published, .admitted: .checking
         }
     }
 
@@ -493,10 +515,20 @@ public final class CaptureActivityStore: @unchecked Sendable {
         return formatter
     }()
 
+    /// Publishes one state file, owner-only and durable, or changes nothing.
+    ///
+    /// The bytes and the mode reach the device before the name does, and the
+    /// containing directory is flushed after it, so a crash leaves either the
+    /// previous state file or this one and never a published name whose contents
+    /// were never written. Every step fails closed: the caller only commits its
+    /// in-memory records once this has returned.
     private func persist(
         _ values: [String: CaptureActivityRecord],
         nextSequence: UInt64
     ) throws {
+        let temporary = directory.appendingPathComponent(
+            ".capture-activity-\(UUID().uuidString).tmp"
+        )
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -510,31 +542,44 @@ public final class CaptureActivityStore: @unchecked Sendable {
             guard data.count <= Self.maximumStateBytes else {
                 throw CaptureActivityError.stateUnavailable
             }
-            let temporary = directory.appendingPathComponent(
-                ".capture-activity-\(UUID().uuidString).tmp"
-            )
-            try data.write(to: temporary, options: [.atomic])
+            try data.write(to: temporary, options: [.withoutOverwriting])
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o600],
                 ofItemAtPath: temporary.path
             )
+            try Self.sync(temporary)
             if FileManager.default.fileExists(atPath: stateFile.path) {
                 _ = try FileManager.default.replaceItemAt(stateFile, withItemAt: temporary)
             } else {
                 try FileManager.default.moveItem(at: temporary, to: stateFile)
             }
+            // Replacement can carry the replaced file's metadata, so owner-only
+            // is reasserted on the published file and then flushed with it.
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o600],
                 ofItemAtPath: stateFile.path
             )
-            let descriptor = Darwin.open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-            if descriptor >= 0 {
-                _ = Darwin.fsync(descriptor)
-                Darwin.close(descriptor)
-            }
+            try Self.sync(stateFile)
+            try Self.sync(directory, isDirectory: true)
         } catch let error as CaptureActivityError {
+            try? FileManager.default.removeItem(at: temporary)
             throw error
         } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw CaptureActivityError.stateUnavailable
+        }
+    }
+
+    /// Flushes one file or directory to the device, never through a symlink.
+    private static func sync(_ url: URL, isDirectory: Bool = false) throws {
+        var flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        if isDirectory { flags |= O_DIRECTORY }
+        let descriptor = Darwin.open(url.path, flags)
+        guard descriptor >= 0 else { throw CaptureActivityError.stateUnavailable }
+        defer { Darwin.close(descriptor) }
+        // F_FULLFSYNC reaches the device; it is unsupported on some filesystems,
+        // where fsync is all there is.
+        guard Darwin.fcntl(descriptor, F_FULLFSYNC) == 0 || Darwin.fsync(descriptor) == 0 else {
             throw CaptureActivityError.stateUnavailable
         }
     }
@@ -586,6 +631,10 @@ public final class CaptureActivityStore: @unchecked Sendable {
             .count
         let digests = [record.attemptRequestDigest, record.attemptDescriptorDigest]
             .compactMap { $0 }
+        // A resolution time exists for exactly the facts that resolve. An item
+        // Core merely accepted for processing is not one of them, so a file
+        // claiming it resolved is refused rather than read as a receipt that
+        // could then be cleared or aged out.
         guard identifiers.allSatisfy(validIdentifier),
               record.sequence > 0,
               !record.displayName.isEmpty,

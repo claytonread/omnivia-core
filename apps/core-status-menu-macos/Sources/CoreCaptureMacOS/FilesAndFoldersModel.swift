@@ -32,9 +32,12 @@ public enum FilesAndFoldersStatusFilter: Int, CaseIterable, Sendable {
     case paused
     case needsAttention
     case stoppedOrComplete
-    /// Recent additions only: work that is not resolved locally yet. A source
-    /// subscription never reports it, because "pending" there means waiting for
-    /// Core rather than an unfinished addition.
+    /// Recent additions only: an addition that is not finished. An item Core
+    /// has accepted for processing belongs here, because acceptance is not a
+    /// searchable publication or a terminal receipt and this Mac will never see
+    /// one arrive. A source subscription never reports this filter, because
+    /// "pending" there means waiting for Core rather than an unfinished
+    /// addition.
     case pending
 
     public var title: String {
@@ -60,6 +63,25 @@ public enum FilesAndFoldersStatusFilter: Int, CaseIterable, Sendable {
         case .recentAdditions: [.all, .pending, .needsAttention]
         }
     }
+}
+
+/// Whether the local activity this surface is showing is the current durable
+/// record.
+///
+/// The activity store is the only writer of its own file, and recording is how
+/// this surface learns what the queue and run ledgers now prove. When that
+/// write or read fails there is no current answer: whatever the process is
+/// holding may already be out of date, and nothing observed since reached local
+/// storage. The surface says so and offers no action over those facts rather
+/// than presenting them as current.
+public enum CaptureActivityAvailability: Equatable, Sendable {
+    /// The durable owners were read and what they prove was persisted.
+    case current
+    /// The current facts could not be persisted or re-read. What is listed is
+    /// the last record this process read, which may be stale.
+    case unavailable
+
+    public var isCurrent: Bool { self == .current }
 }
 
 /// A root group that was added once and is retained only so the files it already
@@ -109,8 +131,8 @@ public struct CaptureActivityGroup: Equatable, Sendable {
     }
 
     /// Items that are not receipts: nothing about them can be cleared or
-    /// pruned, including an unknown outcome and a folder member its run can
-    /// still retry.
+    /// pruned, including an item Core has only accepted for processing, an
+    /// unknown outcome and a folder member its run can still retry.
     public var pendingCount: Int { items.filter { !$0.isReceipt }.count }
     public var attentionCount: Int { items.filter { $0.fact.needsAttention }.count }
     public var receiptCount: Int { items.filter(\.isReceipt).count }
@@ -346,6 +368,9 @@ public struct FilesAndFoldersModel: Sendable {
     /// The durable local activity record, exactly as the activity store holds it.
     public let activity: [CaptureActivityRecord]
     public let activityGroups: [CaptureActivityGroup]
+    /// Whether that activity is the current durable record or the last thing
+    /// this process managed to read.
+    public let activityAvailability: CaptureActivityAvailability
 
     public init(
         workspaceName: String,
@@ -353,7 +378,8 @@ public struct FilesAndFoldersModel: Sendable {
         folders: [FolderSubscription] = [],
         retainedRoots: [RetainedRootGroup] = [],
         runs: [FolderBulkRun] = [],
-        activity: [CaptureActivityRecord] = []
+        activity: [CaptureActivityRecord] = [],
+        activityAvailability: CaptureActivityAvailability = .current
     ) {
         self.workspaceName = workspaceName
         self.files = files
@@ -361,12 +387,20 @@ public struct FilesAndFoldersModel: Sendable {
         self.retainedRoots = retainedRoots
         self.runs = runs
         self.activity = activity
+        self.activityAvailability = activityAvailability
         activityGroups = Self.activityGroups(records: activity, runs: runs)
     }
 
     /// Activity that clearing would remove. Unresolved work is never counted:
-    /// not an unknown outcome, and not a folder member its run can still retry.
+    /// not an item Core has only accepted for processing, not an unknown
+    /// outcome, and not a folder member its run can still retry.
     public var clearableActivityCount: Int { activity.filter(\.isReceipt).count }
+
+    /// Whether an action over local activity may be offered at all. A surface
+    /// that could not persist or refresh these facts offers none: clearing,
+    /// retrying, stopping, advancing and revealing a recovery identity would all
+    /// act on what this process happens to be holding.
+    public var canMutateActivity: Bool { activityAvailability.isCurrent }
 
     /// Groups the durable activity record by the frozen run that owns an item,
     /// or by its submission when no run does. A run whose every item has been
@@ -464,13 +498,22 @@ public struct FilesAndFoldersModel: Sendable {
             switch segment {
             case .files: return "No files are listed."
             case .folders: return "No folders are listed."
-            case .recentAdditions: return "No recent additions are recorded."
+            case .recentAdditions:
+                return activityAvailability.isCurrent
+                    ? "No recent additions are recorded."
+                    : "Local activity is unavailable. Nothing recorded here could be read."
             }
         }
         if segment == .recentAdditions {
             let pending = items.filter { $0.statusFilter == .pending }.count
             let attention = items.filter { $0.statusFilter == .needsAttention }.count
-            return "\(pending) pending · \(attention) needs attention · \(items.count) listed "
+            // Counts this surface could not refresh are labelled before they
+            // are read, so no count is mistaken for the current position.
+            let prefix = activityAvailability.isCurrent
+                ? ""
+                : "Local activity unavailable — last read, may be out of date · "
+            return prefix
+                + "\(pending) pending · \(attention) needs attention · \(items.count) listed "
                 + "· workspace \(workspaceName)"
         }
         let active = items.filter { $0.statusFilter == .activeOrPending }.count
@@ -495,7 +538,10 @@ public struct FilesAndFoldersModel: Sendable {
     /// state and nothing else: no replacement key, no destination change and no
     /// removal is offered while an outcome may already have committed.
     public func recoveryDetail(for item: FilesAndFoldersItem?) -> [DetailFact] {
-        guard case let .activity(group)? = item else { return [] }
+        // Recovery is a current-facts decision. If these facts could not be
+        // persisted or refreshed, the detail says that instead, and the action
+        // that would have offered them is disabled.
+        guard canMutateActivity, case let .activity(group)? = item else { return [] }
         let unknown = group.items.filter { $0.fact == .checking }
         guard !unknown.isEmpty else { return [] }
         return unknown.map { record in
@@ -516,7 +562,13 @@ public struct FilesAndFoldersModel: Sendable {
         ]
     }
 
-    public static func actions(for item: FilesAndFoldersItem?) -> FilesAndFoldersActions {
+    /// `activity` is the availability of the local activity record, so that a
+    /// surface which could not persist or refresh it offers no action over it.
+    /// The file and folder rows come from their own stores and are unaffected.
+    public static func actions(
+        for item: FilesAndFoldersItem?,
+        activity: CaptureActivityAvailability = .current
+    ) -> FilesAndFoldersActions {
         guard let item else {
             return FilesAndFoldersActions(
                 pauseTitle: "Pause",
@@ -546,6 +598,18 @@ public struct FilesAndFoldersModel: Sendable {
                 checkEnabled: false
             )
         case let .activity(value):
+            // Facts that could not be persisted or refreshed are not acted on.
+            // A retry, a stop, an advance or a revealed recovery identity chosen
+            // from a stale record could act on work that has since moved on.
+            guard activity.isCurrent else {
+                return FilesAndFoldersActions(
+                    pauseTitle: "Retry unavailable files",
+                    pauseEnabled: false,
+                    stopTitle: "Stop adding remaining files",
+                    stopEnabled: false,
+                    checkEnabled: false
+                )
+            }
             guard let run = value.run else {
                 // An ordinary submission has no authority to offer here. The
                 // queue exposes no cancellation and no return from a known
@@ -681,6 +745,7 @@ public struct FilesAndFoldersModel: Sendable {
     /// store records nothing about capture or extraction, so neither does this.
     private func activityDetail(_ value: CaptureActivityGroup) -> [DetailFact] {
         var facts = [DetailFact(label: "Addition", value: value.displayName)]
+        if !activityAvailability.isCurrent { facts.append(Self.activityUnavailableFact) }
         if let run = value.run {
             facts += [
                 DetailFact(label: "Folder run", value: run.runID),
@@ -747,6 +812,19 @@ public struct FilesAndFoldersModel: Sendable {
         value: "Completed activity is kept for up to 30 days or 100 items. Clearing it removes "
             + "local receipts only: queued work and its recovery keys, original links, running "
             + "watches, folder run manifests and anything already in Core are untouched."
+    )
+
+    /// Said plainly when the activity store could not record or re-read what the
+    /// durable owners now prove: nothing observed since reached local storage,
+    /// what is listed is only the last thing this process read, and no action
+    /// over it is offered. The durable owners themselves are untouched.
+    private static let activityUnavailableFact = DetailFact(
+        label: "Local activity",
+        value: "Unavailable. These are the last records this Mac read and may be out of date; "
+            + "nothing observed since was saved locally. Clearing, retrying, stopping, checking "
+            + "and recovery details are unavailable until it can be read again. Queued work and "
+            + "its recovery keys, original links, running watches, folder run manifests and "
+            + "everything already in Core are unchanged."
     )
 
     private static let retainedLinksFact = DetailFact(

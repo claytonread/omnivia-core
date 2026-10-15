@@ -14,8 +14,11 @@ public final class FolderManagementWindowController: NSWindowController,
     private let bulkCoordinator: FolderBulkRunCoordinator
     private let activityStore: CaptureActivityStore
     /// Records what the durable owners now prove and returns the activity. The
-    /// composition owns the reading, so this window never touches the queue.
-    private let observeActivity: () -> [CaptureActivityRecord]
+    /// composition owns the reading, so this window never touches the queue. It
+    /// throws when nothing could be recorded or re-read, and the surface then
+    /// reports its activity as unavailable instead of showing stale facts as
+    /// current.
+    private let observeActivity: () throws -> [CaptureActivityRecord]
     /// Retained root groups. Read through a closure so the window never holds the
     /// access store, which owns bookmarks this surface has no business seeing.
     private let rootGroups: () -> [NativeRootAccessDescriptor]
@@ -50,7 +53,7 @@ public final class FolderManagementWindowController: NSWindowController,
         bulkStore: FolderBulkRunStore,
         bulkCoordinator: FolderBulkRunCoordinator,
         activityStore: CaptureActivityStore,
-        observeActivity: @escaping () -> [CaptureActivityRecord],
+        observeActivity: @escaping () throws -> [CaptureActivityRecord],
         rootGroups: @escaping () -> [NativeRootAccessDescriptor]
     ) {
         self.workspaceName = workspaceName
@@ -211,8 +214,19 @@ public final class FolderManagementWindowController: NSWindowController,
         let folders = folderStore.all()
         let runs = bulkStore.all()
         // Records first, so the surface shows what the durable owners prove now
-        // rather than what they proved when this window was last open.
-        let activity = observeActivity()
+        // rather than what they proved when this window was last open. If that
+        // fails, nothing was saved and nothing current could be read: the last
+        // records this process holds are shown, labelled as unavailable, and no
+        // action acts on them.
+        let activity: [CaptureActivityRecord]
+        let availability: CaptureActivityAvailability
+        do {
+            activity = try observeActivity()
+            availability = .current
+        } catch {
+            activity = activityStore.all()
+            availability = .unavailable
+        }
         model = FilesAndFoldersModel(
             workspaceName: workspaceName,
             files: fileStore.all(),
@@ -223,7 +237,8 @@ public final class FolderManagementWindowController: NSWindowController,
                 folders: folders
             ),
             runs: runs,
-            activity: activity
+            activity: activity,
+            activityAvailability: availability
         )
         applyFilters()
     }
@@ -246,7 +261,10 @@ public final class FolderManagementWindowController: NSWindowController,
 
     private func updateControls() {
         let selected = self.selected
-        let actions = FilesAndFoldersModel.actions(for: selected)
+        let actions = FilesAndFoldersModel.actions(
+            for: selected,
+            activity: model.activityAvailability
+        )
         pauseResumeButton.title = actions.pauseTitle
         pauseResumeButton.isEnabled = actions.pauseEnabled
         stopButton.title = actions.stopTitle
@@ -255,7 +273,7 @@ public final class FolderManagementWindowController: NSWindowController,
         revealButton.isHidden = segment != .recentAdditions
         revealButton.isEnabled = actions.revealEnabled
         clearButton.isHidden = segment != .recentAdditions
-        clearButton.isEnabled = model.clearableActivityCount > 0
+        clearButton.isEnabled = model.canMutateActivity && model.clearableActivityCount > 0
         detailView.string = model.detail(for: selected)
             .map { "\($0.label): \($0.value)" }
             .joined(separator: "\n")
@@ -394,7 +412,9 @@ public final class FolderManagementWindowController: NSWindowController,
 
     @objc private func clearCompletedActivity() {
         let clearable = model.clearableActivityCount
-        guard clearable > 0 else { return }
+        // Clearing decides from a count. A count this surface could not refresh
+        // is not one to decide from.
+        guard model.canMutateActivity, clearable > 0 else { return }
         let alert = NSAlert()
         alert.messageText = "Clear \(clearable) completed activity "
             + (clearable == 1 ? "receipt?" : "receipts?")

@@ -205,7 +205,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 bulkStore: environment.folderBulkRuns,
                 bulkCoordinator: environment.folderBulkCoordinator,
                 activityStore: environment.captureActivity,
-                observeActivity: { environment.recordCaptureActivity() },
+                observeActivity: { try environment.recordCaptureActivity() },
                 rootGroups: { environment.rootAccessGroups() }
             )
             let companionBinding = CaptureDeliveryBinding.installedCompanion(
@@ -642,14 +642,17 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         // Record before anything is staged, so a published item is on the Recent
         // additions surface while it is still only queued on this Mac, and again
         // after, so its outcome is durable whether or not the window is open.
-        environment?.recordCaptureActivity()
+        // Delivery never depends on this: a failure to record leaves the durable
+        // owners untouched and claims nothing, and the window reports its own
+        // activity as unavailable when it cannot record either.
+        _ = try? environment?.recordCaptureActivity()
         Task {
             _ = await captureDeliveryCoordinator.deliverPending()
             _ = await bulkRuns?.reconcileReceipts()
             _ = await bulkRuns?.advanceAll()
             _ = await monitoring?.reconcileReceipts()
             _ = await fileMonitoring?.reconcileReceipts()
-            environment?.recordCaptureActivity()
+            _ = try? environment?.recordCaptureActivity()
             await self.refreshFolderEventObservation()
         }
     }
@@ -683,7 +686,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             _ = await delivery?.deliverPending()
             _ = await folderMonitoringCoordinator.reconcileReceipts()
             _ = await fileMonitoring?.reconcileReceipts()
-            environment?.recordCaptureActivity()
+            _ = try? environment?.recordCaptureActivity()
             await self.refreshFolderEventObservation()
         }
     }

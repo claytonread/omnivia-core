@@ -167,7 +167,8 @@ final class FilesAndFoldersModelTests: XCTestCase {
         folders: [FolderSubscription] = [],
         retainedRoots: [RetainedRootGroup] = [],
         runs: [FolderBulkRun] = [],
-        activity: [CaptureActivityRecord] = []
+        activity: [CaptureActivityRecord] = [],
+        activityAvailability: CaptureActivityAvailability = .current
     ) -> FilesAndFoldersModel {
         FilesAndFoldersModel(
             workspaceName: "workspace-1",
@@ -175,7 +176,8 @@ final class FilesAndFoldersModelTests: XCTestCase {
             folders: folders,
             retainedRoots: retainedRoots,
             runs: runs,
-            activity: activity
+            activity: activity,
+            activityAvailability: activityAvailability
         )
     }
 
@@ -424,13 +426,13 @@ final class FilesAndFoldersModelTests: XCTestCase {
         ])
 
         XCTAssertEqual(subject.items(segment: .recentAdditions, statusFilter: .all).count, 6)
-        // Pending is work this Mac still owes. An item Core has accepted is a
-        // local receipt that ages out; its remaining work belongs to Core, and
-        // the row still says so.
+        // Pending is an addition that is not finished. An item Core has only
+        // accepted for processing is one: acceptance is not a searchable
+        // publication or a terminal receipt, and this Mac will never see one.
         XCTAssertEqual(
             subject.items(segment: .recentAdditions, statusFilter: .pending)
                 .map(\.identifier).sorted(),
-            ["submission-queued", "submission-sending"]
+            ["submission-core", "submission-queued", "submission-sending"]
         )
         XCTAssertEqual(
             subject.items(segment: .recentAdditions, statusFilter: .all)
@@ -937,7 +939,25 @@ final class FilesAndFoldersModelTests: XCTestCase {
             record(item: "item-stopped", sequence: 7, fact: .stopped),
         ])
 
-        XCTAssertEqual(subject.clearableActivityCount, 3)
+        XCTAssertEqual(
+            subject.clearableActivityCount,
+            2,
+            "the failed ordinary item and the stopped one; an accepted item is unfinished work"
+        )
+        XCTAssertTrue(subject.canMutateActivity)
+    }
+
+    func testAnAcceptedItemIsUnfinishedActivityThatNothingLocalClears() throws {
+        let subject = model(activity: [record(item: "item-core", sequence: 1, fact: .processing)])
+        let item = try XCTUnwrap(subject.items(segment: .recentAdditions).first)
+
+        XCTAssertEqual(item.statusFilter, .pending)
+        XCTAssertEqual(item.statusLabel, "Processing in Core")
+        XCTAssertEqual(subject.clearableActivityCount, 0)
+        XCTAssertEqual(
+            subject.summary(items: subject.items(segment: .recentAdditions), segment: .recentAdditions),
+            "1 pending · 0 needs attention · 1 listed · workspace workspace-1"
+        )
     }
 
     // MARK: - Summary
@@ -960,6 +980,112 @@ final class FilesAndFoldersModelTests: XCTestCase {
         XCTAssertEqual(
             subject.summary(items: [], segment: .recentAdditions),
             "No recent additions are recorded."
+        )
+    }
+
+    // MARK: - Local activity availability
+
+    func testUnavailableActivityIsIdentifiedAsStaleInTheSummary() {
+        let records = [
+            record(item: "item-0", submission: "submission-0", sequence: 1, fact: .queued),
+            record(item: "item-1", submission: "submission-1", sequence: 2, fact: .failed),
+        ]
+        let subject = model(activity: records, activityAvailability: .unavailable)
+        let items = subject.items(segment: .recentAdditions)
+
+        XCTAssertEqual(
+            subject.summary(items: items, segment: .recentAdditions),
+            "Local activity unavailable — last read, may be out of date · 1 pending · "
+                + "1 needs attention · 2 listed · workspace workspace-1"
+        )
+        XCTAssertEqual(
+            model(activityAvailability: .unavailable)
+                .summary(items: [], segment: .recentAdditions),
+            "Local activity is unavailable. Nothing recorded here could be read."
+        )
+        XCTAssertEqual(
+            model(activity: records).summary(items: items, segment: .recentAdditions),
+            "1 pending · 1 needs attention · 2 listed · workspace workspace-1"
+        )
+    }
+
+    func testUnavailableActivityOffersNoMutationOrRecoveryAction() {
+        let frozen: FolderBulkRun = run(state: .needsAttention, memberStates: [.needsAttention, .planned])
+        var items = activity(of: frozen)
+        items[0] = record(
+            item: items[0].itemID,
+            submission: frozen.submissionID,
+            run: frozen.runID,
+            member: items[0].memberID,
+            sequence: 1,
+            fact: .checking
+        )
+        let subject = model(
+            runs: [frozen],
+            activity: items,
+            activityAvailability: .unavailable
+        )
+        let selected = subject.items(segment: .recentAdditions).first
+        let actions = FilesAndFoldersModel.actions(
+            for: selected,
+            activity: subject.activityAvailability
+        )
+
+        XCTAssertFalse(subject.canMutateActivity)
+        XCTAssertFalse(actions.pauseEnabled, "a retry would act on facts this surface cannot vouch for")
+        XCTAssertFalse(actions.stopEnabled)
+        XCTAssertFalse(actions.checkEnabled)
+        XCTAssertFalse(actions.revealEnabled)
+        XCTAssertTrue(
+            subject.recoveryDetail(for: selected).isEmpty,
+            "a recovery identity is a current-facts decision"
+        )
+        // The same selection with current facts does offer them, so the
+        // difference is availability and nothing else.
+        let current = model(runs: [frozen], activity: items)
+        let offered = FilesAndFoldersModel.actions(
+            for: current.items(segment: .recentAdditions).first,
+            activity: current.activityAvailability
+        )
+        XCTAssertTrue(offered.pauseEnabled)
+        XCTAssertTrue(offered.stopEnabled)
+        XCTAssertTrue(offered.revealEnabled)
+        XCTAssertFalse(current.recoveryDetail(for: current.items(segment: .recentAdditions).first).isEmpty)
+    }
+
+    func testUnavailableActivityStillOffersFileAndFolderActionsFromTheirOwnStores() {
+        let subject = model(folders: [folder()], activityAvailability: .unavailable)
+        let actions = FilesAndFoldersModel.actions(
+            for: subject.items(segment: .folders).first,
+            activity: subject.activityAvailability
+        )
+
+        XCTAssertTrue(actions.pauseEnabled)
+        XCTAssertTrue(actions.stopEnabled)
+        XCTAssertTrue(actions.checkEnabled)
+    }
+
+    func testUnavailableActivityDetailSaysNothingWasSavedAndNothingElseChanged() {
+        let subject = model(
+            activity: [record(item: "item-0", sequence: 1, fact: .processing)],
+            activityAvailability: .unavailable
+        )
+        let facts = subject.detail(for: subject.items(segment: .recentAdditions).first)
+        let values = Dictionary(uniqueKeysWithValues: facts.map { ($0.label, $0.value) })
+
+        XCTAssertEqual(
+            values["Local activity"],
+            "Unavailable. These are the last records this Mac read and may be out of date; "
+                + "nothing observed since was saved locally. Clearing, retrying, stopping, checking "
+                + "and recovery details are unavailable until it can be read again. Queued work and "
+                + "its recovery keys, original links, running watches, folder run manifests and "
+                + "everything already in Core are unchanged."
+        )
+        XCTAssertNil(
+            model(activity: [record(item: "item-0", sequence: 1, fact: .processing)])
+                .detail(for: subject.items(segment: .recentAdditions).first)
+                .first(where: { $0.label == "Local activity" }),
+            "nothing is said about availability while the record is current"
         )
     }
 
