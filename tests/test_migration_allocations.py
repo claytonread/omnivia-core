@@ -182,6 +182,12 @@ EXPECTED_ALLOCATION = (
     (68, "0068_task_context_outcomes.sql", "Agent Runtime", "candidate"),
     (69, "0069_document_intake.sql", "Evidence Runtime", "candidate"),
     (70, "0070_app_settings.sql", "Core Settings", "candidate"),
+    (
+        71,
+        "0071_capture_processing_settings.sql",
+        "Evidence Runtime",
+        "candidate",
+    ),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -277,6 +283,9 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # authored it as 0043; it is pinned to the commit that ported it onto this
     # branch's head, which is where its content lives here.
     70: "429cc4ef1d75ccd58691b5dedb0e818830ce3ad0",
+    # 0071 freezes the processing preferences one capture was admitted under onto
+    # the capture row, pinned to the commit that introduced its SQL.
+    71: "6aba714a1772b468d607a7bc205f7363cb6fbca6",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
