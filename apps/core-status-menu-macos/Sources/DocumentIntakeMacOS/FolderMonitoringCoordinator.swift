@@ -215,6 +215,12 @@ public actor FolderMonitoringCoordinator {
     }
 
     private func reconcileAdmissions(_ persisted: FolderSubscription) throws -> FolderSubscription {
+        // Stopping is a one-way door, including for a watch stopped while Core
+        // had not yet confirmed its baseline. Whatever that confirmation turns
+        // out to be, it arrives after the watch ended: it neither activates one
+        // that was waiting nor sends one to review, which is a resumable state
+        // and so the same reactivation by another name.
+        guard persisted.state != .stopped else { return persisted }
         let entries = Dictionary(uniqueKeysWithValues: queue.allEntries().map { ($0.intent.itemId, $0) })
         return try subscriptions.update(id: persisted.subscriptionID) { value in
             var baselineResolved = true

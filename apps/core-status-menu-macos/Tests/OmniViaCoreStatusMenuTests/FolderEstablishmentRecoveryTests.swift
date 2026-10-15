@@ -344,6 +344,123 @@ final class FolderEstablishmentRecoveryTests: XCTestCase {
         XCTAssertEqual(lane.environment.accessStore.rootDescriptors().count, 1)
     }
 
+    // MARK: - A local stop while activation is still pending
+
+    /// END-01: stopping is a one-way door. The watch is stopped while Core has
+    /// not yet confirmed its baseline, so the confirmation lands late — and a
+    /// late confirmation is not consent to resume watching.
+    func testALateBaselineAdmissionDoesNotReactivateALocallyStoppedWatch() async throws {
+        let lane = try lane(files: 1)
+        let submission = FolderCaptureSubmission(
+            environment: lane.environment,
+            workspaceRef: "workspace-1"
+        )
+        let plan = try submission.plan(root: lane.root, policy: Self.keepUpdated)
+        let baseline = try await submission.submit(plan)
+        let subscription = try XCTUnwrap(lane.environment.folderSubscriptions.all().first)
+        XCTAssertEqual(subscription.state, .waitingForCore)
+
+        _ = try await lane.environment.folderMonitoring.stop(
+            subscriptionID: subscription.subscriptionID
+        )
+        try admit(baseline[0], captureID: "dcap-" + String(repeating: "a", count: 64), in: lane)
+
+        await lane.environment.folderMonitoring.reconcileReceipts()
+        let reports = await lane.environment.folderMonitoring.reconcileAll()
+
+        XCTAssertEqual(reports.map(\.state), [.stopped])
+        try await assertStoppedForGood(lane.environment, subscriptionID: subscription.subscriptionID)
+        // The late receipt is not recorded against the stopped watch either: a
+        // watch that was stopped has no current capture to carry forward.
+        let stopped = try XCTUnwrap(
+            lane.environment.folderSubscriptions.subscription(id: subscription.subscriptionID)
+        )
+        XCTAssertEqual(stopped.members.compactMap(\.currentSuccessfulCaptureID), [])
+        XCTAssertEqual(lane.environment.queue.allEntries().count, baseline.count)
+
+        // And the stop survives a restart: reconciling from disk leaves it stopped.
+        let reopened = try lane.reopen()
+        _ = await reopened.reconcilePendingFolderEstablishment()
+        await reopened.folderMonitoring.reconcileReceipts()
+        try await assertStoppedForGood(reopened, subscriptionID: subscription.subscriptionID)
+    }
+
+    /// The other canonical outcome. A baseline Core refuses would normally send
+    /// the watch to review, which is a resumable state — so for a watch already
+    /// stopped it would be the same reactivation by another name.
+    func testALateBaselineFailureDoesNotReopenALocallyStoppedWatch() async throws {
+        let lane = try lane(files: 1)
+        let submission = FolderCaptureSubmission(
+            environment: lane.environment,
+            workspaceRef: "workspace-1"
+        )
+        let plan = try submission.plan(root: lane.root, policy: Self.keepUpdated)
+        let baseline = try await submission.submit(plan)
+        let subscription = try XCTUnwrap(lane.environment.folderSubscriptions.all().first)
+        XCTAssertEqual(subscription.state, .waitingForCore)
+
+        _ = try await lane.environment.folderMonitoring.stop(
+            subscriptionID: subscription.subscriptionID
+        )
+        _ = try lane.environment.queue.markFailed(
+            itemID: baseline[0].intent.itemId,
+            failureCode: "delivery-refused"
+        )
+
+        await lane.environment.folderMonitoring.reconcileReceipts()
+        let reports = await lane.environment.folderMonitoring.reconcileAll()
+
+        XCTAssertEqual(reports.map(\.state), [.stopped])
+        try await assertStoppedForGood(lane.environment, subscriptionID: subscription.subscriptionID)
+    }
+
+    /// A stopped watch stays stopped, observes nothing, and cannot be resumed
+    /// back into the watch it was: re-enrolling the folder is the only way back.
+    private func assertStoppedForGood(
+        _ environment: DocumentIntakeEnvironment,
+        subscriptionID: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let subscription = try XCTUnwrap(
+            environment.folderSubscriptions.subscription(id: subscriptionID),
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(subscription.state, .stopped, file: file, line: line)
+        XCTAssertThrowsError(
+            try environment.accessStore.withRootReadAccess(
+                rootRef: subscription.rootRef,
+                expectedGeneration: subscription.rootBindingGeneration,
+                purpose: .memberDiscovery
+            ) { _ in () },
+            file: file,
+            line: line
+        ) {
+            XCTAssertEqual($0 as? NativeAccessError, .discoveryNotPermitted, file: file, line: line)
+        }
+        do {
+            _ = try await environment.folderMonitoring.resume(subscriptionID: subscriptionID)
+            XCTFail("a stopped watch must not resume", file: file, line: line)
+        } catch {
+            XCTAssertEqual(error as? FolderMonitoringError, .subscriptionNotActive, file: file, line: line)
+        }
+    }
+
+    private func admit(_ entry: CaptureQueueEntry, captureID: String, in lane: Lane) throws {
+        let digest = "sha256:" + String(repeating: "b", count: 64)
+        let staging = try lane.environment.queue.beginStage(
+            itemID: entry.intent.itemId,
+            requestDigest: digest,
+            descriptorDigest: digest
+        )
+        _ = try lane.environment.queue.markAdmitted(
+            itemID: entry.intent.itemId,
+            attemptGeneration: staging.attemptGeneration,
+            captureID: captureID
+        )
+    }
+
     // MARK: - Shared assertions
 
     /// What an interrupted establishment must look like on disk: a truthful
