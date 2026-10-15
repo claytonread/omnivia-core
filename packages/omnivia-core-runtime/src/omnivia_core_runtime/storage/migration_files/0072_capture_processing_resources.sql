@@ -99,6 +99,21 @@
 -- other profile digest 0069 stores: `sha256:` and 64 lower-case hex digits. The same
 -- CHECK, so a value this column accepts is a value `omnivia_extraction_profiles` would
 -- accept as a key, and a comparison between them is a comparison of like with like.
+--
+-- Why one CHECK pairs them
+-- ------------------------
+--
+-- "Both or neither" is the invariant above, and per-column CHECKs cannot state it: each
+-- one accepts NULL on its own, so the two together accept a row with resources and no
+-- digest, or a digest and no resources. Neither half-row is reachable through the
+-- admission path, which writes both in one statement from one resolution, but the
+-- database is what a raw write, a repair script or a restored backup is checked
+-- against. And the asymmetry is not merely untidy: execution reads a NULL digest as
+-- "admitted before 0072" and skips the immutable comparison entirely, so a row with
+-- frozen resources and no digest would execute against them under whatever profile
+-- this build resolves -- the exact substitution END-02 closes. The digest column
+-- therefore carries the pairing beside its own shape check, which is the one place
+-- either column can see the other.
 
 ALTER TABLE omnivia_document_captures
 ADD COLUMN processing_resources_json TEXT
@@ -111,8 +126,9 @@ CHECK (processing_resources_json IS NULL
 
 ALTER TABLE omnivia_document_captures
 ADD COLUMN processing_profile_digest TEXT
-CHECK (processing_profile_digest IS NULL
-       OR (typeof(processing_profile_digest) = 'text'
-           AND length(processing_profile_digest) = 71
-           AND substr(processing_profile_digest, 1, 7) = 'sha256:'
-           AND substr(processing_profile_digest, 8) NOT GLOB '*[^0-9a-f]*'));
+CHECK ((processing_profile_digest IS NULL) = (processing_resources_json IS NULL)
+       AND (processing_profile_digest IS NULL
+            OR (typeof(processing_profile_digest) = 'text'
+                AND length(processing_profile_digest) = 71
+                AND substr(processing_profile_digest, 1, 7) = 'sha256:'
+                AND substr(processing_profile_digest, 8) NOT GLOB '*[^0-9a-f]*')));

@@ -218,6 +218,10 @@ _RESOURCES_NONE = (
 #: columns. Spelled out for the same reason `_RESOURCES_NONE` is.
 _DIGEST = "sha256:" + "0" * 64
 
+#: A settings document 0071's column accepts, for the tests that are about 0072's
+#: two columns and need its one to be certainly valid.
+_SETTINGS = '{"embeddedImageOcr":false,"languages":["eng"],"mode":"text_only"}'
+
 
 def _admitting(
     monkeypatch: pytest.MonkeyPatch,
@@ -486,11 +490,10 @@ def test_0072_refuses_a_snapshot_that_is_not_a_bounded_json_object(
     the column would accept but the decoder would not is a capture that can never
     execute. Refusing it where it is written is what keeps the two in step.
     """
-    _admitting(
-        monkeypatch,
-        '{"embeddedImageOcr":false,"languages":["eng"],"mode":"text_only"}',
-        frozen,
-    )
+    # A well-formed digest beside it: the two columns are paired, so a malformed
+    # snapshot with no digest would be refused by the pairing before this test
+    # reached the shape constraint it is about.
+    _admitting(monkeypatch, _SETTINGS, frozen)
     with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
         _capture(
             runner,
@@ -579,12 +582,7 @@ def test_0072_refuses_a_digest_that_is_not_a_profile_digest(
     value that could only ever compare unequal -- a capture that can never
     execute, discovered at execution instead of where it was written.
     """
-    _admitting(
-        monkeypatch,
-        '{"embeddedImageOcr":false,"languages":["eng"],"mode":"text_only"}',
-        _RESOURCES_NONE,
-        digest,
-    )
+    _admitting(monkeypatch, _SETTINGS, _RESOURCES_NONE, digest)
     with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
         _capture(
             runner,
@@ -599,3 +597,85 @@ def test_0072_refuses_a_digest_that_is_not_a_profile_digest(
         ).fetchone()[0]
         == 0
     )
+
+
+@pytest.mark.parametrize(
+    ("resources", "digest"),
+    [
+        pytest.param(_RESOURCES_NONE, None, id="resources-without-a-digest"),
+        pytest.param(None, _DIGEST, id="digest-without-resources"),
+    ],
+)
+def test_0072_refuses_one_of_the_two_columns_without_the_other(
+    runner: ServiceRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    resources: str | None,
+    digest: str | None,
+) -> None:
+    """Both or neither, enforced where a raw write is checked.
+
+    Each column's own CHECK accepts NULL, so the two separately accept a row that
+    froze resources and no digest, or a digest and no resources. The admission path
+    writes both from one resolution in one statement and so cannot produce either,
+    but a repair script, a hand-written INSERT or a restored backup can -- and the
+    first of the two is not merely untidy. Execution reads a NULL digest as
+    "admitted before 0072" and skips the immutable profile comparison entirely, so
+    a row carrying frozen resources and no digest would execute them under whatever
+    profile the current build resolves: the substitution END-02 exists to close,
+    reintroduced through a shape the database permitted.
+    """
+    _admitting(monkeypatch, _SETTINGS, resources, digest)
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+        _capture(
+            runner,
+            document_id="doc-0072-unpaired",
+            operation_key="cap-0072-unpaired",
+            content=b"unpaired body",
+        )
+    assert runner.connection is not None
+    assert (
+        runner.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_document_captures"
+        ).fetchone()[0]
+        == 0
+    )
+
+
+@pytest.mark.parametrize(
+    ("resources", "digest"),
+    [
+        pytest.param(_RESOURCES_NONE, _DIGEST, id="both-recorded"),
+        pytest.param(None, None, id="neither-recorded"),
+    ],
+)
+def test_0072_keeps_a_capture_whose_two_columns_agree(
+    runner: ServiceRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    resources: str | None,
+    digest: str | None,
+) -> None:
+    """The pairing refuses the halves and nothing else.
+
+    The two states END-02 depends on are the post-0072 capture, which records a
+    decision and the digest of the profile it resolved to, and the pre-0072 one,
+    which records neither. Both still go in through the admission path that writes
+    them.
+    """
+    _admitting(monkeypatch, _SETTINGS, resources, digest)
+    captured = _capture(
+        runner,
+        document_id="doc-0072-paired",
+        operation_key="cap-0072-paired",
+        content=b"paired body",
+    )
+    assert captured.capture.processing_resources_json == resources
+    assert captured.capture.processing_profile_digest == digest
+    assert runner.connection is not None
+    reread = store.read_capture(
+        runner.connection,
+        workspace_id=runner.workspace_id or "",
+        capture_id=captured.capture.capture_id,
+    )
+    assert reread is not None
+    assert reread.processing_resources_json == resources
+    assert reread.processing_profile_digest == digest

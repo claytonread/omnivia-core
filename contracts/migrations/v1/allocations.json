@@ -609,7 +609,7 @@
       "repository": "omnivia-core",
       "state": "candidate",
       "predecessor": 71,
-      "sha256": "84016939b335b50d45553a534576ae7707c6deb2dbf1384c8b6ab58f2dc04e9f",
+      "sha256": "4f16b4ebcf9a6a728a41e56fd2585ddb2a43ff5f18aa009743021a322374a1e4",
       "introduced_commit": "c40da7eb2b97dbf945f74529c50062e814c39315",
       "accepted_commit": null
     }

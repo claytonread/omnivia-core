@@ -905,8 +905,11 @@ def legacy_admission(
     """Admit as a build that recorded neither snapshot, or an unreadable one.
 
     The stored profile digest defaults to ``None`` with them: a build that
-    recorded no decision recorded no digest of one either, and a capture whose
-    frozen documents do not decode has no profile to have digested.
+    recorded no decision recorded no digest of one either. A caller that freezes
+    a resource snapshot must pass one, though -- 0072 pairs the two columns, so
+    resources without a digest is not a row the database will hold -- and the
+    value may be any well-formed digest, because the unreadable-snapshot path
+    settles before the comparison that would read it.
     """
     monkeypatch.setattr(
         document_intake,
@@ -1013,6 +1016,7 @@ def test_a_malformed_resource_snapshot_is_its_own_terminal_fact(
         json.dumps(ProcessingSettings(languages=("deu",)).to_value()),
         '{"schema": "omnivia.capture-ocr-resources.v1", "kind": "frozen", '
         '"selection": [], "reason": null, "detail": null, "unavailableModels": []}',
+        "sha256:" + "0" * 64,
     )
     authority, resources = managed_installation(
         tmp_path / "inst-bad-resources", tmp_path, "deu", "osd"
