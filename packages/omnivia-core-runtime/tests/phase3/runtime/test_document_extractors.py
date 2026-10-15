@@ -376,6 +376,113 @@ def test_an_xlsx_whose_embedded_image_cannot_be_read_is_partial_not_a_success(
     ]
 
 
+PRESENTATIONML: Final = "http://schemas.openxmlformats.org/presentationml/2006/main"
+PPTX_IMAGE_PARTS: Final = {
+    "ppt/presentation.xml": (
+        f'<p:presentation xmlns:p="{PRESENTATIONML}" xmlns:r="{RELNS}">'
+        '<p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>'
+    ).encode(),
+    "ppt/_rels/presentation.xml.rels": (
+        b'<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/>'
+        b"</Relationships>"
+    ),
+    "ppt/slides/slide1.xml": (
+        f'<p:sld xmlns:p="{PRESENTATIONML}" xmlns:a="{DRAWINGML}" xmlns:r="{RELNS}">'
+        "<p:cSld><p:spTree>"
+        '<p:sp><p:nvSpPr><p:cNvPr id="3" name="Title 3"/><p:cNvSpPr/><p:nvPr/>'
+        "</p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:p><a:r><a:t>Review</a:t>"
+        "</a:r></a:p></p:txBody></p:sp>"
+        '<p:pic><p:nvPicPr><p:cNvPr id="2" name="Picture 2"/><p:cNvPicPr/>'
+        "<p:nvPr/></p:nvPicPr>"
+        '<p:blipFill><a:blip r:embed="rIdI"/><a:stretch/></p:blipFill>'
+        "<p:spPr/></p:pic>"
+        "</p:spTree></p:cSld></p:sld>"
+    ).encode(),
+    "ppt/slides/_rels/slide1.xml.rels": (
+        f'<Relationships><Relationship Id="rIdI" Type="{RELNS}/image"'
+        ' Target="../media/image1.png"/></Relationships>'
+    ).encode(),
+}
+
+
+def pptx_with_image(member: bytes) -> bytes:
+    return office_package(
+        PPTX_IMAGE_PARTS | {"ppt/media/image1.png": member}, overrides=PNG_DEFAULT
+    )
+
+
+def test_a_pptx_embedded_image_is_examined_only_under_settings_that_say_so(
+    local_ocr: ExtractionSettings,
+) -> None:
+    """The trusted settings reach the slide path too, and nothing else decides
+    it: a profile that examines no embedded image publishes the structural
+    extraction alone, and the same bytes under a profile that does are read with
+    the engine the profile pinned. The slide's own text is untouched either
+    way."""
+    image = io.BytesIO()
+    Image.new("RGB", (240, 60), "white").save(image, format="PNG")
+    package = pptx_with_image(image.getvalue())
+
+    structural = extract_document(
+        package, media_type=PPTX_MEDIA_TYPE, capture_id=CAPTURE
+    )
+    assert structural.state == "succeeded"
+    assert [item.semantic_role for item in structural.segments] == [
+        "body",
+        "object_inventory",
+    ]
+    record = structural.segments[1].structured_value
+    assert (record["imageDecoded"], record["ocrPerformed"]) == (False, False)
+    assert record["ocrOutcome"] == "embedded_image_ocr_disabled"
+
+    examined = extract_document(
+        package,
+        media_type=PPTX_MEDIA_TYPE,
+        capture_id=CAPTURE,
+        settings=embedded_image_settings(local_ocr),
+    )
+    assert examined.state == "succeeded"
+    assert [item.semantic_role for item in examined.segments] == [
+        "body",
+        "object_inventory",
+    ]
+    record = examined.segments[1].structured_value
+    # A blank raster yields no reliable text, and that is a reading of it: the
+    # bytes were decoded and the engine the profile pinned ran over them.
+    assert (record["imageDecoded"], record["ocrPerformed"]) == (True, True)
+    assert examined.limitations["embeddedImages"] == 1
+
+
+def test_a_pptx_whose_embedded_image_cannot_be_read_is_partial_not_a_success(
+    local_ocr: ExtractionSettings,
+) -> None:
+    """The structural extraction stands and the source is not refused, but a
+    raster the decoder could not read is coverage this presentation never
+    reached, so it is partial and says which coverage was lost. The slide's own
+    text is published."""
+    package = pptx_with_image(b"\x89PNG\r\n\x1a\nnot really an image")
+
+    result = extract_document(
+        package,
+        media_type=PPTX_MEDIA_TYPE,
+        capture_id=CAPTURE,
+        settings=embedded_image_settings(local_ocr),
+    )
+
+    assert result.state == "partial"
+    assert result.limitations["documentOutcome"] == "partial_coverage"
+    assert result.limitations["embeddedImageOutcomes"] == {
+        "image_could_not_be_decoded": 1
+    }
+    # No *slide* failed, and the slide coverage does not claim one did: the
+    # image's own outcome is reported where its own unit is counted.
+    assert result.coverage["units"][0]["failed"] == 0
+    assert [item.semantic_role for item in result.segments] == [
+        "body",
+        "object_inventory",
+    ]
+
+
 def test_xlsx_preserves_formula_and_saved_cache_as_distinct_values() -> None:
     package = office_package(
         {

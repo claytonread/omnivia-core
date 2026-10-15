@@ -79,7 +79,7 @@ def blip(
 BLIP_FILL = blip()
 # What the default fixture's record says about the image it embeds. Every other
 # embed record differs from it only in the part, type or length it resolved to.
-EMBEDDED = {
+REFERENCE = {
     "imageEmbedRelationshipId": "rId2",
     "imageEmbedRelationshipType": IMAGE_TYPE,
     "imagePart": "ppt/media/image1.png",
@@ -91,8 +91,22 @@ EMBEDDED = {
     "imageLinkScheme": None,
     "imageLinkExternal": None,
 }
-# What a picture naming no image at all records: every key, each empty.
-NO_IMAGE = {key: None for key in EMBEDDED}
+# Nothing here hands the reader any settings, so its profile examines no
+# embedded image: every record states that the raster was left unexamined, for
+# the reason it was. A picture naming no part of the package embeds nothing at
+# all, which is settled before the profile is ever consulted.
+UNEXAMINED = {
+    "imageDecoded": False,
+    "ocrPerformed": False,
+    "ocrOutcome": "embedded_image_ocr_disabled",
+}
+EMBEDDED = REFERENCE | UNEXAMINED
+# What a picture naming no image at all records: every reference key empty.
+NO_IMAGE = (
+    {key: None for key in REFERENCE}
+    | UNEXAMINED
+    | {"ocrOutcome": "no_embedded_image_part"}
+)
 # The claim half of a record whose author claimed nothing about the picture.
 UNCLAIMED = {
     "kind": "picture",

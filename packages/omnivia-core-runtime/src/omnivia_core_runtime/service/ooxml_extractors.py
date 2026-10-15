@@ -3884,7 +3884,40 @@ def extract_xlsx(
         )
 
 
-def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
+def extract_pptx(
+    content: bytes,
+    *,
+    capture_id: str,
+    settings: ExtractionSettings | None = None,
+    ocr_engine: OcrEngine = run_tesseract,
+    budget: ExtractionBudget | None = None,
+) -> OOXMLExtraction:
+    """Read one admitted PPTX structurally, and only then its embedded rasters.
+
+    The structural read is what it has always been and is the whole extraction
+    by default: ``settings`` defaults to the explicit text-only profile, so a
+    caller that hands none opens no image member at all.
+
+    An embedded raster is examined only where the trusted settings say to and
+    their pinned models were served. Every candidate of one presentation shares
+    one aggregate execution budget -- across every slide, not one slide at a
+    time -- and a candidate that is refused, unsupported, malformed or cut short
+    keeps the structural record it already had and reports exactly why nothing
+    was read out of it. A picture a slide's own shape tree displays is the only
+    candidate: a layout's or master's shapes are never read as pictures at all,
+    and a link, a media reference, an embedded object, a chart, a diagram and
+    every non-picture shape display no raster of the package's own.
+
+    ``budget`` is that aggregate ceiling, injectable so a breach can be
+    exercised with a small budget rather than a real allocation.
+    """
+    settings = settings if settings is not None else text_only_settings()
+    images = _EmbeddedImages(
+        settings,
+        ocr_engine,
+        budget if budget is not None else ExtractionBudget(),
+        embedded_image_gate(settings),
+    )
     with _Package(content) as package:
         if "ppt/presentation.xml" not in package.names:
             raise OOXMLInvalid("PPTX presentation part is missing")
@@ -3898,7 +3931,7 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         segments: list[ExtractedSegment] = []
         for ordinal, (slide_id, part, hidden) in enumerate(slides, start=1):
             walker = _PptxWalker(
-                capture_id, part, slide_id, ordinal, hidden, segments, package
+                capture_id, part, slide_id, ordinal, hidden, segments, package, images
             )
             slide_root = package.xml(part)
             # The slide's own text first, so that what it shows itself is what
@@ -3977,14 +4010,20 @@ def extract_pptx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                     )
                 )
                 _bounded(segments)
+        limitations: dict[str, object] = {
+            "packageMembers": len(package.names),
+            "externalReferences": package.external_relationships,
+            **images.to_limitations(),
+        }
+        if images.budget.breach is not None:
+            limitations["limitBreach"] = images.budget.breach
         return OOXMLExtraction(
             tuple(segments),
             "slide",
             len(slides),
-            {
-                "packageMembers": len(package.names),
-                "externalReferences": package.external_relationships,
-            },
+            limitations,
+            failed_units=images.outcomes.count(EMBEDDED_MALFORMED),
+            limit_breach=images.budget.breach,
         )
 
 
@@ -9594,8 +9633,9 @@ class _PptxWalker:
     connections it encodes. A picture is inventoried where it sits, with the
     name, title and description its author claimed kept apart, and each
     non-empty alt claim reported as text of its own, and the image it names
-    recorded as the part or the link it is; the image itself is never opened or
-    decoded. Geometry and
+    recorded as the part or the link it is; the raster it embeds is examined
+    only where the trusted settings say so, and what was recognised in it is
+    published after the claims as a reading of its own. Geometry and
     the placeholder reference are recorded exactly as the shape encodes them;
     no value is resolved from a layout or master, and no group child-space
     mapping is applied, so a shape that encodes no transform carries none.
@@ -9623,6 +9663,7 @@ class _PptxWalker:
         hidden: bool,
         segments: list[ExtractedSegment],
         package: _Package,
+        images: _EmbeddedImages,
     ) -> None:
         self._capture_id = capture_id
         self._part = part
@@ -9631,6 +9672,7 @@ class _PptxWalker:
         self._hidden = hidden
         self._segments = segments
         self._package = package
+        self._images = images
         self._ids: set[str] = set()
         # Every visual identity this slide has already shown, in the order-free
         # form ``_visual`` builds. The inherited pass consults it; the slide's
@@ -10145,9 +10187,11 @@ class _PptxWalker:
         The record also inventories the image the picture names -- the embedded
         part's relationship, name, declared type and validated byte length, and
         separately the target, scheme and external flag of a linked one. That is
-        inventory about an image, not anything read out of one: nothing opens,
-        decodes, renders, OCRs or fetches it, and no image ever contributes
-        text.
+        inventory about an image rather than anything read out of one, and the
+        record states exactly what was read: whether the bytes were decoded,
+        whether the engine ran over them, and the one outcome that says why
+        nothing was read where nothing was. A linked reference carries no part,
+        so nothing of it is ever opened, resolved or fetched.
 
         A picture that references audio or video gets one further record at the
         same place, told from the picture's own by its ``kind`` and from the
@@ -10163,9 +10207,14 @@ class _PptxWalker:
         which attribute the words came from. They are the author's own words
         read straight out of the picture's non-visual properties, so they are
         reported by the method that found them, ``direct``, and never as
-        anything read off an image: nothing here opens, decodes or resolves an
-        image, there is no OCR, and no text is invented for a picture whose
+        anything read off an image: no text is invented for a picture whose
         author described it with none.
+
+        Any text recognised in the raster the picture embeds follows the
+        author's claims, as the separate reading it is: it is anchored to this
+        picture's own place on the slide and to the image part the bytes came
+        from, with the raster's own frame and line geometry, and it is never
+        joined to the slide's prose or to the alt text the author wrote.
 
         A claim written empty is reported by the record alone, which keeps it as
         the empty claim the file made rather than as text. Nothing is suppressed
@@ -10180,17 +10229,33 @@ class _PptxWalker:
         visibility = "hidden" if self._hidden else "visible"
         claims = _pptx_picture_claims(pic)
         media = _pptx_picture_media(self._package, self._part, pic)
+        locator = _locator(self._capture_id, **where)
+        record: dict[str, object] = {
+            "kind": "picture",
+            **{
+                name: None if value is None else _clip(value, _MAX_META_CHARS)
+                for name, value in claims.items()
+            },
+            **_pptx_picture_image(self._package, self._part, pic),
+        }
+        # The candidate carries this picture's own locator, so two pictures
+        # showing one image part stay two readings at two places on the slide.
+        # ``imagePart`` and ``imageContentType`` come from the record just
+        # built, so a picture naming only a reference out of the package carries
+        # no part here and nothing of that reference is opened, fetched or
+        # probed.
+        read = self._images.read(
+            self._package, record["imagePart"], record["imageContentType"], locator
+        )
         self._segments.append(
             ExtractedSegment(
                 "object_inventory",
-                _locator(self._capture_id, **where),
+                locator,
                 structured_value={
-                    "kind": "picture",
-                    **{
-                        name: None if value is None else _clip(value, _MAX_META_CHARS)
-                        for name, value in claims.items()
-                    },
-                    **_pptx_picture_image(self._package, self._part, pic),
+                    **record,
+                    "imageDecoded": read.decoded,
+                    "ocrPerformed": read.performed,
+                    "ocrOutcome": read.outcome,
                 },
                 extraction_method="inventory",
                 visibility=visibility,
@@ -10224,6 +10289,16 @@ class _PptxWalker:
                     text=text,
                     visibility=visibility,
                 )
+            )
+            _bounded(self._segments)
+        for reading in read.segments:
+            # A reading keeps the role, method, language and confidence the
+            # image path gave it, so an accepted line stays searchable text read
+            # by OCR and a below-threshold observation stays out of ordinary
+            # retrieval. A hidden slide hides what was read on it exactly as it
+            # hides the record above.
+            self._segments.append(
+                replace(reading, visibility=visibility) if self._hidden else reading
             )
             _bounded(self._segments)
 

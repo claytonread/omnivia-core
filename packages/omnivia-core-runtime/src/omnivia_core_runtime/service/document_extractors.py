@@ -222,9 +222,9 @@ def extract_document(
     packaged Text-and-local-OCR profile for PDF and image sources; nothing in it
     is ever derived from the document.
 
-    For a Word or Excel source the same settings decide whether the rasters
-    embedded in it are examined, which they are only where the profile says so
-    *and* its pinned models were served. Handed none, those paths are
+    For a Word, Excel or PowerPoint source the same settings decide whether the
+    rasters embedded in it are examined, which they are only where the profile
+    says so *and* its pinned models were served. Handed none, those paths are
     structural: no image member is opened.
     """
     if media_type in {"text/plain", "text/markdown"}:
@@ -252,21 +252,14 @@ def extract_document(
     }.get(media_type)
     if office_extractor is not None:
         try:
-            # The Word and Excel paths read embedded rasters, and each is handed
-            # the frozen settings rather than deciding anything of its own: with
-            # none, or with a profile that examines no embedded image, neither
-            # opens an image member at all and the extraction is structural. The
-            # slide path is unchanged and is handed nothing.
-            if media_type == DOCX_MEDIA_TYPE:
-                office_extraction = extract_docx(
-                    content, capture_id=capture_id, settings=settings
-                )
-            elif media_type == XLSX_MEDIA_TYPE:
-                office_extraction = extract_xlsx(
-                    content, capture_id=capture_id, settings=settings
-                )
-            else:
-                office_extraction = office_extractor(content, capture_id=capture_id)
+            # Every OOXML path reads embedded rasters, and each is handed the
+            # frozen settings rather than deciding anything of its own: with
+            # none, or with a profile that examines no embedded image, none of
+            # them opens an image member at all and the extraction is
+            # structural.
+            office_extraction = office_extractor(
+                content, capture_id=capture_id, settings=settings
+            )
         except OOXMLInvalid as error:
             raise DocumentExtractionInvalid(str(error)) from error
         limitations = dict(office_extraction.limitations)
