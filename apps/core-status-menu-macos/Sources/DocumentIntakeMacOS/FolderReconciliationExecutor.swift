@@ -408,8 +408,16 @@ public actor FolderReconciliationExecutor {
         var notResident = 0
         var unreadable = 0
         var drifted = false
+        // A source the person disconnected has no route left to verify through, so it is not part
+        // of the population at all. Counting it uncovered would hold the whole folder short of
+        // complete coverage for as long as the Disconnect stands, which is attention owed to a
+        // deliberate decision rather than to a gap.
+        let revoked = Set(
+            accessStore.descriptors().filter { $0.state == .disconnected }.map(\.accessRef)
+        )
         for member in subscription.members
             where member.state == .present && member.lastObservedDigest != nil
+                && !revoked.contains(member.accessRef)
         {
             let qualified: (residency: FolderContentResidency, digest: String?)
             do {

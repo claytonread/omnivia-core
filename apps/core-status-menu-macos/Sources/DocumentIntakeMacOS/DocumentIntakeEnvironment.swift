@@ -50,7 +50,10 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
         stateRoot: URL,
         bookmarkCodec: any SecurityScopedBookmarkCoding = SystemSecurityScopedBookmarkCodec(),
         reader: any CoordinatedOriginalReading = SystemCoordinatedOriginalReader(),
-        monotonicClock: (@Sendable () -> Int64)? = nil
+        monotonicClock: (@Sendable () -> Int64)? = nil,
+        // Wall clock for the periodic folder schedule, whose intervals are 15 minutes and 24
+        // hours. A test moves it by hand rather than waiting one out; production reads `Date`.
+        reconciliationClock: (@Sendable () -> Date)? = nil
     ) throws {
         self.reader = reader
         let clock = monotonicClock ?? Self.processUptimeMilliseconds()
@@ -82,6 +85,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             stateDirectory: stateRoot.appendingPathComponent("folder-reconciliation", isDirectory: true),
             subscriptions: folderSubscriptions,
             observation: folderObservation,
+            clock: reconciliationClock ?? { Date() },
             gate: gate
         )
         automaticScheduling = try AutomaticSchedulingStateMachine(
@@ -177,5 +181,13 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     /// added once can be listed as retained rather than as a watch.
     public func rootAccessGroups() -> [NativeRootAccessDescriptor] {
         accessStore.rootDescriptors()
+    }
+
+    /// The document routes this Mac holds, as projections that carry no bookmark
+    /// and no absolute route. The management window reads these so a child whose
+    /// folder-mediated reads have stopped can be shown as still read through a
+    /// route of its own.
+    public func documentAccessRoutes() -> [NativeAccessDescriptor] {
+        accessStore.descriptors()
     }
 }

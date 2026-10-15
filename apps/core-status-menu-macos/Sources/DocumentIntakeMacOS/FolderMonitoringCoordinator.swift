@@ -302,10 +302,18 @@ public actor FolderMonitoringCoordinator {
                 }
                 .compactMap { $0.intent.originalBinding?.memberId }
         )
+        // A source the person disconnected has no local route left. Its membership stays on
+        // record, so a later scan never re-enrols it as a newly discovered child, and nothing is
+        // read through the revoked grant: the Disconnect is what prevents rediscovery, rather
+        // than the file having to leave the folder.
+        let revoked = Set(
+            accessStore.descriptors().filter { $0.state == .disconnected }.map(\.accessRef)
+        )
         let credibleChanges = candidates.filter { candidate in
             guard let existing = existingByPath[Self.pathKey(candidate.relativeComponents)] else {
                 return true
             }
+            guard !revoked.contains(existing.accessRef) else { return false }
             return existing.lastObservedByteLength != candidate.byteLength
         }
         let credibleDisappearances = subscription.members.filter {
@@ -350,6 +358,8 @@ public actor FolderMonitoringCoordinator {
         for candidate in candidates {
             let key = Self.pathKey(candidate.relativeComponents)
             if var member = existingByPath[key] {
+                // See `revoked`: a disconnected source is left exactly as it stands.
+                if revoked.contains(member.accessRef) { continue }
                 member.state = .present
                 if unresolved.contains(member.memberID) {
                     Self.replace(member, in: &updated.members)

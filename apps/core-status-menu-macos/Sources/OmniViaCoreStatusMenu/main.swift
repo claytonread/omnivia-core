@@ -235,6 +235,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 activityStore: environment.captureActivity,
                 observeActivity: { try environment.recordCaptureActivity() },
                 rootGroups: { environment.rootAccessGroups() },
+                documentRoutes: { environment.documentAccessRoutes() },
                 // The same authenticated application-operation client `document capture`
                 // is delivered through, for the two canonical document operations the
                 // management window reads and authorises. Absent when no client could be

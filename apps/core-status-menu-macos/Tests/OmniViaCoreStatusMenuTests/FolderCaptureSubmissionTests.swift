@@ -1,3 +1,4 @@
+import CryptoKit
 @testable import DocumentIntakeMacOS
 import Foundation
 import XCTest
@@ -10,6 +11,19 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         }
         func startAccessing(_ url: URL) -> Bool { true }
         func stopAccessing(_ url: URL) {}
+    }
+
+    /// The wall clock the periodic folder schedule reads, moved by hand: the design's intervals
+    /// are 15 minutes and 24 hours, and neither is waited out in a test.
+    private final class Clock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Date
+
+        init(_ value: Date) { self.value = value }
+
+        var now: Date { lock.withLock { value } }
+
+        func advance(_ seconds: TimeInterval) { lock.withLock { value += seconds } }
     }
 
     func testPlanAppliesRecursiveHiddenAndSupportedFormatScope() throws {
@@ -413,6 +427,449 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         XCTAssertTrue(environment.queue.allEntries().allSatisfy {
             $0.intent.basePrecondition == .expected(nil)
         })
+    }
+
+    /// MON-06: a new-and-changed baseline at all three of the moments the gate
+    /// names. The existing files are recorded locally and produce no Core evidence
+    /// at creation, again after a restart, and again at the first 24-hour content
+    /// verification — which is the one pass that re-reads their bytes.
+    func testAnOnlyNewAndChangedBaselineMakesNoEvidenceAtCreationRestartOrTheFirstContentPass() async throws {
+        let root = try temporaryDirectory()
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        try Data("baseline".utf8).write(to: root.appendingPathComponent("existing.txt"))
+        try Data("other".utf8).write(to: root.appendingPathComponent("other.md"))
+        let clock = Clock(Date(timeIntervalSince1970: 1_760_000_000))
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: BookmarkCodec(),
+            reconciliationClock: { clock.now }
+        )
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(
+                mode: .keepUpdated,
+                recursive: true,
+                includeHidden: false,
+                watchInitialContent: .onlyNewAndChanged
+            )
+        )
+
+        // At creation: the baseline is local only. Nothing is queued, so nothing
+        // can reach Core, and no member claims a capture.
+        let created = try await submission.submit(plan)
+        XCTAssertTrue(created.isEmpty)
+        XCTAssertTrue(environment.queue.allEntries().isEmpty)
+        let established = try XCTUnwrap(environment.folderSubscriptions.all().first)
+        XCTAssertEqual(established.state, .active)
+        XCTAssertEqual(established.members.count, 2)
+        XCTAssertTrue(established.members.allSatisfy { $0.baselineItemID == nil })
+        XCTAssertTrue(established.members.allSatisfy { $0.lastQueuedItemID == nil })
+        XCTAssertTrue(established.members.allSatisfy { $0.currentSuccessfulCaptureID == nil })
+        XCTAssertTrue(established.members.allSatisfy { $0.lastObservedDigest != nil })
+
+        // After a restart: the same durable state, read by a new process. The
+        // pending establishment is already finished, and a full scan recognises
+        // every baseline member as unchanged rather than as new.
+        let restarted = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: BookmarkCodec(),
+            reconciliationClock: { clock.now }
+        )
+        let pending = await restarted.reconcilePendingFolderEstablishment()
+        XCTAssertTrue(pending.isEmpty)
+        let afterRestart = await restarted.folderMonitoring.reconcileAll()
+        XCTAssertEqual(afterRestart.map(\.queued), [0])
+        XCTAssertEqual(afterRestart.map(\.unchanged), [2])
+        XCTAssertTrue(restarted.queue.allEntries().isEmpty)
+        XCTAssertEqual(
+            restarted.folderSubscriptions.all().first?.members
+                .compactMap(\.currentSuccessfulCaptureID).count,
+            0
+        )
+
+        // The first scheduled passes, the 24-hour content verification among
+        // them: it re-reads exactly these baseline members' bytes and finds them
+        // unchanged, so there is nothing to hand to the capture path.
+        let first = try restarted.folderReconciliation.schedule()
+        XCTAssertEqual(
+            Set(first.map(\.kind)),
+            Set(FolderReconciliationKind.allCases)
+        )
+        let firstRuns = await restarted.folderReconciliationExecutor.run(first)
+        XCTAssertEqual(firstRuns.map(\.outcome), [.complete, .complete])
+        XCTAssertTrue(firstRuns.allSatisfy { !$0.drifted })
+        // Both baseline members really were the population of the content pass:
+        // a pass that examined nothing would also report complete coverage.
+        XCTAssertEqual(
+            firstRuns.first { $0.kind == .content }?.result?.examined,
+            2
+        )
+        XCTAssertTrue(restarted.queue.allEntries().isEmpty)
+
+        // And again once the content interval has actually come round, which is
+        // the moment the gate names. A due interval reads the same bytes and
+        // still finds nothing owed.
+        clock.advance(FolderReconciliationKind.content.interval * 2)
+        let due = try restarted.folderReconciliation.schedule()
+        XCTAssertTrue(due.contains { $0.kind == .content && $0.trigger == .due })
+        let dueRuns = await restarted.folderReconciliationExecutor.run(due)
+        XCTAssertEqual(Set(dueRuns.compactMap(\.outcome)), [.complete])
+        XCTAssertTrue(dueRuns.allSatisfy { !$0.drifted })
+        XCTAssertEqual(dueRuns.first { $0.kind == .content }?.result?.examined, 2)
+        XCTAssertTrue(restarted.queue.allEntries().isEmpty)
+        let afterContent = await restarted.folderMonitoring.reconcileAll()
+        XCTAssertEqual(afterContent.map(\.queued), [0])
+        XCTAssertTrue(restarted.queue.allEntries().isEmpty)
+        XCTAssertTrue(
+            restarted.folderReconciliation
+                .coverage(subscriptionID: established.subscriptionID)
+                .allSatisfy { $0.isUpToDate(at: clock.now) }
+        )
+    }
+
+    /// MON-30: a member whose last outcome was a known negative — a refusal and a
+    /// zero-text extraction. Repeated events and both the 15-minute and the
+    /// 24-hour check leave it alone, and none of them reports it as added.
+    func testAKnownNegativeOutcomeIsNotReprocessedByRepeatedEventsOrEitherIntervalCheck() async throws {
+        let root = try temporaryDirectory()
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        let refused = root.appendingPathComponent("refused.txt")
+        let blank = root.appendingPathComponent("blank.md")
+        try Data("one".utf8).write(to: refused)
+        try Data("two".utf8).write(to: blank)
+        let clock = Clock(Date(timeIntervalSince1970: 1_760_000_000))
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: BookmarkCodec(),
+            reconciliationClock: { clock.now }
+        )
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(mode: .keepUpdated, recursive: true, includeHidden: false)
+        )
+        let baseline = try await submission.submit(plan)
+        for (index, entry) in baseline.enumerated() {
+            try admit(
+                entry,
+                captureID: "dcap-" + String(repeating: String(format: "%x", index + 1), count: 64),
+                queue: environment.queue
+            )
+        }
+        _ = await environment.folderMonitoring.reconcileAll()
+        let admitted = try XCTUnwrap(environment.folderSubscriptions.all().first)
+        XCTAssertEqual(admitted.state, .active)
+        let baselineCaptures = Set(admitted.members.compactMap(\.currentSuccessfulCaptureID))
+        XCTAssertEqual(baselineCaptures.count, 2)
+        // The control for the two interval claims below: while this watch is
+        // ordinary, both kinds of periodic work are owed and armed. What silences
+        // them later is the negative outcome, not an empty schedule.
+        XCTAssertEqual(
+            Set(try environment.folderReconciliation.schedule().map(\.kind)),
+            Set(FolderReconciliationKind.allCases)
+        )
+
+        // A new version of each is read and queued, then Core reports a known
+        // negative for both: one refused outright, one admitted no text.
+        try Data("one changed".utf8).write(to: refused)
+        try Data("two changed".utf8).write(to: blank)
+        let changed = await environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(changed.map(\.queued), [2])
+        let negatives = environment.queue.allEntries().filter {
+            $0.intent.surface == .automaticFolder
+                && !baseline.map(\.intent.itemId).contains($0.intent.itemId)
+        }
+        XCTAssertEqual(negatives.count, 2)
+        for (entry, code) in zip(
+            negatives.sorted { $0.intent.itemId < $1.intent.itemId },
+            ["unsupported_format", "zero_text_extracted"]
+        ) {
+            _ = try environment.queue.markFailed(itemID: entry.intent.itemId, failureCode: code)
+        }
+        _ = await environment.folderMonitoring.reconcileReceipts()
+
+        let remembered = try XCTUnwrap(environment.folderSubscriptions.all().first)
+        XCTAssertEqual(remembered.state, .reviewRequired)
+        // No success is shown for either refused version: neither digest is kept
+        // as synchronized, and the only captures on record are the baselines'.
+        XCTAssertTrue(remembered.members.allSatisfy { $0.lastObservedDigest == nil })
+        XCTAssertTrue(remembered.members.allSatisfy { $0.lastQueuedItemID == nil })
+        XCTAssertEqual(
+            Set(remembered.members.compactMap(\.currentSuccessfulCaptureID)),
+            baselineCaptures
+        )
+
+        // Repeated events change nothing: the known negative is remembered, so no
+        // further read or publication is attempted for either member.
+        let before = environment.queue.allEntries()
+        for _ in 0..<3 {
+            await environment.folderMonitoring.markDirty(
+                subscriptionIDs: [remembered.subscriptionID]
+            )
+            let repeated = await environment.folderMonitoring.reconcileAll()
+            XCTAssertEqual(repeated.map(\.queued), [0])
+        }
+        XCTAssertEqual(environment.queue.allEntries(), before)
+
+        // And neither interval check revives it. Nothing is owed at 15 minutes or
+        // at 24 hours, and a demand handed over anyway reads nothing.
+        for interval in [
+            FolderReconciliationKind.metadata.interval,
+            FolderReconciliationKind.content.interval,
+        ] {
+            clock.advance(interval * 2)
+            XCTAssertTrue(try environment.folderReconciliation.schedule().isEmpty)
+            XCTAssertTrue(environment.folderReconciliation.due().isEmpty)
+            let forced = await environment.folderReconciliationExecutor.run(
+                FolderReconciliationKind.allCases.map {
+                    FolderReconciliationScheduler.Demand(
+                        subscriptionID: remembered.subscriptionID,
+                        kind: $0,
+                        trigger: .due
+                    )
+                }
+            )
+            XCTAssertEqual(forced.map(\.skipped), [.notActive, .notActive])
+            XCTAssertTrue(forced.allSatisfy { $0.result == nil })
+        }
+        XCTAssertEqual(environment.queue.allEntries(), before)
+        let negativeIDs = Set(negatives.map(\.intent.itemId))
+        XCTAssertEqual(
+            Set(
+                environment.queue.allEntries()
+                    .filter { negativeIDs.contains($0.intent.itemId) }
+                    .compactMap(\.failureCode)
+            ),
+            ["unsupported_format", "zero_text_extracted"]
+        )
+    }
+
+    /// MON-23: a disconnected source is not rediscovered. The folder owner's own
+    /// release revokes only the route it owns; the source action revokes every
+    /// local route, and a later scan over a tree that still holds the file reads
+    /// nothing through it and never enrols it again.
+    func testADisconnectedSourceIsNeverRediscoveredByALaterScan() async throws {
+        let root = try temporaryDirectory()
+        let kept = root.appendingPathComponent("kept.txt")
+        let dropped = root.appendingPathComponent("dropped.txt")
+        try Data("kept".utf8).write(to: kept)
+        try Data("dropped".utf8).write(to: dropped)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec()
+        )
+        let submission = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        let plan = try submission.plan(
+            root: root,
+            policy: FolderCapturePolicy(mode: .keepUpdated, recursive: true, includeHidden: false)
+        )
+        let baseline = try await submission.submit(plan)
+        for (index, entry) in baseline.enumerated() {
+            try admit(
+                entry,
+                captureID: "dcap-" + String(repeating: String(format: "%x", index + 1), count: 64),
+                queue: environment.queue
+            )
+        }
+        _ = await environment.folderMonitoring.reconcileAll()
+        let watched = try XCTUnwrap(environment.folderSubscriptions.all().first)
+        let member = try XCTUnwrap(watched.members.first { $0.displayName == "dropped.txt" })
+
+        // Disconnect the source, not the folder: every route this Mac holds for
+        // that one document is revoked and no other document is touched.
+        let revoked = try environment.accessStore.disconnect(
+            linkedDocumentID: member.linkedDocumentID
+        )
+        XCTAssertEqual(revoked.map(\.accessRef), [member.accessRef])
+        XCTAssertTrue(
+            environment.accessStore.descriptors()
+                .filter { $0.accessRef != member.accessRef }
+                .allSatisfy { $0.state == .connected }
+        )
+
+        // The file is still in the tree and its bytes change, which is exactly
+        // what a scan would otherwise read and enrol.
+        try Data("dropped and changed".utf8).write(to: dropped)
+        try Data("kept and changed".utf8).write(to: kept)
+        let rescan = await environment.folderMonitoring.reconcileAll()
+
+        // The watch is unharmed and the other member is still read; the
+        // disconnected one is neither read, nor queued, nor enrolled a second
+        // time under a new membership.
+        XCTAssertEqual(rescan.map(\.state), [.active])
+        XCTAssertEqual(rescan.map(\.queued), [1])
+        let after = try XCTUnwrap(environment.folderSubscriptions.all().first)
+        XCTAssertEqual(after.members.count, watched.members.count)
+        XCTAssertEqual(
+            after.members.filter { $0.displayName == "dropped.txt" }.map(\.memberID),
+            [member.memberID]
+        )
+        // Two baselines plus one new version of the connected file, and nothing
+        // at all for the disconnected one.
+        XCTAssertEqual(
+            environment.queue.allEntries()
+                .filter { $0.intent.surface == .automaticFolder }
+                .compactMap(\.intent.displayName)
+                .sorted(),
+            ["dropped.txt", "kept.txt", "kept.txt"]
+        )
+        // Repeating the scan never catches up on it either.
+        let again = await environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(again.map(\.queued), [0])
+        XCTAssertThrowsError(
+            try environment.accessStore.withReadAccess(
+                accessRef: member.accessRef,
+                expectedGeneration: member.membershipGeneration,
+                expectedRootBindingGeneration: after.rootBindingGeneration
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .disconnected) }
+    }
+
+    /// MON-21: two genuinely overlapping watched roots and a direct route over the
+    /// same file. Each membership is its own, every identity is minted rather than
+    /// derived from the bytes, and nothing is shared with another workspace.
+    func testOverlappingRootsAndADirectRouteKeepIndependentNonContentIdentities() async throws {
+        let outer = try temporaryDirectory()
+        let inner = outer.appendingPathComponent("inner", isDirectory: true)
+        try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+        let shared = inner.appendingPathComponent("shared.txt")
+        // Byte-identical twins: an identity derived from content could not tell
+        // them apart.
+        let twin = inner.appendingPathComponent("twin.txt")
+        try Data("identical".utf8).write(to: shared)
+        try Data("identical".utf8).write(to: twin)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: outer.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec()
+        )
+
+        let outerWatch = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        _ = try await outerWatch.submit(
+            try outerWatch.plan(
+                root: outer,
+                policy: FolderCapturePolicy(mode: .keepUpdated, recursive: true, includeHidden: false)
+            )
+        )
+        let innerWatch = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        _ = try await innerWatch.submit(
+            try innerWatch.plan(
+                root: inner,
+                policy: FolderCapturePolicy(mode: .keepUpdated, recursive: true, includeHidden: false)
+            )
+        )
+        // The same file again, this time through its own direct route.
+        _ = try await ManualCaptureSubmission(
+            environment: environment,
+            workspaceRef: "workspace-1"
+        ).submit([ManualCaptureCandidate(url: shared, keepUpdated: true)])
+
+        // Two overlapping roots, each with its own grant, and one direct route.
+        let subscriptions = environment.folderSubscriptions.all()
+        XCTAssertEqual(subscriptions.count, 2)
+        XCTAssertEqual(Set(subscriptions.map(\.rootRef)).count, 2)
+        let memberships = subscriptions.flatMap { subscription in
+            subscription.members.filter { $0.displayName.hasSuffix("shared.txt") }
+        }
+        XCTAssertEqual(memberships.count, 2)
+        let direct = try XCTUnwrap(environment.fileSubscriptions.all().first)
+        let routes = environment.accessStore.descriptors()
+        // Every membership is its own connected route, and the direct one is the
+        // only route that does not resolve through a root group.
+        XCTAssertEqual(
+            Set(memberships.map(\.accessRef) + [direct.accessRef]).count,
+            3
+        )
+        XCTAssertEqual(
+            Set(routes.filter { $0.route == .directFile && $0.state == .connected }
+                .map(\.linkedDocumentID)),
+            [direct.linkedDocumentID]
+        )
+        XCTAssertTrue(
+            memberships.allSatisfy { membership in
+                routes.contains {
+                    $0.accessRef == membership.accessRef
+                        && $0.state == .connected
+                        && $0.route != .directFile
+                }
+            }
+        )
+
+        // No identity anywhere is derived from the file's bytes. The two
+        // byte-identical twins get different identities, the overlapping
+        // memberships of one file get different identities again, and none of
+        // them contains the digest of what it names.
+        let digest = "sha256:" + SHA256.hash(data: try Data(contentsOf: shared))
+            .map { String(format: "%02x", $0) }.joined()
+        let identities = subscriptions.flatMap(\.members).map(\.requestedSourceIdentity)
+            + [direct.requestedSourceIdentity]
+        XCTAssertEqual(identities.count, 5)
+        XCTAssertEqual(Set(identities).count, 5)
+        XCTAssertTrue(identities.allSatisfy { !$0.contains(digest.dropFirst(7)) })
+        XCTAssertTrue(identities.allSatisfy { $0.hasPrefix("source-") })
+        let twins = subscriptions.flatMap(\.members)
+            .filter { $0.displayName.hasSuffix("twin.txt") }
+        XCTAssertEqual(twins.count, 2)
+        XCTAssertTrue(
+            Set(twins.map(\.requestedSourceIdentity))
+                .isDisjoint(with: Set(memberships.map(\.requestedSourceIdentity)))
+        )
+        // Changing the bytes does not change any recorded identity.
+        try Data("rewritten entirely".utf8).write(to: shared)
+        _ = await environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(
+            Set(environment.folderSubscriptions.all().flatMap(\.members)
+                .map(\.requestedSourceIdentity)),
+            Set(subscriptions.flatMap(\.members).map(\.requestedSourceIdentity))
+        )
+
+        // One verified capture per membership and never two for the same one:
+        // each of the three routes over this file published exactly one intent,
+        // under its own operation key, and the two folder memberships stay
+        // distinct members rather than collapsing into each other.
+        let overlapping = environment.queue.allEntries().filter {
+            $0.intent.displayName?.hasSuffix("shared.txt") == true
+        }
+        XCTAssertEqual(overlapping.count, 3)
+        XCTAssertEqual(Set(overlapping.map(\.intent.operationKey)).count, 3)
+        XCTAssertEqual(
+            Set(overlapping.compactMap { $0.intent.originalBinding?.memberId }),
+            Set(memberships.map(\.memberID))
+        )
+
+        // The memberships are held independently: stopping the inner watch
+        // releases only the route it owns, and the outer membership still reads
+        // the same file.
+        let innerSubscription = try XCTUnwrap(
+            subscriptions.first { $0.rootDisplayName == "inner" }
+        )
+        _ = try await environment.folderMonitoring.stop(
+            subscriptionID: innerSubscription.subscriptionID
+        )
+        let outerMembership = try XCTUnwrap(
+            subscriptions.first { $0.rootDisplayName != "inner" }?
+                .members.first { $0.displayName.hasSuffix("shared.txt") }
+        )
+        let outerRootGeneration = try XCTUnwrap(
+            subscriptions.first { $0.rootDisplayName != "inner" }?.rootBindingGeneration
+        )
+        XCTAssertEqual(
+            try environment.accessStore.withReadAccess(
+                accessRef: outerMembership.accessRef,
+                expectedGeneration: outerMembership.membershipGeneration,
+                expectedRootBindingGeneration: outerRootGeneration
+            ) { try String(contentsOf: $0, encoding: .utf8) },
+            "rewritten entirely"
+        )
+
+        // Nothing is reused across workspaces: this source's scheduling unit is
+        // its own minted identity under the one workspace it was configured for,
+        // so no other workspace names the same unit and nothing about it comes
+        // from the bytes.
+        let key = FileMonitoringCoordinator.schedulingKey(for: direct)
+        XCTAssertEqual(key.source.workspaceRef, "workspace-1")
+        XCTAssertEqual(key.source.sourceRef, direct.requestedSourceIdentity)
+        XCTAssertFalse(key.source.sourceRef.contains(digest.dropFirst(7)))
     }
 
     func testUnusualFolderGrowthRequiresExplicitReviewBeforeAnyAutomaticReadPublication() async throws {

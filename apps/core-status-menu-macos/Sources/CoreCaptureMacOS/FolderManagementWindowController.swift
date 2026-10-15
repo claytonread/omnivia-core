@@ -22,6 +22,10 @@ public final class FolderManagementWindowController: NSWindowController,
     /// Retained root groups. Read through a closure so the window never holds the
     /// access store, which owns bookmarks this surface has no business seeing.
     private let rootGroups: () -> [NativeRootAccessDescriptor]
+    /// The document routes this Mac holds, read through the same kind of closure and for the
+    /// same reason. The projections carry no bookmark: this surface only asks which documents
+    /// still have a route of their own.
+    private let documentRoutes: () -> [NativeAccessDescriptor]
     /// The authenticated application-operation transport for the two canonical document
     /// operations this surface uses. `nil` when no client could be resolved, which is a
     /// state the detail pane states rather than a reason to show nothing.
@@ -73,6 +77,7 @@ public final class FolderManagementWindowController: NSWindowController,
         activityStore: CaptureActivityStore,
         observeActivity: @escaping () throws -> [CaptureActivityRecord],
         rootGroups: @escaping () -> [NativeRootAccessDescriptor],
+        documentRoutes: @escaping () -> [NativeAccessDescriptor],
         historyTransport: CoreDocumentHistoryTransport? = nil,
         locateOriginal: (() -> Void)? = nil
     ) {
@@ -86,6 +91,7 @@ public final class FolderManagementWindowController: NSWindowController,
         self.activityStore = activityStore
         self.observeActivity = observeActivity
         self.rootGroups = rootGroups
+        self.documentRoutes = documentRoutes
         self.historyTransport = historyTransport
         self.locateOriginal = locateOriginal
         model = FilesAndFoldersModel(workspaceName: workspaceName)
@@ -270,6 +276,9 @@ public final class FolderManagementWindowController: NSWindowController,
             runs: runs,
             activity: activity,
             activityAvailability: availability,
+            independentlyRoutedDocuments: FilesAndFoldersModel.independentlyRoutedDocuments(
+                routes: documentRoutes()
+            ),
             coreHistory: historyState
         )
         applyFilters()

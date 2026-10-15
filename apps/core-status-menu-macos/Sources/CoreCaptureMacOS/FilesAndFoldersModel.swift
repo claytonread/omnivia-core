@@ -474,6 +474,9 @@ public struct FilesAndFoldersModel: Sendable {
     /// Whether that activity is the current durable record or the last thing
     /// this process managed to read.
     public let activityAvailability: CaptureActivityAvailability
+    /// Documents this Mac still holds a route of their own for, independently of any folder
+    /// they are a member of. See `independentlyRoutedDocuments(routes:)`.
+    public let independentlyRoutedDocuments: Set<String>
     /// The canonical Core history of at most one document: the selected one. It is kept
     /// in its own field, never folded into `activity`, because the two answer different
     /// questions and one of them is not this Mac's to answer.
@@ -487,6 +490,7 @@ public struct FilesAndFoldersModel: Sendable {
         runs: [FolderBulkRun] = [],
         activity: [CaptureActivityRecord] = [],
         activityAvailability: CaptureActivityAvailability = .current,
+        independentlyRoutedDocuments: Set<String> = [],
         coreHistory: CoreHistoryState = .notRequested
     ) {
         self.workspaceName = workspaceName
@@ -496,6 +500,7 @@ public struct FilesAndFoldersModel: Sendable {
         self.runs = runs
         self.activity = activity
         self.activityAvailability = activityAvailability
+        self.independentlyRoutedDocuments = independentlyRoutedDocuments
         self.coreHistory = coreHistory
         activityGroups = Self.activityGroups(records: activity, runs: runs)
     }
@@ -511,6 +516,7 @@ public struct FilesAndFoldersModel: Sendable {
             runs: runs,
             activity: activity,
             activityAvailability: activityAvailability,
+            independentlyRoutedDocuments: independentlyRoutedDocuments,
             coreHistory: history
         )
     }
@@ -658,6 +664,22 @@ public struct FilesAndFoldersModel: Sendable {
                 membersFrozen: group.membersFrozen
             )
         }
+    }
+
+    /// The documents that hold a direct route of their own, so a folder member whose
+    /// root-mediated reads have stopped can be distinguished from one that is still being read.
+    ///
+    /// Only a connected direct route counts. A member route resolves through its root group's
+    /// own grant, so it stops with the root and is not independent of it; a disconnected route
+    /// reads nothing at all.
+    public static func independentlyRoutedDocuments(
+        routes: [NativeAccessDescriptor]
+    ) -> Set<String> {
+        Set(
+            routes
+                .filter { $0.state == .connected && $0.route == .directFile }
+                .map(\.linkedDocumentID)
+        )
     }
 
     public func items(
@@ -1243,6 +1265,30 @@ public struct FilesAndFoldersModel: Sendable {
                 value: value.reviewChangeCount.map(String.init) ?? "None recorded"
             ),
         ]
+        // Children this folder no longer reads: one that left the watched root, or every member
+        // once the watch itself is stopped. A stopped root read and a still-live direct one are
+        // different facts, so the ones that continue through a route of their own are named
+        // rather than left to look equally stopped.
+        let unread = value.state == .stopped
+            ? value.members
+            : value.members.filter { $0.state == .absent }
+        if !unread.isEmpty {
+            let continuing = unread
+                .filter { independentlyRoutedDocuments.contains($0.linkedDocumentID) }
+                .map(\.displayName)
+                .sorted()
+            facts.append(
+                DetailFact(
+                    label: "No longer read through this folder",
+                    value: "\(unread.count) of \(value.members.count). "
+                        + (continuing.isEmpty
+                            ? "None of them has a link of its own, so none is still being read."
+                            : "Still read through their own link (\(continuing.count)): "
+                                + continuing.prefix(10).joined(separator: ", ")
+                                + (continuing.count > 10 ? " and others" : ""))
+                )
+            )
+        }
         if value.state == .stopped {
             facts.append(Self.retainedLinksFact)
         }

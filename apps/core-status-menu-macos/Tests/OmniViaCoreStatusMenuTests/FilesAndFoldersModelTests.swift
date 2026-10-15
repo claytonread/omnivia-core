@@ -77,6 +77,36 @@ final class FilesAndFoldersModelTests: XCTestCase {
         )
     }
 
+    /// One folder's detail facts, keyed by label.
+    private func facts(
+        of value: FolderSubscription,
+        independentlyRoutedDocuments: Set<String> = []
+    ) -> [String: String] {
+        Dictionary(
+            uniqueKeysWithValues: model(
+                folders: [value],
+                independentlyRoutedDocuments: independentlyRoutedDocuments
+            )
+            .detail(for: .folder(value))
+            .map { ($0.label, $0.value) }
+        )
+    }
+
+    private func route(
+        document: String,
+        kind: NativeAccessRoute,
+        state: NativeAccessState = .connected
+    ) -> NativeAccessDescriptor {
+        NativeAccessDescriptor(
+            accessRef: "access-\(document)",
+            linkedDocumentID: document,
+            generation: 1,
+            rootBindingGeneration: kind == .directFile ? nil : 1,
+            state: state,
+            route: kind
+        )
+    }
+
     private func member(
         id: String,
         state: FolderMemberState = .present
@@ -168,7 +198,8 @@ final class FilesAndFoldersModelTests: XCTestCase {
         retainedRoots: [RetainedRootGroup] = [],
         runs: [FolderBulkRun] = [],
         activity: [CaptureActivityRecord] = [],
-        activityAvailability: CaptureActivityAvailability = .current
+        activityAvailability: CaptureActivityAvailability = .current,
+        independentlyRoutedDocuments: Set<String> = []
     ) -> FilesAndFoldersModel {
         FilesAndFoldersModel(
             workspaceName: "workspace-1",
@@ -177,7 +208,8 @@ final class FilesAndFoldersModelTests: XCTestCase {
             retainedRoots: retainedRoots,
             runs: runs,
             activity: activity,
-            activityAvailability: activityAvailability
+            activityAvailability: activityAvailability,
+            independentlyRoutedDocuments: independentlyRoutedDocuments
         )
     }
 
@@ -538,6 +570,79 @@ final class FilesAndFoldersModelTests: XCTestCase {
             FilesAndFoldersModel.retainedRoots(groups: [group()], runs: [], folders: []).isEmpty,
             "no durable run names this root, so no display name can be stated"
         )
+    }
+
+    // MARK: - Independent route disclosure
+
+    /// MON-17: only a connected direct route is independent of a folder. A member
+    /// route resolves through its root group's own grant, so it stops when the
+    /// root does, and a disconnected route reads nothing at all.
+    func testOnlyAConnectedDirectRouteCountsAsIndependentOfAFolder() {
+        let routes = [
+            route(document: "document-own", kind: .directFile),
+            route(document: "document-revoked", kind: .directFile, state: .disconnected),
+            route(
+                document: "document-member",
+                kind: .rootMember(
+                    rootRef: "root-1",
+                    memberRef: "member-1",
+                    relativeComponents: ["member.pdf"]
+                )
+            ),
+        ]
+
+        XCTAssertEqual(
+            FilesAndFoldersModel.independentlyRoutedDocuments(routes: routes),
+            ["document-own"]
+        )
+    }
+
+    /// MON-17: a child that left the watched root. Reads through the folder have
+    /// stopped for it, and the pane states which of those children continue
+    /// through a route of their own rather than letting them all look stopped.
+    func testAChildThatLeftTheRootIsDisclosedAsContinuingThroughItsOwnRoute() {
+        let moved = member(id: "moved", state: .absent)
+        let gone = member(id: "gone", state: .absent)
+        let watched = folder(members: [member(id: "stays"), moved, gone])
+
+        let disclosed = facts(
+            of: watched,
+            independentlyRoutedDocuments: [moved.linkedDocumentID]
+        )["No longer read through this folder"]
+        let silent = facts(of: watched)["No longer read through this folder"]
+
+        XCTAssertEqual(
+            disclosed,
+            "2 of 3. Still read through their own link (1): moved.pdf"
+        )
+        XCTAssertEqual(
+            silent,
+            "2 of 3. None of them has a link of its own, so none is still being read."
+        )
+        // Nothing has left an intact watch, so there is no such distinction to draw.
+        XCTAssertNil(
+            facts(
+                of: folder(members: [member(id: "stays")]),
+                independentlyRoutedDocuments: [moved.linkedDocumentID]
+            )["No longer read through this folder"]
+        )
+    }
+
+    /// MON-17: stopping the watch stops the root-mediated read of every member, so
+    /// the same distinction is drawn over all of them.
+    func testAStoppedWatchDisclosesEveryChildAndWhichOnesStillHaveTheirOwnRoute() {
+        let own = member(id: "own")
+        let other = member(id: "other")
+        let stopped = folder(state: .stopped, members: [own, other])
+
+        let values = facts(of: stopped, independentlyRoutedDocuments: [own.linkedDocumentID])
+
+        XCTAssertEqual(
+            values["No longer read through this folder"],
+            "2 of 2. Still read through their own link (1): own.pdf"
+        )
+        XCTAssertEqual(values["Updates"], "Stopped. This folder is no longer kept updated.")
+        XCTAssertNotNil(values["Already added files"])
     }
 
     // MARK: - Detail facts

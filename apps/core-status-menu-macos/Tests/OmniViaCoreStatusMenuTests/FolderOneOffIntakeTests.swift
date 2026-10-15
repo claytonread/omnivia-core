@@ -827,6 +827,76 @@ final class FolderOneOffIntakeTests: XCTestCase {
         )
     }
 
+    /// MON-04: the gate's distinguishing condition is scale. A reviewed plan of
+    /// a thousand files is acknowledged as a frozen manifest, not as a thousand
+    /// added files, and it drains only through bounded batches that never breach
+    /// the ordinary queue caps.
+    func testAThousandFileRunIsNeverSuccessAtCreationAndDrainsInBoundedBatches() async throws {
+        let root = try temporaryDirectory()
+        let planned = 1_000
+        for index in 0..<planned {
+            try write("file \(index)", to: root.appendingPathComponent(String(format: "%04d.txt", index)))
+        }
+        let environment = try environment(for: root)
+        let submission = FolderCaptureSubmission(
+            environment: environment,
+            workspaceRef: "workspace-1"
+        )
+        let plan = try submission.plan(root: root, policy: Self.importOnce)
+        XCTAssertEqual(plan.members.count, planned)
+        XCTAssertNil(plan.limit)
+
+        let receipt = try await submission.submitWithReceipt(plan)
+
+        // Creation acknowledges the manifest. It is not an outcome: nothing is
+        // added, the run is still adding, and only one bounded batch published.
+        XCTAssertEqual(receipt.entries.count, FolderBulkRunCoordinator.maximumBatchItems)
+        let run = try XCTUnwrap(environment.folderBulkRuns.all().first)
+        XCTAssertEqual(run.members.count, planned)
+        XCTAssertEqual(run.admittedCount, 0)
+        XCTAssertEqual(run.publishedCount, FolderBulkRunCoordinator.maximumBatchItems)
+        XCTAssertEqual(run.plannedCount, planned - FolderBulkRunCoordinator.maximumBatchItems)
+        XCTAssertEqual(run.state, .adding)
+        XCTAssertNotEqual(run.state, .complete)
+        let atCreation = await environment.folderBulkCoordinator.advance(runID: run.runID)
+        XCTAssertTrue(atCreation.progressDetail.contains("0 added"))
+        XCTAssertTrue(atCreation.progressDetail.contains("of \(planned)"))
+
+        // Drain the rest. Every batch respects the item bound and the queue
+        // never holds more unresolved work than the ordinary cap allows.
+        var admitted = 0
+        var batches = [receipt.entries, atCreation.newlyPublished]
+        var drained = 0
+        while let batch = batches.first {
+            batches.removeFirst()
+            XCTAssertLessThanOrEqual(batch.count, FolderBulkRunCoordinator.maximumBatchItems)
+            XCTAssertLessThanOrEqual(
+                environment.queue.allEntries().filter {
+                    [.pending, .staging, .unknownOutcome].contains($0.state)
+                }.count,
+                CaptureIntentQueue.maximumUnresolvedItems
+            )
+            for entry in batch {
+                try admit(
+                    entry,
+                    captureID: "dcap-" + String(format: "%064x", admitted),
+                    queue: environment.queue
+                )
+                admitted += 1
+            }
+            drained += 1
+            XCTAssertLessThanOrEqual(drained, planned, "the run never drained")
+            let next = await environment.folderBulkCoordinator.advance(runID: run.runID)
+            if !next.newlyPublished.isEmpty { batches.append(next.newlyPublished) }
+        }
+
+        XCTAssertEqual(admitted, planned)
+        XCTAssertEqual(drained, planned / FolderBulkRunCoordinator.maximumBatchItems)
+        let completed = try XCTUnwrap(environment.folderBulkRuns.run(id: run.runID))
+        XCTAssertEqual(completed.admittedCount, planned)
+        XCTAssertEqual(completed.state, .complete)
+    }
+
     func testPauseResumeStopAndRestartPreserveSuccessfulAndQueuedChildren() async throws {
         let root = try temporaryDirectory()
         for index in 0..<12 {
