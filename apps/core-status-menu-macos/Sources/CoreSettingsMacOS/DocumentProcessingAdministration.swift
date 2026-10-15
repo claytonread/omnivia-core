@@ -35,6 +35,7 @@
 // flow (`OcrInstallAvailability`).
 // ============================================================================
 
+import CryptoKit
 import Foundation
 
 // MARK: - Model
@@ -120,25 +121,30 @@ public enum DocumentProcessingChange: Sendable, Equatable {
               Set(codes).count == codes.count,
               codes.allSatisfy(DocumentProcessingCommandRunner.isOpenCode)
         else { return nil }
-        let change = DocumentProcessingChange.recognitionLanguages(codes)
-        // The key is spent as the idempotency key, which the contract bounds at
-        // 128 characters after a `docproc-<revision>-` prefix. Three codes of
-        // the shape's full length would overrun it, and a truncated key would
-        // make two different selections one replay of each other.
-        guard change.key.count <= 100 else { return nil }
-        return change
+        return .recognitionLanguages(codes)
     }
 
     /// The busy key, and the tail of the idempotency key. Stable for one
     /// change and different for every other, which is what the key needs.
+    ///
+    /// The two closed members name themselves, because their vocabularies are
+    /// short and fixed. The selection does not: an `OpenCode` runs to 128
+    /// characters, so three of them written out would overrun the 128-character
+    /// idempotency key this is spent in, and narrowing the selection to keep the
+    /// key short would narrow the service's contract. It is digested instead —
+    /// fixed length, and carrying the identity the key needs.
     public var key: String {
         switch self {
         case .mode(let mode): return "mode-\(mode.rawValue)"
         case .embeddedImageOcr(let on): return "embedded-\(on ? "on" : "off")"
-        // The order is part of the change, so it is part of the key: the same
-        // three languages in another order is a different selection.
+        // The order is part of the change, so it is part of the digest: the
+        // same three languages in another order is a different selection.
+        // The separator is NUL because it is the one byte an `OpenCode` cannot
+        // hold, so `["a", "bc"]` and `["ab", "c"]` cannot digest alike.
         case .recognitionLanguages(let codes):
-            return "languages-\(codes.joined(separator: "-"))"
+            let canonical = Data(codes.joined(separator: "\u{0}").utf8)
+            let digest = SHA256.hash(data: canonical).map { String(format: "%02x", $0) }.joined()
+            return "languages-\(digest)"
         }
     }
 
@@ -612,6 +618,10 @@ public struct DocumentProcessingCommandRunner: DocumentProcessingAdministering {
     /// The key one change under one revision replays under. Equal keys with
     /// different inputs are an `idempotency_conflict`, so every member of the
     /// input is in here: the revision, and the one member being changed.
+    ///
+    /// The contract bounds the key at 128 characters, and every change's key is
+    /// fixed length, so the longest this can be is a 19-digit revision and a
+    /// digested selection: 102.
     static func idempotencyKey(revision: Int, change: DocumentProcessingChange) -> String {
         "docproc-\(revision)-\(change.key)"
     }

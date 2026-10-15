@@ -265,7 +265,9 @@ final class DocumentProcessingCommandRunnerTests: XCTestCase {
             "document", "configure",
             "--input-json", "{\"recognition_languages\":[\"deu\",\"eng\"],\"revision\":4}",
             "--json",
-            "--idempotency-key", "docproc-4-languages-deu-eng",
+            "--idempotency-key",
+            "docproc-4-languages-"
+                + "1d9a8ea547205873c1be2eee137330b6f8e3bc5fd95ec1ef332a88a0e1b31577",
         ])
         XCTAssertEqual((try? result.get())?.recognitionLanguages, ["deu", "eng"])
         let arguments = process.invocations[0]
@@ -275,6 +277,10 @@ final class DocumentProcessingCommandRunnerTests: XCTestCase {
 
     /// The same languages in another order is a different selection, so it is a
     /// different key: equal keys with different inputs are refused by Core.
+    ///
+    /// The digest is pinned rather than recomputed, because what has to hold is
+    /// that one selection under one revision keeps the key it replayed under
+    /// before — a changed canonical form would silently re-key every retry.
     func testOrderIsPartOfTheSelectionsIdempotencyKey() {
         let forward = DocumentProcessingCommandRunner.idempotencyKey(
             revision: 2, change: .recognitionLanguages(["eng", "deu"])
@@ -282,8 +288,34 @@ final class DocumentProcessingCommandRunnerTests: XCTestCase {
         let reversed = DocumentProcessingCommandRunner.idempotencyKey(
             revision: 2, change: .recognitionLanguages(["deu", "eng"])
         )
-        XCTAssertEqual(forward, "docproc-2-languages-eng-deu")
+        XCTAssertEqual(
+            forward,
+            "docproc-2-languages-"
+                + "81df866f697731b31f412fffd4cc1263ad0cd5fd4f207ee502964cbe29065cc7"
+        )
         XCTAssertNotEqual(forward, reversed)
+        // The same list under another revision is another key, and the same
+        // list under the same revision is the one key it replays under.
+        XCTAssertNotEqual(
+            forward,
+            DocumentProcessingCommandRunner.idempotencyKey(
+                revision: 3, change: .recognitionLanguages(["eng", "deu"])
+            )
+        )
+        XCTAssertEqual(
+            forward,
+            DocumentProcessingCommandRunner.idempotencyKey(
+                revision: 2, change: .recognitionLanguages(["eng", "deu"])
+            )
+        )
+        // A shorter list is not a prefix of a longer one: the separator is the
+        // one byte an `OpenCode` cannot carry.
+        XCTAssertNotEqual(
+            forward,
+            DocumentProcessingCommandRunner.idempotencyKey(
+                revision: 2, change: .recognitionLanguages(["engdeu"])
+            )
+        )
         for key in [forward, reversed] {
             XCTAssertLessThanOrEqual(key.count, 128)
             XCTAssertTrue(key.allSatisfy { character in
@@ -291,6 +323,62 @@ final class DocumentProcessingCommandRunnerTests: XCTestCase {
                     && (character.isLetter || character.isNumber || "._:-".contains(character))
             })
         }
+    }
+
+    /// An `OpenCode` is up to 128 characters, so three of the full length is a
+    /// selection the service contract accepts — and therefore one this window
+    /// must still be able to send. The key stays inside its own bound because
+    /// the selection is digested rather than written into it.
+    func testThreeMaximumLengthCodesAreStillSelectable() {
+        let longest = ["a", "b", "c"].map { $0 + String(repeating: "0", count: 127) }
+        XCTAssertEqual(longest.map(\.count), [128, 128, 128])
+        XCTAssertTrue(longest.allSatisfy(DocumentProcessingCommandRunner.isOpenCode))
+
+        let change = DocumentProcessingChange.selecting(longest)
+        XCTAssertEqual(change, .recognitionLanguages(longest))
+
+        // The widest key this surface can produce: the longest selection under
+        // a revision of every digit an `Int` can hold.
+        let key = DocumentProcessingCommandRunner.idempotencyKey(
+            revision: .max, change: .recognitionLanguages(longest)
+        )
+        XCTAssertEqual(key.count, 102)
+        XCTAssertLessThanOrEqual(key.count, 128)
+        XCTAssertTrue(key.first?.isLetter == true)
+        XCTAssertTrue(key.allSatisfy { character in
+            character.isASCII
+                && (character.isLetter || character.isNumber || "._:-".contains(character))
+        })
+
+        // And it is still the selection's own key: order and membership both
+        // tell, at the full code length.
+        let digested = DocumentProcessingChange.recognitionLanguages(longest).key
+        XCTAssertEqual(
+            digested,
+            "languages-e100825e7d0978af22e7a848999deb26d279c6195b38cf1e65a906242725f5bc"
+        )
+        XCTAssertEqual(
+            DocumentProcessingChange.recognitionLanguages(longest.reversed()).key,
+            "languages-ebb8ce14e8e885eec1f35f62472022deb728809d77175670c72c18ee970977f5"
+        )
+        XCTAssertEqual(
+            DocumentProcessingChange.recognitionLanguages([longest[0]]).key,
+            "languages-fdb75389faf5f675add3346054c2e83940853ea67e71e013689e8a42d2abe23e"
+        )
+        XCTAssertEqual(
+            Set([longest, longest.reversed(), [longest[0]], Array(longest.dropLast())]
+                .map { DocumentProcessingChange.recognitionLanguages($0).key }).count,
+            4
+        )
+    }
+
+    /// The window matches the saving chip on this prefix, so the digest has to
+    /// keep it.
+    func testALanguageChangeKeepsTheBusyPrefixTheWindowMatchesOn() {
+        XCTAssertTrue(
+            DocumentProcessingChange.recognitionLanguages(["eng"]).key
+                .hasPrefix("languages-")
+        )
     }
 
     /// One to three unique codes of the bounded token shape, and nothing else.
@@ -301,9 +389,11 @@ final class DocumentProcessingCommandRunnerTests: XCTestCase {
         XCTAssertNil(DocumentProcessingChange.selecting(["eng", "ENG"]))
         XCTAssertNil(DocumentProcessingChange.selecting(["--input-json"]))
         XCTAssertNil(DocumentProcessingChange.selecting(["eng", ""]))
-        // Three codes of the token shape's full length would overrun the
-        // idempotency key the change is spent as.
-        XCTAssertNil(DocumentProcessingChange.selecting([String(repeating: "e", count: 120)]))
+        // Past the token shape's own length, and nothing to do with the key.
+        XCTAssertNil(DocumentProcessingChange.selecting([String(repeating: "e", count: 129)]))
+        // Inside it, and therefore a selection: the key's length is not a
+        // second, narrower bound on what may be chosen.
+        XCTAssertNotNil(DocumentProcessingChange.selecting([String(repeating: "e", count: 128)]))
 
         XCTAssertEqual(
             DocumentProcessingChange.selecting(["eng"]), .recognitionLanguages(["eng"])
@@ -797,6 +887,30 @@ final class DocumentProcessingModelTests: XCTestCase {
         }
         XCTAssertEqual(stub.calls, [.read])
         XCTAssertTrue(model.lastWriteError!.sentence.contains("one to three"))
+    }
+
+    /// Three installed languages at the full `OpenCode` length are a selection
+    /// the service would accept, so the window sends it: the only local
+    /// refusals are the contract's own.
+    func testThreeMaximumLengthInstalledCodesAreSent() async {
+        let longest = ["a", "b", "c"].map { $0 + String(repeating: "0", count: 127) }
+        let stored = settings(languages: longest, revision: 8)
+        let stub = StubAdministrator(
+            reads: [.success(settings(revision: 7)), .success(stored)],
+            writes: [.success(stored)]
+        )
+        let model = DocumentProcessingModel(administering: stub)
+        await model.load()
+
+        let sent = await model.selectLanguages(longest, installed: inventory(longest))
+        XCTAssertNil(sent.failure)
+        XCTAssertNil(model.lastWriteError)
+        XCTAssertEqual(stub.calls, [
+            .read,
+            .update(revision: 7, change: .recognitionLanguages(longest)),
+            .read,
+        ])
+        XCTAssertEqual(model.settings?.recognitionLanguages, longest)
     }
 
     func testAnOrderedSelectionIsWrittenUnderTheReadRevisionAndReadBack() async {
