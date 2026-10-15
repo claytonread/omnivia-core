@@ -97,7 +97,7 @@ def test_cell_without_a_style_keeps_its_values_and_general_provenance() -> None:
     assert [item.semantic_role for item in segments] == ["table_cell"]
     assert segments[0].structured_value == {
         "raw": "5",
-        "decoded": "5",
+        "decoded": 5,
         "cellType": None,
         "styleIndex": None,
         "numberFormatId": 0,

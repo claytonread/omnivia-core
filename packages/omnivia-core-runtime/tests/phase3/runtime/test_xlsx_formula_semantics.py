@@ -77,6 +77,7 @@ def test_expression_and_saved_cache_stay_separate_and_uncalculated() -> None:
                 "cellType": None,
                 "error": False,
                 "freshness": "unknown",
+                "decoded": 7,
                 **DEFAULT_FORMAT,
             },
         ),

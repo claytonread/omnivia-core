@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import io
+import math
 import posixpath
 import re
 import stat
@@ -392,6 +393,44 @@ _XLSX_WORKBOOK_PROPERTIES: Final = frozenset(
 _MAX_XLSX_CELL_FORMATS: Final = 65_536
 _MAX_XLSX_NUMBER_FORMATS: Final = 4_096
 _MAX_XLSX_FORMAT_CODE_CHARS: Final = _MAX_META_CHARS
+# The whole finite part of the ``xsd:double`` lexical space a stored number is
+# written in -- an integer, a decimal with or without a leading digit, or
+# either carrying an exponent -- in Excel's own spelling and in anything else
+# conformant. Neither the digits nor the exponent are bounded here, because the
+# type does not bound them lexically: a conformant writer may spell any number
+# of digits and any exponent, and a literal naming a magnitude no double can
+# hold is a number out of range rather than text that is not a number, so it is
+# converted and classified below instead of being refused as malformed. The
+# same lexical space serves both OOXML profiles: Strict narrows which elements
+# and attributes may appear, never how a double is spelled.
+#
+# Each repetition here is anchored on the literal that can follow it, so no two
+# of them can claim the same character and a failing literal is refused in one
+# pass over it. Spelling the integral form as digits and an optional
+# point-and-digits group rather than as digits, an optional point and further
+# digits is what buys that: the latter accepts the same strings, but leaves the
+# split between its two digit runs free, so a long run of digits ending in a
+# character the space does not have is retried once per split.
+_XLSX_NUMBER: Final = re.compile(
+    r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[Ee][+-]?[0-9]+)?"
+)
+# The four spellings in that lexical space which are not finite numbers. They
+# are reported as the non-finite values they are rather than as text that
+# failed to parse, because the file did write a double; it just wrote one no
+# consumer can hold, count or serialise. XSD 1.1 also spells positive infinity
+# ``+INF``.
+_XLSX_NONFINITE: Final = frozenset({"INF", "+INF", "-INF", "NaN"})
+# Past 2**53 an integer no longer round-trips through the double the file
+# stored it in, nor through JSON's own number, so it is kept as the float it
+# already was rather than reported as an exact integer it is not.
+_MAX_EXACT_INTEGER: Final = 2**53
+# A literal longer than this cannot name an integer inside that range, so the
+# exact-integer conversion is never offered one -- which is also what keeps the
+# decode resource-safe without bounding the lexical space, because ``int()`` is
+# the one conversion whose cost grows with the digits and the one CPython
+# refuses outright past 4300 of them. ``float()`` of any length is linear and
+# cannot raise on text this expression already matched.
+_MAX_EXACT_INTEGER_DIGITS: Final = len(str(_MAX_EXACT_INTEGER))
 # The shape-tree children that carry an identity and a z-order position.
 # ``contentPart`` carries neither, so it is not a shape here.
 _PPTX_SHAPES: Final = frozenset({"sp", "grpSp", "graphicFrame", "cxnSp", "pic"})
@@ -2306,6 +2345,16 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                     else "visible"
                 )
                 cell_type = cell.attrib.get("t")
+                # The decoding of whatever number the cell stored, built once
+                # for the same reason the provenance is: the ordinary record
+                # and a formula's saved cache hold the same stored value, so
+                # neither may read it as a different number -- or as a number
+                # at all where the other found none. It decodes the value a
+                # formula last saved, never the formula: the expression, its
+                # cache state and its freshness are untouched, nothing is
+                # evaluated, and a cache is still never checked against the
+                # expression that wrote it.
+                numeric = _xlsx_numeric(cell_type, value)
                 if formula is not None:
                     segments.append(
                         ExtractedSegment(
@@ -2329,12 +2378,18 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                                     "error": cell_type == "e",
                                     "freshness": "unknown",
                                     **provenance,
+                                    **numeric,
                                 },
                                 visibility=visibility,
                             )
                         )
                 else:
                     decoded = _xlsx_value(cell_type, value, inline, shared)
+                    if "numericAnomaly" in numeric:
+                        # The lexical value is not a number this cell can have
+                        # stored, so the record decodes nothing rather than
+                        # passing its text off as the number it failed to be.
+                        decoded = None
                     segments.append(
                         ExtractedSegment(
                             "table_cell",
@@ -2344,6 +2399,7 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                                 "decoded": decoded,
                                 "cellType": cell_type,
                                 **provenance,
+                                **numeric,
                             },
                             visibility=visibility,
                         )
@@ -7956,6 +8012,61 @@ def _xlsx_formula(
         "cacheState": "missing" if cached is None else "present",
         "cacheFreshness": "unknown",
     }
+
+
+def _xlsx_numeric(kind: str | None, raw: str | None) -> dict[str, object]:
+    """Decode one stored number, or say why its text is not a finite one.
+
+    Only a cell that stored a number is read: SpreadsheetML defaults an absent
+    ``t`` to ``n``, so an absent type and ``n`` are the one numeric kind, and
+    every other kind -- a shared or inline string, a boolean, an error -- keeps
+    the value it already reported and is not looked at here. An absent or empty
+    ``v`` stored no number to decode, so a blank stays the blank it is rather
+    than becoming a malformed number.
+
+    What comes back is merged into the record the caller already built, so the
+    decoded number replaces the lexical ``decoded`` an ordinary cell reports
+    and is added beside the ``raw`` a saved cache keeps. Either way the exact
+    text the file wrote stays in ``raw``: the decode is a reading of it, never
+    a replacement for it, and a reader needing the authored digits -- their
+    count, their trailing zeros, their exponent -- still has them.
+
+    Text the type cannot hold is reported as the anomaly it is and nothing is
+    decoded from it, so a malformed, non-finite or unrepresentable value can
+    never be mistaken for a number the file stored. Nothing here applies a
+    number format, converts a serial to a date or evaluates anything: an
+    integer form inside the exactly representable range decodes to an integer,
+    everything else to the double the file stored it as.
+    """
+    if raw is None or kind not in (None, "n"):
+        return {}
+    text = raw.strip()
+    if not text:
+        return {}
+    if _XLSX_NUMBER.fullmatch(text) is None:
+        return {
+            "numericAnomaly": "nonfinite" if text in _XLSX_NONFINITE else "malformed"
+        }
+    if (
+        "." not in text
+        and "e" not in text
+        and "E" not in text
+        and len(text.lstrip("+-")) <= _MAX_EXACT_INTEGER_DIGITS
+    ):
+        number = int(text)
+        if abs(number) <= _MAX_EXACT_INTEGER:
+            return {"decoded": number}
+    # Overflow is the one conversion that can still fail here, and it fails to
+    # an infinity rather than an error, so the result is checked rather than
+    # trusted: a lexically valid magnitude the type cannot hold is the
+    # out-of-range number it is, not a malformed token. Underflow lands on
+    # zero, which is the double the file stored.
+    converted = float(text)
+    return (
+        {"decoded": converted}
+        if math.isfinite(converted)
+        else {"numericAnomaly": "nonfinite"}
+    )
 
 
 def _xlsx_value(

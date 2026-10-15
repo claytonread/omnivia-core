@@ -165,6 +165,9 @@ def test_xlsx_preserves_formula_and_saved_cache_as_distinct_values() -> None:
         "cellType": None,
         "error": False,
         "freshness": "unknown",
+        # The saved cache is a stored number, so it is decoded beside the
+        # lexical value the file wrote; the formula above is untouched.
+        "decoded": 42,
         "styleIndex": None,
         "numberFormatId": 0,
         "numberFormatCode": None,
