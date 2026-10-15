@@ -24,11 +24,14 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from omnivia_core_cli.surface import APPLICATION_COMMANDS
 from omnivia_core_mcp.manifest import PROFILES, exposure_manifest
+from omnivia_core_runtime.service import main as main_module
 from omnivia_core_runtime.service.main import (
+    _OCR_ACTION_OPTIONS,
     OCR_RESOURCE_ACTIONS,
     OCR_RESOURCE_DOCUMENT_VERSION,
     build_parser,
@@ -37,6 +40,7 @@ from omnivia_core_runtime.service.main import (
 from omnivia_core_runtime.service.ocr_resource_lifecycle import (
     MODEL_SUFFIX,
     OCR_RESOURCES_DIR,
+    REFUSAL_BUSY,
     REFUSAL_CAPACITY,
     REFUSAL_NOT_INSTALLED,
     REFUSAL_PAYLOAD,
@@ -570,6 +574,163 @@ def test_no_mcp_tool_can_name_the_resource_administration() -> None:
         for exposed in exposure_manifest(profile):
             assert "ocr" not in exposed.tool_name.lower()
             assert "resource" not in exposed.tool_name.lower()
+
+
+# --- options the chosen action does not read
+
+
+def test_every_action_declares_which_options_it_reads() -> None:
+    """Closed on both sides: no action without a rule, no rule without an action.
+
+    A new action added without declaring its options would otherwise inherit no
+    entry at all and fail with a `KeyError` on first use, and an option admitted
+    for an action that no longer exists would never be refused for any.
+    """
+    assert set(_OCR_ACTION_OPTIONS) == set(OCR_RESOURCE_ACTIONS)
+    assert _OCR_ACTION_OPTIONS["status"] == ()
+    assert _OCR_ACTION_OPTIONS["reconcile"] == ()
+    assert "ocr_payload" not in _OCR_ACTION_OPTIONS["remove"]
+    assert "ocr_payload" in _OCR_ACTION_OPTIONS["install"]
+
+
+@pytest.mark.parametrize("action", ["status", "reconcile"])
+def test_an_identity_handed_to_an_inventory_action_is_a_usage_fault(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], action: str
+) -> None:
+    """`status` and `reconcile` act on the whole cache, never on one identity.
+
+    Silently ignoring the identity was the defect: a caller asking for the status
+    *of one resource set* received the status of every one of them and no sign
+    that its request had not been understood, and the same five flags handed to
+    `reconcile` looked like a scoped repair.
+    """
+    admin = _Admin(tmp_path)
+    code, out, err = admin.run(
+        capsys, "--ocr-resources", action, *_identity_arguments()
+    )
+    assert code == 2
+    assert out == ""
+    assert f"--ocr-resources {action}" in err
+    assert "--ocr-language" in err
+    assert "--ocr-sha256" in err
+    # Nothing was read, written or created in the meantime.
+    assert not admin.managed_root.exists()
+
+
+@pytest.mark.parametrize("action", ["status", "reconcile", "remove"])
+def test_a_payload_handed_to_an_action_that_reads_none_is_a_usage_fault(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], action: str
+) -> None:
+    """Only `install` reads a payload. A removal that accepted one would look as
+    though the named file had been consulted before the bytes went."""
+    admin = _Admin(tmp_path)
+    identity = _identity_arguments() if action == "remove" else []
+    code, out, err = admin.run(
+        capsys,
+        "--ocr-resources",
+        action,
+        "--ocr-payload",
+        str(admin.payload()),
+        *identity,
+    )
+    assert code == 2
+    assert out == ""
+    assert "--ocr-payload" in err
+
+
+def test_a_single_stray_identity_field_is_enough_to_refuse(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One flag, not only the full five: a partial one is just as ignored."""
+    admin = _Admin(tmp_path)
+    code, _, err = admin.run(
+        capsys, "--ocr-resources", "status", "--ocr-byte-size", "17"
+    )
+    assert code == 2
+    assert "--ocr-byte-size" in err
+    assert "--ocr-language" not in err, "only what was actually supplied is named"
+
+
+def test_the_admitted_options_are_still_accepted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The guard refuses the irrelevant without narrowing the relevant."""
+    admin = _Admin(tmp_path)
+    code, _, err = admin.install(capsys, admin.payload())
+    assert code == 0, err
+    code, _, err = admin.run(
+        capsys, "--ocr-resources", "remove", *_identity_arguments()
+    )
+    assert code == 0, err
+    for action in ("status", "reconcile"):
+        code, _, err = admin.run(capsys, "--ocr-resources", action)
+        assert code == 0, err
+
+
+# --- one administrator at a time
+
+
+def test_a_concurrently_held_cache_is_refused_with_its_code(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second administrator is told the cache is busy, not left waiting.
+
+    The surface's contract for it is the ordinary one: the versioned document on
+    stdout carries the lifecycle's stable code, so the native settings surface
+    branches on `ocr_resource_busy` rather than on a sentence, and exit 1 marks it
+    a refusal rather than a usage fault.
+
+    The wait is shortened through the constructor the mode uses, because the
+    default is a thirty-second bound and this test is about the classification
+    rather than about the length of the bound.
+    """
+    admin = _Admin(tmp_path)
+    monkeypatch.setattr(
+        main_module,
+        "ManagedOcrResources",
+        lambda root: ManagedOcrResources(root, lock_wait_seconds=0.2),
+    )
+    holder = ManagedOcrResources(admin.managed_root)
+    with holder.coordinated():
+        code, out, err = admin.run(capsys, "--ocr-resources", "status")
+
+    assert code == 1
+    document = json.loads(out)
+    assert document["status"] == "refused"
+    assert document["code"] == REFUSAL_BUSY
+    assert REFUSAL_BUSY in err
+
+
+def test_an_inventory_action_answers_an_absent_cache_without_reading_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`status` and `reconcile` render an absent cache from the decision itself.
+
+    Neither may establish the cache, so neither takes the coordination lock -- and
+    therefore neither may read the root afterwards either, because an install
+    arriving in that instant would be rendered halfway into existence. The whole
+    document comes from the empty inventory and a pass that repaired nothing, and
+    nothing under the managed root is created, lock file included.
+    """
+    admin = _Admin(tmp_path)
+    documents: dict[str, dict[str, Any]] = {}
+    for action in ("status", "reconcile"):
+        code, out, err = admin.run(capsys, "--ocr-resources", action)
+        assert code == 0, err
+        assert not admin.managed_root.exists(), action
+        documents[action] = json.loads(out)
+
+    for action, document in documents.items():
+        assert document["action"] == action
+        assert document["status"] == "accepted"
+        assert document["resources"] == []
+        assert document["installedBytes"] == 0
+        assert document["availableBytes"] == document["capacityBytes"]
+    assert documents["reconcile"]["changed"] is False
+    assert documents["reconcile"]["discardedStaging"] == []
+    assert documents["reconcile"]["discardedUnreferenced"] == []
+    assert documents["reconcile"]["quarantined"] == []
+    assert documents["reconcile"]["unrecoverablePinned"] == []
 
 
 # --- the one literal shared with the selection path

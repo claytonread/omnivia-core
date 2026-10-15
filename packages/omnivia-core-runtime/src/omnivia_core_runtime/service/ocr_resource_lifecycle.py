@@ -31,6 +31,44 @@ therefore leaves unreferenced bytes rather than a state entry claiming bytes tha
 are not there: the state document never overstates what is installed.
 :meth:`ManagedOcrResources.reconcile` sweeps the other side.
 
+**One operation at a time, across processes.** Every operation here spans two
+things -- resource bytes and the state document -- and neither alone is a coherent
+view of the cache. Two administrators left to run concurrently would each read the
+same remaining capacity and each install against it, exceeding the 512 MiB cap
+§18.4 says is never silently exceeded; each would write a state document derived
+from a snapshot taken before the other's, losing an entry to the last writer; and
+one's reconciliation would sweep the other's live staging. So install, remove,
+reconcile and the inventory read are serialised by one exclusive
+:data:`~omnivia_core_runtime.ownership.locks.LockRole.RESOURCE_COORDINATION` lock
+at a stable owner-private path under the managed root, taken through the same
+qualified cross-platform locking the service's own fencing uses rather than a
+POSIX-only call of its own. A contender waits a bounded time and then refuses with
+:data:`REFUSAL_BUSY`; it never waits forever. The lock is an OS lock on an open
+descriptor, so a holder that crashes releases it on the spot and leaves its
+abandoned staging for the next reconciliation -- which is why serialising the
+operations is enough and no staging needs a separate owner record.
+
+**And one operation at a time within this process.** Both lock implementations are
+per-*descriptor*, so two threads sharing one
+:class:`ManagedOcrResources` share the lock they are supposed to be excluded by:
+the OS grants the second one the lock it already holds. A
+:class:`threading.RLock` per instance is what actually serialises them -- held for
+the whole of every coordinated block, re-entrant for the thread that owns it so
+the administrative surface can still run an action and render the inventory as one
+view, and bounded by the same wait, so a thread contending with another thread
+refuses with :data:`REFUSAL_BUSY` exactly as it would against another process. The
+two waits share one deadline: a contender's total wait is the wait it asked for,
+not twice it.
+
+**An absent cache is answered, not inspected.** The inventory read and the
+reconciliation pass must not be the thing that brings a cache into existence, so
+when the root is absent they take no lock -- and then return the empty answer
+outright, computed from no read at all. That makes the unlocked decision a whole
+snapshot of the moment it was taken rather than the beginning of one: an install
+arriving immediately after creates the root and completes, and the empty answer
+remains an accurate *before*. Reading the root after that decision is what would
+be incoherent, because the read would land in the middle of the install.
+
 **There is no eviction here, by choice.** §18.4 permits evicting *verified
 unpinned* resources, but names no ordering over them, and the state document
 records no recency or use that a deterministic policy could rank by. Inventing
@@ -55,12 +93,22 @@ import hashlib
 import os
 import shutil
 import stat
-from contextlib import suppress
+import threading
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import IO, Final
 
 from omnivia_core_runtime.ownership.discovery import restrict_to_owner
+from omnivia_core_runtime.ownership.locks import (
+    IS_WINDOWS,
+    FileLock,
+    LockError,
+    LockRole,
+    create_lock,
+)
 from omnivia_core_runtime.service.ocr_resource_store import (
     DEFAULT_OCR_RESOURCE_CAPACITY_BYTES,
     OcrResourceSetIdentity,
@@ -83,6 +131,19 @@ MANAGED_STAGING_DIRNAME: Final = "staging"
 
 #: Where bytes that stopped matching their declared digest are moved.
 MANAGED_QUARANTINE_DIRNAME: Final = "quarantine"
+
+#: The cross-process coordination lock, beside the state document it guards. One
+#: stable name, because a lock at a per-call name would exclude nobody -- and at
+#: the root rather than inside ``staging/`` or ``resources/``, which are the two
+#: directories reconciliation sweeps by name.
+MANAGED_LOCK_FILENAME: Final = "coordination.lock"
+
+#: How long an operation waits for the coordination lock before refusing. Long
+#: enough that it does not refuse merely because another administrator is copying
+#: a large payload, bounded because §18.4's refusals are states an operator is
+#: shown rather than a wait with no end. Overridable per cache so a caller with a
+#: tighter responsiveness budget -- and a test proving the bound -- can say so.
+DEFAULT_LOCK_WAIT_SECONDS: Final = 30.0
 
 #: The model file's extension inside a published resource directory. Spelled
 #: here rather than imported from
@@ -112,6 +173,19 @@ _SOURCE_FLAGS: Final = (
     os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
 )
 
+#: Open the coordination lock itself and never a link standing in for it. The
+#: POSIX descriptor is created here rather than left to the lock implementation,
+#: whose POSIX branch opens the path with ``open(..., "a+b")`` and would follow
+#: one. ``O_CREAT`` without ``O_EXCL`` because the point is a *stable* name every
+#: contender opens; ``O_NOFOLLOW`` is what makes opening that stable name safe.
+#: See :meth:`ManagedOcrResources._open_lock_handle` for the Windows half.
+_LOCK_FLAGS: Final = (
+    os.O_RDWR
+    | os.O_CREAT
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_BINARY", 0)
+)
+
 #: The payload is not a file this module may use.
 REFUSAL_PAYLOAD: Final = "ocr_resource_payload_refused"
 
@@ -132,6 +206,17 @@ REFUSAL_NOT_INSTALLED: Final = "ocr_resource_not_installed"
 #: alternative is an install silently destroying bytes an operator may want to
 #: look at.
 REFUSAL_DIVERGENT: Final = "ocr_resource_state_divergent"
+
+#: Another process holds the coordination lock, so this operation would have had
+#: to act on a view someone else is already changing. Retrying later is the whole
+#: of the repair, which is why it is a distinct code from the two below.
+REFUSAL_BUSY: Final = "ocr_resource_busy"
+
+#: The coordination lock could not be established at all -- the path is a symlink
+#: or not a regular file, the filesystem refused the lock, or the managed root is
+#: not usable. Fail closed: without the lock an operation cannot be serialised,
+#: and running it unserialised is the defect, not the fallback.
+REFUSAL_UNAVAILABLE: Final = "ocr_resource_coordination_unavailable"
 
 
 class OcrResourceLifecycleRefused(Exception):
@@ -297,11 +382,18 @@ class ManagedOcrResources:
         root: Path,
         *,
         capacity_bytes: int = DEFAULT_OCR_RESOURCE_CAPACITY_BYTES,
+        lock_wait_seconds: float = DEFAULT_LOCK_WAIT_SECONDS,
     ) -> None:
         if isinstance(capacity_bytes, bool) or not isinstance(capacity_bytes, int):
             raise OcrResourceStoreError("capacity_bytes must be an integer")
         if capacity_bytes <= 0:
             raise OcrResourceStoreError("capacity_bytes must be positive")
+        if isinstance(lock_wait_seconds, bool) or not isinstance(
+            lock_wait_seconds, (int, float)
+        ):
+            raise OcrResourceStoreError("lock_wait_seconds must be a number")
+        if lock_wait_seconds < 0:
+            raise OcrResourceStoreError("lock_wait_seconds must not be negative")
         root = Path(root)
         if not root.is_absolute():
             raise OcrResourceStoreError(f"managed OCR root must be absolute: {root}")
@@ -309,6 +401,13 @@ class ManagedOcrResources:
             raise OcrResourceStoreError(f"managed OCR root must not be a symlink: {root}")
         self._root = root
         self._capacity_bytes = capacity_bytes
+        self._lock_wait_seconds = float(lock_wait_seconds)
+        #: Serialises the threads of *this* process over this instance. The OS
+        #: lock cannot: it is per-descriptor, and threads share one.
+        self._reentry = threading.RLock()
+        #: Only ever read or written by the thread holding ``_reentry``, which is
+        #: what makes a plain integer safe here.
+        self._lock_depth = 0
         self._store = OcrResourceStore(root)
 
     @property
@@ -318,6 +417,15 @@ class ManagedOcrResources:
     @property
     def capacity_bytes(self) -> int:
         return self._capacity_bytes
+
+    @property
+    def lock_wait_seconds(self) -> float:
+        return self._lock_wait_seconds
+
+    @property
+    def lock_path(self) -> Path:
+        """The one coordination lock every operation on this cache contends for."""
+        return self._root / MANAGED_LOCK_FILENAME
 
     @property
     def store(self) -> OcrResourceStore:
@@ -344,15 +452,226 @@ class ManagedOcrResources:
         """The model file inside this identity's resource directory."""
         return self.resource_directory(identity) / f"{identity.language}{MODEL_SUFFIX}"
 
+    # -- coordination --------------------------------------------------------
+
+    @contextmanager
+    def coordinated(self, *, create: bool = True) -> Iterator[bool]:
+        """Hold this cache's coordination for the length of the block.
+
+        Yields ``True`` when the cache is coordinated and may therefore be read
+        and written, and ``False`` only in the one case below, where nothing was
+        locked and nothing under the root may be touched at all.
+
+        Every operation whose coherent view spans both resource bytes and the
+        state document runs inside one of these, so no two processes -- and no two
+        threads of one process -- can read the same capacity and both spend it,
+        derive a state document from a snapshot the other has already replaced, or
+        sweep each other's live staging. The OS lock excludes the other processes;
+        this instance's :class:`threading.RLock`, held for the whole block,
+        excludes the other threads, which a per-descriptor OS lock cannot.
+
+        Re-entrant within one instance *for the owning thread only*, counted
+        rather than re-acquired: the administrative surface runs an action and then
+        renders the inventory, and those two have to be one view of one moment
+        rather than two views of two. An inner block must not release what an
+        outer one still needs, and an OS lock has no depth of its own to count
+        with. The depth is only ever touched under the ``RLock``, so no other
+        thread can read a nonzero depth and take the re-entrant path past a lock
+        it does not hold.
+
+        ``create=False`` is for the operations that must not be the thing which
+        brings the managed cache into existence -- the inventory read and the
+        reconciliation pass, both of which do nothing at all to a cache that is
+        not there. When the root is absent this yields ``False`` without locking,
+        and the caller must then return its empty result **without reading the
+        root**: the absence is the whole snapshot, so an install arriving next
+        leaves that answer an accurate *before* rather than turning it into a view
+        of a cache caught halfway into existence.
+        """
+        deadline = time.monotonic() + self._lock_wait_seconds
+        # A zero wait is one attempt, exactly as it is for the OS lock below.
+        if not self._reentry.acquire(timeout=self._lock_wait_seconds):
+            raise OcrResourceLifecycleRefused(
+                REFUSAL_BUSY,
+                f"another thread of this process held the managed OCR resources "
+                f"for longer than {self._lock_wait_seconds} seconds; nothing was "
+                f"changed",
+            )
+        try:
+            if self._lock_depth:
+                self._lock_depth += 1
+                try:
+                    yield True
+                finally:
+                    self._lock_depth -= 1
+                return
+            if not create and self._absent():
+                yield False
+                return
+            lock = self._acquire_coordination(deadline)
+            self._lock_depth = 1
+            try:
+                yield True
+            finally:
+                self._lock_depth = 0
+                lock.release()
+        finally:
+            self._reentry.release()
+
+    def _absent(self) -> bool:
+        """Whether there is no managed cache at this root at all.
+
+        One decision, read once: what the caller returns for an absent cache is
+        derived from this answer and from nothing it reads afterwards. A symlink
+        at the root is deliberately not absent -- it is a root that fails closed
+        when the lock is taken, not an empty cache to report as such.
+        """
+        return not self._root.exists() and not self._root.is_symlink()
+
+    def _acquire_coordination(self, deadline: float) -> FileLock:
+        """Take the one exclusive lock, or refuse; never wait without end.
+
+        The lock is the repository's qualified one -- the same POSIX ``flock`` /
+        Windows byte-range implementation behind
+        :func:`~omnivia_core_runtime.ownership.locks.create_lock` -- under a role
+        that grants no write authority. Both platforms release it when the holding
+        process dies, which is what makes a crashed installation recoverable
+        rather than a cache locked forever.
+
+        The lock file is made safe to open by :meth:`_open_lock_handle`, inside a
+        root this call has just confirmed is an owner-only real directory.
+
+        ``deadline`` is the caller's whole wait, already started before the
+        process-local mutex was taken, so waiting for both locks costs the wait
+        that was asked for rather than twice it.
+        """
+        try:
+            self._prepare(self._root)
+        except OcrResourceStoreError as exc:
+            raise OcrResourceLifecycleRefused(
+                REFUSAL_UNAVAILABLE,
+                f"the managed OCR resources could not be coordinated: {exc}",
+            ) from exc
+
+        handle = self._open_lock_handle()
+        lock = create_lock(
+            self.lock_path,
+            LockRole.RESOURCE_COORDINATION,
+            {"component": OCR_RESOURCES_DIR},
+            opened_handle=handle,
+        )
+        try:
+            acquired = lock.acquire(
+                blocking=False, timeout=max(0.0, deadline - time.monotonic())
+            )
+        except (LockError, OSError) as exc:
+            lock.release()
+            raise OcrResourceLifecycleRefused(
+                REFUSAL_UNAVAILABLE,
+                f"the managed OCR coordination lock could not be taken: {exc}",
+            ) from exc
+        if not acquired:
+            raise OcrResourceLifecycleRefused(
+                REFUSAL_BUSY,
+                f"another managed OCR resource operation held the coordination "
+                f"lock for longer than {self._lock_wait_seconds} seconds; "
+                f"nothing was changed",
+            )
+        return lock
+
+    def _open_lock_handle(self) -> IO[bytes] | None:
+        """Make the stable lock name safe to open, and open it where that is ours.
+
+        POSIX: this opens the descriptor itself, because the lock's own opener
+        uses ``open(..., "a+b")`` and would follow a symbolic link sitting at the
+        name. ``O_NOFOLLOW`` refuses one, and ``O_CREAT`` without ``O_EXCL``
+        because the whole point is a stable name that every contender opens.
+
+        Windows: the lock's opener already refuses a reparse point, pins every
+        parent and applies an owner-only DACL, so it keeps the open -- but it
+        secures a file *it* created behind a handle that shares nothing, and a
+        contender arriving inside that window would be told the lock is
+        unavailable when the truth is that it is busy. Creating the file here
+        first means every contender, the first pair included, reaches it through
+        the shared open and receives the ordinary busy result. A name already
+        taken is left for that opener to validate rather than adopted here.
+        """
+        if IS_WINDOWS:  # pragma: no cover - exercised on the hosted Windows row
+            try:
+                descriptor = os.open(
+                    self.lock_path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600
+                )
+            except FileExistsError:
+                return None
+            except OSError as exc:
+                raise OcrResourceLifecycleRefused(
+                    REFUSAL_UNAVAILABLE,
+                    f"the managed OCR coordination lock could not be created: {exc}",
+                ) from exc
+            os.close(descriptor)
+            restrict_to_owner(self.lock_path, directory=False)
+            return None
+
+        try:
+            descriptor = os.open(self.lock_path, _LOCK_FLAGS, 0o600)
+        except OSError as exc:
+            raise OcrResourceLifecycleRefused(
+                REFUSAL_UNAVAILABLE,
+                f"the managed OCR coordination lock could not be opened: {exc}",
+            ) from exc
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                # A directory is already refused by `O_RDWR` itself; a FIFO or a
+                # device at the name is not, and would be lockable while being
+                # nothing this module should hold open. The same explicit test
+                # `_stage` makes of a payload, for the same reason.
+                raise OcrResourceLifecycleRefused(
+                    REFUSAL_UNAVAILABLE,
+                    f"the managed OCR coordination lock must be a regular file: "
+                    f"{self.lock_path}",
+                )
+            restrict_to_owner(self.lock_path, directory=False)
+            return os.fdopen(descriptor, "r+b", buffering=0)
+        except BaseException:
+            os.close(descriptor)
+            raise
+
     # -- inventory -----------------------------------------------------------
 
     def inventory(self) -> ManagedOcrInventory:
         """What is installed, what pins it, and how much capacity remains.
 
-        Reads the state document and stats each payload. Writes nothing, creates
-        nothing, and refuses a state document from a newer build rather than
-        reporting an empty cache.
+        Reads the state document and stats each payload. Writes nothing beyond
+        the coordination lock, never creates the cache, and refuses a state
+        document from a newer build rather than reporting an empty cache.
+
+        Coordinated, so the state document and the bytes it describes are read
+        from one moment: an uncoordinated read could see an entry whose publication
+        a concurrent install of the same identity was in the middle of replacing
+        and report an installed resource as absent.
+
+        A cache that is not there is answered rather than inspected: the whole
+        empty inventory comes from :meth:`absent_inventory` and the root is not
+        opened after the unlocked absence decision, so a concurrent install
+        arriving at that moment cannot be observed half-made.
         """
+        with self.coordinated(create=False) as coordinated:
+            if not coordinated:
+                return self.absent_inventory()
+            return self._inventory()
+
+    def absent_inventory(self) -> ManagedOcrInventory:
+        """What a cache that does not exist holds: nothing, with all capacity free.
+
+        Derived from no read at all, which is the point: it is the complete answer
+        for the moment the root was found absent, so it cannot become a partial
+        view of a cache that came into existence immediately afterwards.
+        """
+        return ManagedOcrInventory(
+            capacity_bytes=self._capacity_bytes, installed_bytes=0, resources=()
+        )
+
+    def _inventory(self) -> ManagedOcrInventory:
         state = self._store.load()
         pins: dict[str, list[str]] = {}
         for pin in state.pins:
@@ -387,11 +706,22 @@ class ManagedOcrResources:
         Nothing is substituted: the installation either serves this exact identity
         or refuses. Another model version of the same language, installed or not,
         is a different resource set and is neither consulted nor replaced.
+
+        The whole of it -- the capacity check, the staging, the publication and
+        the state write -- runs under the coordination lock, which is what makes
+        the reservation a reservation. The arguments are validated first, so a
+        caller's malformed payload path is refused without contending for
+        anything and without creating a cache.
         """
         if not isinstance(identity, OcrResourceSetIdentity):
             raise OcrResourceStoreError("identity must be an OcrResourceSetIdentity")
         source = self._validated_payload(payload)
+        with self.coordinated():
+            return self._install(source, identity)
 
+    def _install(
+        self, source: Path, identity: OcrResourceSetIdentity
+    ) -> ManagedOcrInstallation:
         state = self._store.load()
         if identity in state.entries:
             return self._already_installed(identity, state)
@@ -605,9 +935,17 @@ class ManagedOcrResources:
         The state document is updated before the bytes go, so an interrupted
         removal leaves unreferenced bytes for reconciliation rather than an entry
         claiming bytes that have already been deleted.
+
+        Coordinated for the same reason an install is: read-decide-write over the
+        state document, so a removal overlapping an installation would otherwise
+        write back a document that never knew about the other's entry.
         """
         if not isinstance(identity, OcrResourceSetIdentity):
             raise OcrResourceStoreError("identity must be an OcrResourceSetIdentity")
+        with self.coordinated():
+            self._remove(identity)
+
+    def _remove(self, identity: OcrResourceSetIdentity) -> None:
         state = self._store.load()
         if identity not in state.entries:
             raise OcrResourceLifecycleRefused(
@@ -665,12 +1003,24 @@ class ManagedOcrResources:
         touched, so an older build cannot reconcile away what a newer one
         recorded.
 
-        ponytail: this sweeps all of ``staging/``, not only what one call left,
-        which is safe because an install never outlives the call that started it
-        and the service owns this root alone. A second concurrent installer would
-        need per-call staging ownership, as
-        :mod:`omnivia_core_runtime.distribution.shared_runtime` keeps.
+        This sweeps all of ``staging/`` rather than only what one call left, and
+        the coordination lock is what makes that safe: an installation holds the
+        lock for its whole length, so staging a reconciliation can see is staging
+        no live operation owns. A holder that crashes releases the lock with its
+        descriptor and leaves its staging exactly where the next pass will find
+        it, which is why no staging directory needs an owner record of its own and
+        why this cannot refuse to clean up after a dead process.
+
+        A cache that is not there has nothing to repair, and that answer is
+        returned without reading the root: sweeping a tree discovered after the
+        unlocked absence decision would be sweeping a live install's staging.
         """
+        with self.coordinated(create=False) as coordinated:
+            if not coordinated:
+                return ManagedOcrReconciliation()
+            return self._reconcile()
+
+    def _reconcile(self) -> ManagedOcrReconciliation:
         state = self._store.load()
         discarded_staging = self._discard_children(self.staging_root)
         referenced = {directory_name(entry) for entry in state.entries}
@@ -811,16 +1161,20 @@ class ManagedOcrResources:
 
 
 __all__ = [
+    "DEFAULT_LOCK_WAIT_SECONDS",
+    "MANAGED_LOCK_FILENAME",
     "MANAGED_QUARANTINE_DIRNAME",
     "MANAGED_RESOURCES_DIRNAME",
     "MANAGED_STAGING_DIRNAME",
     "MODEL_SUFFIX",
     "OCR_RESOURCES_DIR",
+    "REFUSAL_BUSY",
     "REFUSAL_CAPACITY",
     "REFUSAL_DIVERGENT",
     "REFUSAL_NOT_INSTALLED",
     "REFUSAL_PAYLOAD",
     "REFUSAL_PINNED",
+    "REFUSAL_UNAVAILABLE",
     "REFUSAL_VERIFICATION",
     "ManagedOcrInstallation",
     "ManagedOcrInventory",
