@@ -12,6 +12,7 @@ import unicodedata
 import zipfile
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Final, Self
 from xml.etree import ElementTree
 
@@ -468,6 +469,47 @@ _MAX_EXACT_INTEGER: Final = 2**53
 # refuses outright past 4300 of them. ``float()`` of any length is linear and
 # cannot raise on text this expression already matched.
 _MAX_EXACT_INTEGER_DIGITS: Final = len(str(_MAX_EXACT_INTEGER))
+# The format kinds whose serial names a point in time, which are the only ones
+# a serial is decoded under. ``elapsed_duration`` is deliberately absent: a
+# count of hours is not a date, and converting one would invent an epoch its
+# author never wrote.
+_XLSX_TEMPORAL_KINDS: Final = frozenset({"date", "time", "datetime"})
+# The day each date system counts from, as the day *before* its serial 1 --
+# except that the 1900 system is written one day earlier than that, because
+# Excel counts a 29th of February 1900 which never existed. Serials up to 59
+# are the days the two readings disagree over, so they are shifted back onto
+# the real calendar; serial 60 is the fictional day itself and is never put
+# through this arithmetic; serial 61 onwards lands on the real date because the
+# phantom day has by then been counted.
+#
+# The 1904 system counts its own serial 0 as the 1st of January 1904, so it
+# needs no shift and has no phantom day: it is the epoch itself.
+_XLSX_EPOCHS: Final = {
+    "1900": datetime.date(1899, 12, 30),
+    "1904": datetime.date(1904, 1, 1),
+}
+# The largest whole serial each system can name a date for. Derived from the
+# last date the standard library can hold rather than written out, because that
+# is the bound the conversion below actually has -- and for the 1900 system it
+# is also the 2958465 that OOXML names as the upper limit of the serial space.
+# Checked before any exact arithmetic is attempted, so a serial naming a
+# magnitude far past the calendar costs one comparison rather than a conversion.
+_XLSX_MAX_SERIAL: Final = {
+    system: (datetime.date.max - epoch).days for system, epoch in _XLSX_EPOCHS.items()
+}
+# The serial the 1900 system reads as the 29th of February 1900, and the
+# literal it is reported as. The date does not exist, so it is written out
+# rather than computed: no Gregorian calendar can produce it, and coercing it to
+# the 28th or the 1st of March would silently move every value stored under it.
+_XLSX_PHANTOM_SERIAL: Final = 60
+_XLSX_PHANTOM_DATE: Final = "1900-02-29"
+# A day in microseconds, which is the resolution the decoded clock is reported
+# at: the time of day is stored as a fraction of a day, so a fraction is scaled
+# by this and rounded to the nearest microsecond. That is the finest resolution
+# an ISO local time can carry here, and rounding to it is what lets the doubles
+# a writer actually stores for a whole minute -- never exactly the fraction the
+# minute is -- report as that whole minute.
+_MICROSECONDS_PER_DAY: Final = 24 * 60 * 60 * 1_000_000
 # The shape-tree children that carry an identity and a z-order position.
 # ``contentPart`` carries neither, so it is not a shape here.
 _PPTX_SHAPES: Final = frozenset({"sp", "grpSp", "graphicFrame", "cxnSp", "pic"})
@@ -8219,6 +8261,88 @@ def _xlsx_numeric(kind: str | None, raw: str | None) -> dict[str, object]:
         if math.isfinite(converted)
         else {"numericAnomaly": "nonfinite"}
     )
+
+
+def _xlsx_temporal_serial(
+    raw: str, decoded: float, kind: str, system: str
+) -> dict[str, object]:
+    """Read one stored serial as the point in time its number format writes.
+
+    ``raw`` is the exact text the file wrote, ``decoded`` the JSON-safe number
+    already read from it, ``kind`` the temporal reading the cell's format
+    resolved to, and ``system`` the epoch its workbook counts from. Nothing
+    here validates the text: this is reached only once it is known to be a
+    finite number, so a malformed or non-finite value is the caller's refusal
+    to make and never arrives.
+
+    What comes back is merged into the record the caller already built. On a
+    serial the calendar can hold, the number moves to ``serial`` and
+    ``decoded`` becomes the local ISO literal it names, so the authored digits
+    stay in ``raw`` and the number stays reportable beside the reading of it.
+    A serial no calendar has decodes to nothing at all: only a
+    ``temporalDecodeAnomaly`` comes back, which leaves the caller's numeric
+    ``decoded`` exactly as it was rather than replacing it with a date that
+    does not exist. A negative serial is one of those -- the systems count
+    forwards from their epoch and nothing is written before it -- and so is a
+    magnitude past the last day the calendar reaches.
+
+    The literal is local and bears no timezone: a serial carries none, so
+    claiming an offset -- or a ``Z`` -- would invent one the file never wrote.
+    The arithmetic is exact, from the authored text rather than from the
+    double, and the time of day is rounded to the nearest microsecond so the
+    fraction a writer actually stores for a whole minute reports as that
+    minute. A fraction rounding up to a whole day carries into the next day
+    rather than naming a 24th hour no clock has.
+    """
+    # The magnitude is checked against the double first, before any exact
+    # arithmetic: a serial naming a year past the calendar -- or an exponent
+    # naming no year at all -- costs two comparisons here rather than parsing
+    # and multiplying the digits behind it.
+    limit = _XLSX_MAX_SERIAL[system]
+    if decoded < 0:
+        return {"temporalDecodeAnomaly": "negative"}
+    if decoded > limit + 1:
+        return {"temporalDecodeAnomaly": "out_of_range"}
+    serial = Decimal(raw)
+    whole = int(serial)
+    microseconds = int(
+        ((serial - whole) * _MICROSECONDS_PER_DAY).to_integral_value(ROUND_HALF_EVEN)
+    )
+    carry = microseconds == _MICROSECONDS_PER_DAY
+    if carry:
+        microseconds = 0
+    seconds, microsecond = divmod(microseconds, 1_000_000)
+    minutes, second = divmod(seconds, 60)
+    hour, minute = divmod(minutes, 60)
+    clock = datetime.time(hour, minute, second, microsecond).isoformat()
+    # A clock format names a time of day and no day, so the whole days the
+    # serial carries are dropped rather than dated: the fraction is read modulo
+    # one day, which is the reading that makes a stored 1.5 the half past
+    # midnight it displays as.
+    if kind == "time":
+        return {"serial": decoded, "decoded": clock, "decodedKind": kind}
+    # A date format names the day and nothing else, so it ignores the fraction
+    # entirely -- including a fraction that rounded up to a whole day, which
+    # would otherwise move the date onto the day after the one it stores.
+    day = whole + (1 if carry and kind == "datetime" else 0)
+    if day > limit:
+        return {"temporalDecodeAnomaly": "out_of_range"}
+    anomaly: dict[str, object] = {}
+    if system == "1900" and day == _XLSX_PHANTOM_SERIAL:
+        date = _XLSX_PHANTOM_DATE
+        anomaly = {"temporalDecodeAnomaly": "excel_1900_leap_day"}
+    else:
+        # Below the phantom day the two readings are one day apart, so the
+        # serial is shifted back onto the real calendar; at and above it the
+        # epoch already absorbs the day Excel counted and nothing is shifted.
+        shift = 1 if system == "1900" and day < _XLSX_PHANTOM_SERIAL else 0
+        date = (_XLSX_EPOCHS[system] + datetime.timedelta(day + shift)).isoformat()
+    return {
+        "serial": decoded,
+        "decoded": date if kind == "date" else f"{date}T{clock}",
+        "decodedKind": kind,
+        **anomaly,
+    }
 
 
 def _xlsx_value(
