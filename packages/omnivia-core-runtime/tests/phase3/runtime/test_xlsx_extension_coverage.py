@@ -333,7 +333,7 @@ def test_lookalikes_are_not_entries(tail: str) -> None:
     assert coverage(xlsx(workbook_tail=tail)) == []
 
 
-def test_lookalikes_inside_the_grid_or_an_entry_are_not_entries() -> None:
+def test_only_a_cell_in_the_grid_owns_a_list_and_an_entrys_body_never_does() -> None:
     inside_grid = xlsx(sheet_head="")
     with zipfile.ZipFile(io.BytesIO(inside_grid)) as package:
         members = {name: package.read(name).decode() for name in package.namelist()}
@@ -342,7 +342,8 @@ def test_lookalikes_inside_the_grid_or_an_entry_are_not_entries() -> None:
         .replace("</row>", f'<c r="B1"><extLst><ext uri="{G2}"/></extLst></c></row>')
         .replace("</sheetData>", f'<extLst><ext uri="{G3}"/></extLst></sheetData>')
     )
-    assert coverage(archive(members)) == []
+    # The cell is an owner; ``sheetData`` itself is not.
+    assert uris(archive(members)) == [G2]
 
     # A list nested in an entry's own body is payload, not a second entry.
     nested = ext_list(ext(G1, ext_list(ext(G2), ext(G3))))

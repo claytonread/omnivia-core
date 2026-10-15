@@ -711,15 +711,86 @@ _MAX_XLSX_PART_EXTENSIONS: Final = 4096
 # owner paths): a path is the local names from the root down to an owner, and
 # the empty path is the root itself. Every step is a direct child qualified in
 # the root's own namespace; nothing else is visited, and no ``ext`` is entered.
-# Only parts the reader already reaches by a validated relationship are listed.
-# Not listed, so not covered: the nested owners of a worksheet (``sheetView``,
-# ``conditionalFormatting``, ``cfRule``, ``cfvo``, ``autoFilter``, ``sortState``,
-# ``customSheetView``, ``ignoredError``, ``control``), the shared strings part
-# (read by its fixed name, not a relationship), drawing and chart parts (their
-# lists are DrawingML), and the pivot owners not named below.
+#
+# The paths are the Open XML SDK's SpreadsheetML schema model, checked against
+# the parent inventory of Microsoft's ``Spreadsheet.ExtensionList`` page: every
+# parent that page names which a part this reader opens can hold is a path
+# below, and a path is a parent the schema places there. The parents it names
+# that no opened part can hold -- ``bk``, ``rcc``, ``rdn``, ``rfmt``, ``rsnm``,
+# ``header``, ``userInfo`` (revision parts), ``calcChain``, ``metadata`` and
+# ``futureMetadata``, ``volTypes``, ``singleXmlCell``, ``xmlCellPr``, ``xmlPr``
+# and the ``nc``/``oc``/``ndxf``/``odxf`` revision formats -- belong to parts
+# the reader never opens. Only parts the reader opens are listed: drawing and
+# chart parts keep their lists in DrawingML, which is another increment.
+#
+# ``ignoredErrors`` is the owner, not its ``ignoredError`` members, and a
+# worksheet's ``controls`` hold none. A sheet's ``pivotArea`` chain is reached
+# below ``sheetView`` through ``pivotSelection``; the same ``autoFilter`` chain
+# (the filter, its ``filterColumn`` and its ``sortState``) recurs under a table,
+# a custom sheet view and a pivot table's ``filter``.
+
+
+def _area(*prefix: str) -> tuple[tuple[str, ...], ...]:
+    """A ``pivotArea`` owner below ``prefix`` and the ``reference``s inside it."""
+    area = (*prefix, "pivotArea")
+    return (area, (*area, "references", "reference"))
+
+
+def _filter(*prefix: str) -> tuple[tuple[str, ...], ...]:
+    """An ``autoFilter`` owner below ``prefix``, its columns and its sort state."""
+    chain = (*prefix, "autoFilter")
+    return (chain, (*chain, "filterColumn"), (*chain, "sortState"))
+
+
+_XLSX_SHEET_VIEWS: Final = (
+    ("sheetViews",),
+    ("sheetViews", "sheetView"),
+    *_area("sheetViews", "sheetView", "pivotSelection"),
+)
+_XLSX_CUSTOM_SHEET_VIEWS: Final = (
+    ("customSheetViews", "customSheetView"),
+    *_filter("customSheetViews", "customSheetView"),
+)
 _XLSX_EXTENSION_VOCABULARY: Final = {
-    "workbook": (_SPREADSHEETML, ((),)),
-    "worksheet": (_SPREADSHEETML, ((),)),
+    "workbook": (
+        _SPREADSHEETML,
+        (
+            (),
+            ("bookViews", "workbookView"),
+            ("customWorkbookViews", "customWorkbookView"),
+        ),
+    ),
+    "worksheet": (
+        _SPREADSHEETML,
+        (
+            (),
+            *_XLSX_SHEET_VIEWS,
+            ("sheetData", "row"),
+            ("sheetData", "row", "c"),
+            *_filter(),
+            ("sortState",),
+            *_XLSX_CUSTOM_SHEET_VIEWS,
+            ("conditionalFormatting",),
+            ("conditionalFormatting", "cfRule"),
+            ("conditionalFormatting", "cfRule", "colorScale", "cfvo"),
+            ("conditionalFormatting", "cfRule", "dataBar", "cfvo"),
+            ("conditionalFormatting", "cfRule", "iconSet", "cfvo"),
+            ("ignoredErrors",),
+        ),
+    ),
+    # A chart sheet and a dialog sheet are sheets the workbook may declare and
+    # this reader opens like any other; their own roots and views are the
+    # schema's, and a dialog sheet shares the worksheet's custom views.
+    "chartsheet": (
+        _SPREADSHEETML,
+        ((), ("sheetViews",), ("sheetViews", "sheetView")),
+    ),
+    "dialogsheet": (
+        _SPREADSHEETML,
+        ((), *_XLSX_SHEET_VIEWS, *_XLSX_CUSTOM_SHEET_VIEWS),
+    ),
+    # ``CT_Sst`` holds its list directly; ``si`` and its runs hold none.
+    "sharedStrings": (_SPREADSHEETML, ((),)),
     # ``CT_Connections`` has no list of its own; each connection has one.
     "connections": (_SPREADSHEETML, (("connection",),)),
     "externalLink": (_SPREADSHEETML, ((),)),
@@ -730,6 +801,11 @@ _XLSX_EXTENSION_VOCABULARY: Final = {
             ("cacheSource",),
             ("cacheFields", "cacheField"),
             ("cacheHierarchies", "cacheHierarchy"),
+            ("cacheHierarchies", "cacheHierarchy", "groupLevels", "groupLevel"),
+            ("tupleCache",),
+            ("calculatedItems", "calculatedItem"),
+            *_area("calculatedItems", "calculatedItem"),
+            ("calculatedMembers", "calculatedMember"),
         ),
     ),
     "pivotCacheRecords": (_SPREADSHEETML, ((),)),
@@ -738,12 +814,17 @@ _XLSX_EXTENSION_VOCABULARY: Final = {
         (
             (),
             ("pivotFields", "pivotField"),
+            *_area("pivotFields", "pivotField", "autoSortScope"),
             ("pageFields", "pageField"),
             ("dataFields", "dataField"),
             ("formats", "format"),
+            *_area("formats", "format"),
             ("conditionalFormats", "conditionalFormat"),
+            *_area("conditionalFormats", "conditionalFormat", "pivotAreas"),
+            *_area("chartFormats", "chartFormat"),
             ("pivotHierarchies", "pivotHierarchy"),
             ("filters", "filter"),
+            *_filter("filters", "filter"),
         ),
     ),
     "queryTable": (
@@ -759,11 +840,10 @@ _XLSX_EXTENSION_VOCABULARY: Final = {
         _SPREADSHEETML,
         (
             (),
-            ("autoFilter",),
-            ("autoFilter", "filterColumn"),
-            ("autoFilter", "sortState"),
+            *_filter(),
             ("sortState",),
             ("tableColumns", "tableColumn"),
+            ("tableColumns", "tableColumn", "xmlColumnPr"),
         ),
     ),
     "styles": (
@@ -808,6 +888,19 @@ _XLSX_STYLES_RELATIONSHIPS: Final = frozenset(
 )
 _XLSX_STYLES_CONTENT_TYPE: Final = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"
+)
+# The same pair for the shared strings, which the reader reads by its fixed name
+# and whose extension list is covered only when the workbook declares that very
+# member under both.
+_XLSX_SHARED_STRINGS_RELATIONSHIPS: Final = frozenset(
+    {
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings",
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/sharedStrings",
+    }
+)
+# Written case-folded, as ``declared_type`` returns it.
+_XLSX_SHARED_STRINGS_CONTENT_TYPE: Final = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedstrings+xml"
 )
 # The qualified spellings of the element the workbook's date system is declared
 # on. ``xl/workbook.xml`` is reached by name rather than by a declared type, so
@@ -2779,13 +2872,16 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
     with _Package(content) as package:
         if "xl/workbook.xml" not in package.names:
             raise OOXMLInvalid("XLSX workbook part is missing")
-        shared = _shared_strings(package)
-        workbook = package.xml("xl/workbook.xml")
-        sheets = _xlsx_sheets(package, workbook)
-        # Where every other part the reader reaches reports its extension lists.
-        # Set before the first of them is read, so the workbook's own parts are
+        # Where every part the reader reaches reports its extension lists. Set
+        # before the first of them is read, so the workbook's own parts are
         # collected under no sheet and each sheet's under its own.
         coverage = package.coverage = _XlsxCoverage()
+        shared = _shared_strings(package)
+        workbook = package.xml("xl/workbook.xml")
+        # The workbook's own lists are bounded here, with every other part's, and
+        # built and reported last of all.
+        workbook_lists = coverage.claim("workbook", workbook)
+        sheets = _xlsx_sheets(package, workbook)
         # Resolved against the sheet list before any sheet is read, so a name
         # scoped to a sheet the workbook never declared is refused rather than
         # reported after a package's worth of work.
@@ -2823,9 +2919,30 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         formats = _xlsx_formats(package, workbook)
         segments: list[ExtractedSegment] = []
         populated = 0
+        # Where each sheet's own extension records belong, noted as the sheet is
+        # read and filled in only once every part's lists have been counted --
+        # a later sheet's can still take the global bound over its limit, and no
+        # record is constructed before that is settled.
+        deferred: list[
+            tuple[
+                int,
+                str,
+                str,
+                str,
+                str,
+                str,
+                list[tuple[str, list[ElementTree.Element]]],
+            ]
+        ] = []
         for ordinal, (sheet_name, sheet_id, part, state) in enumerate(sheets):
             coverage.scope = ordinal
             root = package.xml(part)
+            _prefix, _, sheet_kind = root.tag.rpartition("}")
+            sheet_lists = (
+                coverage.claim(sheet_kind, root)
+                if sheet_kind in _XLSX_SHEET_OWNERS
+                else []
+            )
             masters = _shared_masters(root)
             merged = _merged_ranges(root)
             hidden_columns = _hidden_columns(root)
@@ -2845,7 +2962,9 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                     (node.text or "" for node in cell if _local(node.tag) == "v"), None
                 )
                 inline = "".join(
-                    node.text or "" for node in cell.iter() if _local(node.tag) == "t"
+                    node.text or ""
+                    for node in _outside_extensions(cell)
+                    if _local(node.tag) == "t"
                 )
                 if formula is None and value is None and not inline:
                     continue
@@ -3095,26 +3214,21 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 )
                 _bounded(segments)
             # The extension entries the sheet's own ``extLst`` declares, as
-            # coverage: the reader understands none of them, so each is a record
-            # that one exists and where, never a cell or any content.
-            for provenance, record in _xlsx_root_extensions(root, part, "worksheet"):
-                extensions += 1
-                segments.append(
-                    ExtractedSegment(
-                        "object_inventory",
-                        _locator(
-                            capture_id,
-                            sheetId=sheet_id,
-                            sheet=sheet_name,
-                            sheetState=state,
-                            **provenance,
-                        ),
-                        structured_value=record | {"scope": "sheet"},
-                        extraction_method="inventory",
-                        visibility="hidden" if sheet_hidden else "visible",
+            # coverage, belong here: the reader understands none of them, so
+            # each is a record that one exists and where, never a cell or any
+            # content. Only the place is kept now.
+            if sheet_lists:
+                deferred.append(
+                    (
+                        len(segments),
+                        sheet_id,
+                        sheet_name,
+                        state,
+                        part,
+                        sheet_kind,
+                        sheet_lists,
                     )
                 )
-                _bounded(segments)
             # A comment is anchored to a reference, not to a cell: nothing here
             # requires the sheet to have written anything at that position, and
             # no cell is materialised for one.
@@ -3153,6 +3267,33 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                     )
                 )
                 _bounded(segments)
+        # Every part's lists are counted now, so the sheets' own extension records
+        # are built and put where each was noted, last place first so the earlier
+        # places stay valid.
+        for at, sheet_id, sheet_name, state, part, sheet_kind, sheet_lists in reversed(
+            deferred
+        ):
+            built = [
+                ExtractedSegment(
+                    "object_inventory",
+                    _locator(
+                        capture_id,
+                        sheetId=sheet_id,
+                        sheet=sheet_name,
+                        sheetState=state,
+                        **provenance,
+                    ),
+                    structured_value=record | {"scope": "sheet"},
+                    extraction_method="inventory",
+                    visibility="hidden" if state != "visible" else "visible",
+                )
+                for provenance, record in _xlsx_extension_records(
+                    part, sheet_kind, sheet_lists
+                )
+            ]
+            extensions += len(built)
+            segments[at:at] = built
+        _bounded(segments)
         # After every sheet's own content, in the order the workbook declared
         # them: a defined name is the workbook's declaration rather than a
         # sheet's, even where it scopes itself to one.
@@ -3234,7 +3375,7 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         # The extension entries of every other part the reader reached, once per
         # part and in the order it first reached them: coverage, never content.
         coverage.scope = None
-        for held in coverage.reached.values():
+        for reached_part, held in coverage.reached.items():
             owners = sorted(n for n in held.scopes if n is not None)
             where: dict[str, object] = {}
             if None in held.scopes:
@@ -3256,7 +3397,9 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
             hidden = scope != "workbook" and all(
                 sheets[n][3] != "visible" for n in owners
             )
-            for provenance, record in held.records:
+            for provenance, record in _xlsx_extension_records(
+                reached_part, held.owner, held.lists
+            ):
                 extensions += 1
                 segments.append(
                     ExtractedSegment(
@@ -3271,8 +3414,8 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
         # Last of all: the workbook's own ``extLst`` entries, coverage and not
         # content, for the reason a sheet's are. Always in sight, as the other
         # workbook-level inventories are.
-        for provenance, record in _xlsx_root_extensions(
-            workbook, "xl/workbook.xml", "workbook"
+        for provenance, record in _xlsx_extension_records(
+            "xl/workbook.xml", "workbook", workbook_lists
         ):
             extensions += 1
             segments.append(
@@ -3302,10 +3445,11 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 # which is not the ``connections`` figure beside it: a stored
                 # connection may serve several query tables, or none at all.
                 "queryTables": query_tables,
-                # The unsupported extension entries every part the reader reached
-                # declared, the roots included: coverage records, counted apart
-                # from the cells, and not every owner in the package -- see
-                # ``_XLSX_EXTENSION_VOCABULARY`` for what is not read.
+                # The unsupported extension entries every SpreadsheetML part the
+                # reader opened declared, at every owner the schema places a list
+                # at in that part, the roots and the shared strings included:
+                # coverage records, counted apart from the cells. A part the
+                # reader never opens, and DrawingML lists, are not counted.
                 "extensions": extensions,
                 # The links the workbook declared, which is not the
                 # ``externalReferences`` figure beside it: that one counts every
@@ -3433,7 +3577,7 @@ def _xlsx_sheets(
     """
     relations = package.relationships.get("xl/_rels/workbook.xml.rels", {})
     result: list[tuple[str, str, str, str]] = []
-    for sheet in root.iter():
+    for sheet in _outside_extensions(root):
         if _local(sheet.tag) != "sheet":
             continue
         relation_id = _relationship_id(sheet.attrib)
@@ -5184,7 +5328,7 @@ def _hidden_columns(root: ElementTree.Element) -> frozenset[int]:
     so the set can hold no more entries than there are columns.
     """
     hidden: set[int] = set()
-    for node in root.iter():
+    for node in _outside_extensions(root):
         if _local(node.tag) != "col" or not _flag(node, "hidden"):
             continue
         first, last = _column_span(node)
@@ -5205,7 +5349,7 @@ def _merged_ranges(
     # ponytail: positions indexed directly, bounded; an interval index only if
     # whole-column merges have to be accepted.
     members: dict[tuple[int, int], tuple[str, bool]] = {}
-    for node in root.iter():
+    for node in _outside_extensions(root):
         if _local(node.tag) != "mergeCell":
             continue
         reference = node.attrib.get("ref")
@@ -5593,7 +5737,7 @@ def _xlsx_hyperlinks(
     relations = package.relationships.get(rels, {})
     types = package.relationship_types.get(rels, {})
     result: list[tuple[str, dict[str, object]]] = []
-    for node in root.iter():
+    for node in _outside_extensions(root):
         if _local(node.tag) != "hyperlink":
             continue
         reference = node.attrib.get("ref")
@@ -5954,13 +6098,18 @@ def _xlsx_extension_lists(
     onward = frozenset(path[: n + 1] for path in paths for n in range(len(path)))
     found: list[tuple[str, list[ElementTree.Element]]] = []
     total = 0
+    list_tag = f"{scope}extLst"
 
-    def visit(node: ElementTree.Element, steps: tuple[str, ...], where: str) -> None:
+    def visit(
+        node: ElementTree.Element,
+        steps: tuple[str, ...],
+        where: tuple[tuple[str, int], ...],
+    ) -> None:
         nonlocal total
         listed = False
         ordinals: dict[str, int] = {}
         for child in node:
-            if child.tag == f"{scope}extLst":
+            if child.tag == list_tag:
                 if steps not in wanted:
                     continue
                 listed = _xlsx_extension_list(
@@ -5972,15 +6121,17 @@ def _xlsx_extension_lists(
                 total += len(entries)
                 if total > _MAX_XLSX_PART_EXTENSIONS:
                     raise OOXMLInvalid(f"XLSX {owner} declares too many extensions")
-                found.append((where or "/", entries))
+                found.append(
+                    ("".join(f"/{n}[{i}]" for n, i in where) or "/", entries)
+                )
             elif child.tag.startswith(scope):
                 name = child.tag[len(scope) :]
-                ordinal = ordinals.get(name, 0)
-                ordinals[name] = ordinal + 1
                 if (*steps, name) in onward:
-                    visit(child, (*steps, name), f"{where}/{name}[{ordinal}]")
+                    ordinal = ordinals.get(name, 0)
+                    ordinals[name] = ordinal + 1
+                    visit(child, (*steps, name), (*where, (name, ordinal)))
 
-    visit(root, (), "")
+    visit(root, (), ())
     return found
 
 
@@ -6030,19 +6181,23 @@ def _xlsx_extension_records(
     return records
 
 
-def _xlsx_root_extensions(
-    root: ElementTree.Element, part: str, owner: str
-) -> list[tuple[dict[str, object], dict[str, object]]]:
-    """Build the coverage records for the extension list a root part declares."""
-    return _xlsx_extension_records(part, owner, _xlsx_extension_lists(root, owner))
+# The roots a sheet part may be written at, each its own owner in the vocabulary.
+# The sheet is reached by a workbook ``sheet`` declaration, which names a
+# worksheet, a chart sheet or a dialog sheet alike; a root that is none of them
+# is not a sheet's vocabulary and declares nothing.
+_XLSX_SHEET_OWNERS: Final = frozenset({"worksheet", "chartsheet", "dialogsheet"})
 
 
 @dataclass(slots=True)
 class _XlsxReached:
-    """One reached part's extension records, and every scope that reached it."""
+    """One reached part's bounded extension lists, and every scope that reached it.
+
+    Only the lists are held: a record is built when the part is reported, after
+    every part's lists have been counted against the bounds.
+    """
 
     owner: str
-    records: list[tuple[dict[str, object], dict[str, object]]]
+    lists: list[tuple[str, list[ElementTree.Element]]]
     scopes: set[int | None] = field(default_factory=set)
 
 
@@ -6068,16 +6223,26 @@ class _XlsxCoverage:
     total: int = 0
     reached: dict[str, _XlsxReached] = field(default_factory=dict)
 
+    def claim(
+        self, owner: str, root: ElementTree.Element
+    ) -> list[tuple[str, list[ElementTree.Element]]]:
+        """Find and bound the lists one part declares, building nothing.
+
+        The per-list and per-part bounds are taken while the lists are found,
+        and the global one here against the running total of every part -- a
+        root, a nested owner or the shared strings alike -- so every bound is
+        settled before a single record is constructed from any of them.
+        """
+        lists = _xlsx_extension_lists(root, owner)
+        self.total += sum(len(entries) for _path, entries in lists)
+        if self.total > MAX_SEGMENTS:
+            raise OOXMLInvalid("OOXML extraction has too many segments")
+        return lists
+
     def reach(self, part: str, owner: str, root: ElementTree.Element) -> None:
         held = self.reached.get(part)
         if held is None:
-            lists = _xlsx_extension_lists(root, owner)
-            self.total += sum(len(entries) for _path, entries in lists)
-            if self.total > MAX_SEGMENTS:
-                raise OOXMLInvalid("OOXML extraction has too many segments")
-            held = self.reached[part] = _XlsxReached(
-                owner, _xlsx_extension_records(part, owner, lists)
-            )
+            held = self.reached[part] = _XlsxReached(owner, self.claim(owner, root))
         held.scopes.add(self.scope)
 
 
@@ -10060,11 +10225,39 @@ def _pptx_picture_media(
 
 
 def _shared_strings(package: _Package) -> list[str]:
-    if "xl/sharedStrings.xml" not in package.names:
+    """Read the shared strings by their fixed name, as the reader always has.
+
+    Reading is deliberately unchanged. Coverage is not: the part reports its
+    extension list only when the workbook itself declares it -- a qualifying
+    shared-strings relationship that resolves to this very member, declared with
+    the shared-strings content type -- and the root is an ``sst``, which the
+    vocabulary then requires to be a SpreadsheetML one. A member that merely
+    holds the name, a relationship to some other part, or a lookalike root is
+    read for its strings as before and declares no extension.
+    """
+    part = "xl/sharedStrings.xml"
+    if part not in package.names:
         return []
+    root = package.xml(part)
+    rels = "xl/_rels/workbook.xml.rels"
+    targets = package.relationships.get(rels, {})
+    if (
+        root.tag.rpartition("}")[2] == "sst"
+        and package.declared_type(part) == _XLSX_SHARED_STRINGS_CONTENT_TYPE
+        and any(
+            _is_defined_relationship(kind, _XLSX_SHARED_STRINGS_RELATIONSHIPS)
+            and targets.get(relation_id) == (part, False)
+            for relation_id, kind in package.relationship_types.get(rels, {}).items()
+        )
+    ):
+        _xlsx_cover(package, part, "sharedStrings", root)
     return [
-        "".join(node.text or "" for node in item.iter() if _local(node.tag) == "t")
-        for item in package.xml("xl/sharedStrings.xml")
+        "".join(
+            node.text or ""
+            for node in _outside_extensions(item)
+            if _local(node.tag) == "t"
+        )
+        for item in root
         if _local(item.tag) == "si"
     ]
 
@@ -10079,7 +10272,7 @@ def _shared_masters(root: ElementTree.Element) -> frozenset[str]:
     sheet, so each sheet is collected on its own.
     """
     masters: set[str] = set()
-    for node in root.iter():
+    for node in _outside_extensions(root):
         if _local(node.tag) != "f" or node.attrib.get("t") != "shared":
             continue
         index = node.attrib.get("si")
@@ -12545,6 +12738,27 @@ def _clip(value: str, limit: int) -> str:
 
 def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
+
+
+def _outside_extensions(root: ElementTree.Element) -> Iterator[ElementTree.Element]:
+    """Yield every descendant of ``root`` in document order, never entering an extension.
+
+    An ``extLst`` and an ``ext`` are payload the reader does not understand, and
+    it reports each as coverage only, so nothing below one may be read as a cell,
+    a formula, a row, a merge or any other structure -- whatever it is named.
+    Nothing is stripped or copied: the subtree is simply not walked, and what it
+    holds is never inspected.
+    """
+    stack = [iter(root)]
+    while stack:
+        for node in stack[-1]:
+            if _local(node.tag) in ("extLst", "ext"):
+                continue
+            yield node
+            stack.append(iter(node))
+            break
+        else:
+            stack.pop()
 
 
 def _locator(capture_id: str, **values: object) -> dict[str, object]:
