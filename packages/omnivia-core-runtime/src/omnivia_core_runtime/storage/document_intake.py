@@ -711,25 +711,39 @@ def _page_bounds(offset: int, limit: int) -> None:
         raise DocumentIntakeInvalid(f"a history read is bounded to {MAX_HISTORY_PAGE} rows")
 
 
+#: The two positions in a `capture_fingerprints` row a caller reads by meaning rather than
+#: by digesting the whole row. Stated here so the SELECT below and its one reader cannot
+#: drift into disagreeing about which column is which.
+CAPTURE_FACT_RETENTION_STATE: Final = 3
+CAPTURE_FACT_MEDIA_TYPE: Final = 7
+
+
 def capture_fingerprints(
     connection: sqlite3.Connection, *, workspace_id: str, document_id: str
 ) -> list[tuple[Any, ...]]:
-    """Every capture fact a later write can still change, for the whole document.
+    """Every capture fact a later write can still change, plus the media type, per document.
 
-    The immutable capture columns are deliberately absent: a capture is never edited, so its
-    identity and its ordering number are the whole of what detects one appearing. What does
-    move is retention, the generation and instant that moved it, and the processing
+    The other immutable capture columns are deliberately absent: a capture is never edited,
+    so its identity and its ordering number are the whole of what detects one appearing. What
+    does move is retention, the generation and instant that moved it, and the processing
     obligation -- and each of those changes what a page of history says about a capture that
     an earlier page already returned. The row count is the document's complete capture total,
     so a separate `COUNT(*)` would be a second statement of the same fact read at a second
     instant.
+
+    `media_type` is the one immutable column here, and it is not here to detect a change. It
+    is here so one read tells its caller the complete set of media types the document's
+    active retained captures represent: the approved reprocess profiles for each of those
+    types can then be resolved once, from this same read, instead of once per capture per
+    page. Resolving them per page is what let installed resources move between two pages of
+    one series without the snapshot noticing.
     """
     return [
         tuple(row)
         for row in connection.execute(
             "SELECT c.capture_id, c.capture_sequence, c.source_removal_generation, "
             "r.retention_state, r.capture_retention_generation, r.changed_at_us, "
-            "o.outbox_state FROM omnivia_document_captures c "
+            "o.outbox_state, c.media_type FROM omnivia_document_captures c "
             "LEFT JOIN omnivia_document_capture_retention r "
             "  ON r.workspace_id = c.workspace_id AND r.capture_id = c.capture_id "
             "LEFT JOIN omnivia_document_capture_outbox o "

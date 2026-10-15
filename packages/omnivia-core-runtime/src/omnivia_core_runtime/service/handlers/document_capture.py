@@ -37,6 +37,7 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
+    RETRY_CLASS_RETRYABLE,
     ContractDecodeError,
     ContractSemanticError,
     decode_document_history_input,
@@ -84,6 +85,7 @@ from omnivia_core_runtime.service.document_intake import (
     read_retained_source,
 )
 from omnivia_core_runtime.service.document_processing import (
+    ReprocessProfileOption,
     approved_reprocess_profiles,
 )
 from omnivia_core_runtime.service.document_transfer import (
@@ -169,6 +171,12 @@ _MESSAGE_HISTORY_MOVED: Final = (
     "this document changed since the page this continuation was issued for; read the "
     "history again from its first page"
 )
+#: The caller did nothing wrong here: the document moved while this page's own rows were
+#: being read, so the page could only be served from two instants. Recoverable rather than
+#: invalid, because the same request retried against a settled document answers.
+_MESSAGE_HISTORY_RACED: Final = (
+    "this document changed while this page was being assembled; read the history again"
+)
 #: The continuation token's exact key set: the request binding, the state snapshot, the two
 #: independent offsets and the version. A token carrying anything else, or missing one of
 #: these, is refused.
@@ -233,6 +241,7 @@ def _history_snapshot(
     published_at_us: int | None,
     captures: Sequence[tuple[Any, ...]],
     extractions: Sequence[tuple[Any, ...]],
+    reprocess_options: Mapping[str, Sequence[ReprocessProfileOption]],
 ) -> str:
     """One digest of every fact that can change what a page of this history says.
 
@@ -243,17 +252,28 @@ def _history_snapshot(
     under this digest is continuing within one state of all of them, and a page that would
     have been answered from any other state is refused instead.
 
+    `reprocess_options` is in here because the database is not the whole of what a page
+    says. The approved selections a capture is offered are resolved from the installation's
+    decoder build, its OCR catalogue and its installed recognition resources, and none of
+    those leaves a trace in any row this digest reads. Without them a newly installed or
+    newly missing model would change page two's offered profiles and digests while every
+    database fact stood still, and the series would be stitched across two resolutions. The
+    canonical form here is the complete option identity a page publishes -- reference,
+    revision, processing mode and profile digest, in the resolved order -- so a change to any
+    of them refuses the continuation.
+
     `fencing_generation` is in here as well: it is not read into the result, but a document
     whose ownership generation advanced was written to by another owner, which is not a state
     a half-read history should be stitched across.
 
-    What this digest does *not* do is hold the statements of one page to one instant. The
-    service connection is shared with the instance's other threads and `BEGIN IMMEDIATE`
+    The service connection is shared with the instance's other threads and `BEGIN IMMEDIATE`
     does not nest, so a read handler here does not open a transaction of its own -- the same
-    posture every other read in this build takes. The digest therefore binds a *series* of
-    pages: a document that moved while one page was being assembled refuses the next
-    continuation rather than extending the series, so the caller re-reads instead of
-    stitching.
+    posture every other read in this build takes. This digest is therefore used twice per
+    page rather than relied on once: once before the page's rows are read, to bind the
+    *series*, and once after they are assembled, to bind the *page*. A document that moved
+    mid-assembly fails the second comparison and the page is refused as retriable rather than
+    served from two instants; a document that moved between two pages fails the first and the
+    caller re-reads from the beginning instead of stitching.
     """
     return token_digest(
         {
@@ -272,7 +292,19 @@ def _history_snapshot(
                 head.updated_at_us,
             ],
             "published_at_us": published_at_us,
-            "snapshot_version": 1,
+            "reprocess_options": {
+                media_type: [
+                    [
+                        option.profile_ref,
+                        option.revision,
+                        option.processing_mode,
+                        option.profile_digest,
+                    ]
+                    for option in options
+                ]
+                for media_type, options in reprocess_options.items()
+            },
+            "snapshot_version": 2,
         }
     )
 
@@ -448,18 +480,26 @@ class DocumentCaptureHandlers:
         capture's retention and processing obligation, each revision's result and
         disposition, the binding aggregate and the published projection can all move between
         two pages, and every one of them changes what a page says -- which member is current,
-        which action is offered, which profiles are approved. Pages stitched across two such
-        states would be a history no instant ever held. `_history_snapshot` digests every one
-        of those facts for the whole document, the token carries that digest, and a
-        continuation whose recomputed digest differs is refused so the caller re-reads from
-        the first page rather than assembling a composite.
+        which action is offered. So can the installation itself, which is not in any row:
+        the approved profiles a capture is offered are resolved from the decoder build, the
+        OCR catalogue and the installed recognition resources. Pages stitched across two such
+        states would be a history no instant ever held. `_history_snapshot` digests all of
+        those facts for the whole document *including* this request's resolved profile
+        options, the token carries that digest, and a continuation whose recomputed digest
+        differs is refused so the caller re-reads from the first page rather than assembling
+        a composite. The same digest is recomputed once more after this page's own rows are
+        assembled, so a write landing mid-page is refused as retriable rather than served as
+        rows from one instant beside heads from another.
 
         **Nothing derived is inferred.** `is_current_source` and `is_current_extraction` are
         read from `omnivia_document_heads`; the per-capture reprocess availability is the
         same retention and source-state check `complete_reprocess_in_transaction` makes; and
         the offered profiles come from the same `approved_reprocess_profiles` call the
         reprocess handler resolves its execution from, so the digest a caller is shown is
-        the digest of the settings that will run.
+        the digest of the settings that will run. That call is made once per distinct media
+        type for the whole request, before the snapshot, and page assembly reads the result
+        rather than resolving again: two captures of one media type, on one page or on two,
+        are therefore offered the same options by construction and not by coincidence.
 
         **What is not here.** No source bytes, no blob path, no original filesystem path,
         bookmark or owner reference, no credential, no consent or bulk lineage, no caller
@@ -504,8 +544,10 @@ class DocumentCaptureHandlers:
             raise OperationError(
                 ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_HISTORY_UNREADABLE
             )
+        source_active = head.source_state == store.SOURCE_ACTIVE
 
         unreadable = False
+        raced = False
         try:
             capture_facts = store.capture_fingerprints(
                 connection, workspace_id=workspace_id, document_id=request.document_id
@@ -523,6 +565,25 @@ class DocumentCaptureHandlers:
             # page's totals and its continuation can never describe two different instants.
             capture_count = len(capture_facts)
             extraction_count = len(extraction_facts)
+            # Resolved once per distinct media type, for the whole request, before the
+            # snapshot is taken. A capture is only offered profiles when its logical source
+            # is active and its bytes are retained, so those are the only media types worth
+            # resolving -- and resolving them here rather than inside page assembly is what
+            # puts the result inside the snapshot: every page of one series then reports the
+            # single resolution this mapping holds, and installed resources cannot move
+            # beneath page two without the continuation being refused.
+            reprocess_options = {
+                media_type: approved_reprocess_profiles(media_type=media_type)
+                for media_type in sorted(
+                    {
+                        row[store.CAPTURE_FACT_MEDIA_TYPE]
+                        for row in capture_facts
+                        if source_active
+                        and row[store.CAPTURE_FACT_RETENTION_STATE]
+                        == store.RETENTION_RETAINED
+                    }
+                )
+            }
             snapshot = _history_snapshot(
                 document=document,
                 head=head,
@@ -530,6 +591,7 @@ class DocumentCaptureHandlers:
                 published_at_us=published_at_us,
                 captures=capture_facts,
                 extractions=extraction_facts,
+                reprocess_options=reprocess_options,
             )
             capture_offset, extraction_offset = _history_offsets(supplied, snapshot)
             if capture_offset > capture_count or extraction_offset > extraction_count:
@@ -552,10 +614,61 @@ class DocumentCaptureHandlers:
                 self._extraction_entry(connection, row, head=head, workspace_id=workspace_id)
                 for row in extraction_rows
             )
-            source_active = head.source_state == store.SOURCE_ACTIVE
             captures = tuple(
-                self._capture_entry(row, head=head, source_active=source_active)
+                self._capture_entry(
+                    row,
+                    head=head,
+                    source_active=source_active,
+                    reprocess_options=reprocess_options,
+                )
                 for row in capture_rows
+            )
+            # The page is now assembled, and its rows were read after the snapshot was
+            # taken. On a shared connection with no transaction of its own, that is a window
+            # a write can land in: the heads, counts and actions above would then come from
+            # one instant and these rows from another. So the document-wide facts are read
+            # again and digested again, and a page whose digest moved is refused. This is a
+            # read-then-verify, not a nested transaction -- there is nothing to roll back and
+            # nothing is held across it.
+            settled_document = store.read_document(
+                connection, workspace_id=workspace_id, document_id=request.document_id
+            )
+            settled_head = store.read_head(
+                connection, workspace_id=workspace_id, document_id=request.document_id
+            )
+            raced = (
+                settled_document is None
+                or settled_head is None
+                or snapshot
+                != _history_snapshot(
+                    document=settled_document,
+                    head=settled_head,
+                    binding_state=store.document_binding_state(
+                        connection,
+                        workspace_id=workspace_id,
+                        document_id=request.document_id,
+                    ),
+                    published_at_us=store.projection_published_at(
+                        connection,
+                        workspace_id=workspace_id,
+                        document_id=request.document_id,
+                    ),
+                    captures=store.capture_fingerprints(
+                        connection,
+                        workspace_id=workspace_id,
+                        document_id=request.document_id,
+                    ),
+                    extractions=store.extraction_fingerprints(
+                        connection,
+                        workspace_id=workspace_id,
+                        document_id=request.document_id,
+                    ),
+                    # The one resolution this request made, deliberately not a second one:
+                    # a single resolution per request is what makes the page internally one
+                    # state, so re-resolving here could only manufacture a disagreement with
+                    # a page that is itself consistent.
+                    reprocess_options=reprocess_options,
+                )
             )
         except (store.DocumentIntakeInvalid, OcrSelectionInvalid, sqlite3.Error):
             # Contained rather than chained: a storage refusal names rows, digests and
@@ -566,6 +679,15 @@ class DocumentCaptureHandlers:
         if unreadable:
             raise OperationError(
                 ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_HISTORY_UNREADABLE
+            )
+        if raced:
+            # Stated retryable explicitly: `internal_recoverable` is frozen to that class,
+            # and the default `non_retryable` would contradict it, which the response
+            # validator turns into a bare `internal_non_recoverable` carrying none of this.
+            raise OperationError(
+                ERROR_CODE_INTERNAL_RECOVERABLE,
+                _MESSAGE_HISTORY_RACED,
+                retry_class=RETRY_CLASS_RETRYABLE,
             )
 
         next_capture = capture_offset + len(captures)
@@ -698,12 +820,21 @@ class DocumentCaptureHandlers:
         *,
         head: store.DocumentHead,
         source_active: bool,
+        reprocess_options: Mapping[str, Sequence[ReprocessProfileOption]],
     ) -> DocumentCaptureHistoryEntry:
-        """One capture as history, with the actions Core will actually accept for it."""
+        """One capture as history, with the actions Core will actually accept for it.
+
+        `reprocess_options` is the request's single resolution, keyed by media type, and no
+        profile is resolved here. A capture that qualifies for options -- active source,
+        retained bytes -- has its media type in that mapping by construction, because the
+        mapping was built from the same capture facts; the `.get` default covers only the
+        captures that qualify for none, which is the same empty tuple those captures were
+        given before and so the same unavailable reason.
+        """
         capture = row.capture
         retained = row.retention_state == store.RETENTION_RETAINED
-        options = (
-            approved_reprocess_profiles(media_type=capture.media_type)
+        options: Sequence[ReprocessProfileOption] = (
+            reprocess_options.get(capture.media_type, ())
             if source_active and retained
             else ()
         )

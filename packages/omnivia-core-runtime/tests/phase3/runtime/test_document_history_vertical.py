@@ -53,6 +53,7 @@ from test_evidence_capture_vertical import (
 from omnivia_core.contracts.v1 import (
     CONTRACT_VERSION,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+    ERROR_CODE_INTERNAL_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_WORKSPACE_NOT_GRANTED,
@@ -1388,3 +1389,239 @@ def test_an_unchanged_document_pages_through_to_the_end_under_one_snapshot(
         token = page.page.continuation_token
     assert token is None
     assert seen == [source.capture_id for source in captures]
+
+
+def _resolution_moved(digest: str) -> Any:
+    """A stand-in for the installation moving beneath a continuation.
+
+    A newly installed or newly removed recognition model, a new OCR catalogue or a newer
+    decoder build all reach this read the same way: the same reference now resolves to a
+    different approved profile identity. None of that is recorded in any row the snapshot
+    reads from the database, so the substituted digest here is the whole of the change.
+    """
+
+    def moved(*, media_type: str) -> tuple[ReprocessProfileOption, ...]:
+        return tuple(
+            ReprocessProfileOption(
+                profile_ref=option.profile_ref,
+                revision=option.revision,
+                processing_mode=option.processing_mode,
+                profile_digest=digest,
+                settings=option.settings,
+                profile=option.profile,
+            )
+            for option in approved_reprocess_profiles(media_type=media_type)
+        )
+
+    return moved
+
+
+def test_a_continuation_is_refused_when_profile_resolution_moved_between_pages(
+    owned: Served, monkeypatch: Any
+) -> None:
+    """The case the database facts cannot see.
+
+    Expiring a capture or moving a head leaves a row behind for the snapshot to notice. An
+    OCR model appearing or disappearing does not: every capture row, both heads, both totals,
+    the binding aggregate and the published projection stand exactly still, and only the
+    approved profile identity a capture is offered changes. A series stitched across that
+    would hand the caller page one's digests beside page two's, both labelled approved, when
+    only one of them is. So the resolution is part of the snapshot and this continuation is
+    refused.
+    """
+    dispatcher = build_dispatcher(owned, tag="history-interleave-profiles")
+    _three_captures(dispatcher)
+    first = history(dispatcher, limit=1, request_id="req-history-p1")
+    token = first.page.continuation_token
+    assert token is not None
+    was_offered = first.captures[0].reprocess_profiles[0].profile_digest
+
+    substituted = "sha256:" + "e" * 64
+    monkeypatch.setattr(
+        document_handlers, "approved_reprocess_profiles", _resolution_moved(substituted)
+    )
+    error = refusal(
+        dispatcher.dispatch(
+            history_request(limit=1, token=token, request_id="req-history-p2")
+        )
+    )
+    assert error.error.code == ERROR_CODE_INVALID_REQUEST
+
+    # Nothing in the database moved: this is exactly the state a totals-and-rows binding
+    # would have continued through, and the page it would have served is the mixed one.
+    fresh = history(dispatcher, limit=1, request_id="req-history-fresh")
+    assert fresh.capture_count == 3
+    assert fresh.source.current_capture_id == first.source.current_capture_id
+    # Reading again from the first page is the recovery, and it reports the new resolution
+    # rather than the one page one was issued under.
+    assert fresh.captures[0].reprocess_profiles[0].profile_digest == substituted
+    assert was_offered != substituted
+    # And that fresh series pages through to the end under the new resolution.
+    walked = history(
+        dispatcher,
+        limit=1,
+        token=fresh.page.continuation_token,
+        request_id="req-history-fresh2",
+    )
+    assert walked.captures[0].reprocess_profiles[0].profile_digest == substituted
+
+
+def test_one_request_resolves_each_relevant_media_type_exactly_once(
+    owned: Served, monkeypatch: Any
+) -> None:
+    """Resolution is per request and per distinct media type, not per capture per page.
+
+    Three captures of two media types. A request that returns one of them still resolves both
+    types, because the mapping it digests has to cover every page of the series it is about
+    to issue a token for -- and it resolves each of them once, because a second resolution of
+    the same type is a second chance for the two to disagree inside one page.
+    """
+    dispatcher = build_dispatcher(owned, tag="history-resolve-once")
+    first = capture(dispatcher, request_id="req-c1", key="idem-c1", content=b"body one")
+    second = capture(
+        dispatcher,
+        request_id="req-c2",
+        key="idem-c2",
+        content=PNG_BODY,
+        media_type="image/png",
+        intent="refresh",
+        expected_base=first.capture_id,
+    )
+    capture(
+        dispatcher,
+        request_id="req-c3",
+        key="idem-c3",
+        content=b"body three",
+        intent="refresh",
+        expected_base=second.capture_id,
+    )
+
+    asked: list[str] = []
+
+    def counted(*, media_type: str) -> tuple[ReprocessProfileOption, ...]:
+        asked.append(media_type)
+        return approved_reprocess_profiles(media_type=media_type)
+
+    monkeypatch.setattr(document_handlers, "approved_reprocess_profiles", counted)
+
+    offered: dict[str, tuple[tuple[str, str, str, str], ...]] = {}
+    token: str | None = None
+    for index in range(3):
+        del asked[:]
+        page = history(
+            dispatcher, limit=1, token=token, request_id=f"req-history-once{index}"
+        )
+        # One call per distinct media type the document's active retained captures hold,
+        # whatever this page itself returned.
+        assert sorted(asked) == ["image/png", "text/plain"]
+        assert len(asked) == len(set(asked))
+        entry = page.captures[0]
+        identity = tuple(
+            (
+                option.profile_ref,
+                option.revision,
+                option.processing_mode,
+                option.profile_digest,
+            )
+            for option in entry.reprocess_profiles
+        )
+        offered.setdefault(entry.media_type, identity)
+        # Every capture of one media type is offered the same resolution, across pages.
+        assert offered[entry.media_type] == identity
+        token = page.page.continuation_token
+    assert token is None
+    # The two text captures went through the same resolution, and the image capture has the
+    # pair its media type qualifies for rather than the single text option.
+    assert len(offered["text/plain"]) == 1
+    assert len(offered["image/png"]) == 2
+
+
+def test_a_capture_with_no_offered_profile_still_resolves_nothing_for_itself(
+    owned: Served, monkeypatch: Any
+) -> None:
+    """The media types that qualify for no resolution are not resolved.
+
+    An expired capture, a removed source and an unqualified format each report their own
+    unavailable reason and no profile, and none of them needs a resolution to say so. A
+    request whose only retained capture is of an unqualified format resolves that one type and
+    nothing else, and the entry still reports `format_not_qualified`.
+    """
+    dispatcher = build_dispatcher(owned, tag="history-resolve-none")
+    source = capture(
+        dispatcher,
+        request_id="req-c1",
+        key="idem-c1",
+        content=b"MZ\x00\x00binary",
+        media_type="application/x-msdownload",
+    )
+
+    asked: list[str] = []
+
+    def counted(*, media_type: str) -> tuple[ReprocessProfileOption, ...]:
+        asked.append(media_type)
+        return approved_reprocess_profiles(media_type=media_type)
+
+    monkeypatch.setattr(document_handlers, "approved_reprocess_profiles", counted)
+    entry = history(dispatcher, request_id="req-history-unqualified").captures[0]
+    assert asked == ["application/x-msdownload"]
+    assert entry.reprocess_profiles == ()
+    assert [action.unavailable_reason for action in entry.actions] == [
+        "format_not_qualified"
+    ]
+
+    # Expire it, and the request resolves nothing at all: a capture whose bytes are gone has
+    # no profile question to ask of the installation.
+    expire_capture(service_view(owned), capture_id=source.capture_id)
+    del asked[:]
+    expired = history(dispatcher, request_id="req-history-expired").captures[0]
+    assert asked == []
+    assert expired.reprocess_profiles == ()
+    assert [action.unavailable_reason for action in expired.actions] == [
+        "source_not_retained"
+    ]
+
+
+def test_a_write_landing_mid_page_is_refused_rather_than_served_mixed(
+    owned: Served, monkeypatch: Any
+) -> None:
+    """The snapshot binds this page as well as the series it starts.
+
+    The heads, totals, actions and resolved options above are read before the page's own rows
+    are, and this read holds no transaction of its own, so a write can land in between. Here
+    one does: a capture is expired while the page is being assembled. The page that would be
+    served states a retention and a reprocess availability for that capture from before the
+    write and totals from the same instant -- internally mixed. It is refused as recoverable
+    instead, and the same request retried against a settled document answers.
+    """
+    dispatcher = build_dispatcher(owned, tag="history-mid-page")
+    captures = _three_captures(dispatcher)
+    real = store.read_capture_history
+    landed: list[str] = []
+
+    def mutating(*args: Any, **kwargs: Any) -> Any:
+        rows = real(*args, **kwargs)
+        if not landed:
+            landed.append(captures[0].capture_id)
+            expire_capture(service_view(owned), capture_id=captures[0].capture_id)
+        return rows
+
+    monkeypatch.setattr(document_handlers.store, "read_capture_history", mutating)
+    error = refusal(dispatcher.dispatch(history_request(request_id="req-history-mid")))
+    assert error.error.code == ERROR_CODE_INTERNAL_RECOVERABLE
+    # And stated as retryable, because resending this identical read is the recovery. A
+    # refusal that contradicted the frozen class for its code would reach the caller as a
+    # bare `internal_non_recoverable` and tell them to stop.
+    assert error.error.retry_class == "retryable"
+    assert landed == [captures[0].capture_id]
+
+    # Retrying the identical request against the settled document answers, and answers with
+    # the state the write left behind rather than the one the refused page was holding.
+    monkeypatch.undo()
+    settled = history(dispatcher, request_id="req-history-mid-again")
+    entry = next(
+        row for row in settled.captures if row.capture_id == captures[0].capture_id
+    )
+    assert entry.retention_state == "expired"
+    assert [action.unavailable_reason for action in entry.actions] == [
+        "source_not_retained"
+    ]
