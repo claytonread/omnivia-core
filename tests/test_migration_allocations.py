@@ -293,8 +293,10 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # the capture row, pinned to the commit that introduced its SQL.
     71: "6aba714a1772b468d607a7bc205f7363cb6fbca6",
     # 0072 freezes the exact OCR resource identities one capture was admitted
-    # *against* beside them, pinned to the commit that introduced its SQL.
-    72: "be5a744e1a9f09ed29f46b48dccca0c84781f820",
+    # *against* beside them, and the profile digest the two resolved to, pinned to
+    # the commit that introduced its SQL -- the follow-up that added the second
+    # column, because 0072 is a candidate and grew rather than gaining a migration.
+    72: "c40da7eb2b97dbf945f74529c50062e814c39315",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
