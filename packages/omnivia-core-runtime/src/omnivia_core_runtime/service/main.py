@@ -420,6 +420,16 @@ def _build_production_application_surface(
         installation_id=installation_id,
         workspace_id=started.workspace_id,
         fallback=memory,
+        # The same managed cache the document-processing executor resolves against,
+        # from the installation being served. `document.history` offers the approved
+        # profiles and `document.reprocess` executes one, and both are resolved
+        # against installed OCR resources -- so a family composed without this
+        # reports installed languages unavailable and refuses a reprocess that
+        # named them. Read the way the document-settings handlers read it, and
+        # absent means the packaged fail-closed catalogue, which serves nothing.
+        catalogue_for=installation_catalogue(
+            getattr(getattr(started, "installation", None), "root", None)
+        ),
     )
     governance = build_governance_application_dispatcher(
         service=started,

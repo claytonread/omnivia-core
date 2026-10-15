@@ -18,6 +18,13 @@ For pins (§18.4, END-02): that a pinned identity cannot be removed and is never
 dropped by reconciliation even when its bytes have gone, and that a pin on one
 identity does not protect another.
 
+For selection leases (§18.4, END-02): that a selection held for an extraction's
+length cannot be removed, is not dropped by reconciliation and is discarded by
+neither sweep nor the pruning bound; that the hold lives on disk rather than in
+the object that took it, so another process sees it; that two holds of one
+selection are two leases; that a hold nobody holds any more is discarded rather
+than left blocking removal for good; and that a refused resolution takes no hold.
+
 For the path boundary (§15.1): that a relative, traversing, symlinked,
 non-regular or inside-the-cache payload is refused, and that no field of an
 identity can reach the filesystem as anything but a fixed-width hexadecimal name.
@@ -41,11 +48,13 @@ import hashlib
 import os
 import re
 import stat
+from itertools import permutations
 from pathlib import Path
 
 import pytest
 from omnivia_core_runtime.service import ocr_resource_lifecycle as lifecycle_module
 from omnivia_core_runtime.service.ocr_resource_lifecycle import (
+    MANAGED_LEASES_DIRNAME,
     MANAGED_QUARANTINE_DIRNAME,
     MANAGED_RESOURCES_DIRNAME,
     MANAGED_SELECTIONS_DIRNAME,
@@ -874,11 +883,13 @@ def test_a_newer_schema_refuses_reconciliation_and_sweeps_nothing(
 # --- selection projection
 
 
-def _multilingual(tmp_path: Path) -> tuple[ManagedOcrResources, list[OcrResourceSetIdentity]]:
-    """Three languages, each installed as its own identity in its own directory."""
+def _multilingual(
+    tmp_path: Path, *languages: str
+) -> tuple[ManagedOcrResources, list[OcrResourceSetIdentity]]:
+    """Several languages, each installed as its own identity in its own directory."""
     managed = _managed(tmp_path)
     identities = []
-    for index, language in enumerate(("deu", "eng", "fra")):
+    for index, language in enumerate(languages or ("deu", "eng", "fra")):
         body = BODY + bytes([index])
         identity = _identity(body, language=language)
         managed.install(_payload(tmp_path, body, name=f"{language}.bin"), identity)
@@ -1077,6 +1088,201 @@ def test_reconciliation_discards_the_projections_too(tmp_path: Path) -> None:
     assert not directory.exists()
 
 
+# --- selection leases
+
+
+def _lease_names(managed: ManagedOcrResources) -> list[str]:
+    try:
+        return sorted(child.name for child in managed.leases_root.iterdir())
+    except FileNotFoundError:
+        return []
+
+
+def test_a_leased_identity_refuses_removal_until_the_lease_ends(
+    tmp_path: Path,
+) -> None:
+    """The window the lease closes. Between resolving a selection and invoking the
+    engine over it an operator could remove one of its languages, and the invocation
+    would then open a directory that is no longer there.
+
+    Refused with the same code a §18.4 pin refuses with, because the operator's
+    recovery is the same one: wait for the operation to finish. And the refusal lasts
+    exactly as long as the hold -- the identity is removable again afterwards, so this
+    is a hold rather than a new permanent veto.
+    """
+    managed, identities = _multilingual(tmp_path)
+
+    with managed.leased_selection(identities[:2]) as directory:
+        for identity in identities[:2]:
+            with pytest.raises(OcrResourceLifecycleRefused) as refused:
+                managed.remove(identity)
+            assert refused.value.code == REFUSAL_PINNED
+        assert directory.is_dir()
+        # The third language was never resolved, so nothing holds it.
+        managed.remove(identities[2])
+
+    managed.remove(identities[0])
+    assert not managed.payload_path(identities[0]).exists()
+
+
+def test_a_hold_is_the_lock_and_not_the_object_that_took_it(tmp_path: Path) -> None:
+    """The cross-process property. Another process is another
+    :class:`ManagedOcrResources` over the same root with none of this one's state, so
+    a hold only excludes it if the hold lives on disk. It does: the lease file and the
+    OS lock over it, which is what the second instance reads.
+    """
+    managed, identities = _multilingual(tmp_path)
+    other = ManagedOcrResources(managed.root)
+
+    with managed.leased_selection(identities[:2]) as directory:
+        with pytest.raises(OcrResourceLifecycleRefused) as refused:
+            other.remove(identities[0])
+        assert refused.value.code == REFUSAL_PINNED
+        assert other.reconcile().changed is False
+        assert directory.is_dir()
+
+    other.remove(identities[0])
+
+
+def test_neither_sweep_nor_the_pruning_bound_discards_a_held_projection(
+    tmp_path: Path,
+) -> None:
+    """All three of the ways a projection used to be able to vanish underneath a
+    resolution, run while one is held: the removal sweep, the reconciliation sweep and
+    the bound on how many projections are kept.
+    """
+    managed, identities = _multilingual(tmp_path, "deu", "eng", "fra", "ita")
+    leased = [identities[0], identities[1]]
+    others = identities[:3]
+
+    with managed.leased_selection(leased) as directory:
+        # A removal of something else sweeps the unheld projections and keeps this one.
+        unheld = managed.project_selection([identities[3]])
+        managed.remove(identities[3])
+        assert not unheld.exists()
+        assert directory.is_dir()
+        # A reconciliation sweeps them again, and still keeps this one.
+        managed.project_selection([identities[1], identities[0]])
+        managed.reconcile()
+        assert directory.is_dir()
+        # And enough further projections to drive the bound past its limit. The bound
+        # has to actually bite, or this would pass with the pruning switched off.
+        orders = [
+            list(order)
+            for size in (1, 2, 3)
+            for order in permutations(others, size)
+            if list(order) != leased
+        ]
+        assert len(orders) > MAX_PUBLISHED_SELECTIONS
+        for order in orders:
+            managed.project_selection(order)
+        published = {child.name for child in managed.selections_root.iterdir()}
+        assert len(published) <= MAX_PUBLISHED_SELECTIONS + 1
+        assert directory.name in published
+        assert directory.is_dir()
+        assert sorted(child.name for child in directory.iterdir()) == [
+            f"{identities[0].language}{MODEL_SUFFIX}",
+            f"{identities[1].language}{MODEL_SUFFIX}",
+        ]
+
+
+def test_reconciliation_keeps_an_entry_a_live_lease_still_links(
+    tmp_path: Path,
+) -> None:
+    """A leased entry whose bytes stopped matching is §18.4's unrecoverable case, the
+    same as a pinned one: the pass reports it rather than dropping the entry out from
+    under the operation holding it.
+    """
+    managed, identities = _multilingual(tmp_path)
+
+    with managed.leased_selection(identities[:1]):
+        # Rewritten in place, so the inode the projection links is the same one.
+        managed.payload_path(identities[0]).write_bytes(OTHER_BODY)
+        outcome = managed.reconcile()
+
+    assert outcome.quarantined == ()
+    assert outcome.unrecoverable_pinned == (identities[0],)
+    assert identities[0] in managed.store.load().entries
+
+
+def test_releasing_the_lease_leaves_nothing_holding_anything(tmp_path: Path) -> None:
+    """The release is the whole of the cleanup, after success and after failure alike:
+    the lease file goes, and nothing is left claiming a hold.
+    """
+    managed, identities = _multilingual(tmp_path)
+
+    with managed.leased_selection(identities[:2]):
+        assert len(_lease_names(managed)) == 1
+    assert _lease_names(managed) == []
+
+    with pytest.raises(RuntimeError), managed.leased_selection(identities[:2]):
+        assert len(_lease_names(managed)) == 1
+        raise RuntimeError("the extraction failed")
+    assert _lease_names(managed) == []
+    managed.remove(identities[0])
+
+
+def test_two_holds_of_one_selection_are_two_leases(tmp_path: Path) -> None:
+    """Two extractions may want the same recognition order at once, and the end of
+    one must not release the other's hold.
+    """
+    managed, identities = _multilingual(tmp_path)
+
+    with managed.leased_selection(identities[:2]) as first:
+        with managed.leased_selection(identities[:2]) as second:
+            assert second == first
+            assert len(_lease_names(managed)) == 2
+        with pytest.raises(OcrResourceLifecycleRefused) as refused:
+            managed.remove(identities[0])
+        assert refused.value.code == REFUSAL_PINNED
+        assert first.is_dir()
+
+
+def test_a_lease_whose_holder_has_gone_holds_nothing(tmp_path: Path) -> None:
+    """The reason the hold is a lock rather than a record. A record of a claim has to
+    be released by whoever took it, so a service that crashed mid-extraction would
+    leave one behind for good and its languages could never be removed again. A lock
+    nobody holds is a lease nobody holds, and the next operation discards it.
+    """
+    managed, identities = _multilingual(tmp_path)
+    directory = managed.project_selection(identities[:2])
+    abandoned = managed.leases_root / f"{directory.name}-{'0' * 32}"
+    abandoned.parent.mkdir(parents=True, exist_ok=True)
+    abandoned.write_bytes(b"")
+
+    managed.remove(identities[0])
+
+    assert not abandoned.exists()
+    assert not directory.exists()
+
+
+def test_a_lease_of_a_selection_the_cache_cannot_serve_holds_nothing(
+    tmp_path: Path,
+) -> None:
+    """It refuses exactly what a projection refuses, and for the same reasons:
+    nothing substituted, no smaller selection, and no hold taken on the strength of
+    a resolution that did not happen.
+    """
+    managed, identities = _multilingual(tmp_path)
+    absent = _identity(OTHER_BODY, language="jpn")
+
+    with (
+        pytest.raises(OcrResourceLifecycleRefused) as refused,
+        managed.leased_selection([identities[0], absent]),
+    ):
+        pass  # pragma: no cover - the lease is refused before the block runs
+    assert refused.value.code == REFUSAL_NOT_INSTALLED
+
+    managed.payload_path(identities[1]).write_bytes(OTHER_BODY)
+    with (
+        pytest.raises(OcrResourceLifecycleRefused) as diverged,
+        managed.leased_selection(identities[1:2]),
+    ):
+        pass  # pragma: no cover - the lease is refused before the block runs
+    assert diverged.value.code == REFUSAL_DIVERGENT
+    assert _lease_names(managed) == []
+
+
 # --- layout constants
 
 
@@ -1084,5 +1290,6 @@ def test_the_installation_directory_name_is_stable() -> None:
     assert OCR_RESOURCES_DIR == "ocr-resources"
     assert MANAGED_RESOURCES_DIRNAME == "resources"
     assert MANAGED_SELECTIONS_DIRNAME == "selections"
+    assert MANAGED_LEASES_DIRNAME == "leases"
     assert MANAGED_STAGING_DIRNAME == "staging"
     assert MANAGED_QUARANTINE_DIRNAME == "quarantine"

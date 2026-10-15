@@ -10,12 +10,22 @@ therefore cannot move what a queued or active obligation does -- the obligation
 is replayed from the same row under the same operation key, and the key is
 derived from the profile that row resolves to.
 
-Two deliberate boundaries:
+Three deliberate boundaries:
 
 **Text-only never resolves OCR resources.** Not "resolves them and ignores the
 answer": :func:`resolve_settings` returns before the catalogue is consulted, so a
-text-only capture takes no coordination lock on the managed cache and its profile
-pins no engine, model or language at all.
+text-only capture takes no coordination lock on the managed cache, leases
+nothing, and its profile pins no engine, model or language at all.
+
+**What one obligation resolves, it holds.** Resolving a selection and invoking
+the engine over it are two moments, and between them a removal, a reconciliation
+or the managed cache's own pruning would discard the projected directory the
+invocation is about to open. :func:`held_selection` takes one lease per
+obligation before the selection is resolved and releases it only after the
+extraction has been settled, so the exact resource identities and the projected
+directory survive the whole invocation. It fails closed: a hold that cannot be
+taken resolves as unavailable resources with the requested order intact, never as
+a substitution.
 
 **A null snapshot is the one compatibility path, and it is deterministic.** It
 means exactly what migration 0071 says it means -- a capture admitted before the
@@ -25,6 +35,32 @@ embedded-image pass, and an *unconfigured* language request, which reports
 ``ocr_resources_unconfigured`` rather than claiming English was asked for. A
 non-null snapshot that does not decode is never reinterpreted that way: it
 settles as a failed extraction naming :data:`PROCESSING_SETTINGS_INVALID`.
+
+Still open, for the next END-02 lane
+------------------------------------
+
+**Resource identity is frozen for an obligation that is executing, not for one
+that is merely queued.** The capture row freezes the *preferences* at admission,
+and the lease holds the *resources* from the moment an obligation resolves them.
+Between those two points nothing is held, and nothing could reasonably be: the
+queue is unbounded, and a hold taken at admission would make every pending
+capture a veto over the operator's own removal for as long as the backlog lasts.
+
+So a capture admitted while ``deu`` was installed at one model revision, and
+executed after the operator removed that revision and installed another, resolves
+against the revision installed *then*. Nothing is substituted and nothing is
+silent -- the requested order is still the frozen one, the profile names the model
+hashes actually read or the unavailable resource state, and the outcome reports
+it -- but the resolved profile's digest, and therefore the extraction's operation
+key, is not the digest that the same row would have produced at admission. A
+language removed in that window resolves as ``needs_ocr_language`` rather than
+being held open.
+
+Closing it means freezing the resolved resource-set identities into the capture
+row alongside the preferences, so execution either serves those exact identities
+or refuses with a resource condition, instead of resolving whatever is installed
+when its turn comes. That is a migration and an admission-time resolution; it is
+not what the lease does and the lease should not be read as having done it.
 """
 
 from __future__ import annotations
@@ -33,9 +69,10 @@ import hashlib
 import json
 import sqlite3
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service import document_intake
@@ -120,6 +157,47 @@ PROCESSING_SETTINGS_INVALID = "processing_settings_invalid"
 CatalogueFor = Callable[[Sequence[str]], TrustedOcrCatalogue]
 
 
+@runtime_checkable
+class SelectionLeaseSource(Protocol):
+    """An installation that can *hold* the resources one resolution pins.
+
+    The installation's managed cache is one; the packaged fail-closed catalogue is
+    not, because it serves nothing there would be anything to hold. Structural
+    rather than nominal so this module depends on the behaviour and not on which
+    module supplies it.
+    """
+
+    def lease(self) -> AbstractContextManager[CatalogueFor]: ...
+
+
+#: Either way of naming where OCR resources come from: a plain resolver, which
+#: holds nothing because there is nothing installation-local to hold, or an
+#: installation that leases what it resolves.
+CatalogueSource = CatalogueFor | SelectionLeaseSource
+
+
+@contextmanager
+def held_selection(source: CatalogueSource | None) -> Iterator[CatalogueFor | None]:
+    """Hold whatever one unit of work resolves, for the whole of that work.
+
+    Resolving a selection and invoking the engine over it are two moments. Between
+    them the operator may remove a language, a reconciliation may quarantine one,
+    and the managed cache's own pruning may discard the projected directory -- any
+    of which would leave an extraction pointed at a directory that is no longer
+    there. An installation that can lease is asked for a fresh hold here, per unit
+    of work, so two units never share one and the end of one cannot release the
+    other's.
+
+    A plain resolver and ``None`` pass straight through: there is nothing
+    installation-local to hold, and the lease is not a second gate on resolution.
+    """
+    if isinstance(source, SelectionLeaseSource):
+        with source.lease() as catalogue_for:
+            yield catalogue_for
+        return
+    yield source
+
+
 @dataclass
 class DocumentProcessingExecutor:
     """Rate-limited service-owned document processing.
@@ -134,9 +212,10 @@ class DocumentProcessingExecutor:
     #: How a frozen ordered selection becomes a trusted catalogue, asked at the
     #: moment an obligation runs. The executor holds no language of its own:
     #: which languages are wanted is the capture row's frozen snapshot, and this
-    #: answers only whether the installation can serve them. ``None`` reads the
-    #: packaged fail-closed catalogue, which serves nothing.
-    catalogue_for: CatalogueFor | None = None
+    #: answers only whether the installation can serve them. An installation that
+    #: can lease is held for each obligation's whole extraction. ``None`` reads
+    #: the packaged fail-closed catalogue, which serves nothing.
+    catalogue_for: CatalogueSource | None = None
     _next_poll: float = 0.0
 
     def run_pending(
@@ -471,7 +550,7 @@ def process_capture_outbox(
     runner: ServiceRunner,
     *,
     limit: int = 16,
-    catalogue_for: CatalogueFor | None = None,
+    catalogue_for: CatalogueSource | None = None,
 ) -> list[store.StoredResult]:
     """Process the oldest capture obligations, settling each terminal result.
 
@@ -500,91 +579,113 @@ def process_capture_outbox(
             )
         if capture is None:
             continue
-        unexecutable = False
-        try:
-            settings = resolve_settings(
-                media_type=capture.media_type,
-                profile_ref=capture.processing_profile_ref,
-                settings=frozen_settings(capture),
-                catalogue_for=catalogue_for,
-            )
-        except (ProcessingSettingsInvalid, OcrSelectionInvalid):
-            # The frozen snapshot cannot be read as a decision, so there is no
-            # requested profile to keep: the revision is admitted under the one
-            # profile that pins no OCR resources and settles as failed. It is
-            # deliberately *not* executed as the legacy no-selection case, which
-            # would run the product default under a key nobody was offered.
-            unexecutable = True
-            settings = ExtractionSettings(processing_mode=MODE_TEXT_ONLY)
-        profile = portable_profile(
+        # One hold per obligation: taken before this capture's selection is
+        # resolved and released only once its extraction has been settled, so
+        # nothing in between can take away the exact resources the profile under
+        # which it settles was derived from.
+        with held_selection(catalogue_for) as leased:
+            completed.append(_execute_obligation(runner, capture, leased))
+    return completed
+
+
+def _execute_obligation(
+    runner: ServiceRunner,
+    capture: store.StoredCapture,
+    catalogue_for: CatalogueFor | None,
+) -> store.StoredResult:
+    """Resolve, admit, extract and settle one capture obligation.
+
+    Called inside the obligation's selection lease, so every resource this
+    resolves stays held until it returns -- including through the engine
+    invocation and the terminal handling that records what the invocation
+    produced.
+    """
+    assert runner.connection is not None and runner.workspace_id is not None
+    assert runner.identity is not None and runner.generation is not None
+    unexecutable = False
+    try:
+        settings = resolve_settings(
             media_type=capture.media_type,
             profile_ref=capture.processing_profile_ref,
-            revision=capture.processing_profile_revision,
-            settings=settings,
+            settings=frozen_settings(capture),
+            catalogue_for=catalogue_for,
         )
-        with runner.sqlite_gate:
-            profile_digest = document_intake.register_profile(runner, profile)
-            head = store.read_head(
-                runner.connection,
-                workspace_id=runner.workspace_id,
-                document_id=capture.document_id,
-            )
-        assert head is not None
-        operation_key = (
-            "extract-"
-            + hashlib.sha256(
-                f"{capture.capture_id}\0{profile_digest}".encode()
-            ).hexdigest()
+    except (ProcessingSettingsInvalid, OcrSelectionInvalid):
+        # The frozen snapshot cannot be read as a decision, so there is no
+        # requested profile to keep: the revision is admitted under the one
+        # profile that pins no OCR resources and settles as failed. It is
+        # deliberately *not* executed as the legacy no-selection case, which
+        # would run the product default under a key nobody was offered.
+        unexecutable = True
+        settings = ExtractionSettings(processing_mode=MODE_TEXT_ONLY)
+    profile = portable_profile(
+        media_type=capture.media_type,
+        profile_ref=capture.processing_profile_ref,
+        revision=capture.processing_profile_revision,
+        settings=settings,
+    )
+    with runner.sqlite_gate:
+        profile_digest = document_intake.register_profile(runner, profile)
+        head = store.read_head(
+            runner.connection,
+            workspace_id=runner.workspace_id,
+            document_id=capture.document_id,
         )
-        with runner.sqlite_gate:
-            revision, _ = document_intake.admit_extraction(
-                runner,
+    assert head is not None
+    operation_key = (
+        "extract-"
+        + hashlib.sha256(
+            f"{capture.capture_id}\0{profile_digest}".encode()
+        ).hexdigest()
+    )
+    with runner.sqlite_gate:
+        revision, _ = document_intake.admit_extraction(
+            runner,
+            capture_id=capture.capture_id,
+            profile_digest=profile_digest,
+            expected_base_extraction_id=head.current_extraction_id,
+            operation_key=operation_key,
+        )
+    if unexecutable:
+        outcome = _terminal_without_segments("failed", PROCESSING_SETTINGS_INVALID)
+    else:
+        try:
+            with runner.sqlite_gate:
+                content = document_intake.read_retained_source(
+                    runner, capture_id=capture.capture_id
+                )
+            outcome = extract_document(
+                content,
+                media_type=capture.media_type,
                 capture_id=capture.capture_id,
-                profile_digest=profile_digest,
-                expected_base_extraction_id=head.current_extraction_id,
-                operation_key=operation_key,
+                settings=settings,
             )
-        if unexecutable:
-            outcome = _terminal_without_segments("failed", PROCESSING_SETTINGS_INVALID)
-        else:
-            try:
-                with runner.sqlite_gate:
-                    content = document_intake.read_retained_source(
-                        runner, capture_id=capture.capture_id
-                    )
-                outcome = extract_document(
-                    content,
-                    media_type=capture.media_type,
-                    capture_id=capture.capture_id,
-                    settings=settings,
-                )
-            except DocumentExtractionUnsupported:
-                outcome = _terminal_without_segments(
-                    "unsupported", "format_not_qualified"
-                )
-            except (DocumentExtractionInvalid, document_intake.DocumentIntakeRefused):
-                outcome = _terminal_without_segments("failed", "source_invalid")
-        with runner.sqlite_gate:
-            result = document_intake.complete_extraction(
-                runner,
-                extraction_revision_id=revision.extraction_revision_id,
-                outcome=outcome,
+        except DocumentExtractionUnsupported:
+            outcome = _terminal_without_segments(
+                "unsupported", "format_not_qualified"
             )
-            with fenced_transaction(
+        except (DocumentExtractionInvalid, document_intake.DocumentIntakeRefused):
+            outcome = _terminal_without_segments("failed", "source_invalid")
+    with runner.sqlite_gate:
+        result = document_intake.complete_extraction(
+            runner,
+            extraction_revision_id=revision.extraction_revision_id,
+            outcome=outcome,
+        )
+        with fenced_transaction(
+            runner.connection,
+            runner.identity,
+            workspace_id=runner.workspace_id,
+            fencing_generation=runner.generation,
+        ):
+            store.settle_outbox(
                 runner.connection,
-                runner.identity,
                 workspace_id=runner.workspace_id,
+                capture_id=capture.capture_id,
                 fencing_generation=runner.generation,
-            ):
-                store.settle_outbox(
-                    runner.connection,
-                    workspace_id=runner.workspace_id,
-                    capture_id=capture.capture_id,
-                    fencing_generation=runner.generation,
-                    now_us=time.time_ns() // 1000,
-                )
-        completed.append(result)
-    return completed
+                now_us=time.time_ns() // 1000,
+            )
+    return result
 
 
 def _terminal_without_segments(

@@ -85,8 +85,10 @@ from omnivia_core_runtime.service.document_intake import (
     read_retained_source,
 )
 from omnivia_core_runtime.service.document_processing import (
+    CatalogueSource,
     ReprocessProfileOption,
     approved_reprocess_profiles,
+    held_selection,
 )
 from omnivia_core_runtime.service.document_transfer import (
     DocumentTransferRefused,
@@ -459,6 +461,14 @@ class DocumentCaptureHandlers:
     clock: Clock
     allocate_identifier: IdentifierAllocator
     token_codec: ContinuationTokenCodec = PROCESS_CONTINUATION_TOKENS
+    #: How this installation's managed OCR cache answers a selection, and holds
+    #: what it answers. The same authority `DocumentProcessingExecutor` is given,
+    #: composed once in `service/application.py` from the installation being
+    #: served, because the profiles `document.history` offers and the one
+    #: `document.reprocess` executes are resolved against installed resources and
+    #: an installation that is not asked reports every one of them unavailable.
+    #: ``None`` reads the packaged fail-closed catalogue, which serves nothing.
+    catalogue_for: CatalogueSource | None = None
 
     def _processing_settings(
         self, connection: Any, workspace_id: str, message: str
@@ -606,20 +616,27 @@ class DocumentCaptureHandlers:
             settings = self._processing_settings(
                 connection, workspace_id, _MESSAGE_HISTORY_UNREADABLE
             )
-            reprocess_options = {
-                media_type: approved_reprocess_profiles(
-                    media_type=media_type, settings=settings
-                )
-                for media_type in sorted(
-                    {
-                        row[store.CAPTURE_FACT_MEDIA_TYPE]
-                        for row in capture_facts
-                        if source_active
-                        and row[store.CAPTURE_FACT_RETENTION_STATE]
-                        == store.RETENTION_RETAINED
-                    }
-                )
-            }
+            # One lease for the whole resolution. Every media type of one workspace
+            # names the same recognition order, so the installation publishes one
+            # projection and holds it once: the digests this page offers are the
+            # digests of resources that were still installed when they were taken.
+            with held_selection(self.catalogue_for) as catalogue_for:
+                reprocess_options = {
+                    media_type: approved_reprocess_profiles(
+                        media_type=media_type,
+                        settings=settings,
+                        catalogue_for=catalogue_for,
+                    )
+                    for media_type in sorted(
+                        {
+                            row[store.CAPTURE_FACT_MEDIA_TYPE]
+                            for row in capture_facts
+                            if source_active
+                            and row[store.CAPTURE_FACT_RETENTION_STATE]
+                            == store.RETENTION_RETAINED
+                        }
+                    )
+                }
             snapshot = _history_snapshot(
                 document=document,
                 head=head,
@@ -1185,105 +1202,112 @@ class DocumentCaptureHandlers:
         # not approve for this capture's media type, and a selection whose profile identity
         # has moved since it was offered, are the same refusal: Core will not quietly run a
         # different profile beneath a request that named this one.
-        selection = request.processing_profile
-        try:
-            options = approved_reprocess_profiles(
-                media_type=capture.media_type,
-                # The *current* preferences, read once here: a reprocess is a new
-                # decision, so the workspace's live choice is the approved one and the
-                # original capture's frozen snapshot is not consulted at all.
-                settings=self._processing_settings(
-                    connection, context.workspace_id, _MESSAGE_NO_STORAGE
-                ),
-            )
-        except OcrSelectionInvalid as error:
-            # The installation's recognition selection is not a selection at all, so there
-            # is no approved profile to resolve. Refusing is the only honest answer: the
-            # text-only profile would run, and that is not what was asked for.
-            raise OperationError(
-                ERROR_CODE_CONFLICT, _MESSAGE_REPROCESS_SUBSTITUTED
-            ) from error
-        approved = next(
-            (
-                option
-                for option in options
-                if option.profile_ref == selection.profile_ref
-                and option.revision == selection.revision
-            ),
-            None,
-        )
-        if (
-            approved is None
-            or approved.profile_digest != selection.expected_profile_digest
-        ):
-            raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_REPROCESS_SUBSTITUTED)
-        profile = dict(approved.profile)
-        expected = request.expected_base.extraction_id
-        existing = store.read_revision_by_key(
-            connection,
-            workspace_id=context.workspace_id,
-            operation_key=operation_key,
-        )
-        extraction_outcome = None
-        if existing is None:
+        # One lease, held from the resolution through the engine invocation to the
+        # recorded outcome. A reprocess resolves exactly one selection and then runs
+        # it, so the resources the recorded profile names must not be removable in
+        # between -- and the release waits for the mutation, because the mutation is
+        # where the extraction's outcome becomes the capture's history.
+        with held_selection(self.catalogue_for) as catalogue_for:
+            selection = request.processing_profile
             try:
-                content = read_retained_source(capture_service, capture_id=capture.capture_id)
-                extraction_outcome = extract_document(
-                    content,
+                options = approved_reprocess_profiles(
                     media_type=capture.media_type,
-                    capture_id=capture.capture_id,
-                    # The same settings the recorded profile was built from. Without this
-                    # the worker would resolve its own default, and a text-only selection
-                    # would execute Text and local OCR under a text-only receipt.
-                    settings=approved.settings,
+                    # The *current* preferences, read once here: a reprocess is a new
+                    # decision, so the workspace's live choice is the approved one and the
+                    # original capture's frozen snapshot is not consulted at all.
+                    settings=self._processing_settings(
+                        connection, context.workspace_id, _MESSAGE_NO_STORAGE
+                    ),
+                    catalogue_for=catalogue_for,
                 )
-            except DocumentExtractionUnsupported:
-                extraction_outcome = _terminal_outcome("unsupported", "format_not_qualified")
-            except (DocumentExtractionInvalid, DocumentIntakeRefused):
-                extraction_outcome = _terminal_outcome("failed", "source_invalid")
+            except OcrSelectionInvalid as error:
+                # The installation's recognition selection is not a selection at all, so there
+                # is no approved profile to resolve. Refusing is the only honest answer: the
+                # text-only profile would run, and that is not what was asked for.
+                raise OperationError(
+                    ERROR_CODE_CONFLICT, _MESSAGE_REPROCESS_SUBSTITUTED
+                ) from error
+            approved = next(
+                (
+                    option
+                    for option in options
+                    if option.profile_ref == selection.profile_ref
+                    and option.revision == selection.revision
+                ),
+                None,
+            )
+            if (
+                approved is None
+                or approved.profile_digest != selection.expected_profile_digest
+            ):
+                raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_REPROCESS_SUBSTITUTED)
+            profile = dict(approved.profile)
+            expected = request.expected_base.extraction_id
+            existing = store.read_revision_by_key(
+                connection,
+                workspace_id=context.workspace_id,
+                operation_key=operation_key,
+            )
+            extraction_outcome = None
+            if existing is None:
+                try:
+                    content = read_retained_source(capture_service, capture_id=capture.capture_id)
+                    extraction_outcome = extract_document(
+                        content,
+                        media_type=capture.media_type,
+                        capture_id=capture.capture_id,
+                        # The same settings the recorded profile was built from. Without this
+                        # the worker would resolve its own default, and a text-only selection
+                        # would execute Text and local OCR under a text-only receipt.
+                        settings=approved.settings,
+                    )
+                except DocumentExtractionUnsupported:
+                    extraction_outcome = _terminal_outcome("unsupported", "format_not_qualified")
+                except (DocumentExtractionInvalid, DocumentIntakeRefused):
+                    extraction_outcome = _terminal_outcome("failed", "source_invalid")
 
-        def mutate(_fenced: Any, _settlement: MutationSettlementContext) -> Mapping[str, Any]:
-            try:
-                revision, result = complete_reprocess_in_transaction(
-                    capture_service,
-                    capture_id=capture.capture_id,
-                    profile=profile,
-                    expected_base_extraction_id=expected,
-                    operation_key=operation_key,
-                    outcome=extraction_outcome,
-                )
-            except DocumentIntakeRefused as error:
-                raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_REPROCESS_INVALID) from error
-            return DocumentReprocessResult(
-                extraction_revision_id=revision.extraction_revision_id,
-                document_id=revision.document_id,
-                capture_id=revision.capture_id,
-                profile_digest=revision.profile_digest,
-                result_state=result.result_state,
-                publication_disposition=result.publication_disposition,
-                became_head=result.publication_disposition == "promoted",
-                output_digest=result.output_digest,
-            ).to_wire()
+            def mutate(_fenced: Any, _settlement: MutationSettlementContext) -> Mapping[str, Any]:
+                try:
+                    revision, result = complete_reprocess_in_transaction(
+                        capture_service,
+                        capture_id=capture.capture_id,
+                        profile=profile,
+                        expected_base_extraction_id=expected,
+                        operation_key=operation_key,
+                        outcome=extraction_outcome,
+                    )
+                except DocumentIntakeRefused as error:
+                    raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_REPROCESS_INVALID) from error
+                return DocumentReprocessResult(
+                    extraction_revision_id=revision.extraction_revision_id,
+                    document_id=revision.document_id,
+                    capture_id=revision.capture_id,
+                    profile_digest=revision.profile_digest,
+                    result_state=result.result_state,
+                    publication_disposition=result.publication_disposition,
+                    became_head=result.publication_disposition == "promoted",
+                    output_digest=result.output_digest,
+                ).to_wire()
 
-        def valid_result(wire: Mapping[str, Any]) -> bool:
-            try:
-                result = DocumentReprocessResult.from_wire(wire)
-            except ContractDecodeError:
-                return False
-            return result.capture_id == request.capture_id
+            def valid_result(wire: Mapping[str, Any]) -> bool:
+                try:
+                    result = DocumentReprocessResult.from_wire(wire)
+                except ContractDecodeError:
+                    return False
+                return result.capture_id == request.capture_id
 
-        outcome = execute_mutation(
-            connection,
-            identity,
-            grant=grant,
-            context=context.authorization,
-            equivalence=equivalence,
-            mutate=mutate,
-            validate_result=valid_result,
-            clock=self.clock,
-            allocate_identifier=self.allocate_identifier,
-        )
-        return AuditedOperationResult(outcome.result, outcome.audit_ref)
+            outcome = execute_mutation(
+                connection,
+                identity,
+                grant=grant,
+                context=context.authorization,
+                equivalence=equivalence,
+                mutate=mutate,
+                validate_result=valid_result,
+                clock=self.clock,
+                allocate_identifier=self.allocate_identifier,
+            )
+            return AuditedOperationResult(outcome.result, outcome.audit_ref)
 
 
 def _terminal_outcome(state: str, limitation: str) -> ExtractionOutcome:

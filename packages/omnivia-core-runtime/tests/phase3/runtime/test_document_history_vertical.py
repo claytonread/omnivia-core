@@ -15,9 +15,12 @@ send `document.reprocess` built from nothing else.
 from __future__ import annotations
 
 import base64
+import hashlib
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from omnivia_core_runtime.service.document_intake import (
     disconnect_original,
     expire_capture,
@@ -29,6 +32,7 @@ from omnivia_core_runtime.service.document_processing import (
     TEXT_ONLY_PROFILE_REF,
     ReprocessProfileOption,
     approved_reprocess_profiles,
+    held_selection,
     portable_profile,
 )
 from omnivia_core_runtime.service.handlers import document_capture as document_handlers
@@ -38,12 +42,23 @@ from omnivia_core_runtime.service.handlers.document_capture import (
     DOCUMENT_HISTORY_OPERATION,
     DOCUMENT_REPROCESS_OPERATION,
 )
+from omnivia_core_runtime.service.ocr_resource_lifecycle import (
+    OCR_RESOURCES_DIR,
+    REFUSAL_PINNED,
+    ManagedOcrResources,
+    OcrResourceLifecycleRefused,
+)
+from omnivia_core_runtime.service.ocr_resource_store import OcrResourceSetIdentity
 from omnivia_core_runtime.service.ocr_resources import (
     MODE_TEXT_AND_LOCAL_OCR,
     MODE_TEXT_ONLY,
+    TESSERACT_REVISION,
     ExtractionSettings,
 )
 from omnivia_core_runtime.service.processing_settings import (
+    ManagedSelectionAuthority,
+    installation_catalogue,
+    installed_identities,
     read_settings,
     write_settings,
 )
@@ -1773,3 +1788,230 @@ def test_a_write_landing_mid_page_is_refused_rather_than_served_mixed(
     assert [action.unavailable_reason for action in entry.actions] == [
         "source_not_retained"
     ]
+
+
+# --- the installation the offered profiles are resolved against -----------------
+
+MODEL_BODY = b"tessdata-stand-in"
+
+
+def managed_installation(
+    root: Path, *languages: str
+) -> tuple[ManagedSelectionAuthority, ManagedOcrResources]:
+    """A real managed OCR cache with stand-in models, and the authority over it.
+
+    The same join `main` composes this family with. Stand-in model bytes: identity,
+    verification and holding are byte-level, so they exercise all three exactly, and
+    nothing in a history or a reprocess of an HTML source reaches the engine.
+    """
+    resources = ManagedOcrResources(root / OCR_RESOURCES_DIR)
+    for language in languages:
+        body = MODEL_BODY + language.encode()
+        payload = root / "downloads" / f"{language}.bin"
+        payload.parent.mkdir(parents=True, exist_ok=True)
+        payload.write_bytes(body)
+        resources.install(
+            payload,
+            OcrResourceSetIdentity(
+                language=language,
+                engine_version=TESSERACT_REVISION,
+                model_version="tessdata_fast-4.1.0",
+                byte_size=len(body),
+                sha256=hashlib.sha256(body).hexdigest(),
+            ),
+        )
+    authority = installation_catalogue(root)
+    assert authority is not None
+    return authority, resources
+
+
+def recorded_profile(owned: Served, digest: str) -> dict[str, Any]:
+    """The immutable profile an executed extraction registered under this digest."""
+    profile = store.read_profile(owned.connection, workspace_id=WORKSPACE, digest=digest)
+    assert profile is not None
+    return profile
+
+
+def resolved_option(
+    owned: Served,
+    authority: ManagedSelectionAuthority | None,
+    *,
+    media_type: str = "text/html",
+) -> ReprocessProfileOption:
+    """The Text-and-local-OCR option this installation resolves for this workspace.
+
+    From the same function the handlers resolve from, held the same way, so the digest
+    compared against the offered one is a digest Core computed rather than one this
+    test composed.
+    """
+    settings, _revision = read_settings(owned.connection, workspace_id=WORKSPACE)
+    with held_selection(authority) as catalogue_for:
+        options = approved_reprocess_profiles(
+            media_type=media_type, settings=settings, catalogue_for=catalogue_for
+        )
+    return next(
+        option
+        for option in options
+        if option.processing_mode == MODE_TEXT_AND_LOCAL_OCR
+    )
+
+
+def test_installed_resources_reach_the_offered_digest_and_the_reprocess(
+    owned: Served, tmp_path: Path
+) -> None:
+    """The repair. These handlers resolved approved profiles with no installation to
+    ask, so every one of them reported `unavailable` -- a workspace with two languages
+    installed was offered a digest that pinned no model and a reprocess naming it
+    could not execute with them.
+
+    Composed with the installation, the offered digest is the digest of a profile that
+    pins both ordered models, and executing exactly that offer records exactly it.
+    """
+    authority, resources = managed_installation(tmp_path / "inst-history", "deu", "fra")
+    dispatcher = build_dispatcher(
+        owned, tag="history-installed", catalogue_for=authority
+    )
+    set_preferences(owned, languages=("fra", "deu"), embedded_image_ocr=True)
+    source = capture(
+        dispatcher,
+        request_id="req-c1",
+        key="idem-c1",
+        content=b"<html><body><p>Core installed resources</p></body></html>",
+        media_type="text/html",
+    )
+
+    offered = next(
+        option
+        for option in history(dispatcher).captures[0].reprocess_profiles
+        if option.processing_mode == MODE_TEXT_AND_LOCAL_OCR
+    )
+    served = resolved_option(owned, authority)
+    assert offered.profile_digest == served.profile_digest
+    assert served.profile["ocr"]["languages"] == ["fra", "deu"]
+    assert "resourceState" not in served.profile["ocr"]
+    assert served.profile["ocr"]["modelHashes"] == sorted(
+        f"sha256:{identity.sha256}"
+        for identity in installed_identities(resources).values()
+    )
+
+    result = reprocess(
+        dispatcher,
+        capture_id=source.capture_id,
+        profile_ref=offered.profile_ref,
+        revision=offered.revision,
+        expected=None,
+        request_id="req-r1",
+        key="idem-r1",
+        profile_digest=offered.profile_digest,
+        media_type="text/html",
+    )
+
+    assert result.profile_digest == offered.profile_digest
+    assert history(dispatcher).extractions[-1].profile.digest == offered.profile_digest
+    # The profile the extraction actually registered, read back from storage: the
+    # digest offered is the digest of a profile that pinned both installed models.
+    recorded = recorded_profile(owned, result.profile_digest)
+    assert recorded["ocr"]["languages"] == ["fra", "deu"]
+    assert recorded["ocr"]["modelHashes"] == served.profile["ocr"]["modelHashes"]
+    assert "resourceState" not in recorded["ocr"]
+    # Holding is not a one-way door: the resources are removable once the reprocess
+    # has settled, which is what makes the hold a lease rather than a new veto.
+    assert list(resources.leases_root.iterdir()) == []
+    resources.remove(installed_identities(resources)["deu"])
+
+
+def test_an_uncomposed_family_reports_installed_resources_unavailable(
+    owned: Served, tmp_path: Path
+) -> None:
+    """The defect this closes, kept as a test so the wiring cannot be dropped again.
+
+    The same workspace and the same installed languages, composed *without* the
+    installation: the offer is still honest -- the requested order intact, no model
+    hash claimed and the resource state said out loud -- but it is the wrong answer
+    for an installation that holds both, and it is a different digest.
+    """
+    authority, _resources = managed_installation(tmp_path / "inst-absent", "deu", "fra")
+    set_preferences(owned, languages=("fra", "deu"), embedded_image_ocr=True)
+    payload = {
+        "request_id": "req-c1",
+        "key": "idem-c1",
+        "content": b"<html><body><p>Core installed resources</p></body></html>",
+        "media_type": "text/html",
+    }
+    composed = build_dispatcher(owned, tag="history-wired", catalogue_for=authority)
+    capture(composed, **payload)
+    wired = next(
+        option
+        for option in history(composed).captures[0].reprocess_profiles
+        if option.processing_mode == MODE_TEXT_AND_LOCAL_OCR
+    )
+
+    bare = build_dispatcher(owned, tag="history-bare")
+    unwired = next(
+        option
+        for option in history(bare).captures[0].reprocess_profiles
+        if option.processing_mode == MODE_TEXT_AND_LOCAL_OCR
+    )
+
+    assert unwired.profile_digest != wired.profile_digest
+    assert unwired.profile_digest == resolved_option(owned, None).profile_digest
+    profile = resolved_option(owned, None).profile
+    assert profile["ocr"]["languages"] == ["fra", "deu"]
+    assert profile["ocr"]["modelHashes"] == []
+    assert profile["ocr"]["resourceState"] == "unavailable"
+
+
+def test_a_reprocess_holds_its_resources_until_the_outcome_is_recorded(
+    owned: Served, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A reprocess resolves one selection and then runs it, so the resources the
+    recorded profile names must not be removable in between.
+
+    Observed from inside the extraction, which is where the claim means something.
+    """
+    authority, resources = managed_installation(tmp_path / "inst-held", "deu")
+    dispatcher = build_dispatcher(owned, tag="history-held", catalogue_for=authority)
+    set_preferences(owned, languages=("deu",), embedded_image_ocr=True)
+    source = capture(
+        dispatcher,
+        request_id="req-c1",
+        key="idem-c1",
+        content=b"<html><body><p>Core held reprocess</p></body></html>",
+        media_type="text/html",
+    )
+    offered = next(
+        option
+        for option in history(dispatcher).captures[0].reprocess_profiles
+        if option.processing_mode == MODE_TEXT_AND_LOCAL_OCR
+    )
+    installed = installed_identities(resources)
+    real = document_handlers.extract_document
+    observed: list[str] = []
+
+    def wrapped(content: Any, **kwargs: Any) -> Any:
+        settings = kwargs["settings"]
+        assert settings.ocr is not None and settings.ocr.available
+        with pytest.raises(OcrResourceLifecycleRefused) as refused:
+            resources.remove(installed["deu"])
+        assert refused.value.code == REFUSAL_PINNED
+        assert Path(settings.ocr.tessdata_dir).is_dir()
+        observed.append(settings.ocr.tessdata_dir)
+        return real(content, **kwargs)
+
+    monkeypatch.setattr(document_handlers, "extract_document", wrapped)
+
+    reprocess(
+        dispatcher,
+        capture_id=source.capture_id,
+        profile_ref=offered.profile_ref,
+        revision=offered.revision,
+        expected=None,
+        request_id="req-r1",
+        key="idem-r1",
+        profile_digest=offered.profile_digest,
+        media_type="text/html",
+    )
+
+    assert len(observed) == 1
+    assert list(resources.leases_root.iterdir()) == []
+    resources.remove(installed["deu"])

@@ -92,6 +92,27 @@ links name the same inodes the digest check just passed, so the directory the
 engine opens holds the exact verified bytes; the selection path digests them
 again before invoking anything.
 
+**A projection in use is held, not merely published.** Resolving a selection and
+invoking the engine over it are two moments, and between them a removal, a
+reconciliation or this module's own pruning would have discarded the directory
+the invocation is about to open -- the engine would then be pointed at nothing
+and the extraction would report a resource failure it had already resolved past.
+:meth:`ManagedOcrResources.leased_selection` publishes the projection and holds
+it for the length of the caller's block: while the hold is live the identities it
+links may not be removed, reconciliation will not drop them, and neither the
+pruning bound nor either sweep discards the directory.
+
+The hold is an **OS lock on a file of its own** under ``leases/``, not an entry
+in the state document. §18.4's pin is a durable *record* of a claim, and a record
+has to be released by whoever took it: a service that crashed mid-extraction
+would leave one behind for good, and the resources it named could never be
+removed again. The lock is the one fact a crashed holder cannot leave behind,
+because both platforms drop it with the holding descriptor -- so a lease whose
+lock can be taken is a lease nobody holds, and the next operation to look
+discards it. What a live hold covers is read from the projection's own hard
+links: a member *is* the payload's inode, which is the exact byte identity rather
+than a second record of which identities were named.
+
 Still absent, and not implied by anything here: downloading a resource, checking
 a signature over one, and discovering that an update exists.
 """
@@ -147,17 +168,18 @@ MANAGED_QUARANTINE_DIRNAME: Final = "quarantine"
 #: names and a projection is named by no state entry.
 MANAGED_SELECTIONS_DIRNAME: Final = "selections"
 
-#: How many published projections are kept. A workspace resolves one selection at
+#: One file per live hold on a projection, named ``<selection>-<hold>`` so the
+#: projection a hold covers is the name itself and two concurrent holds of one
+#: selection are two files. A sibling of ``selections/`` rather than a child,
+#: because a rebuilt projection is replaced wholesale and would take the holds
+#: inside it with it.
+MANAGED_LEASES_DIRNAME: Final = "leases"
+
+#: How many *unheld* projections are kept. A workspace resolves one selection at
 #: a time, so this is generous; it exists because the set would otherwise grow by
 #: one every time an operator changed the recognition order and never shrink.
-#:
-#: ponytail: evict-oldest-by-mtime, and a whole sweep on remove and reconcile. A
-#: projection discarded while an extraction is between resolving it and invoking
-#: the engine makes that extraction report a resource failure -- never different
-#: bytes, because discarding removes the directory rather than changing what is in
-#: it. Upgrade path, if that is ever observed: record the resolving extraction as
-#: a pin in the state document, the way an install is pinned, and skip pinned
-#: projections here.
+#: A projection a live lease holds is never a candidate and does not count
+#: towards the bound, so the published set is this many plus whatever is in use.
 MAX_PUBLISHED_SELECTIONS: Final = 8
 
 #: Models one projection may hold: the three recognition languages §14.5 allows,
@@ -190,6 +212,9 @@ _COPY_BLOCK: Final = 1 << 20
 
 #: Bytes of randomness in a staging directory's name.
 _STAGING_NAME_BYTES: Final = 16
+
+#: Bytes of randomness distinguishing two concurrent holds of one selection.
+_LEASE_NAME_BYTES: Final = 16
 
 #: Owner-only modes, spelled as :mod:`omnivia_core_runtime.ownership.discovery`
 #: spells them. ``mkdir(mode=...)`` is masked by the umask and does nothing at
@@ -227,7 +252,11 @@ REFUSAL_VERIFICATION: Final = "ocr_resource_verification_failed"
 #: Installing would exceed the managed cap. §14.5's **Language storage is full**.
 REFUSAL_CAPACITY: Final = "language_storage_full"
 
-#: An operation pins this exact identity, so its bytes may not be removed.
+#: An operation holds this exact identity, so its bytes may not be removed --
+#: either a durable §18.4 pin in the state document, or a live selection lease
+#: held by an extraction that is between resolving the resources and finishing
+#: with them. One code for both, because the operator's recovery is the same:
+#: wait for the operation to reach a terminal disposition and try again.
 REFUSAL_PINNED: Final = "ocr_resource_pinned"
 
 #: No installed resource has this exact identity.
@@ -495,6 +524,10 @@ class ManagedOcrResources:
     def selections_root(self) -> Path:
         return self._root / MANAGED_SELECTIONS_DIRNAME
 
+    @property
+    def leases_root(self) -> Path:
+        return self._root / MANAGED_LEASES_DIRNAME
+
     def selection_directory(self, identities: Sequence[OcrResourceSetIdentity]) -> Path:
         """Where this exact ordered selection is published when it is projected."""
         return self.selections_root / selection_name(identities)
@@ -608,7 +641,7 @@ class ManagedOcrResources:
                 f"the managed OCR resources could not be coordinated: {exc}",
             ) from exc
 
-        handle = self._open_lock_handle()
+        handle = self._open_lock_handle(self.lock_path)
         lock = create_lock(
             self.lock_path,
             LockRole.RESOURCE_COORDINATION,
@@ -634,8 +667,12 @@ class ManagedOcrResources:
             )
         return lock
 
-    def _open_lock_handle(self) -> IO[bytes] | None:
-        """Make the stable lock name safe to open, and open it where that is ours.
+    def _open_lock_handle(self, path: Path) -> IO[bytes] | None:
+        """Make one managed lock name safe to open, and open it where that is ours.
+
+        Used for the coordination lock and for each selection lease, which are the
+        same kind of thing at different names: a regular file inside the managed
+        root whose only content is the holder's advisory payload.
 
         POSIX: this opens the descriptor itself, because the lock's own opener
         uses ``open(..., "a+b")`` and would follow a symbolic link sitting at the
@@ -654,25 +691,25 @@ class ManagedOcrResources:
         if IS_WINDOWS:  # pragma: no cover - exercised on the hosted Windows row
             try:
                 descriptor = os.open(
-                    self.lock_path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600
+                    path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600
                 )
             except FileExistsError:
                 return None
             except OSError as exc:
                 raise OcrResourceLifecycleRefused(
                     REFUSAL_UNAVAILABLE,
-                    f"the managed OCR coordination lock could not be created: {exc}",
+                    f"the managed OCR lock could not be created: {exc}",
                 ) from exc
             os.close(descriptor)
-            restrict_to_owner(self.lock_path, directory=False)
+            restrict_to_owner(path, directory=False)
             return None
 
         try:
-            descriptor = os.open(self.lock_path, _LOCK_FLAGS, 0o600)
+            descriptor = os.open(path, _LOCK_FLAGS, 0o600)
         except OSError as exc:
             raise OcrResourceLifecycleRefused(
                 REFUSAL_UNAVAILABLE,
-                f"the managed OCR coordination lock could not be opened: {exc}",
+                f"the managed OCR lock could not be opened: {exc}",
             ) from exc
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
@@ -682,10 +719,9 @@ class ManagedOcrResources:
                 # `_stage` makes of a payload, for the same reason.
                 raise OcrResourceLifecycleRefused(
                     REFUSAL_UNAVAILABLE,
-                    f"the managed OCR coordination lock must be a regular file: "
-                    f"{self.lock_path}",
+                    f"a managed OCR lock must be a regular file: {path}",
                 )
-            restrict_to_owner(self.lock_path, directory=False)
+            restrict_to_owner(path, directory=False)
             return os.fdopen(descriptor, "r+b", buffering=0)
         except BaseException:
             os.close(descriptor)
@@ -785,6 +821,173 @@ class ManagedOcrResources:
                     "this installation has no managed OCR resources to project",
                 )
             return self._project(selection)
+
+    @contextmanager
+    def leased_selection(
+        self, identities: Sequence[OcrResourceSetIdentity]
+    ) -> Iterator[Path]:
+        """Project this ordered selection and hold it for the length of the block.
+
+        :meth:`project_selection` publishes a directory; this one also keeps it.
+        Resolving a selection and invoking the engine over it are two moments, and
+        in between a removal, a reconciliation or this module's own pruning would
+        discard the directory the invocation is about to open. While the hold is
+        live, :meth:`remove` refuses the identities it links, :meth:`reconcile`
+        will not drop them, and neither sweep nor the pruning bound touches the
+        directory.
+
+        The hold is an exclusive OS lock on a file of its own, taken under the
+        coordination lock and then kept while the coordination lock is released --
+        which is the point, because an extraction runs for minutes and the
+        administrative operations must still be able to run and *preserve* rather
+        than wait. Both platforms drop the lock with the holding descriptor, so a
+        caller that crashes releases its hold on the spot and leaves a file the
+        next operation discards.
+
+        It refuses exactly what :meth:`project_selection` refuses, and for the
+        same reasons: nothing is substituted and no smaller selection is served.
+        A hold that cannot be taken at all is refused too, so a caller never
+        proceeds believing it holds something it does not.
+        """
+        selection = self._validated_selection(identities)
+        with self.coordinated(create=False) as coordinated:
+            if not coordinated:
+                raise OcrResourceLifecycleRefused(
+                    REFUSAL_NOT_INSTALLED,
+                    "this installation has no managed OCR resources to lease",
+                )
+            directory = self._project(selection)
+            lock, path = self._hold(directory.name, selection)
+        try:
+            yield directory
+        finally:
+            lock.release()
+            # The lock is already gone, so the file is a lease nobody holds and
+            # the next operation would discard it anyway. Unlinking it here is
+            # tidiness, never the release itself.
+            with suppress(OSError):
+                path.unlink()
+
+    def _hold(
+        self, projection: str, selection: tuple[OcrResourceSetIdentity, ...]
+    ) -> tuple[FileLock, Path]:
+        """Take one live hold on one published projection, or refuse.
+
+        The name carries the projection, so what a hold covers needs no record of
+        its own; the random half distinguishes two concurrent holds of the same
+        selection, which must each keep their own lock. The lock's advisory
+        payload names the identities for an operator reading the file, and is
+        never what decides anything -- the lock is.
+        """
+        self._prepare(self.leases_root)
+        path = self.leases_root / f"{projection}-{os.urandom(_LEASE_NAME_BYTES).hex()}"
+        handle = self._open_lock_handle(path)
+        lock = create_lock(
+            path,
+            LockRole.RESOURCE_COORDINATION,
+            {
+                "component": OCR_RESOURCES_DIR,
+                "selection": [identity.stable_key for identity in selection],
+            },
+            opened_handle=handle,
+        )
+        try:
+            acquired = lock.acquire(blocking=False, timeout=0.0)
+        except (LockError, OSError) as exc:
+            lock.release()
+            raise OcrResourceLifecycleRefused(
+                REFUSAL_UNAVAILABLE,
+                f"a managed OCR selection could not be held: {exc}",
+            ) from exc
+        if not acquired:  # pragma: no cover - the name is freshly random
+            raise OcrResourceLifecycleRefused(
+                REFUSAL_UNAVAILABLE,
+                f"a managed OCR selection lease was already held at {path}",
+            )
+        return lock, path
+
+    def _live_leases(self) -> set[str]:
+        """The projections a live hold covers, discarding the holds nobody has.
+
+        Liveness is read from the lock and from nothing else: a lease file whose
+        lock this call can take is a lease whose holder has gone, because both
+        platforms drop the lock with the descriptor. Such a file is discarded on
+        the spot, the way reconciliation discards abandoned staging.
+
+        Fails closed. A lease this call cannot even probe -- the name is not a
+        regular file, the filesystem refused the lock -- is counted live, because
+        the alternative is discarding a projection an extraction is reading on the
+        strength of not having been able to look.
+        """
+        try:
+            names = sorted(child.name for child in self.leases_root.iterdir())
+        except OSError:
+            return set()
+        live: set[str] = set()
+        for name in names:
+            projection, _, hold = name.partition("-")
+            if not hold:
+                live.add(name)
+                continue
+            if self._abandoned(self.leases_root / name):
+                continue
+            live.add(projection)
+        return live
+
+    def _abandoned(self, path: Path) -> bool:
+        """Whether this lease file's lock is free, discarding it when it is."""
+        try:
+            probe = create_lock(
+                path,
+                LockRole.RESOURCE_COORDINATION,
+                {"component": OCR_RESOURCES_DIR},
+                opened_handle=self._open_lock_handle(path),
+            )
+        except (OcrResourceLifecycleRefused, OSError):
+            return False
+        try:
+            taken = probe.acquire(blocking=False, timeout=0.0)
+        except (LockError, OSError):  # pragma: no cover - platform dependent
+            taken = False
+        probe.release()
+        if not taken:
+            return False
+        with suppress(OSError):
+            path.unlink()
+        return True
+
+    def _leased_inodes(self, live: set[str]) -> set[tuple[int, int]]:
+        """The payload inodes the live holds cover.
+
+        A projection member *is* the payload's inode -- that is what a hard link
+        is -- so this is the exact byte identity a hold covers, read from the
+        projection itself rather than from a second record of which identities
+        were named and in which order.
+        """
+        inodes: set[tuple[int, int]] = set()
+        for projection in live:
+            try:
+                members = sorted((self.selections_root / projection).iterdir())
+            except OSError:
+                continue
+            for member in members:
+                try:
+                    info = member.lstat()
+                except OSError:
+                    continue
+                if stat.S_ISREG(info.st_mode):
+                    inodes.add((info.st_dev, info.st_ino))
+        return inodes
+
+    def _leased(
+        self, identity: OcrResourceSetIdentity, inodes: set[tuple[int, int]]
+    ) -> bool:
+        """Whether a live hold covers exactly this identity's installed bytes."""
+        try:
+            info = self.payload_path(identity).lstat()
+        except OSError:
+            return False
+        return stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) in inodes
 
     def _validated_selection(
         self, identities: Sequence[OcrResourceSetIdentity]
@@ -891,17 +1094,22 @@ class ManagedOcrResources:
         return True
 
     def _bound_published_selections(self, *, keep: str) -> None:
-        """Keep at most :data:`MAX_PUBLISHED_SELECTIONS` projections, oldest out.
+        """Keep at most :data:`MAX_PUBLISHED_SELECTIONS` unheld projections, oldest out.
 
         Oldest by modification time, which a projection only gets when it is
         built: the idempotent path does not touch it. The one just published is
-        never a candidate, so this cannot evict the selection it was called for.
-        Failures are swallowed -- an unprunable projection is an untidy cache, not
-        a reason to fail a resolution that has already succeeded.
+        never a candidate, so this cannot evict the selection it was called for,
+        and neither is one a live lease holds -- pruning the directory an
+        extraction is about to open is exactly the window the lease exists to
+        close. Failures are swallowed -- an unprunable projection is an untidy
+        cache, not a reason to fail a resolution that has already succeeded.
         """
+        held = self._live_leases() | {keep}
         try:
             published = [
-                child for child in self.selections_root.iterdir() if child.name != keep
+                child
+                for child in self.selections_root.iterdir()
+                if child.name not in held
             ]
         except OSError:
             return
@@ -1184,19 +1392,33 @@ class ManagedOcrResources:
                 f"{identity.stable_key} is pinned by {', '.join(holders)} "
                 f"and may not be removed",
             )
+        # A live selection lease is the same answer as a pin and for the same
+        # reason: an extraction is between resolving these exact bytes and
+        # finishing with them, and §18.4's hold lasts until the operation
+        # reaches a terminal disposition. Removing them would leave the engine
+        # pointed at a language the operator took away mid-invocation.
+        live = self._live_leases()
+        if self._leased(identity, self._leased_inodes(live)):
+            raise OcrResourceLifecycleRefused(
+                REFUSAL_PINNED,
+                f"{identity.stable_key} is leased by an extraction in progress "
+                f"and may not be removed",
+            )
         self._store.save(
             OcrResourceStoreState(
                 entries=tuple(entry for entry in state.entries if entry != identity),
                 pins=state.pins,
             )
         )
-        # Every projection goes first: a published selection holds a *hard link*
-        # to these bytes, so one left behind would both keep the removed inode
-        # alive on disk after its accounting entry is gone and let the engine
-        # still be pointed at a language the operator has removed. They are
-        # derived state and the next resolution rebuilds whichever are still
+        # Every unheld projection goes first: a published selection holds a *hard
+        # link* to these bytes, so one left behind would both keep the removed
+        # inode alive on disk after its accounting entry is gone and let the
+        # engine still be pointed at a language the operator has removed. They
+        # are derived state and the next resolution rebuilds whichever are still
         # wanted, so discarding all of them is cheaper than working out which.
-        self._discard_projections()
+        # A held one is kept, and may be: every identity it links is leased, and
+        # a leased identity is the one this call has just refused to remove.
+        self._discard_projections(live)
         # The entry is gone, so these bytes are already unreferenced and a
         # failure here is work for reconciliation rather than a failed removal.
         with suppress(OSError):
@@ -1228,6 +1450,13 @@ class ManagedOcrResources:
         §18.4's unrecoverable case -- the operation holding the pin must pause
         with a resource issue rather than run different bytes under its key --
         and it is reported for the caller to act on rather than repaired here.
+        An entry a live selection lease still links is kept on the same rule, and
+        so is the projection linking it, so a reconciliation running while an
+        extraction is between resolving its resources and invoking the engine
+        cannot take either away. An entry whose payload was *replaced* under it
+        is quarantined even so: the hold covers the inode the projection links,
+        which the replacement is not, and the running invocation keeps reading
+        the verified bytes the hard link preserves.
 
         A state document from a newer build is refused by the load and nothing is
         touched, so an older build cannot reconcile away what a newer one
@@ -1256,8 +1485,11 @@ class ManagedOcrResources:
         # Projections are derived from the entries this pass may be about to drop,
         # and they hold hard links that would keep quarantined inodes alive. They
         # are not reported: the counts here are about what the state document
-        # referenced, and a projection is referenced by no entry.
-        self._discard_projections()
+        # referenced, and a projection is referenced by no entry. The ones a live
+        # lease holds are kept, and the entries they link are not dropped.
+        live = self._live_leases()
+        leased = self._leased_inodes(live)
+        self._discard_projections(live)
         referenced = {directory_name(entry) for entry in state.entries}
         discarded_unreferenced = self._discard_children(
             self.resources_root, keep=referenced
@@ -1270,7 +1502,7 @@ class ManagedOcrResources:
         for entry in state.entries:
             if self._payload_matches(entry):
                 kept.append(entry)
-            elif entry in pinned:
+            elif entry in pinned or self._leased(entry, leased):
                 kept.append(entry)
                 unrecoverable.append(entry)
             else:
@@ -1287,15 +1519,19 @@ class ManagedOcrResources:
             unrecoverable_pinned=tuple(unrecoverable),
         )
 
-    def _discard_projections(self) -> None:
-        """Discard every published selection; the next resolution rebuilds them.
+    def _discard_projections(self, live: set[str]) -> None:
+        """Discard every unheld published selection; the next resolution rebuilds them.
+
+        The projections a live lease holds are kept, because an extraction is
+        between resolving one and invoking the engine over it and the hold is
+        exactly the statement that it may not be taken away underneath.
 
         Tolerant of failure on purpose: an undiscardable projection must not fail
         the removal or reconciliation it was a tidy-up for, and the state document
         -- not a projection -- is what says a resource is installed.
         """
         with suppress(OcrResourceStoreError, OSError):
-            self._discard_children(self.selections_root)
+            self._discard_children(self.selections_root, keep=live)
 
     def _discard_children(
         self, directory: Path, *, keep: frozenset[str] | set[str] = frozenset()
@@ -1407,6 +1643,7 @@ class ManagedOcrResources:
 
 __all__ = [
     "DEFAULT_LOCK_WAIT_SECONDS",
+    "MANAGED_LEASES_DIRNAME",
     "MANAGED_LOCK_FILENAME",
     "MANAGED_QUARANTINE_DIRNAME",
     "MANAGED_RESOURCES_DIRNAME",

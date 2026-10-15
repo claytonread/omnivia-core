@@ -80,6 +80,7 @@ from omnivia_core_runtime.service.authorization import (
     authorize_application_request,
 )
 from omnivia_core_runtime.service.chat_submit import resolve_chat_command
+from omnivia_core_runtime.service.document_processing import CatalogueSource
 from omnivia_core_runtime.service.handlers.analysis import analysis_start
 from omnivia_core_runtime.service.handlers.chat import (
     CHAT_COMMAND_OPERATION,
@@ -2604,8 +2605,19 @@ def build_job_application_dispatcher(
     token_codec: ContinuationTokenCodec | None = None,
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
+    catalogue_for: CatalogueSource | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the exact nine-operation S3 content-ingestion family around the router."""
+    """Compose the exact nine-operation S3 content-ingestion family around the router.
+
+    `catalogue_for` is this installation's managed OCR cache -- the same authority the
+    document-processing executor resolves against, and the one join between an
+    installation root and a frozen selection. `document.history` and
+    `document.reprocess` resolve approved profiles against installed resources, so an
+    installation that is not supplied here reports every one of them unavailable and a
+    reprocess naming installed languages cannot execute with them. Left out, the
+    packaged fail-closed catalogue serves nothing, which is the right answer for a
+    composition with no installation to ask.
+    """
     session = job_family_session(
         principal_id=principal_id,
         installation_id=installation_id,
@@ -2639,6 +2651,7 @@ def build_job_application_dispatcher(
         token_codec=(
             HmacContinuationTokenCodec.secure() if token_codec is None else token_codec
         ),
+        catalogue_for=catalogue_for,
     )
     document_settings = DocumentSettingsHandlers(
         service=service,

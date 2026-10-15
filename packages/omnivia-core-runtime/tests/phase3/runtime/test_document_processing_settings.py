@@ -41,7 +41,9 @@ from omnivia_core_runtime.service.handlers.document_settings import (
 )
 from omnivia_core_runtime.service.ocr_resource_lifecycle import (
     OCR_RESOURCES_DIR,
+    REFUSAL_PINNED,
     ManagedOcrResources,
+    OcrResourceLifecycleRefused,
 )
 from omnivia_core_runtime.service.ocr_resource_store import OcrResourceSetIdentity
 from omnivia_core_runtime.service.ocr_resources import (
@@ -690,9 +692,11 @@ def test_an_ordered_selection_of_installed_languages_is_served_together(
     root = tmp_path / "inst-multi"
     install_distinct(root, tmp_path, "deu", "fra", "ita")
     resources = ManagedOcrResources(root / OCR_RESOURCES_DIR)
+    authority = settings_store.installation_catalogue(root)
+    assert authority is not None
 
-    catalogue = settings_store.managed_catalogue(resources, order)
-    resolved = catalogue.resolve(order)
+    with authority.lease() as catalogue_for:
+        resolved = catalogue_for(order).resolve(order)
 
     assert resolved.available
     # The requested order, preserved: the engine is invoked once with it.
@@ -719,11 +723,11 @@ def test_an_uninstalled_language_is_reported_as_exactly_itself(tmp_path: Path) -
     """
     root = tmp_path / "inst-partial"
     install_distinct(root, tmp_path, "deu")
-    resources = ManagedOcrResources(root / OCR_RESOURCES_DIR)
+    authority = settings_store.installation_catalogue(root)
+    assert authority is not None
 
-    resolved = settings_store.managed_catalogue(resources, ("deu", "jpn")).resolve(
-        ("deu", "jpn")
-    )
+    with authority.lease() as catalogue_for:
+        resolved = catalogue_for(("deu", "jpn")).resolve(("deu", "jpn"))
 
     assert not resolved.available
     assert resolved.reason == "needs_ocr_language"
@@ -735,9 +739,11 @@ def test_an_uninstalled_language_is_reported_as_exactly_itself(tmp_path: Path) -
 def test_an_empty_cache_serves_nothing_rather_than_substituting(tmp_path: Path) -> None:
     root = tmp_path / "inst-empty"
     root.mkdir(parents=True)
-    resources = ManagedOcrResources(root / OCR_RESOURCES_DIR)
+    authority = settings_store.installation_catalogue(root)
+    assert authority is not None
 
-    catalogue = settings_store.managed_catalogue(resources, ("deu",))
+    with authority.lease() as catalogue_for:
+        catalogue = catalogue_for(("deu",))
 
     assert catalogue.installed == {}
     assert catalogue.tessdata_dir is None
@@ -751,14 +757,100 @@ def test_an_installation_resolver_asks_the_managed_cache_of_that_root(
     root = tmp_path / "inst-resolver"
     install_distinct(root, tmp_path, "deu", "fra")
 
-    resolver = settings_store.installation_catalogue(root)
+    authority = settings_store.installation_catalogue(root)
 
-    assert resolver is not None
-    assert resolver(("fra", "deu")).resolve(("fra", "deu")).available
+    assert authority is not None
+    with authority.lease() as catalogue_for:
+        assert catalogue_for(("fra", "deu")).resolve(("fra", "deu")).available
     # No root, and a root no managed cache may live under, both fail closed to the
     # packaged catalogue rather than searching the host for models.
     assert settings_store.installation_catalogue(None) is None
     assert settings_store.installation_catalogue(Path("relative/root")) is None
+
+
+def test_the_authority_resolves_only_inside_a_lease(tmp_path: Path) -> None:
+    """A resolution that is not held is the defect the lease exists to prevent, so
+    the authority offers no way to make one: it is not itself a resolver.
+    """
+    root = tmp_path / "inst-not-callable"
+    install_distinct(root, tmp_path, "deu")
+    authority = settings_store.installation_catalogue(root)
+    assert authority is not None
+    assert not callable(authority)
+
+
+def test_a_leased_selection_cannot_be_removed_until_the_lease_ends(
+    tmp_path: Path,
+) -> None:
+    """The repair. The projection is resolved, the engine has not been invoked yet,
+    and an operator removing the language in that window would leave the invocation
+    pointed at a directory that is no longer there.
+
+    Held: both identities refuse removal and the projected directory stands. Released:
+    the same removal is accepted, so the hold is a hold and not a new veto.
+    """
+    root = tmp_path / "inst-leased"
+    install_distinct(root, tmp_path, "deu", "fra")
+    resources = ManagedOcrResources(root / OCR_RESOURCES_DIR)
+    installed = settings_store.installed_identities(resources)
+    authority = settings_store.installation_catalogue(root)
+    assert authority is not None
+
+    with authority.lease() as catalogue_for:
+        resolved = catalogue_for(("fra", "deu")).resolve(("fra", "deu"))
+        assert resolved.available and resolved.tessdata_dir is not None
+        served = Path(resolved.tessdata_dir)
+        for language in ("deu", "fra"):
+            with pytest.raises(OcrResourceLifecycleRefused) as refused:
+                resources.remove(installed[language])
+            assert refused.value.code == REFUSAL_PINNED
+        # Neither sweep, nor the pruning bound, discards the directory in use.
+        assert resources.reconcile().changed is False
+        assert served.is_dir()
+        assert sorted(child.name for child in served.iterdir()) == [
+            "deu.traineddata",
+            "fra.traineddata",
+        ]
+
+    resources.remove(installed["deu"])
+    assert "deu" not in settings_store.installed_identities(resources)
+
+
+def test_a_resolution_that_resolves_nothing_leases_nothing(tmp_path: Path) -> None:
+    """Text-only never consults the catalogue, so entering the lease must cost
+    nothing: no lease file, and a removal during it is accepted exactly as before.
+    """
+    root = tmp_path / "inst-unleased"
+    install_distinct(root, tmp_path, "deu")
+    resources = ManagedOcrResources(root / OCR_RESOURCES_DIR)
+    installed = settings_store.installed_identities(resources)
+    authority = settings_store.installation_catalogue(root)
+    assert authority is not None
+
+    with authority.lease():
+        assert not resources.leases_root.exists()
+        resources.remove(installed["deu"])
+
+    assert settings_store.installed_identities(resources) == {}
+
+
+def test_one_resolution_leases_a_repeated_selection_once(tmp_path: Path) -> None:
+    """A history page offers approved profiles per media type and every media type of
+    one workspace names the same recognition order. Resolving it again inside one
+    lease reuses the answer rather than projecting and holding a second time, which
+    is also what makes the digest offered and the digest executed one resolution.
+    """
+    root = tmp_path / "inst-repeat"
+    install_distinct(root, tmp_path, "deu", "fra")
+    resources = ManagedOcrResources(root / OCR_RESOURCES_DIR)
+    authority = settings_store.installation_catalogue(root)
+    assert authority is not None
+
+    with authority.lease() as catalogue_for:
+        first = catalogue_for(("fra", "deu"))
+        again = catalogue_for(("fra", "deu"))
+        assert again is first
+        assert len(list(resources.leases_root.iterdir())) == 1
 
 
 # --- the closed pair of modes ---------------------------------------------------

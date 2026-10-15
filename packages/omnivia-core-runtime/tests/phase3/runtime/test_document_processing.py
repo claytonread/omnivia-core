@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import zipfile
@@ -13,6 +14,7 @@ from omnivia_core_runtime.service import document_intake
 from omnivia_core_runtime.service.document_extractors import (
     DOCX_MEDIA_TYPE,
     XHTML_MEDIA_TYPE,
+    DocumentExtractionInvalid,
 )
 from omnivia_core_runtime.service.document_intake import (
     capture_document_bytes,
@@ -28,9 +30,23 @@ from omnivia_core_runtime.service.document_processing import (
     process_capture_outbox,
     resolve_settings,
 )
-from omnivia_core_runtime.service.ocr_resources import TrustedOcrCatalogue
+from omnivia_core_runtime.service.ocr_resource_lifecycle import (
+    OCR_RESOURCES_DIR,
+    REFUSAL_PINNED,
+    ManagedOcrResources,
+    OcrResourceLifecycleRefused,
+)
+from omnivia_core_runtime.service.ocr_resource_store import OcrResourceSetIdentity
+from omnivia_core_runtime.service.ocr_resources import (
+    MODE_TEXT_ONLY,
+    TESSERACT_REVISION,
+    TrustedOcrCatalogue,
+)
 from omnivia_core_runtime.service.processing_settings import (
+    ManagedSelectionAuthority,
     ProcessingSettings,
+    installation_catalogue,
+    installed_identities,
     read_settings,
     write_settings,
 )
@@ -135,6 +151,39 @@ def asked(
         return catalogue
 
     return resolver, seen
+
+
+def managed_installation(
+    root: Path, tmp_path: Path, *languages: str
+) -> tuple[ManagedSelectionAuthority, ManagedOcrResources]:
+    """A real managed OCR cache with stand-in models, and the authority over it.
+
+    The production join between an installation root and a frozen selection, rather
+    than a fixed catalogue: the lease is the managed cache's own, so only a test that
+    goes through it can prove what the hold excludes. The model bytes are stand-ins
+    -- resource identity, verification and holding are all byte-level, so they
+    exercise all three exactly, and nothing here reaches the engine.
+    """
+    downloads = tmp_path / "ocr-downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+    resources = ManagedOcrResources(root / OCR_RESOURCES_DIR)
+    for language in languages:
+        body = f"model-{language}".encode()
+        payload = downloads / f"{language}.bin"
+        payload.write_bytes(body)
+        resources.install(
+            payload,
+            OcrResourceSetIdentity(
+                language=language,
+                engine_version=TESSERACT_REVISION,
+                model_version="tessdata_fast-4.1.0",
+                byte_size=len(body),
+                sha256=hashlib.sha256(body).hexdigest(),
+            ),
+        )
+    authority = installation_catalogue(root)
+    assert authority is not None
+    return authority, resources
 
 
 def executed_profile(runner: ServiceRunner, result: store.StoredResult) -> dict[str, Any]:
@@ -881,3 +930,146 @@ def test_service_executor_processes_xhtml_through_the_retained_copy(
         "Core XHTML heading",
         "Core XHTML content",
     ]
+
+
+# --- what one obligation resolves, it holds -------------------------------------
+
+HTML_SOURCE = b"<html><body><p>Core held selection content</p></body></html>"
+
+
+def capture_html(runner: ServiceRunner, *, document_id: str) -> None:
+    """One capture whose preferences resolve OCR resources but reach no engine.
+
+    An HTML source with the embedded-image preference on qualifies for recognition,
+    so the selection *is* resolved and held -- and it carries no raster image, so the
+    extraction succeeds without invoking Tesseract over stand-in model bytes.
+    """
+    capture_document_bytes(
+        runner,
+        content=HTML_SOURCE,
+        document_id=document_id,
+        expected_base_capture_id=None,
+        operation_key=f"capture-{document_id}",
+        media_type="text/html",
+        intent_kind=store.INTENT_NEW_CAPTURE,
+    )
+
+
+def observing(
+    monkeypatch: pytest.MonkeyPatch, observe: Callable[[Any], None]
+) -> None:
+    """Run `observe` inside the extraction, with the settings it is executing."""
+    import omnivia_core_runtime.service.document_processing as module
+
+    real = module.extract_document
+
+    def wrapped(content: Any, **kwargs: Any) -> Any:
+        observe(kwargs["settings"])
+        return real(content, **kwargs)
+
+    monkeypatch.setattr(module, "extract_document", wrapped)
+
+
+def test_the_resolved_selection_is_held_for_the_whole_extraction(
+    runner: ServiceRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The repair. The projection used to be resolved and then let go of, so a
+    removal, a reconciliation or the cache's own pruning could discard the directory
+    between resolving it and invoking the engine over it -- which the module's own
+    comments admitted.
+
+    Observed from *inside* the extraction, which is the only place the claim means
+    anything: both resolved identities refuse removal, a concurrent reconciliation
+    changes nothing, and the directory the invocation was handed is still there with
+    both models in it.
+    """
+    authority, resources = managed_installation(
+        tmp_path / "inst-held", tmp_path, "deu", "eng", "osd"
+    )
+    installed = installed_identities(resources)
+    set_preferences(runner, languages=("deu", "eng"), embedded_image_ocr=True)
+    capture_html(runner, document_id="doc-held-1")
+    observed: list[str] = []
+
+    def probe(settings: Any) -> None:
+        assert settings.ocr is not None and settings.ocr.available
+        served = Path(settings.ocr.tessdata_dir)
+        for language in ("deu", "eng"):
+            with pytest.raises(OcrResourceLifecycleRefused) as refused:
+                resources.remove(installed[language])
+            assert refused.value.code == REFUSAL_PINNED
+        assert resources.reconcile().changed is False
+        assert sorted(child.name for child in served.iterdir()) == [
+            "deu.traineddata",
+            "eng.traineddata",
+            "osd.traineddata",
+        ]
+        observed.append(settings.ocr.tessdata_dir)
+
+    observing(monkeypatch, probe)
+
+    results = process_capture_outbox(runner, catalogue_for=authority)
+
+    assert [result.result_state for result in results] == ["succeeded"]
+    assert len(observed) == 1
+    # Released only after the extraction was settled, so the hold lasts exactly as
+    # long as the work it was taken for -- and no longer.
+    assert list(resources.leases_root.iterdir()) == []
+    resources.remove(installed["deu"])
+    assert "deu" not in installed_identities(resources)
+
+
+def test_the_hold_is_released_after_a_failed_extraction(
+    runner: ServiceRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cleanup is the release and not the success: an extraction that failed has
+    finished with its resources exactly as one that succeeded has.
+    """
+    authority, resources = managed_installation(
+        tmp_path / "inst-failed", tmp_path, "deu", "osd"
+    )
+    installed = installed_identities(resources)
+    set_preferences(runner, languages=("deu",), embedded_image_ocr=True)
+    capture_html(runner, document_id="doc-held-2")
+
+    def failing(settings: Any) -> None:
+        assert settings.ocr is not None and settings.ocr.available
+        with pytest.raises(OcrResourceLifecycleRefused):
+            resources.remove(installed["deu"])
+        raise DocumentExtractionInvalid("the extraction failed")
+
+    observing(monkeypatch, failing)
+
+    results = process_capture_outbox(runner, catalogue_for=authority)
+
+    assert [result.result_state for result in results] == ["failed"]
+    assert list(resources.leases_root.iterdir()) == []
+    resources.remove(installed["deu"])
+
+
+def test_a_text_only_capture_holds_nothing(
+    runner: ServiceRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Text-only does not "resolve resources and then hold them": it never reaches
+    the managed cache, so there is no lease file at any point of the extraction and
+    an operator's removal during it is accepted exactly as it would be otherwise.
+    """
+    authority, resources = managed_installation(
+        tmp_path / "inst-text-only", tmp_path, "deu", "osd"
+    )
+    installed = installed_identities(resources)
+    set_preferences(runner, mode=MODE_TEXT_ONLY, languages=("deu",))
+    capture_html(runner, document_id="doc-held-3")
+
+    def probe(settings: Any) -> None:
+        assert settings.ocr is None
+        assert not resources.leases_root.exists()
+        resources.remove(installed["deu"])
+
+    observing(monkeypatch, probe)
+
+    results = process_capture_outbox(runner, catalogue_for=authority)
+
+    assert [result.result_state for result in results] == ["succeeded"]
+    assert "deu" not in installed_identities(resources)
+    assert not resources.leases_root.exists()

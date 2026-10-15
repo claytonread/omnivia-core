@@ -33,14 +33,19 @@ answer, resolved at execution against the managed cache, and an unavailable
 selection keeps its identity and its requested order rather than quietly
 becoming English. A stored preference is a statement of intent; it is not a
 claim that the bytes to honour it are present.
+
+:class:`ManagedSelectionAuthority` is where a frozen selection meets one
+installation's managed cache. It resolves only inside a lease, because resolving
+a selection and invoking the engine over it are two moments and the resources
+have to survive both.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import Any, Final
 
@@ -322,42 +327,15 @@ def installed_identities(
     }
 
 
-def managed_catalogue(
-    resources: ManagedOcrResources, requested: Sequence[str] = ()
-) -> TrustedOcrCatalogue:
-    """A trusted selection catalogue over what the managed OCR cache installed.
+def selected_identities(
+    resources: ManagedOcrResources, requested: Sequence[str]
+) -> list[OcrResourceSetIdentity]:
+    """The installed identities one request names, with the orientation data after.
 
-    This is the bridge between the two halves the installation already has: the
-    managed cache owns the bytes, their five-field identities, the 512 MiB
-    capacity rule and the one directory an ordered selection is published into,
-    and
-    :class:`~omnivia_core_runtime.service.ocr_resources.TrustedOcrCatalogue`
-    owns what the engine may be invoked with. Nothing is downloaded or installed
-    here, and no second resource store is introduced: the cache's own inventory
-    is the only input.
-
-    A model whose recorded `engine_version` is not the revision this build
-    invokes is left out rather than presented, so a resource set built for
-    another engine is reported as a missing language instead of being handed to
-    one that may not read it.
-
-    The whole ordered selection is projected, so two or three installed
-    languages are served together and in the order they were asked for.
-    Projection is the cache's own operation and keeps digest verification: the
-    bytes it links are bytes it has just re-digested against their declared
-    identity, and
-    :meth:`~omnivia_core_runtime.service.ocr_resources.TrustedOcrCatalogue.resolve`
-    digests them once more before the engine sees them.
-
-    Only the languages that *are* installed reach the catalogue, with the
-    orientation data alongside them when the cache holds it. A requested
-    language the cache has not got is therefore absent from `installed` and
-    `resolve` reports exactly it as missing -- rather than the whole selection,
-    which is what an empty catalogue would have said.
-
-    An unreadable or contended cache, and a projection that cannot be published,
-    all yield the empty fail-closed catalogue. A selection then resolves as
-    unavailable with its requested order intact and nothing substituted.
+    The ordered request, narrowed to what the cache can actually serve, in the
+    order it was asked for. Empty when the cache can serve none of it, which is
+    the fail-closed answer: a selection nothing is installed for resolves as
+    unavailable with its requested order intact rather than as a smaller one.
     """
     present = installed_identities(resources)
     selection = [
@@ -366,31 +344,137 @@ def managed_catalogue(
         if language in present
     ]
     if not selection:
-        return TrustedOcrCatalogue()
+        return []
     orientation = present.get(ORIENTATION_MODEL)
     if orientation is not None:
         selection.append(orientation)
-    try:
-        directory = resources.project_selection(selection)
-    except (OcrResourceLifecycleRefused, OcrResourceStoreError, OSError):
-        return TrustedOcrCatalogue()
+    return selection
+
+
+def _catalogue_over(
+    selection: Sequence[OcrResourceSetIdentity], directory: Path
+) -> TrustedOcrCatalogue:
+    """The trusted catalogue one published projection of `selection` serves."""
     return TrustedOcrCatalogue(
         installed={identity.language: identity.sha256 for identity in selection},
         tessdata_dir=str(directory),
     )
 
 
-def installation_catalogue(
-    installation_root: Path | None,
-) -> Callable[[Sequence[str]], TrustedOcrCatalogue] | None:
-    """How one installation resolves a selection, or ``None`` when it cannot.
+class _HeldSelections:
+    """Every selection one resolution leased, released together at its end.
+
+    One resolution may ask for the same selection more than once -- a history
+    page offers approved profiles per media type, and every media type of one
+    workspace names the same recognition order -- so an answer already resolved
+    is reused rather than re-projected. That is also what makes the digest a
+    caller is offered and the digest that executes one resolution rather than
+    two.
+    """
+
+    def __init__(self, resources: ManagedOcrResources) -> None:
+        self._resources = resources
+        self._stack = ExitStack()
+        self._resolved: dict[tuple[str, ...], TrustedOcrCatalogue] = {}
+
+    def catalogue(self, requested: Sequence[str] = ()) -> TrustedOcrCatalogue:
+        """Hold what this installation can serve of `requested`, and name it.
+
+        The bridge between the two halves the installation already has: the managed
+        cache owns the bytes, their five-field identities, the 512 MiB capacity rule
+        and the one directory an ordered selection is published into, and
+        :class:`~omnivia_core_runtime.service.ocr_resources.TrustedOcrCatalogue`
+        owns what the engine may be invoked with. Nothing is downloaded or installed
+        here, and no second resource store is introduced: the cache's own inventory
+        is the only input.
+
+        The whole installed part of the ordered selection is projected and held, so
+        two or three installed languages are served together and in the order they
+        were asked for, with the orientation data alongside them when the cache holds
+        it. Digest verification is preserved: the bytes the projection links are
+        bytes the cache has just re-digested against their declared identity, and
+        :meth:`~omnivia_core_runtime.service.ocr_resources.TrustedOcrCatalogue.resolve`
+        digests them once more before the engine sees them. A requested language the
+        cache has not got is absent from `installed`, so `resolve` reports exactly it
+        as missing rather than the whole selection.
+
+        Fails closed. An unreadable or contended cache, a projection that cannot be
+        published, and a hold that cannot be taken all yield the empty catalogue --
+        serving a projection this call could not keep would be the defect the lease
+        exists to remove. The selection then resolves as unavailable with its
+        requested order intact and nothing substituted.
+        """
+        key = tuple(requested)
+        held = self._resolved.get(key)
+        if held is not None:
+            return held
+        try:
+            selection = selected_identities(self._resources, requested)
+            if selection:
+                directory = self._stack.enter_context(
+                    self._resources.leased_selection(selection)
+                )
+                answer = _catalogue_over(selection, directory)
+            else:
+                answer = TrustedOcrCatalogue()
+        except (OcrResourceLifecycleRefused, OcrResourceStoreError, OSError):
+            answer = TrustedOcrCatalogue()
+        self._resolved[key] = answer
+        return answer
+
+    def release(self) -> None:
+        """Drop every hold this resolution took.
+
+        Never raises: it runs after the work it was holding for has reached its
+        terminal handling, and a failure to tidy up must not become that work's
+        outcome. A hold whose release failed is a lock no longer held, which the
+        next managed operation discards as abandoned.
+        """
+        with suppress(OcrResourceLifecycleRefused, OcrResourceStoreError, OSError):
+            self._stack.close()
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedSelectionAuthority:
+    """One installation's managed OCR cache, as a source of *held* selections.
 
     The managed cache is installation-local state, and the lifecycle takes a root
-    rather than choosing one, so the join between the two is made here -- once --
-    and handed to the executor and to anything else that resolves at execution.
-    The returned callable takes the *frozen* ordered selection and is called at
-    the moment work runs, never at admission: it is what makes "resolved against
-    trusted managed resources at execution" literal.
+    rather than choosing one, so the join between the two is made once, here, and
+    handed to the executor and to the request handlers that resolve a profile.
+
+    It is deliberately not itself a resolver. A resolution that is not held is
+    the defect this class exists to prevent, so the only way to resolve through
+    it is to take a lease first and resolve inside it.
+    """
+
+    resources: ManagedOcrResources
+
+    @contextmanager
+    def lease(self) -> Iterator[Callable[[Sequence[str]], TrustedOcrCatalogue]]:
+        """Resolve frozen selections inside the block, holding each to its end.
+
+        The yielded callable takes the *frozen* ordered selection and is called at
+        the moment work runs, never at admission: it is what makes "resolved
+        against trusted managed resources at execution" literal. Whatever it
+        resolves stays held -- the exact resource identities and the projected
+        directory -- until the block ends, which the caller places after its
+        terminal handling of the work the resources were resolved for.
+
+        Entering the block touches nothing and takes no lock, so a Text-only
+        capture -- which returns before any catalogue is consulted -- leases
+        nothing at all.
+        """
+        held = _HeldSelections(self.resources)
+        try:
+            yield held.catalogue
+        finally:
+            held.release()
+
+
+def installation_catalogue(
+    installation_root: Path | None,
+) -> ManagedSelectionAuthority | None:
+    """How one installation resolves a selection, or ``None`` when it cannot.
 
     ``None`` means this process has no installation root to ask, or the root is
     not one a managed cache may live under. The caller then falls back to the
@@ -402,7 +486,7 @@ def installation_catalogue(
         resources = ManagedOcrResources(Path(installation_root) / OCR_RESOURCES_DIR)
     except OcrResourceStoreError:
         return None
-    return partial(managed_catalogue, resources)
+    return ManagedSelectionAuthority(resources)
 
 
 __all__ = [
@@ -411,12 +495,13 @@ __all__ = [
     "PROCESSING_MODES",
     "SETTING_KEY",
     "SETTING_WRITER",
+    "ManagedSelectionAuthority",
     "ProcessingSettings",
     "ProcessingSettingsInvalid",
     "apply_settings",
     "installation_catalogue",
     "installed_identities",
-    "managed_catalogue",
     "read_settings",
+    "selected_identities",
     "write_settings",
 ]
