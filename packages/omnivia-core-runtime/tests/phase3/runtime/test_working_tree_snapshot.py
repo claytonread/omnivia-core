@@ -2419,6 +2419,7 @@ def test_0059_upgrade_seeds_a_preexisting_0058_capture(
             67,
             68,
             69,
+            70,
         ]
         assert old.holder.connection.execute(
             "SELECT COUNT(*) FROM omnivia_engineering_source_producer_queue"
