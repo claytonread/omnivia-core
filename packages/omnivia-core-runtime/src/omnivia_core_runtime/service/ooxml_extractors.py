@@ -720,8 +720,10 @@ _MAX_XLSX_PART_EXTENSIONS: Final = 4096
 # ``header``, ``userInfo`` (revision parts), ``calcChain``, ``metadata`` and
 # ``futureMetadata``, ``volTypes``, ``singleXmlCell``, ``xmlCellPr``, ``xmlPr``
 # and the ``nc``/``oc``/``ndxf``/``odxf`` revision formats -- belong to parts
-# the reader never opens. Only parts the reader opens are listed: drawing and
-# chart parts keep their lists in DrawingML, which is another increment.
+# the reader never opens. Only parts the reader opens are listed, and only the
+# ones written in SpreadsheetML: a drawing and a chart keep their lists in
+# DrawingML, so each has its own vocabulary in
+# ``_XLSX_DRAWING_EXTENSION_VOCABULARY``.
 #
 # ``ignoredErrors`` is the owner, not its ``ignoredError`` members, and a
 # worksheet's ``controls`` hold none. A sheet's ``pivotArea`` chain is reached
@@ -1451,6 +1453,217 @@ _XLSX_CONNECTOR: Final[dict[str, object]] = {
     "connectionStartIndex": None,
     "connectionEndId": None,
     "connectionEndIndex": None,
+}
+# The namespace Excel's own 2010 drawing extensions are written in, and the one
+# place it is read: the content part a spreadsheet drawing may anchor is typed
+# from it, so the extension list that object carries is its, not OOXML's. There
+# is no Strict spelling of a vocabulary OOXML never defined.
+_XLSX_DRAWING_2010: Final = (
+    "http://schemas.microsoft.com/office/excel/2010/spreadsheetDrawing"
+)
+# The elements of the DrawingML chart vocabulary the schema gives an extension
+# list of that same vocabulary. ``c:spPr`` and ``c:clrMapOvr`` are chart
+# elements too but are typed from DrawingML main, so their lists are that
+# vocabulary's and they are named apart, below.
+_XLSX_CHART_EXTENSION_OWNERS: Final = (
+    "area3DChart",
+    "areaChart",
+    "backWall",
+    "bar3DChart",
+    "barChart",
+    "bubbleChart",
+    "catAx",
+    "chart",
+    "chartSpace",
+    "dLbl",
+    "dLbls",
+    "dPt",
+    "dTable",
+    "dateAx",
+    "dispUnits",
+    "doughnutChart",
+    "errBars",
+    "floor",
+    "layout",
+    "legend",
+    "legendEntry",
+    "line3DChart",
+    "lineChart",
+    "manualLayout",
+    "marker",
+    "multiLvlStrCache",
+    "multiLvlStrRef",
+    "numCache",
+    "numLit",
+    "numRef",
+    "ofPieChart",
+    "pie3DChart",
+    "pieChart",
+    "pivotFmt",
+    "pivotSource",
+    "plotArea",
+    "radarChart",
+    "scaling",
+    "scatterChart",
+    "ser",
+    "serAx",
+    "sideWall",
+    "stockChart",
+    "strCache",
+    "strLit",
+    "strRef",
+    "surface3DChart",
+    "surfaceChart",
+    "title",
+    "trendline",
+    "trendlineLbl",
+    "upDownBars",
+    "valAx",
+    "view3D",
+)
+_DRAWING_MAIN_EXTENSION_OWNERS: Final = frozenset(
+    (
+        "audioCd",
+        "audioFile",
+        "backdrop",
+        "blip",
+        "bodyPr",
+        "bodyStyle",
+        "cell3D",
+        "clrMap",
+        "clrMapOvr",
+        "clrScheme",
+        "cNvCnPr",
+        "cNvCxnSpPr",
+        "cNvFrPr",
+        "cNvGraphicFramePr",
+        "cNvGrpSpPr",
+        "cNvPicPr",
+        "cNvPr",
+        "cNvSpPr",
+        "cxnSp",
+        "cxnSpLocks",
+        "defaultTextStyle",
+        "defPPr",
+        "defRPr",
+        "docPr",
+        "endParaRPr",
+        "font",
+        "fontScheme",
+        "graphicFrame",
+        "graphicFrameLocks",
+        "gridCol",
+        "grpSp",
+        "grpSpLocks",
+        "grpSpPr",
+        "hiddenLine",
+        "hiddenScene3d",
+        "hiddenSp3d",
+        "hlinkClick",
+        "hlinkHover",
+        "hlinkMouseOver",
+        "ln",
+        "lnB",
+        "lnBlToTr",
+        "lnDef",
+        "lnL",
+        "lnR",
+        "lnT",
+        "lnTlToBr",
+        "lockedCanvas",
+        "lstStyle",
+        "lvl1pPr",
+        "lvl2pPr",
+        "lvl3pPr",
+        "lvl4pPr",
+        "lvl5pPr",
+        "lvl6pPr",
+        "lvl7pPr",
+        "lvl8pPr",
+        "lvl9pPr",
+        "majorFont",
+        "minorFont",
+        "notesStyle",
+        "objectDefaults",
+        "otherStyle",
+        "overrideClrMapping",
+        "pic",
+        "picLocks",
+        "pPr",
+        "quickTimeFile",
+        "rPr",
+        "scene3d",
+        "snapshot",
+        "sp",
+        "sp3d",
+        "spDef",
+        "spLocks",
+        "spPr",
+        "tableStyle",
+        "tblPr",
+        "tblStyle",
+        "tc",
+        "tcBdr",
+        "tcPr",
+        "tcTxStyle",
+        "theme",
+        "themeElements",
+        "titleStyle",
+        "tr",
+        "txDef",
+        "txSp",
+        "uLn",
+        "videoFile",
+    )
+)
+# Where each DrawingML part a worksheet reaches may carry an unsupported
+# extension list, and so the only places a coverage entry is read from in one. A
+# kind is (the namespaces its root may be written in, owner local name -> the
+# namespaces that owner's ``extLst`` may be written in); ``None`` is the part's
+# own validated namespace, and a frozenset is the vocabulary the schema types
+# that owner's list from, which is another one wherever an element of the part's
+# vocabulary is itself typed from DrawingML main -- most of a drawing, and two
+# elements of a chart.
+#
+# Unlike the SpreadsheetML matrix above, these two vocabularies recurse: a group
+# shape holds group shapes, a plot area holds charts holding series holding
+# their own references. So an owner is named rather than placed, and the walk
+# covers every position the schema puts that owner at. The structural path still
+# says which of those positions a list was found at.
+#
+# The names are the Open XML SDK's schema models for the two part vocabularies.
+# The walker also enters DrawingML main and uses the complete owner inventory
+# above. It never enters a foreign vocabulary carried by ``a:graphicData`` --
+# SmartArt and VML among them -- or any extension payload.
+_XLSX_DRAWING_EXTENSION_VOCABULARY: Final[
+    dict[str, tuple[frozenset[str], dict[str, frozenset[str] | None]]]
+] = {
+    "drawing": (
+        _XLSX_DRAWING_NAMESPACES,
+        {
+            **dict.fromkeys(
+                (
+                    "cNvPr",
+                    "cNvSpPr",
+                    "cNvGrpSpPr",
+                    "cNvPicPr",
+                    "cNvCxnSpPr",
+                    "cNvGraphicFramePr",
+                    "spPr",
+                    "grpSpPr",
+                ),
+                frozenset(_DRAWING_MAIN),
+            ),
+            "contentPart": frozenset({_XLSX_DRAWING_2010}),
+        },
+    ),
+    "chart": (
+        _CHART_NAMESPACES,
+        {
+            **dict.fromkeys(_XLSX_CHART_EXTENSION_OWNERS, None),
+            **dict.fromkeys(("spPr", "clrMapOvr"), frozenset(_DRAWING_MAIN)),
+        },
+    ),
 }
 # The two WordprocessingDrawing namespaces OOXML defines, Transitional and
 # Strict. A drawing object is reached by its qualified name alone, so an
@@ -3445,11 +3658,14 @@ def extract_xlsx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 # which is not the ``connections`` figure beside it: a stored
                 # connection may serve several query tables, or none at all.
                 "queryTables": query_tables,
-                # The unsupported extension entries every SpreadsheetML part the
-                # reader opened declared, at every owner the schema places a list
-                # at in that part, the roots and the shared strings included:
-                # coverage records, counted apart from the cells. A part the
-                # reader never opens, and DrawingML lists, are not counted.
+                # The unsupported extension entries every part the reader opened
+                # declared, at every owner the schema places a list at in that
+                # part: the SpreadsheetML roots and the shared strings, and the
+                # worksheet drawings and charts in their own DrawingML
+                # vocabularies. Coverage records, counted apart from the cells.
+                # A part the reader never opens is not counted. DrawingML-main
+                # properties inside an opened drawing or chart are counted;
+                # foreign graphics a frame merely carries are not entered.
                 "extensions": extensions,
                 # The links the workbook declared, which is not the
                 # ``externalReferences`` figure beside it: that one counts every
@@ -6067,7 +6283,10 @@ def _xlsx_extension_lists(
 
     ``extLst`` is where a producer keeps what the schema has no element for --
     conditional-formatting extensions, sparklines, slicers, a Power Query
-    definition -- and this reader understands none of it. Which positions of a
+    definition -- and this reader understands none of it. This is the walk for
+    the SpreadsheetML parts; a drawing and a chart are written in DrawingML and
+    are walked by ``_xlsx_drawing_extension_lists`` instead, under the same
+    bounds, the same refusal and the same path. Which positions of a
     part may hold one is ``_XLSX_EXTENSION_VOCABULARY``'s, per kind of part: the
     walk goes down only the named steps, each a direct child qualified in the
     root's own namespace, and an ``extLst`` is taken only directly below an owner
@@ -6115,9 +6334,7 @@ def _xlsx_extension_lists(
                 listed = _xlsx_extension_list(
                     listed, " ".join((owner, *steps[-1:]))
                 )
-                entries = [item for item in child if item.tag == entry_tag]
-                if len(entries) > _MAX_XLSX_EXTENSIONS:
-                    raise OOXMLInvalid(f"XLSX {owner} declares too many extensions")
+                entries = _xlsx_extension_entries(child, entry_tag, owner)
                 total += len(entries)
                 if total > _MAX_XLSX_PART_EXTENSIONS:
                     raise OOXMLInvalid(f"XLSX {owner} declares too many extensions")
@@ -6132,6 +6349,139 @@ def _xlsx_extension_lists(
                     visit(child, (*steps, name), (*where, (name, ordinal)))
 
     visit(root, (), ())
+    return found
+
+
+def _xlsx_extension_entries(
+    node: ElementTree.Element, entry_tag: str, owner: str
+) -> list[ElementTree.Element]:
+    """The entries one ``extLst`` declares, counted before any is reported.
+
+    An entry is an ``ext`` qualified exactly as ``entry_tag``: the namespace the
+    schema types the list's entries from, which is not always the list's own.
+    Anything else inside the list belongs to another vocabulary and declares no
+    entry. Nothing below an entry is looked at here or anywhere past here.
+    """
+    entries = [item for item in node if item.tag == entry_tag]
+    if len(entries) > _MAX_XLSX_EXTENSIONS:
+        raise OOXMLInvalid(f"XLSX {owner} declares too many extensions")
+    return entries
+
+
+@dataclass(slots=True)
+class _XlsxDrawingScan:
+    """One element of a DrawingML part being scanned for the list it may hold.
+
+    ``lists`` is the qualified ``extLst`` names this element's own position
+    admits, or None where the schema puts no list there; ``label`` is what a
+    refusal calls the position, ``where`` is the structural path down to it,
+    ``ordinals`` counts the like-named children already entered and ``listed``
+    says whether the one list its position allows has been seen.
+    """
+
+    children: Iterator[ElementTree.Element]
+    lists: frozenset[str] | None
+    label: str
+    where: tuple[tuple[str, int], ...]
+    ordinals: dict[str, int] = field(default_factory=dict)
+    listed: bool = False
+
+
+def _xlsx_drawing_extension_lists(
+    root: ElementTree.Element, owner: str
+) -> list[tuple[str, list[ElementTree.Element]]]:
+    """Find the extension lists one DrawingML part carries, as (owner path, entries).
+
+    The worksheet-drawing and chart parts a sheet reaches are DrawingML rather
+    than SpreadsheetML, and their vocabularies recurse -- a group shape holds
+    group shapes, a plot area holds charts holding series holding their own
+    references -- so an owner is named rather than placed, which is the one
+    difference from the SpreadsheetML walk above. Children qualified in the
+    part's own validated namespace or either DrawingML-main profile are
+    descended, and an ``extLst`` is taken only directly below an element its
+    qualified vocabulary names as an owner. A part-vocabulary owner uses the
+    list namespace its schema type declares; a DrawingML-main owner uses an
+    ``extLst`` in that owner's exact namespace. Foreign and unqualified children
+    are never entered, so a SmartArt, VML or other payload carried by
+    ``a:graphicData`` remains outside this walk. No ``extLst`` or ``ext`` is
+    ever entered, so extension payloads remain opaque.
+
+    The structural path, the one-list-per-position refusal and the per-list and
+    per-part bounds are the SpreadsheetML walk's, for its reasons, and the lists
+    come back where each was authored: an element's own trailing list after the
+    ones its children hold, exactly as a table's does there.
+    """
+    namespaces, listed = _XLSX_DRAWING_EXTENSION_VOCABULARY[owner]
+    namespace = root.tag.rpartition("}")[0].lstrip("{")
+    if namespace not in namespaces:
+        return []
+    scope = f"{{{namespace}}}"
+    owners = {
+        f"{scope}{name}": frozenset(
+            f"{{{uri}}}extLst"
+            for uri in (group if group is not None else (namespace,))
+        )
+        for name, group in listed.items()
+    }
+    entered_namespaces = frozenset((namespace, *_DRAWING_MAIN))
+
+    def extension_lists(tag: str) -> frozenset[str] | None:
+        """Return the schema-qualified list this exact owner may carry."""
+        prefix, brace, name = tag.rpartition("}")
+        if not brace:
+            return None
+        owner_namespace = prefix.lstrip("{")
+        if (
+            owner_namespace in _DRAWING_MAIN
+            and name in _DRAWING_MAIN_EXTENSION_OWNERS
+        ):
+            return frozenset((f"{{{owner_namespace}}}extLst",))
+        return owners.get(tag)
+
+    found: list[tuple[str, list[ElementTree.Element]]] = []
+    total = 0
+    # Scanned with an explicit stack rather than by recursion: both
+    # vocabularies nest as deep as a producer writes them, and a part that
+    # nested its groups past the interpreter's own limit would leave the walk
+    # rather than the package refused.
+    stack = [_XlsxDrawingScan(iter(root), extension_lists(root.tag), owner, ())]
+    while stack:
+        frame = stack[-1]
+        for child in frame.children:
+            if frame.lists is not None and child.tag in frame.lists:
+                frame.listed = _xlsx_extension_list(frame.listed, frame.label)
+                prefix, _, _ = child.tag.rpartition("}")
+                entries = _xlsx_extension_entries(child, f"{prefix}}}ext", owner)
+                total += len(entries)
+                if total > _MAX_XLSX_PART_EXTENSIONS:
+                    raise OOXMLInvalid(f"XLSX {owner} declares too many extensions")
+                found.append(
+                    ("".join(f"/{n}[{i}]" for n, i in frame.where) or "/", entries)
+                )
+            else:
+                prefix, brace, name = child.tag.rpartition("}")
+                if not brace or prefix.lstrip("{") not in entered_namespaces:
+                    continue
+                # Anything called an extension is left alone whether or not it
+                # is the list this position allows. This also keeps the ordinary
+                # extents ``a:xfrm/a:ext`` and ``xdr:oneCellAnchor/xdr:ext`` out
+                # of extension-entry handling: an ``ext`` is an extension entry
+                # only as a direct qualified child of a recognized list above.
+                if name in ("extLst", "ext"):
+                    continue
+                ordinal = frame.ordinals.get(name, 0)
+                frame.ordinals[name] = ordinal + 1
+                stack.append(
+                    _XlsxDrawingScan(
+                        iter(child),
+                        extension_lists(child.tag),
+                        f"{owner} {name}",
+                        (*frame.where, (name, ordinal)),
+                    )
+                )
+                break
+        else:
+            stack.pop()
     return found
 
 
@@ -6228,12 +6578,21 @@ class _XlsxCoverage:
     ) -> list[tuple[str, list[ElementTree.Element]]]:
         """Find and bound the lists one part declares, building nothing.
 
+        A SpreadsheetML part is walked down its matrix of positions and a
+        DrawingML one down the owners its vocabulary names, which is the one
+        difference between them; a part of either kind lands here the same way.
+
         The per-list and per-part bounds are taken while the lists are found,
         and the global one here against the running total of every part -- a
-        root, a nested owner or the shared strings alike -- so every bound is
-        settled before a single record is constructed from any of them.
+        root, a nested owner, a drawing, a chart or the shared strings alike --
+        so every bound is settled before a single record is constructed from any
+        of them.
         """
-        lists = _xlsx_extension_lists(root, owner)
+        lists = (
+            _xlsx_drawing_extension_lists(root, owner)
+            if owner in _XLSX_DRAWING_EXTENSION_VOCABULARY
+            else _xlsx_extension_lists(root, owner)
+        )
         self.total += sum(len(entries) for _path, entries in lists)
         if self.total > MAX_SEGMENTS:
             raise OOXMLInvalid("OOXML extraction has too many segments")
@@ -6707,6 +7066,12 @@ def _xlsx_drawing_anchors(
     anchors = [node for node in drawing if node.tag in anchor_names]
     if len(anchors) > _MAX_XLSX_ANCHORS:
         raise OOXMLInvalid("XLSX drawing has too many anchors")
+    # The drawing's own unsupported extension lists, reported now that the part
+    # has passed every check it is held to. Both readers past here resolve this
+    # same route, so the part is reached twice and the coverage is built on the
+    # first reach and left alone on the second: one physical part is one set of
+    # entries however many readers open it.
+    _xlsx_cover(package, drawing_part, "drawing", drawing)
     return drawing_part, relation_id, drawing_namespace, anchors
 
 
@@ -8713,6 +9078,11 @@ def _chart_root(package: _Package, part: str, owner: str) -> ElementTree.Element
     DrawingML charts. Anything else is not the vocabulary the declaration
     promised, so the part is refused rather than read for whatever happens to
     be in it.
+
+    An accepted chart reports the unsupported extension lists it holds, which
+    is where a workbook's chart coverage comes from: this is the one place a
+    chart part is opened, whichever format related it, and only a format
+    collecting coverage is listening.
     """
     root = package.xml(part)
     namespace, _, local = root.tag.rpartition("}")
@@ -8720,6 +9090,7 @@ def _chart_root(package: _Package, part: str, owner: str) -> ElementTree.Element
         raise OOXMLInvalid(f"{owner} chart part uses an unsupported namespace")
     if local != "chartSpace":
         raise OOXMLInvalid(f"{owner} chart part is not rooted at its own chart space")
+    _xlsx_cover(package, part, "chart", root)
     return root
 
 
@@ -8746,6 +9117,12 @@ def _chart_records(
     and a document are read by this one reader under one set of bounds and one
     set of refusals. ``owner`` is the format that related it, carried through so
     a refusal names the file it came from and never the other format.
+
+    An extension list is payload this reader does not understand -- it is
+    reported as coverage where the format collects it -- so nothing below one is
+    read as a series, a cache or a point. A filtered series a producer parked in
+    ``c:extLst`` is a series the chart does not plot, and reading one as plotted
+    would report values the chart never showed.
     """
     root = _chart_root(package, part, owner)
     # Only the chart's own title: an axis or a legend carries a ``c:title`` of
@@ -8760,7 +9137,9 @@ def _chart_records(
     indices: set[str] = set()
     orders: set[str] = set()
     points = 0
-    for series in (node for node in root.iter() if _local(node.tag) == "ser"):
+    for series in (
+        node for node in _outside_extensions(root) if _local(node.tag) == "ser"
+    ):
         if len(indices) >= _MAX_CHART_SERIES:
             raise OOXMLInvalid(f"{owner} chart has too many series")
         index = _chart_index(series, "idx", owner)
@@ -8805,14 +9184,19 @@ def _chart_title(
     A rich title is the text the author typed, joined as written; a referenced
     title is the stored copy of what its source held, reported with the formula
     beside it. A title that holds neither leaves nothing to report, and nothing
-    is taken from a layout or recomputed from the data.
+    is taken from a layout or recomputed from the data -- nor from an extension
+    list below the body, which is payload rather than the title's own runs.
     """
     holder = next((node for node in title if _local(node.tag) == "tx"), None)
     if holder is None:
         return []
     rich = next((node for node in holder if _local(node.tag) == "rich"), None)
     if rich is not None:
-        runs = [node.text or "" for node in rich.iter() if _local(node.tag) == "t"]
+        runs = [
+            node.text or ""
+            for node in _outside_extensions(rich)
+            if _local(node.tag) == "t"
+        ]
         if len(runs) > _MAX_CHART_TITLE_RUNS:
             raise OOXMLInvalid(f"{owner} chart title has too many runs")
         return [({**_CHART_PLACE, "chartRole": "chart_title"}, "".join(runs))]
