@@ -25,9 +25,10 @@ public enum NativeAccessError: Error, Equatable {
     /// already recorded. Only a byte-identical replay is a retry.
     case conflictingEstablishment
     /// An explicit Refresh, Open original or Reveal in Finder was asked of a
-    /// route whose root group is still only provisional. Preparing that route's
-    /// own frozen capture intent is permitted; acting on the original as a
-    /// linked file needs an established owner.
+    /// route that is still only provisional — a member whose root group is, or a
+    /// direct file no published work owns. Preparing that route's own frozen
+    /// capture intent is permitted; acting on the original as a linked file
+    /// needs an established owner.
     case routeNotActive
 }
 
@@ -105,6 +106,23 @@ public struct NativeRootAccessBinding: Codable, Equatable, Sendable {
 public enum NativeAccessState: String, Codable, Sendable {
     case connected
     case disconnected
+}
+
+/// A direct-file grant's own lifecycle.
+///
+/// A member's equivalent lives on its root group (`NativeRootAccessState`): the
+/// group is what is provisional until a durable owner exists. A direct file has
+/// no group between it and its original, so design §7.2's distinction is
+/// recorded here instead. It is orthogonal to `NativeAccessState`, which says
+/// whether the grant still holds its bookmark: a disconnected grant keeps the
+/// lifecycle it had, so a relink of established work repairs back into it.
+public enum NativeAccessLifecycle: String, Codable, Sendable {
+    /// Adopted for a reviewed candidate that no published queue entry and no
+    /// registered file subscription owns yet. It may prepare its own frozen
+    /// capture intent, and serves no explicit original action.
+    case provisional
+    /// Published work owns this grant.
+    case active
 }
 
 /// One reviewed member of a pending folder establishment. Every identity the
@@ -243,6 +261,28 @@ public struct NativeAccessDescriptor: Equatable, Sendable {
     public let rootBindingGeneration: UInt64?
     public let state: NativeAccessState
     public let route: NativeAccessRoute
+    /// Direct-file only. A member's lifecycle is its root group's state, which
+    /// `NativeRootAccessDescriptor` projects, so a member is always `.active`
+    /// here and never gates on this field.
+    public let lifecycle: NativeAccessLifecycle
+
+    public init(
+        accessRef: String,
+        linkedDocumentID: String,
+        generation: UInt64,
+        rootBindingGeneration: UInt64?,
+        state: NativeAccessState,
+        route: NativeAccessRoute,
+        lifecycle: NativeAccessLifecycle = .active
+    ) {
+        self.accessRef = accessRef
+        self.linkedDocumentID = linkedDocumentID
+        self.generation = generation
+        self.rootBindingGeneration = rootBindingGeneration
+        self.state = state
+        self.route = route
+        self.lifecycle = lifecycle
+    }
 }
 
 /// The public projection of the durable root group. Bookmark bytes and
@@ -322,6 +362,63 @@ private struct NativeAccessRecord: Codable, Equatable {
     let state: NativeAccessState
     let route: NativeAccessRoute
     let bookmark: Data?
+    let lifecycle: NativeAccessLifecycle
+
+    init(
+        accessRef: String,
+        linkedDocumentID: String,
+        generation: UInt64,
+        rootBindingGeneration: UInt64?,
+        state: NativeAccessState,
+        route: NativeAccessRoute,
+        bookmark: Data?,
+        lifecycle: NativeAccessLifecycle
+    ) {
+        self.accessRef = accessRef
+        self.linkedDocumentID = linkedDocumentID
+        self.generation = generation
+        self.rootBindingGeneration = rootBindingGeneration
+        self.state = state
+        self.route = route
+        self.bookmark = bookmark
+        self.lifecycle = lifecycle
+    }
+
+    /// A record written before the lifecycle was recorded predates the
+    /// distinction: whatever held it then was established work, so it reads back
+    /// `active`. Every other field, bookmark bytes and generation included, is
+    /// decoded exactly as written. An unknown *document* section still fails
+    /// closed — see `NativeAccessDocument.init(from:)`.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accessRef = try container.decode(String.self, forKey: .accessRef)
+        linkedDocumentID = try container.decode(String.self, forKey: .linkedDocumentID)
+        generation = try container.decode(UInt64.self, forKey: .generation)
+        rootBindingGeneration = try container.decodeIfPresent(
+            UInt64.self,
+            forKey: .rootBindingGeneration
+        )
+        state = try container.decode(NativeAccessState.self, forKey: .state)
+        route = try container.decode(NativeAccessRoute.self, forKey: .route)
+        bookmark = try container.decodeIfPresent(Data.self, forKey: .bookmark)
+        lifecycle = try container.decodeIfPresent(
+            NativeAccessLifecycle.self,
+            forKey: .lifecycle
+        ) ?? .active
+    }
+
+    func with(lifecycle: NativeAccessLifecycle) -> NativeAccessRecord {
+        NativeAccessRecord(
+            accessRef: accessRef,
+            linkedDocumentID: linkedDocumentID,
+            generation: generation,
+            rootBindingGeneration: rootBindingGeneration,
+            state: state,
+            route: route,
+            bookmark: bookmark,
+            lifecycle: lifecycle
+        )
+    }
 }
 
 private struct NativeRootAccessRecord: Codable, Equatable {
@@ -507,7 +604,13 @@ public final class NativeAccessStore: @unchecked Sendable {
                 rootBindingGeneration: nil,
                 state: .connected,
                 route: route,
-                bookmark: bookmark
+                bookmark: bookmark,
+                // A newly adopted candidate is provisional: nothing published
+                // owns it yet. A re-grant of a reference this store already
+                // holds is a repair of that grant, not a new candidate, so it
+                // keeps the lifecycle it had — which is what lets a relink of
+                // established work serve original actions again.
+                lifecycle: existing?.lifecycle ?? .provisional
             )
             var replacement = records
             replacement[accessRef] = record
@@ -753,6 +856,41 @@ public final class NativeAccessStore: @unchecked Sendable {
         }
     }
 
+    /// Promotes the direct-file grants that published work now owns.
+    ///
+    /// The counterpart of `activateRoot` for the route that has no root group.
+    /// Its caller is the publication critical section
+    /// (`CapturePreparationCoordinator.prepareAndPublish`), immediately after
+    /// the queue commit that is the moment durable ownership starts to exist,
+    /// and it names the grants the published entries are bound to — which are
+    /// also the grants the watches registered beside them are bound to, because
+    /// a watch is registered for the entry that froze its baseline. Nothing
+    /// before that commit promotes anything, so a batch that fails or is
+    /// discarded leaves every grant it adopted provisional.
+    ///
+    /// A reference naming no connected direct-file grant is skipped rather than
+    /// refused: this records what was published, and a member's lifecycle is its
+    /// root group's.
+    public func activateGrants(accessRefs: [String]) throws {
+        guard !accessRefs.isEmpty else { return }
+        try gate.withLock {
+            var replacement = records
+            var promoted = false
+            for accessRef in Set(accessRefs) {
+                guard let current = replacement[accessRef],
+                      current.route == .directFile,
+                      current.state == .connected,
+                      current.lifecycle == .provisional
+                else { continue }
+                replacement[accessRef] = current.with(lifecycle: .active)
+                promoted = true
+            }
+            guard promoted else { return }
+            try persist(records: replacement, roots: roots)
+            records = replacement
+        }
+    }
+
     /// Freezes the exact reviewed membership of a one-off plan at approval. From
     /// here on this group resolves only these members: a sibling created later
     /// never becomes readable or capturable through it, including after a
@@ -860,7 +998,10 @@ public final class NativeAccessStore: @unchecked Sendable {
                 rootBindingGeneration: current.rootBindingGeneration,
                 state: .disconnected,
                 route: current.route,
-                bookmark: nil
+                bookmark: nil,
+                // Dropping the bytes is not a demotion: the lifecycle says what
+                // owns this grant, and a relink repairs back into it.
+                lifecycle: current.lifecycle
             )
             var replacement = records
             replacement[accessRef] = record
@@ -889,7 +1030,8 @@ public final class NativeAccessStore: @unchecked Sendable {
                     rootBindingGeneration: current.rootBindingGeneration,
                     state: .disconnected,
                     route: current.route,
-                    bookmark: nil
+                    bookmark: nil,
+                    lifecycle: current.lifecycle
                 )
             }
             var replacementRoots = roots
@@ -910,9 +1052,10 @@ public final class NativeAccessStore: @unchecked Sendable {
     /// `purpose` is the broker operation being served. `.prepareCapture`, the
     /// default, is every submission, bulk-run and automatic read. `.originalAction`
     /// is an explicit Refresh, Open original or Reveal in Finder, and design §7.2
-    /// gives those three no capability over a route whose root group is still
-    /// provisional: that group is a submission whose durable run or subscription
-    /// does not exist yet, so it may serve only its own preparation.
+    /// gives those three no capability over a provisional route: a root group
+    /// whose durable run or subscription does not exist yet, or a direct-file
+    /// grant no published entry or registered watch owns yet. Either may serve
+    /// only its own preparation.
     public func withReadAccess<T>(
         accessRef: String,
         expectedGeneration: UInt64,
@@ -930,6 +1073,12 @@ public final class NativeAccessStore: @unchecked Sendable {
             case .directFile:
                 guard expectedRootBindingGeneration == nil, let bookmark = record.bookmark else {
                     throw NativeAccessError.generationMismatch
+                }
+                // Design §7.2 for the route with no group: a grant adopted for a
+                // candidate serves that candidate's own preparation, and serves
+                // Refresh/Open/Reveal only once published work owns it.
+                guard purpose == .prepareCapture || record.lifecycle == .active else {
+                    throw NativeAccessError.routeNotActive
                 }
                 return (record, bookmark)
             case let .rootMember(rootRef, _, _):
@@ -1095,7 +1244,10 @@ public final class NativeAccessStore: @unchecked Sendable {
                 rootBindingGeneration: root.generation,
                 state: .connected,
                 route: route,
-                bookmark: nil
+                bookmark: nil,
+                // A member's own lifecycle is its root group's state, which is
+                // where its provisional period is recorded and gated.
+                lifecycle: .active
             )
             var replacement = records
             replacement[accessRef] = record
@@ -1287,7 +1439,13 @@ public final class NativeAccessStore: @unchecked Sendable {
                           (record.state == .connected) == (record.bookmark != nil)
                     else { throw NativeAccessError.invalidState }
                 case .rootMember:
-                    guard record.rootBindingGeneration != nil, record.bookmark == nil else {
+                    // A member's provisional period belongs to its root group,
+                    // so a member record carrying one of its own is a document
+                    // this build did not write and cannot interpret.
+                    guard record.rootBindingGeneration != nil,
+                          record.bookmark == nil,
+                          record.lifecycle == .active
+                    else {
                         throw NativeAccessError.invalidState
                     }
                 }
@@ -1413,7 +1571,10 @@ public final class NativeAccessStore: @unchecked Sendable {
                     rootBindingGeneration: nil,
                     state: old.state,
                     route: old.route,
-                    bookmark: old.bookmark
+                    bookmark: old.bookmark,
+                    // A v1 grant predates the distinction, so it is established
+                    // work: it keeps its bytes, its generation and its reach.
+                    lifecycle: .active
                 )
             case let .rootMember(rootRef, memberRef, _):
                 guard (old.state == .connected) == (old.bookmark != nil) else {
@@ -1457,7 +1618,8 @@ public final class NativeAccessStore: @unchecked Sendable {
                     rootBindingGeneration: 1,
                     state: old.state,
                     route: old.route,
-                    bookmark: nil
+                    bookmark: nil,
+                    lifecycle: .active
                 )
             }
         }
@@ -1653,7 +1815,8 @@ public final class NativeAccessStore: @unchecked Sendable {
             generation: record.generation,
             rootBindingGeneration: record.rootBindingGeneration,
             state: record.state,
-            route: record.route
+            route: record.route,
+            lifecycle: record.lifecycle
         )
     }
 

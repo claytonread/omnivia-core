@@ -422,6 +422,9 @@ final class NativeAccessStoreTests: XCTestCase {
         // re-minted under a fresh reference or a reset generation.
         XCTAssertEqual(grants.map(\.generation), [3, 2])
         XCTAssertEqual(grants.map(\.rootBindingGeneration), [1, nil])
+        // Both predate the lifecycle, so both are the established work they
+        // were: nothing a v1 file retained is demoted to a candidate.
+        XCTAssertEqual(grants.map(\.lifecycle), [.active, .active])
         XCTAssertEqual(
             grants.map(\.route),
             [
@@ -640,11 +643,12 @@ final class NativeAccessStoreTests: XCTestCase {
         )
     }
 
-    /// The refusal is scoped to what design §7.2 scopes it to. A direct file
-    /// grant has no root group standing between it and its original, so an
-    /// explicit original action over a connected one is served — and a
-    /// disconnected one is still refused for its own reason, not this one.
-    func testOriginalActionOverADirectGrantIsServedAndRefusedOnItsOwnTerms() throws {
+    /// Design §7.2 for the route that has no root group standing between it and
+    /// its original. A grant adopted for a candidate prepares that candidate and
+    /// serves no explicit original action; the publication that gives it a
+    /// durable owner promotes it; the promotion survives a restart; and a
+    /// disconnected grant is still refused for its own reason, not this one.
+    func testDirectGrantIsProvisionalUntilPublishedWorkOwnsItAndStaysActive() throws {
         let state = try temporaryDirectory()
         let original = state.deletingLastPathComponent().appendingPathComponent("original.txt")
         try Data("body".utf8).write(to: original)
@@ -655,24 +659,151 @@ final class NativeAccessStoreTests: XCTestCase {
             selectedURL: original,
             route: .directFile
         )
+        XCTAssertEqual(adopted.lifecycle, .provisional)
 
+        // Refresh, Open original and Reveal in Finder all resolve the original
+        // through this one record, so one refusal covers the three.
+        XCTAssertThrowsError(
+            try store.withReadAccess(
+                accessRef: "access-a",
+                expectedGeneration: adopted.generation,
+                purpose: .originalAction
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .routeNotActive) }
+        // The same record, the same generation: only the purpose differs, and
+        // preparing this candidate is what the grant was adopted for.
         XCTAssertEqual(
             try store.withReadAccess(
-                accessRef: adopted.accessRef,
+                accessRef: "access-a",
+                expectedGeneration: adopted.generation
+            ) { try Data(contentsOf: $0) },
+            Data("body".utf8)
+        )
+
+        // A promotion names what was published. A reference nothing published
+        // names promotes nothing at all.
+        try store.activateGrants(accessRefs: ["access-b"])
+        XCTAssertEqual(store.descriptors().map(\.lifecycle), [.provisional])
+
+        try store.activateGrants(accessRefs: ["access-a"])
+        XCTAssertEqual(store.descriptors().map(\.lifecycle), [.active])
+        XCTAssertEqual(
+            try store.withReadAccess(
+                accessRef: "access-a",
                 expectedGeneration: adopted.generation,
                 purpose: .originalAction
             ) { try Data(contentsOf: $0) },
             Data("body".utf8)
         )
 
-        try store.disconnect(accessRef: adopted.accessRef)
+        // Published work still owns it after a restart, so the capability it
+        // gained is not an in-memory one.
+        let reopened = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        XCTAssertEqual(reopened.descriptors().map(\.lifecycle), [.active])
+        XCTAssertEqual(
+            try reopened.withReadAccess(
+                accessRef: "access-a",
+                expectedGeneration: adopted.generation,
+                purpose: .originalAction
+            ) { try Data(contentsOf: $0) },
+            Data("body".utf8)
+        )
+
+        try reopened.disconnect(accessRef: "access-a")
         XCTAssertThrowsError(
-            try store.withReadAccess(
-                accessRef: adopted.accessRef,
+            try reopened.withReadAccess(
+                accessRef: "access-a",
                 expectedGeneration: adopted.generation,
                 purpose: .originalAction
             ) { _ in () }
         ) { XCTAssertEqual($0 as? NativeAccessError, .disconnected) }
+
+        // Re-granting the same reference is a repair of established work, not a
+        // new candidate: it comes back with the lifecycle its publication gave
+        // it rather than demoted to provisional.
+        let relinked = try reopened.adopt(
+            accessRef: "access-a",
+            linkedDocumentID: "doc-a",
+            selectedURL: original,
+            route: .directFile
+        )
+        XCTAssertEqual(relinked.generation, 2)
+        XCTAssertEqual(relinked.lifecycle, .active)
+        XCTAssertEqual(
+            try reopened.withReadAccess(
+                accessRef: "access-a",
+                expectedGeneration: 2,
+                purpose: .originalAction
+            ) { try Data(contentsOf: $0) },
+            Data("body".utf8)
+        )
+    }
+
+    /// A direct-file grant written before the lifecycle was recorded predates
+    /// the distinction, so it comes back as the established work it was — with
+    /// its bookmark bytes and generation untouched. A member record claiming a
+    /// lifecycle of its own is not a document this build wrote, and fails
+    /// closed rather than being reinterpreted.
+    func testGrantsWithoutARecordedLifecycleMigrateAsActive() throws {
+        let state = try temporaryDirectory()
+        let original = state.deletingLastPathComponent().appendingPathComponent("original.txt")
+        try Data("body".utf8).write(to: original)
+        let stateFile = state.appendingPathComponent("native-access-v1.json")
+        try JSONSerialization.data(withJSONObject: [
+            "schema": "omnivia.native-access.v3",
+            "records": [
+                [
+                    "accessRef": "access-file", "linkedDocumentID": "doc-file", "generation": 4,
+                    "state": "connected",
+                    "bookmark": Data(original.path.utf8).base64EncodedString(),
+                    "route": ["kind": "direct_file"],
+                ],
+            ],
+            "roots": [[String: Any]](),
+        ]).write(to: stateFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
+
+        let store = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        let grant = try XCTUnwrap(store.descriptors().first)
+        XCTAssertEqual(grant.lifecycle, .active)
+        XCTAssertEqual(grant.generation, 4)
+        XCTAssertEqual(
+            try store.withReadAccess(
+                accessRef: "access-file",
+                expectedGeneration: 4,
+                purpose: .originalAction
+            ) { try Data(contentsOf: $0) },
+            Data("body".utf8)
+        )
+
+        let broken = try temporaryDirectory("broken")
+        let brokenFile = broken.appendingPathComponent("native-access-v1.json")
+        try JSONSerialization.data(withJSONObject: [
+            "schema": "omnivia.native-access.v3",
+            "records": [
+                [
+                    "accessRef": "access-a", "linkedDocumentID": "doc-a", "generation": 1,
+                    "rootBindingGeneration": 1, "state": "connected",
+                    "lifecycle": "provisional",
+                    "route": [
+                        "kind": "root_member", "rootRef": "root-a", "memberRef": "member-a",
+                        "relativeComponents": ["a.txt"],
+                    ],
+                ],
+            ],
+            "roots": [
+                [
+                    "rootRef": "root-a", "generation": 1, "state": "active",
+                    "ownerRefs": ["subscription-a"], "authority": "watch_and_members",
+                    "memberRefs": ["member-a"], "membersFrozen": false,
+                    "bookmark": Data(state.path.utf8).base64EncodedString(),
+                ],
+            ],
+        ]).write(to: brokenFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: brokenFile.path)
+        XCTAssertThrowsError(
+            try NativeAccessStore(stateDirectory: broken, codec: TestBookmarkCodec())
+        ) { XCTAssertEqual($0 as? NativeAccessError, .invalidState) }
     }
 
     func testStaleRootAccessBecomesRepairableAndIsRepairedInPlace() throws {
@@ -842,6 +973,7 @@ final class NativeAccessStoreTests: XCTestCase {
         let group = try XCTUnwrap(migrated.rootDescriptors().first)
         XCTAssertEqual(group.state, .active)
         XCTAssertEqual(group.generation, 1)
+        XCTAssertEqual(migrated.descriptors().map(\.lifecycle), [.active])
         XCTAssertEqual(
             try migrated.withReadAccess(
                 accessRef: "access-a",
@@ -873,6 +1005,121 @@ final class NativeAccessStoreTests: XCTestCase {
         XCTAssertThrowsError(
             try NativeAccessStore(stateDirectory: broken, codec: TestBookmarkCodec())
         ) { XCTAssertEqual($0 as? NativeAccessError, .invalidState) }
+    }
+
+    /// The production path, over one real `DocumentIntakeEnvironment`: the
+    /// submission adopts the grant, its own publication promotes it inside the
+    /// publication critical section, the watch registered beside it names that
+    /// same grant, and a restart finds it still owned.
+    func testASubmittedOriginalIsPromotedByItsOwnPublicationAndSurvivesRestart() async throws {
+        let state = try temporaryDirectory("intake")
+        let original = state.deletingLastPathComponent().appendingPathComponent("invoice.txt")
+        try Data("invoice".utf8).write(to: original)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: TestBookmarkCodec()
+        )
+
+        let entries = try await ManualCaptureSubmission(
+            environment: environment,
+            binding: .companion(workspaceRef: "workspace-1")
+        ).submit([ManualCaptureCandidate(url: original, keepUpdated: true)])
+
+        let accessRef = try XCTUnwrap(entries.first?.intent.originalBinding?.accessRecordId)
+        let grant = try XCTUnwrap(
+            environment.accessStore.descriptors().first { $0.accessRef == accessRef }
+        )
+        XCTAssertEqual(grant.lifecycle, .active)
+        XCTAssertEqual(environment.fileSubscriptions.all().map(\.accessRef), [accessRef])
+        XCTAssertEqual(
+            try environment.accessStore.withReadAccess(
+                accessRef: accessRef,
+                expectedGeneration: grant.generation,
+                purpose: .originalAction
+            ) { try Data(contentsOf: $0) },
+            Data("invoice".utf8)
+        )
+
+        let restarted = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: TestBookmarkCodec()
+        )
+        XCTAssertEqual(
+            restarted.accessStore.descriptors().first { $0.accessRef == accessRef }?.lifecycle,
+            .active
+        )
+        XCTAssertEqual(
+            try restarted.accessStore.withReadAccess(
+                accessRef: accessRef,
+                expectedGeneration: grant.generation,
+                purpose: .originalAction
+            ) { try Data(contentsOf: $0) },
+            Data("invoice".utf8)
+        )
+    }
+
+    /// The other side of the same boundary. A submission that publishes nothing
+    /// promotes nothing, and neither does a candidate that is adopted and then
+    /// discarded unsubmitted: both leave a provisional grant, which is released
+    /// rather than left holding a capability it never earned.
+    func testAFailedSubmissionAndADiscardedCandidateNeverBecomeActive() async throws {
+        let state = try temporaryDirectory("intake")
+        let root = state.deletingLastPathComponent()
+        let alpha = root.appendingPathComponent("alpha.txt")
+        let beta = root.appendingPathComponent("beta.txt")
+        try Data("alpha".utf8).write(to: alpha)
+        try Data("beta".utf8).write(to: beta)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: TestBookmarkCodec()
+        )
+        let submission = ManualCaptureSubmission(
+            environment: environment,
+            binding: .companion(workspaceRef: "workspace-1")
+        )
+        // One of the two reviewed files is gone, so the batch publishes none of
+        // itself — after the other one's grant has already been adopted.
+        try FileManager.default.removeItem(at: beta)
+
+        do {
+            _ = try await submission.submit([
+                ManualCaptureCandidate(url: alpha, keepUpdated: true),
+                ManualCaptureCandidate(url: beta, keepUpdated: true),
+            ])
+            XCTFail("the batch cannot publish")
+        } catch {}
+
+        XCTAssertEqual(environment.queue.allEntries(), [])
+        XCTAssertEqual(environment.fileSubscriptions.all(), [])
+        XCTAssertEqual(environment.accessStore.descriptors().map(\.state), [.disconnected])
+        XCTAssertEqual(environment.accessStore.descriptors().map(\.lifecycle), [.provisional])
+
+        let candidate = try submission.adoptOriginal(
+            alpha,
+            displayName: "alpha.txt",
+            surface: .finderQuickAction
+        )
+        guard case let .adoptedOriginal(adoptedRef, generation, _) = candidate.source else {
+            return XCTFail("an adopted original carries its own grant")
+        }
+        let adopted = try XCTUnwrap(
+            environment.accessStore.descriptors().first { $0.accessRef == adoptedRef }
+        )
+        XCTAssertEqual(adopted.lifecycle, .provisional)
+        XCTAssertThrowsError(
+            try environment.accessStore.withReadAccess(
+                accessRef: adoptedRef,
+                expectedGeneration: generation,
+                purpose: .originalAction
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .routeNotActive) }
+
+        submission.releaseGrant(accessRef: adoptedRef)
+        let released = try XCTUnwrap(
+            environment.accessStore.descriptors().first { $0.accessRef == adoptedRef }
+        )
+        XCTAssertEqual(released.state, .disconnected)
+        XCTAssertEqual(released.lifecycle, .provisional)
     }
 
     func testRoutesAndPeerRequirementsFailClosed() throws {

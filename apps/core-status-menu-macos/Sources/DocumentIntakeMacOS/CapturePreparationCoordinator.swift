@@ -337,7 +337,9 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
     /// A completion that throws does not unpublish anything: the rename is the
     /// commit point, so the batch stays published and
     /// `CapturePublicationIncomplete` reports it with the entries that exist.
-    /// Manual callers pass nothing and are unaffected.
+    /// Promoting the published entries' own grants out of `provisional` happens
+    /// in the same place, under the same rule, whether a completion was passed
+    /// or not.
     public func prepareAndPublish(
         _ items: [CapturePreparationItem],
         binding: CaptureDeliveryBinding,
@@ -413,9 +415,18 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
                 }
                 self.afterConsentValidation?()
                 let published = try self.queue.publish(candidate)
-                guard let onPublished else { return published }
                 do {
-                    try onPublished(published)
+                    // The rename is the moment durable ownership exists, so it
+                    // is the moment these grants stop being provisional. Exactly
+                    // the grants the committed entries are bound to are
+                    // promoted, which are also the grants the watches registered
+                    // below are bound to.
+                    try self.accessStore.activateGrants(
+                        accessRefs: published.compactMap {
+                            $0.intent.originalBinding?.accessRecordId
+                        }
+                    )
+                    try onPublished?(published)
                 } catch {
                     // The rename already happened, so this is not a failed
                     // publication. Report what was published rather than an
