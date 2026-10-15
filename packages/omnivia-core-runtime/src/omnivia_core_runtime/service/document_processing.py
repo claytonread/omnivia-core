@@ -1,12 +1,40 @@
-"""Bounded processing of durable document-capture outbox obligations."""
+"""Bounded processing of durable document-capture outbox obligations.
+
+Every obligation executes from the capture row's own frozen
+``processing_settings_json`` (migration 0071) and from nothing process-global.
+That snapshot decides the mode, the ordered recognition languages and whether
+embedded raster images are examined; the installation's managed resources are
+consulted only at this point, and only for a selection that snapshot names. A
+preference changed, or the service restarted, between admission and execution
+therefore cannot move what a queued or active obligation does -- the obligation
+is replayed from the same row under the same operation key, and the key is
+derived from the profile that row resolves to.
+
+Two deliberate boundaries:
+
+**Text-only never resolves OCR resources.** Not "resolves them and ignores the
+answer": :func:`resolve_settings` returns before the catalogue is consulted, so a
+text-only capture takes no coordination lock on the managed cache and its profile
+pins no engine, model or language at all.
+
+**A null snapshot is the one compatibility path, and it is deterministic.** It
+means exactly what migration 0071 says it means -- a capture admitted before the
+column existed, which recorded no selection -- and it executes the behaviour that
+applied when it was admitted: the mode its own profile reference names, no
+embedded-image pass, and an *unconfigured* language request, which reports
+``ocr_resources_unconfigured`` rather than claiming English was asked for. A
+non-null snapshot that does not decode is never reinterpreted that way: it
+settles as a failed extraction naming :data:`PROCESSING_SETTINGS_INVALID`.
+"""
 
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import time
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
@@ -27,6 +55,11 @@ from omnivia_core_runtime.service.ocr_resources import (
     ExtractionSettings,
     OcrSelectionInvalid,
     TrustedOcrCatalogue,
+)
+from omnivia_core_runtime.service.processing_settings import (
+    DEFAULT_SETTINGS,
+    ProcessingSettings,
+    ProcessingSettingsInvalid,
 )
 from omnivia_core_runtime.service.raster_extractors import (
     DEDUPLICATION_VERSION,
@@ -73,6 +106,18 @@ APPROVED_PROFILE_REVISION = "1"
 _ADAPTER_VERSION = "2"
 #: The limitation code a Needs OCR language outcome carries.
 NEEDS_OCR_LANGUAGE = REASON_NEEDS_LANGUAGE
+#: The limitation code a capture whose frozen snapshot does not decode settles with.
+#: Distinct from every resource condition: the preferences this capture was admitted
+#: under cannot be established at all, so there is no requested profile to keep and
+#: nothing about the installation to recover by installing.
+PROCESSING_SETTINGS_INVALID = "processing_settings_invalid"
+
+#: Resolves the trusted catalogue for one *frozen* ordered selection, at the moment
+#: the work runs. A callable rather than a catalogue because the managed cache
+#: publishes one directory per selection, so there is no single catalogue that could
+#: serve every selection -- see
+#: :func:`~omnivia_core_runtime.service.processing_settings.installation_catalogue`.
+CatalogueFor = Callable[[Sequence[str]], TrustedOcrCatalogue]
 
 
 @dataclass
@@ -86,11 +131,12 @@ class DocumentProcessingExecutor:
 
     runner: ServiceRunner
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
-    #: What the signed installation installed, and the configured ordered
-    #: recognition languages. Both are trusted configuration, never document
-    #: input. ``None`` reads the packaged catalogue at use time.
-    ocr_catalogue: TrustedOcrCatalogue | None = None
-    ocr_languages: Sequence[str] = field(default_factory=tuple)
+    #: How a frozen ordered selection becomes a trusted catalogue, asked at the
+    #: moment an obligation runs. The executor holds no language of its own:
+    #: which languages are wanted is the capture row's frozen snapshot, and this
+    #: answers only whether the installation can serve them. ``None`` reads the
+    #: packaged fail-closed catalogue, which serves nothing.
+    catalogue_for: CatalogueFor | None = None
     _next_poll: float = 0.0
 
     def run_pending(
@@ -107,10 +153,7 @@ class DocumentProcessingExecutor:
         self._next_poll = now + max(self.poll_interval_seconds, 0.0)
         try:
             return process_capture_outbox(
-                self.runner,
-                limit=budget,
-                ocr_catalogue=self.ocr_catalogue,
-                ocr_languages=self.ocr_languages,
+                self.runner, limit=budget, catalogue_for=self.catalogue_for
             )
         except sqlite3.Error:
             # SQLite contention and lost ownership leave the durable outbox intact.
@@ -118,30 +161,95 @@ class DocumentProcessingExecutor:
             return []
 
 
+def recognises(settings: ProcessingSettings, media_type: str) -> bool:
+    """Whether these preferences would run recognition over this media type.
+
+    Two independent ways recognition can be wanted: the media type is one the
+    engine reads whole (a PDF or an image), or the source carries raster images
+    *inside* it and the embedded-image preference applies to it. Text-only wants
+    neither. Decided in one place because three callers need the same answer --
+    what to resolve, what limits to publish, and whether a reprocess has a real
+    alternate to offer -- and three copies of it would be three chances for the
+    executed profile and the offered one to disagree.
+    """
+    return settings.mode == MODE_TEXT_AND_LOCAL_OCR and (
+        media_type in OCR_MEDIA_TYPES or settings.embedded_image_ocr_for(media_type)
+    )
+
+
 def resolve_settings(
     *,
     media_type: str,
     profile_ref: str,
-    catalogue: TrustedOcrCatalogue | None = None,
-    languages: Sequence[str] = (),
+    settings: ProcessingSettings | None = DEFAULT_SETTINGS,
+    catalogue_for: CatalogueFor | None = None,
 ) -> ExtractionSettings:
     """The trusted processing decisions for one capture.
 
-    Nothing here reads the document. The mode comes from the configured profile
-    reference, and the ordered recognition languages from the installation's
-    configured selection, checked against what the signed installation actually
-    installed and verified. A missing or unverified model does not change the
-    selected mode and never quietly becomes English: the returned settings keep
-    the Text-and-local-OCR identity and the requested order, and say that the
-    resources were not served. A malformed selection is a configuration fault
-    and is raised.
+    Nothing here reads the document. `settings` is the capture's own frozen
+    snapshot -- its mode, its ordered recognition languages and its
+    embedded-image preference -- and it is the only source of all three. The
+    installation is consulted once, through `catalogue_for`, and only for the
+    languages that snapshot names.
+
+    A missing or unverified model does not change the selected mode and never
+    quietly becomes English: the returned settings keep the Text-and-local-OCR
+    identity and the requested order, and say that the resources were not served.
+    A malformed selection is a configuration fault and is raised.
+
+    ``settings=None`` is the documented compatibility path for a capture admitted
+    before migration 0071, which recorded no selection: the mode is the one its
+    profile reference names, no embedded-image pass runs, and the language request
+    is *empty* -- an unconfigured installation, which is what such a capture was
+    admitted under.
     """
-    if media_type not in OCR_MEDIA_TYPES or profile_ref == TEXT_ONLY_PROFILE_REF:
-        return ExtractionSettings(processing_mode=MODE_TEXT_ONLY)
-    catalogue = catalogue if catalogue is not None else PACKAGED_OCR_CATALOGUE
-    return ExtractionSettings(
-        processing_mode=MODE_TEXT_AND_LOCAL_OCR, ocr=catalogue.resolve(languages)
+    languages: Sequence[str] = () if settings is None else settings.languages
+    embedded = settings is not None and settings.embedded_image_ocr_for(media_type)
+    qualifies = (
+        media_type in OCR_MEDIA_TYPES
+        if settings is None
+        else recognises(settings, media_type)
     )
+    text_only = (
+        profile_ref == TEXT_ONLY_PROFILE_REF
+        or (settings is not None and settings.mode == MODE_TEXT_ONLY)
+        or not qualifies
+    )
+    if text_only:
+        # Returned before the catalogue is asked anything: a text-only capture
+        # resolves no OCR resource, takes no lock on the managed cache and pins
+        # no model it would never read.
+        return ExtractionSettings(processing_mode=MODE_TEXT_ONLY)
+    catalogue = (
+        PACKAGED_OCR_CATALOGUE if catalogue_for is None else catalogue_for(languages)
+    )
+    return ExtractionSettings(
+        processing_mode=MODE_TEXT_AND_LOCAL_OCR,
+        ocr=catalogue.resolve(languages),
+        embedded_image_ocr=embedded,
+    )
+
+
+def frozen_settings(capture: store.StoredCapture) -> ProcessingSettings | None:
+    """The preferences this capture was admitted under, decoded from its own row.
+
+    ``None`` only for a capture admitted before migration 0071, which recorded no
+    selection at all; :func:`resolve_settings` documents what that executes as. A
+    stored document that is present but does not decode raises, because the one
+    thing that must not happen is reading it as the legacy "no selection" case:
+    that would reinterpret an unreadable decision as an absent one and run
+    something nobody asked for under the key of something they did.
+    """
+    stored = capture.processing_settings_json
+    if stored is None:
+        return None
+    try:
+        return ProcessingSettings.from_value(json.loads(stored))
+    except (TypeError, ValueError) as error:
+        raise ProcessingSettingsInvalid(
+            f"the frozen processing settings of {capture.capture_id} do not decode: "
+            f"{error}"
+        ) from error
 
 
 def portable_profile(
@@ -262,14 +370,30 @@ class ReprocessProfileOption:
     profile: Mapping[str, Any]
 
 
-def approved_reprocess_profiles(*, media_type: str) -> tuple[ReprocessProfileOption, ...]:
+def approved_reprocess_profiles(
+    *,
+    media_type: str,
+    settings: ProcessingSettings = DEFAULT_SETTINGS,
+    catalogue_for: CatalogueFor | None = None,
+) -> tuple[ReprocessProfileOption, ...]:
     """The profile selections Core will accept for a reprocess of this media type.
+
+    A reprocess is an explicit new decision, so it resolves against the *current*
+    workspace preferences rather than against the frozen snapshot the original capture
+    executed under -- which is why `settings` is a parameter here and the capture row is
+    the authority in :func:`process_capture_outbox`. The caller reads the preferences once
+    and passes them in, so the options it offers and the option it later executes are one
+    resolution. `settings` defaults to the product defaults, which is what an unconfigured
+    workspace stores.
 
     One option for an ordinary document, because Text-only and the default resolve to the
     same processing for it and offering two identical choices would be a false choice. Two
-    for a media type that qualifies for local OCR, which is the product's stated pair: Text
-    and local OCR as the default, Text only as the explicit alternate. An unqualified format
-    has no option at all rather than one that would be refused.
+    where the default would actually recognise something -- a PDF or image, or a source
+    carrying embedded images the preference applies to -- which is the product's stated
+    pair: Text and local OCR as the default, Text only as the explicit alternate. A
+    workspace already set to Text-only therefore offers one option, because under those
+    preferences the explicit alternate *is* the default. An unqualified format has no
+    option at all rather than one that would be refused.
 
     This is the single place a reprocess profile is resolved. `document.history` reports what
     it returns and `document.reprocess` executes what it returns, so neither can name a
@@ -277,17 +401,22 @@ def approved_reprocess_profiles(*, media_type: str) -> tuple[ReprocessProfileOpt
     """
     references = (
         (DEFAULT_PROFILE_REF, TEXT_ONLY_PROFILE_REF)
-        if media_type in OCR_MEDIA_TYPES
+        if recognises(settings, media_type)
         else (DEFAULT_PROFILE_REF,)
     )
     options: list[ReprocessProfileOption] = []
     for reference in references:
-        settings = resolve_settings(media_type=media_type, profile_ref=reference)
+        resolved = resolve_settings(
+            media_type=media_type,
+            profile_ref=reference,
+            settings=settings,
+            catalogue_for=catalogue_for,
+        )
         profile = portable_profile(
             media_type=media_type,
             profile_ref=reference,
             revision=APPROVED_PROFILE_REVISION,
-            settings=settings,
+            settings=resolved,
         )
         if profile["adapter"] == "unsupported":
             return ()
@@ -297,7 +426,7 @@ def approved_reprocess_profiles(*, media_type: str) -> tuple[ReprocessProfileOpt
                 revision=APPROVED_PROFILE_REVISION,
                 processing_mode=str(profile["processingMode"]),
                 profile_digest=store.profile_digest(profile),
-                settings=settings,
+                settings=resolved,
                 profile=profile,
             )
         )
@@ -342,10 +471,19 @@ def process_capture_outbox(
     runner: ServiceRunner,
     *,
     limit: int = 16,
-    ocr_catalogue: TrustedOcrCatalogue | None = None,
-    ocr_languages: Sequence[str] = (),
+    catalogue_for: CatalogueFor | None = None,
 ) -> list[store.StoredResult]:
-    """Process the oldest capture obligations, settling each terminal result."""
+    """Process the oldest capture obligations, settling each terminal result.
+
+    Each obligation executes from its own capture row's frozen snapshot. Nothing
+    process-global decides a mode, a language order or an embedded-image pass, so
+    a preference changed or a service restarted between admission and this pass
+    reaches neither a queued obligation nor an active one: the row is the same
+    row, the profile it resolves to is the same profile, and the operation key
+    derived from that profile's digest is the same key -- which is what makes the
+    replay after a restart idempotent rather than a second extraction under a
+    second identity.
+    """
     assert runner.connection is not None and runner.workspace_id is not None
     assert runner.identity is not None and runner.generation is not None
     with runner.sqlite_gate:
@@ -362,19 +500,21 @@ def process_capture_outbox(
             )
         if capture is None:
             continue
-        selection_invalid = False
+        unexecutable = False
         try:
             settings = resolve_settings(
                 media_type=capture.media_type,
                 profile_ref=capture.processing_profile_ref,
-                catalogue=ocr_catalogue,
-                languages=ocr_languages,
+                settings=frozen_settings(capture),
+                catalogue_for=catalogue_for,
             )
-        except OcrSelectionInvalid:
-            # The configured selection is not a selection at all, so there is no
-            # requested local-OCR profile to keep: the revision is admitted under
-            # the one profile that pins no OCR resources and settles as failed.
-            selection_invalid = True
+        except (ProcessingSettingsInvalid, OcrSelectionInvalid):
+            # The frozen snapshot cannot be read as a decision, so there is no
+            # requested profile to keep: the revision is admitted under the one
+            # profile that pins no OCR resources and settles as failed. It is
+            # deliberately *not* executed as the legacy no-selection case, which
+            # would run the product default under a key nobody was offered.
+            unexecutable = True
             settings = ExtractionSettings(processing_mode=MODE_TEXT_ONLY)
         profile = portable_profile(
             media_type=capture.media_type,
@@ -404,8 +544,8 @@ def process_capture_outbox(
                 expected_base_extraction_id=head.current_extraction_id,
                 operation_key=operation_key,
             )
-        if selection_invalid:
-            outcome = _terminal_without_segments("failed", "ocr_selection_invalid")
+        if unexecutable:
+            outcome = _terminal_without_segments("failed", PROCESSING_SETTINGS_INVALID)
         else:
             try:
                 with runner.sqlite_gate:

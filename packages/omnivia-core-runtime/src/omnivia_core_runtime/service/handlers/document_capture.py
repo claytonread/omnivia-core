@@ -108,12 +108,18 @@ from omnivia_core_runtime.service.pagination import (
     ContinuationTokenCodec,
     token_digest,
 )
+from omnivia_core_runtime.service.processing_settings import (
+    ProcessingSettings,
+    ProcessingSettingsInvalid,
+    read_settings,
+)
 from omnivia_core_runtime.service.source_capture import (
     SourceCaptureRefused,
     _validate_request,
     publish_blob,
 )
 from omnivia_core_runtime.storage import document_intake as store
+from omnivia_core_runtime.storage.app_settings import AppSettingsError
 from omnivia_core_runtime.storage.memory import IdentifierAllocator
 from omnivia_core_runtime.workspace.blob_publication import BlobPublicationRefused
 
@@ -454,6 +460,29 @@ class DocumentCaptureHandlers:
     allocate_identifier: IdentifierAllocator
     token_codec: ContinuationTokenCodec = PROCESS_CONTINUATION_TOKENS
 
+    def _processing_settings(
+        self, connection: Any, workspace_id: str, message: str
+    ) -> ProcessingSettings:
+        """This workspace's current document-processing preferences, read once.
+
+        A reprocess is an explicit new decision, so it resolves against what the
+        workspace wants *now* -- not against the snapshot the original capture froze,
+        which is the executor's authority and not this family's. Read once per request
+        and threaded into the one `approved_reprocess_profiles` call, so the options a
+        caller is offered and the option that then executes come from one read.
+
+        A stored document that does not decode refuses rather than falling back to the
+        product defaults: offering profiles resolved from defaults the workspace did not
+        choose would report an approved selection nobody approved.
+        """
+        try:
+            settings, _revision = read_settings(connection, workspace_id=workspace_id)
+        except (ProcessingSettingsInvalid, AppSettingsError, sqlite3.Error) as error:
+            raise OperationError(
+                ERROR_CODE_INTERNAL_NON_RECOVERABLE, message
+            ) from error
+        return settings
+
     def document_history(self, context: OperationContext) -> Mapping[str, Any]:
         """Answer one `document.history` for one document of the authorized workspace.
 
@@ -480,10 +509,12 @@ class DocumentCaptureHandlers:
         capture's retention and processing obligation, each revision's result and
         disposition, the binding aggregate and the published projection can all move between
         two pages, and every one of them changes what a page says -- which member is current,
-        which action is offered. So can the installation itself, which is not in any row:
-        the approved profiles a capture is offered are resolved from the decoder build, the
-        OCR catalogue and the installed recognition resources. Pages stitched across two such
-        states would be a history no instant ever held. `_history_snapshot` digests all of
+        which action is offered. So can the installation itself and the workspace's
+        document-processing preferences, neither of which is in any of these rows: the
+        approved profiles a capture is offered are resolved from the decoder build, the OCR
+        catalogue, the installed recognition resources and the current preferences. Pages
+        stitched across two such states would be a history no instant ever held.
+        `_history_snapshot` digests all of
         those facts for the whole document *including* this request's resolved profile
         options, the token carries that digest, and a continuation whose recomputed digest
         differs is refused so the caller re-reads from the first page rather than assembling
@@ -572,8 +603,13 @@ class DocumentCaptureHandlers:
             # puts the result inside the snapshot: every page of one series then reports the
             # single resolution this mapping holds, and installed resources cannot move
             # beneath page two without the continuation being refused.
+            settings = self._processing_settings(
+                connection, workspace_id, _MESSAGE_HISTORY_UNREADABLE
+            )
             reprocess_options = {
-                media_type: approved_reprocess_profiles(media_type=media_type)
+                media_type: approved_reprocess_profiles(
+                    media_type=media_type, settings=settings
+                )
                 for media_type in sorted(
                     {
                         row[store.CAPTURE_FACT_MEDIA_TYPE]
@@ -1151,7 +1187,15 @@ class DocumentCaptureHandlers:
         # different profile beneath a request that named this one.
         selection = request.processing_profile
         try:
-            options = approved_reprocess_profiles(media_type=capture.media_type)
+            options = approved_reprocess_profiles(
+                media_type=capture.media_type,
+                # The *current* preferences, read once here: a reprocess is a new
+                # decision, so the workspace's live choice is the approved one and the
+                # original capture's frozen snapshot is not consulted at all.
+                settings=self._processing_settings(
+                    connection, context.workspace_id, _MESSAGE_NO_STORAGE
+                ),
+            )
         except OcrSelectionInvalid as error:
             # The installation's recognition selection is not a selection at all, so there
             # is no approved profile to resolve. Refusing is the only honest answer: the

@@ -140,6 +140,7 @@ from omnivia_core_runtime.service.outcome_admission import (
     OutcomeAdmissionAuthority,
 )
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
+from omnivia_core_runtime.service.processing_settings import installation_catalogue
 from omnivia_core_runtime.service.protocol import DocumentRouter
 from omnivia_core_runtime.service.runner import (
     ServiceRunner,
@@ -1523,7 +1524,16 @@ def main(
             application=application,
             principal_id=LOCAL_PRINCIPAL,
         )
-        document_executor = DocumentProcessingExecutor(runner=started)
+        # The executor holds no recognition language of its own: which languages one
+        # capture wants is frozen on that capture's row. This is only how the
+        # installation answers whether it can serve them, asked at the moment the
+        # obligation runs and for that selection alone.
+        document_executor = DocumentProcessingExecutor(
+            runner=started,
+            catalogue_for=installation_catalogue(
+                started.settings.installation_root
+            ),
+        )
         source_work = _compose_background_work(
             source_executor.run_pending, document_executor.run_pending
         )

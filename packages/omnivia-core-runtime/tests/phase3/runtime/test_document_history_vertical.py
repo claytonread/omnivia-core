@@ -43,6 +43,10 @@ from omnivia_core_runtime.service.ocr_resources import (
     MODE_TEXT_ONLY,
     ExtractionSettings,
 )
+from omnivia_core_runtime.service.processing_settings import (
+    read_settings,
+    write_settings,
+)
 from omnivia_core_runtime.storage import document_intake as store
 from test_evidence_capture_vertical import (
     Served,
@@ -52,6 +56,7 @@ from test_evidence_capture_vertical import (
 
 from omnivia_core.contracts.v1 import (
     CONTRACT_VERSION,
+    ERROR_CODE_CONFLICT,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     ERROR_CODE_INTERNAL_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
@@ -818,6 +823,141 @@ def test_an_image_capture_is_offered_both_approved_profiles_and_nothing_else(
     assert all(option.revision == APPROVED_PROFILE_REVISION for option in entry.reprocess_profiles)
 
 
+def set_preferences(owned: Served, **changes: Any) -> None:
+    """Store this workspace's document-processing preferences.
+
+    Written straight to the store: these tests are about what a *reprocess* resolves
+    from them, not about the settings surface, which has its own tests.
+    """
+    current, revision = read_settings(owned.connection, workspace_id=WORKSPACE)
+    write_settings(
+        owned.connection,
+        owned.identity,
+        workspace_id=WORKSPACE,
+        fencing_generation=owned.generation,
+        settings=current.replacing(
+            mode=changes.get("mode"),
+            languages=changes.get("languages"),
+            embedded_image_ocr=changes.get("embedded_image_ocr"),
+        ),
+        expected_revision=revision,
+        now_us=1,
+    )
+
+
+def test_a_reprocess_resolves_the_current_preferences_and_reports_what_it_ran(
+    owned: Served,
+) -> None:
+    """A reprocess is an explicit new decision, so the *current* preferences decide it.
+
+    The capture was admitted under Text and local OCR and froze that, which is what its
+    own obligation executed. The workspace has since chosen Text-only, so the only
+    approved option a reprocess may name is Text-only -- the explicit alternate is no
+    longer an alternate to anything -- and the extraction the reprocess records reports
+    exactly that mode rather than the mode the capture was admitted under.
+    """
+    dispatcher = build_dispatcher(owned, tag="history-reprocess-settings")
+    source = capture(
+        dispatcher,
+        request_id="req-c1",
+        key="idem-c1",
+        content=b"\x89PNG\r\n\x1a\n" + b"0" * 64,
+        media_type="image/png",
+    )
+    assert len(history(dispatcher).captures[0].reprocess_profiles) == 2
+
+    set_preferences(owned, mode=MODE_TEXT_ONLY)
+
+    offered = history(dispatcher).captures[0].reprocess_profiles
+    assert [option.profile_ref for option in offered] == [DEFAULT_PROFILE_REF]
+    assert offered[0].processing_mode == MODE_TEXT_ONLY
+
+    result = reprocess(
+        dispatcher,
+        capture_id=source.capture_id,
+        profile_ref=offered[0].profile_ref,
+        revision=offered[0].revision,
+        expected=None,
+        request_id="req-r1",
+        key="idem-r1",
+        profile_digest=offered[0].profile_digest,
+        media_type="image/png",
+    )
+
+    assert result.profile_digest == offered[0].profile_digest
+    recorded = history(dispatcher).extractions[-1].profile
+    assert recorded.digest == offered[0].profile_digest
+    assert recorded.processing_mode == MODE_TEXT_ONLY
+
+
+def test_a_preference_changed_after_the_read_refuses_rather_than_running_the_other(
+    owned: Served,
+) -> None:
+    """The reprocess race. A digest offered under one preference is not executable
+    under another: the caller re-reads the history rather than having Core quietly run
+    a profile it was never offered.
+    """
+    dispatcher = build_dispatcher(owned, tag="history-reprocess-moved")
+    source = capture(
+        dispatcher,
+        request_id="req-c1",
+        key="idem-c1",
+        content=b"\x89PNG\r\n\x1a\n" + b"0" * 64,
+        media_type="image/png",
+    )
+    offered = next(
+        option
+        for option in history(dispatcher).captures[0].reprocess_profiles
+        if option.processing_mode == MODE_TEXT_AND_LOCAL_OCR
+    )
+
+    set_preferences(owned, mode=MODE_TEXT_ONLY)
+
+    error = refusal(
+        dispatcher.dispatch(
+            reprocess_request(
+                capture_id=source.capture_id,
+                profile_ref=offered.profile_ref,
+                revision=offered.revision,
+                expected=None,
+                request_id="req-r1",
+                key="idem-r1",
+                profile_digest=offered.profile_digest,
+                media_type="image/png",
+            )
+        )
+    )
+    assert error.error.code == ERROR_CODE_CONFLICT
+    assert history(dispatcher).extraction_count == 0
+
+
+def test_a_reprocess_reads_the_preferences_once(owned: Served, monkeypatch: Any) -> None:
+    """One read per request, so the options offered and the option executed cannot be
+    resolved from two different instants of the same setting.
+    """
+    dispatcher = build_dispatcher(owned, tag="history-reprocess-once")
+    source = capture(dispatcher, request_id="req-c1", key="idem-c1")
+    reads: list[str] = []
+    real = document_handlers.read_settings
+
+    def counted(connection: Any, *, workspace_id: str) -> Any:
+        reads.append(workspace_id)
+        return real(connection, workspace_id=workspace_id)
+
+    monkeypatch.setattr(document_handlers, "read_settings", counted)
+    reprocess(
+        dispatcher,
+        capture_id=source.capture_id,
+        profile_ref=DEFAULT_PROFILE_REF,
+        revision=APPROVED_PROFILE_REVISION,
+        expected=None,
+        request_id="req-r1",
+        key="idem-r1",
+    )
+
+    assert reads == [WORKSPACE]
+
+
 def test_an_unqualified_format_is_offered_no_profile_and_says_why(owned: Served) -> None:
     """A retained capture of a format with no adapter has nothing honest to offer.
 
@@ -1097,7 +1237,7 @@ def test_a_profile_that_resolves_differently_than_reported_is_refused_not_substi
     source = capture(dispatcher, request_id="req-c1", key="idem-c1")
     offered = history(dispatcher).captures[0].reprocess_profiles[0]
 
-    def moved(*, media_type: str) -> tuple[ReprocessProfileOption, ...]:
+    def moved(*, media_type: str, **resolved: Any) -> tuple[ReprocessProfileOption, ...]:
         return tuple(
             ReprocessProfileOption(
                 profile_ref=option.profile_ref,
@@ -1107,7 +1247,9 @@ def test_a_profile_that_resolves_differently_than_reported_is_refused_not_substi
                 settings=option.settings,
                 profile=option.profile,
             )
-            for option in approved_reprocess_profiles(media_type=media_type)
+            for option in approved_reprocess_profiles(
+                media_type=media_type, **resolved
+            )
         )
 
     def never(*_args: Any, **_kwargs: Any) -> Any:
@@ -1400,7 +1542,7 @@ def _resolution_moved(digest: str) -> Any:
     reads from the database, so the substituted digest here is the whole of the change.
     """
 
-    def moved(*, media_type: str) -> tuple[ReprocessProfileOption, ...]:
+    def moved(*, media_type: str, **resolved: Any) -> tuple[ReprocessProfileOption, ...]:
         return tuple(
             ReprocessProfileOption(
                 profile_ref=option.profile_ref,
@@ -1410,7 +1552,9 @@ def _resolution_moved(digest: str) -> Any:
                 settings=option.settings,
                 profile=option.profile,
             )
-            for option in approved_reprocess_profiles(media_type=media_type)
+            for option in approved_reprocess_profiles(
+                media_type=media_type, **resolved
+            )
         )
 
     return moved
@@ -1498,9 +1642,11 @@ def test_one_request_resolves_each_relevant_media_type_exactly_once(
 
     asked: list[str] = []
 
-    def counted(*, media_type: str) -> tuple[ReprocessProfileOption, ...]:
+    def counted(
+        *, media_type: str, **resolved: Any
+    ) -> tuple[ReprocessProfileOption, ...]:
         asked.append(media_type)
-        return approved_reprocess_profiles(media_type=media_type)
+        return approved_reprocess_profiles(media_type=media_type, **resolved)
 
     monkeypatch.setattr(document_handlers, "approved_reprocess_profiles", counted)
 
@@ -1557,9 +1703,11 @@ def test_a_capture_with_no_offered_profile_still_resolves_nothing_for_itself(
 
     asked: list[str] = []
 
-    def counted(*, media_type: str) -> tuple[ReprocessProfileOption, ...]:
+    def counted(
+        *, media_type: str, **resolved: Any
+    ) -> tuple[ReprocessProfileOption, ...]:
         asked.append(media_type)
-        return approved_reprocess_profiles(media_type=media_type)
+        return approved_reprocess_profiles(media_type=media_type, **resolved)
 
     monkeypatch.setattr(document_handlers, "approved_reprocess_profiles", counted)
     entry = history(dispatcher, request_id="req-history-unqualified").captures[0]
