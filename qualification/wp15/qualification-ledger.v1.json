@@ -2893,7 +2893,7 @@
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_capture_vertical.py",
-          "symbol": "test_document_reprocess_changed_profile_is_idempotency_conflict_without_extraction",
+          "symbol": "test_document_reprocess_changed_request_is_idempotency_conflict_without_extraction",
           "covers": "A changed base or profile is an idempotency conflict and no extraction runs, which is the no-resurrection rule."
         }
       ],
@@ -4064,7 +4064,7 @@
       "evidence": [
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_capture_vertical.py",
-          "symbol": "test_document_reprocess_changed_profile_is_idempotency_conflict_without_extraction",
+          "symbol": "test_document_reprocess_changed_request_is_idempotency_conflict_without_extraction",
           "covers": "A changed profile is an idempotency conflict and runs no extraction, so nothing is silently reprocessed."
         },
         {
