@@ -393,6 +393,43 @@ _XLSX_WORKBOOK_PROPERTIES: Final = frozenset(
 _MAX_XLSX_CELL_FORMATS: Final = 65_536
 _MAX_XLSX_NUMBER_FORMATS: Final = 4_096
 _MAX_XLSX_FORMAT_CODE_CHARS: Final = _MAX_META_CHARS
+# The implied number formats whose meaning is a date, a time or an elapsed
+# duration whatever locale reads the workbook, as OOXML spells them: ids 14-17
+# carry a day, month or year, 18-21 and 45 and 47 carry a clock or a
+# minute-and-second count, 22 carries both, and 46 is the one implied format
+# written as an elapsed hour.
+#
+# Every other implied id is left out deliberately rather than by omission. The
+# numeric and text ones -- General, the decimals, the percentages, the
+# scientific and fraction forms, the accounting group and ``@`` -- hold no date
+# at all, and ids 27-36 and 50-58 are the reserved locale-dependent block,
+# whose format code is whatever the reading locale supplies: in some it is a
+# date and in others it is not, so a serial under one of them is not
+# demonstrably temporal and is not claimed to be.
+_XLSX_BUILTIN_TEMPORAL_FORMATS: Final = {
+    14: "date",
+    15: "date",
+    16: "date",
+    17: "date",
+    18: "time",
+    19: "time",
+    20: "time",
+    21: "time",
+    22: "datetime",
+    45: "time",
+    46: "elapsed_duration",
+    47: "time",
+}
+# One bracketed elapsed unit, matched against already-lowered text. An elapsed
+# bracket holds a run of a single unit letter and nothing else, so a mixed or
+# decorated bracket -- a colour, a condition, a locale or a calendar directive,
+# which is what nearly every bracket in a real format code is -- is not one.
+_XLSX_ELAPSED_UNIT: Final = re.compile(r"h+|m+|s+")
+# The two clock markers that may appear unquoted in a format code. They are
+# recognised so that their letters are not read as a day, a month or a second,
+# and they are evidence of nothing on their own: the hour they qualify is what
+# carries the time.
+_XLSX_CLOCK_MARKERS: Final = ("am/pm", "a/p")
 # The whole finite part of the ``xsd:double`` lexical space a stored number is
 # written in -- an integer, a decimal with or without a leading digit, or
 # either carrying an exponent -- in Excel's own spelling and in anything else
@@ -3227,6 +3264,121 @@ def _xlsx_format_id(element: ElementTree.Element, owner: str) -> int | None:
     if _INDEX.fullmatch(raw) is None or int(raw) > _MAX_INDEX:
         raise OOXMLInvalid(f"XLSX {owner} number-format id is malformed")
     return int(raw)
+
+
+def _xlsx_temporal_kind(format_id: int, code: str | None) -> str | None:
+    """Say whether a number format demonstrably reads its serial as a time.
+
+    The answer is one of ``date``, ``time``, ``datetime`` and
+    ``elapsed_duration``, or None where the format is not demonstrably any of
+    them. It is a reading of the format a cell resolved to and nothing else:
+    nothing here decodes a serial, applies the format, consults the workbook's
+    epoch or reports anything, and a None answer is "not shown to be temporal"
+    rather than "shown to be numeric".
+
+    A declared custom code is what the workbook spells, so it decides on its
+    own; only a format that declares none falls back to the implied table,
+    where an id outside it -- including every locale-dependent one -- is no
+    answer rather than a guess at one. A code longer than the bound the styles
+    part is read under is not classified at all, which keeps this bounded
+    wherever it is called from rather than only behind that reader.
+
+    Ambiguity is refused rather than resolved. ``m`` is a month in a date and a
+    minute in a clock, and only its neighbours say which; where they do not,
+    the whole code is unclassified, because reading a month as a minute would
+    misdate every cell under it. An elapsed bracket outranks everything else it
+    is written with: ``[h]`` is a count of hours, never an hour of a day, so a
+    code carrying one is never read as a clock or a date.
+    """
+    if code is None:
+        return _XLSX_BUILTIN_TEMPORAL_FORMATS.get(format_id)
+    if len(code) > _MAX_XLSX_FORMAT_CODE_CHARS:
+        return None
+    return _xlsx_temporal_code_kind(code)
+
+
+def _xlsx_temporal_code_kind(code: str) -> str | None:
+    """Classify one format code by the date and time fields it writes.
+
+    The code is read once, left to right, over its first section only: later
+    sections format a negative, zero or text value, and the serial a temporal
+    reading would decode is the positive one. Format codes are
+    case-insensitive, so the whole code is lowered first and a run of one field
+    letter is read as the single field it is.
+
+    Everything that is not a field is skipped as the decoration it is -- a
+    quoted literal, a backslash-escaped character, the character after an
+    underscore or an asterisk, a digit, a separator, and every bracket
+    directive that is not an elapsed unit. That is what keeps a literal
+    ``d``, ``m`` or ``y`` inside ``"May"``, ``\\d`` or ``[Red]`` from being
+    read as a field.
+
+    Any other letter is left unclassified rather than ignored: an unrecognised
+    letter is a field or a literal this reader does not know, and a code it
+    cannot account for in full is not one it can claim is temporal.
+    """
+    tokens: list[tuple[str, int]] = []
+    text = code.lower()
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == ";":
+            break
+        if char == '"':
+            closing = text.find('"', index + 1)
+            if closing < 0:
+                return None
+            index = closing + 1
+        elif char in "\\_*":
+            index += 2
+        elif char == "[":
+            closing = text.find("]", index + 1)
+            if closing < 0:
+                return None
+            if _XLSX_ELAPSED_UNIT.fullmatch(text[index + 1 : closing]) is not None:
+                tokens.append(("elapsed", closing - index - 1))
+            index = closing + 1
+        elif char == "a":
+            marker = next(
+                (one for one in _XLSX_CLOCK_MARKERS if text.startswith(one, index)),
+                None,
+            )
+            if marker is None:
+                return None
+            index += len(marker)
+        elif char in "dmyhs":
+            run = index
+            while run < len(text) and text[run] == char:
+                run += 1
+            tokens.append((char, run - index))
+            index = run
+        elif char.isalpha():
+            return None
+        else:
+            index += 1
+    if any(kind == "elapsed" for kind, _ in tokens):
+        return "elapsed_duration"
+    date = clock = False
+    for position, (kind, run) in enumerate(tokens):
+        if kind in ("d", "y"):
+            date = True
+        elif kind in ("h", "s"):
+            clock = True
+        else:
+            # The one ambiguous field. Three or more ``m`` spell a month name,
+            # which no clock has; otherwise the adjacent fields decide, and an
+            # ``m`` beside none of them is the ambiguity this refuses.
+            before = tokens[position - 1][0] if position else ""
+            after = tokens[position + 1][0] if position + 1 < len(tokens) else ""
+            if run >= 3 or before in ("d", "y") or after in ("d", "y"):
+                date = True
+            elif before == "h" or after == "s":
+                clock = True
+            else:
+                return None
+    if date and clock:
+        return "datetime"
+    return "date" if date else "time" if clock else None
 
 
 def _xlsx_cells(
