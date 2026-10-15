@@ -78,13 +78,22 @@ never specified. So a full cache refuses the installation with
 §14.5's **Language storage is full** -- and reports the capacity it needed.
 :meth:`ManagedOcrResources.remove` is the operator's explicit lever instead.
 
+**One selection, one directory.** The managed layout keeps each identity's bytes
+in their own directory so two model revisions of one language can coexist, which
+is what §17.3's "including retained older managed model versions" requires. The
+engine, though, takes a single ``--tessdata-dir``, so an ordered selection of two
+or three languages installed as separate identities could not be handed to it at
+all. :meth:`ManagedOcrResources.project_selection` publishes one owner-only
+directory per selection whose members are *hard links* to the already-verified
+payloads -- not copies, so nothing is duplicated and nothing is re-downloaded,
+and not symlinks, which
+:func:`~omnivia_core_runtime.service.ocr_resources._model_digest` refuses. The
+links name the same inodes the digest check just passed, so the directory the
+engine opens holds the exact verified bytes; the selection path digests them
+again before invoking anything.
+
 Still absent, and not implied by anything here: downloading a resource, checking
-a signature over one, discovering that an update exists, and presenting several
-installed languages to the engine as one ``tessdata`` directory. The managed
-layout keeps each identity's bytes in their own directory so two model revisions
-of one language can coexist, which is what §17.3's "including retained older
-managed model versions" requires; composing a multi-language selection out of
-them is the selection path's problem and is not solved here.
+a signature over one, and discovering that an update exists.
 """
 
 from __future__ import annotations
@@ -95,7 +104,7 @@ import shutil
 import stat
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -131,6 +140,29 @@ MANAGED_STAGING_DIRNAME: Final = "staging"
 
 #: Where bytes that stopped matching their declared digest are moved.
 MANAGED_QUARANTINE_DIRNAME: Final = "quarantine"
+
+#: Published per-selection directories of hard links, one per ordered selection
+#: that has been resolved. A sibling of ``resources/`` rather than a child,
+#: because reconciliation discards every child of ``resources/`` no state entry
+#: names and a projection is named by no state entry.
+MANAGED_SELECTIONS_DIRNAME: Final = "selections"
+
+#: How many published projections are kept. A workspace resolves one selection at
+#: a time, so this is generous; it exists because the set would otherwise grow by
+#: one every time an operator changed the recognition order and never shrink.
+#:
+#: ponytail: evict-oldest-by-mtime, and a whole sweep on remove and reconcile. A
+#: projection discarded while an extraction is between resolving it and invoking
+#: the engine makes that extraction report a resource failure -- never different
+#: bytes, because discarding removes the directory rather than changing what is in
+#: it. Upgrade path, if that is ever observed: record the resolving extraction as
+#: a pin in the state document, the way an install is pinned, and skip pinned
+#: projections here.
+MAX_PUBLISHED_SELECTIONS: Final = 8
+
+#: Models one projection may hold: the three recognition languages §14.5 allows,
+#: plus the orientation/script data the engine loads alongside them.
+MAX_PROJECTED_MODELS: Final = 4
 
 #: The cross-process coordination lock, beside the state document it guards. One
 #: stable name, because a lock at a per-call name would exclude nobody -- and at
@@ -340,6 +372,21 @@ def directory_name(identity: OcrResourceSetIdentity) -> str:
     return hashlib.sha256(identity.stable_key.encode("utf-8")).hexdigest()
 
 
+def selection_name(identities: Sequence[OcrResourceSetIdentity]) -> str:
+    """The managed directory name for one ordered selection.
+
+    A digest over the identities *in order*, by the same reasoning
+    :func:`directory_name` uses for one of them: fixed width, no separator, no
+    ``..`` and no absolute path, so no field value reaches the filesystem as
+    anything but a name. Order is part of the name because order is part of the
+    selection -- ``deu+eng`` and ``eng+deu`` are different recognition requests
+    and must not share a directory.
+    """
+    return hashlib.sha256(
+        "\n".join(identity.stable_key for identity in identities).encode("utf-8")
+    ).hexdigest()
+
+
 def _discard(path: Path) -> None:
     """Remove a managed path, whatever kind of thing is sitting at it.
 
@@ -443,6 +490,14 @@ class ManagedOcrResources:
     @property
     def quarantine_root(self) -> Path:
         return self._root / MANAGED_QUARANTINE_DIRNAME
+
+    @property
+    def selections_root(self) -> Path:
+        return self._root / MANAGED_SELECTIONS_DIRNAME
+
+    def selection_directory(self, identities: Sequence[OcrResourceSetIdentity]) -> Path:
+        """Where this exact ordered selection is published when it is projected."""
+        return self.selections_root / selection_name(identities)
 
     def resource_directory(self, identity: OcrResourceSetIdentity) -> Path:
         """Where this exact identity's bytes live when it is installed."""
@@ -689,6 +744,174 @@ class ManagedOcrResources:
             installed_bytes=_installed_bytes(state),
             resources=resources,
         )
+
+    # -- selection projection ------------------------------------------------
+
+    def project_selection(
+        self, identities: Sequence[OcrResourceSetIdentity]
+    ) -> Path:
+        """One directory the engine can be pointed at for this ordered selection.
+
+        The engine takes a single ``--tessdata-dir``, and the managed layout keeps
+        each identity's bytes in a directory of its own, so a selection of two or
+        three languages has no directory to name. This publishes one: a hard link
+        per model inside a directory named by the ordered selection's digest.
+
+        Nothing is copied, nothing is downloaded and nothing is substituted. Every
+        named identity must be installed *and* its bytes must still match their
+        declared digest, which is read here before any link is made -- so the
+        inodes the links name are inodes this call verified. A missing identity is
+        :data:`REFUSAL_NOT_INSTALLED` and divergent bytes are
+        :data:`REFUSAL_DIVERGENT`, the same two answers every other operation
+        gives for them; neither is degraded into a smaller selection.
+
+        Idempotent: a projection whose members are already links to exactly those
+        inodes is returned untouched, so the common case costs one ``lstat`` per
+        model and leaves the directory a concurrent engine invocation may be
+        reading in place. Otherwise it is rebuilt in private staging and moved
+        into place whole, so the published name holds either the complete
+        selection or nothing.
+
+        Coordinated, for the same reason the inventory read is: the state document
+        and the bytes it describes have to be one view of one moment, and two
+        processes projecting at once must not interleave a rebuild with a read of
+        the directory being rebuilt.
+        """
+        selection = self._validated_selection(identities)
+        with self.coordinated(create=False) as coordinated:
+            if not coordinated:
+                raise OcrResourceLifecycleRefused(
+                    REFUSAL_NOT_INSTALLED,
+                    "this installation has no managed OCR resources to project",
+                )
+            return self._project(selection)
+
+    def _validated_selection(
+        self, identities: Sequence[OcrResourceSetIdentity]
+    ) -> tuple[OcrResourceSetIdentity, ...]:
+        """The selection as a tuple, or the caller's usage fault.
+
+        Checked before anything is contended for, exactly as :meth:`install`
+        validates its payload path first. A repeated language is a usage fault
+        rather than a refusal because two identities of one language cannot both
+        be published under one ``<language>.traineddata`` name -- the selection is
+        not expressible, not merely unavailable.
+        """
+        selection = tuple(identities)
+        if not selection:
+            raise OcrResourceStoreError("a projected selection names at least one model")
+        if len(selection) > MAX_PROJECTED_MODELS:
+            raise OcrResourceStoreError(
+                f"a projected selection names at most {MAX_PROJECTED_MODELS} models"
+            )
+        if not all(
+            isinstance(identity, OcrResourceSetIdentity) for identity in selection
+        ):
+            raise OcrResourceStoreError(
+                "a projected selection names OcrResourceSetIdentity values"
+            )
+        languages = [identity.language for identity in selection]
+        if len(set(languages)) != len(languages):
+            raise OcrResourceStoreError(
+                "a projected selection names one identity per language"
+            )
+        return selection
+
+    def _project(self, selection: tuple[OcrResourceSetIdentity, ...]) -> Path:
+        state = self._store.load()
+        for identity in selection:
+            if identity not in state.entries:
+                raise OcrResourceLifecycleRefused(
+                    REFUSAL_NOT_INSTALLED,
+                    f"no installed managed OCR resource has the identity "
+                    f"{identity.stable_key}",
+                )
+        target = self.selection_directory(selection)
+        if self._projection_current(target, selection):
+            return target
+        for identity in selection:
+            if not self._payload_matches(identity):
+                raise OcrResourceLifecycleRefused(
+                    REFUSAL_DIVERGENT,
+                    f"the installed bytes for {identity.stable_key} are missing or no "
+                    f"longer match their declared digest; reconcile the managed OCR "
+                    f"resources",
+                )
+        self._prepare(self._root)
+        self._prepare(self.selections_root)
+        self._prepare(self.staging_root)
+        staging = self.staging_root / _staging_name()
+        try:
+            staging.mkdir(mode=_DIRECTORY_MODE)
+            restrict_to_owner(staging, directory=True)
+            for identity in selection:
+                os.link(
+                    self.payload_path(identity),
+                    staging / f"{identity.language}{MODEL_SUFFIX}",
+                )
+            fsync_directory(staging)
+        except OSError as exc:
+            _discard(staging)
+            raise OcrResourceStoreError(
+                f"a managed OCR selection could not be projected: {exc}"
+            ) from exc
+        _discard(target)
+        try:
+            os.replace(staging, target)
+        except OSError as exc:
+            _discard(staging)
+            raise OcrResourceStoreError(
+                f"a managed OCR selection could not be published: {exc}"
+            ) from exc
+        fsync_directory(self.selections_root)
+        self._bound_published_selections(keep=target.name)
+        return target
+
+    def _projection_current(
+        self, target: Path, selection: tuple[OcrResourceSetIdentity, ...]
+    ) -> bool:
+        """Whether `target` already links exactly this selection's verified bytes.
+
+        Identity by ``(st_dev, st_ino)``, which is what a hard link *is*: a member
+        that names the payload's inode holds the payload's bytes by definition, so
+        this is both cheaper and stricter than re-digesting a copy would be. A
+        member that is a symlink, a directory or a regular file of its own is not
+        current, and the projection is rebuilt.
+        """
+        for identity in selection:
+            try:
+                linked = (target / f"{identity.language}{MODEL_SUFFIX}").lstat()
+                payload = self.payload_path(identity).lstat()
+            except OSError:
+                return False
+            if not stat.S_ISREG(linked.st_mode) or not stat.S_ISREG(payload.st_mode):
+                return False
+            if (linked.st_dev, linked.st_ino) != (payload.st_dev, payload.st_ino):
+                return False
+        return True
+
+    def _bound_published_selections(self, *, keep: str) -> None:
+        """Keep at most :data:`MAX_PUBLISHED_SELECTIONS` projections, oldest out.
+
+        Oldest by modification time, which a projection only gets when it is
+        built: the idempotent path does not touch it. The one just published is
+        never a candidate, so this cannot evict the selection it was called for.
+        Failures are swallowed -- an unprunable projection is an untidy cache, not
+        a reason to fail a resolution that has already succeeded.
+        """
+        try:
+            published = [
+                child for child in self.selections_root.iterdir() if child.name != keep
+            ]
+        except OSError:
+            return
+        if len(published) < MAX_PUBLISHED_SELECTIONS:
+            return
+        with suppress(OSError):
+            published.sort(key=lambda child: child.lstat().st_mtime_ns)
+            for child in published[: len(published) - MAX_PUBLISHED_SELECTIONS + 1]:
+                _discard(child)
+            fsync_directory(self.selections_root)
 
     # -- install -------------------------------------------------------------
 
@@ -967,6 +1190,13 @@ class ManagedOcrResources:
                 pins=state.pins,
             )
         )
+        # Every projection goes first: a published selection holds a *hard link*
+        # to these bytes, so one left behind would both keep the removed inode
+        # alive on disk after its accounting entry is gone and let the engine
+        # still be pointed at a language the operator has removed. They are
+        # derived state and the next resolution rebuilds whichever are still
+        # wanted, so discarding all of them is cheaper than working out which.
+        self._discard_projections()
         # The entry is gone, so these bytes are already unreferenced and a
         # failure here is work for reconciliation rather than a failed removal.
         with suppress(OSError):
@@ -1023,6 +1253,11 @@ class ManagedOcrResources:
     def _reconcile(self) -> ManagedOcrReconciliation:
         state = self._store.load()
         discarded_staging = self._discard_children(self.staging_root)
+        # Projections are derived from the entries this pass may be about to drop,
+        # and they hold hard links that would keep quarantined inodes alive. They
+        # are not reported: the counts here are about what the state document
+        # referenced, and a projection is referenced by no entry.
+        self._discard_projections()
         referenced = {directory_name(entry) for entry in state.entries}
         discarded_unreferenced = self._discard_children(
             self.resources_root, keep=referenced
@@ -1051,6 +1286,16 @@ class ManagedOcrResources:
             quarantined=tuple(quarantined),
             unrecoverable_pinned=tuple(unrecoverable),
         )
+
+    def _discard_projections(self) -> None:
+        """Discard every published selection; the next resolution rebuilds them.
+
+        Tolerant of failure on purpose: an undiscardable projection must not fail
+        the removal or reconciliation it was a tidy-up for, and the state document
+        -- not a projection -- is what says a resource is installed.
+        """
+        with suppress(OcrResourceStoreError, OSError):
+            self._discard_children(self.selections_root)
 
     def _discard_children(
         self, directory: Path, *, keep: frozenset[str] | set[str] = frozenset()
@@ -1165,7 +1410,10 @@ __all__ = [
     "MANAGED_LOCK_FILENAME",
     "MANAGED_QUARANTINE_DIRNAME",
     "MANAGED_RESOURCES_DIRNAME",
+    "MANAGED_SELECTIONS_DIRNAME",
     "MANAGED_STAGING_DIRNAME",
+    "MAX_PROJECTED_MODELS",
+    "MAX_PUBLISHED_SELECTIONS",
     "MODEL_SUFFIX",
     "OCR_RESOURCES_DIR",
     "REFUSAL_BUSY",
@@ -1183,4 +1431,5 @@ __all__ = [
     "ManagedOcrResources",
     "OcrResourceLifecycleRefused",
     "directory_name",
+    "selection_name",
 ]

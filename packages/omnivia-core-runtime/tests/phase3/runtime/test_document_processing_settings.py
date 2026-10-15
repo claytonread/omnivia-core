@@ -98,21 +98,36 @@ def served(owned: Served, installation_root: Path) -> Any:
     )
 
 
-def install_language(installation_root: Path, language: str, payload: Path) -> None:
+def install_language(
+    installation_root: Path, language: str, payload: Path, body: bytes = MODEL_BODY
+) -> None:
     payload.parent.mkdir(parents=True, exist_ok=True)
-    payload.write_bytes(MODEL_BODY)
-    import hashlib
-
+    payload.write_bytes(body)
     ManagedOcrResources(installation_root / OCR_RESOURCES_DIR).install(
         payload,
         OcrResourceSetIdentity(
             language=language,
             engine_version=TESSERACT_REVISION,
             model_version="tessdata_fast-4.1.0",
-            byte_size=len(MODEL_BODY),
-            sha256=hashlib.sha256(MODEL_BODY).hexdigest(),
+            byte_size=len(body),
+            sha256=hashlib.sha256(body).hexdigest(),
         ),
     )
+
+
+def install_distinct(installation_root: Path, tmp_path: Path, *languages: str) -> None:
+    """Each language installed with bytes of its own, as a real bundle would be.
+
+    Distinct bodies matter wherever a model hash is asserted: identical bytes would
+    collapse three pinned digests into one and hide which models were read.
+    """
+    for language in languages:
+        install_language(
+            installation_root,
+            language,
+            tmp_path / "downloads" / f"{language}.bin",
+            body=MODEL_BODY + language.encode(),
+        )
 
 
 # --- requests -------------------------------------------------------------------
@@ -651,6 +666,99 @@ def test_a_refused_selection_substitutes_nothing_and_installs_nothing(
         settings_store.installed_identities(ManagedOcrResources(root / OCR_RESOURCES_DIR))
         == {}
     )
+
+
+# --- what the managed cache can serve the engine --------------------------------
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        pytest.param(("fra", "deu"), id="two"),
+        pytest.param(("deu", "fra", "ita"), id="three"),
+    ],
+)
+def test_an_ordered_selection_of_installed_languages_is_served_together(
+    tmp_path: Path, order: tuple[str, ...]
+) -> None:
+    """The managed layout installs each language as its own identity in its own
+    directory, and the engine takes one model directory. A selection of two or three
+    is served from a projected directory holding all of them -- not from the first
+    language's own directory with the rest reported missing, which is what a
+    single-directory catalogue would have had to do.
+    """
+    root = tmp_path / "inst-multi"
+    install_distinct(root, tmp_path, "deu", "fra", "ita")
+    resources = ManagedOcrResources(root / OCR_RESOURCES_DIR)
+
+    catalogue = settings_store.managed_catalogue(resources, order)
+    resolved = catalogue.resolve(order)
+
+    assert resolved.available
+    # The requested order, preserved: the engine is invoked once with it.
+    assert resolved.languages == order
+    assert resolved.tesseract_lang == "+".join(order)
+    assert len(resolved.model_hashes) == len(order)
+    assert resolved.tessdata_dir is not None
+    served = Path(resolved.tessdata_dir)
+    assert served.parent == resources.selections_root
+    assert sorted(child.name for child in served.iterdir()) == sorted(
+        f"{language}.traineddata" for language in order
+    )
+    # And each language is still installed under its own identity, so retaining two
+    # model revisions of one language stays possible.
+    installed = settings_store.installed_identities(resources)
+    assert len(
+        {resources.resource_directory(installed[language]) for language in order}
+    ) == len(order)
+
+
+def test_an_uninstalled_language_is_reported_as_exactly_itself(tmp_path: Path) -> None:
+    """Not "nothing is configured", and not the whole order: the one language whose
+    bytes are absent, so the recovery an operator is shown is installing that one.
+    """
+    root = tmp_path / "inst-partial"
+    install_distinct(root, tmp_path, "deu")
+    resources = ManagedOcrResources(root / OCR_RESOURCES_DIR)
+
+    resolved = settings_store.managed_catalogue(resources, ("deu", "jpn")).resolve(
+        ("deu", "jpn")
+    )
+
+    assert not resolved.available
+    assert resolved.reason == "needs_ocr_language"
+    assert resolved.languages == ("deu", "jpn")
+    assert resolved.unavailable_models == ("jpn",)
+    assert resolved.model_hashes == ()
+
+
+def test_an_empty_cache_serves_nothing_rather_than_substituting(tmp_path: Path) -> None:
+    root = tmp_path / "inst-empty"
+    root.mkdir(parents=True)
+    resources = ManagedOcrResources(root / OCR_RESOURCES_DIR)
+
+    catalogue = settings_store.managed_catalogue(resources, ("deu",))
+
+    assert catalogue.installed == {}
+    assert catalogue.tessdata_dir is None
+    assert not catalogue.resolve(("deu",)).available
+
+
+def test_an_installation_resolver_asks_the_managed_cache_of_that_root(
+    tmp_path: Path,
+) -> None:
+    """The one join between an installation root and a frozen selection, made once."""
+    root = tmp_path / "inst-resolver"
+    install_distinct(root, tmp_path, "deu", "fra")
+
+    resolver = settings_store.installation_catalogue(root)
+
+    assert resolver is not None
+    assert resolver(("fra", "deu")).resolve(("fra", "deu")).available
+    # No root, and a root no managed cache may live under, both fail closed to the
+    # packaged catalogue rather than searching the host for models.
+    assert settings_store.installation_catalogue(None) is None
+    assert settings_store.installation_catalogue(Path("relative/root")) is None
 
 
 # --- the closed pair of modes ---------------------------------------------------

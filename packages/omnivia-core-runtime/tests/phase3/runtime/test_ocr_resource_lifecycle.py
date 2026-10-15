@@ -48,7 +48,10 @@ from omnivia_core_runtime.service import ocr_resource_lifecycle as lifecycle_mod
 from omnivia_core_runtime.service.ocr_resource_lifecycle import (
     MANAGED_QUARANTINE_DIRNAME,
     MANAGED_RESOURCES_DIRNAME,
+    MANAGED_SELECTIONS_DIRNAME,
     MANAGED_STAGING_DIRNAME,
+    MAX_PROJECTED_MODELS,
+    MAX_PUBLISHED_SELECTIONS,
     MODEL_SUFFIX,
     OCR_RESOURCES_DIR,
     REFUSAL_CAPACITY,
@@ -868,11 +871,218 @@ def test_a_newer_schema_refuses_reconciliation_and_sweeps_nothing(
     assert (staging / "half.bin").read_bytes() == b"half"
 
 
+# --- selection projection
+
+
+def _multilingual(tmp_path: Path) -> tuple[ManagedOcrResources, list[OcrResourceSetIdentity]]:
+    """Three languages, each installed as its own identity in its own directory."""
+    managed = _managed(tmp_path)
+    identities = []
+    for index, language in enumerate(("deu", "eng", "fra")):
+        body = BODY + bytes([index])
+        identity = _identity(body, language=language)
+        managed.install(_payload(tmp_path, body, name=f"{language}.bin"), identity)
+        identities.append(identity)
+    return managed, identities
+
+
+@pytest.mark.parametrize("count", [2, 3])
+def test_a_selection_of_several_languages_is_served_from_one_directory(
+    tmp_path: Path, count: int
+) -> None:
+    """The repair: separate identities, separate directories, one tessdata directory.
+
+    The engine takes a single `--tessdata-dir`, so until the selection was projected
+    a two- or three-language order could not be handed to it at all. Each model is
+    present under its own recognition-language name and its bytes are the installed
+    bytes -- the same inode, which is what makes "without pretending they share the
+    first language's directory" literal rather than a copy that could drift.
+    """
+    managed, identities = _multilingual(tmp_path)
+    selection = identities[:count]
+
+    directory = managed.project_selection(selection)
+
+    assert directory.parent == managed.selections_root
+    assert sorted(child.name for child in directory.iterdir()) == sorted(
+        f"{identity.language}{MODEL_SUFFIX}" for identity in selection
+    )
+    for identity in selection:
+        projected = directory / f"{identity.language}{MODEL_SUFFIX}"
+        assert stat.S_ISREG(projected.lstat().st_mode)
+        assert projected.lstat().st_ino == managed.payload_path(identity).lstat().st_ino
+        assert hashlib.sha256(projected.read_bytes()).hexdigest() == identity.sha256
+    # Still one directory per identity underneath: the projection adds a view, it
+    # does not flatten the layout two model revisions of one language depend on.
+    assert len({managed.resource_directory(i) for i in selection}) == count
+
+
+def test_the_order_of_a_selection_is_part_of_its_identity(tmp_path: Path) -> None:
+    """`deu+eng` and `eng+deu` are different recognition requests, so different names."""
+    managed, identities = _multilingual(tmp_path)
+    forward = managed.project_selection([identities[0], identities[1]])
+    reversed_ = managed.project_selection([identities[1], identities[0]])
+    assert forward != reversed_
+
+
+def test_projecting_the_same_selection_again_leaves_it_in_place(tmp_path: Path) -> None:
+    """Idempotent, and specifically not a rebuild: a concurrent engine invocation may
+    be reading the directory, so the cheap path must not unlink and republish it.
+    """
+    managed, identities = _multilingual(tmp_path)
+    first = managed.project_selection(identities[:2])
+    before = first.lstat().st_ino
+
+    again = managed.project_selection(identities[:2])
+
+    assert again == first
+    assert again.lstat().st_ino == before
+
+
+def test_a_projection_is_rebuilt_when_a_member_is_no_longer_the_payload(
+    tmp_path: Path,
+) -> None:
+    """A member that is a file of its own rather than a link to the payload is stale."""
+    managed, identities = _multilingual(tmp_path)
+    directory = managed.project_selection(identities[:2])
+    member = directory / f"{identities[0].language}{MODEL_SUFFIX}"
+    member.unlink()
+    member.write_bytes(b"not the installed bytes")
+
+    rebuilt = managed.project_selection(identities[:2])
+
+    assert rebuilt == directory
+    assert member.lstat().st_ino == managed.payload_path(identities[0]).lstat().st_ino
+
+
+def test_one_uninstalled_language_refuses_the_whole_projection(tmp_path: Path) -> None:
+    """Nothing is substituted and nothing is served partially: a selection the cache
+    cannot hold entirely has no directory at all.
+    """
+    managed, identities = _multilingual(tmp_path)
+    absent = _identity(OTHER_BODY, language="jpn")
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.project_selection([identities[1], absent])
+    assert refused.value.code == REFUSAL_NOT_INSTALLED
+    assert not managed.selections_root.exists()
+
+
+def test_divergent_bytes_refuse_the_projection_rather_than_linking_them(
+    tmp_path: Path,
+) -> None:
+    """Digest verification is preserved: the projection links bytes it has just
+    re-digested against the declared identity, so bytes that changed underneath an
+    installed entry are refused here and not handed to the engine.
+    """
+    managed, identities = _multilingual(tmp_path)
+    managed.payload_path(identities[0]).write_bytes(OTHER_BODY)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.project_selection(identities[:2])
+    assert refused.value.code == REFUSAL_DIVERGENT
+
+
+def test_a_projection_of_an_absent_cache_is_refused_not_created(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.project_selection([_identity()])
+    assert refused.value.code == REFUSAL_NOT_INSTALLED
+    assert not managed.root.exists()
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        pytest.param([], id="empty"),
+        pytest.param(["eng"], id="not-an-identity"),
+    ],
+)
+def test_a_selection_that_is_not_one_is_a_usage_fault(
+    tmp_path: Path, selection: list[object]
+) -> None:
+    managed, _identities = _multilingual(tmp_path)
+    with pytest.raises(OcrResourceStoreError):
+        managed.project_selection(selection)  # type: ignore[arg-type]
+
+
+def test_one_identity_per_language_is_a_usage_fault_not_a_refusal(tmp_path: Path) -> None:
+    """Two revisions of one language cannot both be `eng.traineddata`, so the
+    selection is not expressible rather than merely unavailable.
+    """
+    managed = _managed(tmp_path)
+    first = _identity()
+    second = _identity(OTHER_BODY, model_version="tessdata_fast-4.2.0")
+    managed.install(_payload(tmp_path), first)
+    managed.install(_payload(tmp_path, OTHER_BODY, name="other.bin"), second)
+    with pytest.raises(OcrResourceStoreError):
+        managed.project_selection([first, second])
+
+
+def test_more_than_the_allowed_models_is_a_usage_fault(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+    identities = []
+    for index, language in enumerate(("deu", "eng", "fra", "ita", "spa")):
+        body = BODY + bytes([index])
+        identity = _identity(body, language=language)
+        managed.install(_payload(tmp_path, body, name=f"{language}.bin"), identity)
+        identities.append(identity)
+    assert len(identities) > MAX_PROJECTED_MODELS
+    with pytest.raises(OcrResourceStoreError):
+        managed.project_selection(identities)
+
+
+def test_published_projections_are_bounded(tmp_path: Path) -> None:
+    """Otherwise the set grows by one every time an operator changes the order and
+    never shrinks. The projection just published is never the one evicted.
+    """
+    managed, identities = _multilingual(tmp_path)
+    orders = [
+        [identities[i], identities[j]]
+        for i in range(3)
+        for j in range(3)
+        if i != j
+    ] + [identities[:3], identities[::-1], [identities[1]], [identities[2]]]
+    assert len(orders) > MAX_PUBLISHED_SELECTIONS
+    for order in orders:
+        latest = managed.project_selection(order)
+    published = sorted(child.name for child in managed.selections_root.iterdir())
+    assert len(published) <= MAX_PUBLISHED_SELECTIONS
+    assert latest.name in published
+
+
+def test_removing_a_language_discards_the_projections_linking_it(tmp_path: Path) -> None:
+    """A projection holds a *hard link*, so one left behind would keep the removed
+    inode alive after its accounting entry was gone and let the engine still be
+    pointed at a language the operator removed.
+    """
+    managed, identities = _multilingual(tmp_path)
+    directory = managed.project_selection(identities[:2])
+    assert directory.is_dir()
+
+    managed.remove(identities[0])
+
+    assert not directory.exists()
+    assert not managed.payload_path(identities[0]).exists()
+
+
+def test_reconciliation_discards_the_projections_too(tmp_path: Path) -> None:
+    """They are derived from entries this pass may drop, and they would keep
+    quarantined inodes alive.
+    """
+    managed, identities = _multilingual(tmp_path)
+    directory = managed.project_selection(identities[:2])
+    managed.payload_path(identities[0]).write_bytes(OTHER_BODY)
+
+    managed.reconcile()
+
+    assert not directory.exists()
+
+
 # --- layout constants
 
 
 def test_the_installation_directory_name_is_stable() -> None:
     assert OCR_RESOURCES_DIR == "ocr-resources"
     assert MANAGED_RESOURCES_DIRNAME == "resources"
+    assert MANAGED_SELECTIONS_DIRNAME == "selections"
     assert MANAGED_STAGING_DIRNAME == "staging"
     assert MANAGED_QUARANTINE_DIRNAME == "quarantine"

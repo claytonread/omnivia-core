@@ -38,13 +38,15 @@ claim that the bytes to honour it are present.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Final
 
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.service.ocr_resource_lifecycle import (
+    OCR_RESOURCES_DIR,
     ManagedOcrResources,
     OcrResourceLifecycleRefused,
 )
@@ -56,6 +58,7 @@ from omnivia_core_runtime.service.ocr_resources import (
     DEFAULT_LANGUAGE,
     MODE_TEXT_AND_LOCAL_OCR,
     MODE_TEXT_ONLY,
+    ORIENTATION_MODEL,
     TESSERACT_REVISION,
     OcrSelectionInvalid,
     TrustedOcrCatalogue,
@@ -325,46 +328,81 @@ def managed_catalogue(
     """A trusted selection catalogue over what the managed OCR cache installed.
 
     This is the bridge between the two halves the installation already has: the
-    managed cache owns the bytes, their five-field identities and the 512 MiB
-    capacity rule, and
+    managed cache owns the bytes, their five-field identities, the 512 MiB
+    capacity rule and the one directory an ordered selection is published into,
+    and
     :class:`~omnivia_core_runtime.service.ocr_resources.TrustedOcrCatalogue`
-    owns what the engine may be invoked with. Nothing is downloaded, verified or
-    installed here, and no second resource store is introduced: the cache's own
-    inventory is the only input.
+    owns what the engine may be invoked with. Nothing is downloaded or installed
+    here, and no second resource store is introduced: the cache's own inventory
+    is the only input.
 
     A model whose recorded `engine_version` is not the revision this build
     invokes is left out rather than presented, so a resource set built for
     another engine is reported as a missing language instead of being handed to
     one that may not read it.
 
-    An unreadable or contended cache yields the empty fail-closed catalogue. A
-    selection then resolves as unavailable with its requested order intact.
+    The whole ordered selection is projected, so two or three installed
+    languages are served together and in the order they were asked for.
+    Projection is the cache's own operation and keeps digest verification: the
+    bytes it links are bytes it has just re-digested against their declared
+    identity, and
+    :meth:`~omnivia_core_runtime.service.ocr_resources.TrustedOcrCatalogue.resolve`
+    digests them once more before the engine sees them.
 
-    ponytail: one directory per selection. The managed layout keeps each
-    identity's bytes in their own directory, by design, so two model revisions
-    of one language can coexist -- but Tesseract takes a single
-    ``--tessdata-dir``. Languages that do not share a directory with the first
-    one therefore cannot be presented together and are reported as missing. In
-    practice that bounds a served selection to one language. Upgrade path, if
-    the cache ever holds more than one language: publish a per-selection
-    directory of hard links (not symlinks -- `_model_digest` refuses anything
-    that is not a regular file) under the cache's coordination lock.
+    Only the languages that *are* installed reach the catalogue, with the
+    orientation data alongside them when the cache holds it. A requested
+    language the cache has not got is therefore absent from `installed` and
+    `resolve` reports exactly it as missing -- rather than the whole selection,
+    which is what an empty catalogue would have said.
+
+    An unreadable or contended cache, and a projection that cannot be published,
+    all yield the empty fail-closed catalogue. A selection then resolves as
+    unavailable with its requested order intact and nothing substituted.
     """
     present = installed_identities(resources)
-    installed: dict[str, str] = {}
-    directory: Path | None = None
-    for language in requested or (DEFAULT_LANGUAGE,):
-        identity = present.get(language)
-        if identity is None:
-            continue
-        candidate = resources.resource_directory(identity)
-        if directory is None:
-            directory = candidate
-        if candidate == directory:
-            installed[language] = identity.sha256
-    if directory is None or not installed:
+    selection = [
+        present[language]
+        for language in validated_languages(requested)
+        if language in present
+    ]
+    if not selection:
         return TrustedOcrCatalogue()
-    return TrustedOcrCatalogue(installed=installed, tessdata_dir=str(directory))
+    orientation = present.get(ORIENTATION_MODEL)
+    if orientation is not None:
+        selection.append(orientation)
+    try:
+        directory = resources.project_selection(selection)
+    except (OcrResourceLifecycleRefused, OcrResourceStoreError, OSError):
+        return TrustedOcrCatalogue()
+    return TrustedOcrCatalogue(
+        installed={identity.language: identity.sha256 for identity in selection},
+        tessdata_dir=str(directory),
+    )
+
+
+def installation_catalogue(
+    installation_root: Path | None,
+) -> Callable[[Sequence[str]], TrustedOcrCatalogue] | None:
+    """How one installation resolves a selection, or ``None`` when it cannot.
+
+    The managed cache is installation-local state, and the lifecycle takes a root
+    rather than choosing one, so the join between the two is made here -- once --
+    and handed to the executor and to anything else that resolves at execution.
+    The returned callable takes the *frozen* ordered selection and is called at
+    the moment work runs, never at admission: it is what makes "resolved against
+    trusted managed resources at execution" literal.
+
+    ``None`` means this process has no installation root to ask, or the root is
+    not one a managed cache may live under. The caller then falls back to the
+    packaged catalogue, which serves nothing -- fail-closed, not host-discovered.
+    """
+    if installation_root is None:
+        return None
+    try:
+        resources = ManagedOcrResources(Path(installation_root) / OCR_RESOURCES_DIR)
+    except OcrResourceStoreError:
+        return None
+    return partial(managed_catalogue, resources)
 
 
 __all__ = [
@@ -376,6 +414,7 @@ __all__ = [
     "ProcessingSettings",
     "ProcessingSettingsInvalid",
     "apply_settings",
+    "installation_catalogue",
     "installed_identities",
     "managed_catalogue",
     "read_settings",
