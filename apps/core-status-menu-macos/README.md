@@ -65,7 +65,34 @@ python scripts/build-core-companion-app.py \
 ```
 
 The result embeds `Add to OmniVia Core.appex` and `Share to OmniVia Core.appex`
-under `Contents/PlugIns`. It remains explicitly `qualification_only` until each
+under `Contents/PlugIns`, and `companion-manifest.json` beside the app binds all
+three as one component set: bundle identifiers, marketing and build version,
+minimum macOS, executable digests, each component's single service or extension
+registration, the component-set compatibility identifier and the update owner.
+There is no second updater; the manifest names the existing product release
+owner, and the installed-product installer is owned outside this repository.
+
+Verify an assembled candidate against that manifest before it goes anywhere:
+
+```bash
+python scripts/verify-core-companion-bundle.py /absolute/path/to/candidate
+```
+
+It is fail-closed: a missing or extra managed extension, a duplicate bundle
+identifier or service registration, any version, build-version or minimum-macOS
+skew between the companion and either extension, a tampered executable, a
+symlink, a declared path outside the set, or an unknown manifest schema all exit
+non-zero. An unknown schema is refused whole and left exactly as written.
+
+Signing and notarisation are reported only from evidence supplied with
+`--signature-evidence FILE` — a JSON object mapping each managed bundle
+identifier to the `authority`, `team_identifier`, `cdhash` and `notarized`
+record of a real `codesign`/notarisation run. The gate runs neither tool.
+Without that evidence the signature status is `unverified` and the candidate is
+never release eligible; release qualification adds
+`--require-release-eligible`, which turns that into a finding.
+
+The bundle remains explicitly `qualification_only` until each
 extension and the containing app are signed with the entitlements under
 `Packaging/`, then notarized by the production release process. Ad-hoc signing
 can launch the app for local UI checks, but it is not evidence that macOS has
