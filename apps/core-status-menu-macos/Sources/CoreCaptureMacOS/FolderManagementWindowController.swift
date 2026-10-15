@@ -12,6 +12,10 @@ public final class FolderManagementWindowController: NSWindowController,
     private let fileMonitoring: FileMonitoringCoordinator
     private let bulkStore: FolderBulkRunStore
     private let bulkCoordinator: FolderBulkRunCoordinator
+    private let activityStore: CaptureActivityStore
+    /// Records what the durable owners now prove and returns the activity. The
+    /// composition owns the reading, so this window never touches the queue.
+    private let observeActivity: () -> [CaptureActivityRecord]
     /// Retained root groups. Read through a closure so the window never holds the
     /// access store, which owns bookmarks this surface has no business seeing.
     private let rootGroups: () -> [NativeRootAccessDescriptor]
@@ -30,6 +34,8 @@ public final class FolderManagementWindowController: NSWindowController,
     private let pauseResumeButton = NSButton(title: "Pause", target: nil, action: nil)
     private let stopButton = NSButton(title: "Stop updating", target: nil, action: nil)
     private let checkButton = NSButton(title: "Check now", target: nil, action: nil)
+    private let revealButton = NSButton(title: "Show recovery details", target: nil, action: nil)
+    private let clearButton = NSButton(title: "Clear completed activity", target: nil, action: nil)
     private var segment = FilesAndFoldersSegment.files
     private var statusFilter = FilesAndFoldersStatusFilter.all
     private var model: FilesAndFoldersModel
@@ -43,6 +49,8 @@ public final class FolderManagementWindowController: NSWindowController,
         fileMonitoring: FileMonitoringCoordinator,
         bulkStore: FolderBulkRunStore,
         bulkCoordinator: FolderBulkRunCoordinator,
+        activityStore: CaptureActivityStore,
+        observeActivity: @escaping () -> [CaptureActivityRecord],
         rootGroups: @escaping () -> [NativeRootAccessDescriptor]
     ) {
         self.workspaceName = workspaceName
@@ -52,6 +60,8 @@ public final class FolderManagementWindowController: NSWindowController,
         self.fileMonitoring = fileMonitoring
         self.bulkStore = bulkStore
         self.bulkCoordinator = bulkCoordinator
+        self.activityStore = activityStore
+        self.observeActivity = observeActivity
         self.rootGroups = rootGroups
         model = FilesAndFoldersModel(workspaceName: workspaceName)
         super.init(window: nil)
@@ -149,6 +159,10 @@ public final class FolderManagementWindowController: NSWindowController,
         stopButton.action = #selector(stopUpdating)
         checkButton.target = self
         checkButton.action = #selector(checkNow)
+        revealButton.target = self
+        revealButton.action = #selector(showRecoveryDetails)
+        clearButton.target = self
+        clearButton.action = #selector(clearCompletedActivity)
 
         let searchSpacer = NSView()
         searchSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -158,7 +172,10 @@ public final class FolderManagementWindowController: NSWindowController,
         let actionSpacer = NSView()
         actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let actions = NSStackView(
-            views: [statusLabel, actionSpacer, checkButton, pauseResumeButton, stopButton]
+            views: [
+                statusLabel, actionSpacer, clearButton, revealButton, checkButton,
+                pauseResumeButton, stopButton,
+            ]
         )
         actions.orientation = .horizontal
         actions.spacing = 8
@@ -193,6 +210,9 @@ public final class FolderManagementWindowController: NSWindowController,
     private func reload() {
         let folders = folderStore.all()
         let runs = bulkStore.all()
+        // Records first, so the surface shows what the durable owners prove now
+        // rather than what they proved when this window was last open.
+        let activity = observeActivity()
         model = FilesAndFoldersModel(
             workspaceName: workspaceName,
             files: fileStore.all(),
@@ -202,7 +222,8 @@ public final class FolderManagementWindowController: NSWindowController,
                 runs: runs,
                 folders: folders
             ),
-            runs: runs
+            runs: runs,
+            activity: activity
         )
         applyFilters()
     }
@@ -231,11 +252,17 @@ public final class FolderManagementWindowController: NSWindowController,
         stopButton.title = actions.stopTitle
         stopButton.isEnabled = actions.stopEnabled
         checkButton.isEnabled = actions.checkEnabled
+        revealButton.isHidden = segment != .recentAdditions
+        revealButton.isEnabled = actions.revealEnabled
+        clearButton.isHidden = segment != .recentAdditions
+        clearButton.isEnabled = model.clearableActivityCount > 0
         detailView.string = model.detail(for: selected)
             .map { "\($0.label): \($0.value)" }
             .joined(separator: "\n")
         if selected == nil {
-            detailView.string = "Select a file or folder to see what Core records about it."
+            detailView.string = segment == .recentAdditions
+                ? "Select an addition to see what this Mac records about each of its files."
+                : "Select a file or folder to see what Core records about it."
         }
     }
 
@@ -276,16 +303,20 @@ public final class FolderManagementWindowController: NSWindowController,
                 } else {
                     _ = try? await fileMonitoring.pause(subscriptionID: value.subscriptionID)
                 }
-            case let .bulkRun(value):
-                if value.state == .paused {
-                    _ = try? await bulkCoordinator.resume(runID: value.runID)
-                    _ = await bulkCoordinator.advance(runID: value.runID)
-                } else if value.attentionCount > 0 {
+            case let .activity(value):
+                // Only a frozen folder run has an authority that can retry or
+                // pause. An ordinary submission has none, and its buttons are
+                // disabled rather than silently doing something else.
+                guard let run = value.run else { break }
+                if run.state == .paused {
+                    _ = try? await bulkCoordinator.resume(runID: run.runID)
+                    _ = await bulkCoordinator.advance(runID: run.runID)
+                } else if run.attentionCount > 0 {
                     // Acts on the same frozen membership; discovers nothing.
-                    _ = try? await bulkCoordinator.retryUnavailable(runID: value.runID)
-                    _ = await bulkCoordinator.advance(runID: value.runID)
+                    _ = try? await bulkCoordinator.retryUnavailable(runID: run.runID)
+                    _ = await bulkCoordinator.advance(runID: run.runID)
                 } else {
-                    _ = try? await bulkCoordinator.pause(runID: value.runID)
+                    _ = try? await bulkCoordinator.pause(runID: run.runID)
                 }
             case .retainedRoot:
                 // Nothing watches a retained root, so there is nothing to pause.
@@ -298,7 +329,7 @@ public final class FolderManagementWindowController: NSWindowController,
     @objc private func stopUpdating() {
         guard let selected else { return }
         let isRun: Bool
-        if case .bulkRun = selected { isRun = true } else { isRun = false }
+        if case .activity = selected { isRun = true } else { isRun = false }
         let alert = NSAlert()
         alert.messageText = isRun
             ? "Stop adding remaining files from \(selected.displayName)?"
@@ -316,11 +347,12 @@ public final class FolderManagementWindowController: NSWindowController,
                 _ = try? await folderMonitoring.stop(subscriptionID: value.subscriptionID)
             case let .file(value):
                 _ = try? await fileMonitoring.stop(subscriptionID: value.subscriptionID)
-            case let .bulkRun(value):
+            case let .activity(value):
+                guard let frozen = value.run else { break }
                 // The exact stopped count, read back from the durable ledger.
-                let run = try? await bulkCoordinator.stopRemaining(runID: value.runID)
-                outcome = "Stopped \(run?.stoppedCount ?? value.plannedCount) of "
-                    + "\(value.members.count) files. Already added files remain in Core "
+                let run = try? await bulkCoordinator.stopRemaining(runID: frozen.runID)
+                outcome = "Stopped \(run?.stoppedCount ?? frozen.plannedCount) of "
+                    + "\(frozen.members.count) files. Already added files remain in Core "
                     + "and stay linked for manual refresh."
             case .retainedRoot:
                 break
@@ -339,12 +371,44 @@ public final class FolderManagementWindowController: NSWindowController,
                 _ = await folderMonitoring.reconcile(subscriptionIDs: [value.subscriptionID])
             case let .file(value):
                 _ = await fileMonitoring.reconcile(subscriptionIDs: [value.subscriptionID])
-            case let .bulkRun(value):
-                _ = await bulkCoordinator.advance(runID: value.runID)
+            case let .activity(value):
+                guard let run = value.run else { break }
+                _ = await bulkCoordinator.advance(runID: run.runID)
             case .retainedRoot:
                 break
             }
             reload()
         }
+    }
+
+    /// Reveals what an unknown outcome is recovered by. It reads the durable
+    /// activity record and allocates nothing: no replacement key, no
+    /// destination change and no removal.
+    @objc private func showRecoveryDetails() {
+        let recovery = model.recoveryDetail(for: selected)
+        guard !recovery.isEmpty else { return }
+        detailView.string = (model.detail(for: selected) + recovery)
+            .map { "\($0.label): \($0.value)" }
+            .joined(separator: "\n")
+    }
+
+    @objc private func clearCompletedActivity() {
+        let clearable = model.clearableActivityCount
+        guard clearable > 0 else { return }
+        let alert = NSAlert()
+        alert.messageText = "Clear \(clearable) completed activity "
+            + (clearable == 1 ? "receipt?" : "receipts?")
+        alert.informativeText = "This removes local receipts for finished additions only. "
+            + "Additions still queued, sending or checking stay listed, their recovery keys and "
+            + "queued copies are kept, and original links, running watches, folder run manifests "
+            + "and everything already in Core are unchanged."
+        alert.addButton(withTitle: "Clear receipts")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let removed = (try? activityStore.clearReceipts()) ?? 0
+        reload()
+        statusLabel.stringValue = "Cleared \(removed) completed "
+            + (removed == 1 ? "receipt" : "receipts")
+            + ". Queued work, links, watches and run manifests are unchanged."
     }
 }

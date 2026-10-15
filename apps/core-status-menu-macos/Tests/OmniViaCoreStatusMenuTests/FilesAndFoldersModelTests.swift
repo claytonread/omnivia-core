@@ -166,14 +166,79 @@ final class FilesAndFoldersModelTests: XCTestCase {
         files: [FileSubscription] = [],
         folders: [FolderSubscription] = [],
         retainedRoots: [RetainedRootGroup] = [],
-        runs: [FolderBulkRun] = []
+        runs: [FolderBulkRun] = [],
+        activity: [CaptureActivityRecord] = []
     ) -> FilesAndFoldersModel {
         FilesAndFoldersModel(
             workspaceName: "workspace-1",
             files: files,
             folders: folders,
             retainedRoots: retainedRoots,
-            runs: runs
+            runs: runs,
+            activity: activity
+        )
+    }
+
+    /// One activity record, as the store writes them.
+    private func record(
+        item: String,
+        submission: String = "submission-1",
+        name: String? = nil,
+        run: String? = nil,
+        member: String? = nil,
+        sequence: UInt64,
+        fact: CaptureActivityFact,
+        resolvedAt: String? = "2026-10-15T10:00:00Z",
+        failureCode: String? = nil
+    ) -> CaptureActivityRecord {
+        CaptureActivityRecord(
+            itemID: item,
+            submissionID: submission,
+            operationKey: "operation-\(item)",
+            displayName: name ?? "\(item).pdf",
+            runID: run,
+            manifestRevision: run == nil ? nil : "manifest-1",
+            memberID: run == nil ? nil : (member ?? "member-\(item)"),
+            sequence: sequence,
+            firstObservedAt: "2026-10-15T09:00:00Z",
+            fact: fact,
+            resolvedAt: fact.isResolved ? resolvedAt : nil,
+            attemptGeneration: fact == .checking ? 1 : 0,
+            attemptOperationKey: fact == .checking ? "capop-1" : nil,
+            failureCode: failureCode
+        )
+    }
+
+    /// The activity of a whole run, one record per member, mirroring the member
+    /// states the fixture run was built with.
+    private func activity(of run: FolderBulkRun) -> [CaptureActivityRecord] {
+        run.members.enumerated().map { index, member in
+            record(
+                item: member.itemID,
+                submission: run.submissionID,
+                name: member.displayName,
+                run: run.runID,
+                member: member.memberID,
+                sequence: UInt64(index + 1),
+                fact: {
+                    switch member.state {
+                    case .planned: .planned
+                    case .published: .queued
+                    case .admitted: .processing
+                    case .needsAttention: .failed
+                    case .stopped: .stopped
+                    }
+                }()
+            )
+        }
+    }
+
+    private func group(of run: FolderBulkRun) -> CaptureActivityGroup {
+        CaptureActivityGroup(
+            identifier: run.runID,
+            displayName: run.rootDisplayName,
+            run: run,
+            items: activity(of: run)
         )
     }
 
@@ -191,12 +256,53 @@ final class FilesAndFoldersModelTests: XCTestCase {
                     membersFrozen: true
                 ),
             ],
-            runs: [run()]
+            runs: [run()],
+            activity: activity(of: run())
         )
 
         XCTAssertEqual(subject.items(segment: .files).map(\.identifier), ["file-1"])
         XCTAssertEqual(subject.items(segment: .folders).map(\.identifier), ["folder-1", "root-2"])
         XCTAssertEqual(subject.items(segment: .recentAdditions).map(\.identifier), ["run-1"])
+    }
+
+    func testAnAdditionWhoseActivityWasClearedIsNoLongerListed() {
+        let subject = model(runs: [run()], activity: [])
+
+        XCTAssertTrue(
+            subject.items(segment: .recentAdditions).isEmpty,
+            "the frozen manifest still exists, but its cleared receipts are not resurrected"
+        )
+    }
+
+    func testOrdinarySubmissionsAndFolderRunsAreSeparateGroups() {
+        let frozen: FolderBulkRun = run()
+        let subject = model(
+            runs: [frozen],
+            activity: activity(of: frozen) + [
+                record(item: "item-manual", submission: "submission-manual", sequence: 9, fact: .queued),
+            ]
+        )
+
+        XCTAssertEqual(
+            subject.items(segment: .recentAdditions).map(\.identifier),
+            ["submission-manual", "run-1"]
+        )
+        XCTAssertEqual(
+            subject.items(segment: .recentAdditions).map(\.displayName),
+            ["item-manual.pdf", "Invoices"]
+        )
+    }
+
+    func testAnOrdinarySubmissionOfSeveralItemsIsNamedByItsCount() {
+        let subject = model(activity: [
+            record(item: "item-a", sequence: 1, fact: .queued),
+            record(item: "item-b", sequence: 2, fact: .queued),
+        ])
+
+        XCTAssertEqual(
+            subject.items(segment: .recentAdditions).map(\.displayName),
+            ["2 items added together"]
+        )
     }
 
     func testFoldersSegmentSortsSubscriptionsAndRetainedRootsTogetherByName() {
@@ -213,15 +319,15 @@ final class FilesAndFoldersModelTests: XCTestCase {
         )
     }
 
-    func testRecentAdditionsShowsTheNewestRunFirst() {
-        let subject = model(runs: [
-            run(id: "run-old", createdAt: "2026-10-01T00:00:00Z"),
-            run(id: "run-new", createdAt: "2026-10-15T00:00:00Z"),
+    func testRecentAdditionsShowsTheNewestAdditionFirst() {
+        let subject = model(activity: [
+            record(item: "item-old", submission: "submission-old", sequence: 1, fact: .processing),
+            record(item: "item-new", submission: "submission-new", sequence: 2, fact: .queued),
         ])
 
         XCTAssertEqual(
             subject.items(segment: .recentAdditions).map(\.identifier),
-            ["run-new", "run-old"]
+            ["submission-new", "submission-old"]
         )
     }
 
@@ -237,14 +343,21 @@ final class FilesAndFoldersModelTests: XCTestCase {
     }
 
     func testSearchMatchesStableIdentifiersAndNothingElse() {
+        let frozen: FolderBulkRun = run(id: "run-bbb")
         let subject = model(
             folders: [folder(id: "folder-1", root: "root-aaa", name: "Contracts")],
-            runs: [run(id: "run-bbb")]
+            runs: [frozen],
+            activity: activity(of: frozen)
         )
 
         XCTAssertEqual(subject.items(segment: .folders, search: "root-aaa").count, 1)
         XCTAssertEqual(subject.items(segment: .folders, search: "folder-1").count, 1)
         XCTAssertEqual(subject.items(segment: .recentAdditions, search: "run-bbb").count, 1)
+        XCTAssertEqual(
+            subject.items(segment: .recentAdditions, search: "item-run-bbb-0").count,
+            1,
+            "an addition is searchable by the frozen item identity it is recovered by"
+        )
         XCTAssertTrue(subject.items(segment: .folders, search: "root-zzz").isEmpty)
     }
 
@@ -285,35 +398,68 @@ final class FilesAndFoldersModelTests: XCTestCase {
         XCTAssertEqual(subject.items(segment: .folders, statusFilter: .all).count, 6)
     }
 
-    func testRunStatesAndRetainedRootsLandInTheirBuckets() {
+    func testRetainedRootsLandInTheirBucket() {
         let subject = model(
             retainedRoots: [
                 RetainedRootGroup(rootRef: "root-2", displayName: "Invoices", memberCount: 2, membersFrozen: true),
-            ],
-            runs: [
-                run(id: "run-adding", state: .adding),
-                run(id: "run-paused", state: .paused),
-                run(id: "run-attention", state: .needsAttention),
-                run(id: "run-complete", state: .complete),
-                run(id: "run-stopped", state: .stopped),
             ]
         )
 
-        XCTAssertEqual(
-            subject.items(segment: .recentAdditions, statusFilter: .stoppedOrComplete)
-                .map(\.identifier).sorted(),
-            ["run-complete", "run-stopped"]
-        )
-        XCTAssertEqual(
-            subject.items(segment: .recentAdditions, statusFilter: .needsAttention).map(\.identifier),
-            ["run-attention"]
-        )
         // Added once and never updated is a finished source, not an active one.
         XCTAssertEqual(
             subject.items(segment: .folders, statusFilter: .stoppedOrComplete).map(\.identifier),
             ["root-2"]
         )
         XCTAssertTrue(subject.items(segment: .folders, statusFilter: .activeOrPending).isEmpty)
+    }
+
+    func testAdditionsAreFilteredByWhatTheirOwnItemsProve() {
+        let subject = model(activity: [
+            record(item: "item-queued", submission: "submission-queued", sequence: 1, fact: .queued),
+            record(item: "item-sending", submission: "submission-sending", sequence: 2, fact: .sending),
+            record(item: "item-checking", submission: "submission-checking", sequence: 3, fact: .checking),
+            record(item: "item-core", submission: "submission-core", sequence: 4, fact: .processing),
+            record(item: "item-failed", submission: "submission-failed", sequence: 5, fact: .failed),
+            record(item: "item-stopped", submission: "submission-stopped", sequence: 6, fact: .stopped),
+        ])
+
+        XCTAssertEqual(subject.items(segment: .recentAdditions, statusFilter: .all).count, 6)
+        // Pending is work this Mac still owes. An item Core has accepted is a
+        // local receipt that ages out; its remaining work belongs to Core, and
+        // the row still says so.
+        XCTAssertEqual(
+            subject.items(segment: .recentAdditions, statusFilter: .pending)
+                .map(\.identifier).sorted(),
+            ["submission-queued", "submission-sending"]
+        )
+        XCTAssertEqual(
+            subject.items(segment: .recentAdditions, statusFilter: .all)
+                .first(where: { $0.identifier == "submission-core" })?.statusLabel,
+            "Processing in Core"
+        )
+        XCTAssertEqual(
+            subject.items(segment: .recentAdditions, statusFilter: .needsAttention)
+                .map(\.identifier).sorted(),
+            ["submission-checking", "submission-failed"],
+            "an unknown outcome needs a decision as much as a known failure does"
+        )
+    }
+
+    func testAMixedAdditionIsFiledUnderItsMostDemandingItem() {
+        let subject = model(activity: [
+            record(item: "item-0", sequence: 1, fact: .processing),
+            record(item: "item-1", sequence: 2, fact: .queued),
+            record(item: "item-2", sequence: 3, fact: .failed),
+        ])
+
+        XCTAssertEqual(
+            subject.items(segment: .recentAdditions, statusFilter: .needsAttention).count,
+            1
+        )
+        XCTAssertTrue(
+            subject.items(segment: .recentAdditions, statusFilter: .pending).isEmpty,
+            "a group that needs attention is not also offered as ordinary pending work"
+        )
     }
 
     func testSearchAndStatusFilterApplyTogether() {
@@ -328,14 +474,22 @@ final class FilesAndFoldersModelTests: XCTestCase {
         )
     }
 
-    func testEveryStatusFilterIsOfferedOnEverySegment() {
-        for segment in FilesAndFoldersSegment.allCases {
+    func testEachSegmentOffersOnlyTheFiltersItsOwnStatesReach() {
+        for segment in [FilesAndFoldersSegment.files, .folders] {
             XCTAssertEqual(
                 FilesAndFoldersStatusFilter.applicable(to: segment),
-                FilesAndFoldersStatusFilter.allCases,
+                [.all, .activeOrPending, .paused, .needsAttention, .stoppedOrComplete],
                 "segment \(segment.title)"
             )
         }
+        XCTAssertEqual(
+            FilesAndFoldersStatusFilter.applicable(to: .recentAdditions),
+            [.all, .pending, .needsAttention]
+        )
+        XCTAssertEqual(
+            FilesAndFoldersStatusFilter.applicable(to: .recentAdditions).map(\.title),
+            ["All", "Pending", "Needs attention"]
+        )
     }
 
     // MARK: - Retained root derivation
@@ -476,33 +630,76 @@ final class FilesAndFoldersModelTests: XCTestCase {
         )
     }
 
-    func testRunDetailReportsPerFileTotalsAndRefusesAWholeFolderResult() {
-        let facts = model().detail(
-            for: .bulkRun(
-                run(
-                    state: .needsAttention,
-                    memberStates: [.admitted, .published, .planned, .stopped, .needsAttention]
-                )
-            )
+    func testRunDetailReportsPerFileFactsAndRefusesAWholeAdditionResult() {
+        let frozen: FolderBulkRun = run(
+            state: .needsAttention,
+            memberStates: [.admitted, .published, .planned, .stopped, .needsAttention]
         )
+        let facts = model().detail(for: .activity(group(of: frozen)))
         let values = Dictionary(uniqueKeysWithValues: facts.map { ($0.label, $0.value) })
 
-        XCTAssertEqual(values["Files in this run"], "5")
+        XCTAssertEqual(values["Folder run"], "run-1")
+        XCTAssertEqual(values["Manifest revision"], "manifest-1")
+        XCTAssertEqual(values["Files in this addition"], "5")
         XCTAssertEqual(
             values["Progress"],
-            "1 added, 1 in progress, 1 waiting, 1 stopped, 1 need attention"
+            "1 accepted by Core for processing · 1 queued on this Mac · "
+                + "1 waiting to be prepared · 1 need attention · 1 stopped"
         )
         XCTAssertEqual(
-            values["Whole-folder result"],
+            values["Whole-addition result"],
             "Not recorded. Each file carries its own outcome."
         )
         XCTAssertEqual(values["Updates"], "Added once. This run establishes no watch.")
     }
 
-    func testFinishedRunDetailStatesThatAddedFilesStayLinked() {
-        let facts = model().detail(
-            for: .bulkRun(run(state: .complete, subscriptionID: "folder-1", memberStates: [.admitted]))
+    func testEveryItemCarriesItsOwnOutcomeAndRecoveryIdentityInTheDetail() {
+        let subject = model(activity: [
+            record(item: "item-0", name: "Invoice.pdf", sequence: 1, fact: .processing),
+            record(item: "item-1", name: "Receipt.pdf", sequence: 2, fact: .failed, failureCode: "download_failed"),
+        ])
+        let facts = subject.detail(for: subject.items(segment: .recentAdditions).first)
+
+        XCTAssertTrue(
+            facts.contains(where: {
+                $0.label == "Invoice.pdf"
+                    && $0.value.hasPrefix("Processing in Core · item item-0")
+            }),
+            "\(facts)"
         )
+        XCTAssertTrue(
+            facts.contains(where: {
+                $0.label == "Receipt.pdf"
+                    && $0.value.contains("Needs attention · item item-1 · reason download_failed")
+            }),
+            "\(facts)"
+        )
+        XCTAssertFalse(
+            facts.contains(where: { $0.value.contains("Added to Core") }),
+            "this side proves no retrieval-ready capture"
+        )
+    }
+
+    func testActivityDetailStatesTheRetentionBoundAndWhatClearingLeavesAlone() {
+        let subject = model(activity: [record(item: "item-0", sequence: 1, fact: .processing)])
+        let facts = subject.detail(for: subject.items(segment: .recentAdditions).first)
+        let values = Dictionary(uniqueKeysWithValues: facts.map { ($0.label, $0.value) })
+
+        XCTAssertEqual(
+            values["Activity retention"],
+            "Completed activity is kept for up to 30 days or 100 items. Clearing it removes "
+                + "local receipts only: queued work and its recovery keys, original links, running "
+                + "watches, folder run manifests and anything already in Core are untouched."
+        )
+        XCTAssertEqual(
+            values["Capture history"],
+            "Capture, extraction and profile history is available from Core after admission."
+        )
+    }
+
+    func testFinishedRunDetailStatesThatAddedFilesStayLinked() {
+        let frozen: FolderBulkRun = run(state: .complete, subscriptionID: "folder-1", memberStates: [.admitted])
+        let facts = model().detail(for: .activity(group(of: frozen)))
         let values = Dictionary(uniqueKeysWithValues: facts.map { ($0.label, $0.value) })
 
         XCTAssertEqual(
@@ -515,16 +712,66 @@ final class FilesAndFoldersModelTests: XCTestCase {
         )
     }
 
-    func testRunActivityTextNeverClaimsAWholeFolderSuccess() {
-        let item = FilesAndFoldersItem.bulkRun(
-            run(state: .complete, memberStates: [.admitted, .stopped])
+    func testRecoveryDetailIsOfferedOnlyForAnUnknownOutcome() {
+        let unknown = model(activity: [record(item: "item-0", sequence: 1, fact: .checking)])
+        let resolved = model(activity: [record(item: "item-0", sequence: 1, fact: .processing)])
+
+        let facts = unknown.recoveryDetail(for: unknown.items(segment: .recentAdditions).first)
+        XCTAssertTrue(
+            facts.contains(where: {
+                $0.label == "Recovery identity — item-0.pdf"
+                    && $0.value == "item item-0 · operation operation-item-0 · attempt 1"
+                        + " · attempt key capop-1"
+            }),
+            "\(facts)"
         )
+        XCTAssertTrue(
+            facts.contains(
+                DetailFact(
+                    label: "Reconciliation",
+                    value: "This addition is reconciled under its existing key. No replacement key, "
+                        + "destination change or removal is offered while its outcome is unknown."
+                )
+            )
+        )
+        XCTAssertTrue(
+            resolved.recoveryDetail(for: resolved.items(segment: .recentAdditions).first).isEmpty
+        )
+        XCTAssertTrue(unknown.recoveryDetail(for: .file(file())).isEmpty)
+    }
+
+    func testActivityTextNeverClaimsAWholeAdditionSuccess() {
+        let frozen: FolderBulkRun = run(state: .complete, memberStates: [.admitted, .stopped])
+        let item = FilesAndFoldersItem.activity(group(of: frozen))
 
         XCTAssertEqual(
             item.activityText,
-            "1 added · 0 in progress · 0 waiting · 1 stopped · 0 needs attention"
-                + " · links retained for manual refresh"
+            "1 accepted by Core for processing · 1 stopped"
         )
+        XCTAssertEqual(item.countText, "1/2")
+        XCTAssertEqual(item.statusLabel, "Processing in Core")
+    }
+
+    func testAQueuedAdditionIsNeverLabelledAdded() {
+        let planned = FilesAndFoldersItem.activity(
+            CaptureActivityGroup(
+                identifier: "run-1",
+                displayName: "Invoices",
+                run: run(memberStates: [.planned]),
+                items: [record(item: "item-0", run: "run-1", sequence: 1, fact: .planned)]
+            )
+        )
+        let queued = FilesAndFoldersItem.activity(
+            CaptureActivityGroup(
+                identifier: "submission-1",
+                displayName: "Invoice.pdf",
+                items: [record(item: "item-0", sequence: 1, fact: .queued)]
+            )
+        )
+
+        XCTAssertEqual(planned.statusLabel, "Folder addition queued")
+        XCTAssertEqual(queued.statusLabel, "Queued on this Mac")
+        XCTAssertEqual(planned.countText, "0/1", "nothing is accepted by Core yet")
     }
 
     // MARK: - Actions
@@ -583,7 +830,9 @@ final class FilesAndFoldersModelTests: XCTestCase {
 
     func testRunWithUnavailableFilesRetriesRatherThanPauses() {
         let actions = FilesAndFoldersModel.actions(
-            for: .bulkRun(run(state: .needsAttention, memberStates: [.needsAttention, .planned]))
+            for: .activity(
+                group(of: run(state: .needsAttention, memberStates: [.needsAttention, .planned]))
+            )
         )
 
         XCTAssertEqual(actions.pauseTitle, "Retry unavailable files")
@@ -591,25 +840,104 @@ final class FilesAndFoldersModelTests: XCTestCase {
         XCTAssertEqual(actions.stopTitle, "Stop adding remaining files")
         XCTAssertTrue(actions.stopEnabled, "one member has not started")
         XCTAssertFalse(actions.checkEnabled)
+        XCTAssertFalse(actions.revealEnabled, "no outcome here is unknown")
     }
 
     func testFinishedRunStopsNothingAndChecksNothing() {
         let actions = FilesAndFoldersModel.actions(
-            for: .bulkRun(run(state: .complete, memberStates: [.admitted]))
+            for: .activity(group(of: run(state: .complete, memberStates: [.admitted])))
         )
 
         XCTAssertFalse(actions.pauseEnabled)
         XCTAssertFalse(actions.stopEnabled, "no member is still waiting to be added")
         XCTAssertFalse(actions.checkEnabled)
+        XCTAssertFalse(actions.revealEnabled)
+    }
+
+    func testAddingRunAdvancesOnDemandAndStopsOnlyUnstartedMembers() {
+        let actions = FilesAndFoldersModel.actions(
+            for: .activity(group(of: run(state: .adding, memberStates: [.published, .planned])))
+        )
+
+        XCTAssertEqual(actions.pauseTitle, "Pause")
+        XCTAssertTrue(actions.pauseEnabled)
+        XCTAssertTrue(actions.checkEnabled)
+        XCTAssertTrue(actions.stopEnabled)
+
+        let nothingUnstarted = FilesAndFoldersModel.actions(
+            for: .activity(group(of: run(state: .adding, memberStates: [.published])))
+        )
+        XCTAssertFalse(
+            nothingUnstarted.stopEnabled,
+            "a published member is already under way, so there is nothing safe to stop"
+        )
     }
 
     func testPausedRunResumes() {
         let actions = FilesAndFoldersModel.actions(
-            for: .bulkRun(run(state: .paused, memberStates: [.planned]))
+            for: .activity(group(of: run(state: .paused, memberStates: [.planned])))
         )
 
         XCTAssertEqual(actions.pauseTitle, "Resume")
         XCTAssertTrue(actions.pauseEnabled)
+    }
+
+    func testAnUnknownOutcomeOffersOnlyRevealAndNoRunActionWithoutARun() {
+        let withoutRun = FilesAndFoldersModel.actions(
+            for: .activity(
+                CaptureActivityGroup(
+                    identifier: "submission-1",
+                    displayName: "Invoice.pdf",
+                    items: [
+                        record(item: "item-0", sequence: 1, fact: .checking),
+                        record(item: "item-1", sequence: 2, fact: .failed),
+                    ]
+                )
+            )
+        )
+
+        XCTAssertTrue(withoutRun.revealEnabled)
+        XCTAssertFalse(
+            withoutRun.pauseEnabled,
+            "no authority can return an ordinary failed item to pending work"
+        )
+        XCTAssertFalse(withoutRun.stopEnabled, "the queue exposes no cancellation")
+        XCTAssertFalse(withoutRun.checkEnabled)
+    }
+
+    func testARunMemberWhoseOutcomeIsUnknownStillOffersItsRunActions() {
+        let frozen: FolderBulkRun = run(state: .adding, memberStates: [.published, .planned])
+        let actions = FilesAndFoldersModel.actions(
+            for: .activity(
+                CaptureActivityGroup(
+                    identifier: frozen.runID,
+                    displayName: frozen.rootDisplayName,
+                    run: frozen,
+                    items: [
+                        record(item: "item-run-1-0", run: frozen.runID, sequence: 1, fact: .checking),
+                        record(item: "item-run-1-1", run: frozen.runID, sequence: 2, fact: .planned),
+                    ]
+                )
+            )
+        )
+
+        XCTAssertTrue(actions.revealEnabled)
+        XCTAssertTrue(actions.checkEnabled, "the run can still advance its unstarted members")
+        XCTAssertTrue(actions.stopEnabled, "one member has not started")
+    }
+
+    func testClearableActivityCountsOnlyTerminalItems() {
+        let subject = model(activity: [
+            record(item: "item-planned", sequence: 1, fact: .planned),
+            record(item: "item-queued", sequence: 2, fact: .queued),
+            record(item: "item-sending", sequence: 3, fact: .sending),
+            record(item: "item-checking", sequence: 4, fact: .checking),
+            record(item: "item-core", sequence: 5, fact: .processing),
+            record(item: "item-failed", sequence: 6, fact: .failed),
+            record(item: "item-stopped", sequence: 7, fact: .stopped),
+        ])
+
+        XCTAssertEqual(subject.clearableActivityCount, 3)
     }
 
     // MARK: - Summary
@@ -631,7 +959,21 @@ final class FilesAndFoldersModelTests: XCTestCase {
         XCTAssertEqual(subject.summary(items: [], segment: .folders), "No folders are listed.")
         XCTAssertEqual(
             subject.summary(items: [], segment: .recentAdditions),
-            "No folder additions are recorded."
+            "No recent additions are recorded."
+        )
+    }
+
+    func testRecentAdditionsSummaryCountsPendingAndAttentionSeparately() {
+        let subject = model(activity: [
+            record(item: "item-0", submission: "submission-0", sequence: 1, fact: .queued),
+            record(item: "item-1", submission: "submission-1", sequence: 2, fact: .failed),
+            record(item: "item-2", submission: "submission-2", sequence: 3, fact: .stopped),
+        ])
+        let items = subject.items(segment: .recentAdditions)
+
+        XCTAssertEqual(
+            subject.summary(items: items, segment: .recentAdditions),
+            "1 pending · 1 needs attention · 3 listed · workspace workspace-1"
         )
     }
 }

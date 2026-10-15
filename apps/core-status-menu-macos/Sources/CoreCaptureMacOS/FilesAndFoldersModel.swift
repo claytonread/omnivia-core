@@ -32,6 +32,10 @@ public enum FilesAndFoldersStatusFilter: Int, CaseIterable, Sendable {
     case paused
     case needsAttention
     case stoppedOrComplete
+    /// Recent additions only: work that is not resolved locally yet. A source
+    /// subscription never reports it, because "pending" there means waiting for
+    /// Core rather than an unfinished addition.
+    case pending
 
     public var title: String {
         switch self {
@@ -40,16 +44,20 @@ public enum FilesAndFoldersStatusFilter: Int, CaseIterable, Sendable {
         case .paused: "Paused"
         case .needsAttention: "Needs attention"
         case .stoppedOrComplete: "Stopped or complete"
+        case .pending: "Pending"
         }
     }
 
     public static func applicable(to segment: FilesAndFoldersSegment) -> [FilesAndFoldersStatusFilter] {
         switch segment {
-        // Every segment's state space reaches all four buckets: a file or folder
-        // subscription can be pending, paused, in review or stopped, and a bulk
-        // run can be adding, paused, needing attention or finished. So the list
-        // does not vary, and a chosen filter stays valid across a segment change.
-        case .files, .folders, .recentAdditions: allCases
+        // A file or folder subscription can be pending, paused, in review or
+        // stopped, so those four buckets plus All are offered on both tabs and a
+        // chosen filter stays valid when the tab changes between them.
+        case .files, .folders: [.all, .activeOrPending, .paused, .needsAttention, .stoppedOrComplete]
+        // Recent additions is an activity and recovery utility, not a source
+        // list: it has nothing to pause and no complete whole-addition result to
+        // filter on, so it offers exactly All, Pending and Needs attention.
+        case .recentAdditions: [.all, .pending, .needsAttention]
         }
     }
 }
@@ -70,6 +78,46 @@ public struct RetainedRootGroup: Equatable, Sendable {
     }
 }
 
+/// One Recent additions row: either one frozen folder run or one ordinary
+/// submission, with every member's own outcome preserved. The group states
+/// per-item facts and never a single whole-addition success.
+public struct CaptureActivityGroup: Equatable, Sendable {
+    /// The run id, or the submission id for an ordinary addition.
+    public let identifier: String
+    public let displayName: String
+    /// The frozen run this group projects, when it is a folder run. Its state is
+    /// what the run authority acts on; a group whose manifest is gone has none,
+    /// and therefore offers no run action.
+    public let run: FolderBulkRun?
+    /// Members in the order they were first observed.
+    public let items: [CaptureActivityRecord]
+
+    public init(
+        identifier: String,
+        displayName: String,
+        run: FolderBulkRun? = nil,
+        items: [CaptureActivityRecord]
+    ) {
+        self.identifier = identifier
+        self.displayName = displayName
+        self.run = run
+        self.items = items
+    }
+
+    public func count(_ fact: CaptureActivityFact) -> Int {
+        items.filter { $0.fact == fact }.count
+    }
+
+    /// Items that are not receipts: nothing about them can be cleared or
+    /// pruned, including an unknown outcome and a folder member its run can
+    /// still retry.
+    public var pendingCount: Int { items.filter { !$0.isReceipt }.count }
+    public var attentionCount: Int { items.filter { $0.fact.needsAttention }.count }
+    public var receiptCount: Int { items.filter(\.isReceipt).count }
+    /// The newest member, which is what orders the surface.
+    public var latestSequence: UInt64 { items.map(\.sequence).max() ?? 0 }
+}
+
 public struct DetailFact: Equatable, Sendable {
     public let label: String
     public let value: String
@@ -80,26 +128,45 @@ public struct DetailFact: Equatable, Sendable {
     }
 }
 
-/// The enablement and titles of the three actions, for exactly one selection.
+/// The enablement and titles of the row actions, for exactly one selection.
 public struct FilesAndFoldersActions: Equatable, Sendable {
     public let pauseTitle: String
     public let pauseEnabled: Bool
     public let stopTitle: String
     public let stopEnabled: Bool
     public let checkEnabled: Bool
+    /// Reveals the frozen recovery identity of an item whose outcome is
+    /// unknown. It reads durable state and allocates nothing.
+    public let revealEnabled: Bool
+
+    public init(
+        pauseTitle: String,
+        pauseEnabled: Bool,
+        stopTitle: String,
+        stopEnabled: Bool,
+        checkEnabled: Bool,
+        revealEnabled: Bool = false
+    ) {
+        self.pauseTitle = pauseTitle
+        self.pauseEnabled = pauseEnabled
+        self.stopTitle = stopTitle
+        self.stopEnabled = stopEnabled
+        self.checkEnabled = checkEnabled
+        self.revealEnabled = revealEnabled
+    }
 }
 
 public enum FilesAndFoldersItem: Equatable, Sendable {
     case file(FileSubscription)
     case folder(FolderSubscription)
     case retainedRoot(RetainedRootGroup)
-    case bulkRun(FolderBulkRun)
+    case activity(CaptureActivityGroup)
 
     public var segment: FilesAndFoldersSegment {
         switch self {
         case .file: .files
         case .folder, .retainedRoot: .folders
-        case .bulkRun: .recentAdditions
+        case .activity: .recentAdditions
         }
     }
 
@@ -108,7 +175,7 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
         case let .file(value): value.subscriptionID
         case let .folder(value): value.subscriptionID
         case let .retainedRoot(value): value.rootRef
-        case let .bulkRun(value): value.runID
+        case let .activity(value): value.identifier
         }
     }
 
@@ -117,18 +184,20 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
         case let .file(value): value.displayName
         case let .folder(value): value.rootDisplayName
         case let .retainedRoot(value): value.displayName
-        case let .bulkRun(value): value.rootDisplayName
+        case let .activity(value): value.displayName
         }
     }
 
     /// Every stable identifier a search may name, including the root a folder
-    /// subscription or a run is bound to.
+    /// subscription or a run is bound to and every frozen item identity an
+    /// addition is recovered by.
     public var searchableIdentifiers: [String] {
         switch self {
         case let .file(value): [value.subscriptionID, value.requestedSourceIdentity]
         case let .folder(value): [value.subscriptionID, value.rootRef]
         case let .retainedRoot(value): [value.rootRef]
-        case let .bulkRun(value): [value.runID, value.rootRef]
+        case let .activity(value):
+            [value.identifier] + (value.run.map { [$0.rootRef] } ?? []) + value.items.map(\.itemID)
         }
     }
 
@@ -137,7 +206,7 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
         case let .file(value): Self.label(value.state)
         case let .folder(value): Self.label(value.state)
         case .retainedRoot: "Added once"
-        case let .bulkRun(value): Self.label(value.state)
+        case let .activity(value): Self.statusLabel(value)
         }
     }
 
@@ -146,17 +215,18 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
         case let .file(value): Self.bucket(value.state)
         case let .folder(value): Self.bucket(value.state)
         case .retainedRoot: .stoppedOrComplete
-        case let .bulkRun(value): Self.bucket(value.state)
+        case let .activity(value): Self.bucket(value)
         }
     }
 
-    /// The count column: enrolled members, or a run's added-of-planned.
+    /// The count column: enrolled members, or how many of an addition's items
+    /// Core has accepted for processing. Accepted is not added.
     public var countText: String {
         switch self {
         case .file: "1"
         case let .folder(value): String(value.members.count)
         case let .retainedRoot(value): String(value.memberCount)
-        case let .bulkRun(value): "\(value.admittedCount)/\(value.members.count)"
+        case let .activity(value): "\(value.count(.processing))/\(value.items.count)"
         }
     }
 
@@ -168,12 +238,43 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
                 ?? value.lastCompletedMetadataScanAt
                 ?? "Not scanned yet"
         case .retainedRoot: "Not kept updated"
-        case let .bulkRun(value):
-            // Separate per-file facts, never one whole-folder success.
-            "\(value.admittedCount) added · \(value.publishedCount) in progress · "
-                + "\(value.plannedCount) waiting · \(value.stoppedCount) stopped · "
-                + "\(value.attentionCount) needs attention"
-                + (Self.isTerminal(value.state) ? " · links retained for manual refresh" : "")
+        case let .activity(value): Self.progressText(value)
+        }
+    }
+
+    /// The group's own status: the fact that most needs the user, then the
+    /// earliest unfinished stage, then what Core owns, then stopped. It is never
+    /// a claim that the addition as a whole succeeded.
+    static func statusLabel(_ group: CaptureActivityGroup) -> String {
+        let order: [CaptureActivityFact] =
+            [.failed, .checking, .sending, .queued, .planned, .processing, .stopped]
+        guard let fact = order.first(where: { group.count($0) > 0 }) else {
+            return "No activity recorded"
+        }
+        return label(fact)
+    }
+
+    /// Separate per-file facts, in a fixed order, with nothing invented for a
+    /// fact no item reports.
+    static func progressText(_ group: CaptureActivityGroup) -> String {
+        let order: [CaptureActivityFact] =
+            [.processing, .sending, .queued, .planned, .checking, .failed, .stopped]
+        let parts = order.compactMap { fact -> String? in
+            let count = group.count(fact)
+            return count > 0 ? phrase(fact, count: count) : nil
+        }
+        return parts.isEmpty ? "No activity recorded yet" : parts.joined(separator: " · ")
+    }
+
+    private static func phrase(_ fact: CaptureActivityFact, count: Int) -> String {
+        switch fact {
+        case .planned: "\(count) waiting to be prepared"
+        case .queued: "\(count) queued on this Mac"
+        case .sending: "\(count) sending to Core"
+        case .checking: "\(count) checking status"
+        case .processing: "\(count) accepted by Core for processing"
+        case .failed: "\(count) need attention"
+        case .stopped: "\(count) stopped"
         }
     }
 
@@ -186,12 +287,22 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
         }
     }
 
-    private static func bucket(_ state: FolderBulkRunState) -> FilesAndFoldersStatusFilter {
-        switch state {
-        case .adding: .activeOrPending
-        case .paused: .paused
-        case .needsAttention: .needsAttention
-        case .complete, .stopped: .stoppedOrComplete
+    private static func bucket(_ group: CaptureActivityGroup) -> FilesAndFoldersStatusFilter {
+        if group.attentionCount > 0 { return .needsAttention }
+        if group.pendingCount > 0 { return .pending }
+        return .stoppedOrComplete
+    }
+
+    /// What is proven about one item, in the shared product wording.
+    static func label(_ fact: CaptureActivityFact) -> String {
+        switch fact {
+        case .planned: "Folder addition queued"
+        case .queued: "Queued on this Mac"
+        case .sending: "Sending to Core…"
+        case .checking: "Checking status…"
+        case .processing: "Processing in Core"
+        case .failed: "Needs attention"
+        case .stopped: "Stopped"
         }
     }
 
@@ -232,19 +343,62 @@ public struct FilesAndFoldersModel: Sendable {
     public let folders: [FolderSubscription]
     public let retainedRoots: [RetainedRootGroup]
     public let runs: [FolderBulkRun]
+    /// The durable local activity record, exactly as the activity store holds it.
+    public let activity: [CaptureActivityRecord]
+    public let activityGroups: [CaptureActivityGroup]
 
     public init(
         workspaceName: String,
         files: [FileSubscription] = [],
         folders: [FolderSubscription] = [],
         retainedRoots: [RetainedRootGroup] = [],
-        runs: [FolderBulkRun] = []
+        runs: [FolderBulkRun] = [],
+        activity: [CaptureActivityRecord] = []
     ) {
         self.workspaceName = workspaceName
         self.files = files
         self.folders = folders
         self.retainedRoots = retainedRoots
         self.runs = runs
+        self.activity = activity
+        activityGroups = Self.activityGroups(records: activity, runs: runs)
+    }
+
+    /// Activity that clearing would remove. Unresolved work is never counted:
+    /// not an unknown outcome, and not a folder member its run can still retry.
+    public var clearableActivityCount: Int { activity.filter(\.isReceipt).count }
+
+    /// Groups the durable activity record by the frozen run that owns an item,
+    /// or by its submission when no run does. A run whose every item has been
+    /// pruned or cleared is not listed: clearing a receipt actually clears it,
+    /// and the run's own manifest and links are untouched either way.
+    public static func activityGroups(
+        records: [CaptureActivityRecord],
+        runs: [FolderBulkRun]
+    ) -> [CaptureActivityGroup] {
+        let runsByID = Dictionary(runs.map { ($0.runID, $0) }, uniquingKeysWith: { first, _ in first })
+        var order: [String] = []
+        var grouped: [String: [CaptureActivityRecord]] = [:]
+        for record in records.sorted(by: { $0.sequence < $1.sequence }) {
+            let key = record.runID ?? record.submissionID
+            if grouped[key] == nil { order.append(key) }
+            grouped[key, default: []].append(record)
+        }
+        return order.map { key in
+            let items = grouped[key] ?? []
+            let run = runsByID[key]
+            return CaptureActivityGroup(
+                identifier: key,
+                displayName: run?.rootDisplayName ?? Self.submissionName(items),
+                run: run,
+                items: items
+            )
+        }
+    }
+
+    private static func submissionName(_ items: [CaptureActivityRecord]) -> String {
+        guard items.count > 1 else { return items.first?.displayName ?? "Addition" }
+        return "\(items.count) items added together"
     }
 
     /// Retained one-off root groups that no folder subscription represents. A
@@ -290,10 +444,13 @@ public struct FilesAndFoldersModel: Sendable {
                     + retainedRoots.map(FilesAndFoldersItem.retainedRoot)
             )
         case .recentAdditions:
-            // Most recent first: the surface is about what was just added.
-            unfiltered = runs.sorted {
-                $0.createdAt == $1.createdAt ? $0.runID > $1.runID : $0.createdAt > $1.createdAt
-            }.map(FilesAndFoldersItem.bulkRun)
+            // Most recent first, by the store's own monotonic order rather than
+            // by a timestamp two additions can share.
+            unfiltered = activityGroups.sorted {
+                $0.latestSequence == $1.latestSequence
+                    ? $0.identifier > $1.identifier
+                    : $0.latestSequence > $1.latestSequence
+            }.map(FilesAndFoldersItem.activity)
         }
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
         return unfiltered.filter { item in
@@ -307,8 +464,14 @@ public struct FilesAndFoldersModel: Sendable {
             switch segment {
             case .files: return "No files are listed."
             case .folders: return "No folders are listed."
-            case .recentAdditions: return "No folder additions are recorded."
+            case .recentAdditions: return "No recent additions are recorded."
             }
+        }
+        if segment == .recentAdditions {
+            let pending = items.filter { $0.statusFilter == .pending }.count
+            let attention = items.filter { $0.statusFilter == .needsAttention }.count
+            return "\(pending) pending · \(attention) needs attention · \(items.count) listed "
+                + "· workspace \(workspaceName)"
         }
         let active = items.filter { $0.statusFilter == .activeOrPending }.count
         return "\(active) active or pending · \(items.count) listed · workspace \(workspaceName)"
@@ -323,8 +486,34 @@ public struct FilesAndFoldersModel: Sendable {
         case let .file(value): return fileDetail(value)
         case let .folder(value): return folderDetail(value)
         case let .retainedRoot(value): return retainedRootDetail(value)
-        case let .bulkRun(value): return bulkRunDetail(value)
+        case let .activity(value): return activityDetail(value)
         }
+    }
+
+    /// The frozen recovery identity of every item whose outcome is unknown, so
+    /// it can be reconciled under exactly the same key. This reveals durable
+    /// state and nothing else: no replacement key, no destination change and no
+    /// removal is offered while an outcome may already have committed.
+    public func recoveryDetail(for item: FilesAndFoldersItem?) -> [DetailFact] {
+        guard case let .activity(group)? = item else { return [] }
+        let unknown = group.items.filter { $0.fact == .checking }
+        guard !unknown.isEmpty else { return [] }
+        return unknown.map { record in
+            DetailFact(
+                label: "Recovery identity — \(record.displayName)",
+                value: "item \(record.itemID) · operation \(record.operationKey)"
+                    + " · attempt \(record.attemptGeneration)"
+                    + (record.attemptOperationKey.map { " · attempt key \($0)" } ?? "")
+                    + (record.attemptRequestDigest.map { " · request \($0)" } ?? "")
+                    + (record.attemptDescriptorDigest.map { " · descriptor \($0)" } ?? "")
+            )
+        } + [
+            DetailFact(
+                label: "Reconciliation",
+                value: "This addition is reconciled under its existing key. No replacement key, "
+                    + "destination change or removal is offered while its outcome is unknown."
+            ),
+        ]
     }
 
     public static func actions(for item: FilesAndFoldersItem?) -> FilesAndFoldersActions {
@@ -356,17 +545,35 @@ public struct FilesAndFoldersModel: Sendable {
                 stopEnabled: false,
                 checkEnabled: false
             )
-        case let .bulkRun(value):
+        case let .activity(value):
+            guard let run = value.run else {
+                // An ordinary submission has no authority to offer here. The
+                // queue exposes no cancellation and no return from a known
+                // failure, so nothing pretends to retry or stop one; the only
+                // safe action is revealing an unknown outcome's identity.
+                return FilesAndFoldersActions(
+                    pauseTitle: "Retry unavailable files",
+                    pauseEnabled: false,
+                    stopTitle: "Stop adding remaining files",
+                    stopEnabled: false,
+                    checkEnabled: false,
+                    revealEnabled: value.count(.checking) > 0
+                )
+            }
             // Resuming is not retrying: a member that already failed keeps its
-            // own outcome until Retry unavailable files is chosen for it.
+            // own outcome until Retry unavailable files is chosen for it. Every
+            // action acts on this same frozen manifest and discovers nothing.
             return FilesAndFoldersActions(
-                pauseTitle: value.state == .paused
+                pauseTitle: run.state == .paused
                     ? "Resume"
-                    : value.attentionCount > 0 ? "Retry unavailable files" : "Pause",
-                pauseEnabled: [.adding, .paused, .needsAttention].contains(value.state),
+                    : run.attentionCount > 0 ? "Retry unavailable files" : "Pause",
+                pauseEnabled: [.adding, .paused, .needsAttention].contains(run.state),
                 stopTitle: "Stop adding remaining files",
-                stopEnabled: value.plannedCount > 0,
-                checkEnabled: value.state == .adding
+                // Only members that never started. A published or admitted
+                // child keeps its canonical outcome.
+                stopEnabled: run.plannedCount > 0,
+                checkEnabled: run.state == .adding,
+                revealEnabled: value.count(.checking) > 0
             )
         }
     }
@@ -470,40 +677,77 @@ public struct FilesAndFoldersModel: Sendable {
         ]
     }
 
-    private func bulkRunDetail(_ value: FolderBulkRun) -> [DetailFact] {
-        var facts = [
-            DetailFact(label: "Folder", value: value.rootDisplayName),
-            DetailFact(label: "Run", value: value.runID),
-            DetailFact(label: "Root", value: value.rootRef),
-            DetailFact(label: "Destination workspace", value: value.workspaceRef),
-            DetailFact(label: "Started", value: value.createdAt),
-            DetailFact(label: "Status", value: FilesAndFoldersItem.label(value.state)),
-            DetailFact(label: "Files in this run", value: String(value.members.count)),
+    /// One addition's own facts, then every item's own outcome. The activity
+    /// store records nothing about capture or extraction, so neither does this.
+    private func activityDetail(_ value: CaptureActivityGroup) -> [DetailFact] {
+        var facts = [DetailFact(label: "Addition", value: value.displayName)]
+        if let run = value.run {
+            facts += [
+                DetailFact(label: "Folder run", value: run.runID),
+                DetailFact(label: "Manifest revision", value: run.manifestRevision),
+                DetailFact(label: "Root", value: run.rootRef),
+                DetailFact(label: "Destination workspace", value: run.workspaceRef),
+                DetailFact(label: "Started", value: run.createdAt),
+                DetailFact(label: "Run status", value: FilesAndFoldersItem.label(run.state)),
+                DetailFact(
+                    label: "Updates",
+                    value: run.subscriptionID == nil
+                        ? "Added once. This run establishes no watch."
+                        : "This folder is also kept updated as a folder subscription."
+                ),
+            ]
+        } else {
+            facts += [
+                DetailFact(label: "Submission", value: value.identifier),
+                DetailFact(label: "Destination workspace", value: workspaceName),
+                DetailFact(
+                    label: "Updates",
+                    value: "Added once. This submission establishes no watch."
+                ),
+            ]
+        }
+        facts += [
+            DetailFact(label: "Files in this addition", value: String(value.items.count)),
+            DetailFact(label: "Progress", value: FilesAndFoldersItem.progressText(value)),
+            // The activity record holds a per-file outcome and nothing else: an
+            // addition that mostly succeeded is not an addition that succeeded.
             DetailFact(
-                label: "Progress",
-                value: "\(value.admittedCount) added, \(value.publishedCount) in progress, "
-                    + "\(value.plannedCount) waiting, \(value.stoppedCount) stopped, "
-                    + "\(value.attentionCount) need attention"
-            ),
-            // The ledger records a per-file outcome and nothing else: a run that
-            // mostly succeeded is not a folder that succeeded.
-            DetailFact(
-                label: "Whole-folder result",
+                label: "Whole-addition result",
                 value: "Not recorded. Each file carries its own outcome."
             ),
-            DetailFact(
-                label: "Updates",
-                value: value.subscriptionID == nil
-                    ? "Added once. This run establishes no watch."
-                    : "This folder is also kept updated as a folder subscription."
-            ),
         ]
-        if FilesAndFoldersItem.isTerminal(value.state) {
+        facts += value.items.map {
+            DetailFact(label: $0.displayName, value: Self.itemDetail($0))
+        }
+        if let run = value.run, FilesAndFoldersItem.isTerminal(run.state) {
             facts.append(Self.retainedLinksFact)
         }
+        facts.append(Self.retentionFact)
         facts.append(Self.coreHistoryFact)
         return facts
     }
+
+    /// One item's proven fact and the identity it is recovered by.
+    private static func itemDetail(_ record: CaptureActivityRecord) -> String {
+        var parts = [
+            FilesAndFoldersItem.label(record.fact),
+            "item \(record.itemID)",
+        ]
+        if let code = record.failureCode { parts.append("reason \(code)") }
+        if let captureID = record.admittedCaptureID { parts.append("capture \(captureID)") }
+        parts.append(
+            record.resolvedAt.map { "resolved \($0)" } ?? "first seen \(record.firstObservedAt)"
+        )
+        return parts.joined(separator: " · ")
+    }
+
+    /// What the bound is and, just as importantly, what clearing does not do.
+    private static let retentionFact = DetailFact(
+        label: "Activity retention",
+        value: "Completed activity is kept for up to 30 days or 100 items. Clearing it removes "
+            + "local receipts only: queued work and its recovery keys, original links, running "
+            + "watches, folder run manifests and anything already in Core are untouched."
+    )
 
     private static let retainedLinksFact = DetailFact(
         label: "Already added files",

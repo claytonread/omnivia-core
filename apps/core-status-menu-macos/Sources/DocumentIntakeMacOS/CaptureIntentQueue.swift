@@ -252,7 +252,7 @@ private struct CaptureQueueAnyKey: CodingKey {
 
 /// Refuses any field this build does not define, so a manifest carrying future
 /// authority is rejected rather than silently read as a subset.
-private func rejectUnknownKeys<Keys: CodingKey & CaseIterable>(
+func rejectUnknownKeys<Keys: CodingKey & CaseIterable>(
     _ decoder: Decoder,
     _ keys: Keys.Type
 ) throws {

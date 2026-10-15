@@ -26,6 +26,10 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     public let automaticScheduling: AutomaticSchedulingStateMachine
     public let folderBulkRuns: FolderBulkRunStore
     public let folderBulkCoordinator: FolderBulkRunCoordinator
+    /// Durable local activity for Recent additions. It reads the queue and the
+    /// run ledger and writes only its own file, so pruning or clearing activity
+    /// never touches recovery data, a link, a watch or a frozen manifest.
+    public let captureActivity: CaptureActivityStore
     public let fileSubscriptions: FileSubscriptionStore
     public let fileMonitoring: FileMonitoringCoordinator
     /// The canonical native/Core-owned stores every folder scope excludes, so a
@@ -124,6 +128,9 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             queue: queue,
             runs: folderBulkRuns
         )
+        captureActivity = try CaptureActivityStore(
+            stateDirectory: stateRoot.appendingPathComponent("capture-activity", isDirectory: true)
+        )
         fileMonitoring = FileMonitoringCoordinator(
             accessStore: accessStore,
             preparation: preparation,
@@ -147,6 +154,16 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     @discardableResult
     public func reconcilePendingFolderEstablishment() async -> [String] {
         await FolderCaptureSubmission.reconcilePending(environment: self)
+    }
+
+    /// Records what the durable queue and run ledgers now prove about each
+    /// submitted item and applies the terminal retention bound. Called before
+    /// and after every delivery pass, so a published item is recorded while it
+    /// is still queued and its outcome is recorded as soon as it is known.
+    @discardableResult
+    public func recordCaptureActivity() -> [CaptureActivityRecord] {
+        (try? captureActivity.observe(queue: queue.allEntries(), runs: folderBulkRuns.all()))
+            ?? captureActivity.all()
     }
 
     /// The retained root groups, as projections that carry no bookmark and no
