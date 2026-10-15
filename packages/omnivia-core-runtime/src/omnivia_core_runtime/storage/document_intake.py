@@ -391,6 +391,13 @@ class StoredCapture:
     #: last because `_insert`/`_select` derive their column lists from the field
     #: order, and a defaulted field cannot precede an undefaulted one.
     processing_settings_json: str | None = None
+    #: The exact ordered OCR resource-set identities this capture was admitted
+    #: *against*, as the canonical JSON of one resource snapshot (migration 0072),
+    #: and the fact that it was admitted against none when it resolves no
+    #: recognition. `None` only for a capture admitted before that migration.
+    #: Appended after `processing_settings_json` for the column-order reason above,
+    #: which is also the order the two migrations added them in.
+    processing_resources_json: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -605,6 +612,27 @@ def pending_outbox(
         (workspace_id, limit),
     ).fetchall()
     return [StoredOutbox(*row) for row in rows]
+
+
+def unsettled_capture_ids(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> tuple[str, ...]:
+    """Every capture of this workspace whose processing obligation is unsettled.
+
+    Deliberately unbounded, unlike :func:`pending_outbox`, and that is the whole
+    point of it being a separate read. Its one caller reclaims the durable OCR
+    resource pins that no unresolved obligation holds any more, and it computes
+    that by subtracting this set: a *page* of the oldest obligations would read as
+    "the rest have settled" and release the pins of work still queued. A bounded
+    read is right for deciding what to process next and wrong for deciding what
+    nothing needs.
+    """
+    rows = connection.execute(
+        "SELECT capture_id FROM omnivia_document_capture_outbox "
+        "WHERE workspace_id = ? AND kind = ? AND outbox_state = ?",
+        (workspace_id, OUTBOX_CAPTURE_PROCESSING, OUTBOX_PENDING),
+    ).fetchall()
+    return tuple(str(row[0]) for row in rows)
 
 
 def read_revision(

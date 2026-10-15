@@ -78,6 +78,14 @@ never specified. So a full cache refuses the installation with
 §14.5's **Language storage is full** -- and reports the capacity it needed.
 :meth:`ManagedOcrResources.remove` is the operator's explicit lever instead.
 
+That is also, exactly, why pinned resources never need defending from the cap:
+the only thing that could evict one is an eviction policy, and there is none.
+Capacity is spent by installing and reclaimed by removing, a pin occupies none of
+it and never causes an install, and a cache whose remaining room is held by pinned
+entries defers the next installation rather than taking those entries away. No
+path here cancels a pin to make room, and none exceeds the 512 MiB cap to avoid
+having to.
+
 **One selection, one directory.** The managed layout keeps each identity's bytes
 in their own directory so two model revisions of one language can coexist, which
 is what §17.3's "including retained older managed model versions" requires. The
@@ -103,15 +111,36 @@ links may not be removed, reconciliation will not drop them, and neither the
 pruning bound nor either sweep discards the directory.
 
 The hold is an **OS lock on a file of its own** under ``leases/``, not an entry
-in the state document. §18.4's pin is a durable *record* of a claim, and a record
-has to be released by whoever took it: a service that crashed mid-extraction
-would leave one behind for good, and the resources it named could never be
-removed again. The lock is the one fact a crashed holder cannot leave behind,
-because both platforms drop it with the holding descriptor -- so a lease whose
-lock can be taken is a lease nobody holds, and the next operation to look
-discards it. What a live hold covers is read from the projection's own hard
-links: a member *is* the payload's inode, which is the exact byte identity rather
-than a second record of which identities were named.
+in the state document, and it covers only the minutes one invocation runs. Both
+platforms drop it with the holding descriptor, so a lease whose lock can be taken
+is a lease nobody holds and the next operation to look discards it -- which makes
+it the right instrument for a window a crash must not be able to extend, and the
+wrong one for a window that outlives a process. What a live hold covers is read
+from the projection's own hard links: a member *is* the payload's inode, which is
+the exact byte identity rather than a second record of which identities were
+named.
+
+**A queued operation is held by a pin, which is the durable half.** An obligation
+may wait hours between being admitted and being executed, and a lock cannot span
+that: the service restarts and the lock is gone, while the claim must not be.
+:meth:`ManagedOcrResources.pin` writes §18.4's pin -- a record in the state
+document naming one operation and the exact identities it was admitted against --
+and :meth:`ManagedOcrResources.release` takes it back once that operation has
+reached a terminal disposition. The enforcement was here from the start and had no
+writer: a pinned identity cannot be removed, and reconciliation keeps its entry
+even when the bytes have gone, which is §18.4's unrecoverable case rather than a
+repair.
+
+Because the record survives a crash, the crash boundaries are where the care goes.
+The pin is written *before* the operation it belongs to is durable and released
+*after* that operation has settled -- the only order with no instant in which the
+bytes may be removed while the operation still needs them, and therefore an order
+whose two failure modes both leave a pin that no live operation holds.
+:meth:`ManagedOcrResources.reclaim` is how the owner takes those back: it is told
+the prefix its own pins carry and the exact set it still holds unresolved, and
+drops the rest. Nothing here guesses which pins are stale -- a durable record is
+precisely the thing this module cannot know the liveness of, so the component that
+wrote it says.
 
 **And a hold that cannot be read is not a hold that is absent.** Discovering
 which selections are held is itself a read of the filesystem, and every one of
@@ -138,7 +167,7 @@ import shutil
 import stat
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Container, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -154,10 +183,14 @@ from omnivia_core_runtime.ownership.locks import (
 )
 from omnivia_core_runtime.service.ocr_resource_store import (
     DEFAULT_OCR_RESOURCE_CAPACITY_BYTES,
+    MAX_TOKEN_LENGTH,
+    OcrResourceIdentityInvalid,
+    OcrResourcePin,
     OcrResourceSetIdentity,
     OcrResourceStore,
     OcrResourceStoreError,
     OcrResourceStoreState,
+    _validated_token,
 )
 from omnivia_core_runtime.workspace.filesystem import fsync_directory
 
@@ -300,6 +333,12 @@ class OcrResourceLifecycleRefused(Exception):
     thing a caller branches on; the message is for an operator. A capacity
     refusal also carries the exact byte figures, because §18.4 requires the
     required capacity to be visible rather than merely reported as full.
+
+    A refusal raised over a *named* selection carries the identities it was
+    raised for. The message names them too, but a message is not something a
+    caller may parse, and the caller that turns this into a user-facing resource
+    condition has to say which languages could not be served rather than
+    implicating the whole selection.
     """
 
     def __init__(
@@ -309,11 +348,13 @@ class OcrResourceLifecycleRefused(Exception):
         *,
         required_bytes: int | None = None,
         available_bytes: int | None = None,
+        identities: Sequence[OcrResourceSetIdentity] = (),
     ) -> None:
         super().__init__(message)
         self.code = code
         self.required_bytes = required_bytes
         self.available_bytes = available_bytes
+        self.identities = tuple(identities)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1082,6 +1123,7 @@ class ManagedOcrResources:
                     REFUSAL_NOT_INSTALLED,
                     f"no installed managed OCR resource has the identity "
                     f"{identity.stable_key}",
+                    identities=(identity,),
                 )
         target = self.selection_directory(selection)
         if self._projection_current(target, selection):
@@ -1093,6 +1135,7 @@ class ManagedOcrResources:
                     f"the installed bytes for {identity.stable_key} are missing or no "
                     f"longer match their declared digest; reconcile the managed OCR "
                     f"resources",
+                    identities=(identity,),
                 )
         self._prepare(self._root)
         self._prepare(self.selections_root)
@@ -1414,6 +1457,206 @@ class ManagedOcrResources:
             )
         restrict_to_owner(target, directory=False)
         return target
+
+    # -- pins ----------------------------------------------------------------
+
+    def pin(
+        self, operation_id: str, identities: Sequence[OcrResourceSetIdentity]
+    ) -> None:
+        """Durably claim these exact identities for one unresolved operation.
+
+        §18.4's pin, finally written by somebody. The state document has carried
+        :class:`~omnivia_core_runtime.service.ocr_resource_store.OcrResourcePin`
+        and both halves of its enforcement -- :meth:`remove` refuses a pinned
+        identity, :meth:`reconcile` keeps its entry even when the bytes have gone
+        -- since the store was written; what was missing was the writer, so
+        nothing was ever pinned and the enforcement never fired.
+
+        This is the claim a *queued* operation holds, which is what the selection
+        lease deliberately is not. The lease is an OS lock and dies with the
+        descriptor, so it covers the minutes an extraction is running and cannot
+        survive the hours an obligation may wait; this is a durable record and
+        survives a restart, which is the whole point, and which is why
+        :meth:`release` and :meth:`reclaim` both exist to take it back.
+
+        One operation's pins are exactly one selection, so a second call for the
+        same ``operation_id`` *replaces* what the first claimed rather than adding
+        to it. Re-pinning the same selection therefore writes the same document
+        and is a no-op, which is what lets execution re-assert its own claim
+        before it runs without having to know whether admission's claim survived.
+
+        Refuses, rather than claiming what it cannot: an identity no state entry
+        names is :data:`REFUSAL_NOT_INSTALLED`, and one whose payload is missing
+        or the wrong length is :data:`REFUSAL_DIVERGENT`. The length is the same
+        cheap check :attr:`ManagedOcrResource.bytes_present` makes and
+        deliberately not a digest -- a pin is a claim on an identity the store
+        says is installed, and proving the bytes belongs to the resolution that
+        is about to hand them to the engine, which digests them twice. Pinning
+        every capture's models at admission would otherwise read them all.
+
+        Pins occupy no capacity and are never a reason to install anything, so
+        this cannot exceed the managed cap. What it does is make the identities
+        unevictable, which is why a full cache then defers an installation with
+        :data:`REFUSAL_CAPACITY` rather than taking pinned bytes away to fit.
+        """
+        selection = self._validated_selection(identities)
+        with self.coordinated(create=False) as coordinated:
+            if not coordinated:
+                raise OcrResourceLifecycleRefused(
+                    REFUSAL_NOT_INSTALLED,
+                    "this installation has no managed OCR resources to pin",
+                )
+            self._pin(operation_id, selection)
+
+    def _pin(
+        self, operation_id: str, selection: tuple[OcrResourceSetIdentity, ...]
+    ) -> None:
+        state = self._store.load()
+        for identity in selection:
+            if identity not in state.entries:
+                raise OcrResourceLifecycleRefused(
+                    REFUSAL_NOT_INSTALLED,
+                    f"no installed managed OCR resource has the identity "
+                    f"{identity.stable_key}",
+                    identities=(identity,),
+                )
+            if self._payload_length(identity) != identity.byte_size:
+                raise OcrResourceLifecycleRefused(
+                    REFUSAL_DIVERGENT,
+                    f"the state document installs {identity.stable_key} but its "
+                    f"managed bytes are missing or the wrong length; reconcile the "
+                    f"managed OCR resources before pinning it",
+                    identities=(identity,),
+                )
+        try:
+            # The pin's own validation of the operation identifier: a token no
+            # longer than a stable key's field, so an identifier assembled from a
+            # caller's own names cannot reach the document as anything else.
+            claimed = tuple(
+                OcrResourcePin(operation_id, identity) for identity in selection
+            )
+        except OcrResourceIdentityInvalid as exc:
+            raise OcrResourceStoreError(f"a managed OCR pin is invalid: {exc}") from exc
+        kept = tuple(pin for pin in state.pins if pin.operation_id != operation_id)
+        self._store.save(
+            OcrResourceStoreState(entries=state.entries, pins=(*kept, *claimed))
+        )
+
+    def release(self, operation_id: str) -> None:
+        """Drop every pin one operation holds, once it has reached a terminal state.
+
+        The counterpart of :meth:`pin`, and the *only* thing that ends a durable
+        claim short of :meth:`reclaim`: §18.4's pin lasts until the operation
+        holding it is resolved, and neither a removal nor a reconciliation may
+        cancel one to make room.
+
+        Idempotent and quiet about an operation that holds nothing, because the
+        caller releasing after a terminal settlement cannot know whether it ever
+        pinned -- a text-only capture pins nothing at all -- and must not have to
+        branch on it. An absent cache has no pins to drop and is answered rather
+        than created, so releasing against an installation whose resources were
+        taken away is not an error either.
+        """
+        _validated_token("operation_id", operation_id)
+        with self.coordinated(create=False) as coordinated:
+            if not coordinated:
+                return
+            state = self._store.load()
+            kept = tuple(pin for pin in state.pins if pin.operation_id != operation_id)
+            if len(kept) != len(state.pins):
+                self._store.save(
+                    OcrResourceStoreState(entries=state.entries, pins=kept)
+                )
+
+    def reclaim(self, prefix: str, live: Container[str]) -> tuple[str, ...]:
+        """Drop the pins under ``prefix`` that no live operation holds; which ones.
+
+        What makes a durable pin recoverable rather than a leak. A pin is written
+        before the operation that owns it is durable and released after that
+        operation has settled, which is the only order with no window in which
+        the bytes could be removed while the operation still needs them -- and it
+        is therefore an order whose two crash boundaries both leave a pin behind:
+        one taken for an admission that then rolled back, and one whose operation
+        settled before the release landed. Neither is distinguishable from a live
+        claim by looking at the state document, because a durable record is
+        exactly the thing a crash cannot withdraw.
+
+        So the owner says. ``prefix`` scopes this to the pins one caller writes --
+        the pins of another workspace, or of some later component, are not under
+        it and are not even considered -- and ``live`` is the set of operation
+        identifiers that caller still holds unresolved, computed from its own
+        durable state. A pin under the prefix that is not in ``live`` names an
+        operation that no longer exists or has already settled, and is dropped.
+
+        ``live`` must be *exact*, not a page of the first few: a truncated set
+        would read as "these operations are no longer unresolved" and release the
+        pins of work that is still queued. The caller computing it is the one
+        thing this cannot check.
+
+        The prefix is checked only for being a bounded non-empty string, and
+        deliberately not for being a *token*: it is the beginning of one, so it
+        may well end on the separator a token may not, and it reaches nothing but
+        :meth:`str.startswith` -- no path, no document key, no lock name -- so
+        there is nothing a narrower alphabet would protect.
+        """
+        if not isinstance(prefix, str) or not 0 < len(prefix) <= MAX_TOKEN_LENGTH:
+            raise OcrResourceStoreError(
+                f"a managed OCR pin prefix must be 1 to {MAX_TOKEN_LENGTH} "
+                f"characters"
+            )
+        with self.coordinated(create=False) as coordinated:
+            if not coordinated:
+                return ()
+            state = self._store.load()
+            orphaned = {
+                pin.operation_id
+                for pin in state.pins
+                if pin.operation_id.startswith(prefix) and pin.operation_id not in live
+            }
+            if not orphaned:
+                return ()
+            self._store.save(
+                OcrResourceStoreState(
+                    entries=state.entries,
+                    pins=tuple(
+                        pin for pin in state.pins if pin.operation_id not in orphaned
+                    ),
+                )
+            )
+            return tuple(sorted(orphaned))
+
+    @contextmanager
+    def pinned_selection(
+        self, operation_id: str, identities: Sequence[OcrResourceSetIdentity]
+    ) -> Iterator[Path]:
+        """Re-assert one operation's claim, then project and hold what it claims.
+
+        The execution half of a durable pin: an operation that is about to invoke
+        the engine over the identities it was admitted against asserts the claim
+        again and only then resolves them. Both steps refuse rather than
+        substitute, so an identity that is no longer installed, or whose bytes no
+        longer match, stops the invocation instead of being quietly replaced by
+        whatever model of that language is installed now.
+
+        Re-asserting is what closes the gap between a pin that should be there
+        and one that is. :meth:`pin` replaces this operation's claim with exactly
+        this selection, so a claim that survived is confirmed, a claim lost with
+        an interrupted admission is restored, and either way the engine is never
+        invoked over bytes nothing holds. It costs one state-document write per
+        obligation, which is the price of not having to trust that the pin
+        written hours earlier is still there.
+
+        The two coordinated blocks are deliberately *not* nested, and the hold is
+        taken in the second one: coordination is released while the caller's
+        block runs, exactly as :meth:`leased_selection` arranges, because an
+        extraction runs for minutes and the administrative operations must stay
+        able to run and preserve rather than wait. Nothing can be removed in
+        between, because by then the durable pin already refuses it.
+        """
+        selection = self._validated_selection(identities)
+        self.pin(operation_id, selection)
+        with self.leased_selection(selection) as directory:
+            yield directory
 
     # -- remove --------------------------------------------------------------
 

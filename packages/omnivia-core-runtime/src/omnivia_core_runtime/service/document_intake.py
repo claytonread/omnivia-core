@@ -43,6 +43,7 @@ from typing import Any, Final
 from omnivia_core.contracts.v1 import to_canonical_json
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service import processing_settings
+from omnivia_core_runtime.service.ocr_resource_lifecycle import ManagedOcrResources
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
 from omnivia_core_runtime.service.source_capture import (
     _IDENTIFIER,
@@ -63,6 +64,11 @@ CAPTURE_STATUS_CAPTURED: Final = "captured"
 CAPTURE_STATUS_REPLAYED: Final = "replayed"
 CAPTURE_METADATA_KIND: Final = "document_intake"
 MAX_DOCUMENT_CAPTURE_BYTES: Final = 50 * 1024 * 1024
+#: The profile reference the governed-transfer boundary admits under. Named rather
+#: than spelled inline because the admission now has to ask what that reference
+#: resolves to -- a Text-only reference pins no OCR resources -- and the question and
+#: the stored value must be about the same string.
+_LEGACY_PROFILE_REF: Final = "legacy-default"
 
 
 class DocumentIntakeRefused(RuntimeError):
@@ -328,11 +334,18 @@ def capture_document_bytes(
     media_type: str,
     intent_kind: str,
     binding: BindingClaim | None = None,
+    ocr_resources: ManagedOcrResources | None = None,
 ) -> DocumentCaptureResult:
     """Admit the exact immutable bytes supplied by a governed transfer boundary.
 
     This function never opens an original path. The caller owns staging/transfer and must
     provide the complete snapshot bytes; Core recomputes identity and length here.
+
+    `ocr_resources` is the installation's managed OCR cache, which the admission
+    freezes and pins the capture's exact resource identities against. It defaults to
+    `None` -- an installation with no managed cache -- rather than being required,
+    because this boundary admits under the fixed `legacy-default` profile reference
+    and has no production caller to forget it.
     """
     assert runner.connection is not None and runner.workspace_id is not None
     assert runner.generation is not None
@@ -443,6 +456,13 @@ def capture_document_bytes(
             has_captures=sequence > 0,
         )
         capture_id = store.capture_id_for(workspace_id, operation_key)
+        admitted_settings, admitted_resources = _admitted_processing(
+            runner,
+            capture_id=capture_id,
+            media_type=media_type,
+            profile_ref=_LEGACY_PROFILE_REF,
+            resources=ocr_resources,
+        )
         try:
             written = _write_capture(
                 runner,
@@ -467,7 +487,7 @@ def capture_document_bytes(
             media_type=media_type,
             requested_source_identity=operation_key,
             target_binding_revision=operation_key,
-            processing_profile_ref="legacy-default",
+            processing_profile_ref=_LEGACY_PROFILE_REF,
             processing_profile_revision="1",
             consent_json=None,
             bulk_origin_json=None,
@@ -489,7 +509,8 @@ def capture_document_bytes(
             ),
             fencing_generation=runner.generation,
             created_at_us=now_us,
-            processing_settings_json=_admitted_settings(runner),
+            processing_settings_json=admitted_settings,
+            processing_resources_json=admitted_resources,
         )
         store.insert_capture(runner.connection, capture, now_us=now_us)
         store.insert_capture_outbox(runner.connection, capture, now_us=now_us)
@@ -498,26 +519,73 @@ def capture_document_bytes(
     return DocumentCaptureResult(CAPTURE_STATUS_CAPTURED, capture, eligible)
 
 
-def _admitted_settings(runner: ServiceRunner) -> str:
-    """The processing preferences this capture is admitted under, as one frozen document.
+def _admitted_processing(
+    runner: ServiceRunner,
+    *,
+    capture_id: str,
+    media_type: str,
+    profile_ref: str,
+    resources: ManagedOcrResources | None,
+) -> tuple[str, str]:
+    """What this capture is admitted under, and against: the two frozen documents.
 
-    Read **once**, here, at the instant the capture row is written, and stored on that row
-    (migration 0071). A preference changed after this point cannot reach this capture: the
-    queued obligation, the profile a worker will execute and the identity `document.history`
-    reports for it all derive from this snapshot rather than from whatever the live setting
-    says when the obligation is finally picked up.
+    Both read **once**, here, at the instant the capture row is written, and stored
+    on that row -- the preferences as `processing_settings_json` (migration 0071)
+    and the exact OCR resource identities as `processing_resources_json`
+    (migration 0072). A preference changed, a model updated or a language removed
+    after this point cannot reach this capture: the queued obligation, the profile
+    a worker will execute and the identity `document.history` reports for it all
+    derive from these two snapshots and never from whatever the installation or the
+    setting says when the obligation is finally picked up.
 
-    Nothing is resolved against the installation here -- no model is looked for, nothing is
-    downloaded and no language is substituted. What is frozen is the *intent*: which mode,
-    which ordered languages, whether embedded images are examined. Whether the bytes to
-    honour that intent are installed is settled at execution, which is the only moment at
-    which that question has a true answer.
+    The resource half is why this is no longer only an intent. 0071 froze which mode
+    and which ordered languages were wanted and left *which bytes* to execution,
+    which meant a capture admitted against one model revision could execute against
+    another -- under an operation key derived from the profile digest, so under an
+    identity nobody had been offered. :func:`admitted_resources` resolves the
+    languages against the installation's managed cache now and pins the exact
+    identities it resolves, so the bytes survive the queue; execution serves those
+    identities or reports a resource condition, and never resolves again.
+
+    A capture whose processing resolves no OCR resources at all -- Text-only, or a
+    media type these preferences do not recognise -- records that it pinned nothing.
+    It is deliberately a recorded decision rather than an absent value: a NULL means
+    a capture admitted before the column existed, and the two must stay
+    distinguishable.
+
+    A managed cache that cannot be read is not an answer about it, so the admission
+    is refused rather than frozen against a guess. The refusal is the same retryable
+    class as a capture whose bytes could not be preserved, because resending the same
+    operation key completes the work -- which is exactly the recovery, and much better
+    than a capture permanently frozen out of recognition because an administrator was
+    installing a language at that instant.
     """
     assert runner.connection is not None and runner.workspace_id is not None
     settings, _revision = processing_settings.read_settings(
         runner.connection, workspace_id=runner.workspace_id
     )
-    return to_canonical_json(settings.to_value())
+    if processing_settings.resolves_resources(
+        media_type=media_type, profile_ref=profile_ref, settings=settings
+    ):
+        try:
+            admitted = processing_settings.admitted_resources(
+                resources,
+                pin=processing_settings.capture_pin(runner.workspace_id, capture_id),
+                languages=settings.languages,
+            )
+        except processing_settings.ResourceStateIndeterminate as error:
+            raise DocumentIntakeRefused(
+                "the OCR resources this capture would be admitted against could "
+                "not be established"
+            ) from error
+    else:
+        admitted = processing_settings.AdmittedResources(
+            processing_settings.RESOURCES_NONE
+        )
+    return (
+        to_canonical_json(settings.to_value()),
+        to_canonical_json(admitted.to_value()),
+    )
 
 
 def _captured_replay(
@@ -563,12 +631,27 @@ def admit_document_capture_in_transaction(
     consent: Mapping[str, Any] | None,
     bulk_origin: Mapping[str, Any] | None,
     display_name: str | None,
+    ocr_resources: ManagedOcrResources | None,
 ) -> DocumentCaptureResult:
     """Write one transferred snapshot while the application mutation owns the transaction.
 
     The caller must have published ``content`` to the workspace blob store first. This
     function opens no transaction and commits nothing; the application mutation seam owns
     audit, idempotency outcome, these domain rows, and rollback as one unit.
+
+    ``ocr_resources`` is this installation's managed OCR cache, and it is a required
+    argument with no default: the admission freezes and *pins* the exact resource
+    identities this capture will execute against, and a caller that silently passed
+    nothing would admit a capture that can never recognise anything -- which is a
+    decision no caller should be able to make by omission. ``None`` says there is no
+    managed cache to ask, which is a determinate answer and not an absent one.
+
+    The pin is taken before these rows are written, and therefore inside the
+    mutation's transaction. A rollback leaves the pin without the capture that owns
+    it, which
+    :meth:`~omnivia_core_runtime.service.ocr_resource_lifecycle.ManagedOcrResources.reclaim`
+    takes back; the order cannot be reversed, because a capture durable before its
+    pin is a capture whose resources are removable while it waits.
     """
     assert runner.connection is not None and runner.workspace_id is not None
     assert runner.generation is not None
@@ -669,6 +752,13 @@ def admit_document_capture_in_transaction(
         has_captures=sequence > 0,
     )
     capture_id = store.capture_id_for(workspace_id, operation_key)
+    admitted_settings, admitted_resources = _admitted_processing(
+        runner,
+        capture_id=capture_id,
+        media_type=media_type,
+        profile_ref=processing_profile_ref,
+        resources=ocr_resources,
+    )
     try:
         written = _write_capture(
             runner,
@@ -715,7 +805,8 @@ def admit_document_capture_in_transaction(
         ),
         fencing_generation=runner.generation,
         created_at_us=now_us,
-        processing_settings_json=_admitted_settings(runner),
+        processing_settings_json=admitted_settings,
+        processing_resources_json=admitted_resources,
     )
     store.insert_capture(runner.connection, capture, now_us=now_us)
     store.insert_capture_outbox(runner.connection, capture, now_us=now_us)

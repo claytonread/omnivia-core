@@ -1408,3 +1408,271 @@ def test_the_installation_directory_name_is_stable() -> None:
     assert MANAGED_LEASES_DIRNAME == "leases"
     assert MANAGED_STAGING_DIRNAME == "staging"
     assert MANAGED_QUARANTINE_DIRNAME == "quarantine"
+
+
+# --- the pin writer: durable claims a queued operation holds (§18.4, END-02)
+
+
+def test_a_pin_claims_the_exact_identities_and_a_release_takes_it_back(
+    tmp_path: Path,
+) -> None:
+    """The writer the state document has always had enforcement for.
+
+    A pinned identity is immovable until the operation holding it is resolved, and
+    resolving it is the *only* thing that frees it: the removal in between is
+    refused with the code an operator recovers from by waiting.
+    """
+    managed, identity = _installed(tmp_path)
+
+    managed.pin("op-queued", (identity,))
+
+    assert [pin.operation_id for pin in managed.store.load().pins] == ["op-queued"]
+    assert managed.inventory().resources[0].pinned_by == ("op-queued",)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.remove(identity)
+    assert refused.value.code == REFUSAL_PINNED
+
+    managed.release("op-queued")
+
+    assert managed.store.load().pins == ()
+    managed.remove(identity)
+    assert managed.store.load().entries == ()
+
+
+def test_a_pin_refuses_an_identity_that_is_not_installed(tmp_path: Path) -> None:
+    """A claim on bytes nothing installed is refused rather than recorded.
+
+    A pin that could name an uninstalled identity would be a claim the cache
+    cannot keep, and the operation holding it would go on to resolve nothing.
+    """
+    managed, identity = _installed(tmp_path)
+    absent = _identity(OTHER_BODY)
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.pin("op-absent", (absent,))
+
+    assert refused.value.code == REFUSAL_NOT_INSTALLED
+    assert refused.value.identities == (absent,)
+    assert managed.store.load().pins == ()
+    # The installed one was not pinned either: the claim is all or nothing.
+    managed.remove(identity)
+
+
+def test_a_pin_refuses_bytes_that_have_already_diverged(tmp_path: Path) -> None:
+    """The state document says installed and the payload says otherwise.
+
+    Pinning it would hold an entry whose bytes no resolution could verify, so the
+    operator is sent to reconciliation instead -- the same answer every other
+    operation gives for a divergent entry.
+    """
+    managed, identity = _installed(tmp_path)
+    managed.payload_path(identity).write_bytes(BODY[:-1])
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.pin("op-divergent", (identity,))
+
+    assert refused.value.code == REFUSAL_DIVERGENT
+    assert refused.value.identities == (identity,)
+    assert managed.store.load().pins == ()
+
+
+def test_pinning_again_replaces_one_operations_claim_rather_than_adding(
+    tmp_path: Path,
+) -> None:
+    """An operation's pins are exactly one selection, so the second call replaces.
+
+    That is what lets execution re-assert its own claim without knowing whether
+    admission's survived: pinning the same selection writes the same document.
+    """
+    managed = _managed(tmp_path)
+    first = _identity()
+    second = _identity(OTHER_BODY, language="deu")
+    managed.install(_payload(tmp_path, BODY, "first.bin"), first)
+    managed.install(_payload(tmp_path, OTHER_BODY, "second.bin"), second)
+
+    managed.pin("op-1", (first, second))
+    managed.pin("op-1", (first, second))
+    assert [pin.identity for pin in managed.store.load().pins] == sorted(
+        (first, second), key=lambda identity: identity.stable_key
+    )
+
+    managed.pin("op-1", (second,))
+
+    assert [pin.identity for pin in managed.store.load().pins] == [second]
+    # Replaced, not added to: the identity dropped from the claim is removable.
+    managed.remove(first)
+
+
+def test_a_release_is_quiet_about_an_operation_that_holds_nothing(
+    tmp_path: Path,
+) -> None:
+    """Text-only captures pin nothing, and their settlement still releases.
+
+    The caller releasing after a terminal disposition cannot know whether it ever
+    pinned, and must not have to branch on it.
+    """
+    managed, identity = _installed(tmp_path)
+    managed.pin("op-other", (identity,))
+
+    managed.release("op-nothing")
+
+    assert [pin.operation_id for pin in managed.store.load().pins] == ["op-other"]
+
+
+def test_releasing_against_an_absent_cache_is_not_an_error(tmp_path: Path) -> None:
+    """An installation whose resources were taken away has no pins to drop."""
+    managed = _managed(tmp_path)
+
+    managed.release("op-anything")
+
+    assert not managed.root.exists()
+
+
+def test_pinning_an_absent_cache_refuses_rather_than_creating_one(
+    tmp_path: Path,
+) -> None:
+    """A read-shaped operation must never be the thing that brings a cache into
+    existence, and a claim on a cache that is not there can only be refused.
+    """
+    managed = _managed(tmp_path)
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.pin("op-absent-cache", (_identity(),))
+
+    assert refused.value.code == REFUSAL_NOT_INSTALLED
+    assert not managed.root.exists()
+
+
+def test_reclaim_drops_only_the_pins_under_its_prefix_that_are_not_live(
+    tmp_path: Path,
+) -> None:
+    """Crash recovery, and the scope that makes it safe.
+
+    One installation's cache may serve more than one workspace, so a sweep
+    computed from one workspace's obligations is told the prefix its own pins
+    carry. A pin under that prefix that no live operation holds is abandoned --
+    the admission rolled back, or the release was lost -- and a pin outside it is
+    not even considered, however stale it looks from here.
+    """
+    managed, identity = _installed(tmp_path)
+    managed.pin("mine-live", (identity,))
+    managed.pin("mine-abandoned", (identity,))
+    managed.pin("theirs-live", (identity,))
+
+    dropped = managed.reclaim("mine-", {"mine-live"})
+
+    assert dropped == ("mine-abandoned",)
+    assert [pin.operation_id for pin in managed.store.load().pins] == [
+        "mine-live",
+        "theirs-live",
+    ]
+    # Still pinned by the two that were kept, so nothing became removable.
+    with pytest.raises(OcrResourceLifecycleRefused):
+        managed.remove(identity)
+
+    assert managed.reclaim("mine-", {"mine-live"}) == ()
+    assert managed.reclaim("theirs-", set()) == ("theirs-live",)
+    managed.release("mine-live")
+    managed.remove(identity)
+
+
+def test_reclaim_answers_an_absent_cache_without_creating_one(tmp_path: Path) -> None:
+    managed = _managed(tmp_path)
+
+    assert managed.reclaim("mine-", set()) == ()
+    assert not managed.root.exists()
+
+
+@pytest.mark.parametrize("prefix", ["", "x" * 65, None, 7])
+def test_a_malformed_reclaim_prefix_is_refused(
+    tmp_path: Path, prefix: object
+) -> None:
+    """Bounded and non-empty, and deliberately not checked as a *token*: a prefix
+    is the beginning of one, so it may end on the separator a token may not.
+    """
+    managed, _identity_installed = _installed(tmp_path)
+
+    with pytest.raises(OcrResourceStoreError):
+        managed.reclaim(prefix, set())  # type: ignore[arg-type]
+
+
+def test_a_pinned_selection_holds_the_projection_and_keeps_the_claim(
+    tmp_path: Path,
+) -> None:
+    """The execution end: re-assert, then project and hold.
+
+    Both claims are live inside the block -- the durable pin and the lease -- and
+    only the lease ends with it. The pin outlives the invocation because the
+    obligation it belongs to has not been settled yet, and settling it is a
+    decision this module does not get to make.
+    """
+    managed, identity = _installed(tmp_path)
+
+    with managed.pinned_selection("op-executing", (identity,)) as directory:
+        assert (directory / f"{identity.language}{MODEL_SUFFIX}").read_bytes() == BODY
+        assert [pin.operation_id for pin in managed.store.load().pins] == [
+            "op-executing"
+        ]
+        assert len(list(managed.leases_root.iterdir())) == 1
+        with pytest.raises(OcrResourceLifecycleRefused) as refused:
+            managed.remove(identity)
+        assert refused.value.code == REFUSAL_PINNED
+
+    assert list(managed.leases_root.iterdir()) == []
+    with pytest.raises(OcrResourceLifecycleRefused):
+        managed.remove(identity)
+    managed.release("op-executing")
+    managed.remove(identity)
+
+
+def test_a_pinned_selection_refuses_an_identity_that_has_been_removed(
+    tmp_path: Path,
+) -> None:
+    """Never a substitution. The pin is gone and so are the bytes, and another
+    model revision of the same language being installed changes nothing: the exact
+    identity is what was asked for and it is not there.
+    """
+    managed, identity = _installed(tmp_path)
+    managed.release("op-executing")
+    managed.remove(identity)
+    replacement = _identity(OTHER_BODY, model_version="tessdata_fast-4.2.0")
+    managed.install(_payload(tmp_path, OTHER_BODY, "replacement.bin"), replacement)
+
+    with (
+        pytest.raises(OcrResourceLifecycleRefused) as refused,
+        managed.pinned_selection("op-executing", (identity,)),
+    ):
+        raise AssertionError("a removed identity was served")
+
+    assert refused.value.code == REFUSAL_NOT_INSTALLED
+    assert refused.value.identities == (identity,)
+
+
+def test_a_pinned_resource_is_never_evicted_to_fit_an_installation(
+    tmp_path: Path,
+) -> None:
+    """§18.4's capacity rule with a pin in the way: defer, never evict.
+
+    The cache is exactly full and the only entry is pinned, so there is no unpinned
+    byte to reclaim. The installation is deferred with **Language storage is full**
+    and the capacity it needed -- the cap is not exceeded, the pinned bytes are
+    still there, and the pin was not cancelled to make room.
+    """
+    managed, identity = _installed(tmp_path, capacity_bytes=len(BODY))
+    managed.pin("op-queued", (identity,))
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.install(
+            _payload(tmp_path, OTHER_BODY, "other.bin"),
+            _identity(OTHER_BODY, language="deu"),
+        )
+
+    assert refused.value.code == REFUSAL_CAPACITY
+    assert refused.value.required_bytes == len(OTHER_BODY)
+    assert refused.value.available_bytes == 0
+    inventory = managed.inventory()
+    assert inventory.installed_bytes == len(BODY)
+    assert inventory.installed_bytes <= inventory.capacity_bytes
+    assert [resource.identity for resource in inventory.resources] == [identity]
+    assert managed.payload_path(identity).read_bytes() == BODY
+    assert [pin.operation_id for pin in managed.store.load().pins] == ["op-queued"]

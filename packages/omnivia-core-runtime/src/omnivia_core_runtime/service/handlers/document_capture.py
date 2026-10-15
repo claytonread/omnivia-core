@@ -113,6 +113,7 @@ from omnivia_core_runtime.service.pagination import (
 from omnivia_core_runtime.service.processing_settings import (
     ProcessingSettings,
     ProcessingSettingsInvalid,
+    managed_resources,
     read_settings,
 )
 from omnivia_core_runtime.service.source_capture import (
@@ -1085,6 +1086,13 @@ class DocumentCaptureHandlers:
                     consent=None if request.consent is None else request.consent.to_wire(),
                     bulk_origin=None if request.bulk_origin is None else request.bulk_origin.to_wire(),
                     display_name=request.display_name,
+                    # The installation's managed OCR cache, so the admission can
+                    # freeze and pin the exact resource identities this capture
+                    # will execute against. The same authority the executor and
+                    # the history read are given, composed once in `service/main`
+                    # from the installation being served: an admission that was
+                    # not given it would freeze every capture out of recognition.
+                    ocr_resources=managed_resources(self.catalogue_for),
                 )
             except DocumentCaptureSuppressed:
                 failure = "conflict"

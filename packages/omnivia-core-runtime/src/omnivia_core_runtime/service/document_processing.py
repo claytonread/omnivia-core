@@ -1,66 +1,69 @@
 """Bounded processing of durable document-capture outbox obligations.
 
-Every obligation executes from the capture row's own frozen
-``processing_settings_json`` (migration 0071) and from nothing process-global.
-That snapshot decides the mode, the ordered recognition languages and whether
-embedded raster images are examined; the installation's managed resources are
-consulted only at this point, and only for a selection that snapshot names. A
-preference changed, or the service restarted, between admission and execution
-therefore cannot move what a queued or active obligation does -- the obligation
-is replayed from the same row under the same operation key, and the key is
-derived from the profile that row resolves to.
+Every obligation executes from its own capture row's two frozen documents and
+from nothing process-global: ``processing_settings_json`` (migration 0071), which
+decides the mode, the ordered recognition languages and whether embedded raster
+images are examined, and ``processing_resources_json`` (migration 0072), which
+names the exact ordered OCR resource-set identities the capture was admitted
+*against*. A preference changed, a model updated, a language removed, or the
+service restarted between admission and execution therefore cannot move what a
+queued or active obligation does -- the obligation is replayed from the same row,
+the profile it resolves to is the same profile, and the operation key derived from
+that profile's digest is the same key.
 
-Three deliberate boundaries:
+**Execution resolves no language against the installation.** There is no code
+path here that asks "which models are installed for these languages"; that
+question was asked once, at admission, and its answer is on the row.
+:meth:`~omnivia_core_runtime.service.processing_settings.ManagedSelectionAuthority.frozen_resources`
+is handed the identities and serves those or reports a condition, so a newer model
+revision of the same language -- installed while the obligation waited -- is a
+different identity and is never consulted. That is what makes substitution
+impossible rather than merely unlikely, and it is why the resource half of a
+capture can only change through an explicit reprocess, which is a new decision.
 
-**Text-only never resolves OCR resources.** Not "resolves them and ignores the
-answer": :func:`resolve_settings` returns before the catalogue is consulted, so a
-text-only capture takes no coordination lock on the managed cache, leases
-nothing, and its profile pins no engine, model or language at all.
+**What a queued obligation needs, it durably pins; what an executing one needs,
+it also holds.** The two cover different windows and neither is the other. The pin
+is a record in the managed cache's state document, written at admission and
+released only once the obligation reaches a terminal disposition, so the bytes
+survive an unbounded queue wait and a restart. The lease is an OS lock that dies
+with the process, so it covers the minutes between resolving a projection and
+finishing with the engine over it.
+:meth:`~omnivia_core_runtime.service.ocr_resource_lifecycle.ManagedOcrResources.pinned_selection`
+takes both, re-asserting the pin before it resolves, so an obligation never
+invokes the engine over bytes nothing holds.
 
-**What one obligation resolves, it holds.** Resolving a selection and invoking
-the engine over it are two moments, and between them a removal, a reconciliation
-or the managed cache's own pruning would discard the projected directory the
-invocation is about to open. :func:`held_selection` takes one lease per
-obligation before the selection is resolved and releases it only after the
-extraction has been settled, so the exact resource identities and the projected
-directory survive the whole invocation. It fails closed: a hold that cannot be
-taken resolves as unavailable resources with the requested order intact, never as
-a substitution.
+**A condition is settled; the absence of one is not.** Resources that are
+demonstrably not there -- an identity no longer installed, bytes that no longer
+match it -- are a resource condition, recorded against the extraction with the
+recovery that fixes it, and the obligation is terminal. A managed cache that
+could not be *read* is not a condition but the lack of one, and settling an
+extraction on it would burn a capture over a lock another administrator happened
+to be holding. Such an obligation is left exactly as it was: nothing resolved,
+no extraction revision admitted, nothing settled, and the same row replayed under
+the same key on a later pass.
 
-**A null snapshot is the one compatibility path, and it is deterministic.** It
-means exactly what migration 0071 says it means -- a capture admitted before the
-column existed, which recorded no selection -- and it executes the behaviour that
-applied when it was admitted: the mode its own profile reference names, no
-embedded-image pass, and an *unconfigured* language request, which reports
-``ocr_resources_unconfigured`` rather than claiming English was asked for. A
-non-null snapshot that does not decode is never reinterpreted that way: it
-settles as a failed extraction naming :data:`PROCESSING_SETTINGS_INVALID`.
+**Two null columns are the compatibility paths, and both are deterministic.** A
+null settings snapshot means what migration 0071 says: a capture admitted before
+the column existed, which executes the behaviour that applied then -- the mode its
+profile reference names, no embedded-image pass, and an *unconfigured* language
+request. A null resource snapshot means what 0072 says, and resolves against the
+packaged fail-closed catalogue, which installs no model and names no model
+directory. Neither invents an identity, and in particular neither consults the
+installation's current cache, so a model installed after such a capture was
+admitted cannot change what it does. A non-null column that does not decode is
+never reinterpreted as its own absence: it settles as a failed extraction naming
+:data:`PROCESSING_SETTINGS_INVALID` or :data:`PROCESSING_RESOURCES_INVALID`,
+because reading an unreadable decision as an absent one would run something
+nobody asked for under the key of something they did.
 
-Still open, for the next END-02 lane
-------------------------------------
-
-**Resource identity is frozen for an obligation that is executing, not for one
-that is merely queued.** The capture row freezes the *preferences* at admission,
-and the lease holds the *resources* from the moment an obligation resolves them.
-Between those two points nothing is held, and nothing could reasonably be: the
-queue is unbounded, and a hold taken at admission would make every pending
-capture a veto over the operator's own removal for as long as the backlog lasts.
-
-So a capture admitted while ``deu`` was installed at one model revision, and
-executed after the operator removed that revision and installed another, resolves
-against the revision installed *then*. Nothing is substituted and nothing is
-silent -- the requested order is still the frozen one, the profile names the model
-hashes actually read or the unavailable resource state, and the outcome reports
-it -- but the resolved profile's digest, and therefore the extraction's operation
-key, is not the digest that the same row would have produced at admission. A
-language removed in that window resolves as ``needs_ocr_language`` rather than
-being held open.
-
-Closing it means freezing the resolved resource-set identities into the capture
-row alongside the preferences, so execution either serves those exact identities
-or refuses with a resource condition, instead of resolving whatever is installed
-when its turn comes. That is a migration and an admission-time resolution; it is
-not what the lease does and the lease should not be read as having done it.
+**Crash recovery is by reclamation, not by trust.** A pin is written before the
+capture that owns it is durable and released after that capture's obligation has
+settled -- the only order with no instant in which the bytes are removable while
+the obligation still needs them, and therefore an order whose two crash
+boundaries both leave a pin that no obligation holds. :func:`reclaim_capture_pins`
+takes those back: it computes the *exact* set of unsettled obligations, under the
+SQLite gate every admission also runs inside, and releases every pin of this
+workspace that is not in it.
 """
 
 from __future__ import annotations
@@ -70,7 +73,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -83,20 +86,41 @@ from omnivia_core_runtime.service.document_extractors import (
     DocumentExtractionUnsupported,
     extract_document,
 )
+from omnivia_core_runtime.service.ocr_resource_lifecycle import (
+    OcrResourceLifecycleRefused,
+)
+from omnivia_core_runtime.service.ocr_resource_store import OcrResourceStoreError
 from omnivia_core_runtime.service.ocr_resources import (
     MODE_TEXT_AND_LOCAL_OCR,
     MODE_TEXT_ONLY,
     OCR_SECONDS_PER_DOCUMENT,
     PACKAGED_OCR_CATALOGUE,
     REASON_NEEDS_LANGUAGE,
+    REASON_UNCONFIGURED,
+    TESSERACT_ENGINE,
+    TESSERACT_REVISION,
     ExtractionSettings,
+    OcrResources,
     OcrSelectionInvalid,
     TrustedOcrCatalogue,
+    validated_languages,
 )
 from omnivia_core_runtime.service.processing_settings import (
     DEFAULT_SETTINGS,
+    OCR_MEDIA_TYPES,
+    RESOURCES_FROZEN,
+    RESOURCES_NONE,
+    RESOURCES_UNAVAILABLE,
+    TEXT_ONLY_PROFILE_REF,
+    AdmittedResources,
+    ProcessingResourcesInvalid,
     ProcessingSettings,
     ProcessingSettingsInvalid,
+    ResourceStateIndeterminate,
+    capture_pin,
+    capture_pin_prefix,
+    managed_resources,
+    resolves_resources,
 )
 from omnivia_core_runtime.service.raster_extractors import (
     DEDUPLICATION_VERSION,
@@ -118,19 +142,6 @@ from omnivia_core_runtime.storage import document_intake as store
 
 DEFAULT_POLL_INTERVAL_SECONDS = 0.5
 DEFAULT_PROCESSING_BUDGET = 4
-OCR_MEDIA_TYPES = frozenset(
-    {
-        "application/pdf",
-        "image/png",
-        "image/jpeg",
-        "image/tiff",
-        "image/heic",
-        "image/heif",
-        "image/webp",
-    }
-)
-#: The profile reference that selects the explicit faster Text-only profile.
-TEXT_ONLY_PROFILE_REF = "text-only"
 #: The profile reference that selects the product default: Text and local OCR where the
 #: media type qualifies for it, and direct text everywhere else. Named here, rather than
 #: left to whatever string a caller sends, because `document.history` reports the exact
@@ -148,6 +159,11 @@ NEEDS_OCR_LANGUAGE = REASON_NEEDS_LANGUAGE
 #: under cannot be established at all, so there is no requested profile to keep and
 #: nothing about the installation to recover by installing.
 PROCESSING_SETTINGS_INVALID = "processing_settings_invalid"
+#: The same for the resource snapshot, and deliberately its own code: an operator
+#: reading one of these has to know which of the capture's two frozen documents is
+#: unreadable, and the recovery differs from every resource condition -- installing
+#: or reinstalling a model cannot repair a record of which models were named.
+PROCESSING_RESOURCES_INVALID = "processing_resources_invalid"
 
 #: Resolves the trusted catalogue for one *frozen* ordered selection, at the moment
 #: the work runs. A callable rather than a catalogue because the managed cache
@@ -168,6 +184,25 @@ class SelectionLeaseSource(Protocol):
     """
 
     def lease(self) -> AbstractContextManager[CatalogueFor]: ...
+
+
+@runtime_checkable
+class FrozenResourceSource(Protocol):
+    """An installation that can serve one capture's *frozen* resource identities.
+
+    The worker's only route to OCR resources. It deliberately takes identities
+    rather than languages: a source that could be asked "what serves these
+    languages" is a source that could answer with a model installed since
+    admission, and there is no such question here to answer wrongly.
+    """
+
+    def frozen_resources(
+        self,
+        *,
+        operation_id: str,
+        admitted: AdmittedResources,
+        requested: Sequence[str],
+    ) -> AbstractContextManager[OcrResources]: ...
 
 
 #: Either way of naming where OCR resources come from: a plain resolver, which
@@ -217,6 +252,11 @@ class DocumentProcessingExecutor:
     #: the packaged fail-closed catalogue, which serves nothing.
     catalogue_for: CatalogueSource | None = None
     _next_poll: float = 0.0
+    #: Whether this instance has already taken back the durable resource pins no
+    #: obligation holds. Once per instance, which is once per service start: the
+    #: pins that need reclaiming are the ones a previous process left behind, and
+    #: a sweep is a whole-workspace read that has no business running on a tick.
+    _reclaimed: bool = False
 
     def run_pending(
         self,
@@ -230,6 +270,7 @@ class DocumentProcessingExecutor:
         if not force and now < self._next_poll:
             return []
         self._next_poll = now + max(self.poll_interval_seconds, 0.0)
+        self._reclaim_once()
         try:
             return process_capture_outbox(
                 self.runner, limit=budget, catalogue_for=self.catalogue_for
@@ -239,21 +280,32 @@ class DocumentProcessingExecutor:
             # A later bounded pass replays the same operation key.
             return []
 
+    def _reclaim_once(self) -> None:
+        """Take back the pins of the obligations a previous process left, once.
 
-def recognises(settings: ProcessingSettings, media_type: str) -> bool:
-    """Whether these preferences would run recognition over this media type.
+        Before the first pass processes anything, so an abandoned pin is released
+        at the earliest moment this instance could know it was abandoned rather
+        than at the end of whatever backlog it inherited.
 
-    Two independent ways recognition can be wanted: the media type is one the
-    engine reads whole (a PDF or an image), or the source carries raster images
-    *inside* it and the embedded-image preference applies to it. Text-only wants
-    neither. Decided in one place because three callers need the same answer --
-    what to resolve, what limits to publish, and whether a reprocess has a real
-    alternate to offer -- and three copies of it would be three chances for the
-    executed profile and the offered one to disagree.
-    """
-    return settings.mode == MODE_TEXT_AND_LOCAL_OCR and (
-        media_type in OCR_MEDIA_TYPES or settings.embedded_image_ocr_for(media_type)
-    )
+        A sweep that could not run is simply not marked done and is attempted
+        again on the next pass -- a contended cache or an unreadable outbox is a
+        reason to try later, never a reason to fail the processing pass this was
+        a tidy-up before, and never a reason to go on believing the pins were
+        reclaimed.
+        """
+        if self._reclaimed:
+            return
+        try:
+            reclaim_capture_pins(self.runner, self.catalogue_for)
+        except (
+            OcrResourceLifecycleRefused,
+            OcrResourceStoreError,
+            OSError,
+            sqlite3.Error,
+            store.DocumentIntakeInvalid,
+        ):
+            return
+        self._reclaimed = True
 
 
 def resolve_settings(
@@ -262,14 +314,24 @@ def resolve_settings(
     profile_ref: str,
     settings: ProcessingSettings | None = DEFAULT_SETTINGS,
     catalogue_for: CatalogueFor | None = None,
+    resources: OcrResources | None = None,
 ) -> ExtractionSettings:
     """The trusted processing decisions for one capture.
 
     Nothing here reads the document. `settings` is the capture's own frozen
     snapshot -- its mode, its ordered recognition languages and its
-    embedded-image preference -- and it is the only source of all three. The
-    installation is consulted once, through `catalogue_for`, and only for the
-    languages that snapshot names.
+    embedded-image preference -- and it is the only source of all three.
+
+    Two mutually exclusive ways to name the OCR resources, because the two
+    callers have them at different moments. `catalogue_for` resolves the
+    snapshot's languages against an installation *now*, which is what a reprocess
+    does: it is an explicit new decision, taken inside one request, and the
+    workspace's current preferences are the approved ones. `resources` is already
+    resolved -- the capture's frozen identities, served or truthfully unserved --
+    which is what the worker passes, because a queued obligation's resources were
+    decided at admission and resolving them again is the one thing it must not
+    do. Given both, `resources` wins; given neither, the packaged fail-closed
+    catalogue answers, and it serves nothing.
 
     A missing or unverified model does not change the selected mode and never
     quietly becomes English: the returned settings keep the Text-and-local-OCR
@@ -283,30 +345,160 @@ def resolve_settings(
     admitted under.
     """
     languages: Sequence[str] = () if settings is None else settings.languages
-    embedded = settings is not None and settings.embedded_image_ocr_for(media_type)
-    qualifies = (
-        media_type in OCR_MEDIA_TYPES
-        if settings is None
-        else recognises(settings, media_type)
-    )
-    text_only = (
-        profile_ref == TEXT_ONLY_PROFILE_REF
-        or (settings is not None and settings.mode == MODE_TEXT_ONLY)
-        or not qualifies
-    )
-    if text_only:
+    if not resolves_resources(
+        media_type=media_type, profile_ref=profile_ref, settings=settings
+    ):
         # Returned before the catalogue is asked anything: a text-only capture
         # resolves no OCR resource, takes no lock on the managed cache and pins
         # no model it would never read.
         return ExtractionSettings(processing_mode=MODE_TEXT_ONLY)
-    catalogue = (
-        PACKAGED_OCR_CATALOGUE if catalogue_for is None else catalogue_for(languages)
-    )
+    if resources is None:
+        catalogue = (
+            PACKAGED_OCR_CATALOGUE
+            if catalogue_for is None
+            else catalogue_for(languages)
+        )
+        resources = catalogue.resolve(languages)
     return ExtractionSettings(
         processing_mode=MODE_TEXT_AND_LOCAL_OCR,
-        ocr=catalogue.resolve(languages),
-        embedded_image_ocr=embedded,
+        ocr=resources,
+        embedded_image_ocr=(
+            settings is not None and settings.embedded_image_ocr_for(media_type)
+        ),
     )
+
+
+def frozen_resources(capture: store.StoredCapture) -> AdmittedResources | None:
+    """The resources this capture was admitted against, decoded from its own row.
+
+    ``None`` only for a capture admitted before migration 0072, which recorded no
+    resource selection at all; :func:`capture_resources` documents what that
+    executes as. A stored document that is present but does not decode raises,
+    for the reason :func:`frozen_settings` raises: reading it as the legacy "no
+    selection" case would reinterpret an unreadable decision as an absent one,
+    and the absent one resolves -- which is exactly the resolution this capture
+    was admitted to avoid.
+    """
+    stored = capture.processing_resources_json
+    if stored is None:
+        return None
+    try:
+        return AdmittedResources.from_value(json.loads(stored))
+    except (TypeError, ValueError) as error:
+        raise ProcessingResourcesInvalid(
+            f"the frozen OCR resources of {capture.capture_id} do not decode: "
+            f"{error}"
+        ) from error
+
+
+@contextmanager
+def capture_resources(
+    capture: store.StoredCapture,
+    *,
+    settings: ProcessingSettings | None,
+    admitted: AdmittedResources | None,
+    source: CatalogueSource | None,
+    operation_id: str,
+) -> Iterator[OcrResources | None]:
+    """The OCR resources this capture executes with, held for the caller's block.
+
+    Every branch is decided by what the capture row *recorded*, never by what the
+    installation holds now:
+
+    ``None`` recorded (pre-0072) resolves against the packaged fail-closed
+    catalogue, which installs no model and names no model directory. That is the
+    behaviour such a capture was admitted under, it invents no identity, and it
+    is the one answer a model installed since cannot change.
+
+    :data:`RESOURCES_NONE` yields ``None``: this capture resolves no recognition,
+    so there is nothing to serve and nothing was ever pinned.
+
+    :data:`RESOURCES_UNAVAILABLE` replays the condition recorded at admission,
+    exactly as it was recorded. It is deliberately not re-resolved: a selection
+    the installation could not serve then must not become servable because a
+    language was installed while the obligation waited, because the capture's
+    profile digest -- and the operation key derived from it -- would move with it.
+    The recovery is an explicit reprocess.
+
+    :data:`RESOURCES_FROZEN` is served by the installation, from the exact
+    identities, under a re-asserted pin and a live lease. An installation that is
+    no longer there cannot serve them, which is the missing-language condition
+    with the unconfigured installation as the operator's detail -- the same answer
+    the packaged catalogue gives for an explicit request, so what a user sees does
+    not depend on which of the two it was.
+    """
+    requested = () if settings is None else settings.languages
+    if admitted is None:
+        yield resolve_settings(
+            media_type=capture.media_type,
+            profile_ref=capture.processing_profile_ref,
+            settings=settings,
+        ).ocr
+        return
+    if admitted.kind == RESOURCES_NONE:
+        yield None
+        return
+    if admitted.kind == RESOURCES_UNAVAILABLE:
+        yield admitted.unserved(requested)
+        return
+    assert admitted.kind == RESOURCES_FROZEN
+    if not isinstance(source, FrozenResourceSource):
+        yield OcrResources(
+            engine=TESSERACT_ENGINE,
+            engine_revision=TESSERACT_REVISION,
+            languages=validated_languages(requested),
+            available=False,
+            reason=REASON_NEEDS_LANGUAGE,
+            unavailable_models=admitted.languages,
+            resource_detail=REASON_UNCONFIGURED,
+        )
+        return
+    with source.frozen_resources(
+        operation_id=operation_id, admitted=admitted, requested=requested
+    ) as resources:
+        yield resources
+
+
+def reclaim_capture_pins(
+    runner: ServiceRunner, source: CatalogueSource | None
+) -> tuple[str, ...]:
+    """Release every durable pin of this workspace that no obligation holds.
+
+    The recovery half of pinning at admission. Because the pin is written before
+    the capture row is durable and released after that capture's obligation has
+    settled -- the only order that leaves no instant in which the bytes are
+    removable while the obligation still needs them -- a crash on either side of
+    the work leaves a pin behind: one taken for an admission that then rolled
+    back, and one whose obligation settled before the release landed. Neither is
+    distinguishable from a live claim by looking at the state document, which is
+    what a durable record *is*, so the component that wrote them says.
+
+    The live set is read whole rather than as a page, and read under
+    ``runner.sqlite_gate`` which is held across the reclamation itself. That is
+    what makes this safe against a capture being admitted at the same moment:
+    every request handler runs inside that gate, so an admission cannot write its
+    pin and commit its row around a sweep that has already decided its pin is
+    nobody's. The lock order is the same one admission takes -- the gate first,
+    then the managed cache's coordination -- so the two serialise rather than
+    deadlock.
+
+    Scoped to this workspace's own pins by prefix: one installation's managed
+    cache may serve more than one workspace, and a sweep computed from one
+    workspace's obligations must not be able to reach another's.
+    """
+    assert runner.connection is not None and runner.workspace_id is not None
+    resources = managed_resources(source)
+    if resources is None:
+        return ()
+    workspace_id = runner.workspace_id
+    with runner.sqlite_gate:
+        live = {
+            capture_pin(workspace_id, capture_id)
+            for capture_id in store.unsettled_capture_ids(
+                runner.connection, workspace_id=workspace_id
+            )
+        }
+        return resources.reclaim(capture_pin_prefix(workspace_id), live)
 
 
 def frozen_settings(capture: store.StoredCapture) -> ProcessingSettings | None:
@@ -480,7 +672,7 @@ def approved_reprocess_profiles(
     """
     references = (
         (DEFAULT_PROFILE_REF, TEXT_ONLY_PROFILE_REF)
-        if recognises(settings, media_type)
+        if settings.recognises(media_type)
         else (DEFAULT_PROFILE_REF,)
     )
     options: list[ReprocessProfileOption] = []
@@ -554,14 +746,21 @@ def process_capture_outbox(
 ) -> list[store.StoredResult]:
     """Process the oldest capture obligations, settling each terminal result.
 
-    Each obligation executes from its own capture row's frozen snapshot. Nothing
-    process-global decides a mode, a language order or an embedded-image pass, so
-    a preference changed or a service restarted between admission and this pass
-    reaches neither a queued obligation nor an active one: the row is the same
-    row, the profile it resolves to is the same profile, and the operation key
-    derived from that profile's digest is the same key -- which is what makes the
-    replay after a restart idempotent rather than a second extraction under a
-    second identity.
+    Each obligation executes from its own capture row's two frozen snapshots.
+    Nothing process-global decides a mode, a language order, an embedded-image
+    pass or a model revision, so a preference changed, a language installed or
+    removed, or a service restarted between admission and this pass reaches
+    neither a queued obligation nor an active one: the row is the same row, the
+    profile it resolves to is the same profile, and the operation key derived from
+    that profile's digest is the same key -- which is what makes the replay after
+    a restart idempotent rather than a second extraction under a second identity.
+
+    An obligation whose resources cannot be *established* is skipped whole:
+    nothing is resolved, no extraction revision is admitted and nothing is
+    settled, so a later pass replays the same row under the same key. That is the
+    one case in which this returns fewer results than it had obligations, and it
+    is deliberately not an outcome -- an extraction settled on a momentarily
+    unreadable cache would be a terminal answer invented from the absence of one.
     """
     assert runner.connection is not None and runner.workspace_id is not None
     assert runner.identity is not None and runner.generation is not None
@@ -579,45 +778,114 @@ def process_capture_outbox(
             )
         if capture is None:
             continue
-        # One hold per obligation: taken before this capture's selection is
-        # resolved and released only once its extraction has been settled, so
-        # nothing in between can take away the exact resources the profile under
-        # which it settles was derived from.
-        with held_selection(catalogue_for) as leased:
-            completed.append(_execute_obligation(runner, capture, leased))
+        try:
+            completed.append(_process_obligation(runner, capture, catalogue_for))
+        except ResourceStateIndeterminate:
+            continue
     return completed
+
+
+def _process_obligation(
+    runner: ServiceRunner,
+    capture: store.StoredCapture,
+    source: CatalogueSource | None,
+) -> store.StoredResult:
+    """Decide one obligation's resources, execute it, and release what it held.
+
+    The frozen documents are decoded first, because a capture whose decision
+    cannot be read has no execution to arrange: it is admitted under the one
+    profile that pins no OCR resources and settles as failed, naming which of the
+    two documents was unreadable. It is deliberately *not* executed as the legacy
+    no-selection case, which would resolve a profile nobody was offered.
+
+    The pin is released only after the obligation has reached a terminal
+    disposition, which is after :func:`_execute_obligation` has settled the outbox
+    row -- and therefore never on the path that pauses, and never when settling
+    itself failed. A release that is lost to a crash in that window leaves a pin
+    :func:`reclaim_capture_pins` takes back, which is the recoverable direction;
+    releasing before the settlement would leave the bytes removable while the
+    obligation was still unresolved, which is not.
+    """
+    assert runner.workspace_id is not None
+    unexecutable: str | None = None
+    settings: ProcessingSettings | None = None
+    admitted: AdmittedResources | None = None
+    try:
+        settings = frozen_settings(capture)
+        admitted = frozen_resources(capture)
+    except ProcessingSettingsInvalid:
+        unexecutable = PROCESSING_SETTINGS_INVALID
+    except ProcessingResourcesInvalid:
+        unexecutable = PROCESSING_RESOURCES_INVALID
+    if unexecutable is not None:
+        return _execute_obligation(
+            runner,
+            capture,
+            ExtractionSettings(processing_mode=MODE_TEXT_ONLY),
+            unexecutable=unexecutable,
+        )
+    operation_id = capture_pin(runner.workspace_id, capture.capture_id)
+    try:
+        with capture_resources(
+            capture,
+            settings=settings,
+            admitted=admitted,
+            source=source,
+            operation_id=operation_id,
+        ) as resources:
+            executed = resolve_settings(
+                media_type=capture.media_type,
+                profile_ref=capture.processing_profile_ref,
+                settings=settings,
+                resources=resources,
+            )
+            result = _execute_obligation(runner, capture, executed)
+    except OcrSelectionInvalid:
+        # A frozen selection that is not a selection at all. Unreachable from a
+        # snapshot this build wrote -- both documents validate their languages on
+        # the way in -- and settled as unexecutable rather than resolved, for the
+        # same reason an undecodable document is.
+        return _execute_obligation(
+            runner,
+            capture,
+            ExtractionSettings(processing_mode=MODE_TEXT_ONLY),
+            unexecutable=PROCESSING_RESOURCES_INVALID,
+        )
+    _release(source, operation_id)
+    return result
+
+
+def _release(source: CatalogueSource | None, operation_id: str) -> None:
+    """Drop one settled obligation's durable pin; never fail the work over it.
+
+    The obligation is already terminal when this runs, so a release that cannot
+    happen must not become its outcome -- and it does not need to, because a pin
+    whose release failed is exactly the pin :func:`reclaim_capture_pins` exists to
+    take back on the next start.
+    """
+    resources = managed_resources(source)
+    if resources is None:
+        return
+    with suppress(OcrResourceLifecycleRefused, OcrResourceStoreError, OSError):
+        resources.release(operation_id)
 
 
 def _execute_obligation(
     runner: ServiceRunner,
     capture: store.StoredCapture,
-    catalogue_for: CatalogueFor | None,
+    settings: ExtractionSettings,
+    *,
+    unexecutable: str | None = None,
 ) -> store.StoredResult:
-    """Resolve, admit, extract and settle one capture obligation.
+    """Admit, extract and settle one capture obligation under decided settings.
 
-    Called inside the obligation's selection lease, so every resource this
-    resolves stays held until it returns -- including through the engine
-    invocation and the terminal handling that records what the invocation
-    produced.
+    Called inside whatever hold its resources needed, so every byte the profile it
+    settles under was derived from stays held until it returns -- including through
+    the engine invocation and the terminal handling that records what the
+    invocation produced.
     """
     assert runner.connection is not None and runner.workspace_id is not None
     assert runner.identity is not None and runner.generation is not None
-    unexecutable = False
-    try:
-        settings = resolve_settings(
-            media_type=capture.media_type,
-            profile_ref=capture.processing_profile_ref,
-            settings=frozen_settings(capture),
-            catalogue_for=catalogue_for,
-        )
-    except (ProcessingSettingsInvalid, OcrSelectionInvalid):
-        # The frozen snapshot cannot be read as a decision, so there is no
-        # requested profile to keep: the revision is admitted under the one
-        # profile that pins no OCR resources and settles as failed. It is
-        # deliberately *not* executed as the legacy no-selection case, which
-        # would run the product default under a key nobody was offered.
-        unexecutable = True
-        settings = ExtractionSettings(processing_mode=MODE_TEXT_ONLY)
     profile = portable_profile(
         media_type=capture.media_type,
         profile_ref=capture.processing_profile_ref,
@@ -646,8 +914,8 @@ def _execute_obligation(
             expected_base_extraction_id=head.current_extraction_id,
             operation_key=operation_key,
         )
-    if unexecutable:
-        outcome = _terminal_without_segments("failed", PROCESSING_SETTINGS_INVALID)
+    if unexecutable is not None:
+        outcome = _terminal_without_segments("failed", unexecutable)
     else:
         try:
             with runner.sqlite_gate:

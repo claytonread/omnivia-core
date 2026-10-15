@@ -83,14 +83,14 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ServiceR
 def test_0069_is_the_unique_successor_to_0068() -> None:
     found = [migration for migration in load_migrations() if migration.version == 69]
     assert [migration.name for migration in found] == [MIGRATION_FILENAME]
-    # 0071 (capture processing settings) is the head; 0069 is still the only
+    # 0072 (capture processing resources) is the head; 0069 is still the only
     # migration at 69.
-    assert max(migration.version for migration in load_migrations()) == 71
+    assert max(migration.version for migration in load_migrations()) == 72
 
 
 def test_0069_applies_all_document_intake_tables_and_guards(runner: ServiceRunner) -> None:
     assert runner.connection is not None
-    assert max(applied_migrations(runner.connection)) == 71
+    assert max(applied_migrations(runner.connection)) == 72
     expected_tables = {
         "omnivia_documents",
         "omnivia_document_original_bindings",
@@ -199,6 +199,31 @@ def test_0069_binding_and_outbox_rows_only_move_forward(runner: ServiceRunner) -
 
 # --- 0071: the preference snapshot one capture was admitted under ---------------
 
+#: The resource snapshot a capture that resolves no recognition records. Spelled
+#: out rather than built, so a test driving one column's CHECK constraint hands the
+#: other a value that is certainly valid.
+_RESOURCES_NONE = (
+    '{"detail":null,"kind":"none","reason":null,'
+    '"schema":"omnivia.capture-ocr-resources.v1",'
+    '"selection":[],"unavailableModels":[]}'
+)
+
+
+def _admitting(
+    monkeypatch: pytest.MonkeyPatch, settings: str | None, resources: str | None
+) -> None:
+    """Admit captures with these two frozen documents, whatever the live state.
+
+    The seam is the one function that reads the preferences and resolves the
+    resources, so a test can drive either column's own constraint -- or the
+    pre-migration NULL -- through the production write that fills it.
+    """
+    monkeypatch.setattr(
+        service,
+        "_admitted_processing",
+        lambda _runner, **_kwargs: (settings, resources),
+    )
+
 
 def _capture(
     runner: ServiceRunner, *, document_id: str, operation_key: str, content: bytes
@@ -284,7 +309,7 @@ def test_0071_keeps_a_capture_that_recorded_no_selection(
     Inventing a selection for a capture admitted before this column existed would be a
     claim about what ran, so the column is nullable and absence stays absence.
     """
-    monkeypatch.setattr(service, "_admitted_settings", lambda _runner: None)
+    _admitting(monkeypatch, None, None)
     captured = _capture(
         runner, document_id="doc-0071-null", operation_key="cap-0071-null",
         content=b"legacy body",
@@ -317,10 +342,142 @@ def test_0071_refuses_a_snapshot_that_is_not_a_bounded_json_object(
     bounded JSON object must be refused where it is written rather than discovered when
     something tries to act on it.
     """
-    monkeypatch.setattr(service, "_admitted_settings", lambda _runner: frozen)
+    _admitting(monkeypatch, frozen, _RESOURCES_NONE)
     with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
         _capture(
             runner, document_id="doc-0071-bad", operation_key="cap-0071-bad",
+            content=b"bad body",
+        )
+    assert runner.connection is not None
+    assert (
+        runner.connection.execute(
+            "SELECT COUNT(*) FROM omnivia_document_captures"
+        ).fetchone()[0]
+        == 0
+    )
+
+
+# --- 0072: the exact resources one capture was admitted against -----------------
+
+
+def test_0072_adds_the_resource_column_to_the_capture_table(
+    runner: ServiceRunner,
+) -> None:
+    assert runner.connection is not None
+    columns = {
+        str(row[1])
+        for row in runner.connection.execute(
+            "PRAGMA table_info(omnivia_document_captures)"
+        )
+    }
+    assert "processing_resources_json" in columns
+
+
+def test_0072_freezes_the_admitted_resources_on_an_append_only_row(
+    runner: ServiceRunner,
+) -> None:
+    """A new capture always carries a resource snapshot, including when it pins none.
+
+    Plain text resolves no recognition, so the recorded decision is that this
+    capture was admitted against nothing -- which is deliberately a *value* and not
+    a NULL, because NULL already means "admitted before this column existed" and
+    the two must stay distinguishable. The row's immutability is 0069's, exactly as
+    it is for 0071's column.
+    """
+    captured = _capture(
+        runner,
+        document_id="doc-0072-frozen",
+        operation_key="cap-0072-frozen",
+        content=b"frozen body",
+    )
+    stored = captured.capture.processing_resources_json
+    assert stored is not None
+    assert json.loads(stored) == {
+        "detail": None,
+        "kind": "none",
+        "reason": None,
+        "schema": "omnivia.capture-ocr-resources.v1",
+        "selection": [],
+        "unavailableModels": [],
+    }
+    # The canonical form, not merely an equal document: the snapshot is compared
+    # and digested as text downstream, so its byte form is part of what is frozen.
+    assert stored == _RESOURCES_NONE
+    assert runner.connection is not None
+    reread = store.read_capture(
+        runner.connection,
+        workspace_id=runner.workspace_id or "",
+        capture_id=captured.capture.capture_id,
+    )
+    assert reread is not None and reread.processing_resources_json == stored
+
+    with service._fence(runner), pytest.raises(
+        sqlite3.IntegrityError, match="append-only"
+    ):
+        runner.connection.execute(
+            "UPDATE omnivia_document_captures SET processing_resources_json = ? "
+            "WHERE workspace_id = ? AND capture_id = ?",
+            (_RESOURCES_NONE, runner.workspace_id, captured.capture.capture_id),
+        )
+
+
+def test_0072_keeps_a_capture_that_recorded_no_resources(
+    runner: ServiceRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NULL is the pre-migration capture, stored rather than back-filled.
+
+    Inventing resource identities for a capture admitted before this column
+    existed would be a claim about which bytes were read, which is the one claim
+    this design must never make up. The column is nullable and absence stays
+    absence; what such a capture then executes is the packaged fail-closed
+    catalogue's answer, which pins no model.
+    """
+    _admitting(monkeypatch, None, None)
+    captured = _capture(
+        runner,
+        document_id="doc-0072-null",
+        operation_key="cap-0072-null",
+        content=b"legacy body",
+    )
+    assert captured.capture.processing_resources_json is None
+    assert runner.connection is not None
+    reread = store.read_capture(
+        runner.connection,
+        workspace_id=runner.workspace_id or "",
+        capture_id=captured.capture.capture_id,
+    )
+    assert reread is not None and reread.processing_resources_json is None
+
+
+@pytest.mark.parametrize(
+    "frozen",
+    [
+        pytest.param('"frozen"', id="not-an-object"),
+        pytest.param("[]", id="array"),
+        pytest.param("{", id="not-json"),
+        pytest.param("{}" + " " * 4096, id="over-the-bound"),
+        pytest.param('{"kind":"no\u0000ne"}', id="embedded-nul"),
+    ],
+)
+def test_0072_refuses_a_snapshot_that_is_not_a_bounded_json_object(
+    runner: ServiceRunner, monkeypatch: pytest.MonkeyPatch, frozen: str
+) -> None:
+    """The column's own CHECK, exercised through the admission path that writes it.
+
+    The snapshot is read back and strictly decoded by a later worker, and a value
+    the column would accept but the decoder would not is a capture that can never
+    execute. Refusing it where it is written is what keeps the two in step.
+    """
+    _admitting(
+        monkeypatch,
+        '{"embeddedImageOcr":false,"languages":["eng"],"mode":"text_only"}',
+        frozen,
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+        _capture(
+            runner,
+            document_id="doc-0072-bad",
+            operation_key="cap-0072-bad",
             content=b"bad body",
         )
     assert runner.connection is not None

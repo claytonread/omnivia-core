@@ -1914,10 +1914,15 @@ def test_installed_resources_reach_the_offered_digest_and_the_reprocess(
     assert recorded["ocr"]["languages"] == ["fra", "deu"]
     assert recorded["ocr"]["modelHashes"] == served.profile["ocr"]["modelHashes"]
     assert "resourceState" not in recorded["ocr"]
-    # Holding is not a one-way door: the resources are removable once the reprocess
-    # has settled, which is what makes the hold a lease rather than a new veto.
+    # Holding is not a one-way door: the reprocess's lease ended with the request,
+    # which is what makes it a lease rather than a new veto.
     assert list(resources.leases_root.iterdir()) == []
-    resources.remove(installed_identities(resources)["deu"])
+    # What still holds `deu` is the durable pin of this capture's *own* queued
+    # processing obligation -- a different claim over a different window, which the
+    # reprocess neither took nor releases. Settling that obligation releases it.
+    with pytest.raises(OcrResourceLifecycleRefused) as queued:
+        resources.remove(installed_identities(resources)["deu"])
+    assert queued.value.code == REFUSAL_PINNED
 
 
 def test_an_uncomposed_family_reports_installed_resources_unavailable(
@@ -2014,4 +2019,7 @@ def test_a_reprocess_holds_its_resources_until_the_outcome_is_recorded(
 
     assert len(observed) == 1
     assert list(resources.leases_root.iterdir()) == []
-    resources.remove(installed["deu"])
+    # As above: the lease is gone and the queued capture's durable pin is not.
+    with pytest.raises(OcrResourceLifecycleRefused) as queued:
+        resources.remove(installed["deu"])
+    assert queued.value.code == REFUSAL_PINNED
