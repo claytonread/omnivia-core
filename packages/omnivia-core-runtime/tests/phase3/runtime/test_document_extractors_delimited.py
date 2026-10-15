@@ -337,3 +337,59 @@ def test_a_multi_byte_field_is_bounded_by_its_decoded_bytes() -> None:
 
     with pytest.raises(DocumentExtractionInvalid, match="field exceeds"):
         delimited(over.encode() + b"\n")
+
+
+@pytest.mark.parametrize(("media_type", "delimiter"), [(CSV, ","), (TSV, "\t")])
+def test_a_delimiter_is_escaped_by_quoting_and_a_quote_by_doubling_it(
+    media_type: str, delimiter: str
+) -> None:
+    """This dialect has exactly two escapes: a field is quoted to carry the
+    delimiter, a newline or a quote, and a quote inside such a field is written
+    twice to stand for one. Nothing else escapes anything, so a backslash is an
+    ordinary character of the field it stands in and the delimiter beside it
+    still ends that field."""
+    source = (
+        f'"a{delimiter}b"{delimiter}"say ""hi"""{delimiter}'
+        f'"one\ntwo"{delimiter}c\\{delimiter}d\n'
+    ).encode()
+
+    result = delimited(source, media_type)
+
+    assert values(result) == [
+        f"a{delimiter}b",
+        'say "hi"',
+        "one\ntwo",
+        "c\\",
+        "d",
+    ]
+    # One record of five fields: the quoted delimiters are characters of their
+    # own fields and none of them opened a sixth.
+    assert [
+        (locator["record"], locator["column"], locator["fieldCount"])
+        for locator in locators(result)
+    ] == [(1, column, 5) for column in range(1, 6)]
+
+
+@pytest.mark.parametrize(
+    ("mark", "codec"), [(b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be")]
+)
+def test_a_bom_declared_utf_16_source_reads_exactly_like_its_utf_8_twin(
+    mark: bytes, codec: str
+) -> None:
+    """A byte-order mark is the source's own declaration of its encoding, so
+    UTF-16 carrying one is read rather than guessed at or refused -- no profile
+    override is needed to say what the bytes already say. The same text in
+    UTF-8 and in either UTF-16 order yields the same fields, the same escapes,
+    the same leading zeroes and the same locators; only the recorded encoding
+    tells them apart."""
+    text = '"a,b","say ""hi""",01,"one\ntwo"\r\nz\r\n'
+
+    utf8 = delimited(text.encode())
+    declared = delimited(mark + text.encode(codec))
+
+    assert values(declared) == values(utf8) == ["a,b", 'say "hi"', "01", "one\ntwo", "z"]
+    assert locators(declared) == locators(utf8)
+    assert (utf8.limitations["encoding"], declared.limitations["encoding"]) == (
+        "utf-8",
+        f"{codec}-bom",
+    )

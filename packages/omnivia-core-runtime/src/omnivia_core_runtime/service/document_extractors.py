@@ -161,9 +161,10 @@ _HTML_VOID: Final = frozenset(
     }
 )
 #: Elements whose text is never document body, whatever it contains: the two
-#: that hold code rather than prose, and the one whose content is a fragment the
-#: document has not placed.
-_HTML_HIDDEN: Final = frozenset({"script", "style", "template"})
+#: that hold code rather than prose, the one whose content is a fragment the
+#: document has not placed, and the one whose content stands in only for the
+#: separate document it names and never loads.
+_HTML_HIDDEN: Final = frozenset({"script", "style", "template", "iframe"})
 #: Elements that cannot be their own direct child, so a repeat implies an end.
 _HTML_PEER_CLOSING: Final = frozenset({"li", "p", "td", "th"})
 #: Row groups, which name the section a row sits in. A row outside all of them
@@ -764,6 +765,14 @@ class _InertHTMLParser(HTMLParser):
             )
         elif tag == "a":
             self._reference("link", tag, path, attributes.get("href"))
+        elif tag == "iframe":
+            # An ``iframe`` names a whole separate document to embed. It is
+            # inventoried as the unresolved reference it is, under its own kind
+            # so a consumer can tell it from a link the prose offers, and
+            # nothing here loads it. ``srcdoc`` carries markup rather than a
+            # reference, and this walk never parses an attribute's value as
+            # markup, so what it holds is read by nothing.
+            self._reference("iframe", tag, path, attributes.get("src"))
         if tag in _HTML_VOID:
             return
         if len(self.stack) > MAX_HTML_DEPTH:

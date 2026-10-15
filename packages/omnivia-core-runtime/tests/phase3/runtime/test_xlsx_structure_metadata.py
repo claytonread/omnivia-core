@@ -230,6 +230,78 @@ def test_a_lying_dimension_adds_no_cells_and_hides_none() -> None:
     assert [locator["cell"] for _role, locator in located(content)] == ["C5"]
 
 
+#: The two cells a sparse sheet writes: the first coordinate and the last one
+#: the grid has, with nothing between them. Read as a rectangle these two
+#: corners would be some seventeen billion cells.
+SPARSE = (
+    '<row r="1"><c r="A1"><v>1</v></c></row>'
+    '<row r="1048576"><c r="XFD1048576"><v>2</v></c></row>'
+)
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        # Claiming less than the sheet wrote, which is what a writer that
+        # never updated the element leaves behind.
+        '<dimension ref="A1"/>',
+        # Claiming a range that disagrees with the cells in the other
+        # direction, far past the last one written.
+        '<dimension ref="A1:XFD1048576"/>',
+        # A reference that is no range at all.
+        '<dimension ref="not-a-range"/>',
+        "<dimension/>",
+        "",
+    ],
+)
+def test_a_declared_dimension_decides_nothing_about_the_cells_read(
+    declared: str,
+) -> None:
+    """``dimension`` is a claim about extent, not content, and not a reference
+    this reader resolves. Whether it under-claims, over-claims, is unreadable
+    or is absent, the cells read are exactly the cells written, and the count
+    the coverage expects is those cells rather than the rectangle."""
+    result = extract_xlsx(xlsx(sheet(SPARSE, before=declared)), capture_id=CAPTURE)
+
+    assert [str(item.source_locator["cell"]) for item in result.segments] == [
+        "A1",
+        "XFD1048576",
+    ]
+    assert (result.unit_type, result.expected) == ("workbook_cell", 2)
+
+
+def test_a_distant_sparse_cell_is_read_without_materialising_the_grid() -> None:
+    """A cell at the far corner of the sheet is read as the one cell it is.
+    Nothing walks the coordinates between it and the cells before it, so the
+    work a very sparse sheet costs is its written cells and not its extent --
+    including the column visibility that covers every column the grid has,
+    which labels both cells without inventing one in between."""
+    content = xlsx(
+        sheet(SPARSE, before='<cols><col min="1" max="16384" hidden="1"/></cols>')
+    )
+
+    assert cell_state(content) == [
+        ("A1", "visible", False, True, "hidden"),
+        ("XFD1048576", "visible", False, True, "hidden"),
+    ]
+    # The corner is the last coordinate the grid has; one step past it in
+    # either direction is outside the sheet and is refused, not clamped.
+    for beyond in ("XFE1048576", "XFD1048577"):
+        with pytest.raises(OOXMLInvalid, match="coordinate is outside"):
+            extract_xlsx(
+                xlsx(sheet(f'<row r="1"><c r="{beyond}"><v>1</v></c></row>')),
+                capture_id=CAPTURE,
+            )
+    # A column span is the one place the reader does walk coordinates rather
+    # than cells, so a span claiming more columns than the grid has is refused
+    # before it is walked: the widest expansion possible is the grid's width.
+    wider_than_the_grid = xlsx(
+        sheet(SPARSE, before='<cols><col min="1" max="16385" hidden="1"/></cols>')
+    )
+    with pytest.raises(OOXMLInvalid, match="column span is malformed"):
+        extract_xlsx(wider_than_the_grid, capture_id=CAPTURE)
+
+
 def test_hyperlinks_are_inventoried_inertly_with_their_source_coordinate() -> None:
     content = xlsx(
         sheet(

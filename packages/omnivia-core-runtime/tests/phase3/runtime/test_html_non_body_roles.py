@@ -376,3 +376,66 @@ def test_a_comment_at_the_packaged_bound_is_accepted() -> None:
     assert roles(html(source)) == [
         ("comment", "annotation", "x" * MAX_HTML_SEGMENT_CHARS)
     ]
+
+
+def test_a_template_is_a_fragment_the_document_has_not_placed() -> None:
+    """A template holds markup the document wrote but has not placed. Every
+    kind of content inside one is published as the hidden fragment it is, so
+    none of it joins the prose on either side, and the template is read rather
+    than evaluated: the references inside it stay unresolved like any other."""
+    source = (
+        b"<p>before</p>"
+        b"<template>fragment"
+        b"<p>placed nowhere</p>"
+        b'<img alt="Diagram" src="deferred.png">'
+        b'<a href="http://example.invalid/t">later</a>'
+        b"<script>never()</script>"
+        b"<!-- aside -->"
+        b"</template>"
+        b"<p>after</p>"
+    )
+
+    result = html(source)
+
+    assert roles(result) == [
+        ("body", "visible", "before"),
+        ("hidden_content", "hidden", "fragment"),
+        ("hidden_content", "hidden", "placed nowhere"),
+        ("hidden_content", "hidden", "Diagram"),
+        ("hidden_content", "hidden", "later"),
+        ("hidden_content", "hidden", "never()"),
+        ("comment", "annotation", " aside "),
+        ("body", "visible", "after"),
+    ]
+    assert [
+        (item.structured_value["kind"], item.structured_value["resolved"])
+        for item in result.segments
+        if item.structured_value is not None
+    ] == [("image", False), ("link", False)]
+
+
+def test_an_iframe_carries_no_prose_of_its_own() -> None:
+    """An iframe's content stands in only for the separate document it names,
+    which this adapter never loads. An iframe holds raw text rather than
+    markup, so what is written inside one is one stretch of characters and not
+    a block this page placed: it is published as the hidden content it is,
+    never as prose, and the words around it keep their own order."""
+    source = (
+        b'<p>before <iframe src="http://example.invalid/f">fallback'
+        b"<p>nested</p></iframe> after</p>"
+    )
+
+    result = html(source)
+
+    assert roles(result) == [
+        ("body", "visible", "before "),
+        ("hidden_content", "hidden", "fallback<p>nested</p>"),
+        ("body", "visible", " after"),
+    ]
+    # Only the page's own words reach a default retrieval, so neither the
+    # fallback nor the markup spelled inside it can surface as document prose.
+    assert [
+        (role, text)
+        for role, _, text in roles(result)
+        if role in DEFAULT_RETRIEVAL_ROLES
+    ] == [("body", "before "), ("body", " after")]

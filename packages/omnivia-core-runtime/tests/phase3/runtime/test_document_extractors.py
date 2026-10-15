@@ -61,6 +61,23 @@ def office_package(parts: dict[str, bytes], *, overrides: bytes = b"") -> bytes:
     return buffer.getvalue()
 
 
+def legible_png(label: str = "INVOICE") -> bytes:
+    """A raster a qualified engine can genuinely read.
+
+    A blank raster proves only that the bytes were opened and the engine ran.
+    Recognising a word that is really drawn in the pixels is what shows the
+    embedded bytes themselves reached recognition, so every embedded-image
+    profile test here draws one.
+    """
+    image = Image.new("RGB", (360, 90), "white")
+    ImageDraw.Draw(image).text(
+        (12, 24), label, fill="black", font=ImageFont.load_default(size=40)
+    )
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def test_text_preserves_bom_and_line_endings() -> None:
     result = extract_document(
         b"\xef\xbb\xbfline one\r\nline two\n",
@@ -174,10 +191,8 @@ def test_a_docx_embedded_image_is_examined_only_under_settings_that_say_so(
     """The trusted settings reach the Word path, and nothing else decides it: a
     profile that examines no embedded image publishes the structural extraction
     alone, and the same bytes under a profile that does are read with the
-    engine the profile pinned."""
-    image = io.BytesIO()
-    Image.new("RGB", (240, 60), "white").save(image, format="PNG")
-    package = docx_with_image(image.getvalue())
+    engine the profile pinned, which recognises the word the raster carries."""
+    package = docx_with_image(legible_png())
 
     structural = extract_document(
         package, media_type=DOCX_MEDIA_TYPE, capture_id=CAPTURE
@@ -201,11 +216,18 @@ def test_a_docx_embedded_image_is_examined_only_under_settings_that_say_so(
         ),
     )
     assert examined.state == "succeeded"
+    assert [
+        (item.semantic_role, item.extraction_method) for item in examined.segments
+    ] == [("body", "direct"), ("object_inventory", "inventory"), ("body", "ocr")]
     record = examined.segments[1].structured_value
-    # A blank raster yields no reliable text, and that is a reading of it: the
-    # bytes were decoded and the engine the profile pinned ran over them.
     assert (record["imageDecoded"], record["ocrPerformed"]) == (True, True)
     assert examined.limitations["embeddedImages"] == 1
+    assert examined.limitations["embeddedImageOutcomes"] == {"ocr_text": 1}
+    # The word drawn in the raster, read by the engine the profile pinned: the
+    # embedded bytes themselves reached recognition rather than merely being
+    # opened. The body text the walker extracted is unchanged beside it.
+    assert "INVOICE" in (examined.segments[2].text or "")
+    assert examined.segments[0].text == "Body text"
 
 
 def test_a_docx_whose_embedded_image_cannot_be_read_is_partial_not_a_success(
@@ -312,11 +334,9 @@ def test_an_xlsx_embedded_image_is_examined_only_under_settings_that_say_so(
     """The trusted settings reach the Excel path too, and nothing else decides
     it: a profile that examines no embedded image publishes the structural
     extraction alone, and the same bytes under a profile that does are read with
-    the engine the profile pinned. The cell beside the picture is untouched
-    either way."""
-    image = io.BytesIO()
-    Image.new("RGB", (240, 60), "white").save(image, format="PNG")
-    package = xlsx_with_image(image.getvalue())
+    the engine the profile pinned, which recognises the word the raster
+    carries. The cell beside the picture is untouched either way."""
+    package = xlsx_with_image(legible_png())
 
     structural = extract_document(
         package, media_type=XLSX_MEDIA_TYPE, capture_id=CAPTURE
@@ -337,15 +357,18 @@ def test_an_xlsx_embedded_image_is_examined_only_under_settings_that_say_so(
         settings=embedded_image_settings(local_ocr),
     )
     assert examined.state == "succeeded"
-    assert [item.semantic_role for item in examined.segments] == [
-        "table_cell",
-        "object_inventory",
-    ]
+    assert [
+        (item.semantic_role, item.extraction_method) for item in examined.segments
+    ] == [("table_cell", "direct"), ("object_inventory", "inventory"), ("body", "ocr")]
     record = examined.segments[1].structured_value
-    # A blank raster yields no reliable text, and that is a reading of it: the
-    # bytes were decoded and the engine the profile pinned ran over them.
     assert (record["imageDecoded"], record["ocrPerformed"]) == (True, True)
     assert examined.limitations["embeddedImages"] == 1
+    assert examined.limitations["embeddedImageOutcomes"] == {"ocr_text": 1}
+    # The word drawn in the raster, read by the engine the profile pinned: the
+    # embedded bytes themselves reached recognition rather than merely being
+    # opened. The cell beside the picture keeps its own value.
+    assert "INVOICE" in (examined.segments[2].text or "")
+    assert examined.segments[0].structured_value["decoded"] == "Name"
 
 
 def test_an_xlsx_whose_embedded_image_cannot_be_read_is_partial_not_a_success(
@@ -418,11 +441,9 @@ def test_a_pptx_embedded_image_is_examined_only_under_settings_that_say_so(
     """The trusted settings reach the slide path too, and nothing else decides
     it: a profile that examines no embedded image publishes the structural
     extraction alone, and the same bytes under a profile that does are read with
-    the engine the profile pinned. The slide's own text is untouched either
-    way."""
-    image = io.BytesIO()
-    Image.new("RGB", (240, 60), "white").save(image, format="PNG")
-    package = pptx_with_image(image.getvalue())
+    the engine the profile pinned, which recognises the word the raster
+    carries. The slide's own text is untouched either way."""
+    package = pptx_with_image(legible_png())
 
     structural = extract_document(
         package, media_type=PPTX_MEDIA_TYPE, capture_id=CAPTURE
@@ -443,15 +464,18 @@ def test_a_pptx_embedded_image_is_examined_only_under_settings_that_say_so(
         settings=embedded_image_settings(local_ocr),
     )
     assert examined.state == "succeeded"
-    assert [item.semantic_role for item in examined.segments] == [
-        "body",
-        "object_inventory",
-    ]
+    assert [
+        (item.semantic_role, item.extraction_method) for item in examined.segments
+    ] == [("body", "direct"), ("object_inventory", "inventory"), ("body", "ocr")]
     record = examined.segments[1].structured_value
-    # A blank raster yields no reliable text, and that is a reading of it: the
-    # bytes were decoded and the engine the profile pinned ran over them.
     assert (record["imageDecoded"], record["ocrPerformed"]) == (True, True)
     assert examined.limitations["embeddedImages"] == 1
+    assert examined.limitations["embeddedImageOutcomes"] == {"ocr_text": 1}
+    # The word drawn in the raster, read by the engine the profile pinned: the
+    # embedded bytes themselves reached recognition rather than merely being
+    # opened. The slide's own text is unchanged beside it.
+    assert "INVOICE" in (examined.segments[2].text or "")
+    assert examined.segments[0].text == "Review"
 
 
 def test_a_pptx_whose_embedded_image_cannot_be_read_is_partial_not_a_success(
@@ -503,13 +527,7 @@ def test_an_rtf_embedded_image_is_examined_only_under_settings_that_say_so(
     extraction and the scan's inventory alone, and the same bytes under a
     profile that does are read with the engine the profile pinned. The body text
     the pinned reader extracted is untouched either way."""
-    image = io.BytesIO()
-    draw = Image.new("RGB", (360, 90), "white")
-    ImageDraw.Draw(draw).text(
-        (12, 24), "INVOICE", fill="black", font=ImageFont.load_default(size=40)
-    )
-    draw.save(image, format="PNG")
-    content = rtf_with_picture(image.getvalue())
+    content = rtf_with_picture(legible_png())
 
     structural = extract_document(
         content, media_type="application/rtf", capture_id=CAPTURE
@@ -570,13 +588,7 @@ def test_an_html_inline_image_is_examined_only_under_settings_that_say_so(
     """The trusted settings reach the markup path too. A reference naming
     anything outside the supplied bytes stays unresolved under either profile:
     only the bytes the page carries in the attribute are ever read."""
-    image = io.BytesIO()
-    draw = Image.new("RGB", (360, 90), "white")
-    ImageDraw.Draw(draw).text(
-        (12, 24), "INVOICE", fill="black", font=ImageFont.load_default(size=40)
-    )
-    draw.save(image, format="PNG")
-    inline = base64.b64encode(image.getvalue()).decode("ascii")
+    inline = base64.b64encode(legible_png()).decode("ascii")
     content = (
         b'<p>Invoice total</p><img alt="Scanned" src="data:image/png;base64,'
         + inline.encode("ascii")

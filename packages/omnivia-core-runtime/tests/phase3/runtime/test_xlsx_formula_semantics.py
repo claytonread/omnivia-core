@@ -153,6 +153,82 @@ def test_error_typed_cache_is_preserved_as_an_error_not_as_text() -> None:
     )
 
 
+def test_an_array_or_shared_formula_without_a_cache_invents_no_saved_value() -> None:
+    """A spilling array and a shared follower are the two kinds most likely to
+    be written with no cache of their own. Neither grows one: the cache is
+    reported missing, no ``saved_value`` segment is published, and nothing
+    substitutes a zero for the number the source never saved."""
+    cells = (
+        '<c r="A1"><f t="array" ref="A1:B2">TRANSPOSE(C1:C2)</f></c>'
+        '<c r="A2"><f t="shared" si="2" ref="A2:A3">SUM(B:B)</f></c>'
+        '<c r="A3"><f t="shared" si="2"/></c>'
+    )
+
+    roles = values(cells)
+
+    assert [role for role, _value in roles] == ["formula", "formula", "formula"]
+    assert [
+        (value["kind"], value["expression"], value["cacheState"]) for _role, value in roles
+    ] == [
+        ("array", "TRANSPOSE(C1:C2)", "missing"),
+        ("shared", "SUM(B:B)", "missing"),
+        ("shared", "", "missing"),
+    ]
+
+
+def test_a_shared_master_declared_after_its_follower_still_resolves() -> None:
+    """The masters a sheet defines are collected before any cell is read, so a
+    follower written above its master is not mistaken for an orphan. The
+    follower still derives nothing: its own expression stays empty."""
+    cells = (
+        '<c r="A1"><f t="shared" si="3"/><v>1</v></c>'
+        '<c r="A2"><f t="shared" si="3" ref="A1:A2">SUM(B:B)</f><v>2</v></c>'
+    )
+
+    assert [
+        (value["sharedIndex"], value["ref"], value["expression"])
+        for role, value in values(cells)
+        if role == "formula"
+    ] == [("3", None, ""), ("3", "A1:A2", "SUM(B:B)")]
+
+
+def test_an_array_formula_cache_can_be_an_error_and_is_not_a_number() -> None:
+    """An error is a value kind of its own. The cache of an array formula that
+    failed reports the error it recorded, and decodes to no number at all."""
+    roles = values('<c r="A1" t="e"><f t="array" ref="A1:A2">1/0</f><v>#DIV/0!</v></c>')
+
+    assert roles[0][1]["kind"] == "array"
+    assert roles[1] == (
+        "saved_value",
+        {
+            "raw": "#DIV/0!",
+            "cellType": "e",
+            "error": True,
+            "freshness": "unknown",
+            **DEFAULT_FORMAT,
+        },
+    )
+    assert "decoded" not in roles[1][1]
+
+
+def test_every_error_value_is_kept_as_the_error_the_source_wrote() -> None:
+    """An error standing in a cell of its own is carried through verbatim under
+    the error cell type. None of the seven becomes text the sheet never held,
+    and none of them decodes to a number."""
+    spellings = ("#DIV/0!", "#N/A", "#NAME?", "#NULL!", "#NUM!", "#REF!", "#VALUE!")
+    cells = "".join(
+        f'<c r="{column}1" t="e"><v>{error}</v></c>'
+        for column, error in zip("ABCDEFG", spellings, strict=True)
+    )
+
+    records = [value for _role, value in values(cells)]
+
+    assert [value["raw"] for value in records] == list(spellings)
+    assert [value["decoded"] for value in records] == list(spellings)
+    assert {value["cellType"] for value in records} == {"e"}
+    assert not [value for value in records if "numericAnomaly" in value]
+
+
 def test_shared_string_cache_is_not_decoded_against_the_string_table() -> None:
     """A formula's cache is kept raw; only a plain cell resolves its index."""
     package = xlsx(

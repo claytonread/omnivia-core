@@ -336,3 +336,60 @@ def test_html_bounds_refuse_the_source_rather_than_truncate_it(
     # bound speaking and not a defect in the fixture.
     monkeypatch.undo()
     assert html(source).state == "succeeded"
+
+
+def test_an_iframe_is_inventoried_as_its_own_kind_and_never_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An iframe names a whole separate document, so it is inventoried under a
+    kind of its own rather than as a link the prose offers. Remote, local and
+    relative targets are all carried out as the unresolved text they are, and
+    an iframe that spells its document inline in ``srcdoc`` names no reference
+    at all: nothing in the walk opens, connects to or runs anything."""
+
+    def refuse(*arguments: object, **keywords: object) -> Any:
+        raise AssertionError("an iframe must never be loaded")
+
+    monkeypatch.setattr(builtins, "open", refuse)
+    monkeypatch.setattr(socket, "socket", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    monkeypatch.setattr(socket, "getaddrinfo", refuse)
+    monkeypatch.setattr(subprocess, "run", refuse)
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+
+    result = html(
+        b'<iframe src="http://example.invalid/f"></iframe>'
+        b'<iframe src="file:///etc/passwd"></iframe>'
+        b'<iframe src="frame.html"></iframe>'
+        b'<iframe srcdoc="&lt;p&gt;inline&lt;/p&gt;"></iframe>'
+    )
+
+    assert [
+        (item.semantic_role, item.extraction_method, item.visibility)
+        for item in result.segments
+    ] == [("object_inventory", "inventory", "annotation")] * 3
+    assert [item.structured_value for item in result.segments] == [
+        {
+            "kind": "iframe",
+            "scheme": "http",
+            "target": "http://example.invalid/f",
+            "resolved": False,
+        },
+        {
+            "kind": "iframe",
+            "scheme": "file",
+            "target": "file:///etc/passwd",
+            "resolved": False,
+        },
+        {
+            "kind": "iframe",
+            "scheme": "relative",
+            "target": "frame.html",
+            "resolved": False,
+        },
+    ]
+    # Three records for four iframes: the ``srcdoc`` one is the fourth element
+    # in the walk and named no document to go and get, so it has none.
+    assert [
+        (locator["element"], locator["path"]) for locator in locators(result)
+    ] == [("iframe", f"/{ordinal}:iframe") for ordinal in (1, 2, 3)]

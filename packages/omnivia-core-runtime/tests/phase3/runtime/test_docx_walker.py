@@ -370,6 +370,70 @@ def test_an_insertion_over_a_whole_table_reaches_its_runs_and_its_record() -> No
     ]
 
 
+def test_move_revisions_over_a_block_reach_every_run_they_cover() -> None:
+    """A move wrapping a whole block is that block's state. Text the author
+    moved in reads as the page's own prose, text moved out reads as the
+    deletion it is, and a table carries the state down to its cells, so the
+    two halves of one move are never conflated into a single sentence."""
+    body = (
+        f"<w:moveTo><w:p>{run('arrived')}</w:p></w:moveTo>"
+        f"<w:moveFrom><w:p>{run('departed', 'delText')}</w:p></w:moveFrom>"
+        f"<w:moveTo><w:tbl><w:tr><w:tc>{p('cell in')}</w:tc></w:tr></w:tbl></w:moveTo>"
+        f"<w:moveFrom><w:tbl><w:tr><w:tc>{p('cell out')}</w:tc></w:tr></w:tbl>"
+        "</w:moveFrom>"
+    )
+
+    assert revisions(docx(body)) == [
+        ("body", "arrived", "visible", "inserted", "0"),
+        ("deleted_text", "departed", "annotation", "deleted", "1.d0"),
+        ("table_cell", "cell in", "visible", "inserted", "2.r0.c0"),
+        # The moved-out cell keeps no current prose, so it closes with the
+        # empty record any cell takes when its text is all deleted.
+        ("deleted_text", "cell out", "annotation", "deleted", "3.r0.c0.0.d0"),
+        ("object_inventory", "", "annotation", "deleted", "3.r0.c0"),
+    ]
+
+
+def test_a_move_out_inside_a_move_in_stays_deleted_and_the_reverse_is_refused() -> None:
+    """``w:moveFrom`` is a deletion and ``w:moveTo`` an insertion, so they
+    nest exactly as ``w:del`` and ``w:ins`` do: text moved out of a moved-in
+    passage stays deleted, and the contradictory pairing is refused rather
+    than read as either state."""
+    moved_in_then_out = (
+        f"<w:p><w:moveTo><w:moveFrom>{run('x', 'delText')}</w:moveFrom></w:moveTo></w:p>"
+    )
+    assert revisions(docx(moved_in_then_out)) == [
+        ("deleted_text", "x", "annotation", "deleted", "0.d0")
+    ]
+
+    for contradiction in (
+        f"<w:p><w:moveFrom><w:moveTo>{run('x')}</w:moveTo></w:moveFrom></w:p>",
+        f"<w:p><w:del><w:moveTo>{run('x')}</w:moveTo></w:del></w:p>",
+    ):
+        with pytest.raises(OOXMLInvalid, match="contradict"):
+            extract_docx(docx(contradiction), capture_id=CAPTURE)
+
+
+def test_move_range_markers_carry_no_prose_of_their_own() -> None:
+    """The range markers that bracket a move are positions, not text. They
+    neither contribute a word nor split the stretch they stand inside, so a
+    moved passage is not reported twice over."""
+    body = (
+        '<w:moveFromRangeStart w:id="1" w:name="m"/>'
+        f"<w:p>{run('before')}</w:p>"
+        '<w:moveFromRangeEnd w:id="1"/>'
+        f"<w:p>{run('plain')}"
+        '<w:moveToRangeStart w:id="2" w:name="m"/>'
+        f"{run(' after')}"
+        '<w:moveToRangeEnd w:id="2"/></w:p>'
+    )
+
+    assert revisions(docx(body)) == [
+        ("body", "before", "visible", "current", "0"),
+        ("body", "plain after", "visible", "current", "1"),
+    ]
+
+
 def test_text_boxes_are_separate_blocks_read_once() -> None:
     body = (
         f"<w:p>{run('Anchor ')}"
@@ -5454,6 +5518,42 @@ def test_a_merged_cell_keeps_its_grid_across_every_run_it_emits() -> None:
     assert [
         sorted(set(i.source_locator) & set(GRID_KEYS)) for i in result.segments[1:3]
     ] == [[], []]
+
+
+def test_a_merged_cell_keeps_its_grid_across_a_move_revision() -> None:
+    """A move reaching into a merged cell is a revision like any other: the
+    text moved in keeps the cell's role and its grid, the text moved out is
+    reported as the deletion it is and claims no grid of its own, and the two
+    halves never join into one sentence the cell never held."""
+    moved = (
+        p("stays")
+        + f"<w:p>{run('kept ')}<w:moveTo>{run('arrived')}</w:moveTo>"
+        f"<w:moveFrom>{run('departed', 'delText')}</w:moveFrom>{run(' tail')}</w:p>"
+    )
+    body = tbl(
+        tr(f"<w:tc><w:tcPr>{RESTART + span(2)}</w:tcPr>{moved}</w:tc>"),
+        tr(tc(None, CONTINUE + span(2))),
+        columns=2,
+    )
+    anchor = at(0, 0, 0, columns=2, spans=(2, 2), state="anchor")
+
+    assert cells(docx(body)) == [
+        ("stays\nkept ", "0.r0.c0", anchor),
+        ("arrived", "0.r0.c0.t1", anchor),
+        (" tail", "0.r0.c0.t2", anchor),
+    ]
+    result = extract_docx(docx(body), capture_id=CAPTURE)
+    assert [
+        (i.semantic_role, i.text, i.revision_state, i.source_locator["position"])
+        for i in result.segments
+    ] == [
+        ("table_cell", "stays\nkept ", "current", "0.r0.c0"),
+        ("table_cell", "arrived", "inserted", "0.r0.c0.t1"),
+        ("deleted_text", "departed", "deleted", "0.r0.c0.1.d0"),
+        ("table_cell", " tail", "current", "0.r0.c0.t2"),
+        ("object_inventory", None, "current", "0.r1.c0"),
+    ]
+    assert sorted(set(result.segments[2].source_locator) & set(GRID_KEYS)) == []
 
 
 # A coordinate the grid declares is a fact about the table whether or not prose
