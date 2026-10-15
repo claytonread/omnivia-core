@@ -1373,6 +1373,112 @@ final class CoreDocumentHistoryTests: XCTestCase {
             XCTAssertFalse(rendered.contains(forbidden), forbidden)
         }
     }
+
+    // MARK: - The control
+
+    /// The management window over real durable stores, with no window built: every
+    /// assertion below drives the production decision and the production selector body,
+    /// not a layout.
+    @MainActor
+    private func managementWindow(
+        locateOriginal: (() -> Void)?
+    ) throws -> FolderManagementWindowController {
+        let stateRoot = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("omnivia-at50-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: stateRoot, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: stateRoot) }
+        let environment = try DocumentIntakeEnvironment(stateRoot: stateRoot)
+        return FolderManagementWindowController(
+            workspaceName: "workspace-1",
+            folderStore: environment.folderSubscriptions,
+            folderMonitoring: environment.folderMonitoring,
+            fileStore: environment.fileSubscriptions,
+            fileMonitoring: environment.fileMonitoring,
+            bulkStore: environment.folderBulkRuns,
+            bulkCoordinator: environment.folderBulkCoordinator,
+            activityStore: environment.captureActivity,
+            observeActivity: { [] },
+            rootGroups: { [] },
+            documentRoutes: { [] },
+            historyTransport: nil,
+            locateOriginal: locateOriginal
+        )
+    }
+
+    /// AT-50 on the control itself, not just on the decision behind it.
+    ///
+    /// The window used to enable and run its original-file action from two local facts —
+    /// a file is selected and an owner is wired — which hold throughout a pending
+    /// association. Both the enabled state and the selector's own check must now refuse,
+    /// and the selector must refuse independently: a stale pass that left the button
+    /// enabled is not a permission.
+    @MainActor
+    func testAPendingLinkageNeitherEnablesNorInvokesTheOriginalAction() throws {
+        let pending = try history(
+            Wire.page(
+                binding: "none",
+                captures: [Wire.capture(association: "snapshot_only")]
+            )
+        )
+        var invocations = 0
+        let window = try managementWindow { invocations += 1 }
+        window.historyState = CoreHistoryState(
+            documentID: "document-file-1", availability: .current(pending)
+        )
+        let item = FilesAndFoldersItem.file(CoreHistoryFixtures.file())
+
+        XCTAssertFalse(
+            window.permitsOriginalAction(for: item),
+            "a requested but unconfirmed association permits no original action"
+        )
+        XCTAssertFalse(window.invokeOriginalAction(for: item))
+        XCTAssertEqual(invocations, 0, "a pending association must never reach the native owner")
+
+        // Nothing selected, and a selection that is not this document, are both closed
+        // for the same reason: neither is a file Core has confirmed an association for.
+        XCTAssertFalse(window.permitsOriginalAction(for: nil))
+        XCTAssertFalse(window.invokeOriginalAction(for: nil))
+        XCTAssertEqual(invocations, 0)
+    }
+
+    /// The other side of the same rule, through the same two production entry points.
+    @MainActor
+    func testAConfirmedAssociationEnablesAndInvokesTheOriginalActionExactlyOnce() throws {
+        let confirmed = try history(Wire.page(binding: "connected"))
+        var invocations = 0
+        let window = try managementWindow { invocations += 1 }
+        window.historyState = CoreHistoryState(
+            documentID: "document-file-1", availability: .current(confirmed)
+        )
+        let item = FilesAndFoldersItem.file(CoreHistoryFixtures.file())
+
+        XCTAssertTrue(window.permitsOriginalAction(for: item))
+        XCTAssertTrue(window.invokeOriginalAction(for: item))
+        XCTAssertEqual(invocations, 1)
+
+        // The held answer is about exactly one document, so another file's row is not
+        // covered by it however confirmed that one is.
+        let other = FilesAndFoldersItem.file(CoreHistoryFixtures.file(id: "file-2"))
+        XCTAssertFalse(window.permitsOriginalAction(for: other))
+        XCTAssertFalse(window.invokeOriginalAction(for: other))
+
+        // Those are the last facts Core reported, not a current permission.
+        window.historyState = CoreHistoryState(
+            documentID: "document-file-1", availability: .stale(confirmed)
+        )
+        XCTAssertFalse(window.permitsOriginalAction(for: item))
+        XCTAssertFalse(window.invokeOriginalAction(for: item))
+        XCTAssertEqual(invocations, 1)
+
+        // And with no owner of native access wired there is nothing to invoke, whatever
+        // Core confirms.
+        let unwired = try managementWindow(locateOriginal: nil)
+        unwired.historyState = CoreHistoryState(
+            documentID: "document-file-1", availability: .current(confirmed)
+        )
+        XCTAssertFalse(unwired.permitsOriginalAction(for: item))
+        XCTAssertFalse(unwired.invokeOriginalAction(for: item))
+    }
 }
 
 // MARK: - Helpers

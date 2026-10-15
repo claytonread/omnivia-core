@@ -59,8 +59,9 @@ public final class FolderManagementWindowController: NSWindowController,
     private var model: FilesAndFoldersModel
     private var items: [FilesAndFoldersItem] = []
     /// What Core last said about the selected document. Held here rather than rebuilt
-    /// from the stores, because no store holds it.
-    private var historyState = CoreHistoryState.notRequested
+    /// from the stores, because no store holds it. Internal rather than private so the
+    /// enforcement tests can hold one exact answer; nothing outside this module sees it.
+    var historyState = CoreHistoryState.notRequested
     /// Which read the answer in hand belongs to. A selection change bumps it, so an
     /// answer that arrives after the user moved on is dropped instead of rendered
     /// against the wrong file.
@@ -318,11 +319,12 @@ public final class FolderManagementWindowController: NSWindowController,
         clearButton.isEnabled = model.canMutateActivity && model.clearableActivityCount > 0
         // Both canonical controls belong to one file, so neither appears on a surface
         // that is not listing files. Reprocess is enabled only when Core reported the
-        // action available; Locate only when the one owner of native access is wired.
+        // action available; the original action only when the central decision permits
+        // it -- a wired owner and a selected file are necessary, never sufficient.
         reprocessButton.isHidden = segment != .files
         reprocessButton.isEnabled = actions.reprocessEnabled
         locateButton.isHidden = segment != .files
-        locateButton.isEnabled = locateOriginal != nil && isFileSelected
+        locateButton.isEnabled = permitsOriginalAction(for: selected)
         detailView.string = model.detail(for: selected)
             .map { "\($0.label): \($0.value)" }
             .joined(separator: "\n")
@@ -459,9 +461,35 @@ public final class FolderManagementWindowController: NSWindowController,
             .joined(separator: "\n")
     }
 
-    private var isFileSelected: Bool {
-        if case .file = selected { return true }
-        return false
+    /// Whether the original-file action may be offered for `item`, or taken on it.
+    ///
+    /// One rule in one place, because the button's enabled state and the action's own
+    /// check must not be able to disagree: a pass that left the button enabled is not a
+    /// permission. Design §12.1 offers original actions "only if binding permits" and
+    /// §7.2 gives a provisional route no linked-file capability, so this consumes the
+    /// central decision instead of the two local facts it used to -- that a file is
+    /// selected and an owner is wired, which are necessary and not sufficient.
+    ///
+    /// Fail-closed: no owner, a selection that is not a file, a requested but
+    /// unconfirmed association, a snapshot-only capture, a held answer about another
+    /// document, a stale read and a read that never happened all permit nothing.
+    func permitsOriginalAction(for item: FilesAndFoldersItem?) -> Bool {
+        guard locateOriginal != nil, case .file? = item else { return false }
+        return FilesAndFoldersModel.actions(
+            for: item,
+            activity: model.activityAvailability,
+            coreHistory: historyState
+        ).originalActionsEnabled
+    }
+
+    /// Enforces that rule again from the facts held now, then hands the selection to the
+    /// one owner of native access. Returns whether the owner was invoked, which is what
+    /// makes the refused path observable without a click.
+    @discardableResult
+    func invokeOriginalAction(for item: FilesAndFoldersItem?) -> Bool {
+        guard permitsOriginalAction(for: item), let locateOriginal else { return false }
+        locateOriginal()
+        return true
     }
 
     /// Reads the selected file's canonical history from Core, off the main actor.
@@ -633,11 +661,11 @@ public final class FolderManagementWindowController: NSWindowController,
         return (chosen.capture.captureID, chosen.profile.profileDigest)
     }
 
-    /// Hands the selection to the one owner of native access. This window chooses no
-    /// file, holds no bookmark and replaces no frozen key.
+    /// The button's own selector. It recomputes the decision from the selection and the
+    /// held answer as they are now, rather than trusting a button an earlier pass left
+    /// enabled. This window chooses no file, holds no bookmark and replaces no frozen key.
     @objc private func locateOriginalFile() {
-        guard isFileSelected, let locateOriginal else { return }
-        locateOriginal()
+        invokeOriginalAction(for: selected)
     }
 
     @objc private func clearCompletedActivity() {
