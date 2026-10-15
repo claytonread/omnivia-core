@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import subprocess
 import zipfile
@@ -481,6 +482,166 @@ def test_a_pptx_whose_embedded_image_cannot_be_read_is_partial_not_a_success(
         "body",
         "object_inventory",
     ]
+
+
+def rtf_with_picture(member: bytes, *, declared: bytes = b"\\pngblip") -> bytes:
+    """One RTF source whose body holds prose and one picture group."""
+    return (
+        b"{\\rtf1\\ansi\\ansicpg1252 Invoice total\\par {\\pict"
+        + declared
+        + b"\\picw120\\pich40 "
+        + member.hex().encode("ascii")
+        + b"}}"
+    )
+
+
+def test_an_rtf_embedded_image_is_examined_only_under_settings_that_say_so(
+    local_ocr: ExtractionSettings,
+) -> None:
+    """The trusted settings reach the RTF path too, and nothing else decides it:
+    a profile that examines no embedded image publishes the structural
+    extraction and the scan's inventory alone, and the same bytes under a
+    profile that does are read with the engine the profile pinned. The body text
+    the pinned reader extracted is untouched either way."""
+    image = io.BytesIO()
+    draw = Image.new("RGB", (360, 90), "white")
+    ImageDraw.Draw(draw).text(
+        (12, 24), "INVOICE", fill="black", font=ImageFont.load_default(size=40)
+    )
+    draw.save(image, format="PNG")
+    content = rtf_with_picture(image.getvalue())
+
+    structural = extract_document(
+        content, media_type="application/rtf", capture_id=CAPTURE
+    )
+    assert structural.state == "succeeded"
+    assert structural.limitations["embeddedImages"] == 1
+    assert structural.limitations["embeddedImageOutcomes"] == {
+        "embedded_image_ocr_disabled": 1
+    }
+    [record] = structural.limitations["pictureGroups"]
+    assert (record["imageDecoded"], record["ocrPerformed"]) == (False, False)
+    assert record["declaredType"] == "pngblip"
+    assert all(item.extraction_method != "ocr" for item in structural.segments)
+
+    examined = extract_document(
+        content,
+        media_type="application/rtf",
+        capture_id=CAPTURE,
+        settings=embedded_image_settings(local_ocr),
+    )
+    assert examined.state == "succeeded"
+    [reading] = [item for item in examined.segments if item.extraction_method == "ocr"]
+    assert "INVOICE" in (reading.text or "")
+    # The reading is anchored to the group the scanner delimited, not to the
+    # reader's derived AST path.
+    locator = dict(reading.source_locator)
+    assert locator["story"] == "body"
+    assert content[int(locator["byteStart"])] == 0x7B
+    assert examined.limitations["embeddedImageOutcomes"] == {"ocr_text": 1}
+
+
+def test_an_rtf_whose_embedded_image_cannot_be_read_is_partial_not_a_success(
+    local_ocr: ExtractionSettings,
+) -> None:
+    """The scan and the pinned reader stand and the source is not refused, but a
+    payload the decoder could not read is coverage this source never reached, so
+    it is partial and says which coverage was lost."""
+    result = extract_document(
+        rtf_with_picture(b"\x89PNG\r\n\x1a\nnot really an image"),
+        media_type="application/rtf",
+        capture_id=CAPTURE,
+        settings=embedded_image_settings(local_ocr),
+    )
+
+    assert result.state == "partial"
+    assert result.limitations["documentOutcome"] == "partial_coverage"
+    assert result.limitations["embeddedImageOutcomes"] == {
+        "image_could_not_be_decoded": 1
+    }
+    # No *block* failed, and the block coverage does not claim one did.
+    assert result.coverage["units"][0]["failed"] == 0
+    assert "Invoice total" in " ".join(item.text or "" for item in result.segments)
+
+
+def test_an_html_inline_image_is_examined_only_under_settings_that_say_so(
+    local_ocr: ExtractionSettings,
+) -> None:
+    """The trusted settings reach the markup path too. A reference naming
+    anything outside the supplied bytes stays unresolved under either profile:
+    only the bytes the page carries in the attribute are ever read."""
+    image = io.BytesIO()
+    draw = Image.new("RGB", (360, 90), "white")
+    ImageDraw.Draw(draw).text(
+        (12, 24), "INVOICE", fill="black", font=ImageFont.load_default(size=40)
+    )
+    draw.save(image, format="PNG")
+    inline = base64.b64encode(image.getvalue()).decode("ascii")
+    content = (
+        b'<p>Invoice total</p><img alt="Scanned" src="data:image/png;base64,'
+        + inline.encode("ascii")
+        + b'"><img alt="Logo" src="file:///etc/logo.png">'
+    )
+
+    structural = extract_document(content, media_type="text/html", capture_id=CAPTURE)
+    assert structural.state == "succeeded"
+    assert structural.limitations["embeddedImageOutcomes"] == {
+        "embedded_image_ocr_disabled": 1
+    }
+
+    examined = extract_document(
+        content,
+        media_type="text/html",
+        capture_id=CAPTURE,
+        settings=embedded_image_settings(local_ocr),
+    )
+    assert examined.state == "succeeded"
+    assert examined.limitations["embeddedImageOutcomes"] == {"ocr_text": 1}
+    roles = [(item.semantic_role, item.extraction_method) for item in examined.segments]
+    assert roles == [
+        ("body", "direct"),
+        ("image_alt", "direct"),
+        ("object_inventory", "inventory"),
+        ("body", "ocr"),
+        ("image_alt", "direct"),
+        ("object_inventory", "inventory"),
+    ]
+    assert "INVOICE" in (examined.segments[3].text or "")
+    # The ``file:`` reference is inventoried exactly as it was, unresolved, and
+    # the payload is never published.
+    assert examined.segments[5].structured_value == {
+        "kind": "image",
+        "scheme": "file",
+        "target": "file:///etc/logo.png",
+        "resolved": False,
+    }
+    assert examined.segments[2].structured_value["target"] == "data:image/png;base64,"
+    assert inline[:64] not in to_canonical_json(
+        {
+            "segments": [
+                [dict(item.source_locator), item.text, item.structured_value]
+                for item in examined.segments
+            ]
+        }
+    )
+
+
+def test_an_html_inline_image_that_cannot_be_read_is_partial_not_a_success(
+    local_ocr: ExtractionSettings,
+) -> None:
+    result = extract_document(
+        b'<p>Invoice total</p><img src="data:image/png;base64,QUJD">',
+        media_type="text/html",
+        capture_id=CAPTURE,
+        settings=embedded_image_settings(local_ocr),
+    )
+
+    assert result.state == "partial"
+    assert result.limitations["documentOutcome"] == "partial_coverage"
+    assert result.limitations["embeddedImageOutcomes"] == {
+        "image_could_not_be_decoded": 1
+    }
+    assert result.segments[0].text == "Invoice total"
 
 
 def test_xlsx_preserves_formula_and_saved_cache_as_distinct_values() -> None:

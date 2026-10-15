@@ -81,6 +81,10 @@ def test_ordinary_html_names_the_html_parser_and_reports_a_clean_read() -> None:
         "parser": "lxml.html.HTMLParser",
         "parserRecovered": False,
         "parserWarnings": [],
+        # A page carrying no inline image payload declared no embedded image,
+        # which the bounded image pass states rather than leaving unsaid.
+        "embeddedImages": 0,
+        "embeddedImageOutcomes": {},
     }
 
 
@@ -122,6 +126,10 @@ def test_xml_declared_xhtml_is_read_by_the_xml_parser() -> None:
         "parser": "lxml.etree.XMLParser",
         "parserRecovered": False,
         "parserWarnings": [],
+        # A page carrying no inline image payload declared no embedded image,
+        # which the bounded image pass states rather than leaving unsaid.
+        "embeddedImages": 0,
+        "embeddedImageOutcomes": {},
     }
     # Admission chose the stricter parser; the text is still the inert walk's.
     assert texts(result) == [("heading", "Title"), ("body", "Body")]
@@ -137,6 +145,10 @@ def test_the_xhtml_media_type_is_extracted_through_the_public_path() -> None:
         "parser": "lxml.etree.XMLParser",
         "parserRecovered": False,
         "parserWarnings": [],
+        # A page carrying no inline image payload declared no embedded image,
+        # which the bounded image pass states rather than leaving unsaid.
+        "embeddedImages": 0,
+        "embeddedImageOutcomes": {},
     }
     # The same bytes as the same media type locate the same segments as
     # ``text/html`` does, because the walk beneath admission is the one walk.

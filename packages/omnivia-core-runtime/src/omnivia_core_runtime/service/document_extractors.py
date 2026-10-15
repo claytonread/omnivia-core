@@ -7,14 +7,16 @@ refused until their qualified workers are available.
 
 from __future__ import annotations
 
+import base64
 import csv
 import hashlib
 import io
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from html.parser import HTMLParser
 from typing import Any, Final
+from urllib.parse import unquote_to_bytes
 
 from lxml import etree  # type: ignore[import-untyped]
 from lxml import html as lxml_html
@@ -28,7 +30,9 @@ from omnivia_core_runtime.service.ocr_resources import (
     REASON_NEEDS_LANGUAGE,
     RESOURCE_STATE_UNAVAILABLE,
     ExtractionSettings,
+    OcrEngine,
     local_ocr_settings,
+    run_tesseract,
 )
 from omnivia_core_runtime.service.ooxml_extractors import (
     OOXMLInvalid,
@@ -37,13 +41,17 @@ from omnivia_core_runtime.service.ooxml_extractors import (
     extract_xlsx,
 )
 from omnivia_core_runtime.service.raster_extractors import (
-    WORKER_BUILD as RASTER_BUILD,
-)
-from omnivia_core_runtime.service.raster_extractors import (
+    EMBEDDED_MALFORMED,
+    EmbeddedImagePass,
+    EmbeddedImageResult,
+    ExtractionBudget,
     RasterExtraction,
     RasterExtractionInvalid,
     extract_image,
     extract_pdf,
+)
+from omnivia_core_runtime.service.raster_extractors import (
+    WORKER_BUILD as RASTER_BUILD,
 )
 from omnivia_core_runtime.service.rtf_extractor import RTFExtractionInvalid, extract_rtf
 
@@ -106,6 +114,15 @@ MAX_HTML_TABLE_HEADER_REFS: Final = 64
 #: Distinct libxml2 conditions reported from one admission parse. A warning list
 #: is diagnostics, not prose, so this one is a cap rather than a refusal.
 MAX_HTML_PARSER_WARNINGS: Final = 32
+#: Characters of one inline ``data:`` URL's payload this adapter will read.
+#: Separate from ``MAX_HTML_REFERENCE_CHARS``, which bounds a reference whose
+#: target is a *name*: an inline payload is content the source carries, so
+#: breaching this is that one image's outcome and never a refusal of the page
+#: around it. It is the only ceiling either encoding needs: base64 decodes to
+#: three bytes per four characters and a percent-encoded payload to at most one
+#: byte per character, so a payload admitted here cannot decode past the raster
+#: path's own source bound, which refuses anything that somehow did.
+MAX_DATA_URL_CHARS: Final = 8 * 1_048_576
 DOCX_MEDIA_TYPE: Final = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
@@ -185,6 +202,21 @@ _HIDDEN_STYLE_CLAIMS: Final = (("display", "none"), ("visibility", "hidden"))
 #: it has no cell that claims explicit headers.
 _HEADERS_ATTRIBUTE: Final = re.compile(r"(?i)headers\s*=")
 _REFERENCE_SCHEME: Final = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]{1,31}):")
+#: One inline ``data:`` URL's declaration: the media type it claims, the
+#: parameters after it, and the comma that ends the declaration. Only the
+#: declaration is matched -- the payload after the comma is never part of the
+#: pattern, so no payload is scanned, backtracked over or kept by this read.
+_DATA_URL: Final = re.compile(r"(?i)\Adata:([^;,]*)((?:;[^;,]*)*),")
+#: A percent-encoded payload's whole accepted alphabet: one URL character, or
+#: one complete escape. Anything else -- a truncated or non-hexadecimal escape,
+#: whitespace, a control character, a byte outside ASCII -- means these are not
+#: the characters the URL claims, so the payload is refused rather than decoded
+#: with the bad escape left standing as literal text. ``+`` is one of the
+#: characters, and it decodes to itself: this is a URL path payload and never a
+#: form body, so nothing here reads a ``+`` as a space.
+_PERCENT_PAYLOAD: Final = re.compile(
+    r"\A(?:[A-Za-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9A-Fa-f]{2})*\Z"
+)
 #: An XML declaration at the head of the source declares the same thing, so
 #: XML-declared XHTML served as ``text/html`` is still read as XML.
 _XML_DECLARATION: Final = re.compile(rb"\s*<\?xml[\s?]")
@@ -222,10 +254,10 @@ def extract_document(
     packaged Text-and-local-OCR profile for PDF and image sources; nothing in it
     is ever derived from the document.
 
-    For a Word, Excel or PowerPoint source the same settings decide whether the
-    rasters embedded in it are examined, which they are only where the profile
-    says so *and* its pinned models were served. Handed none, those paths are
-    structural: no image member is opened.
+    For a Word, Excel, PowerPoint, RTF or markup source the same settings
+    decide whether the rasters embedded in it are examined, which they are only
+    where the profile says so *and* its pinned models were served. Handed none,
+    those paths are structural: no image payload is opened at all.
     """
     if media_type in {"text/plain", "text/markdown"}:
         text = _decode_utf8(content)
@@ -244,7 +276,13 @@ def extract_document(
         delimiter = "," if media_type == "text/csv" else "\t"
         return _extract_delimited(content, capture_id=capture_id, delimiter=delimiter)
     if media_type in HTML_MEDIA_TYPES:
-        return _extract_html(content, capture_id=capture_id, media_type=media_type)
+        # The markup path reads the rasters a page embeds inline and is handed
+        # the frozen settings rather than deciding anything of its own: with
+        # none, or with a profile that examines no embedded image, it decodes no
+        # payload at all and the extraction is structural.
+        return _extract_html(
+            content, capture_id=capture_id, media_type=media_type, settings=settings
+        )
     office_extractor = {
         DOCX_MEDIA_TYPE: extract_docx,
         XLSX_MEDIA_TYPE: extract_xlsx,
@@ -262,17 +300,11 @@ def extract_document(
             )
         except OOXMLInvalid as error:
             raise DocumentExtractionInvalid(str(error)) from error
-        limitations = dict(office_extraction.limitations)
-        # An embedded raster that could not be read, or a bounded image pass cut
-        # short, leaves coverage this source never reached. The structural
-        # extraction stands, so the source is partial rather than refused, and
-        # it is never reported as a document-wide success. The per-image counts
-        # stay in the limitations: no *block* failed, so the block coverage must
-        # not claim one did.
-        if office_extraction.limit_breach is not None:
-            limitations["documentOutcome"] = "coverage_truncated_by_limit"
-        elif office_extraction.failed_units:
-            limitations["documentOutcome"] = "partial_coverage"
+        limitations = _embedded_image_outcome(
+            dict(office_extraction.limitations),
+            failed_units=office_extraction.failed_units,
+            limit_breach=office_extraction.limit_breach,
+        )
         return _outcome(
             office_extraction.segments,
             unit_type=office_extraction.unit_type,
@@ -301,19 +333,47 @@ def extract_document(
         return _raster_outcome(raster_extraction)
     if media_type in RTF_MEDIA_TYPES:
         try:
-            rtf_extraction = extract_rtf(content, capture_id=capture_id)
+            rtf_extraction = extract_rtf(
+                content, capture_id=capture_id, settings=settings
+            )
         except RTFExtractionInvalid as error:
             raise DocumentExtractionInvalid(str(error)) from error
+        limitations = _embedded_image_outcome(
+            dict(rtf_extraction.limitations),
+            failed_units=rtf_extraction.failed_units,
+            limit_breach=rtf_extraction.limit_breach,
+        )
         return _outcome(
             rtf_extraction.segments,
             unit_type="rtf_block",
             expected=rtf_extraction.blocks,
             known_empty=not bool(rtf_extraction.segments),
-            limitations=rtf_extraction.limitations,
+            state="succeeded" if "documentOutcome" not in limitations else "partial",
+            limitations=limitations,
         )
     raise DocumentExtractionUnsupported(
         "no qualified adapter for the admitted media type"
     )
+
+
+def _embedded_image_outcome(
+    limitations: dict[str, Any], *, failed_units: int, limit_breach: str | None
+) -> dict[str, Any]:
+    """State what a source's bounded embedded-image pass left unreached.
+
+    An embedded raster that could not be read, or a bounded image pass cut
+    short, leaves coverage this source never reached. The structural extraction
+    stands, so the source is partial rather than refused, and it is never
+    reported as a document-wide success. The per-image counts stay in the
+    limitations: no structural *unit* failed, so the unit coverage must not
+    claim one did.
+    """
+    if limit_breach is not None:
+        limitations["limitBreach"] = limit_breach
+        limitations["documentOutcome"] = "coverage_truncated_by_limit"
+    elif failed_units:
+        limitations["documentOutcome"] = "partial_coverage"
+    return limitations
 
 
 def _decode_utf8(content: bytes, *, limit: int | None = None) -> str:
@@ -600,6 +660,7 @@ class _InertHTMLParser(HTMLParser):
         *,
         header_ids: dict[tuple[int, str], str | None] | None = None,
         collect_only: bool = False,
+        images: EmbeddedImagePass | None = None,
     ) -> None:
         super().__init__(convert_charrefs=True)
         self.capture_id = capture_id
@@ -620,6 +681,9 @@ class _InertHTMLParser(HTMLParser):
         self.header_ids: dict[tuple[int, str], str | None] = header_ids or {}
         #: Whether this walk only indexes header ids, emitting no segment.
         self.collect_only = collect_only
+        #: The one bounded embedded-raster pass every inline image of this
+        #: source shares. Absent, no image payload is decoded at all.
+        self.images = images
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.elements += 1
@@ -680,7 +744,24 @@ class _InertHTMLParser(HTMLParser):
                         visibility="hidden" if hidden else "visible",
                     )
                 )
-            self._reference("image", tag, path, attributes.get("src"))
+        if tag == "img":
+            # ``src`` is where an ``img`` carries the one image it displays.
+            self._image(tag, path, "src", attributes.get("src"), hidden=hidden)
+        elif tag == "source":
+            # A ``source`` names the images it offers in ``srcset``, and only
+            # there. Its ``src`` names a media resource for an ``audio`` or a
+            # ``video``, which is no image at all, and inside a ``picture`` it
+            # is not an attribute the element has: either way bytes written
+            # there are never an image candidate, so one is inventoried as the
+            # unresolved reference it is and never read, however it is written.
+            self._srcset(tag, path, attributes.get("srcset"), hidden=hidden)
+            self._inert_image(
+                tag,
+                path,
+                "src",
+                attributes.get("src"),
+                reason="not_an_image_source_attribute",
+            )
         elif tag == "a":
             self._reference("link", tag, path, attributes.get("href"))
         if tag in _HTML_VOID:
@@ -1039,6 +1120,152 @@ class _InertHTMLParser(HTMLParser):
             )
         )
 
+    def _srcset(self, tag: str, path: str, value: str | None, *, hidden: bool) -> None:
+        """Read the one inline candidate a ``srcset`` names, or report that it
+        names none this adapter can take.
+
+        A ``srcset`` is a list, and a candidate's URL runs to the next ASCII
+        whitespace: a comma inside one -- which a ``data:`` URL's payload is
+        free to hold -- belongs to the URL and is never a separator. Only a
+        value that is exactly one whitespace-free inline URL is read here. A
+        descriptor, a second candidate, a trailing comma, an empty value or a
+        candidate naming something outside the supplied bytes leaves the value
+        unresolved and inert: it is inventoried with the reason it was not
+        taken, and nothing is split, opened, fetched or resolved on a guess.
+        """
+        if value is None:
+            return
+        candidate, reason = _srcset_candidate(value)
+        if candidate is not None and candidate[:5].casefold() == "data:":
+            self._image(tag, path, "srcset", candidate, hidden=hidden)
+            return
+        self._inert_image(
+            tag, path, "srcset", value, reason=reason or "external_reference"
+        )
+
+    def _image(
+        self, tag: str, path: str, attribute: str, target: str | None, *, hidden: bool
+    ) -> None:
+        """Inventory one image reference, and read it only if it is inline bytes.
+
+        Every reference whose target is a *name* stays the inert target text it
+        has always been: a relative path, an absolute one, ``file:``, ``http:``,
+        ``blob:``, ``cid:``, a fragment -- nothing opens, fetches, probes or
+        resolves any of them, and none of them can be a candidate however the
+        profile is set. Only bytes the page carries in the attribute itself are
+        a candidate, and only when their declared type is one the raster path
+        admits.
+
+        The declaration is inventoried and the payload is not: what is published
+        says ``data:image/png;base64,`` or ``data:image/png,``, which encoding
+        that was, and how many characters followed it, so nothing persisted
+        holds image bytes. The reading that follows is its own segment and is
+        never joined to the author's alt text beside it.
+        """
+        if target is None:
+            return
+        if target[:5].casefold() != "data:":
+            self._reference("image", tag, path, target)
+            return
+        images = self.images
+        if self.collect_only or images is None:
+            # The collecting walk is after header ids only: it locates nothing
+            # and opens nothing, so no candidate is ever built on it.
+            return
+        part = f"{path}@{attribute}"
+        # The locator names the attribute the bytes came out of, so a ``source``
+        # that writes both of them locates two distinct records.
+        locator = self._locator(tag, path, None, placement={"imagePart": part})
+        declared, media_type, encoding, payload = _data_url(target)
+        result = _read_inline_image(
+            images, payload, media_type, encoding, part, locator
+        )
+        self._emit(
+            ExtractedSegment(
+                "object_inventory",
+                locator,
+                structured_value={
+                    "kind": "image",
+                    "attribute": attribute,
+                    "scheme": "data",
+                    "target": declared,
+                    "resolved": False,
+                    "mediaType": media_type or None,
+                    "encoding": encoding or "unsupported",
+                    "payloadChars": len(payload),
+                    "imageDecoded": result.decoded,
+                    "ocrPerformed": result.performed,
+                    "ocrOutcome": result.outcome,
+                },
+                extraction_method="inventory",
+                visibility="annotation",
+            )
+        )
+        for segment in result.segments:
+            # A reading of an image the page does not present is as hidden as
+            # the element that held it, and stays out of default retrieval.
+            self._emit(
+                replace(
+                    segment,
+                    semantic_role=(
+                        "hidden_content" if hidden else segment.semantic_role
+                    ),
+                    visibility="hidden" if hidden else segment.visibility,
+                )
+            )
+
+    def _inert_image(
+        self, tag: str, path: str, attribute: str, value: str | None, *, reason: str
+    ) -> None:
+        """Inventory one image target nothing here reads, and say why not.
+
+        A value that is exactly one inline URL publishes its declaration and the
+        payload's length only, and a longer value holding an inline payload
+        somewhere inside it publishes neither -- not the payload, and not a
+        payload length that would be measuring the descriptors and candidates
+        around it as well -- so no record ever carries image bytes however the
+        attribute was written. A target that is a *name* is published as the text
+        it is, under the same reference bound every other name obeys: an inline
+        payload is content and is bounded as content, which is why a value
+        carrying one is not measured against that bound.
+        """
+        if value is None:
+            return
+        if value[:5].casefold() == "data:" and _ASCII_WHITESPACE.search(value) is None:
+            declared, media_type, encoding, payload = _data_url(value)
+            detail: dict[str, Any] = {
+                "scheme": "data",
+                "target": declared,
+                "mediaType": media_type or None,
+                "encoding": encoding or "unsupported",
+                "payloadChars": len(payload),
+            }
+        elif "data:" in value.casefold():
+            detail = {"target": None, "valueChars": len(value)}
+        else:
+            if len(value) > MAX_HTML_REFERENCE_CHARS:
+                raise DocumentExtractionInvalid(
+                    "HTML reference exceeds the accepted bound"
+                )
+            detail = {"scheme": _reference_scheme(value), "target": value}
+        self._emit(
+            ExtractedSegment(
+                "object_inventory",
+                self._locator(
+                    tag, path, None, placement={"imagePart": f"{path}@{attribute}"}
+                ),
+                structured_value={
+                    "kind": "image",
+                    "attribute": attribute,
+                    "resolved": False,
+                    "unresolvedReason": reason,
+                    **detail,
+                },
+                extraction_method="inventory",
+                visibility="annotation",
+            )
+        )
+
     def _emit(self, segment: ExtractedSegment) -> None:
         if self.collect_only:
             # The collecting walk is after header ids only; the located
@@ -1065,6 +1292,101 @@ class _InertHTMLParser(HTMLParser):
             elementId=element_id,
             **(placement or {}),
         )
+
+
+def _data_url(target: str) -> tuple[str, str, str | None, str]:
+    """Split one ``data:`` URL into the declaration it may publish and the
+    payload it may not.
+
+    The two encodings a data URL has are both read: ``;base64`` as the last
+    parameter, and otherwise the percent-encoded form, which is the default the
+    scheme defines rather than an encoding this adapter guesses at. The
+    parameter is matched as a whole token, so ``;base64x`` is the unknown
+    parameter it is and not the base64 declaration it contains.
+
+    A ``data:`` target whose declaration never ends carries no encoding at all:
+    it is not a data URL, and it names nothing outside the page either, so it is
+    this image's own malformed payload rather than a reference. Reporting it that
+    way is what keeps the page around it published.
+    """
+    declaration = _DATA_URL.match(target)
+    if declaration is None:
+        return "data:", "", None, target[5:]
+    parameters = {item.strip().lower() for item in declaration.group(2).split(";")}
+    return (
+        declaration.group(0),
+        declaration.group(1).strip().lower(),
+        "base64" if "base64" in parameters else "percent",
+        target[declaration.end() :],
+    )
+
+
+def _srcset_candidate(value: str) -> tuple[str | None, str]:
+    """The one URL a ``srcset`` names unambiguously, or why none was taken.
+
+    A candidate's URL is collected up to the next ASCII whitespace, which is how
+    the attribute is defined: the commas in it separate candidates, but only
+    where whitespace has already ended the URL before them. A ``data:`` URL's
+    payload is free to hold commas, so splitting on one would cut a payload in
+    half and read the halves as two references -- which is exactly what this
+    does not do. Only a value that is one whitespace-free URL is taken. A second
+    token (a descriptor or another candidate), a trailing comma whose removal
+    would change the URL, and an empty value are each reported and left alone.
+    """
+    tokens = [token for token in _ASCII_WHITESPACE.split(value) if token]
+    if not tokens:
+        return None, "no_candidate"
+    if len(tokens) > 1:
+        return None, "multiple_candidates_or_descriptors"
+    if tokens[0].endswith(","):
+        return None, "ambiguous_candidate_separator"
+    return tokens[0], ""
+
+
+def _read_inline_image(
+    images: EmbeddedImagePass,
+    payload: str,
+    media_type: str,
+    encoding: str | None,
+    part: str,
+    locator: dict[str, Any],
+) -> EmbeddedImageResult:
+    """Decode one inline payload under the source's one aggregate budget.
+
+    The gate is consulted before the payload is decoded and a budget already
+    breached stops before this one is, so the shared ceiling bounds the work done
+    and not merely what is published, and nothing about an unexamined payload is
+    claimed. A payload past the inline bound, one whose declaration never ended,
+    and one that is not the encoding it declared are each this image's own
+    outcome: the page around it keeps every structural segment it had. The
+    declared type and the bytes' own magic are checked by the raster path, which
+    is the one place either is judged.
+
+    Both decodings are strict and neither repairs its input. Base64 is validated
+    rather than skipped over, after the ASCII whitespace an attribute is free to
+    wrap on. A percent-encoded payload must be percent-encoded throughout: every
+    escape complete and hexadecimal, every other character one a URL may hold
+    literally -- no whitespace is stripped out of it, because stripping it is how
+    a broken escape would be silently repaired into a byte the source never
+    wrote.
+    """
+    refused = images.refusal()
+    if refused is not None:
+        return refused
+    if encoding is None or len(payload) > MAX_DATA_URL_CHARS:
+        return images.record(EMBEDDED_MALFORMED)
+    if encoding == "base64":
+        try:
+            content = base64.b64decode(
+                _ASCII_WHITESPACE.sub("", payload), validate=True
+            )
+        except ValueError:
+            return images.record(EMBEDDED_MALFORMED)
+    elif _PERCENT_PAYLOAD.match(payload) is None:
+        return images.record(EMBEDDED_MALFORMED)
+    else:
+        content = unquote_to_bytes(payload)
+    return images.read(content, media_type, part, locator)
 
 
 def _table_span(value: str | None) -> int:
@@ -1246,10 +1568,28 @@ def _admit_markup(content: bytes, *, media_type: str) -> dict[str, Any]:
 
 
 def _extract_html(
-    content: bytes, *, capture_id: str, media_type: str
+    content: bytes,
+    *,
+    capture_id: str,
+    media_type: str,
+    settings: ExtractionSettings | None = None,
+    ocr_engine: OcrEngine = run_tesseract,
+    budget: ExtractionBudget | None = None,
 ) -> ExtractionOutcome:
+    """Locate one admitted page's structure, and only then its inline rasters.
+
+    The walk is what it has always been and is the whole extraction by default:
+    ``settings`` defaults to the explicit text-only profile, so a caller that
+    hands none decodes no image payload at all. Only bytes the page carries
+    inline in an ``img``'s ``src`` or in the one unambiguous candidate of a
+    ``source``'s ``srcset`` can be examined; every reference naming something
+    outside the supplied bytes stays unresolved, whatever the profile says.
+    ``budget`` is the source's one aggregate ceiling, injectable so a breach can
+    be exercised with a small budget rather than a real allocation.
+    """
     text = _decode_utf8(content, limit=MAX_HTML_SOURCE_BYTES)
     limitations = _admit_markup(content, media_type=media_type)
+    images = EmbeddedImagePass.over(settings, ocr_engine=ocr_engine, budget=budget)
     # The admission parse decides whether the source is readable at all; the
     # segments are still located by the inert walk over the same bytes, so what
     # this adapter publishes does not move when libxml2's tree does.
@@ -1258,7 +1598,7 @@ def _extract_html(
         # headers, and the attribute name cannot be written any other way, so a
         # source without it is spared the collecting walk entirely.
         header_ids = _header_ids(text) if _HEADERS_ATTRIBUTE.search(text) else {}
-        parser = _InertHTMLParser(capture_id, header_ids=header_ids)
+        parser = _InertHTMLParser(capture_id, header_ids=header_ids, images=images)
         parser.feed(text)
         parser.close()
     except DocumentExtractionInvalid:
@@ -1267,10 +1607,16 @@ def _extract_html(
         raise DocumentExtractionInvalid(
             "HTML is outside the accepted parser bounds"
         ) from error
+    limitations = _embedded_image_outcome(
+        {**limitations, **images.to_limitations()},
+        failed_units=images.failed_units,
+        limit_breach=images.limit_breach,
+    )
     return _outcome(
         tuple(parser.segments),
         unit_type="element",
         known_empty=not bool(parser.segments),
+        state="succeeded" if "documentOutcome" not in limitations else "partial",
         limitations=limitations,
     )
 

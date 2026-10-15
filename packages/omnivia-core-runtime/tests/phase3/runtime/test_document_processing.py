@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -941,6 +942,99 @@ def test_embedded_image_recognition_reaches_a_source_that_carries_images(
     ]
     assert recognised and all(
         json.loads(segment.source_locator_json)["imagePart"] == "word/media/image1.png"
+        for segment in recognised
+    )
+
+
+def legible_png(label: str) -> bytes:
+    """A raster holding text a real engine reads, as the fixtures above build one."""
+    image = Image.new("RGB", (1000, 240), "white")
+    ImageDraw.Draw(image).text(
+        (40, 55), label, fill="black", font=ImageFont.load_default(size=92)
+    )
+    encoded = io.BytesIO()
+    image.save(encoded, format="PNG")
+    return encoded.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("media_type", "document_id", "build", "part"),
+    [
+        pytest.param(
+            "application/rtf",
+            "doc-embedded-rtf",
+            lambda member: b"{\\rtf1\\ansi Carrier\\par {\\pict\\pngblip\\picw1000"
+            b"\\pich240 " + member.hex().encode("ascii") + b"}}",
+            "pict:",
+            id="rtf",
+        ),
+        pytest.param(
+            "text/html",
+            "doc-embedded-html",
+            lambda member: b"<p>Carrier</p><img alt=\"Scan\" "
+            b'src="data:image/png;base64,' + base64.b64encode(member) + b'">',
+            "@src",
+            id="html",
+        ),
+        pytest.param(
+            "application/xhtml+xml",
+            "doc-embedded-xhtml",
+            lambda member: b'<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            b"<p>Carrier</p>"
+            b'<img alt="Scan" src="data:image/png;base64,'
+            + base64.b64encode(member)
+            + b'"/></body></html>',
+            "@src",
+            id="xhtml",
+        ),
+    ],
+)
+def test_embedded_image_recognition_reaches_an_rtf_or_markup_source(
+    runner: ServiceRunner,
+    tmp_path: Path,
+    host_catalogue: TrustedOcrCatalogue,
+    media_type: str,
+    document_id: str,
+    build: Callable[[bytes], bytes],
+    part: str,
+) -> None:
+    """Real recognition of a raster an RTF or a markup source carries, end to end.
+
+    The preference qualifies these media types exactly as it qualifies the Office
+    ones, the admission freezes the identities for them, and the executor then
+    hands those frozen settings to the RTF and markup paths -- which read the one
+    payload the source carries inline and run the engine the profile pinned over
+    it. What is asserted is the recognised text in the projection beside the
+    source's own prose.
+    """
+    set_preferences(runner, embedded_image_ocr=True)
+    authority, resources = managed_host_installation(
+        tmp_path / f"inst-{document_id}", tmp_path, host_catalogue, "eng", "osd"
+    )
+    capture = admit(
+        runner,
+        document_id=document_id,
+        content=build(legible_png("Embedded OCR")),
+        media_type=media_type,
+        resources=resources,
+    )
+
+    results = process_capture_outbox(runner, catalogue_for=authority)
+
+    assert frozen(runner, capture.capture_id).languages == ("eng",)
+    profile = executed_profile(runner, results[0])
+    assert profile["processingMode"] == "text_and_local_ocr"
+    assert profile["embeddedImageOcr"] is True
+    assert [result.result_state for result in results] == ["succeeded"]
+    projected = read_extraction_projection(
+        runner, document_id=document_id, query="Embedded"
+    )
+    assert "Embedded OCR" in " ".join(segment.text or "" for segment in projected)
+    recognised = [
+        segment for segment in projected if segment.extraction_method == "ocr"
+    ]
+    assert recognised and all(
+        part in json.loads(segment.source_locator_json)["imagePart"]
         for segment in recognised
     )
 
