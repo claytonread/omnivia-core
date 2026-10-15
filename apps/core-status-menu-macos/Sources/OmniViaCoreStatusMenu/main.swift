@@ -140,6 +140,10 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     /// the Document processing pane administers; nil when it is not installed
     /// beside the companion, which that pane then states.
     private let ocr: OcrResourceAdministering?
+    /// The same resolved `omnivia` again, for the one authority over this
+    /// workspace's document-processing preferences. Nil when the CLI could not
+    /// be found, which the Document processing pane then states.
+    private let documentProcessing: DocumentProcessingAdministering?
 
     init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
         self.configuration = configuration
@@ -166,6 +170,15 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             runner = UnavailableLifecycleRunner()
         }
         self.mcp = mcp
+        // The governed application surface, not an administration mode: the
+        // preferences are workspace state, so this one carries the workspace.
+        self.documentProcessing = resolvedExecutable.flatMap {
+            DocumentProcessingCommandRunner(
+                executable: $0,
+                installationState: configuration.installationState,
+                workspaceRef: configuration.workspaceID
+            )
+        }
         // Resolved by name, not from `--cli`: that override names the CLI, and
         // the managed resource cache is administered by the service executable.
         // Absent, the pane says it has no route rather than guessing a path.
@@ -648,7 +661,8 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             settingsWindowController = SettingsWindowController(
                 coordinator: ReadinessCoordinator(context: context),
                 mcp: mcp,
-                ocr: ocr
+                ocr: ocr,
+                documentProcessing: documentProcessing
             )
         }
         if let lastSnapshot { reportServiceState(lastSnapshot) }

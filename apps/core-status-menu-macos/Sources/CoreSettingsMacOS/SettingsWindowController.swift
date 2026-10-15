@@ -401,6 +401,12 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// renders this; the model runs the service and holds the states.
     private let languages: OcrLanguageModel
 
+    // MARK: Document-processing preferences (the pane's two settings rows)
+    /// This workspace's durable preferences, as Core holds them. The pane
+    /// renders this; the model reaches `document.settings.get/update` through
+    /// the installed client and holds the states.
+    private let processing: DocumentProcessingModel
+
     // Pane selection
     /// Order and labels follow `NAV` in the design's `core-settings.js`. That
     /// list is seven items: the readiness and Local Decisions amendments both
@@ -475,7 +481,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         navigator: SettingsNavigator = SettingsNavigator(componentName: "OmniVia Core"),
         notificationCenter: UNUserNotificationCenter? = nil,
         mcp: McpAdministering? = nil,
-        ocr: OcrResourceAdministering? = nil
+        ocr: OcrResourceAdministering? = nil,
+        documentProcessing: DocumentProcessingAdministering? = nil
     ) {
         self.coordinator = coordinator
         self.navigator = navigator
@@ -486,6 +493,11 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         // The same arrangement for the packaged `omnivia-core-service`, which
         // is the authority over the managed OCR resource cache.
         languages = OcrLanguageModel(administering: ocr)
+        // And the same for the installed `omnivia`, which is the route to the
+        // one authority over this workspace's processing preferences. Nil means
+        // the pane says it has no route rather than showing a default as a
+        // setting somebody chose.
+        processing = DocumentProcessingModel(administering: documentProcessing)
         // Resolve lazily and bundle-guarded: UNUserNotificationCenter.current()
         // raises when the process has no bundle identity (§13.2 honest states).
         if let notificationCenter {
@@ -497,6 +509,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
         super.init()
         languages.onChange = { [weak self] in self?.render() }
+        processing.onChange = { [weak self] in self?.render() }
         // Pick up the stored preference rather than starting from false every
         // launch. The companion's own preferences stay machine-local: they
         // must work while Core is stopped, and they should not travel with a
@@ -541,6 +554,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         coordinator.scheduleRefresh(.windowOpened)
         loadMcpStatus()
         loadOcrInventory()
+        loadProcessingSettings()
     }
 
     // MARK: Window controls
@@ -1931,24 +1945,164 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// text is read from captured files, and which language resources are
     /// installed. The language rows carry a full install lifecycle in the
     /// design — download, verify, install, storage-full — all of which belongs
-    /// to a capture backend this build does not have.
+    /// to the managed resource owner's own explicit flow, not to this pane.
     private func renderDocumentProcessing(_ content: NSStackView) {
-        let recognition = card(content, header: "Text recognition")
-        notBuiltRow(
-            into: recognition,
-            title: "Profile",
-            detail: "Reads native text and recognises text on every page and image, on this Mac. The alternative, Text only, is faster but doesn’t recognise images of text, including scanned pages.",
-            status: "Not in this build"
-        )
-        notBuiltRow(
-            into: recognition,
-            title: "Recognise text in embedded document images",
-            detail: "Word, PowerPoint, Excel, RTF and local HTML. Only images inside the captured file; linked images are never loaded.",
-            status: "Not in this build"
-        )
-
+        renderTextRecognition(content)
         renderInstalledLanguages(content)
         renderLanguageSelection(content)
+        content.addArrangedSubview(note(DocumentProcessingModel.futureCapturesNote))
+    }
+
+    /// Text recognition: the two preferences Core actually holds for this
+    /// workspace, read from `document.settings.get` and changed through
+    /// `document.settings.update`. Nothing is shown as enabled that this window
+    /// has no route to change, and nothing is shown as changed until a fresh
+    /// read says so.
+    private func renderTextRecognition(_ content: NSStackView) {
+        let recognition = card(content, header: "Text recognition")
+
+        let settings: DocumentProcessingSettings
+        switch processing.state {
+        case .noAdministrator:
+            notBuiltRow(
+                into: recognition,
+                title: "Processing preferences can’t be read here",
+                detail: "How text is read from a captured document is a workspace preference "
+                    + "Core holds. This window was opened without a route to the installed "
+                    + "Core client, so it can neither read nor change it.",
+                status: "Not available here",
+                tone: .neutral
+            )
+            return
+        case .loading:
+            notBuiltRow(
+                into: recognition,
+                title: "Reading processing preferences…",
+                detail: "Asking Core how it reads text from a captured document in this "
+                    + "workspace.",
+                status: "Checking…",
+                tone: .checking
+            )
+            return
+        case .unavailable(let error):
+            notBuiltRow(
+                into: recognition,
+                title: "Processing preferences could not be read",
+                detail: error.sentence,
+                status: "Unavailable",
+                tone: .blocked
+            )
+            return
+        case .ready(let reading):
+            settings = reading
+        }
+
+        renderProcessingProfileRow(into: recognition, settings: settings)
+        renderEmbeddedImageRow(into: recognition, settings: settings)
+
+        if let stale = processing.staleError {
+            content.addArrangedSubview(
+                note(
+                    "The last reading failed, so these are the previous values. "
+                        + stale.sentence,
+                    symbol: .clock,
+                    attn: true
+                )
+            )
+        }
+        if let failed = processing.lastWriteError {
+            content.addArrangedSubview(note(failed.sentence, symbol: .alertTriangle, attn: true))
+        }
+    }
+
+    /// The profile: the default first, the explicit faster alternate second.
+    private func renderProcessingProfileRow(
+        into card: NSStackView, settings: DocumentProcessingSettings
+    ) {
+        let detail = DocumentProcessingMode.allCases
+            .map { "\($0.label) — \($0.summary)" }
+            .joined(separator: " ")
+        let busyKeys = DocumentProcessingMode.allCases.map { DocumentProcessingChange.mode($0).key }
+        var trailing: NSView?
+        if busyKeys.contains(where: { processing.busy == $0 }) {
+            trailing = chip("Saving…", tone: .checking)
+        } else if let mode = settings.mode {
+            let control = NSSegmentedControl(
+                labels: DocumentProcessingMode.allCases.map(\.label),
+                trackingMode: .selectOne,
+                target: self,
+                action: #selector(changeProcessingProfile(_:))
+            )
+            control.selectedSegment = DocumentProcessingMode.allCases.firstIndex(of: mode) ?? 0
+            control.isEnabled = processing.canAct
+            control.setAccessibilityLabel("Profile")
+            trailing = control
+        }
+
+        let body = row(into: card, title: "Profile", detail: detail, trailing: trailing)
+        body.addArrangedSubview(ovSpacer(1))
+        if let mode = settings.mode {
+            body.addArrangedSubview(
+                chip(
+                    settings.isProductDefault
+                        ? "\(mode.label) · the default, nothing stored yet"
+                        : "\(mode.label) · for captures from now on",
+                    tone: mode == .textAndLocalOcr ? .ok : .off
+                )
+            )
+        } else {
+            // An open vocabulary: a later Core may hold a mode this build has
+            // never heard of, and offering a two-way control over it would
+            // silently change it to one of the two this build knows.
+            body.addArrangedSubview(
+                chip("Core holds a profile this build does not know", tone: .attention)
+            )
+        }
+    }
+
+    /// Embedded document images. Off by default, and scoped to the formats that
+    /// carry images inside the captured bytes.
+    private func renderEmbeddedImageRow(
+        into card: NSStackView, settings: DocumentProcessingSettings
+    ) {
+        let busyKeys = [true, false].map { DocumentProcessingChange.embeddedImageOcr($0).key }
+        var trailing: NSView
+        if busyKeys.contains(where: { processing.busy == $0 }) {
+            trailing = chip("Saving…", tone: .checking)
+        } else {
+            let toggle = ovToggle(
+                on: settings.embeddedImageOcr,
+                enabled: processing.canAct,
+                label: "Recognise text in embedded document images"
+            )
+            toggle.target = self
+            toggle.action = #selector(toggleEmbeddedImageOcr(_:))
+            trailing = toggle
+        }
+
+        let body = row(
+            into: card,
+            title: "Recognise text in embedded document images",
+            detail: "Word, PowerPoint, Excel, RTF and local HTML. Only images inside the "
+                + "captured file; a linked or external image is never loaded. A PDF or an "
+                + "image capture is covered by the profile above instead.",
+            trailing: trailing
+        )
+        body.addArrangedSubview(ovSpacer(1))
+        if settings.mode == .textOnly, settings.embeddedImageOcr {
+            // The preference is stored independently of the profile, so it is
+            // reported as stored — and as doing nothing while Text only is the
+            // profile, which is the half that would otherwise be a lie.
+            body.addArrangedSubview(
+                chip("On, and recognising nothing while Text only is selected", tone: .off)
+            )
+        } else {
+            body.addArrangedSubview(
+                settings.embeddedImageOcr
+                    ? chip("On for captures from now on", tone: .ok)
+                    : chip("Off", tone: .off)
+            )
+        }
     }
 
     /// Installed language resources: what the service says is in the managed
@@ -2149,38 +2303,63 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// The language selection contract, stated without pretending it is held.
+    /// The selected recognition languages, in their selection order.
     ///
-    /// §17.3 allows at most three selected recognition languages per profile.
-    /// Selecting them is a *profile* setting, and this build has no durable
-    /// settings owner the window can reach: the application-settings store
-    /// exists in Core's storage layer but no service operation, CLI or handler
-    /// exposes it. So the contract is stated and nothing is offered that would
-    /// imply a selection was saved or is in force.
+    /// §17.3 allows at most three per profile, and the selection is Core's own
+    /// durable preference — read here, never composed from what happens to be
+    /// installed. English appears because a read reports it: Core's product
+    /// default is a configured selection of `eng`, which is reported as a
+    /// missing language when it is not installed rather than as English
+    /// present. Nothing on this card installs anything.
     private func renderLanguageSelection(_ content: NSStackView) {
-        let selection = card(content, header: "Recognition language selection")
-        let installed = languages.inventory?.resources.map(\.identity.displayLanguage) ?? []
-        notBuiltRow(
-            into: selection,
-            title: "Languages used for recognition",
-            detail: installed.isEmpty
-                ? "Up to three installed languages are used for each recognition profile. "
-                    + "There is no installed language to choose, and this build has no durable "
-                    + "settings owner to record a choice in, so no selection is in force."
-                : "Up to three installed languages are used for each recognition profile. "
-                    + "Installed and available to choose from: "
-                    + ListFormatter.localizedString(byJoining: installed) + ". "
-                    + "This build has no durable settings owner to record a choice in, so no "
-                    + "selection is in force and nothing below is saved.",
-            status: "No settings owner in this build",
-            tone: .notBuilt
-        )
-        content.addArrangedSubview(
-            note(
-                "Installing and removing languages is administration of this installation. "
-                    + "Choosing which installed languages a profile recognises is a separate "
-                    + "setting, and changing it would affect future captures only."
+        let selection = card(content, header: "Recognition languages")
+
+        guard let settings = processing.settings else {
+            notBuiltRow(
+                into: selection,
+                title: "The selected languages can’t be read here",
+                detail: "Which languages a capture recognises in is a workspace preference "
+                    + "Core holds, and this window has no reading of it. Installing and "
+                    + "removing languages above is administration of this installation and is "
+                    + "a separate act from selecting them.",
+                status: "Not available here",
+                tone: .neutral
             )
+            return
+        }
+
+        let selected = DocumentProcessingModel.selectedLanguages(
+            settings, installed: languages.inventory
+        )
+        for (position, language) in selected.enumerated() {
+            let body = row(
+                into: selection,
+                title: "\(position + 1). \(language.displayName) (\(language.code))",
+                detail: position == 0
+                    ? "Recognition is attempted in the selected order, this one first."
+                    : nil
+            )
+            body.addArrangedSubview(ovSpacer(1))
+            switch language.availability {
+            case .installed:
+                body.addArrangedSubview(chip(language.status, tone: .ok))
+            case .notInstalled:
+                body.addArrangedSubview(chip(language.status, tone: .attention))
+            case .unconfirmed:
+                body.addArrangedSubview(chip(language.status, tone: .unknown))
+            }
+        }
+
+        // Read-only on purpose. The selection is Core's to hold and this pane
+        // reports it; the window offers no editor for it because installing a
+        // language is unavailable in this build (see `languageActions`), so a
+        // selection control could only ever reorder one entry.
+        row(
+            into: selection,
+            title: "Changing the selection",
+            detail: "Up to three languages may be selected, in order. This window shows the "
+                + "selection Core holds and does not change it. "
+                + DocumentProcessingModel.noInstallNote
         )
     }
 
@@ -3039,6 +3218,40 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// nothing and starts nothing, so it is safe on window open (§A2).
     private func loadOcrInventory() {
         Task { @MainActor in await languages.load() }
+    }
+
+    // MARK: Document-processing preference actions
+
+    /// Read this workspace's preferences. Passive: `document.settings.get`
+    /// opens no capture and changes nothing, so it is safe on window open.
+    private func loadProcessingSettings() {
+        Task { @MainActor in await processing.load() }
+    }
+
+    /// Both changes go the same way: one member, under the revision that was
+    /// read, followed by a fresh read. Neither is confirmed by a sheet — the
+    /// change affects future captures only and is reversed by clicking back,
+    /// which is not the kind of act §A6 asks to be confirmed.
+    private func changeProcessing(_ change: DocumentProcessingChange) {
+        guard processing.canAct else { return }
+        Task { @MainActor in
+            if case .success = await processing.apply(change) {
+                toast("Saved. This applies to captures from now on.")
+            }
+            // A failure is already on the pane as `lastWriteError`, beside the
+            // value Core actually holds. There is nothing to toast about it.
+            render()
+        }
+    }
+
+    @objc private func changeProcessingProfile(_ sender: NSSegmentedControl) {
+        let modes = DocumentProcessingMode.allCases
+        guard (0..<modes.count).contains(sender.selectedSegment) else { return }
+        changeProcessing(.mode(modes[sender.selectedSegment]))
+    }
+
+    @objc private func toggleEmbeddedImageOcr(_ sender: NSSwitch) {
+        changeProcessing(.embeddedImageOcr(sender.state == .on))
     }
 
     @objc private func removeLanguage(_ sender: NSButton) {

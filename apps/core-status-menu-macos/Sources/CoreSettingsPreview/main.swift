@@ -81,7 +81,29 @@ MainActor.assumeIsolated {
             }
         }
 
-    let controller = SettingsWindowController(coordinator: coordinator, mcp: mcp, ocr: ocr)
+    // Optional, so the Document processing pane's two preference rows can be
+    // exercised against a real workspace:
+    //   --cli <path to omnivia> --installation-state <path> --workspace-id <id>
+    // Without them the pane says it has no route to the client, which is the
+    // truth here. There is no stub: fabricated preferences in a screenshot
+    // would be a claim about what a future capture will do.
+    let documentProcessing = (argument("--cli").map { URL(fileURLWithPath: $0) })
+        .flatMap { cli in
+            argument("--installation-state").flatMap { state in
+                DocumentProcessingCommandRunner(
+                    executable: cli,
+                    installationState: URL(fileURLWithPath: state),
+                    workspaceRef: workspace
+                )
+            }
+        }
+
+    let controller = SettingsWindowController(
+        coordinator: coordinator,
+        mcp: mcp,
+        ocr: ocr,
+        documentProcessing: documentProcessing
+    )
 
     // Optional, so the sidebar footer's service states can be looked at
     // without a companion to report them:

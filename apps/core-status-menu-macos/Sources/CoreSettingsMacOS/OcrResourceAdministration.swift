@@ -70,7 +70,13 @@ public struct OcrResourceIdentity: Sendable, Equatable {
         "chi_tra": "Chinese (Traditional)",
     ]
 
-    public var displayLanguage: String { Self.names[language] ?? language }
+    public var displayLanguage: String { Self.displayName(for: language) }
+
+    /// The same table, for a bare language code — a selected language is a
+    /// code and has no installed identity behind it until it is installed.
+    public static func displayName(for language: String) -> String {
+        names[language] ?? language
+    }
 }
 
 /// One installed resource set as `status` reports it.
