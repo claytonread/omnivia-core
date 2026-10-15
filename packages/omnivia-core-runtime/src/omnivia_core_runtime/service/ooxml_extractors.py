@@ -28,6 +28,7 @@ from omnivia_core_runtime.service.raster_extractors import (
     EMBEDDED_MALFORMED,
     EMBEDDED_NOT_EMBEDDED,
     EMBEDDED_OUTCOMES,
+    EMBEDDED_TRUNCATED,
     EmbeddedImageCandidate,
     EmbeddedImageResult,
     ExtractionBudget,
@@ -2364,12 +2365,16 @@ class _EmbeddedImages:
         A container that named only a reference out of the package has no part
         here, and nothing opens, fetches or probes that reference. The gate is
         consulted before the member is read, so a profile that examines no
-        embedded image never touches an image member.
+        embedded image never touches an image member, and a budget already
+        breached stops before this candidate's member is read at all: the
+        shared ceiling bounds the work done, not merely what is published.
         """
         if part is None or media_type is None:
             result = EmbeddedImageResult(EMBEDDED_NOT_EMBEDDED)
         elif self.gate is not None:
             result = EmbeddedImageResult(self.gate)
+        elif self.budget.breach is not None:
+            result = EmbeddedImageResult(EMBEDDED_TRUNCATED)
         else:
             try:
                 content = package.bytes(part, limit=MAX_MEMBER_BYTES)

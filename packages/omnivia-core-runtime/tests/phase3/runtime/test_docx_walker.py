@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from _trusted_ocr import catalogue_over, stand_in_models
-from omnivia_core_runtime.service import ocr_resources
+from omnivia_core_runtime.service import ocr_resources, ooxml_extractors
 from omnivia_core_runtime.service.ooxml_extractors import (
     _MAX_DOCX_EQUATION_BYTES,
     _MAX_DOCX_FIELD_DEPTH,
@@ -6516,6 +6516,54 @@ def test_one_aggregate_budget_truncates_the_later_images_of_one_document(
     assert outcomes == [EMBEDDED_RECOGNISED, EMBEDDED_TRUNCATED]
     assert result.limit_breach == "ocr_pixel_budget_exhausted"
     assert result.limitations["limitBreach"] == "ocr_pixel_budget_exhausted"
+
+
+def test_the_shared_decoded_pixel_ceiling_stops_opening_later_image_members(
+    examining: ocr_resources.ExtractionSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Decoded source pixels are the document's aggregate ceiling, so two
+    individually acceptable rasters can exhaust it between them. The image the
+    ceiling runs out on is truncated, and once the shared budget is breached no
+    later candidate's member is read or decoded at all: the bound limits the
+    work done and not merely what is published."""
+    read_parts: list[str] = []
+    member_bytes = ooxml_extractors._Package.bytes
+
+    def recording(self: ooxml_extractors._Package, name: str, **kwargs: int) -> bytes:
+        read_parts.append(name)
+        return member_bytes(self, name, **kwargs)
+
+    monkeypatch.setattr(ooxml_extractors._Package, "bytes", recording)
+    body = f"<w:p>{drawing()}</w:p><w:p>{drawing()}</w:p><w:p>{drawing()}</w:p>"
+    content = linked(
+        body, IMAGE_RELATION, content_types=PNG_DEFAULT, members=PNG_MEMBER
+    )
+    engine = RecordingOcr("FIRST")
+
+    result = examined(
+        content, examining, engine, budget=ExtractionBudget(decoded_pixels=120 * 40)
+    )
+
+    outcomes = [
+        (i.structured_value["ocrOutcome"], i.structured_value["imageDecoded"])
+        for i in result.segments
+        if i.semantic_role == "object_inventory"
+    ]
+    assert outcomes == [
+        (EMBEDDED_RECOGNISED, True),
+        # Opened, then refused the pixels it needed before any further work.
+        (EMBEDDED_TRUNCATED, True),
+        # The breach already stood, so this member was never read.
+        (EMBEDDED_TRUNCATED, False),
+    ]
+    assert read_parts.count("word/media/image1.png") == 2
+    assert len(engine.sizes) == 1
+    assert result.limit_breach == "decoded_pixel_budget_exhausted"
+    assert result.limitations["embeddedImageOutcomes"] == {
+        EMBEDDED_RECOGNISED: 1,
+        EMBEDDED_TRUNCATED: 2,
+    }
 
 
 def test_a_below_threshold_reading_is_retained_but_is_no_reliable_text(

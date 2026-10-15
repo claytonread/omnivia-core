@@ -226,6 +226,7 @@ class ExtractionBudget:
     ocr_seconds: float = OCR_SECONDS_PER_DOCUMENT
     decode_seconds: float = MAX_DECODE_SECONDS
     text_bytes: int = MAX_TEXT_BYTES
+    decoded_pixels: int = MAX_AGGREGATE_PIXELS
     breach: str | None = None
     ocr_spent_seconds: float = 0.0
     _started: float = field(default_factory=time.monotonic)
@@ -247,6 +248,20 @@ class ExtractionBudget:
 
     def unit_timeout(self) -> float:
         return max(1.0, min(float(OCR_SECONDS_PER_UNIT), self.ocr_seconds))
+
+    def take_decoded_pixels(self, pixels: int) -> bool:
+        """Charge one admitted frame's source pixels, before it is worked on.
+
+        Source pixels are the document's aggregate ceiling and not one image's:
+        a container of many individually acceptable rasters pays this once per
+        frame, and the frame that no longer fits is cut short rather than
+        decoded. Charged exactly once per frame, by its one caller.
+        """
+        if pixels > self.decoded_pixels:
+            self.breach = "decoded_pixel_budget_exhausted"
+            return False
+        self.decoded_pixels -= pixels
+        return True
 
     def may_decode(self) -> bool:
         """Whether the non-OCR execution budget for this source still holds."""
@@ -526,7 +541,6 @@ def extract_image(
     segments: list[ExtractedSegment] = []
     records: list[_UnitRecord] = []
     budget = budget if budget is not None else ExtractionBudget()
-    aggregate_pixels = 0
     auxiliary = 0
     default_frame = 1
     try:
@@ -564,7 +578,7 @@ def extract_image(
                 )
                 continue
             try:
-                record, frame_pixels = _extract_image_frame(
+                record = _extract_image_frame(
                     source,
                     frame_index,
                     capture_id=capture_id,
@@ -573,7 +587,6 @@ def extract_image(
                     ocr_engine=ocr_engine,
                     budget=budget,
                     segments=segments,
-                    aggregate_pixels=aggregate_pixels,
                 )
             except RasterExtractionInvalid:
                 raise
@@ -590,7 +603,6 @@ def extract_image(
                     )
                 )
                 continue
-            aggregate_pixels += frame_pixels
             records.append(record)
     finally:
         source.close()
@@ -875,8 +887,7 @@ def _extract_image_frame(
     ocr_engine: OcrEngine,
     budget: ExtractionBudget,
     segments: list[ExtractedSegment],
-    aggregate_pixels: int,
-) -> tuple[_UnitRecord, int]:
+) -> _UnitRecord:
     """Decode, orient and recognise exactly one primary frame, then close it."""
     number = frame_index + 1
     source_width, source_height = source.size
@@ -885,15 +896,18 @@ def _extract_image_frame(
     # refused rather than allocated and only then downsampled.
     if pixels > MAX_FRAME_PIXELS:
         raise RasterExtractionInvalid("decoded image exceeds the accepted pixel bound")
-    if aggregate_pixels + pixels > MAX_AGGREGATE_PIXELS:
-        raise RasterExtractionInvalid(
-            "decoded image source exceeds the aggregate pixel bound"
+    if not budget.take_decoded_pixels(pixels):
+        # The aggregate ceiling is the document's, so a frame it can no longer
+        # pay for is this frame's truncation and never the source's refusal.
+        return _unit_record(
+            UNIT_IMAGE_FRAME,
+            number,
+            OUTCOME_TRUNCATED_BY_LIMIT,
+            budget=budget,
+            published=False,
         )
     if not settings.runs_ocr:
-        return (
-            _UnitRecord(UNIT_IMAGE_FRAME, number, OUTCOME_EXCLUDED_BY_PROFILE),
-            pixels,
-        )
+        return _UnitRecord(UNIT_IMAGE_FRAME, number, OUTCOME_EXCLUDED_BY_PROFILE)
     declared_orientation = int(source.getexif().get(0x0112, 1) or 1)
     frame = None
     prepared = None
@@ -950,17 +964,14 @@ def _extract_image_frame(
         geometry=transform,
         budget=budget,
     )
-    return (
-        _unit_record(
-            UNIT_IMAGE_FRAME,
-            number,
-            OUTCOME_OCR_TEXT if emitted else OUTCOME_NO_RELIABLE_OCR_TEXT,
-            budget=budget,
-            published=bool(emitted),
-            flags=(OUTCOME_LOW_CONFIDENCE,) if ocr.low_confidence else (),
-            stats=ocr.stats(),
-        ),
-        pixels,
+    return _unit_record(
+        UNIT_IMAGE_FRAME,
+        number,
+        OUTCOME_OCR_TEXT if emitted else OUTCOME_NO_RELIABLE_OCR_TEXT,
+        budget=budget,
+        published=bool(emitted),
+        flags=(OUTCOME_LOW_CONFIDENCE,) if ocr.low_confidence else (),
+        stats=ocr.stats(),
     )
 
 

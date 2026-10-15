@@ -1163,6 +1163,37 @@ def test_a_final_frame_whose_ocr_time_ran_out_is_unknown_not_a_proven_blank() ->
     assert outcome.coverage["units"][0]["knownEmpty"] == 0
 
 
+def test_the_decoded_pixel_budget_is_the_documents_and_not_one_frames() -> None:
+    """Source pixels are charged per admitted frame against the one shared
+    ceiling, so a frame the document can no longer pay for is cut short before
+    it is worked on instead of being counted from zero. The frames already read
+    keep their readings; the frame never decoded is unknown, not a blank."""
+    frame = text_image("Page", (200, 60))
+    content = tiff_frames([(frame, 0)] * 3)
+    engine = FakeOcr(
+        words=[("Frame text", 90.0, (10.0, 10.0, 100.0, 20.0))],
+        page_width_points=200.0,
+    )
+    budget = ExtractionBudget(decoded_pixels=2 * 200 * 60)
+
+    result = extract_image(
+        content,
+        capture_id=CAPTURE,
+        media_type="image/tiff",
+        ocr_engine=engine,
+        budget=budget,
+    )
+
+    assert outcomes(result) == {OUTCOME_OCR_TEXT: 2, OUTCOME_TRUNCATED_BY_LIMIT: 1}
+    assert [segment.source_locator["frame"] for segment in result.segments] == [1, 2]
+    assert result.limitations["limitBreach"] == "decoded_pixel_budget_exhausted"
+    # Charged exactly once for each frame admitted, and not at all for the one
+    # refused: the ceiling is spent, not overspent.
+    assert budget.decoded_pixels == 0
+    assert result.useful_units == 2 and result.unknown_remaining == 1
+    assert result.known_empty_units == 0
+
+
 def test_a_final_page_whose_output_the_text_budget_cut_short_stays_partial(
     sample_pdf: bytes,
 ) -> None:
