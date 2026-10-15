@@ -30,18 +30,28 @@ final class FileMonitoringTests: XCTestCase {
         private let lock = NSLock()
         private var reads = 0
         private var failing = false
+        private var during: (@Sendable () -> Void)?
 
         var count: Int { lock.withLock { reads } }
         func fail() { lock.withLock { failing = true } }
 
+        /// Runs once, inside the next read of the original. `withReadAccess` resolves the bookmark
+        /// under the publication gate and then releases it for the read itself, so this is exactly
+        /// the window a disconnect, a relink or a pause lands in while a check is reading.
+        func interfere(_ body: @escaping @Sendable () -> Void) { lock.withLock { during = body } }
+
         func readStableBytes(from url: URL, maximumBytes: UInt64) throws -> Data {
-            let failing = lock.withLock {
+            let (failing, during) = lock.withLock { () -> (Bool, (@Sendable () -> Void)?) in
                 reads += 1
-                return self.failing
+                let pending = self.during
+                self.during = nil
+                return (self.failing, pending)
             }
             if failing { throw CapturePreparationError.coordinatedReadFailed }
-            return try SystemCoordinatedOriginalReader()
+            let bytes = try SystemCoordinatedOriginalReader()
                 .readStableBytes(from: url, maximumBytes: maximumBytes)
+            during?()
+            return bytes
         }
     }
 
@@ -391,6 +401,72 @@ final class FileMonitoringTests: XCTestCase {
         let value = try XCTUnwrap(context.environment.fileSubscriptions.all().first)
         XCTAssertFalse(value.needsReconciliation)
         XCTAssertNotNil(value.lastCheckedAt)
+    }
+
+    func testUnchangedBytesRecordNoCheckWhenTheAccessIsDisconnectedDuringTheRead() async throws {
+        let context = try await activeWatch()
+        let before = try XCTUnwrap(context.environment.fileSubscriptions.all().first)
+        let store = context.environment.accessStore
+        let accessRef = before.accessRef
+        context.reader.interfere { _ = try? store.disconnect(accessRef: accessRef) }
+
+        let reports = try await checkOnce(context)
+
+        // The bytes are the ones this scope already has, but the grant that authorised reading
+        // them was withdrawn inside the read, so there is nothing to report as up to date.
+        XCTAssertEqual(reports.map(\.queued), [false])
+        XCTAssertEqual(context.reader.count, context.baselineReads + 1)
+        try assertNothingWasRecorded(context, before: before)
+        XCTAssertEqual(context.environment.fileSubscriptions.all().map(\.state), [.active])
+    }
+
+    func testUnchangedBytesRecordNoCheckWhenTheBindingGenerationMovesDuringTheRead() async throws {
+        let context = try await activeWatch()
+        let before = try XCTUnwrap(context.environment.fileSubscriptions.all().first)
+        let store = context.environment.accessStore
+        let accessRef = before.accessRef
+        let documentID = before.linkedDocumentID
+        let original = context.original
+        // A relink leaves a perfectly usable grant behind. It is just not the one this read was
+        // authorised under, so the check it would finish was never made under authority it holds.
+        context.reader.interfere {
+            _ = try? store.disconnect(accessRef: accessRef)
+            _ = try? store.adopt(
+                accessRef: accessRef,
+                linkedDocumentID: documentID,
+                selectedURL: original,
+                route: .directFile
+            )
+        }
+
+        let reports = try await checkOnce(context)
+
+        XCTAssertEqual(reports.map(\.queued), [false])
+        XCTAssertEqual(store.descriptors().first?.generation, before.bindingGeneration + 1)
+        try assertNothingWasRecorded(context, before: before)
+    }
+
+    func testUnchangedBytesRecordNoCheckWhenTheWatchIsPausedDuringTheRead() async throws {
+        let context = try await activeWatch()
+        let before = try XCTUnwrap(context.environment.fileSubscriptions.all().first)
+        let subscriptions = context.environment.fileSubscriptions
+        let subscriptionID = context.subscriptionID
+        // The same two writes `pause` makes, landing while the read this check was claimed for is
+        // still in flight.
+        context.reader.interfere {
+            _ = try? subscriptions.update(id: subscriptionID) {
+                $0.state = .paused
+                $0.needsReconciliation = true
+            }
+        }
+
+        let reports = try await checkOnce(context)
+
+        XCTAssertEqual(reports.map(\.queued), [false])
+        // A pause stays a pause: the refusal records nothing of its own over whoever moved it.
+        XCTAssertEqual(reports.map(\.state), [.paused])
+        try assertNothingWasRecorded(context, before: before)
+        XCTAssertEqual(context.environment.fileSubscriptions.all().map(\.state), [.paused])
     }
 
     func testChangedBytesPublishAnIntentTheScopeThenHoldsByRef() async throws {
@@ -1238,6 +1314,50 @@ final class FileMonitoringTests: XCTestCase {
             key: FileMonitoringCoordinator.schedulingKey(for: value),
             baselineReads: reader.count
         )
+    }
+
+    /// Signals this watch and lets the quiet period elapse, so exactly one claimed check runs.
+    private func checkOnce(_ context: WatchContext) async throws -> [FileMonitoringReport] {
+        await context.environment.fileMonitoring.markDirty(subscriptionIDs: [context.subscriptionID])
+        context.clock.advance(3_000)
+        return await context.environment.fileMonitoring.reconcileAll()
+    }
+
+    /// Nothing a finished check leaves behind: no checked time, no completion, and the capture
+    /// this scope already holds untouched. The generation is owed again as dirty work on the
+    /// signal times it already had, which is what the success path instead resolves and drops.
+    private func assertNothingWasRecorded(
+        _ context: WatchContext,
+        before: FileSubscription,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let after = try XCTUnwrap(
+            context.environment.fileSubscriptions.all().first, file: file, line: line
+        )
+        XCTAssertNil(after.lastCheckedAt, file: file, line: line)
+        XCTAssertTrue(after.needsReconciliation, file: file, line: line)
+        XCTAssertEqual(
+            after.currentSuccessfulCaptureID, before.currentSuccessfulCaptureID, file: file, line: line
+        )
+        XCTAssertEqual(after.lastObservedDigest, before.lastObservedDigest, file: file, line: line)
+        XCTAssertEqual(
+            after.lastObservedByteLength, before.lastObservedByteLength, file: file, line: line
+        )
+        XCTAssertEqual(after.lastObservedAt, before.lastObservedAt, file: file, line: line)
+        XCTAssertEqual(after.dirtyEpoch, before.dirtyEpoch, file: file, line: line)
+        XCTAssertEqual(after.lastQueuedItemID, before.lastQueuedItemID, file: file, line: line)
+        XCTAssertTrue(
+            context.environment.queue.allEntries().allSatisfy { $0.intent.surface != .automaticFile },
+            file: file,
+            line: line
+        )
+        let scheduled = try XCTUnwrap(
+            context.environment.automaticScheduling.state(of: context.key), file: file, line: line
+        )
+        XCTAssertEqual(scheduled.dirtyGeneration, 1, file: file, line: line)
+        XCTAssertNil(scheduled.activeGeneration, file: file, line: line)
+        XCTAssertFalse(scheduled.published, file: file, line: line)
     }
 
     /// Signals one change and lets the scheduler's quiet period elapse, returning the subscription

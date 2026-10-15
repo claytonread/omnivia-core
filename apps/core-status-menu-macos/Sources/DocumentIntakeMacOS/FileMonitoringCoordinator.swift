@@ -432,22 +432,7 @@ public actor FileMonitoringCoordinator {
             let digest = Self.digest(bytes)
             let checkedAt = ISO8601DateFormatter().string(from: Date())
             guard digest != value.lastObservedDigest else {
-                // The read happened and is what established there is nothing new, so this
-                // generation is finished rather than returned to dirty for another attempt.
-                try scheduling.markCompletedWithoutPublication(
-                    claim.key,
-                    generation: claim.generation,
-                    at: clock()
-                )
-                _ = try subscriptions.update(id: value.subscriptionID) {
-                    $0.lastCheckedAt = checkedAt
-                    $0.needsReconciliation = false
-                }
-                return FileMonitoringReport(
-                    subscriptionID: value.subscriptionID,
-                    state: value.state,
-                    queued: false
-                )
+                return unchanged(value, claim: claim, checkedAt: checkedAt)
             }
             let observedDirtyEpoch = value.dirtyEpoch
             value.dirtyEpoch += 1
@@ -579,6 +564,68 @@ public actor FileMonitoringCoordinator {
                 queued: false
             )
         }
+    }
+
+    /// Finishes a check whose read returned the bytes this scope already has.
+    ///
+    /// Same bytes is only "nothing to do" while the evidence that authorised the read still
+    /// stands. The read is the slow part of a check, and a disconnect, a pause, a reconfigure or
+    /// a withdrawal of consent can all land inside it — after which this scope was never checked
+    /// under authority it still holds, and recording it as checked would report expired or
+    /// revoked evidence as up to date. So the same facts the publication path revalidates before
+    /// it commits are revalidated here before anything is recorded, on the same gate, so none of
+    /// them can land between the recheck and the two writes that follow it.
+    ///
+    /// Evidence that no longer stands records nothing at all: no completion, no checked time.
+    /// The generation returns to the scope's one dirty obligation, exactly as a failed read
+    /// leaves it, so the next check runs under evidence that does stand. The subscription's own
+    /// state is left to whoever moved it — a pause stays a pause.
+    private func unchanged(
+        _ value: FileSubscription,
+        claim: AutomaticSchedulingClaim,
+        checkedAt: String
+    ) -> FileMonitoringReport {
+        let settled = try? accessStore.withValidatedGenerations([
+            NativeAccessExpectation(accessRef: value.accessRef, generation: value.bindingGeneration),
+        ]) { () -> FileSubscription in
+            guard let current = subscriptions.all().first(where: {
+                $0.subscriptionID == value.subscriptionID
+            }),
+                current.state == .active,
+                current.consentGeneration == value.consentGeneration,
+                current.configGeneration == value.configGeneration,
+                current.dirtyEpoch == value.dirtyEpoch
+            else { throw CapturePreparationError.consentChanged }
+            // The read happened and is what established there is nothing new, so this
+            // generation is finished rather than returned to dirty for another attempt.
+            try scheduling.markCompletedWithoutPublication(
+                claim.key,
+                generation: claim.generation,
+                at: clock()
+            )
+            return try subscriptions.update(id: value.subscriptionID) {
+                $0.lastCheckedAt = checkedAt
+                $0.needsReconciliation = false
+            }
+        }
+        guard let settled else {
+            if scheduling.state(of: claim.key)?.published != true {
+                _ = try? scheduling.cancel(claim.key, generation: claim.generation, at: clock())
+            }
+            let dirty = try? subscriptions.update(id: value.subscriptionID) {
+                $0.needsReconciliation = true
+            }
+            return FileMonitoringReport(
+                subscriptionID: value.subscriptionID,
+                state: dirty?.state ?? value.state,
+                queued: false
+            )
+        }
+        return FileMonitoringReport(
+            subscriptionID: settled.subscriptionID,
+            state: settled.state,
+            queued: false
+        )
     }
 
     /// Records what this scope's published intent observed. Every field is set to an absolute value
