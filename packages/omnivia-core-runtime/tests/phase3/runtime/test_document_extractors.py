@@ -136,6 +136,110 @@ def test_docx_extracts_body_and_keeps_comments_separate() -> None:
     ]
 
 
+DOCX_IMAGE_BODY: Final = (
+    b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    b' xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
+    b' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+    b' xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"'
+    b' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    b"<w:body><w:p><w:r><w:t>Body text</w:t></w:r></w:p>"
+    b"<w:p><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><pic:pic>"
+    b'<pic:blipFill><a:blip r:embed="rId9"/></pic:blipFill>'
+    b"</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"
+    b"</w:body></w:document>"
+)
+DOCX_IMAGE_RELS: Final = (
+    b'<Relationships><Relationship Id="rId9" Target="media/image1.png" Type='
+    b'"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"/>'
+    b"</Relationships>"
+)
+PNG_DEFAULT: Final = b'<Default Extension="png" ContentType="image/png"/>'
+
+
+def docx_with_image(member: bytes) -> bytes:
+    return office_package(
+        {
+            "word/document.xml": DOCX_IMAGE_BODY,
+            "word/_rels/document.xml.rels": DOCX_IMAGE_RELS,
+            "word/media/image1.png": member,
+        },
+        overrides=PNG_DEFAULT,
+    )
+
+
+def test_a_docx_embedded_image_is_examined_only_under_settings_that_say_so(
+    local_ocr: ExtractionSettings,
+) -> None:
+    """The trusted settings reach the Word path, and nothing else decides it: a
+    profile that examines no embedded image publishes the structural extraction
+    alone, and the same bytes under a profile that does are read with the
+    engine the profile pinned."""
+    image = io.BytesIO()
+    Image.new("RGB", (240, 60), "white").save(image, format="PNG")
+    package = docx_with_image(image.getvalue())
+
+    structural = extract_document(
+        package, media_type=DOCX_MEDIA_TYPE, capture_id=CAPTURE
+    )
+    assert structural.state == "succeeded"
+    assert [item.semantic_role for item in structural.segments] == [
+        "body",
+        "object_inventory",
+    ]
+    record = structural.segments[1].structured_value
+    assert (record["imageDecoded"], record["ocrPerformed"]) == (False, False)
+
+    examined = extract_document(
+        package,
+        media_type=DOCX_MEDIA_TYPE,
+        capture_id=CAPTURE,
+        settings=ExtractionSettings(
+            processing_mode=local_ocr.processing_mode,
+            ocr=local_ocr.ocr,
+            embedded_image_ocr=True,
+        ),
+    )
+    assert examined.state == "succeeded"
+    record = examined.segments[1].structured_value
+    # A blank raster yields no reliable text, and that is a reading of it: the
+    # bytes were decoded and the engine the profile pinned ran over them.
+    assert (record["imageDecoded"], record["ocrPerformed"]) == (True, True)
+    assert examined.limitations["embeddedImages"] == 1
+
+
+def test_a_docx_whose_embedded_image_cannot_be_read_is_partial_not_a_success(
+    local_ocr: ExtractionSettings,
+) -> None:
+    """The structural extraction stands and the source is not refused, but a
+    raster the decoder could not read is coverage this source never reached, so
+    the document is partial and says which coverage was lost."""
+    package = docx_with_image(b"\x89PNG\r\n\x1a\nnot really an image")
+
+    result = extract_document(
+        package,
+        media_type=DOCX_MEDIA_TYPE,
+        capture_id=CAPTURE,
+        settings=ExtractionSettings(
+            processing_mode=local_ocr.processing_mode,
+            ocr=local_ocr.ocr,
+            embedded_image_ocr=True,
+        ),
+    )
+
+    assert result.state == "partial"
+    assert result.limitations["documentOutcome"] == "partial_coverage"
+    assert result.limitations["embeddedImageOutcomes"] == {
+        "image_could_not_be_decoded": 1
+    }
+    # No *block* failed, and the block coverage does not claim one did: the
+    # image's own outcome is reported where its own unit is counted.
+    assert result.coverage["units"][0]["failed"] == 0
+    assert [item.semantic_role for item in result.segments] == [
+        "body",
+        "object_inventory",
+    ]
+
+
 def test_xlsx_preserves_formula_and_saved_cache_as_distinct_values() -> None:
     package = office_package(
         {

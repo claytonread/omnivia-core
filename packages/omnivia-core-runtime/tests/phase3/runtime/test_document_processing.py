@@ -6,7 +6,7 @@ import json
 import zipfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from _trusted_ocr import catalogue_over, host_models, stand_in_models
@@ -857,28 +857,66 @@ def test_a_non_image_source_resolves_nothing_unless_its_images_are_examined(
     assert profile["embeddedImageOcr"] is False
 
 
-def test_embedded_image_recognition_reaches_a_source_that_carries_images(
-    runner: ServiceRunner, tmp_path: Path
-) -> None:
+DOCX_DRAWING_BODY: Final = (
+    '<w:document xmlns:w="urn:w"'
+    ' xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
+    ' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+    ' xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"'
+    ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    "<w:body><w:p><w:r><w:t>Carrier</w:t></w:r></w:p>"
+    "<w:p><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><pic:pic>"
+    '<pic:blipFill><a:blip r:embed="rId9"/></pic:blipFill>'
+    "</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"
+    "</w:body></w:document>"
+)
+
+
+def docx_carrying_image(label: str) -> bytes:
+    """A DOCX whose only picture is a real PNG holding legible text."""
+    image = Image.new("RGB", (1000, 240), "white")
+    ImageDraw.Draw(image).text(
+        (40, 55), label, fill="black", font=ImageFont.load_default(size=92)
+    )
+    encoded = io.BytesIO()
+    image.save(encoded, format="PNG")
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
             "[Content_Types].xml",
-            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="png" ContentType="image/png"/></Types>',
         )
+        archive.writestr("word/document.xml", DOCX_DRAWING_BODY)
         archive.writestr(
-            "word/document.xml",
-            '<w:document xmlns:w="urn:w"><w:body><w:p><w:r><w:t>Carrier</w:t>'
-            "</w:r></w:p></w:body></w:document>",
+            "word/_rels/document.xml.rels",
+            '<Relationships><Relationship Id="rId9" Target="media/image1.png" Type='
+            '"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"'
+            "/></Relationships>",
         )
-    set_preferences(runner, languages=("deu",), embedded_image_ocr=True)
-    authority, resources = managed_installation(
-        tmp_path / "inst-embedded", tmp_path, "deu", "osd"
+        archive.writestr("word/media/image1.png", encoded.getvalue())
+    return buffer.getvalue()
+
+
+def test_embedded_image_recognition_reaches_a_source_that_carries_images(
+    runner: ServiceRunner, tmp_path: Path, host_catalogue: TrustedOcrCatalogue
+) -> None:
+    """Real recognition of a raster embedded in a Word source, end to end.
+
+    The preference qualifies the media type, the admission freezes the identities
+    for it, and the executor then hands those frozen settings to the Word path --
+    which opens the picture's own image part and runs the engine the profile
+    pinned over it. What is asserted is the recognised text in the projection
+    beside the document's own prose, so the profile metadata can no longer be the
+    whole of it.
+    """
+    set_preferences(runner, embedded_image_ocr=True)
+    authority, resources = managed_host_installation(
+        tmp_path / "inst-embedded", tmp_path, host_catalogue, "eng", "osd"
     )
     capture = admit(
         runner,
         document_id="doc-embedded-docx",
-        content=buffer.getvalue(),
+        content=docx_carrying_image("Embedded OCR"),
         media_type=DOCX_MEDIA_TYPE,
         resources=resources,
     )
@@ -886,11 +924,25 @@ def test_embedded_image_recognition_reaches_a_source_that_carries_images(
     results = process_capture_outbox(runner, catalogue_for=authority)
 
     # A source that carries images qualifies, so the admission pinned for it.
-    assert frozen(runner, capture.capture_id).languages == ("deu",)
+    assert frozen(runner, capture.capture_id).languages == ("eng",)
     profile = executed_profile(runner, results[0])
     assert profile["processingMode"] == "text_and_local_ocr"
     assert profile["embeddedImageOcr"] is True
-    assert profile["ocr"]["languages"] == ["deu"]
+    assert profile["ocr"]["languages"] == ["eng"]
+    # The picture's bytes reached the engine: the reading is in the projection,
+    # located at the drawing that showed it rather than merged into the prose.
+    assert [result.result_state for result in results] == ["succeeded"]
+    projected = read_extraction_projection(
+        runner, document_id="doc-embedded-docx", query="Embedded"
+    )
+    assert "Embedded OCR" in " ".join(segment.text or "" for segment in projected)
+    recognised = [
+        segment for segment in projected if segment.extraction_method == "ocr"
+    ]
+    assert recognised and all(
+        json.loads(segment.source_locator_json)["imagePart"] == "word/media/image1.png"
+        for segment in recognised
+    )
 
 
 # --- the compatibility path and its boundary ------------------------------------

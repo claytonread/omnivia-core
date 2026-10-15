@@ -221,6 +221,11 @@ def extract_document(
     profile, the pinned engine/model/language identity. It defaults to the
     packaged Text-and-local-OCR profile for PDF and image sources; nothing in it
     is ever derived from the document.
+
+    For a Word source the same settings decide whether the rasters embedded in
+    it are examined, which they are only where the profile says so *and* its
+    pinned models were served. Handed none, that path is structural: no image
+    member is opened.
     """
     if media_type in {"text/plain", "text/markdown"}:
         text = _decode_utf8(content)
@@ -247,15 +252,35 @@ def extract_document(
     }.get(media_type)
     if office_extractor is not None:
         try:
-            office_extraction = office_extractor(content, capture_id=capture_id)
+            # Only the Word path reads embedded rasters so far, and it is handed
+            # the frozen settings rather than deciding anything of its own: with
+            # none, or with a profile that examines no embedded image, it opens
+            # no image member at all and the extraction is structural.
+            office_extraction = (
+                extract_docx(content, capture_id=capture_id, settings=settings)
+                if media_type == DOCX_MEDIA_TYPE
+                else office_extractor(content, capture_id=capture_id)
+            )
         except OOXMLInvalid as error:
             raise DocumentExtractionInvalid(str(error)) from error
+        limitations = dict(office_extraction.limitations)
+        # An embedded raster that could not be read, or a bounded image pass cut
+        # short, leaves coverage this source never reached. The structural
+        # extraction stands, so the source is partial rather than refused, and
+        # it is never reported as a document-wide success. The per-image counts
+        # stay in the limitations: no *block* failed, so the block coverage must
+        # not claim one did.
+        if office_extraction.limit_breach is not None:
+            limitations["documentOutcome"] = "coverage_truncated_by_limit"
+        elif office_extraction.failed_units:
+            limitations["documentOutcome"] = "partial_coverage"
         return _outcome(
             office_extraction.segments,
             unit_type=office_extraction.unit_type,
             expected=office_extraction.expected,
             known_empty=not bool(office_extraction.segments),
-            limitations=office_extraction.limitations,
+            state="succeeded" if "documentOutcome" not in limitations else "partial",
+            limitations=limitations,
         )
     if media_type == PDF_MEDIA_TYPE or media_type in IMAGE_MEDIA_TYPES:
         # Text and local OCR is the default for PDF and image sources; a

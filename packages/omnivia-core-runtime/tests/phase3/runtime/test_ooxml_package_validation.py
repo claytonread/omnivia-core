@@ -85,6 +85,10 @@ def test_valid_stored_and_deflated_packages_still_read(compression: int) -> None
         "packageMembers": 2,
         "externalReferences": 0,
         "documentSections": 0,
+        # The document declares no drawing and no legacy picture, so the
+        # embedded-image pass had no candidate to examine either way.
+        "embeddedImages": 0,
+        "embeddedImageOutcomes": {},
     }
 
 

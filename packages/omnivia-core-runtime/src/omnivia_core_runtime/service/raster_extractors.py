@@ -5,8 +5,9 @@ These adapters receive the admitted immutable source bytes and the trusted
 job. They open no path, resolve no URL or bookmark, reach no network, and take
 no engine, model, language or directory decision from the document: PDF
 attachments and actions are never followed and no form environment is
-initialised. Every page and frame is decoded, recognised and closed one at a
-time, and every bound is checked before the allocation it protects.
+initialised. Every page, frame and embedded image is decoded, recognised and
+closed one at a time, and every bound is checked before the allocation it
+protects.
 
 Geometry from both methods is normalised into one page/frame space
 (:data:`GEOMETRY_SPACE`) so a reading can be traced back to source pixels:
@@ -613,6 +614,160 @@ def extract_image(
         settings=settings,
         budget=budget,
         limitations=limitations,
+    )
+
+
+#: What became of one embedded raster a container declared. ``ocr_text`` and
+#: ``no_reliable_ocr_text`` are the two readings of bytes that were actually
+#: recognised; every other value names the exact reason nothing was, so a
+#: container's record never reports an image as examined when it was not.
+EMBEDDED_RECOGNISED: Final = OUTCOME_OCR_TEXT
+EMBEDDED_NO_TEXT: Final = OUTCOME_NO_RELIABLE_OCR_TEXT
+#: The selected profile does not examine embedded images at all.
+EMBEDDED_DISABLED: Final = "embedded_image_ocr_disabled"
+#: The profile asked for recognition and its pinned models were not served.
+EMBEDDED_RESOURCES_UNAVAILABLE: Final = "ocr_resources_unavailable"
+#: The container named a reference out of the package, which is never opened.
+EMBEDDED_NOT_EMBEDDED: Final = "no_embedded_image_part"
+#: The part's declared type is outside the accepted set, settled before a decode.
+EMBEDDED_UNSUPPORTED: Final = "image_type_not_supported"
+#: The bytes were opened and the decoder refused them: bad magic, magic that
+#: disagrees with the declared type, animation, or a source/frame/pixel bound.
+EMBEDDED_MALFORMED: Final = "image_could_not_be_decoded"
+EMBEDDED_TRUNCATED: Final = OUTCOME_TRUNCATED_BY_LIMIT
+EMBEDDED_OUTCOMES: Final = (
+    EMBEDDED_RECOGNISED,
+    EMBEDDED_NO_TEXT,
+    EMBEDDED_DISABLED,
+    EMBEDDED_RESOURCES_UNAVAILABLE,
+    EMBEDDED_NOT_EMBEDDED,
+    EMBEDDED_UNSUPPORTED,
+    EMBEDDED_MALFORMED,
+    EMBEDDED_TRUNCATED,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddedImageCandidate:
+    """One raster a container embeds, carried out of its validated reader.
+
+    ``content`` is the member's already-validated bytes and exists only for the
+    duration of one recognition: it is never placed in a segment value, a
+    locator or a limitation, so nothing persisted ever holds image bytes.
+    ``locator`` is the container object's own stable locator, which every
+    reading of this image is anchored to, and ``part`` is the image part inside
+    the package the bytes came from.
+    """
+
+    content: bytes
+    media_type: str
+    part: str
+    locator: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddedImageResult:
+    """One embedded raster's readings and the exact truth about reaching them."""
+
+    outcome: str
+    segments: tuple[ExtractedSegment, ...] = ()
+    #: Whether the bytes were opened and decoded at all.
+    decoded: bool = False
+    #: Whether the recognition engine was actually invoked over them.
+    performed: bool = False
+
+
+def embedded_image_gate(settings: ExtractionSettings) -> str | None:
+    """Why no embedded raster may be opened under ``settings``, or ``None``.
+
+    Checked once per extraction and before any candidate is built, so a profile
+    that examines no embedded image never reads an image member: the refusal is
+    a property of the trusted settings and never of the document.
+    """
+    if not settings.embedded_image_ocr or settings.ocr is None:
+        return EMBEDDED_DISABLED
+    if not settings.ocr.available:
+        return EMBEDDED_RESOURCES_UNAVAILABLE
+    return None
+
+
+def extract_embedded_image(
+    candidate: EmbeddedImageCandidate,
+    *,
+    settings: ExtractionSettings,
+    budget: ExtractionBudget,
+    ocr_engine: OcrEngine = run_tesseract,
+) -> EmbeddedImageResult:
+    """Recognise one embedded raster under the container's aggregate budget.
+
+    The declared type is checked against the accepted set before anything is
+    opened, and the bytes then go through the same bounded image path an
+    admitted image source does -- the same magic check, the same refusal of
+    animation, the same frame/pixel/working-raster bounds, the same recognition
+    and the same OCR line and frame geometry. ``budget`` is the container's one
+    aggregate ceiling, shared by every candidate in the document, so a source of
+    many images is bounded in aggregate rather than one image at a time.
+
+    Every reading is anchored to the container object's own locator and to the
+    image part the bytes came from, so a reading can be traced back to the
+    object that displayed it. Nothing is merged into the container's prose and no
+    page layout is invented: the geometry is the frame's own.
+
+    A refusal is this image's outcome and never the document's: the caller keeps
+    its structural extraction and reports the reason here.
+    """
+    refused = embedded_image_gate(settings)
+    if refused is not None:
+        return EmbeddedImageResult(refused)
+    if candidate.media_type not in IMAGE_FORMAT_BY_MEDIA_TYPE:
+        return EmbeddedImageResult(EMBEDDED_UNSUPPORTED)
+    try:
+        extraction = extract_image(
+            candidate.content,
+            capture_id=str(candidate.locator.get("captureId", "")),
+            media_type=candidate.media_type,
+            settings=settings,
+            ocr_engine=ocr_engine,
+            budget=budget,
+        )
+    except RasterExtractionInvalid:
+        return EmbeddedImageResult(EMBEDDED_MALFORMED)
+    units = extraction.limitations.get("units") or ()
+    segments = tuple(
+        replace(
+            segment,
+            source_locator={
+                **candidate.locator,
+                **segment.source_locator,
+                "imagePart": candidate.part,
+            },
+        )
+        for segment in extraction.segments
+    )
+    if extraction.failed_units:
+        outcome = EMBEDDED_MALFORMED
+    elif budget.breach is not None:
+        outcome = EMBEDDED_TRUNCATED
+    elif extraction.useful_units:
+        # The frame's own reconciled coverage, not merely whether anything was
+        # emitted: a frame that published only below-threshold observations
+        # reached no reliable reading and is not reported as having read one.
+        outcome = EMBEDDED_RECOGNISED
+    else:
+        outcome = EMBEDDED_NO_TEXT
+    return EmbeddedImageResult(
+        outcome,
+        segments=segments,
+        decoded=True,
+        # A segmentation pass is recorded for each invocation and for nothing
+        # else, so this is the engine that actually ran rather than the one the
+        # profile asked for: a frame whose raster the budget refused carries its
+        # empty statistics and no pass.
+        performed=any(
+            unit.get("ocr", {}).get("segmentationPasses")
+            for unit in units
+            if isinstance(unit, Mapping)
+        ),
     )
 
 
@@ -1460,6 +1615,15 @@ def _normalise_text(value: str) -> str:
 
 __all__ = [
     "DEDUPLICATION_VERSION",
+    "EMBEDDED_DISABLED",
+    "EMBEDDED_MALFORMED",
+    "EMBEDDED_NOT_EMBEDDED",
+    "EMBEDDED_NO_TEXT",
+    "EMBEDDED_OUTCOMES",
+    "EMBEDDED_RECOGNISED",
+    "EMBEDDED_RESOURCES_UNAVAILABLE",
+    "EMBEDDED_TRUNCATED",
+    "EMBEDDED_UNSUPPORTED",
     "GEOMETRY_SPACE",
     "IMAGE_DECODER_BUILD",
     "IMAGE_FORMAT_BY_MEDIA_TYPE",
@@ -1489,9 +1653,13 @@ __all__ = [
     "UNIT_OUTCOMES",
     "UNIT_PDF_PAGE",
     "WORKER_BUILD",
+    "EmbeddedImageCandidate",
+    "EmbeddedImageResult",
     "ExtractionBudget",
     "RasterExtraction",
     "RasterExtractionInvalid",
+    "embedded_image_gate",
+    "extract_embedded_image",
     "extract_image",
     "extract_pdf",
 ]

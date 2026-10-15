@@ -10,13 +10,30 @@ import re
 import stat
 import unicodedata
 import zipfile
+from collections import Counter
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Final, Self
 from xml.etree import ElementTree
 
 from omnivia_core_runtime.service.document_intake import ExtractedSegment
+from omnivia_core_runtime.service.ocr_resources import (
+    ExtractionSettings,
+    OcrEngine,
+    run_tesseract,
+    text_only_settings,
+)
+from omnivia_core_runtime.service.raster_extractors import (
+    EMBEDDED_MALFORMED,
+    EMBEDDED_NOT_EMBEDDED,
+    EMBEDDED_OUTCOMES,
+    EmbeddedImageCandidate,
+    EmbeddedImageResult,
+    ExtractionBudget,
+    embedded_image_gate,
+    extract_embedded_image,
+)
 
 MAX_SOURCE_BYTES: Final = 50 * 1024 * 1024
 MAX_MEMBERS: Final = 10_000
@@ -2308,6 +2325,77 @@ class OOXMLExtraction:
     unit_type: str
     expected: int
     limitations: dict[str, object]
+    #: Embedded rasters whose bytes were opened and could not be read. The
+    #: structural extraction around them stands, so these degrade the document's
+    #: outcome rather than refusing the source.
+    failed_units: int = 0
+    #: The aggregate budget a bounded embedded-image pass exhausted, if any.
+    limit_breach: str | None = None
+
+
+@dataclass(slots=True)
+class _EmbeddedImages:
+    """The one bounded embedded-raster pass a DOCX extraction runs.
+
+    Every story of one document shares it, so the aggregate budget below is the
+    document's and not one story's, and two references to the same image part
+    each pay it. There is deliberately no cache of decoded bytes or readings:
+    one reference is one candidate with its own locator, and a cache keyed by
+    part would grow with whatever a document chose to reference.
+    """
+
+    settings: ExtractionSettings
+    ocr_engine: OcrEngine
+    budget: ExtractionBudget
+    #: Why no candidate may be opened at all, settled once from the settings.
+    gate: str | None
+    #: One outcome per embedded image the document declared, in source order.
+    outcomes: list[str] = field(default_factory=list)
+
+    def read(
+        self,
+        package: _Package,
+        part: str | None,
+        media_type: str | None,
+        locator: dict[str, object],
+    ) -> EmbeddedImageResult:
+        """Recognise the raster at ``part``, or say truthfully why nothing was.
+
+        A container that named only a reference out of the package has no part
+        here, and nothing opens, fetches or probes that reference. The gate is
+        consulted before the member is read, so a profile that examines no
+        embedded image never touches an image member.
+        """
+        if part is None or media_type is None:
+            result = EmbeddedImageResult(EMBEDDED_NOT_EMBEDDED)
+        elif self.gate is not None:
+            result = EmbeddedImageResult(self.gate)
+        else:
+            try:
+                content = package.bytes(part, limit=MAX_MEMBER_BYTES)
+            except OOXMLInvalid:
+                # The member is the package's own and was validated, so this is
+                # an image too large for the image path rather than a package
+                # fault: it is this image's outcome and not the document's.
+                result = EmbeddedImageResult(EMBEDDED_MALFORMED)
+            else:
+                result = extract_embedded_image(
+                    EmbeddedImageCandidate(content, media_type, part, locator),
+                    settings=self.settings,
+                    budget=self.budget,
+                    ocr_engine=self.ocr_engine,
+                )
+        self.outcomes.append(result.outcome)
+        return result
+
+    def to_limitations(self) -> dict[str, object]:
+        counts = Counter(self.outcomes)
+        return {
+            "embeddedImages": len(self.outcomes),
+            "embeddedImageOutcomes": {
+                name: counts[name] for name in EMBEDDED_OUTCOMES if counts[name]
+            },
+        }
 
 
 class _Package:
@@ -2607,7 +2695,36 @@ class _Package:
         return root, prefixes
 
 
-def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
+def extract_docx(
+    content: bytes,
+    *,
+    capture_id: str,
+    settings: ExtractionSettings | None = None,
+    ocr_engine: OcrEngine = run_tesseract,
+    budget: ExtractionBudget | None = None,
+) -> OOXMLExtraction:
+    """Read one admitted DOCX structurally, and only then its embedded rasters.
+
+    The structural read is what it has always been and is the whole extraction
+    by default: ``settings`` defaults to the explicit text-only profile, so a
+    caller that hands none opens no image member at all.
+
+    An embedded raster is examined only where the trusted settings say to and
+    their pinned models were served. Every candidate of one document shares one
+    aggregate execution budget, and a candidate that is refused, unsupported,
+    malformed or cut short keeps the structural record it already had and
+    reports exactly why nothing was read out of it.
+
+    ``budget`` is that aggregate ceiling, injectable so a breach can be
+    exercised with a small budget rather than a real allocation.
+    """
+    settings = settings if settings is not None else text_only_settings()
+    images = _EmbeddedImages(
+        settings,
+        ocr_engine,
+        budget if budget is not None else ExtractionBudget(),
+        embedded_image_gate(settings),
+    )
     with _Package(content) as package:
         if "word/document.xml" not in package.names:
             raise OOXMLInvalid("DOCX main document part is missing")
@@ -2679,6 +2796,7 @@ def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                     notes,
                     seen,
                     extensions,
+                    images,
                 )
                 if walker.inventory_note(container):
                     continue
@@ -2687,15 +2805,21 @@ def extract_docx(content: bytes, *, capture_id: str) -> OOXMLExtraction:
                 walker.walk(container, "", 0)
                 walker.finish()
                 blocks += walker.paragraphs
+        limitations: dict[str, object] = {
+            "packageMembers": len(package.names),
+            "externalReferences": package.external_relationships,
+            "documentSections": section_count,
+            **images.to_limitations(),
+        }
+        if images.budget.breach is not None:
+            limitations["limitBreach"] = images.budget.breach
         return OOXMLExtraction(
             tuple(segments),
             "document_block",
             blocks,
-            {
-                "packageMembers": len(package.names),
-                "externalReferences": package.external_relationships,
-                "documentSections": section_count,
-            },
+            limitations,
+            failed_units=images.outcomes.count(EMBEDDED_MALFORMED),
+            limit_breach=images.budget.breach,
         )
 
 
@@ -10945,7 +11069,9 @@ class _DocxWalker:
     hidden by a run's own properties (``<paragraph>.v<n>``, a
     ``hidden_content`` segment), inline equations (``<paragraph>.e<n>``, an
     ``equation`` segment), DrawingML images (``<paragraph>.i<n>``, an
-    ``object_inventory`` segment and the ``image_alt`` claims after it),
+    ``object_inventory`` segment, the ``image_alt`` claims after it and, where
+    the settings examine embedded rasters, whatever was recognised in the image
+    after those),
     DrawingML charts (``<paragraph>.c<n>``, an ``object_inventory`` segment and
     the ``chart`` records the chart part stored after it), SmartArt
     (``<paragraph>.d<n>``, an ``object_inventory`` segment, then the ``body``
@@ -11028,8 +11154,10 @@ class _DocxWalker:
         notes: dict[tuple[str, str], str],
         seen: dict[tuple[str, str, str], int],
         extensions: dict[str, dict[str, object]],
+        images: _EmbeddedImages,
     ) -> None:
         self._capture_id = capture_id
+        self._images = images
         self._part = part
         self._story = story
         self._note_id = note_id
@@ -11470,9 +11598,10 @@ class _DocxWalker:
         page -- the claims ``wp:docPr`` carries, and the image the blip names:
         the embedded part's relationship, name, declared type and validated
         byte length, and separately the relationship, target, scheme and
-        external flag of a linked one. That is inventory about an image, not
-        anything read out of one, and the record says so outright: no byte was
-        decoded and no OCR was run. An image never contributes text.
+        external flag of a linked one. That is inventory about an image rather
+        than anything read out of one, and the record states exactly what was
+        read: whether the bytes were decoded, whether the engine ran over them,
+        and the one outcome that says why nothing was read where nothing was.
 
         The claims then follow in one fixed order -- title, then description --
         each under ``image_alt`` with the claim that supplied it in ``altRole``,
@@ -11495,24 +11624,36 @@ class _DocxWalker:
         bounded JSON value beside the keys that locate the image; the alt text
         is reported whole, as a paragraph's text is, because it is the content
         the author wrote rather than metadata about it.
+
+        Any text recognised in the image follows the author's claims, as the
+        separate reading it is: it is anchored to this object's own position and
+        to the image part it came from, and it is never joined to the prose
+        around the drawing or to the alt text the author wrote.
         """
         blip = _docx_drawing_blip(drawing)
         assert blip is not None
         claims = _docx_doc_pr(drawing)
+        record: dict[str, object] = {
+            "kind": "drawingImage",
+            "placement": _DOCX_DRAWINGS[drawing.tag],
+            **{
+                name: None if value is None else _clip(value, _MAX_META_CHARS)
+                for name, value in claims.items()
+            },
+            **_docx_drawing_image(
+                self._package, self._relations, self._relation_types, blip
+            ),
+        }
+        result = self._embedded_image(
+            position, record["imagePart"], record["imageContentType"]
+        )
         self._inventory(
             position,
             {
-                "kind": "drawingImage",
-                "placement": _DOCX_DRAWINGS[drawing.tag],
-                **{
-                    name: None if value is None else _clip(value, _MAX_META_CHARS)
-                    for name, value in claims.items()
-                },
-                **_docx_drawing_image(
-                    self._package, self._relations, self._relation_types, blip
-                ),
-                "imageDecoded": False,
-                "ocrPerformed": False,
+                **record,
+                "imageDecoded": result.decoded,
+                "ocrPerformed": result.performed,
+                "ocrOutcome": result.outcome,
             },
             "visible",
             state,
@@ -11531,6 +11672,7 @@ class _DocxWalker:
                 )
             )
             _bounded(self._segments)
+        self._emit_embedded(result, state)
 
     def _chart(
         self, drawing: ElementTree.Element, position: str, state: str
@@ -11812,12 +11954,19 @@ class _DocxWalker:
         measured while validating the member. An external one is carried exactly
         as the relationship holds it, beside the scheme its own text names.
 
-        That is inventory about an image and nothing read out of one: no byte was
-        opened, decoded or rendered, no OCR was run, and an image never
-        contributes text. The shape's own markup rides along uninterpreted -- the
-        identifier the legacy drawing layer knew it by, resolved against nothing,
-        and the style it was drawn with, bounded and unparsed beyond the one
-        declaration that says whether it is anchored.
+        That is inventory about an image rather than anything read out of one,
+        and the record states exactly what was read: whether the bytes were
+        decoded, whether the engine ran over them, and the one outcome that says
+        why nothing was read where nothing was. A reading of the image follows
+        the author's claims as the separate reading it is, anchored to this
+        shape's own position and to the image part it came from, and is never
+        joined to the prose around the picture. An external reference is never
+        opened, so it is never read.
+
+        The shape's own markup rides along uninterpreted -- the identifier the
+        legacy drawing layer knew it by, resolved against nothing, and the style
+        it was drawn with, bounded and unparsed beyond the one declaration that
+        says whether it is anchored.
 
         The author's claims then follow in one fixed order, each under
         ``image_alt`` with the role it played and the element that declared it, so
@@ -11854,8 +12003,6 @@ class _DocxWalker:
                 "target": _clip(target, _MAX_TARGET_CHARS),
                 "external": external,
                 "shapeStyle": None if style is None else _clip(style, _MAX_TARGET_CHARS),
-                "imageDecoded": False,
-                "ocrPerformed": False,
                 **{
                     name: None if value is None else _clip(value, _MAX_META_CHARS)
                     for name, value in claims.items()
@@ -11872,6 +12019,12 @@ class _DocxWalker:
             record["imagePart"] = _clip(target, _MAX_TARGET_CHARS)
             record["contentType"] = _clip(content_type, _MAX_META_CHARS)
             record["imageBytes"] = self._package.archive.getinfo(target).file_size
+        result = self._embedded_image(
+            position, record["imagePart"], record["contentType"]
+        )
+        record["imageDecoded"] = result.decoded
+        record["ocrPerformed"] = result.performed
+        record["ocrOutcome"] = result.outcome
         self._inventory(position, record, "visible", state)
         for name, role, source in _DOCX_VML_ALT_CLAIMS:
             text = claims[name]
@@ -11883,6 +12036,44 @@ class _DocxWalker:
                     self._locator(position, altRole=role, altSource=source),
                     text=text,
                     visibility=_revised_visibility(state),
+                    revision_state=state,
+                )
+            )
+            _bounded(self._segments)
+        self._emit_embedded(result, state)
+
+    def _embedded_image(
+        self, position: str, part: object, media_type: object
+    ) -> EmbeddedImageResult:
+        """Read the raster this object embeds, under the document's one budget.
+
+        The candidate carries this object's own locator, so two references to
+        one image part stay two readings at two positions. ``part`` and
+        ``media_type`` come from the record just built, which is why a container
+        that named only a reference out of the package passes ``None`` here and
+        nothing of that reference is opened, fetched or probed.
+        """
+        return self._images.read(
+            self._package,
+            part if isinstance(part, str) else None,
+            media_type if isinstance(media_type, str) else None,
+            self._locator(position),
+        )
+
+    def _emit_embedded(self, result: EmbeddedImageResult, state: str) -> None:
+        """Publish what was recognised in one embedded raster, as its own reading.
+
+        Each reading keeps the role, method, language and confidence the image
+        path gave it, so an accepted line stays searchable text read by OCR and
+        a below-threshold observation stays out of ordinary retrieval. A
+        revision wrapped around the container is kept over the readings exactly
+        as it is over the record and the author's claims.
+        """
+        for segment in result.segments:
+            self._segments.append(
+                replace(
+                    segment,
+                    visibility=_revised_visibility(state, segment.visibility),
                     revision_state=state,
                 )
             )

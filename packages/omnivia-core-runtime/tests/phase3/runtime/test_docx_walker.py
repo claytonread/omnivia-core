@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import io
 import zipfile
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
+from _trusted_ocr import catalogue_over, stand_in_models
+from omnivia_core_runtime.service import ocr_resources
 from omnivia_core_runtime.service.ooxml_extractors import (
     _MAX_DOCX_EQUATION_BYTES,
     _MAX_DOCX_FIELD_DEPTH,
@@ -14,10 +18,24 @@ from omnivia_core_runtime.service.ooxml_extractors import (
     _MAX_META_CHARS,
     _MAX_TARGET_CHARS,
     MAX_SEGMENTS,
+    OOXMLExtraction,
     OOXMLInvalid,
     _FieldState,
     extract_docx,
 )
+from omnivia_core_runtime.service.raster_extractors import (
+    EMBEDDED_DISABLED,
+    EMBEDDED_MALFORMED,
+    EMBEDDED_NO_TEXT,
+    EMBEDDED_NOT_EMBEDDED,
+    EMBEDDED_RECOGNISED,
+    EMBEDDED_RESOURCES_UNAVAILABLE,
+    EMBEDDED_TRUNCATED,
+    EMBEDDED_UNSUPPORTED,
+    GEOMETRY_SPACE,
+    ExtractionBudget,
+)
+from PIL import Image, ImageDraw
 
 CAPTURE = "dcap-" + "a" * 64
 W = (
@@ -1812,6 +1830,7 @@ def test_an_embedded_image_is_inventoried_where_it_sits_with_the_alt_text_after(
                 "imageLinkExternal": None,
                 "imageDecoded": False,
                 "ocrPerformed": False,
+                "ocrOutcome": EMBEDDED_DISABLED,
             },
         )
     ]
@@ -2055,13 +2074,15 @@ def test_only_the_schema_qualified_route_reaches_an_image() -> None:
 
 
 def test_no_image_byte_is_decoded_and_no_ocr_is_run() -> None:
-    """The member is declared an image and holds nothing that decodes as one.
+    """The default profile examines no embedded image, so nothing opens the
+    member -- which is declared an image and holds nothing that decodes as one.
     The record still reports the length the package measured when it validated
-    the member, and says outright that it read no further."""
+    the member, and says outright that it read no further and why."""
     content = imaged(f"<w:p>{drawing()}</w:p>")
 
     _, value = inventory(content)[0]
     assert (value["imageDecoded"], value["ocrPerformed"]) == (False, False)
+    assert value["ocrOutcome"] == EMBEDDED_DISABLED
     assert value["imageBytes"] == len(IMAGE_MEMBER["word/media/image1.png"])
     # Nothing was read out of the bytes: no width, no text, no reading of any
     # kind, and the alt text is the author's claim alone.
@@ -2084,6 +2105,7 @@ def test_no_image_byte_is_decoded_and_no_ocr_is_run() -> None:
         "imageLinkExternal",
         "imageDecoded",
         "ocrPerformed",
+        "ocrOutcome",
     }
 
 
@@ -4323,8 +4345,9 @@ def placements(content: bytes) -> list[tuple[object, object, object]]:
 # relationship's target and the part behind it are the same member, because an
 # embedded reference names one; the content type is the one the package declares
 # for the extension, and the byte length is the figure the package already
-# measured. ``imageDecoded`` and ``ocrPerformed`` are the two facts the record
-# states about reading, and both are false: nothing opened the bytes.
+# measured. ``imageDecoded``, ``ocrPerformed`` and ``ocrOutcome`` are what the
+# record states about reading: under the default profile, which examines no
+# embedded image, nothing opened the bytes and the outcome says so.
 VML_IMAGE: dict[str, object] = {
     "kind": "vmlImage",
     "placement": "inline",
@@ -4343,6 +4366,7 @@ VML_IMAGE: dict[str, object] = {
     "imageTitle": None,
     "imageDecoded": False,
     "ocrPerformed": False,
+    "ocrOutcome": EMBEDDED_DISABLED,
 }
 
 
@@ -4412,6 +4436,9 @@ def test_a_linked_legacy_image_carries_its_target_and_scheme_without_part_data()
                 "imagePart": None,
                 "contentType": None,
                 "imageBytes": None,
+                # There is no part to examine, and the reference it named
+                # instead is never opened.
+                "ocrOutcome": EMBEDDED_NOT_EMBEDDED,
             },
         )
     ]
@@ -4908,6 +4935,7 @@ def test_a_relative_external_target_names_no_scheme_and_is_never_opened() -> Non
                 "imagePart": None,
                 "contentType": None,
                 "imageBytes": None,
+                "ocrOutcome": EMBEDDED_NOT_EMBEDDED,
             },
         )
     ]
@@ -6086,4 +6114,452 @@ def test_one_identity_written_in_two_stories_is_reported_in_each_of_them() -> No
         ("object_inventory", "0.n0", PARA_ID),
         ("comment", "0", PARA_ID),
         ("comment", "1", "0000DDD1"),
+    ]
+
+
+# --- embedded raster recognition -------------------------------------------------
+#
+# The structural reader above never opens an image. These exercise the one pass
+# that does: the candidate seam out of the validated package, the aggregate
+# budget over every image of one document, and the per-image truth the record
+# reports when nothing is read. The engine is injected throughout, so what is
+# asserted is this adapter's own behaviour rather than whatever a host's
+# Tesseract reads out of a test fixture.
+
+
+def real_png(label: str = "INVOICE", size: tuple[int, int] = (120, 40)) -> bytes:
+    """A small, genuinely decodable PNG, written by Pillow rather than by hand."""
+    image = Image.new("RGB", size, "white")
+    ImageDraw.Draw(image).text((4, 10), label, fill="black")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def real_jpeg(size: tuple[int, int] = (120, 40)) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", size, "white").save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+PNG_MEMBER = {"word/media/image1.png": real_png()}
+
+
+class RecordingOcr:
+    """An injected engine returning one fixed line, in Tesseract's TSV shape."""
+
+    def __init__(self, *words: str, confidence: float = 91.0) -> None:
+        self.words = words or ("INVOICE", "7")
+        self.confidence = confidence
+        self.sizes: list[tuple[int, int]] = []
+
+    def __call__(
+        self,
+        image: Image.Image,
+        *,
+        resources: ocr_resources.OcrResources,
+        psm: int,
+        timeout_seconds: float,
+    ) -> dict[str, list[object]]:
+        self.sizes.append(image.size)
+        data: dict[str, list[object]] = {
+            key: [] for key in ("text", "conf", "left", "top", "width", "height")
+        }
+        data.update({"block_num": [], "par_num": [], "line_num": []})
+        for index, word in enumerate(self.words):
+            data["text"].append(word)
+            data["conf"].append(self.confidence)
+            data["left"].append(4 + index * 30)
+            data["top"].append(10)
+            data["width"].append(28)
+            data["height"].append(12)
+            data["block_num"].append(1)
+            data["par_num"].append(1)
+            data["line_num"].append(1)
+        return data
+
+
+class RefusingOcr:
+    """An engine that fails the test if anything invokes it."""
+
+    def __call__(self, image: Image.Image, **_kwargs: object) -> dict[str, list[object]]:
+        raise AssertionError("the recognition engine must not have been invoked")
+
+
+@pytest.fixture
+def examining(tmp_path: Path) -> ocr_resources.ExtractionSettings:
+    """Settings whose profile examines embedded images and whose models verify."""
+    stand_in_models(tmp_path, "eng")
+    return ocr_resources.ExtractionSettings(
+        processing_mode=ocr_resources.MODE_TEXT_AND_LOCAL_OCR,
+        ocr=catalogue_over(tmp_path, "eng").resolve(("eng",)),
+        embedded_image_ocr=True,
+    )
+
+
+def examined(
+    content: bytes,
+    settings: ocr_resources.ExtractionSettings | None,
+    engine: object,
+    budget: ExtractionBudget | None = None,
+) -> OOXMLExtraction:
+    return extract_docx(
+        content,
+        capture_id=CAPTURE,
+        settings=settings,
+        ocr_engine=engine,  # type: ignore[arg-type]
+        budget=budget,
+    )
+
+
+def test_an_embedded_raster_is_recognised_and_anchored_to_the_object_showing_it(
+    examining: ocr_resources.ExtractionSettings,
+) -> None:
+    """The reading is a segment of its own, after the record and the author's
+    claims, anchored to the drawing's own position and to the image part the
+    bytes came from. It carries the OCR line geometry, the frame space it was
+    read in and the exact engine and languages that read it, and it is never
+    joined to the prose around the drawing or to the alt text beside it."""
+    body = (
+        f"<w:p>{run('Before ')}"
+        + drawing(doc_pr=f'{DOC_PR} descr="The invoice"')
+        + f"{run(' after')}</w:p>"
+    )
+    content = linked(
+        body, IMAGE_RELATION, content_types=PNG_DEFAULT, members=PNG_MEMBER
+    )
+    engine = RecordingOcr()
+
+    result = examined(content, examining, engine)
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("body", "Before ", "0"),
+        ("object_inventory", None, "0.i0"),
+        ("image_alt", "The invoice", "0.i0"),
+        ("body", "INVOICE 7", "0.i0"),
+        ("body", " after", "0.t1"),
+    ]
+    reading = result.segments[3]
+    assert reading.extraction_method == "ocr"
+    assert reading.language == "eng"
+    assert reading.confidence == pytest.approx(0.91)
+    locator = reading.source_locator
+    # Anchored to the DOCX object and to the part, and located inside the frame.
+    assert locator["part"] == "word/document.xml"
+    assert locator["story"] == "body"
+    assert locator["imagePart"] == "word/media/image1.png"
+    assert (locator["unit"], locator["frame"], locator["line"]) == ("image_frame", 1, 1)
+    assert locator["space"] == GEOMETRY_SPACE
+    assert (locator["sourceWidth"], locator["sourceHeight"]) == (120, 40)
+    assert locator["ocrEngine"] == "tesseract-5.5.3"
+    assert locator["ocrLanguages"] == ["eng"]
+    assert locator["box"] == [4.0, 10.0, 58.0, 12.0]
+    # The bytes reached the engine and nothing persisted holds any of them.
+    assert engine.sizes == [(120, 40)]
+    for item in result.segments:
+        assert not isinstance(item.structured_value, bytes)
+        assert not any(
+            isinstance(value, bytes) for value in item.source_locator.values()
+        )
+
+    value = result.segments[1].structured_value
+    assert (value["imageDecoded"], value["ocrPerformed"]) == (True, True)
+    assert value["ocrOutcome"] == EMBEDDED_RECOGNISED
+    assert result.limitations["embeddedImages"] == 1
+    assert result.limitations["embeddedImageOutcomes"] == {EMBEDDED_RECOGNISED: 1}
+    assert (result.failed_units, result.limit_breach) == (0, None)
+
+
+def test_a_legacy_embedded_raster_is_recognised_on_the_same_seam(
+    examining: ocr_resources.ExtractionSettings,
+) -> None:
+    """A ``w:pict`` reaches the one pass a drawing does, with its reading
+    anchored to the legacy shape's own position."""
+    content = linked(
+        f"<w:p>{pict()}</w:p>",
+        IMAGE_RELATION,
+        content_types=PNG_DEFAULT,
+        members=PNG_MEMBER,
+    )
+
+    result = examined(content, examining, RecordingOcr("LEGACY"))
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("object_inventory", None, "0.v0"),
+        ("body", "LEGACY", "0.v0"),
+    ]
+    assert result.segments[1].source_locator["imagePart"] == "word/media/image1.png"
+    value = result.segments[0].structured_value
+    assert (value["imageDecoded"], value["ocrPerformed"]) == (True, True)
+    assert value["ocrOutcome"] == EMBEDDED_RECOGNISED
+
+
+def test_a_profile_that_examines_no_embedded_image_opens_nothing(
+    examining: ocr_resources.ExtractionSettings,
+) -> None:
+    """The preference alone decides it, and a profile with it off never reaches
+    the engine, never decodes a byte and reports the image as unexamined. The
+    member here is a real PNG, so only the profile is keeping it closed."""
+    content = linked(
+        f"<w:p>{drawing()}</w:p>",
+        IMAGE_RELATION,
+        content_types=PNG_DEFAULT,
+        members=PNG_MEMBER,
+    )
+    off = replace(examining, embedded_image_ocr=False)
+
+    for settings in (off, None):
+        result = examined(content, settings, RefusingOcr())
+
+        assert [i.semantic_role for i in result.segments] == ["object_inventory"]
+        value = result.segments[0].structured_value
+        assert (value["imageDecoded"], value["ocrPerformed"]) == (False, False)
+        assert value["ocrOutcome"] == EMBEDDED_DISABLED
+        assert result.limitations["embeddedImageOutcomes"] == {EMBEDDED_DISABLED: 1}
+
+
+def test_a_profile_whose_models_were_not_served_examines_nothing_and_says_so(
+    examining: ocr_resources.ExtractionSettings,
+) -> None:
+    """An unavailable selection keeps its identity and its requested order, and
+    the image stays unexamined for the reason it really was: the pinned models
+    were never served, which is not the same as the preference being off."""
+    content = linked(
+        f"<w:p>{drawing()}</w:p>",
+        IMAGE_RELATION,
+        content_types=PNG_DEFAULT,
+        members=PNG_MEMBER,
+    )
+    unserved = replace(
+        examining, ocr=ocr_resources.TrustedOcrCatalogue().resolve(("deu",))
+    )
+
+    result = examined(content, unserved, RefusingOcr())
+
+    value = result.segments[0].structured_value
+    assert (value["imageDecoded"], value["ocrPerformed"]) == (False, False)
+    assert value["ocrOutcome"] == EMBEDDED_RESOURCES_UNAVAILABLE
+
+
+def test_an_external_image_reference_is_never_opened(
+    examining: ocr_resources.ExtractionSettings,
+) -> None:
+    """The relationship names a path the package does hold as a member, so only
+    its declared mode keeps it shut: an external reference is inventory, and the
+    pass neither resolves it, reads the member behind it nor reaches the engine.
+    A blip's ``r:link`` and a ``v:imagedata`` on an external relationship are the
+    two ways a Word story names one, and neither yields a candidate."""
+    external = ("rId9", "media/image1.png", True, "image")
+    link_only = (
+        "<a:graphic><a:graphicData>"
+        + picture(blip(embed=None, target="rId9"))
+        + "</a:graphicData></a:graphic>"
+    )
+    bodies = (
+        f"<w:p>{drawing(graphic=link_only)}</w:p>",
+        f"<w:p>{pict()}</w:p>",
+    )
+    for body in bodies:
+        content = linked(
+            body, external, content_types=PNG_DEFAULT, members=PNG_MEMBER
+        )
+
+        result = examined(content, examining, RefusingOcr())
+
+        assert [i.semantic_role for i in result.segments] == ["object_inventory"]
+        value = result.segments[0].structured_value
+        assert (value["imageDecoded"], value["ocrPerformed"]) == (False, False)
+        assert value["ocrOutcome"] == EMBEDDED_NOT_EMBEDDED
+        assert result.limitations["embeddedImageOutcomes"] == {EMBEDDED_NOT_EMBEDDED: 1}
+
+
+def test_an_ole_object_and_its_preview_are_no_candidates(
+    examining: ocr_resources.ExtractionSettings,
+) -> None:
+    """The picture a ``w:object`` shows is a picture *of* the object, reached by
+    a route of its own. It is not an embedded raster this pass examines, so the
+    engine is never reached even though the stand-in names a real image part
+    the package holds."""
+    body = (
+        f'<w:r><w:object><v:shape id="{SHAPE_ID}" style="{VML_STYLE}">'
+        '<v:imagedata r:id="rId8"/></v:shape>'
+        f'<o:OLEObject {OFFICE} Type="Embed" r:id="rId9"/>'
+        "</w:object></w:r>"
+    )
+    content = linked(
+        f"<w:p>{body}</w:p>",
+        OBJECT_RELATION,
+        ("rId8", "media/image1.png", False, "image"),
+        content_types=OBJECT_DEFAULTS + PNG_DEFAULT,
+        members=OBJECT_MEMBERS | PNG_MEMBER,
+    )
+
+    result = examined(content, examining, RefusingOcr())
+
+    assert [i.structured_value["kind"] for i in result.segments] == ["oleObject"]
+    assert result.limitations["embeddedImages"] == 0
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        pytest.param(b"\x89PNG\r\n\x1a\nnot really an image", id="malformed"),
+        pytest.param(real_jpeg(), id="mismatched-magic"),
+    ],
+)
+def test_a_malformed_or_mismatched_raster_keeps_its_record_and_is_not_examined(
+    examining: ocr_resources.ExtractionSettings, member: bytes
+) -> None:
+    """Bytes the decoder refuses -- truncated, or a JPEG behind a ``.png``
+    declaration -- are this image's outcome and never the package's: the
+    structural record stands, states that nothing was decoded, and names the
+    refusal. It is never reported as examined."""
+    content = linked(
+        f"<w:p>{drawing()}</w:p>",
+        IMAGE_RELATION,
+        content_types=PNG_DEFAULT,
+        members={"word/media/image1.png": member},
+    )
+
+    result = examined(content, examining, RecordingOcr())
+
+    assert [i.semantic_role for i in result.segments] == ["object_inventory"]
+    value = result.segments[0].structured_value
+    assert (value["imageDecoded"], value["ocrPerformed"]) == (False, False)
+    assert value["ocrOutcome"] == EMBEDDED_MALFORMED
+    assert value["imageBytes"] == len(member)
+    assert result.failed_units == 1
+    assert result.limitations["embeddedImageOutcomes"] == {EMBEDDED_MALFORMED: 1}
+
+
+def test_an_image_type_outside_the_accepted_set_is_named_before_any_decode(
+    examining: ocr_resources.ExtractionSettings,
+) -> None:
+    """A GIF is a legitimate image part and is not in the accepted raster set,
+    so the declared type settles it before a byte is opened and the engine is
+    never reached. EMF, WMF and SVG are refused the same way."""
+    content = linked(
+        f"<w:p>{drawing()}</w:p>",
+        ("rId9", "media/image1.gif", False, "image"),
+        content_types='<Default Extension="gif" ContentType="image/gif"/>',
+        members={"word/media/image1.gif": b"GIF89a" + b"\x00" * 16},
+    )
+
+    result = examined(content, examining, RefusingOcr())
+
+    value = result.segments[0].structured_value
+    assert value["imageContentType"] == "image/gif"
+    assert (value["imageDecoded"], value["ocrPerformed"]) == (False, False)
+    assert value["ocrOutcome"] == EMBEDDED_UNSUPPORTED
+
+
+def test_two_references_to_one_image_part_stay_two_located_readings(
+    examining: ocr_resources.ExtractionSettings,
+) -> None:
+    """A duplicate reference is a second object showing the same picture, so it
+    keeps its own locator and pays the shared budget again. Nothing is cached:
+    the bytes are read for each reference and discarded with it."""
+    body = f"<w:p>{drawing()}</w:p><w:p>{pict()}</w:p>"
+    content = linked(
+        body, IMAGE_RELATION, content_types=PNG_DEFAULT, members=PNG_MEMBER
+    )
+    engine = RecordingOcr("TWICE")
+
+    result = examined(content, examining, engine)
+
+    assert [
+        (i.semantic_role, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("object_inventory", "0.i0"),
+        ("body", "0.i0"),
+        ("object_inventory", "1.v0"),
+        ("body", "1.v0"),
+    ]
+    assert len(engine.sizes) == 2
+    assert result.limitations["embeddedImageOutcomes"] == {EMBEDDED_RECOGNISED: 2}
+
+
+def test_one_aggregate_budget_truncates_the_later_images_of_one_document(
+    examining: ocr_resources.ExtractionSettings,
+) -> None:
+    """The ceiling is the document's and not one image's: a budget that pays for
+    the first raster leaves the second truncated rather than silently skipped,
+    and the truncated image reports what it published rather than being called a
+    blank. The document's own outcome says coverage was cut short."""
+    body = f"<w:p>{drawing()}</w:p><w:p>{drawing()}</w:p>"
+    content = linked(
+        body, IMAGE_RELATION, content_types=PNG_DEFAULT, members=PNG_MEMBER
+    )
+    engine = RecordingOcr("FIRST")
+
+    result = examined(
+        content, examining, engine, budget=ExtractionBudget(ocr_pixels=120 * 40)
+    )
+
+    assert [
+        (i.semantic_role, i.text, i.source_locator["position"]) for i in result.segments
+    ] == [
+        ("object_inventory", None, "0.i0"),
+        ("body", "FIRST", "0.i0"),
+        ("object_inventory", None, "1.i0"),
+    ]
+    assert len(engine.sizes) == 1
+    outcomes = [
+        i.structured_value["ocrOutcome"]
+        for i in result.segments
+        if i.semantic_role == "object_inventory"
+    ]
+    assert outcomes == [EMBEDDED_RECOGNISED, EMBEDDED_TRUNCATED]
+    assert result.limit_breach == "ocr_pixel_budget_exhausted"
+    assert result.limitations["limitBreach"] == "ocr_pixel_budget_exhausted"
+
+
+def test_a_below_threshold_reading_is_retained_but_is_no_reliable_text(
+    examining: ocr_resources.ExtractionSettings,
+) -> None:
+    """Candidates the engine was not confident about are kept so a reviewer can
+    trace the selection, in a role ordinary retrieval excludes -- and the image
+    reports that it reached no reliable text rather than that it read some."""
+    content = linked(
+        f"<w:p>{drawing()}</w:p>",
+        IMAGE_RELATION,
+        content_types=PNG_DEFAULT,
+        members=PNG_MEMBER,
+    )
+
+    result = examined(content, examining, RecordingOcr("MAYBE", confidence=9.0))
+
+    assert [(i.semantic_role, i.visibility, i.text) for i in result.segments] == [
+        ("object_inventory", "visible", None),
+        ("hidden_content", "hidden", "MAYBE"),
+    ]
+    value = result.segments[0].structured_value
+    assert (value["imageDecoded"], value["ocrPerformed"]) == (True, True)
+    assert value["ocrOutcome"] == EMBEDDED_NO_TEXT
+
+
+def test_a_deletion_over_a_drawing_is_kept_over_the_reading_it_carried(
+    examining: ocr_resources.ExtractionSettings,
+) -> None:
+    """A revision wrapped around the container is kept over the reading exactly
+    as it is over the record and the author's claims: a deleted image's text is
+    not the page's content."""
+    content = linked(
+        f"<w:p><w:del>{drawing()}</w:del></w:p>",
+        IMAGE_RELATION,
+        content_types=PNG_DEFAULT,
+        members=PNG_MEMBER,
+    )
+
+    result = examined(content, examining, RecordingOcr("GONE"))
+
+    assert [
+        (i.semantic_role, i.visibility, i.revision_state) for i in result.segments
+    ] == [
+        ("object_inventory", "annotation", "deleted"),
+        ("body", "annotation", "deleted"),
     ]
