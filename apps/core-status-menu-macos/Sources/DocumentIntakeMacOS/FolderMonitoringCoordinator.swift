@@ -464,7 +464,7 @@ public actor FolderMonitoringCoordinator {
                                 observedDirtyEpoch: observedDirtyEpoch
                             ),
                         ],
-                        binding: Self.binding(of: subscription)
+                        binding: CaptureDeliveryBinding(subscription)
                     )
                 } catch CaptureQueueError.capacityExceeded {
                     capacityDeferred = true
@@ -540,7 +540,7 @@ public actor FolderMonitoringCoordinator {
                                 observedDirtyEpoch: 0
                             ),
                         ],
-                        binding: Self.binding(of: subscription)
+                        binding: CaptureDeliveryBinding(subscription)
                     )
                 } catch CaptureQueueError.capacityExceeded {
                     capacityDeferred = true
@@ -584,15 +584,6 @@ public actor FolderMonitoringCoordinator {
             queued: queued,
             unchanged: unchanged,
             absent: absent
-        )
-    }
-
-    private static func binding(of subscription: FolderSubscription) -> CaptureDeliveryBinding {
-        CaptureDeliveryBinding(
-            targetRef: subscription.targetRef,
-            workspaceRef: subscription.workspaceRef,
-            targetBindingRevision: subscription.targetBindingRevision,
-            callerContextBinding: subscription.callerContextBinding
         )
     }
 

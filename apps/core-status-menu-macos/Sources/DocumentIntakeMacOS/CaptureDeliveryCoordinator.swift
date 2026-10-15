@@ -49,6 +49,29 @@ public struct CaptureDeliveryBinding: Equatable, Sendable {
         )
     }
 
+    /// The identity this watch froze when its consent was recorded. Comparing it
+    /// with the authenticated binding is how an account or target-profile change
+    /// is observed; it is never rewritten to whichever identity is current.
+    public init(_ subscription: FileSubscription) {
+        self.init(
+            targetRef: subscription.targetRef,
+            workspaceRef: subscription.workspaceRef,
+            targetBindingRevision: subscription.targetBindingRevision,
+            callerContextBinding: subscription.callerContextBinding
+        )
+    }
+
+    /// The identity this watch froze when its consent was recorded; see the
+    /// `FileSubscription` overload.
+    public init(_ subscription: FolderSubscription) {
+        self.init(
+            targetRef: subscription.targetRef,
+            workspaceRef: subscription.workspaceRef,
+            targetBindingRevision: subscription.targetBindingRevision,
+            callerContextBinding: subscription.callerContextBinding
+        )
+    }
+
     /// The single binding every native companion submission and the companion's
     /// own transport are built from.
     public static func companion(
@@ -108,6 +131,33 @@ public protocol CaptureDeliveryTransport: Sendable {
 public enum CaptureDeliveryError: Error, Equatable {
     case invalidIntent
     case missingPayload
+}
+
+/// What a changed signed-in principal or target profile has paused on this Mac
+/// (design §10.2, §10.3 "Target/principal identity changed", §10.4 and §21.9.1).
+///
+/// A frozen intent is never rewritten, redirected or replayed under the new
+/// account. It pauses: its bytes, its stable key and its whole attempt history
+/// stay exactly as they are, nothing is sent, and it waits for the owning setup
+/// flow to restore the identity it was authorised for. Automatic subscriptions
+/// frozen against that identity pause durably, which is what leaves them armed
+/// for no further automatic read at all.
+public struct CaptureIdentityPause: Equatable, Sendable {
+    /// Unresolved queued intents — queued, in flight and awaiting recovery
+    /// alike — whose frozen identity is not the authenticated one. This is the
+    /// paused state of the intent itself: it is derived from the frozen binding
+    /// and the identity now authenticated, so it cannot survive as a stale flag
+    /// once the owning setup flow restores that identity.
+    public let pausedItemIDs: [String]
+    /// Watches moved to `FolderSubscriptionState.paused` by this pass.
+    public let pausedFileSubscriptionIDs: [String]
+    public let pausedFolderSubscriptionIDs: [String]
+
+    public var isEmpty: Bool {
+        pausedItemIDs.isEmpty
+            && pausedFileSubscriptionIDs.isEmpty
+            && pausedFolderSubscriptionIDs.isEmpty
+    }
 }
 
 public struct DocumentCaptureWireEncoder {
@@ -195,19 +245,118 @@ public actor CaptureDeliveryCoordinator {
     private let queue: CaptureIntentQueue
     private let transport: any CaptureDeliveryTransport
     private let encoder = DocumentCaptureWireEncoder()
+    /// The watches whose consent froze an identity. Present so an account or
+    /// target-profile change pauses them where it is observed, rather than being
+    /// noticed only at the send boundary; a standalone coordinator has neither.
+    private let fileSubscriptions: FileSubscriptionStore?
+    private let folderSubscriptions: FolderSubscriptionStore?
+    /// Shared with the other publication owners; see `PublicationGate`. Held for
+    /// the whole of one identity pass, so the queue snapshot the pass judges and
+    /// the watches it pauses cannot be interleaved by a publication.
+    private let gate: PublicationGate
 
-    public init(queue: CaptureIntentQueue, transport: any CaptureDeliveryTransport) {
+    public init(
+        queue: CaptureIntentQueue,
+        transport: any CaptureDeliveryTransport,
+        fileSubscriptions: FileSubscriptionStore? = nil,
+        folderSubscriptions: FolderSubscriptionStore? = nil,
+        gate: PublicationGate = .processShared
+    ) {
         self.queue = queue
         self.transport = transport
+        self.fileSubscriptions = fileSubscriptions
+        self.folderSubscriptions = folderSubscriptions
+        self.gate = gate
+    }
+
+    /// Pauses everything the authenticated identity no longer authorises, and
+    /// names it.
+    ///
+    /// The transport's own binding is the identity this companion is actually
+    /// configured and authenticated for. Design §10.2 requires that comparison
+    /// before the first possible send and before every recovery attempt, and
+    /// §21.9.1 makes the same changed identity pause subscriptions and existing
+    /// pending delivery rather than redirect either. So one pass does both:
+    ///
+    /// - every watch frozen against a different principal, target, target
+    ///   binding revision or workspace moves to `paused` durably, which is the
+    ///   state the monitors, the reconciliation schedule and its executor all
+    ///   require to be `active` before they arm or run any automatic read;
+    /// - every unresolved queued intent frozen against a different identity is
+    ///   reported paused, and `deliverPending` sends none of them.
+    ///
+    /// Nothing is rewritten, retargeted or deleted, and a watch already stopped
+    /// or paused is left alone. A watch still `review_required` is left alone
+    /// too: it arms no automatic read while it waits for its owner, and moving
+    /// it would discard the pending review signature that owning flow needs.
+    ///
+    /// Call it at the start of every pass that may read a watched source, not
+    /// only before delivery: an identity change observed between two passes must
+    /// not let one more automatic read through.
+    ///
+    /// It throws when a pause it owes could not be made durable, because the
+    /// watch is then still `active` and the automatic read paths will still run
+    /// it. A caller that was about to read a watched source must abandon that
+    /// pass on a throw rather than treat the pause as done; delivery is
+    /// unaffected either way, since its own send boundary refuses the mismatch
+    /// whatever this pass managed to persist.
+    @discardableResult
+    public func pauseWorkUnderChangedIdentity() throws -> CaptureIdentityPause {
+        let authenticated = transport.deliveryBinding
+        return try gate.withLock {
+            var files: [String] = []
+            for value in fileSubscriptions?.all() ?? []
+                where Self.pausable(value.state) && CaptureDeliveryBinding(value) != authenticated
+            {
+                try fileSubscriptions?.update(id: value.subscriptionID) {
+                    $0.state = .paused
+                    $0.needsReconciliation = true
+                }
+                files.append(value.subscriptionID)
+            }
+            var folders: [String] = []
+            for value in folderSubscriptions?.all() ?? []
+                where Self.pausable(value.state) && CaptureDeliveryBinding(value) != authenticated
+            {
+                try folderSubscriptions?.update(id: value.subscriptionID) {
+                    $0.state = .paused
+                    $0.needsFullReconciliation = true
+                }
+                folders.append(value.subscriptionID)
+            }
+            return CaptureIdentityPause(
+                pausedItemIDs: queue.allEntries().filter {
+                    [.pending, .staging, .unknownOutcome].contains($0.state)
+                        && !authenticated.matches($0.intent)
+                }.map(\.intent.itemId).sorted(),
+                pausedFileSubscriptionIDs: files,
+                pausedFolderSubscriptionIDs: folders
+            )
+        }
+    }
+
+    /// Automatic work is armed from `active`, and both `waiting_for_core` and
+    /// `needs_access` can still reach it without a new reviewed consent, so all
+    /// three pause. This is the transition `FileMonitoringCoordinator.pause` and
+    /// `FolderMonitoringCoordinator.pause` make for an owner who asks.
+    private static func pausable(_ state: FolderSubscriptionState) -> Bool {
+        state == .active || state == .waitingForCore || state == .needsAccess
     }
 
     @discardableResult
     public func deliverPending() async -> [CaptureQueueEntry] {
+        // A pause this cannot persist does not stop delivery: the send boundary
+        // below refuses the same mismatch on its own, and the pass is owed again
+        // on the next tick.
+        try? pauseWorkUnderChangedIdentity()
         var outcomes: [CaptureQueueEntry] = []
         for entry in queue.allEntries() where entry.state == .pending {
-            // Refuse before any payload read, stage transition or transport
-            // call: a binding the transport cannot honour leaves the item
-            // pending for recovery or reconfiguration.
+            // The same comparison the pass above reported, applied again here as
+            // the send boundary itself: paused before any payload read, stage
+            // transition or transport call, including for an intent published
+            // since that pass. The frozen intent is left exactly as it is for
+            // the owning setup flow, and the current account is never
+            // substituted for the one it was authorised for.
             guard transport.deliveryBinding.matches(entry.intent) else { continue }
             do {
                 let payloadURL = try queue.payloadURL(for: entry.intent.itemId)

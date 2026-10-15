@@ -272,7 +272,13 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                         executable: resolvedExecutable,
                         installationState: configuration.installationState,
                         deliveryBinding: companionBinding
-                    )
+                    ),
+                    // The watches a changed signed-in principal or target
+                    // profile has to pause before anything reads a source
+                    // again; see `pauseWorkUnderChangedIdentity`.
+                    fileSubscriptions: environment.fileSubscriptions,
+                    folderSubscriptions: environment.folderSubscriptions,
+                    gate: environment.publicationGate
                 )
             }
             capturePanelController = CapturePanelController(
@@ -710,7 +716,17 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         guard let demands, !demands.isEmpty,
               let executor = intakeEnvironment?.folderReconciliationExecutor
         else { return }
-        Task.detached { await executor.run(demands) }
+        let delivery = captureDeliveryCoordinator
+        Task.detached {
+            // Startup, the periodic tick, wake and remount all arrive here. A
+            // demand armed before the identity changed is not permission to
+            // read: pausing first leaves the executor's own `active` check to
+            // skip it, rather than reading the scope under the new account. A
+            // pause that could not be persisted leaves the watch active, so this
+            // pass runs nothing and the work stays owed.
+            guard (try? await delivery?.pauseWorkUnderChangedIdentity()) != nil else { return }
+            await executor.run(demands)
+        }
     }
 
     private func reconcileWatchedFolders() {
@@ -720,6 +736,12 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         let bulkRuns = folderBulkRunCoordinator
         let environment = intakeEnvironment
         Task {
+            // A signed-in principal or target profile that changed while this
+            // Mac was not running pauses its watches here, before the first
+            // scan of this process arms anything: no automatic read continues
+            // under an identity the frozen consent was not given for, and a
+            // pause that could not be persisted reads nothing at all.
+            guard (try? await delivery?.pauseWorkUnderChangedIdentity()) != nil else { return }
             // An establishment an earlier process left pending holds a root
             // grant nothing can discover through yet. Finish it before anything
             // reads a watched scope.
@@ -813,6 +835,10 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         let delivery = captureDeliveryCoordinator
         let fileMonitoring = fileMonitoringCoordinator
         Task {
+            // Filesystem events are not permission to read under a changed
+            // identity, and this is the one pass a resumed watch can reach
+            // without going through startup; see `pauseWorkUnderChangedIdentity`.
+            guard (try? await delivery?.pauseWorkUnderChangedIdentity()) != nil else { return }
             _ = await folderMonitoringCoordinator.reconcile(subscriptionIDs: subscriptions)
             _ = await fileMonitoring?.reconcile(subscriptionIDs: fileSubscriptions)
             _ = await delivery?.deliverPending()

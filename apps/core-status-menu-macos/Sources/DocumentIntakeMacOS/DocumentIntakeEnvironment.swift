@@ -7,7 +7,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     let accessStore: NativeAccessStore
     let preparation: CapturePreparationCoordinator
     /// The single shared publication gate every owner above was built with.
-    let publicationGate: PublicationGate
+    public let publicationGate: PublicationGate
     let reader: any CoordinatedOriginalReading
     public let queue: CaptureIntentQueue
     public let folderSubscriptions: FolderSubscriptionStore

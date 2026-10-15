@@ -488,12 +488,7 @@ public actor FileMonitoringCoordinator {
                             observedDirtyEpoch: observedDirtyEpoch
                         ),
                     ],
-                    binding: CaptureDeliveryBinding(
-                        targetRef: value.targetRef,
-                        workspaceRef: value.workspaceRef,
-                        targetBindingRevision: value.targetBindingRevision,
-                        callerContextBinding: value.callerContextBinding
-                    )
+                    binding: CaptureDeliveryBinding(value)
                 ) { published in
                     // Inside the publication critical section, under the gate the queue commit was
                     // taken on: the scope's candidate reached an intent, named by the item ID the
