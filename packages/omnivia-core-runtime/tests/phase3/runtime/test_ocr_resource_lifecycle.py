@@ -25,6 +25,12 @@ the object that took it, so another process sees it; that two holds of one
 selection are two leases; that a hold nobody holds any more is discarded rather
 than left blocking removal for good; and that a refused resolution takes no hold.
 
+And that lease *discovery* fails closed: a ``leases/`` that cannot be enumerated,
+a held projection that cannot be inspected and a payload that cannot be probed
+each refuse removal and reconciliation with nothing mutated, rather than reading
+as "nothing is held" -- while the pruning bound, which runs after a resolution
+has already succeeded, preserves every projection instead of failing it.
+
 For the path boundary (§15.1): that a relative, traversing, symlinked,
 non-regular or inside-the-cache payload is refused, and that no field of an
 identity can reach the filesystem as anything but a fixed-width hexadecimal name.
@@ -47,6 +53,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import stat
 from itertools import permutations
 from pathlib import Path
@@ -68,6 +75,7 @@ from omnivia_core_runtime.service.ocr_resource_lifecycle import (
     REFUSAL_NOT_INSTALLED,
     REFUSAL_PAYLOAD,
     REFUSAL_PINNED,
+    REFUSAL_UNAVAILABLE,
     REFUSAL_VERIFICATION,
     ManagedOcrResources,
     OcrResourceLifecycleRefused,
@@ -1281,6 +1289,113 @@ def test_a_lease_of_a_selection_the_cache_cannot_serve_holds_nothing(
         pass  # pragma: no cover - the lease is refused before the block runs
     assert diverged.value.code == REFUSAL_DIVERGENT
     assert _lease_names(managed) == []
+
+
+def test_leases_that_cannot_be_enumerated_refuse_rather_than_read_as_none(
+    tmp_path: Path,
+) -> None:
+    """The fail-closed claim the discovery makes, held to. An enumeration failure
+    used to return the empty set, which is exactly the answer "no extraction holds
+    anything" -- so removal and reconciliation would act on bytes they could not
+    prove were free.
+
+    A regular file where ``leases/`` belongs is the enumerable version of that
+    failure. Both administrative operations must refuse and change nothing, while
+    the resolution path -- whose pruning is a tidy-up after an answer it has
+    already produced -- must still succeed, with everything preserved.
+    """
+    managed, identities = _multilingual(tmp_path)
+    directory = managed.project_selection(identities[:2])
+    abandoned_staging = managed.staging_root / ("0" * 32)
+    abandoned_staging.mkdir(parents=True)
+    managed.leases_root.write_bytes(b"")
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.remove(identities[0])
+    assert refused.value.code == REFUSAL_UNAVAILABLE
+    with pytest.raises(OcrResourceLifecycleRefused) as swept:
+        managed.reconcile()
+    assert swept.value.code == REFUSAL_UNAVAILABLE
+
+    # Neither touched the state document, the bytes, the projections -- nor, in
+    # reconciliation's case, the staging it would otherwise have swept first.
+    assert managed.store.load().entries == tuple(identities)
+    assert managed.payload_path(identities[0]).exists()
+    assert directory.is_dir()
+    assert abandoned_staging.is_dir()
+
+    # The bound is the one caller that must not fail: enough further projections
+    # to drive it past its limit, every one of them resolved and kept.
+    orders = [
+        list(order)
+        for size in (1, 2, 3)
+        for order in permutations(identities, size)
+        if list(order) != list(identities[:2])
+    ]
+    assert len(orders) > MAX_PUBLISHED_SELECTIONS
+    for order in orders:
+        assert managed.project_selection(order).is_dir()
+    published = {child.name for child in managed.selections_root.iterdir()}
+    assert len(published) == len(orders) + 1
+    assert directory.name in published
+
+
+def test_a_live_projection_that_cannot_be_inspected_refuses_mutation(
+    tmp_path: Path,
+) -> None:
+    """The other half of the discovery: a lease names a projection, and what that
+    hold covers is read from the projection's own members.
+
+    A member that cannot be inspected used to be skipped, so a projection this
+    call could not read covered nothing and an extraction's languages were
+    removable underneath it. The identity being removed here is not even one of
+    the leased ones -- the refusal is about not knowing, not about this identity.
+    """
+    managed, identities = _multilingual(tmp_path)
+
+    with managed.leased_selection(identities[:2]) as directory:
+        shutil.rmtree(directory)
+        directory.write_bytes(b"")
+
+        with pytest.raises(OcrResourceLifecycleRefused) as refused:
+            managed.remove(identities[2])
+        assert refused.value.code == REFUSAL_UNAVAILABLE
+        with pytest.raises(OcrResourceLifecycleRefused) as swept:
+            managed.reconcile()
+        assert swept.value.code == REFUSAL_UNAVAILABLE
+
+    assert managed.store.load().entries == tuple(identities)
+    assert managed.payload_path(identities[2]).exists()
+
+
+def test_a_payload_that_cannot_be_probed_refuses_the_reconciliation(
+    tmp_path: Path,
+) -> None:
+    """Whether a hold covers an identity is an ``lstat`` of its payload, and the
+    quarantine decision turns on the answer.
+
+    Absent is a real answer -- nothing links an inode that is not there, and
+    quarantining it is the ordinary repair. Unreadable is not: here the resource
+    directory is a regular file, so the payload cannot be reached at all, and the
+    pass refuses with the entry and the other entries left exactly as they stand.
+    """
+    managed, identities = _multilingual(tmp_path)
+    broken = managed.resource_directory(identities[1])
+    shutil.rmtree(broken)
+    broken.write_bytes(b"")
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.reconcile()
+    assert refused.value.code == REFUSAL_UNAVAILABLE
+
+    assert managed.store.load().entries == tuple(identities)
+    assert not managed.quarantine_root.exists()
+
+    # And the ordinary absence still reconciles: the entry is quarantined, not
+    # refused, because an inode that is not there is held by nobody.
+    broken.unlink()
+    outcome = managed.reconcile()
+    assert outcome.quarantined == (identities[1],)
 
 
 # --- layout constants

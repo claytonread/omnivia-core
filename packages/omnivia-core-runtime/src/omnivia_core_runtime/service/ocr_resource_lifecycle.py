@@ -113,6 +113,19 @@ discards it. What a live hold covers is read from the projection's own hard
 links: a member *is* the payload's inode, which is the exact byte identity rather
 than a second record of which identities were named.
 
+**And a hold that cannot be read is not a hold that is absent.** Discovering
+which selections are held is itself a read of the filesystem, and every one of
+those reads can fail. An absent ``leases/`` means no lease, because nothing but
+a hold creates it; anything else -- a ``leases/`` that will not enumerate, a
+held projection that will not open, a member or a payload that will not stat --
+leaves the covered bytes unknown, and this module never spends "unknown" as
+"nothing is held". :meth:`ManagedOcrResources.remove` and
+:meth:`ManagedOcrResources.reconcile` settle the whole lease question before
+they mutate anything and refuse with :data:`REFUSAL_UNAVAILABLE` when they
+cannot; the pruning bound, which runs only after a resolution has already
+succeeded, preserves every projection instead, because cache tidiness is not
+worth failing the resolution it was a tidy-up for.
+
 Still absent, and not implied by anything here: downloading a resource, checking
 a signature over one, and discovering that an update exists.
 """
@@ -914,15 +927,28 @@ class ManagedOcrResources:
         platforms drop the lock with the descriptor. Such a file is discarded on
         the spot, the way reconciliation discards abandoned staging.
 
-        Fails closed. A lease this call cannot even probe -- the name is not a
-        regular file, the filesystem refused the lock -- is counted live, because
-        the alternative is discarding a projection an extraction is reading on the
-        strength of not having been able to look.
+        Fails closed, in both halves. A lease this call cannot even probe -- the
+        name is not a regular file, the filesystem refused the lock -- is counted
+        live, because the alternative is discarding a projection an extraction is
+        reading on the strength of not having been able to look. And a
+        ``leases/`` that cannot be enumerated at all refuses, for the same reason
+        written larger: an empty answer there is indistinguishable from "no
+        extraction holds anything", and every caller would then act on it.
+
+        A *missing* ``leases/`` is the one safe absence. Nothing creates it but
+        :meth:`_hold`, so a cache that has never leased a selection has no
+        directory, and that genuinely means no lease exists.
         """
         try:
             names = sorted(child.name for child in self.leases_root.iterdir())
-        except OSError:
+        except FileNotFoundError:
             return set()
+        except OSError as exc:
+            raise OcrResourceLifecycleRefused(
+                REFUSAL_UNAVAILABLE,
+                f"the managed OCR selection leases could not be enumerated, so "
+                f"whether an extraction holds a selection is unknown: {exc}",
+            ) from exc
         live: set[str] = set()
         for name in names:
             projection, _, hold = name.partition("-")
@@ -963,18 +989,35 @@ class ManagedOcrResources:
         is -- so this is the exact byte identity a hold covers, read from the
         projection itself rather than from a second record of which identities
         were named and in which order.
+
+        Fails closed on the same rule :meth:`_live_leases` follows: a projection
+        a live hold names but this call cannot inspect, or a member of one it
+        cannot stat, leaves the covered inodes unknown, and an unknown set read
+        as an empty one is exactly how bytes under a running extraction get
+        removed or quarantined. Only a projection directory that is *absent* is
+        skipped -- it links nothing, so it covers nothing.
         """
         inodes: set[tuple[int, int]] = set()
-        for projection in live:
+        for projection in sorted(live):
             try:
                 members = sorted((self.selections_root / projection).iterdir())
-            except OSError:
+            except FileNotFoundError:
                 continue
+            except OSError as exc:
+                raise OcrResourceLifecycleRefused(
+                    REFUSAL_UNAVAILABLE,
+                    f"a live managed OCR selection lease covers {projection}, "
+                    f"which could not be inspected: {exc}",
+                ) from exc
             for member in members:
                 try:
                     info = member.lstat()
-                except OSError:
-                    continue
+                except OSError as exc:
+                    raise OcrResourceLifecycleRefused(
+                        REFUSAL_UNAVAILABLE,
+                        f"a live managed OCR selection lease covers {member}, "
+                        f"which could not be inspected: {exc}",
+                    ) from exc
                 if stat.S_ISREG(info.st_mode):
                     inodes.add((info.st_dev, info.st_ino))
         return inodes
@@ -982,11 +1025,22 @@ class ManagedOcrResources:
     def _leased(
         self, identity: OcrResourceSetIdentity, inodes: set[tuple[int, int]]
     ) -> bool:
-        """Whether a live hold covers exactly this identity's installed bytes."""
+        """Whether a live hold covers exactly this identity's installed bytes.
+
+        An absent payload is not leased -- there is no inode for a hold to have
+        linked. Any other failure to stat it leaves the answer unknown, and
+        "unknown" must not be spent as "no", so it refuses.
+        """
         try:
             info = self.payload_path(identity).lstat()
-        except OSError:
+        except FileNotFoundError:
             return False
+        except OSError as exc:
+            raise OcrResourceLifecycleRefused(
+                REFUSAL_UNAVAILABLE,
+                f"whether a live managed OCR selection lease covers "
+                f"{identity.stable_key} could not be established: {exc}",
+            ) from exc
         return stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) in inodes
 
     def _validated_selection(
@@ -1103,8 +1157,17 @@ class ManagedOcrResources:
         extraction is about to open is exactly the window the lease exists to
         close. Failures are swallowed -- an unprunable projection is an untidy
         cache, not a reason to fail a resolution that has already succeeded.
+
+        A lease view that cannot be established swallows the whole pass rather
+        than pruning against the names it managed to read: every projection is
+        preserved, which is the safe answer both ways round -- nothing an
+        extraction holds is discarded, and the resolution this ran for is not
+        failed because a cache cleanup could not be proven safe.
         """
-        held = self._live_leases() | {keep}
+        try:
+            held = self._live_leases() | {keep}
+        except OcrResourceLifecycleRefused:
+            return
         try:
             published = [
                 child
@@ -1481,14 +1544,22 @@ class ManagedOcrResources:
 
     def _reconcile(self) -> ManagedOcrReconciliation:
         state = self._store.load()
+        # The whole lease question is settled first, before anything is
+        # discarded: every repair below is conditioned on what a live hold
+        # covers, so a lease view that cannot be established has to refuse the
+        # pass rather than let it sweep on the strength of not having been able
+        # to look. That includes the per-entry probe, which is hoisted here for
+        # the same reason -- an entry whose lease state is unknown must not be
+        # reached after an earlier one has already been quarantined.
+        live = self._live_leases()
+        leased = self._leased_inodes(live)
+        held = {entry for entry in state.entries if self._leased(entry, leased)}
         discarded_staging = self._discard_children(self.staging_root)
         # Projections are derived from the entries this pass may be about to drop,
         # and they hold hard links that would keep quarantined inodes alive. They
         # are not reported: the counts here are about what the state document
         # referenced, and a projection is referenced by no entry. The ones a live
         # lease holds are kept, and the entries they link are not dropped.
-        live = self._live_leases()
-        leased = self._leased_inodes(live)
         self._discard_projections(live)
         referenced = {directory_name(entry) for entry in state.entries}
         discarded_unreferenced = self._discard_children(
@@ -1502,7 +1573,7 @@ class ManagedOcrResources:
         for entry in state.entries:
             if self._payload_matches(entry):
                 kept.append(entry)
-            elif entry in pinned or self._leased(entry, leased):
+            elif entry in pinned or entry in held:
                 kept.append(entry)
                 unrecoverable.append(entry)
             else:
