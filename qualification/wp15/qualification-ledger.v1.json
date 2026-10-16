@@ -4,7 +4,13 @@
   "design_source": {
     "document": "omnivia-core-macos-complete-technical-design-v2.0-2026-10-05.md",
     "revision": "v2.0 (2026-10-05)",
-    "sections": ["20", "20.1", "20.2", "20.3", "20.4"]
+    "sections": [
+      "20",
+      "20.1",
+      "20.2",
+      "20.3",
+      "20.4"
+    ]
   },
   "expected_counts": {
     "gates": 130,
@@ -415,7 +421,27 @@
         {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
           "symbol": "testAnOfflineAddIsQueuedWithTheDesignSentenceAndStaysQueuedAfterAFailedPass",
-          "covers": "The production panel receipt for a single Add reads Queued on this Mac. Open OmniVia Core to send., and a delivery pass through the real CLI against an installation that is not there leaves the item pending with its exact bytes and the activity label Queued on this Mac."
+          "covers": "The production panel receipt for a single Add reads Queued on this Mac., and a delivery pass through the real CLI against an installation that is not there leaves the item pending with its exact bytes and the activity label Queued on this Mac."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testAnAddToAStoppedInstalledCoreIsQueuedAndNeverStartsIt",
+          "covers": "A real installed, initialised Core started and then stopped with the CLI's own service commands. An explicit Add through the production panel and queue reads Queued on this Mac. A delivery pass through the real CLI sends nothing, leaves the service stopped (service status afterwards is status_not_running), keeps the item pending with the frozen intent and exact bytes, survives a companion restart and a second pass, and shows Queued on this Mac. After Start Core the same frozen item is admitted. Disabling the gate makes the CLI start Core and admit it, and the test fails."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CLICaptureDeliveryTests.swift",
+          "symbol": "testOnlyARunningServiceForTheFrozenTargetIsSentTo",
+          "covers": "The pre-send gate reads the CLI's redacted service status document and sends only to a running service whose target and workspace are the frozen ones; another target, another workspace or a missing safe status is not sent to."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CLICaptureDeliveryTests.swift",
+          "symbol": "testAStoppedUnreachableOrUnreadableServiceIsNotSentTo",
+          "covers": "A stopped, unreachable, internal-error, unreadable or wrong-action status fails closed to not sent; an incompatible one holds the item (AT-12)."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureDeliveryCoordinatorTests.swift",
+          "symbol": "testInstalledCompanionBindingMatchesCLITargetDerivation",
+          "covers": "The companion's frozen target reference equals the CLI's own, computed with realpath, which the gate compares against."
         },
         {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
@@ -423,16 +449,17 @@
           "covers": "The Share extension source assigns ShareInboxStore.queuedWording to its status in both queued states and never assigns Added."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The target is absent, not a known eligible stopped one. The failed delivery pass runs the real CLI against an installation state that does not exist, so a Core that is installed, eligible and merely not running is never produced, no test fails delivery from an absent network, and eligibility of the target is not modelled at all. The wording is also unsettled for the panel: the full sentence is now what the panel receipt shows, but the design ties it to a closed companion and gives Queued on this Mac for a stopped Core, and the panel runs inside the open companion. The Share extension's display is pinned by matching its source text, because Extensions/Share is outside the Swift test target.",
-      "limitations": "Durable publication, the never-Added rule, the never-name-a-destination rule and the pending-with-bytes result of a failed pass are each asserted against the real queue, the real ShareInboxStore manifest, the real panel receipt and the real CLI. The no-destination assertions search only for the workspace name the test configured. The AbsentTarget tests need a Python that can import the packages and skip, naming OMNIVIA_CORE_TEST_PYTHON, when none is configured.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing against a real installation on 2026-10-16. Offline is a deliberately stopped local service, which is the only offline a local unix-socket Core has; the test does not also disable the host's network. The pre-send gate reads the CLI's service status and then the CLI sends, so a service stopped in the gap between the two would still be started by the capture command; closing that needs an attach-only mode in the CLI, which was not added. The panel reports Queued on this Mac. because the companion is open; the closed-companion sentence is the Share extension's, whose display is pinned by matching its source text because Extensions/Share is outside the Swift test target. The new test skips, naming OMNIVIA_CORE_TEST_PYTHON or the missing omnivia-core-service, when the toolchain is absent. One text item and one workspace. Eligibility is the frozen target and workspace identity matching a running or stopped installation; no wider eligibility policy exists to model.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ManualCaptureSubmission.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareInboxStore.swift",
         "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/CapturePanelController.swift",
         "apps/core-status-menu-macos/Extensions/Share/ShareViewController.swift",
-        "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/CLICaptureDelivery.swift"
+        "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/CLICaptureDelivery.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureDeliveryCoordinator.swift"
       ]
     },
     {

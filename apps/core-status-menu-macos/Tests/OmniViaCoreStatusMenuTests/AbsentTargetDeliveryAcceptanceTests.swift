@@ -29,7 +29,7 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
 
         let receipt = try XCTUnwrap(panel.receipts.last)
         XCTAssertEqual(receipt.outcome, .queued(queued: 1))
-        XCTAssertEqual(receipt.detail, "Queued on this Mac. Open OmniVia Core to send.")
+        XCTAssertEqual(receipt.detail, "Queued on this Mac.")
 
         let transport = CLICaptureDelivery(
             executable: try realCLI(root),
@@ -59,6 +59,74 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
             try XCTUnwrap(FilesAndFoldersModel.activityGroups(records: records, runs: []).first)
         )
         XCTAssertEqual(item.statusLabel, "Queued on this Mac")
+    }
+
+    /// AT-11 against the target the design names: installed, initialised and
+    /// eligible, with its service deliberately stopped. The companion's delivery
+    /// pass runs the real CLI, which would start a stopped service for a
+    /// capture, so the stop must be read first and honoured. Nothing here is a
+    /// classification handed in: the stop is a real `service stop`, and the
+    /// proof that nothing started is a real `service status` afterwards.
+    func testAnAddToAStoppedInstalledCoreIsQueuedAndNeverStartsIt() async throws {
+        let root = try temporaryDirectory()
+        let cli = try realCLI(root)
+        let core = try installStoppedCore(cli)
+        let binding = CaptureDeliveryBinding.installedCompanion(
+            installationState: core.state,
+            workspaceRef: core.workspaceID
+        )
+        let companion = try launch(root: root, withPanel: true, binding: binding)
+        let panel = try XCTUnwrap(companion.panel)
+        panel.addIncoming([try writeOriginal(root, name: "invoice.txt", text: "invoice")])
+        await panel.beginSubmit()?.value
+
+        let receipt = try XCTUnwrap(panel.receipts.last)
+        XCTAssertEqual(receipt.outcome, .queued(queued: 1))
+        XCTAssertEqual(receipt.detail, "Queued on this Mac.")
+
+        let transport = CLICaptureDelivery(
+            executable: cli,
+            installationState: core.state,
+            deliveryBinding: binding
+        )
+        let frozen = try XCTUnwrap(companion.environment.queue.allEntries().first).intent
+        let outcomes = await CaptureDeliveryCoordinator(queue: companion.environment.queue, transport: transport)
+            .deliverPending()
+
+        // Not sent, not Added, not redirected, and the service was left alone.
+        XCTAssertEqual(outcomes.map(\.state), [.pending])
+        XCTAssertEqual(try core.status(cli).code, "status_not_running")
+
+        // After the companion restarts the same bytes and frozen intent wait,
+        // and a second pass still leaves the stopped service stopped.
+        let restarted = try launch(root: root, binding: binding)
+        let queue = restarted.environment.queue
+        let waiting = try XCTUnwrap(queue.allEntries().first)
+        XCTAssertEqual(queue.allEntries().count, 1)
+        XCTAssertEqual(waiting.state, .pending)
+        XCTAssertNil(waiting.admittedCaptureID)
+        XCTAssertEqual(waiting.intent, frozen)
+        XCTAssertEqual(waiting.attempts.map(\.disposition), [.knownNoEffect])
+        XCTAssertEqual(
+            try Data(contentsOf: try queue.payloadURL(for: waiting.intent.itemId)),
+            Data("invoice".utf8)
+        )
+        let again = await CaptureDeliveryCoordinator(queue: queue, transport: transport).deliverPending()
+        XCTAssertEqual(again.map(\.state), [.pending])
+        XCTAssertEqual(try core.status(cli).code, "status_not_running")
+        let records = try restarted.environment.captureActivity.observe(queue: queue.allEntries(), runs: [])
+        let item = FilesAndFoldersItem.activity(
+            try XCTUnwrap(FilesAndFoldersModel.activityGroups(records: records, runs: []).first)
+        )
+        XCTAssertEqual(item.statusLabel, "Queued on this Mac")
+
+        // Start Core is the person's own act. Once it has run, the same
+        // frozen item is sent, and nothing was lost or rewritten meanwhile.
+        XCTAssertEqual(try core.run(cli, "start").code, "start_started")
+        XCTAssertEqual(try core.status(cli).code, "status_running")
+        let sent = await CaptureDeliveryCoordinator(queue: queue, transport: transport).deliverPending()
+        XCTAssertEqual(sent.map(\.state), [.admitted], "failure: \(sent.first?.failureCode ?? "none")")
+        XCTAssertEqual(try XCTUnwrap(queue.allEntries().first).intent, frozen)
     }
 
     /// The Share extension is outside the Swift test target, so what it shows
@@ -425,6 +493,68 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
         """.write(to: launcher, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
         return launcher
+    }
+
+    /// A real, initialised installation whose service has been started and then
+    /// deliberately stopped, through the CLI's own `service` commands.
+    private struct InstalledCore {
+        let state: URL
+        let workspaceID: String
+
+        func run(_ cli: URL, _ action: String) throws -> (status: Int32, code: String) {
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = cli
+            process.arguments = [
+                "--installation-state", state.path, "--workspace-id", workspaceID,
+                "service", action, "--json",
+            ]
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            let data = try output.fileHandleForReading.readToEnd() ?? Data()
+            process.waitUntilExit()
+            let document = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            return (process.terminationStatus, try XCTUnwrap(document["code"] as? String))
+        }
+
+        func status(_ cli: URL) throws -> (status: Int32, code: String) { try run(cli, "status") }
+    }
+
+    private func installStoppedCore(_ cli: URL) throws -> InstalledCore {
+        let path = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":")
+            .map { URL(fileURLWithPath: String($0)).appendingPathComponent("omnivia-core-service") }
+            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+        guard let service = path else { throw XCTSkip("omnivia-core-service must be on PATH") }
+        // Unix socket paths are short; the ambient TMPDIR is too deep for one.
+        let home = URL(fileURLWithPath: "/tmp/at11-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let state = home.appendingPathComponent("installation-state")
+        let init_ = Process()
+        let output = Pipe()
+        init_.executableURL = service
+        init_.arguments = [
+            "--workspace", home.appendingPathComponent("workspace").path,
+            "--installation-state", state.path, "--init",
+        ]
+        init_.standardOutput = output
+        init_.standardError = FileHandle.nullDevice
+        try init_.run()
+        let data = try output.fileHandleForReading.readToEnd() ?? Data()
+        init_.waitUntilExit()
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let core = InstalledCore(
+            state: state,
+            workspaceID: try XCTUnwrap((document["workspace"] as? [String: Any])?["workspace_id"] as? String)
+        )
+        addTeardownBlock {
+            _ = try? core.run(cli, "stop")
+            try? FileManager.default.removeItem(at: home)
+        }
+        XCTAssertEqual(try core.run(cli, "start").status, 0)
+        XCTAssertEqual(try core.run(cli, "stop").code, "stop_stopped")
+        XCTAssertEqual(try core.status(cli).code, "status_not_running")
+        return core
     }
 
     private func makeIntent(payload: Data, binding: CaptureDeliveryBinding) throws -> CaptureIntentV3 {

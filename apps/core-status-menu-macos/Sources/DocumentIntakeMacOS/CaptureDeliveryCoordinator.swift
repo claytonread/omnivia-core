@@ -106,7 +106,7 @@ public struct CaptureDeliveryBinding: Equatable, Sendable {
         installationState: URL,
         workspaceRef: String
     ) -> CaptureDeliveryBinding {
-        let selection = installationState.resolvingSymlinksInPath().standardizedFileURL.path
+        let selection = realPath(installationState)
         var material = targetDomain
         material.append(0)
         material.append(contentsOf: selection.utf8)
@@ -119,6 +119,26 @@ public struct CaptureDeliveryBinding: Equatable, Sendable {
             workspaceRef: workspaceRef,
             targetRef: "core-target-\(suffix)"
         )
+    }
+
+    /// `os.path.realpath`: every symlink in the longest existing prefix
+    /// resolved, the rest kept. Foundation's `resolvingSymlinksInPath` drops a
+    /// leading `/private`, so `/tmp/x` and `/var/x` would hash differently from
+    /// the CLI's `/private/tmp/x` and `/private/var/x`.
+    private static func realPath(_ url: URL) -> String {
+        var existing = url.standardizedFileURL
+        var rest: [String] = []
+        while existing.path != "/" {
+            if let resolved = realpath(existing.path, nil) {
+                defer { free(resolved) }
+                return rest.reversed().reduce(URL(fileURLWithPath: String(cString: resolved))) {
+                    $0.appendingPathComponent($1)
+                }.path
+            }
+            rest.append(existing.lastPathComponent)
+            existing = existing.deletingLastPathComponent()
+        }
+        return rest.reversed().reduce(existing) { $0.appendingPathComponent($1) }.path
     }
 
     public func matches(_ intent: CaptureIntentV3) -> Bool {

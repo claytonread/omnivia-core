@@ -680,10 +680,13 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                     title: title,
                     submissionID: entries.first?.intent.submissionId,
                     outcome: .queued(queued: entries.count),
+                    // The companion is open, so the closed-companion sentence
+                    // (the Share extension's) would be false here. Whether Core is
+                    // stopped is Start Core's to say, not this receipt's.
                     detail: [
                         entries.count == 1
-                            ? ShareInboxStore.queuedWording
-                            : "\(entries.count) items queued on this Mac. Open OmniVia Core to send.",
+                            ? "Queued on this Mac."
+                            : "\(entries.count) items queued on this Mac.",
                         unrecorded,
                     ].compactMap { $0 }.joined(separator: " ")
                 ))

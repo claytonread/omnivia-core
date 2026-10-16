@@ -147,7 +147,7 @@ final class CaptureSurfaceAcceptanceTests: NativeHandoffTestCase {
 
         let receipt = try XCTUnwrap(panel.receipts.last)
         XCTAssertEqual(receipt.outcome, .queued(queued: 1))
-        XCTAssertEqual(receipt.detail, ShareInboxStore.queuedWording)
+        XCTAssertEqual(receipt.detail, "Queued on this Mac.")
         XCTAssertFalse(
             receipt.summary.lowercased().contains("added"),
             "a queued item is never reported as added"

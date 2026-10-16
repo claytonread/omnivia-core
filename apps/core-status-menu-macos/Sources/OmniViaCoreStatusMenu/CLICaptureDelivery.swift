@@ -23,7 +23,13 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
     }
 
     func deliver(input: Data, payloadURL: URL, operationKey: String) async -> CaptureDeliveryOutcome {
-        await Task.detached(priority: .utility) {
+        // `document capture` connects through `connect_managed_local`, which
+        // starts a stopped service. Start Core stays authoritative, so the
+        // service must already be running before this command is launched.
+        if let refusal = Self.gate(await lifecycle(), binding: deliveryBinding) {
+            return refusal
+        }
+        return await Task.detached(priority: .utility) {
             let process = Process()
             process.executableURL = executable
             process.arguments = [
@@ -66,6 +72,43 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
                 return .unknown
             }
         }.value
+    }
+
+    /// The CLI's own redacted `service status --json`, which attaches and never
+    /// starts. The companion decides nothing from the host's files or processes.
+    private func lifecycle() async -> Result<LifecycleDocument, LifecycleRunnerError> {
+        let runner = CLICommandRunner(
+            executable: executable,
+            installationState: installationState,
+            workspaceID: deliveryBinding.workspaceRef,
+            callbackQueue: .global(qos: .utility)
+        )
+        return await withCheckedContinuation { continuation in
+            runner.run(.status) { continuation.resume(returning: $0) }
+        }
+    }
+
+    /// `nil` lets the send proceed, and only a running service that is this
+    /// frozen target does. A stopped, unreachable or unreadable one is not sent
+    /// to, so the intent stays queued; an incompatible one holds it. A running
+    /// service that is some other target is not a fallback.
+    static func gate(
+        _ result: Result<LifecycleDocument, LifecycleRunnerError>,
+        binding: CaptureDeliveryBinding
+    ) -> CaptureDeliveryOutcome? {
+        guard case let .success(document) = result else { return .notSent }
+        switch document.code {
+        case .statusRunning:
+            guard let target = document.safeStatus?.target,
+                  target.targetRef == binding.targetRef,
+                  target.workspaceRef == binding.workspaceRef
+            else { return .notSent }
+            return nil
+        case .statusIncompatible:
+            return .held(.updateRequired)
+        default:
+            return .notSent
+        }
     }
 
     /// Interpret only facts Core actually returned. Error codes classify the

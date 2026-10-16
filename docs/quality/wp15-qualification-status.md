@@ -14,7 +14,7 @@ This document is generated from
 `qualification/wp15/qualification-ledger.v1.json` and is verified against it
 by `scripts/check-wp15-qualification.py`. It records what this checkout can
 show and what it cannot. **It is not a claim that the release is qualified.**
-44 of 130 gates have direct production-path coverage
+45 of 130 gates have direct production-path coverage
 of every condition they name; the rest carry the exact condition still
 missing.
 
@@ -22,22 +22,22 @@ missing.
 
 | Status | Gates | Meaning |
 |---|---|---|
-| passed | 44 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
+| passed | 45 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
 | failed | 0 | Evidence exists and shows the required result is not met. |
 | blocked_external | 46 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
-| not_executed | 40 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
+| not_executed | 39 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
 | not_implemented | 0 | The production path the gate names does not exist in this checkout. |
 
 ## Counts by family and status
 
 | Family | Section | Gates | passed | failed | blocked_external | not_executed | not_implemented |
 |---|---|---|---|---|---|---|---|
-| AT | 20 | 50 | 12 | 0 | 19 | 19 | 0 |
+| AT | 20 | 50 | 13 | 0 | 19 | 18 | 0 |
 | NAT | 20.1 | 17 | 0 | 0 | 17 | 0 | 0 |
 | DOC | 20.2 | 19 | 10 | 0 | 0 | 9 | 0 |
 | MON | 20.3 | 38 | 20 | 0 | 10 | 8 | 0 |
 | END | 20.4 | 6 | 2 | 0 | 0 | 4 | 0 |
-| **total** | | **130** | 44 | 0 | 46 | 40 | 0 |
+| **total** | | **130** | 45 | 0 | 46 | 39 | 0 |
 
 ## Counts by required evidence class
 
@@ -67,6 +67,7 @@ each one's scope limits.
 | AT-08 | An unsupported, oversized or mixed selection. |
 | AT-09 | An exact UTF-8, BOM and line-ending fixture. |
 | AT-10 | A pasted path, an embedded URL and instruction text. |
+| AT-11 | A known eligible local target while offline. |
 | AT-18 | A crash after the Core commit but before the local receipt. |
 | AT-20 | A native queue capacity race across the Share and manual routes. |
 | AT-21 | A symlink, a tampered manifest or a tampered payload. |

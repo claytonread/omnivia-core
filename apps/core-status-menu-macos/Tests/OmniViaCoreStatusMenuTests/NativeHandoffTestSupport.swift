@@ -84,6 +84,7 @@ class NativeHandoffTestCase: XCTestCase {
         bookmarkFailures: Int = 0,
         withPanel: Bool = false,
         withFolders: Bool = false,
+        binding: CaptureDeliveryBinding? = nil,
         chooser: ChooserBox = ChooserBox()
     ) throws -> Companion {
         let intake = root.appendingPathComponent("native-intake", isDirectory: true)
@@ -96,14 +97,15 @@ class NativeHandoffTestCase: XCTestCase {
             root: intake.appendingPathComponent("authenticated-native-handoff", isDirectory: true)
         )
         let candidates = try NativeIntakeCandidateStore(root: candidatesRoot(root))
+        let binding = binding ?? .companion(workspaceRef: "workspace-1")
         let submitter = ManualCaptureSubmission(
             environment: environment,
-            workspaceRef: "workspace-1",
+            binding: binding,
             snapshotStore: snapshots,
             candidates: candidates
         )
         let folders = withFolders
-            ? FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+            ? FolderCaptureSubmission(environment: environment, binding: binding)
             : nil
         let panel = withPanel
             ? CapturePanelController(

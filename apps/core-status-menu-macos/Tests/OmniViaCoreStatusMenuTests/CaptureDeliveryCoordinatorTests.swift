@@ -289,6 +289,8 @@ final class CaptureDeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(binding.callerContextBinding.principalRef, "local-user")
     }
 
+    /// `/tmp` is a symlink to `/private/tmp`; the digest is the CLI's own
+    /// (`os.path.realpath`), computed by `resolve_local_target`.
     func testInstalledCompanionBindingMatchesCLITargetDerivation() {
         let binding = CaptureDeliveryBinding.installedCompanion(
             installationState: URL(fileURLWithPath: "/tmp/omnivia-install/state.json"),
@@ -296,7 +298,7 @@ final class CaptureDeliveryCoordinatorTests: XCTestCase {
         )
         XCTAssertEqual(
             binding.targetRef,
-            "core-target-5074f7e04a0ec622a411c1a5d00cbc57"
+            "core-target-7f88d1499b4deb288db3ebc433ab7f68"
         )
     }
 
