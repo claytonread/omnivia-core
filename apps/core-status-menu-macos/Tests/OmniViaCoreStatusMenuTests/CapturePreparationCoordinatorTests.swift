@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import DocumentIntakeMacOS
@@ -10,7 +11,6 @@ private final class PreparationBookmarkCodec: SecurityScopedBookmarkCoding, @unc
     func startAccessing(_ url: URL) -> Bool { true }
     func stopAccessing(_ url: URL) {}
 }
-
 private final class TestOriginalReader: CoordinatedOriginalReading, @unchecked Sendable {
     private let onRead: @Sendable (URL) throws -> Data
 
@@ -1125,4 +1125,279 @@ final class CapturePreparationCoordinatorTests: XCTestCase {
             XCTAssertEqual(finished.wait(timeout: .now() + 5), .success, owner.name)
         }
     }
+
+    // MARK: - AT-24 · bytes and their metadata are one version
+
+    /// The pairing itself, at the boundary that enforces it. Preparation freezes
+    /// a length and a digest from the buffer it is about to write, and the queue
+    /// reproves that pair against the bytes before any of them is published, so
+    /// one version's metadata over another version's payload cannot commit —
+    /// which is the only way a file changing mid-read could reach Core as a
+    /// coherent-looking capture.
+    func testMetadataFromOneVersionOverAnotherVersionsBytesCannotCommit() throws {
+        let root = try temporaryRoot()
+        let queue = try makeQueue(root)
+        let before = Data("the version the metadata describes".utf8)
+        let after = Data("the version the bytes came from".utf8)
+        XCTAssertNotEqual(before.count, after.count)
+        let frozen = try CaptureIntentV3(
+            submissionId: "submission-1",
+            itemId: "item-1",
+            targetRef: "target-1",
+            workspaceRef: "workspace-1",
+            targetBindingRevision: "target-binding-1",
+            callerContextBinding: callerBinding,
+            surface: .manual,
+            contentKind: .pdf,
+            payloadRef: "payload-item-1",
+            byteLength: UInt64(before.count),
+            localIntegrityDigest: Self.sha256(before),
+            requestedSourceIdentity: "source-item-1",
+            operationKey: "operation-item-1",
+            intentKind: .refresh,
+            basePrecondition: .expected(nil),
+            processingProfile: ProcessingProfileBinding(
+                profileRef: "profile-1",
+                revision: "profile-revision-1"
+            ),
+            createdAt: "2026-10-14T00:00:00Z",
+            displayName: "item-1.pdf"
+        )
+
+        do {
+            _ = try queue.prepareCandidate([(intent: frozen, payload: after)])
+            XCTFail("expected the mismatched pair to be refused")
+        } catch {
+            XCTAssertEqual(error as? CaptureQueueError, .payloadMismatch)
+        }
+
+        XCTAssertTrue(queue.allEntries().isEmpty)
+        XCTAssertTrue(payloadFiles(root).isEmpty)
+        // The matching pair is what does commit, so the refusal above is the
+        // mismatch and nothing else.
+        let candidate = try queue.prepareCandidate([(intent: frozen, payload: before)])
+        XCTAssertEqual(try queue.publish(candidate).map { $0.intent.itemId }, ["item-1"])
+        XCTAssertEqual(try Data(contentsOf: queue.payloadURL(for: "item-1")), before)
+    }
+
+    /// An original the reader finds changed on every attempt — the refusal
+    /// `SystemCoordinatedOriginalReader` raises when its stat before the read
+    /// and its stat after it disagree. It is a bounded failure after the
+    /// retries, and the whole batch goes with it: the sibling the read never
+    /// found a problem with publishes nothing either.
+    func testAnOriginalChangingOnEveryAttemptRefusesTheWholeBatch() async throws {
+        let root = try temporaryRoot()
+        let accessStore = try makeAccessStore(root)
+        let queue = try makeQueue(root)
+        var items: [CapturePreparationItem] = []
+        for index in 1...2 {
+            let item = "item-\(index)"
+            try adoptFile(accessStore, root: root, item: item, access: "access-\(index)")
+            items.append(
+                CapturePreparationItem(
+                    access: NativeAccessExpectation(accessRef: "access-\(index)", generation: 1),
+                    seed: seed(item: item, access: "access-\(index)")
+                )
+            )
+        }
+        let attempts = AttemptCounter()
+        let reader = TestOriginalReader { url in
+            guard url.lastPathComponent == "item-2.pdf" else { return try Data(contentsOf: url) }
+            attempts.record()
+            throw CapturePreparationError.fileChanged
+        }
+        let coordinator = CapturePreparationCoordinator(
+            accessStore: accessStore,
+            queue: queue,
+            reader: reader
+        )
+
+        do {
+            _ = try await coordinator.prepareAndPublish(items, binding: publicationBinding)
+            XCTFail("expected the changing original to be refused")
+        } catch {
+            XCTAssertEqual(error as? CapturePreparationError, .fileChanged)
+        }
+
+        XCTAssertEqual(attempts.count, 3, "the reader's retries are the bound")
+        XCTAssertTrue(queue.allEntries().isEmpty)
+        XCTAssertTrue(payloadFiles(root).isEmpty)
+        XCTAssertEqual(queueNames(root, in: "published"), [])
+        XCTAssertEqual(queueNames(root, in: "candidates"), [])
+    }
+
+    /// A file that settles publishes the attempt that settled it. The metadata
+    /// comes from that attempt's bytes, not from the ones the earlier attempts
+    /// were refused for.
+    func testAReadThatSettlesOnARetryPublishesExactlyTheBytesItSettledOn() async throws {
+        let root = try temporaryRoot()
+        let accessStore = try makeAccessStore(root)
+        let queue = try makeQueue(root)
+        let file = try adoptFile(accessStore, root: root, item: "item-1", access: "access-1")
+        let attempts = AttemptCounter()
+        let reader = TestOriginalReader { url in
+            // Two attempts find the file in motion; the third reads what it
+            // settled on, through the production reader.
+            if attempts.record() < 3 {
+                try Data("mid-write-\(attempts.count)".utf8).write(to: url)
+                throw CapturePreparationError.fileChanged
+            }
+            try Data("settled".utf8).write(to: url)
+            return try SystemCoordinatedOriginalReader()
+                .readStableBytes(from: url, maximumBytes: CaptureIntentV3.maximumPayloadBytes)
+        }
+        let coordinator = CapturePreparationCoordinator(
+            accessStore: accessStore,
+            queue: queue,
+            reader: reader
+        )
+
+        let published = try await coordinator.prepareAndPublish(
+            [
+                CapturePreparationItem(
+                    access: NativeAccessExpectation(accessRef: "access-1", generation: 1),
+                    seed: seed(item: "item-1", access: "access-1")
+                ),
+            ],
+            binding: publicationBinding
+        )
+
+        let entry = try XCTUnwrap(published.first)
+        let payload = try Data(contentsOf: queue.payloadURL(for: "item-1"))
+        XCTAssertEqual(payload, Data("settled".utf8))
+        XCTAssertEqual(payload, try Data(contentsOf: file))
+        XCTAssertEqual(entry.intent.byteLength, UInt64(payload.count))
+        XCTAssertEqual(entry.intent.localIntegrityDigest, Self.sha256(payload))
+    }
+
+    // MARK: - AT-28 · a Disconnect that wins takes the whole batch
+
+    /// A real Disconnect of one grant, landing after every original was read and
+    /// before the batch commits. The revocation wins, and it prevents the whole
+    /// stale batch — including the item whose own grant nobody touched.
+    func testADisconnectRacingTheFinalPublicationPreventsTheEntireBatch() async throws {
+        let root = try temporaryRoot()
+        let gate = PublicationGate()
+        let accessStore = try NativeAccessStore(
+            stateDirectory: root.appendingPathComponent("access"),
+            codec: PreparationBookmarkCodec(),
+            gate: gate
+        )
+        let queue = try CaptureIntentQueue(root: root.appendingPathComponent("queue"), gate: gate)
+        var items: [CapturePreparationItem] = []
+        for index in 1...2 {
+            let item = "item-\(index)"
+            try adoptFile(accessStore, root: root, item: item, access: "access-\(index)")
+            items.append(
+                CapturePreparationItem(
+                    access: NativeAccessExpectation(accessRef: "access-\(index)", generation: 1),
+                    seed: seed(item: item, access: "access-\(index)")
+                )
+            )
+        }
+        // The person disconnects the first original while the last one is still
+        // being read: both are already prepared, neither has published.
+        let reader = TestOriginalReader { url in
+            let data = try Data(contentsOf: url)
+            if url.lastPathComponent == "item-2.pdf" {
+                _ = try accessStore.disconnect(accessRef: "access-1")
+            }
+            return data
+        }
+        let coordinator = CapturePreparationCoordinator(
+            accessStore: accessStore,
+            queue: queue,
+            reader: reader,
+            gate: gate
+        )
+
+        do {
+            _ = try await coordinator.prepareAndPublish(items, binding: publicationBinding)
+            XCTFail("expected the revocation to prevent the batch")
+        } catch {
+            XCTAssertEqual(error as? NativeAccessError, .disconnected)
+        }
+
+        XCTAssertTrue(queue.allEntries().isEmpty)
+        XCTAssertTrue(payloadFiles(root).isEmpty)
+        XCTAssertEqual(queueNames(root, in: "published"), [])
+        XCTAssertEqual(queueNames(root, in: "candidates"), [])
+        // The untouched grant is still the person's, and the revoked one stays
+        // revoked: a refused batch undoes neither.
+        XCTAssertEqual(
+            accessStore.descriptors().map { "\($0.accessRef)=\($0.state)" },
+            ["access-1=disconnected", "access-2=connected"]
+        )
+    }
+
+    /// The other side of the same race. A Disconnect raised once the batch is
+    /// inside the publication critical section blocks on the shared gate, so it
+    /// lands after the commit rather than half way through it.
+    func testADisconnectRaisedInsideTheCriticalSectionCannotSplitTheBatch() async throws {
+        let root = try temporaryRoot()
+        let gate = PublicationGate()
+        let accessStore = try NativeAccessStore(
+            stateDirectory: root.appendingPathComponent("access"),
+            codec: PreparationBookmarkCodec(),
+            gate: gate
+        )
+        let queue = try CaptureIntentQueue(root: root.appendingPathComponent("queue"), gate: gate)
+        var items: [CapturePreparationItem] = []
+        for index in 1...2 {
+            let item = "item-\(index)"
+            try adoptFile(accessStore, root: root, item: item, access: "access-\(index)")
+            items.append(
+                CapturePreparationItem(
+                    access: NativeAccessExpectation(accessRef: "access-\(index)", generation: 1),
+                    seed: seed(item: item, access: "access-\(index)")
+                )
+            )
+        }
+        let coordinator = CapturePreparationCoordinator(
+            accessStore: accessStore,
+            queue: queue,
+            reader: TestOriginalReader { try Data(contentsOf: $0) },
+            gate: gate
+        )
+        let started = DispatchSemaphore(value: 0)
+        let revoked = DispatchSemaphore(value: 0)
+        coordinator.afterConsentValidation = {
+            Thread.detachNewThread {
+                started.signal()
+                _ = try? accessStore.disconnect(accessRef: "access-1")
+                revoked.signal()
+            }
+            started.wait()
+            XCTAssertEqual(
+                revoked.wait(timeout: .now() + 0.5),
+                .timedOut,
+                "the Disconnect must block on the publication gate"
+            )
+        }
+
+        let published = try await coordinator.prepareAndPublish(items, binding: publicationBinding)
+
+        XCTAssertEqual(published.map { $0.intent.itemId }, ["item-1", "item-2"])
+        XCTAssertEqual(revoked.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(queue.allEntries().count, 2)
+        XCTAssertEqual(
+            accessStore.descriptors().map { "\($0.accessRef)=\($0.state)" },
+            ["access-1=disconnected", "access-2=connected"]
+        )
+    }
+
+    private static func sha256(_ payload: Data) -> String {
+        "sha256:" + SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// Counts the reader's attempts across the detached preparation task.
+private final class AttemptCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var attempts = 0
+
+    var count: Int { lock.withLock { attempts } }
+
+    @discardableResult
+    func record() -> Int { lock.withLock { attempts += 1; return attempts } }
 }
