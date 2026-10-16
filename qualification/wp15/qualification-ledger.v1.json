@@ -429,6 +429,21 @@
           "covers": "A real installed, initialised Core started and then stopped with the CLI's own service commands. An explicit Add through the production panel and queue reads Queued on this Mac. A delivery pass through the real CLI sends nothing, leaves the service stopped (service status afterwards is status_not_running), keeps the item pending with the frozen intent and exact bytes, survives a companion restart and a second pass, and shows Queued on this Mac. After Start Core the same frozen item is admitted. Disabling the gate makes the CLI start Core and admit it, and the test fails."
         },
         {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testACoreStoppedAfterTheStatusReadIsNotRestartedByTheCapture",
+          "covers": "The status gate passes against a real running Core, then a wrapper stops that Core as the production capture command is launched. The capture, run with --require-running, is refused as not sent: the item stays pending with one known-no-effect attempt and service status afterwards is status_not_running. Removing --require-running makes the capture start Core and the test fails."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CLICaptureDeliveryTests.swift",
+          "symbol": "testTheCaptureCommandAttachesOnlyAndNeverStartsCore",
+          "covers": "The production capture invocation carries --require-running ahead of the command and is otherwise unchanged."
+        },
+        {
+          "path": "packages/omnivia-core-cli/tests/test_v06_6_main_execution.py",
+          "symbol": "test_require_running_never_starts_a_stopped_service",
+          "covers": "With --require-running an absent descriptor or a dead endpoint exits 1 with the fixed not-running sentence, writes nothing to stdout and never reaches connect_managed_local, which the test makes raise if called."
+        },
+        {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CLICaptureDeliveryTests.swift",
           "symbol": "testOnlyARunningServiceForTheFrozenTargetIsSentTo",
           "covers": "The pre-send gate reads the CLI's redacted service status document and sends only to a running service whose target and workspace are the frozen ones; another target, another workspace or a missing safe status is not sent to."
@@ -451,7 +466,7 @@
       ],
       "status": "passed",
       "missing_condition": null,
-      "limitations": "Executed and passing against a real installation on 2026-10-16. Offline is a deliberately stopped local service, which is the only offline a local unix-socket Core has; the test does not also disable the host's network. The pre-send gate reads the CLI's service status and then the CLI sends, so a service stopped in the gap between the two would still be started by the capture command; closing that needs an attach-only mode in the CLI, which was not added. The panel reports Queued on this Mac. because the companion is open; the closed-companion sentence is the Share extension's, whose display is pinned by matching its source text because Extensions/Share is outside the Swift test target. The new test skips, naming OMNIVIA_CORE_TEST_PYTHON or the missing omnivia-core-service, when the toolchain is absent. One text item and one workspace. Eligibility is the frozen target and workspace identity matching a running or stopped installation; no wider eligibility policy exists to model.",
+      "limitations": "Executed and passing against a real installation on 2026-10-16. Offline is a deliberately stopped local service, the only offline a local unix-socket Core has; the host network is not disabled. The status gate classifies target and compatibility; the send runs the CLI with --require-running, which attaches through ServiceClient.connect and never reaches the managed launcher, so a Core stopped between the gate and the capture is refused as not sent and left stopped (the race test stops the real Core as the capture is launched; removing the flag fails it). The closed-companion sentence is the Share extension's, pinned by source text because Extensions/Share is outside the Swift test target. The real-installation tests skip, naming OMNIVIA_CORE_TEST_PYTHON or the missing omnivia-core-service, when the toolchain is absent. One text item and one workspace; eligibility is frozen target and workspace identity only.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ManualCaptureSubmission.swift",
@@ -459,6 +474,7 @@
         "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/CapturePanelController.swift",
         "apps/core-status-menu-macos/Extensions/Share/ShareViewController.swift",
         "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/CLICaptureDelivery.swift",
+        "packages/omnivia-core-cli/src/omnivia_core_cli/main.py",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureDeliveryCoordinator.swift"
       ]
     },

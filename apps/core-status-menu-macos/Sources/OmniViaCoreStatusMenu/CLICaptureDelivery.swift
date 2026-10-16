@@ -23,25 +23,17 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
     }
 
     func deliver(input: Data, payloadURL: URL, operationKey: String) async -> CaptureDeliveryOutcome {
-        // `document capture` connects through `connect_managed_local`, which
-        // starts a stopped service. Start Core stays authoritative, so the
-        // service must already be running before this command is launched.
+        // The status read classifies the target and compatibility. It cannot
+        // keep Core running, so the capture itself is launched with
+        // `--require-running`: it attaches and can never start a service that
+        // was stopped after the read. Start Core stays authoritative.
         if let refusal = Self.gate(await lifecycle(), binding: deliveryBinding) {
             return refusal
         }
         return await Task.detached(priority: .utility) {
             let process = Process()
             process.executableURL = executable
-            process.arguments = [
-                "--installation-state", installationState.path,
-                "--workspace-id", deliveryBinding.workspaceRef,
-                "--timeout-ms", "20000",
-                "document", "capture",
-                "--input-stdin",
-                "--payload-file", payloadURL.path,
-                "--idempotency-key", operationKey,
-                "--json",
-            ]
+            process.arguments = captureArguments(payloadURL: payloadURL, operationKey: operationKey)
             let inputPipe = Pipe()
             let outputPipe = Pipe()
             let errorPipe = Pipe()
@@ -72,6 +64,22 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
                 return .unknown
             }
         }.value
+    }
+
+    /// `--require-running` makes the CLI attach only. Without it the capture
+    /// connects through `connect_managed_local`, which starts a stopped service.
+    func captureArguments(payloadURL: URL, operationKey: String) -> [String] {
+        [
+            "--require-running",
+            "--installation-state", installationState.path,
+            "--workspace-id", deliveryBinding.workspaceRef,
+            "--timeout-ms", "20000",
+            "document", "capture",
+            "--input-stdin",
+            "--payload-file", payloadURL.path,
+            "--idempotency-key", operationKey,
+            "--json",
+        ]
     }
 
     /// The CLI's own redacted `service status --json`, which attaches and never
@@ -156,6 +164,7 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
     /// stderr only, so the exit status and the sentence are read together: the
     /// exit status alone is shared with failures that can follow a send.
     static let managedStartFailed = "the managed service could not be started"
+    static let notRunning = "the service is not running and was not started"
     static let credentialRefused = "the service did not accept this client's credential"
     static let versionDisagreed = "this client and the service could not agree on a version"
     static let refusedBeforeSend = "the call was refused here and never sent"
@@ -172,7 +181,7 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
         guard output.isEmpty, diagnostic.count <= 256 else { return .unknown }
         switch (status, String(decoding: diagnostic, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)) {
-        case (1, managedStartFailed): return .notSent
+        case (1, managedStartFailed), (1, notRunning): return .notSent
         case (3, credentialRefused): return .held(.needsAccess)
         case (4, versionDisagreed): return .held(.updateRequired)
         case (2, refusedBeforeSend): return .definiteFailure(code: "refused_before_send")

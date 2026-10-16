@@ -46,6 +46,8 @@ from omnivia_core_client import (
     CredentialError,
     Deadline,
     DeadlineExceededError,
+    EndpointUnavailableError,
+    ManagedStartError,
     OperationCancelledError,
     ServiceClient,
 )
@@ -97,6 +99,7 @@ OUT_OF_TIME = "the call ran out of time, or was cancelled"
 NOT_AUTHENTICATED = "the service did not accept this client's credential"
 INCOMPATIBLE = "this client and the service could not agree on a version"
 NO_ANSWER = "the call did not complete"
+NOT_RUNNING = "the service is not running and was not started"
 
 #: The message a service puts on an error answer. Printed, deliberately: the
 #: peer's own `code` and `message` are the answer rather than a diagnostic about
@@ -295,6 +298,73 @@ def test_a_workspace_that_cannot_be_started_says_so_and_exits_one(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert only_document(captured.err) == MANAGED_START_FAILED
+
+
+def _forbid_managed_start(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Make the starting path fail the test, and record that it was reached."""
+    reached: list[str] = []
+
+    def managed(*_args: Any, **_kwargs: Any) -> Any:
+        reached.append("connect_managed_local")
+        raise AssertionError("--require-running reached the managed launcher")
+
+    monkeypatch.setattr("omnivia_core_cli.main.connect_managed_local", managed)
+    return reached
+
+
+@pytest.mark.parametrize(
+    "unavailable",
+    [lambda config, **_kwargs: None, "raise"],
+    ids=["no-descriptor", "dead-endpoint"],
+)
+def test_require_running_never_starts_a_stopped_service(
+    unavailable: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A stopped or absent service is refused as not sent, never started."""
+    reached = _forbid_managed_start(monkeypatch)
+
+    def connect(config: Any, **_kwargs: Any) -> Any:
+        if unavailable == "raise":
+            raise EndpointUnavailableError(SECRET)
+        return None
+
+    monkeypatch.setattr(ServiceClient, "connect", connect)
+    assert main(["--require-running", *BASE, *APPLICATION]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert only_document(captured.err) == NOT_RUNNING
+    assert reached == []
+
+
+def test_require_running_attaches_to_a_running_service_without_the_launcher(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    reached = _forbid_managed_start(monkeypatch)
+    transport = RecordingTransport()
+    monkeypatch.setattr(ServiceClient, "connect", lambda config, **_k: client(transport))
+    assert main(["--require-running", *BASE, *APPLICATION]) == 0
+    assert len(transport.calls) == 1
+    assert reached == []
+
+
+def test_without_require_running_a_stopped_service_still_reaches_the_launcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reached: list[str] = []
+
+    def managed(*_args: Any, **_kwargs: Any) -> Any:
+        reached.append("connect_managed_local")
+        raise ManagedStartError("x")
+
+    monkeypatch.setattr("omnivia_core_cli.main.connect_managed_local", managed)
+    assert main([*BASE, *APPLICATION]) == 1
+    assert reached == ["connect_managed_local"]
+
+
+def test_require_running_is_refused_for_commands_that_may_start_a_service() -> None:
+    assert main(["--require-running", *BASE, "service", "start"]) == 2
 
 
 # --------------------------------------------------------------------------

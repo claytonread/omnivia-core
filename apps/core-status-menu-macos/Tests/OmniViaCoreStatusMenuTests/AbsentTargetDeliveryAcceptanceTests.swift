@@ -129,6 +129,49 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
         XCTAssertEqual(try XCTUnwrap(queue.allEntries().first).intent, frozen)
     }
 
+    /// The status gate is a read, so Core can still stop after it. The wrapper
+    /// below stops the real running Core at the moment the production capture
+    /// command is launched — after the gate passed, before the capture connects.
+    /// The capture must attach-only: nothing is sent and Core is left stopped.
+    func testACoreStoppedAfterTheStatusReadIsNotRestartedByTheCapture() async throws {
+        let root = try temporaryDirectory()
+        let cli = try realCLI(root)
+        let core = try installStoppedCore(cli)
+        XCTAssertEqual(try core.run(cli, "start").code, "start_started")
+        let racing = root.appendingPathComponent("omnivia-racing")
+        try """
+        #!/bin/sh
+        case " $* " in
+          *" capture "*)
+            '\(cli.path)' --installation-state '\(core.state.path)' --workspace-id '\(core.workspaceID)' \
+              service stop --json >/dev/null ;;
+        esac
+        exec '\(cli.path)' "$@"
+        """.write(to: racing, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: racing.path)
+        let binding = CaptureDeliveryBinding.installedCompanion(
+            installationState: core.state,
+            workspaceRef: core.workspaceID
+        )
+        let queue = try CaptureIntentQueue(root: root.appendingPathComponent("queue"))
+        let payload = Data("hello".utf8)
+        let intent = try makeIntent(payload: payload, binding: binding)
+        try queue.enqueue(intent: intent, payload: payload)
+
+        let outcomes = await CaptureDeliveryCoordinator(
+            queue: queue,
+            transport: CLICaptureDelivery(
+                executable: racing,
+                installationState: core.state,
+                deliveryBinding: binding
+            )
+        ).deliverPending()
+
+        XCTAssertEqual(outcomes.map(\.state), [.pending])
+        XCTAssertEqual(queue.allEntries().first?.attempts.map(\.disposition), [.knownNoEffect])
+        XCTAssertEqual(try core.status(cli).code, "status_not_running")
+    }
+
     /// The Share extension is outside the Swift test target, so what it shows
     /// is pinned at the source: both of its queued states display the shared
     /// constant, and neither says added.
@@ -258,6 +301,8 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
             )
         }
         XCTAssertEqual(outcome(1, CLICaptureDelivery.managedStartFailed), .notSent)
+        XCTAssertEqual(outcome(1, CLICaptureDelivery.notRunning), .notSent)
+        XCTAssertEqual(outcome(0, CLICaptureDelivery.notRunning), .unknown)
         XCTAssertEqual(
             outcome(3, CLICaptureDelivery.credentialRefused),
             .held(.needsAccess)
@@ -326,6 +371,7 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
         )
         for sentence in [
             CLICaptureDelivery.managedStartFailed,
+            CLICaptureDelivery.notRunning,
             CLICaptureDelivery.credentialRefused,
             CLICaptureDelivery.versionDisagreed,
             CLICaptureDelivery.refusedBeforeSend,

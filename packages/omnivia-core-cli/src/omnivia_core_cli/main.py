@@ -99,6 +99,7 @@ from omnivia_core_cli.surface import (
     ApplicationCommand,
     LifecycleCommand,
     McpCommand,
+    ProbeCommand,
     exit_code_for,
 )
 
@@ -122,6 +123,7 @@ _COMMAND: Final = "command"
 #: Every local diagnostic this module can print, one fixed sentence each. None
 #: is built from an argument, a document, an exception or a peer's words.
 _MANAGED_START_FAILED: Final = "the managed service could not be started"
+_NOT_RUNNING: Final = "the service is not running and was not started"
 _OUT_OF_TIME: Final = "the call ran out of time, or was cancelled"
 _NOT_AUTHENTICATED: Final = "the service did not accept this client's credential"
 _INCOMPATIBLE: Final = "this client and the service could not agree on a version"
@@ -321,6 +323,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument(
+        "--require-running",
+        action="store_true",
+        help=(
+            "attach to the service only: never start one. A stopped or absent "
+            "service is refused before anything is sent"
+        ),
+    )
+
     groups = parser.add_subparsers(dest="group", required=True)
     built: dict[str, Any] = {}
 
@@ -468,6 +479,10 @@ def main(
             # everything else, and still a usage error -- exit 2, before a socket
             # is opened -- rather than something discovered at the call.
             parser.error("--workspace-id is required for this command")
+        if arguments.require_running and not isinstance(
+            command, (ApplicationCommand, ProbeCommand)
+        ):
+            parser.error("--require-running applies to service calls only")
         if isinstance(command, ApplicationCommand):
             _check_mutation_metadata(parser, command, arguments)
             if arguments.input_stdin:
@@ -493,14 +508,21 @@ def main(
         deadline = Deadline.after_ms(arguments.timeout_ms)
         client = connected_client
         if client is None:
-            managed = connect_managed_local(
-                InstallationServiceConfig(
-                    installation_state=arguments.installation_state,
-                    workspace_id=arguments.workspace_id,
-                ),
-                deadline=deadline,
+            config = InstallationServiceConfig(
+                installation_state=arguments.installation_state,
+                workspace_id=arguments.workspace_id,
             )
-            client = managed.client
+            if arguments.require_running:
+                # Attach only: `connect_managed_local` would start a stopped
+                # service, which a deliberate Start Core stop must not undo.
+                try:
+                    client = ServiceClient.connect(config, deadline=deadline)
+                except EndpointUnavailableError:
+                    client = None
+                if client is None:
+                    return _refuse(_NOT_RUNNING, 1)
+            else:
+                client = connect_managed_local(config, deadline=deadline).client
         if isinstance(command, ApplicationCommand):
             payload = arguments.input_json
             payload_file = getattr(arguments, "payload_file", None)

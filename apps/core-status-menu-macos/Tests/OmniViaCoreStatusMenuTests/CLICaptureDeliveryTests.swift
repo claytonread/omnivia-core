@@ -26,6 +26,30 @@ final class CLICaptureDeliveryTests: XCTestCase {
         XCTAssertEqual(outcome, .definiteFailure(code: "idempotency_conflict"))
     }
 
+    /// The capture itself must be incapable of starting Core: the CLI mode is
+    /// global, so it precedes the command, and the command is otherwise unchanged.
+    func testTheCaptureCommandAttachesOnlyAndNeverStartsCore() {
+        let delivery = CLICaptureDelivery(
+            executable: URL(fileURLWithPath: "/omnivia"),
+            installationState: URL(fileURLWithPath: "/state"),
+            deliveryBinding: binding
+        )
+        XCTAssertEqual(
+            delivery.captureArguments(payloadURL: URL(fileURLWithPath: "/payload"), operationKey: "k-1"),
+            [
+                "--require-running",
+                "--installation-state", "/state",
+                "--workspace-id", "ws-a74255f1-5631-497d",
+                "--timeout-ms", "20000",
+                "document", "capture",
+                "--input-stdin",
+                "--payload-file", "/payload",
+                "--idempotency-key", "k-1",
+                "--json",
+            ]
+        )
+    }
+
     // MARK: - The pre-send lifecycle gate
 
     private let binding = CaptureDeliveryBinding.companion(
