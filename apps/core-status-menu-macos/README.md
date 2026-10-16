@@ -69,7 +69,71 @@ under `Contents/PlugIns`, and `companion-manifest.json` beside the app binds all
 three as one component set: bundle identifiers, marketing and build version,
 minimum macOS, executable digests, each component's single service or extension
 registration, the component-set compatibility identifier and the update-owner
-declaration. There is no second updater, and the manifest names no owner for the
+declaration.
+
+## Packaging the document runtime
+
+Section 11.2 packages the RTF reader and the OCR engine with the distribution.
+Add the trusted engine inputs — all of them or none — and the same build stages
+them into `Contents/Resources/omnivia-runtime` and declares every byte in the
+same manifest:
+
+```bash
+python scripts/build-core-companion-app.py \
+  --executable /absolute/path/to/omnivia-core-status-menu \
+  --finder-extension-executable /absolute/path/to/OmniViaFinderAction \
+  --share-extension-executable /absolute/path/to/OmniViaShare \
+  --pandoc /absolute/path/to/pandoc \
+  --tesseract /absolute/path/to/tesseract \
+  --tessdata-eng /absolute/path/to/eng.traineddata \
+  --tessdata-osd /absolute/path/to/osd.traineddata \
+  --license /absolute/path/to/pandoc-COPYING.md \
+  --license /absolute/path/to/tesseract-LICENSE \
+  --output /absolute/path/to/new-candidate-directory \
+  --version 0.6.5
+```
+
+Every input is an absolute regular file the packager is handed; nothing is
+discovered on `PATH`, in a package-manager prefix or over the network, and a
+symlink is refused because the bytes the manifest digests have to be the bytes
+the loader opens. The build then stages the recursive closure of each engine's
+non-system Mach-O dependencies into `omnivia-runtime/lib`, rewrites every load
+command to `@loader_path`-relative form, deletes every `LC_RPATH` so nothing is
+resolved by search path at all, and re-seals each rewritten file ad hoc —
+without which a relocated Mach-O will not execute on Apple silicon. Apple's own
+libraries and frameworks stay external. Two different builds of one library name
+are a refusal, not a last-write-wins. The digests go into the manifest *after*
+all of that, so what is pinned is what runs.
+
+The layout, the manifest section and the verification of both live in
+`omnivia_core_runtime.distribution.packaged_runtime`, which the packaging script
+and the service share: production resolves the payload from
+`<installation-state>/companion`, re-digests every declared byte, and hands the
+adapters absolute paths. An absent, incomplete or altered payload resolves to
+nothing, and then no engine is invoked and no model hash is claimed.
+
+The ad-hoc seal is not a release signature and is never reported as one: the
+candidate stays `qualification_only`, `signature_status` stays `unsigned`, and
+`release_eligible` stays false. A signing owner re-signs these same files later.
+
+Qualify a real payload on a real host, which is the DOC-13 lane:
+
+```bash
+python scripts/check-doc13-packaged-runtime.py produce \
+  --installation-state /absolute/path/to/installation-state \
+  --output /absolute/path/to/evidence \
+  --version 0.6.5 \
+  --companion-executable … --finder-extension-executable … \
+  --share-extension-executable … \
+  --pandoc … --tesseract … --tessdata-eng … --tessdata-osd … --license …
+```
+
+It assembles the candidate, verifies its bytes, checks that every staged Mach-O
+resolves inside the payload, starts both engines from an environment holding
+nothing but the operating system's own `PATH`, recognises a generated English
+image and reads an RTF through the confined worker, and finally requires a
+tampered packaged byte to be refused. `verify --record FILE` re-reads a produced
+record offline and refuses it unless every gate passed. There is no second updater, and the manifest names no owner for the
 app's update, because no repository authority binds one: it records
 `app_update_owner: externally_unbound`, that the existing update channel does
 not cover this component set, and that the installed-product installer is owned

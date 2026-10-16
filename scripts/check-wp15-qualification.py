@@ -456,10 +456,17 @@ OUT_OF_REACH: Final[tuple[tuple[str, str], ...]] = (
     ),
     (
         "The pinned external binaries",
-        ("RTF extraction needs `pandoc 3.12.1` and OCR needs `tesseract` with "
-        "installed language models. Neither CI workflow nor `scripts/preflight` "
-        "installs either, so the real-engine OCR cases skip on CI and the production "
-        "OCR catalogue serves no model until an installation fills it."),
+        ("RTF extraction needs `pandoc 3.12.1` and OCR needs `tesseract` with the "
+        "bundled English and orientation models. Both are now packaged: "
+        "`scripts/build-core-companion-app.py` stages them, their relocated native "
+        "library closure and their licence notices into the candidate and "
+        "digest-pins every byte in the component-set manifest, and production "
+        "resolves them from the verified installation payload by absolute path. What "
+        "the repository still cannot do is make those bytes: neither engine is "
+        "redistributed here, so neither CI workflow nor `scripts/preflight` can "
+        "assemble a candidate, the real-engine cases skip where the host has no "
+        "engine, and the one real offline run is the committed record behind "
+        "`scripts/check-doc13-packaged-runtime.py`."),
     ),
     (
         "Companion to Core, end to end",

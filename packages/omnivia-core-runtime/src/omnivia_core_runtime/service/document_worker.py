@@ -8,12 +8,22 @@ design is explicit that "parser settings alone are not the process boundary"
 
 **What the child is handed.** A read-only copy of the admitted immutable bytes,
 their media type, the capture id, the frozen extraction settings (including the
-pinned engine/model identity) and one private writable scratch directory. It is
-spawned with an environment built here from nothing -- the executable search
-path included, which is a constant and not the service's own -- so it holds no
-database handle, no credential, no native bookmark, no original path and no
-inherited configuration. The reply is written into that same private directory,
-under the one path the request named.
+pinned engine/model identity and the absolute paths of the packaged engines) and
+one private writable scratch directory. It is spawned with an environment built
+here from nothing -- the executable search path included, which is a constant and
+not the service's own -- so it holds no database handle, no credential, no native
+bookmark, no original path and no inherited configuration. The reply is written
+into that same private directory, under the one path the request named.
+
+**The external engines are packaged, not looked up.** The pinned Pandoc and the
+Tesseract engine are the exact executables the verified installation payload
+declares (:mod:`omnivia_core_runtime.distribution.packaged_runtime`), resolved
+by the parent and handed across as absolute paths, so the child resolves no
+name against its search path. That path accordingly names only the operating
+system's own directories, and the locally administered prefixes a package
+manager owns are readable neither for lookup nor for loading: the payload's own
+root is the one extra directory the seal admits, and the adapters refuse to run
+an engine the installation did not declare.
 
 **What the child leaves behind is not trusted either.** For the length of the
 parse a hostile document had write access to that directory, so the two things
@@ -26,10 +36,11 @@ returned as a success.
 **The boundary fails closed.** The only confinement this build establishes is
 the macOS seatbelt profile of :func:`confine_process`: deny-by-default, the
 network denied outright, and the filesystem narrowed to the interpreter's own
-import roots, the system and package directories the pinned readers load from,
-the verified model directory and the private scratch. It is applied before a
-single source byte is read. A host where it cannot be applied -- a macOS host
-that refuses the profile, or any platform with no adapter at all -- does not
+import roots, the system directories the interpreter and its native wheels load
+from, the verified packaged runtime root, the verified model directory and the
+private scratch. It is applied before a single source byte is read. A host where
+it cannot be applied -- a macOS host that refuses the profile, or any platform
+with no adapter at all -- does not
 extract: the child returns :data:`STATUS_ISOLATION_REFUSED`, the parent raises
 :class:`DocumentWorkerFailed` with :data:`REASON_ISOLATION`, and the caller
 records that refusal. There is no unconfined production route, and nothing ever
@@ -138,6 +149,10 @@ MAX_DETAIL_CHARS: Final = 200
 #: The longest vocabulary word the protocol accepts. The OOXML media types are
 #: the reason it is not 64.
 MAX_NAME_CHARS: Final = 128
+#: The longest trusted absolute path the request may carry. macOS ``PATH_MAX``
+#: is 1024; this is the whole of it, so a path the host could not open anyway
+#: never reaches the confinement profile.
+MAX_PATH_CHARS: Final = 1024
 
 #: Wall-clock budgets from 17.1: 120 seconds of non-OCR extraction per source,
 #: plus 1,800 seconds of OCR per document when the frozen profile may actually
@@ -266,41 +281,48 @@ _RESOURCE_SIGNALS: Final = frozenset(
     if number is not None
 )
 
-#: System and package directories the interpreter, the pinned readers and their
-#: native libraries load from. ``/`` itself is here because resolving any
-#: absolute path reads the root directory, and dyld aborts the child without it.
+#: System directories the interpreter and its native wheels load from. ``/``
+#: itself is here because resolving any absolute path reads the root directory,
+#: and dyld aborts the child without it.
+#:
+#: ``/opt`` used to be here for the two package-manager prefixes the engine
+#: lookup searched. It is gone with that lookup: the packaged engines and their
+#: relocated library closure are admitted by absolute path through
+#: ``runtime_dirs``, and an interpreter installed under such a prefix is in scope
+#: because :func:`_import_roots` names its own trees. Nothing under ``/opt`` or
+#: ``/usr/local`` is readable to a sealed child any more.
 _SYSTEM_READ_SUBPATHS: Final = (
-    "/usr",
+    "/usr/lib",
+    "/usr/share",
+    "/usr/bin",
+    "/usr/sbin",
     "/System",
     "/Library",
     "/bin",
     "/sbin",
-    "/opt",
     "/private/var/db",
 )
-#: The only directories the child may find an external engine in.
+#: The child's whole executable search path: the operating system's own
+#: directories and nothing else.
 #:
 #: It is a constant and not the service's ``PATH``. An inherited search path
-#: lets whoever can set one variable on the service decide which binary the
-#: RTF reader and the OCR engine actually are, and 11.5 is explicit that the
-#: worker receives no arbitrary configuration paths. Nothing here widens the
-#: confinement: ``/usr`` and ``/opt`` are already readable, because the
-#: interpreter's own libraries load from under them.
+#: lets whoever can set one variable on the service decide which binary a parser
+#: actually runs, and 11.5 is explicit that the worker receives no arbitrary
+#: configuration paths.
 #:
-#: **This build packages neither Pandoc nor Tesseract**, so naming these
-#: directories pins no verified binary -- it fixes the search scope, and the
-#: engines' identity rests on the integrity of these directories rather than on
-#: a packaged artefact this repository ships. A host where they hold neither
-#: binary reads no RTF and runs no recognition, and the adapters report that
-#: themselves. The gap is recorded in the DOC-16 ledger entry rather than
-#: papered over here.
+#: **The document engines are not found through it.** The pinned Pandoc and the
+#: Tesseract engine are the absolute executables the verified installation
+#: payload declares, handed to the adapters in the frozen settings
+#: (:mod:`omnivia_core_runtime.distribution.packaged_runtime`), so neither is
+#: ever resolved by name. The locally administered directories that used to be
+#: here -- ``/usr/local/bin`` and ``/opt/homebrew/bin`` -- are gone with the
+#: lookup they existed for: a packaged engine pins its own bytes by digest, and a
+#: Homebrew prefix pins nothing.
 _TRUSTED_PATH_DIRS: Final = (
     "/usr/bin",
     "/bin",
     "/usr/sbin",
     "/sbin",
-    "/usr/local/bin",
-    "/opt/homebrew/bin",
 )
 
 _SYSTEM_READ_LITERALS: Final = (
@@ -352,7 +374,17 @@ _CONFINEMENTS: Final = frozenset({CONFINEMENT_SEATBELT, CONFINEMENT_NONE})
 _OUTCOME_KEYS: Final = frozenset(
     {"state", "outputDigest", "coverage", "limitations", "workerBuild", "segments"}
 )
-_SETTINGS_KEYS: Final = frozenset({"processingMode", "embeddedImageOcr", "ocr"})
+_SETTINGS_KEYS: Final = frozenset(
+    {
+        "processingMode",
+        "embeddedImageOcr",
+        "ocr",
+        # Where this installation keeps the engines it verified. Not part of the
+        # capture's decision and not in its profile; see `ExtractionSettings`.
+        "pandocPath",
+        "runtimeRoot",
+    }
+)
 _OCR_KEYS: Final = frozenset(
     {
         "engine",
@@ -360,6 +392,7 @@ _OCR_KEYS: Final = frozenset(
         "languages",
         "modelHashes",
         "tessdataDir",
+        "tesseractPath",
         "available",
         "reason",
         "unavailableModels",
@@ -1590,6 +1623,8 @@ def _encode_settings(settings: ExtractionSettings | None) -> dict[str, Any] | No
     return {
         "processingMode": settings.processing_mode,
         "embeddedImageOcr": settings.embedded_image_ocr,
+        "pandocPath": settings.pandoc_path,
+        "runtimeRoot": settings.runtime_root,
         "ocr": None
         if ocr is None
         else {
@@ -1598,6 +1633,7 @@ def _encode_settings(settings: ExtractionSettings | None) -> dict[str, Any] | No
             "languages": list(ocr.languages),
             "modelHashes": list(ocr.model_hashes),
             "tessdataDir": ocr.tessdata_dir,
+            "tesseractPath": ocr.tesseract_path,
             "available": ocr.available,
             "reason": ocr.reason,
             "unavailableModels": list(ocr.unavailable_models),
@@ -1621,11 +1657,47 @@ def _decode_settings(encoded: object) -> ExtractionSettings | None:
     embedded = encoded["embeddedImageOcr"]
     if not isinstance(embedded, bool):
         raise _ProtocolError("the embedded-image decision is not a boolean")
+    root = _absolute_path(encoded["runtimeRoot"], "packaged runtime root")
+    ocr = _decode_ocr(encoded["ocr"])
+    reader = _absolute_path(encoded["pandocPath"], "packaged RTF reader")
+    # Every packaged executable and model this extraction may invoke lives under
+    # the one root the child then admits to its confinement. A path that claims
+    # to be packaged and sits outside it would be an engine the seal does not
+    # cover and the manifest never declared, so it is refused rather than
+    # narrowed or ignored.
+    engine = None if ocr is None else ocr.tesseract_path
+    for executable, what in ((reader, "RTF reader"), (engine, "OCR engine")):
+        if executable is not None and (root is None or not _within(root, executable)):
+            raise _ProtocolError(f"the packaged {what} is outside the packaged runtime")
     return ExtractionSettings(
         processing_mode=str(mode),
-        ocr=_decode_ocr(encoded["ocr"]),
+        ocr=ocr,
         embedded_image_ocr=embedded,
+        pandoc_path=reader,
+        runtime_root=root,
     )
+
+
+def _absolute_path(value: object, what: str) -> str | None:
+    """One trusted absolute path from the request, or ``None`` where it is absent.
+
+    Bounded, absolute and free of a traversal segment. The request arrives over
+    the parent's private pipe rather than from a document, but it is still
+    decoded under the same rule as everything else here: a field that is not
+    exactly what this protocol sends did not come from this protocol.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.startswith("/"):
+        raise _ProtocolError(f"the {what} is not an absolute path")
+    if len(value) > MAX_PATH_CHARS or ".." in Path(value).parts:
+        raise _ProtocolError(f"the {what} is not a usable absolute path")
+    return value
+
+
+def _within(root: str, path: str) -> bool:
+    """Whether one absolute path is the root itself or sits beneath it."""
+    return Path(path) == Path(root) or Path(root) in Path(path).parents
 
 
 def _decode_ocr(encoded: object) -> OcrResources | None:
@@ -1642,6 +1714,7 @@ def _decode_ocr(encoded: object) -> OcrResources | None:
         languages=_words(encoded["languages"], "OCR languages"),
         model_hashes=_words(encoded["modelHashes"], "model hashes"),
         tessdata_dir=_text(encoded["tessdataDir"], "model directory"),
+        tesseract_path=_absolute_path(encoded["tesseractPath"], "packaged OCR engine"),
         available=available,
         reason=_text(encoded["reason"], "OCR reason"),
         unavailable_models=_words(encoded["unavailableModels"], "unavailable models"),
@@ -1661,13 +1734,25 @@ def _words(value: object, what: str) -> tuple[str, ...]:
 
 
 def confine_process(
-    *, scratch_root: Path, work_dir: Path, model_dirs: Sequence[Path] = ()
+    *,
+    scratch_root: Path,
+    work_dir: Path,
+    model_dirs: Sequence[Path] = (),
+    runtime_dirs: Sequence[Path] = (),
 ) -> str:
     """Seal this process to its admitted scope and return what was established.
 
     ``scratch_root`` becomes readable, ``work_dir`` writable, and ``model_dirs``
-    readable alongside the packaged code and the system libraries. Nothing else
-    on the filesystem is reachable, and the network is denied outright.
+    and ``runtime_dirs`` readable alongside the packaged code and the system
+    libraries. Nothing else on the filesystem is reachable, and the network is
+    denied outright.
+
+    The two engine scopes are separate because they come from different owners.
+    ``model_dirs`` is wherever the recognition selection was published -- the
+    packaged model directory, or the managed cache's projection for an
+    additional language. ``runtime_dirs`` is the verified packaged runtime root:
+    the engines the adapters invoke and the relocated library closure they load.
+    Each is admitted only when this extraction actually pins one.
 
     Raises :class:`IsolationUnavailable` when no seal was established, which is
     every case other than a seatbelt profile this host accepted: a platform with
@@ -1680,24 +1765,39 @@ def confine_process(
         )
     _apply_seatbelt(
         _seatbelt_profile(
-            scratch_root=scratch_root, work_dir=work_dir, model_dirs=model_dirs
+            scratch_root=scratch_root,
+            work_dir=work_dir,
+            model_dirs=model_dirs,
+            runtime_dirs=runtime_dirs,
         )
     )
     return CONFINEMENT_SEATBELT
 
 
 def _seatbelt_profile(
-    *, scratch_root: Path, work_dir: Path, model_dirs: Sequence[Path]
+    *,
+    scratch_root: Path,
+    work_dir: Path,
+    model_dirs: Sequence[Path],
+    runtime_dirs: Sequence[Path] = (),
 ) -> str:
     """The deny-by-default profile for one extraction.
 
-    Reads are the interpreter's own import roots, the system and package trees
-    the pinned readers and their native libraries load from, the verified model
-    directory and the private scratch. Writes are the scratch work directory
-    alone. ``mach-lookup`` stays open because dyld and the notification daemon
-    need it and no bounded service list for the pinned readers has been
-    qualified; the explicit ``network*`` denial is what closes the path a looked
-    up service could otherwise offer.
+    Reads are the interpreter's own import roots, the system trees the
+    interpreter and its native wheels load from, the verified packaged runtime
+    root, the verified model directory and the private scratch. Writes are the
+    scratch work directory alone. ``mach-lookup`` stays open because dyld and
+    the notification daemon need it and no bounded service list for the pinned
+    readers has been qualified; the explicit ``network*`` denial is what closes
+    the path a looked up service could otherwise offer.
+
+    The locally administered prefixes a package manager owns are deliberately
+    absent from :data:`_SYSTEM_READ_SUBPATHS`. The packaged engines and their
+    relocated library closure are reached through ``runtime_dirs`` by absolute
+    path, so nothing under ``/opt`` or ``/usr/local`` has to be readable for the
+    document engines to run; an interpreter installed under one of those
+    prefixes is still in scope, because :func:`_import_roots` names its own
+    trees explicitly.
 
     There is deliberately no blanket ``file-read-metadata`` grant. The
     unrestricted form let the child stat the whole filesystem -- every home
@@ -1716,7 +1816,7 @@ def _seatbelt_profile(
     """
     # `work_dir` is inside `scratch_root`, so the read scope and the ancestors
     # it needs are both already covered by the scratch.
-    in_scope = (*_import_roots(), *model_dirs, scratch_root)
+    in_scope = (*_import_roots(), *runtime_dirs, *model_dirs, scratch_root)
     readable = [
         *_SYSTEM_READ_SUBPATHS,
         *(_sbpl_path(path) for path in in_scope),
@@ -1953,6 +2053,7 @@ def _run(
             scratch_root=Path(str(header["scratchRoot"])),
             work_dir=Path(str(header["workDir"])),
             model_dirs=_model_dirs(settings),
+            runtime_dirs=_runtime_dirs(settings),
         )
     except IsolationUnavailable as refusal:
         reply["status"] = STATUS_ISOLATION_REFUSED
@@ -2007,6 +2108,20 @@ def _model_dirs(settings: ExtractionSettings | None) -> tuple[Path, ...]:
     if settings is None or settings.ocr is None or not settings.ocr.tessdata_dir:
         return ()
     return (Path(settings.ocr.tessdata_dir),)
+
+
+def _runtime_dirs(settings: ExtractionSettings | None) -> tuple[Path, ...]:
+    """The verified packaged runtime root this extraction may read, if it has one.
+
+    One directory, admitted whole: the engines sit in its ``bin`` and the
+    library closure they were relocated against sits in its ``lib``, so a
+    narrower grant would load one and not the other. An extraction with no
+    packaged runtime admits nothing here and invokes no external engine, which
+    is what the adapters already refuse on their own.
+    """
+    if settings is None or not settings.runtime_root:
+        return ()
+    return (Path(settings.runtime_root),)
 
 
 def _failure_location(error: BaseException) -> str:

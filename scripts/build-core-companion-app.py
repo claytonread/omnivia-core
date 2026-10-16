@@ -6,6 +6,16 @@ both managed extensions as one coherent unit (section 18.1 to 18.4, WP-14).
 `verify_candidate` checks an assembled candidate against that manifest and is
 the fail-closed gate behind `scripts/verify-core-companion-bundle.py`.
 
+Given the trusted engine inputs, the same build also packages the document
+runtime of section 11.2 -- the pinned Pandoc, the Tesseract 5 LSTM engine, its
+relocated native library closure, the bundled English and orientation models and
+their licence notices -- and declares every byte of it in the same manifest. The
+layout, the staging and the verification of that payload belong to
+`omnivia_core_runtime.distribution.packaged_runtime`, which is loaded by location
+below so the packager and the service read one source of truth. Without those
+inputs the candidate is exactly what it was: companion and extensions, declaring
+no packaged resource.
+
 That gate reports two separate verdicts. Coherence is local and answerable here.
 Release eligibility is not: it needs `codesign`, `spctl` and `stapler` to
 succeed over the exact candidate against the expected identity
@@ -21,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import plistlib
@@ -31,10 +42,49 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Final
 
+_PACKAGED_RUNTIME = (
+    Path(__file__).resolve().parent.parent
+    / "packages"
+    / "omnivia-core-runtime"
+    / "src"
+    / "omnivia_core_runtime"
+    / "distribution"
+    / "packaged_runtime.py"
+)
+
+
+def _load_packaged_runtime() -> ModuleType:
+    """Load the packaged-runtime module by location.
+
+    The payload's layout, its manifest section and the verification of both are
+    one module shared with the service, because a second copy of the paths or
+    the digest rules here would drift from the payload actually resolved at
+    runtime. It is loaded by location rather than imported so this script stays
+    runnable before anything is installed; the module is standard-library only
+    and holds no relative import.
+    """
+
+    spec = importlib.util.spec_from_file_location(
+        "omnivia_packaged_runtime", _PACKAGED_RUNTIME
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - unreachable on disk
+        raise SystemExit(f"cannot load {_PACKAGED_RUNTIME}")
+    module = importlib.util.module_from_spec(spec)
+    # Registered before execution: `@dataclass` under `from __future__ import
+    # annotations` resolves string annotations through `sys.modules`, so an
+    # unregistered module cannot define one.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+packaged_runtime: Final = _load_packaged_runtime()
+
 BUNDLE_ID: Final = "com.omnivia.core.status"
-BUNDLE_NAME: Final = "OmniVia Core"
+BUNDLE_NAME: Final = packaged_runtime.BUNDLE_NAME
 EXECUTABLE_NAME: Final = "omnivia-core-status-menu"
 MINIMUM_MACOS: Final = "13.0"
 COMPANION_SERVICE_MESSAGE: Final = "addToOmniViaCore"
@@ -88,8 +138,12 @@ _TEAM_IDENTIFIER = re.compile(r"^[A-Z0-9]{10}$")
 _TEAM_LINE = re.compile(r"^TeamIdentifier=(.+)$", re.MULTILINE)
 _CDHASH_LINE = re.compile(r"^CDHash=[0-9a-f]{40,64}$", re.MULTILINE)
 
-MANIFEST_NAME: Final = "companion-manifest.json"
-MANIFEST_SCHEMA_VERSION: Final = 2
+MANIFEST_NAME: Final = packaged_runtime.MANIFEST_NAME
+# Version 3 binds the packaged document runtime of section 11.2 as a declared
+# resource set. It is a new schema rather than an optional member: a reader that
+# did not know about `resources` would pass a candidate whose engines and models
+# nothing had checked, which is precisely what the set exists to prevent.
+MANIFEST_SCHEMA_VERSION: Final = 3
 # Exactly one schema is read. A newer or unknown schema is preserved unread and
 # refused: nothing in this gate rewrites, downgrades or field-strips a manifest
 # it does not understand (section 18.3).
@@ -137,12 +191,26 @@ MANIFEST_FIELDS: Final = frozenset(
         "minimum_macos",
         "notarization_status",
         "production_release_eligible",
+        "resources",
+        "runtime_payload",
         "schema_version",
         "signature_status",
         "update_owner",
         "version",
     }
 )
+# What was done to the staged Mach-O files, recorded so a reader knows it
+# without inspecting them. `seal` is an ad-hoc seal and not a release signature:
+# rewriting a load command invalidates whatever signature a file arrived with,
+# and on Apple silicon the loader then refuses to run it at all, so sealing is
+# what makes a relocated payload executable. The candidate stays unsigned in the
+# component-set sense -- no designated identity, no notarisation, no release
+# eligibility -- and a signing owner re-signs these same files later.
+RUNTIME_PAYLOAD: Final = {
+    "relocation": packaged_runtime.RELOCATION,
+    "seal": packaged_runtime.PAYLOAD_SEAL,
+    "system_libraries_external": True,
+}
 COMPONENT_FIELDS: Final = frozenset(
     {
         "bundle_id",
@@ -270,6 +338,22 @@ def _write_extension(
     return target
 
 
+@dataclass(frozen=True)
+class RuntimeInputs:
+    """The trusted engine, model and notice inputs one build packages.
+
+    Explicit paths the packager was given, never discovered: there is no search
+    of `PATH`, no Homebrew or MacPorts prefix, and no network acquisition. Each
+    must be an absolute regular file -- a link is refused, because the bytes the
+    manifest digests have to be the bytes the loader opens.
+    """
+
+    pandoc: Path
+    tesseract: Path
+    models: Mapping[str, Path]
+    notices: Mapping[str, Path]
+
+
 def build_companion_app(
     *,
     executable: Path,
@@ -277,6 +361,7 @@ def build_companion_app(
     version: str,
     finder_extension_executable: Path | None = None,
     share_extension_executable: Path | None = None,
+    runtime: RuntimeInputs | None = None,
 ) -> Path:
     _validate_executable(executable, "companion")
     if (finder_extension_executable is None) != (share_extension_executable is None):
@@ -372,6 +457,18 @@ def build_companion_app(
         digests["finder_action_extension"] = _file_digest(finder_target)
         digests["share_extension"] = _file_digest(share_target)
 
+    resources = (
+        ()
+        if runtime is None
+        else packaged_runtime.stage_packaged_runtime(
+            output,
+            pandoc=runtime.pandoc,
+            tesseract=runtime.tesseract,
+            models=runtime.models,
+            notices=runtime.notices,
+        )
+    )
+
     manifest = {
         "bundle_id": BUNDLE_ID,
         "bundle_name": BUNDLE_NAME,
@@ -404,6 +501,12 @@ def build_companion_app(
         # never read out of this file.
         "notarization_status": NOTARIZATION_STATUS,
         "production_release_eligible": False,
+        # Every packaged engine, library, model and notice, with the digest and
+        # size of the bytes as they now stand. `verify_candidate` reads this in
+        # both directions and so does the service, which resolves no engine path
+        # that is not declared and verified here.
+        "resources": [resource.to_manifest() for resource in resources],
+        "runtime_payload": RUNTIME_PAYLOAD,
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "signature_status": SIGNATURE_STATUS,
         "update_owner": UPDATE_OWNER,
@@ -698,6 +801,7 @@ def verify_candidate(
         ("notarization_status", NOTARIZATION_STATUS),
         ("signature_status", SIGNATURE_STATUS),
         ("update_owner", UPDATE_OWNER),
+        ("runtime_payload", RUNTIME_PAYLOAD),
     ):
         if manifest.get(field) != pinned:
             findings.append(f"manifest {field} mismatch")
@@ -718,6 +822,13 @@ def verify_candidate(
             return _refused("candidate exceeds the verifier's entry bound")
         if path.is_symlink():
             findings.append(f"symlink refused: {path.relative_to(candidate).as_posix()}")
+
+    # The packaged document runtime, checked in both directions by the module the
+    # service resolves it with: every declared byte present at its declared path
+    # with its declared digest and size, and every file inside the payload
+    # declared. Tampering, omission, an extra entry, an extra file, a link and a
+    # path escape are each a finding here.
+    findings.extend(packaged_runtime.resource_findings(candidate, manifest.get("resources")))
 
     declared: dict[str, Mapping[str, object]] = {}
     components = manifest.get("components")
@@ -857,6 +968,43 @@ def verify_candidate(
     )
 
 
+def runtime_inputs(arguments: argparse.Namespace) -> RuntimeInputs | None:
+    """The packaged runtime this invocation was given, or none at all.
+
+    All of it or none of it. A build handed some of the engine inputs would
+    produce a payload the verifier refuses anyway, and refusing here says which
+    input was missing instead.
+    """
+    supplied = {
+        "--pandoc": arguments.pandoc,
+        "--tesseract": arguments.tesseract,
+        "--tessdata-eng": arguments.tessdata_eng,
+        "--tessdata-osd": arguments.tessdata_osd,
+    }
+    named = {flag for flag, value in supplied.items() if value is not None}
+    if not named and not arguments.license:
+        return None
+    absent = sorted(set(supplied) - named)
+    if absent:
+        raise PackagingError(f"packaged runtime inputs missing: {', '.join(absent)}")
+    if not arguments.license:
+        raise PackagingError("packaged runtime inputs missing: --license")
+    notices: dict[str, Path] = {}
+    for notice in arguments.license:
+        if notice.name in notices:
+            raise PackagingError(f"licence notice declared twice: {notice.name}")
+        notices[notice.name] = notice
+    return RuntimeInputs(
+        pandoc=arguments.pandoc,
+        tesseract=arguments.tesseract,
+        models={
+            "eng": arguments.tessdata_eng,
+            "osd": arguments.tessdata_osd,
+        },
+        notices=notices,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--executable", required=True, type=Path)
@@ -864,6 +1012,13 @@ def main() -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--finder-extension-executable", required=True, type=Path)
     parser.add_argument("--share-extension-executable", required=True, type=Path)
+    # The packaged document runtime of section 11.2. Every input is an explicit
+    # trusted path; none is discovered, and nothing is downloaded.
+    parser.add_argument("--pandoc", type=Path)
+    parser.add_argument("--tesseract", type=Path)
+    parser.add_argument("--tessdata-eng", type=Path)
+    parser.add_argument("--tessdata-osd", type=Path)
+    parser.add_argument("--license", action="append", default=[], type=Path)
     arguments = parser.parse_args()
     try:
         build_companion_app(
@@ -872,8 +1027,9 @@ def main() -> int:
             version=arguments.version,
             finder_extension_executable=arguments.finder_extension_executable,
             share_extension_executable=arguments.share_extension_executable,
+            runtime=runtime_inputs(arguments),
         )
-    except (OSError, PackagingError):
+    except (OSError, PackagingError, packaged_runtime.PackagedRuntimeRefused):
         return 1
     return 0
 

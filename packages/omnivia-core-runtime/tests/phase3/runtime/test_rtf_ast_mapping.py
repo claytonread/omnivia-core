@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
+from _trusted_ocr import HOST_PANDOC, reader_settings
 from omnivia_core_runtime.service import rtf_extractor
 from omnivia_core_runtime.service.rtf_extractor import (
     MAX_AST_DEPTH,
@@ -92,7 +93,7 @@ def run(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[Any]], Any]:
             return subprocess.CompletedProcess(arguments, 0, document.encode(), b"")
 
         monkeypatch.setattr(rtf_extractor.subprocess, "run", reader)
-        return extract_rtf(SOURCE, capture_id=CAPTURE)
+        return extract_rtf(SOURCE, capture_id=CAPTURE, settings=reader_settings())
 
     return extract
 
@@ -413,9 +414,10 @@ def test_a_non_object_document_is_refused(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(rtf_extractor.subprocess, "run", reader)
 
     with pytest.raises(RTFExtractionInvalid, match="block count"):
-        extract_rtf(SOURCE, capture_id=CAPTURE)
+        extract_rtf(SOURCE, capture_id=CAPTURE, settings=reader_settings())
 
 
+@pytest.mark.skipif(HOST_PANDOC is None, reason="no host RTF reader to bind")
 def test_the_real_reader_maps_a_table_a_note_and_a_hyperlink_field() -> None:
     content = (
         rb"{\rtf1\ansi {\trowd\cellx1000\cellx2000\intbl a\cell b\cell\row}"
@@ -424,7 +426,7 @@ def test_the_real_reader_maps_a_table_a_note_and_a_hyperlink_field() -> None:
         rb"{\footnote note text} end\par}"
     )
 
-    result = extract_rtf(content, capture_id=CAPTURE)
+    result = extract_rtf(content, capture_id=CAPTURE, settings=reader_settings())
     segments = view(result)
 
     cells = [text for role, _, text in segments if role == "table_cell"]
@@ -438,5 +440,5 @@ def test_the_real_reader_maps_a_table_a_note_and_a_hyperlink_field() -> None:
         if item.semantic_role == "object_inventory"
     ]
     assert [(t["scheme"], t["resolved"]) for t in targets] == [("http", False)]
-    again = extract_rtf(content, capture_id=CAPTURE)
+    again = extract_rtf(content, capture_id=CAPTURE, settings=reader_settings())
     assert again.segments == result.segments

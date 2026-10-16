@@ -24,8 +24,8 @@ missing.
 |---|---|---|
 | passed | 64 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
 | failed | 0 | Evidence exists and shows the required result is not met. |
-| blocked_external | 46 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
-| not_executed | 20 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
+| blocked_external | 47 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
+| not_executed | 19 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
 | not_implemented | 0 | The production path the gate names does not exist in this checkout. |
 
 ## Counts by family and status
@@ -34,10 +34,10 @@ missing.
 |---|---|---|---|---|---|---|---|
 | AT | 20 | 50 | 25 | 0 | 19 | 6 | 0 |
 | NAT | 20.1 | 17 | 0 | 0 | 17 | 0 | 0 |
-| DOC | 20.2 | 19 | 11 | 0 | 0 | 8 | 0 |
+| DOC | 20.2 | 19 | 11 | 0 | 1 | 7 | 0 |
 | MON | 20.3 | 38 | 24 | 0 | 10 | 4 | 0 |
 | END | 20.4 | 6 | 4 | 0 | 0 | 2 | 0 |
-| **total** | | **130** | 64 | 0 | 46 | 20 | 0 |
+| **total** | | **130** | 64 | 0 | 47 | 19 | 0 |
 
 ## Counts by required evidence class
 
@@ -51,9 +51,9 @@ refuses that combination.
 | automated_repository_test | 79 | yes |
 | repository_checker | 1 | yes |
 | installed_signed_build | 39 | no |
-| real_host_measurement | 1 | no |
+| real_host_measurement | 2 | no |
 | accessibility_review | 6 | no |
-| external_fixture_corpus | 4 | no |
+| external_fixture_corpus | 3 | no |
 
 ## Gates with direct coverage
 
@@ -142,7 +142,7 @@ not contain:
 - **Intel and older macOS.** The package declares macOS 13, but nothing has run below the CI runner's version, and the build targets `arm64` only.
 - **Real providers and volumes.** There is no iCloud, File Provider, network or removable-volume fixture, and CI mounts none.
 - **Fixtures.** Every Office package is built in memory with `zipfile` and every image with PIL. No application-authored document and no HEIC file exists in the repository, and there is no fixture-hash manifest, which sections 11.15 and 22 require alongside results.
-- **The pinned external binaries.** RTF extraction needs `pandoc 3.12.1` and OCR needs `tesseract` with installed language models. Neither CI workflow nor `scripts/preflight` installs either, so the real-engine OCR cases skip on CI and the production OCR catalogue serves no model until an installation fills it.
+- **The pinned external binaries.** RTF extraction needs `pandoc 3.12.1` and OCR needs `tesseract` with the bundled English and orientation models. Both are now packaged: `scripts/build-core-companion-app.py` stages them, their relocated native library closure and their licence notices into the candidate and digest-pins every byte in the component-set manifest, and production resolves them from the verified installation payload by absolute path. What the repository still cannot do is make those bytes: neither engine is redistributed here, so neither CI workflow nor `scripts/preflight` can assemble a candidate, the real-engine cases skip where the host has no engine, and the one real offline run is the committed record behind `scripts/check-doc13-packaged-runtime.py`.
 - **Companion to Core, end to end.** No test has a real companion talking to a real Core service. Swift tests stop at a fake delivery client; Python tests call the service directly.
 - **Platform coexistence.** Platform does not exist in this repository, so its four states cannot be produced.
 

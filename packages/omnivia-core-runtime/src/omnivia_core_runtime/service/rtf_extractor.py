@@ -10,6 +10,14 @@ The pinned reader extracts body text only, so the scan classifies every other
 feature it finds as inventoried-but-disabled (recognised, deliberately not
 extracted) or unsupported/unknown. Nothing here claims complete extraction.
 
+The reader itself is the Pandoc 11.2 bundles with the distribution: an absolute
+executable the verified installation payload declares
+(:mod:`omnivia_core_runtime.distribution.packaged_runtime`), handed over in the
+frozen settings. :func:`pinned_reader` refuses anything else, so an installation
+with no verified payload reads no RTF rather than resolving a bare name against
+whatever is on the worker's search path. The arguments beside it are the fixed
+vector of 11.9 and are never derived from the source.
+
 The one exception is a raster a ``\\pict`` group encodes inline, which the
 trusted settings may ask to have recognised. The scanner stays authoritative for
 it: the payload's extent is established by the same single pass that tracks
@@ -69,6 +77,11 @@ MAX_AST_DEPTH: Final = 64
 MAX_AST_NODES: Final = 4_000_000
 MAX_TARGET_CHARS: Final = 2048
 PANDOC_BUILD: Final = "pandoc-3.12.1-rtf-json"
+#: The fixed reader arguments of 11.9, and the whole of them. No filter, no
+#: template, no default file, no include path and no PDF engine is ever added,
+#: and nothing here is derived from the source. The executable is not among them:
+#: it is the absolute packaged binary :func:`pinned_reader` resolves.
+PANDOC_ARGUMENTS: Final = ("--from=rtf", "--to=json", "--sandbox")
 
 _SCHEME: Final = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]{1,31}):")
 _FORMATTING: Final = frozenset(
@@ -253,6 +266,41 @@ class RTFExtractionInvalid(ValueError):
     """The RTF is malformed, unsupported, or beyond an extraction bound."""
 
 
+class RTFReaderUnavailable(RTFExtractionInvalid):
+    """This installation packages no RTF reader, so it qualifies no RTF adapter.
+
+    Its own class because it is the one refusal on this path that says nothing
+    about the source. A well-formed RTF read by an installation with no verified
+    payload is not an invalid document, and settling it as one would record a
+    verdict on bytes that are fine; :func:`document_extractors.extract_document`
+    turns this into the unsupported-format outcome instead, whose recovery is
+    repairing the installation and reprocessing the retained copy.
+    """
+
+
+def pinned_reader(settings: ExtractionSettings | None) -> str:
+    """The absolute packaged Pandoc this extraction invokes, or a refusal.
+
+    11.2 bundles the RTF reader with the distribution and 11.5 gives the worker
+    no arbitrary configuration paths, so the reader is the executable the
+    verified installation payload declares and nothing else: not a bare name
+    resolved against a search path, not an environment variable, not a value a
+    caller or a document supplied.
+
+    An installation with no verified packaged reader therefore reads no RTF.
+    That is a refusal of the *source* in the only sense this adapter can report
+    one -- there is no qualified reader for it here -- and it is deliberately
+    not a silent fall back to whatever binary a host happens to have on
+    ``PATH``, whose identity no manifest pins.
+    """
+    reader = None if settings is None else settings.pandoc_path
+    if not reader or not reader.startswith("/"):
+        raise RTFReaderUnavailable(
+            "no absolute packaged RTF reader is bound to this extraction"
+        )
+    return reader
+
+
 @dataclass(frozen=True, slots=True)
 class RTFExtraction:
     segments: tuple[ExtractedSegment, ...]
@@ -291,9 +339,10 @@ def extract_rtf(
     """
     images = EmbeddedImagePass.over(settings, ocr_engine=ocr_engine, budget=budget)
     scan = _scan_rtf(content, capture_id=capture_id, images=images)
+    reader = pinned_reader(settings)
     try:
         completed = subprocess.run(
-            ["pandoc", "--from=rtf", "--to=json", "--sandbox"],
+            [reader, *PANDOC_ARGUMENTS],
             input=content,
             capture_output=True,
             timeout=120,

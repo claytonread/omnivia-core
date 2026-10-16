@@ -5,13 +5,25 @@ configuration (an installation setting, or a verified model manifest's artifact
 names) and is checked against what the signed installation actually installed.
 
 The production default is **unconfigured and fails closed**: it installs no
-model and names no model directory, so it can never claim a packaged model hash
-while the engine resolves some arbitrary host ``tessdata``.  A usable catalogue
-is built from an already-verified model manifest plus an explicit trusted
-``tessdata`` directory, and every selected ``.traineddata`` file is checked -
-present, a regular file, and SHA-256 equal to the manifest - *before* the engine
-is invoked.  Only the selected names are touched: no directory is scanned for
-whatever languages a host happens to have, and no model is ever downloaded.
+model, names no model directory and names no engine, so it can never claim a
+packaged model hash while the engine resolves some arbitrary host ``tessdata``.
+A usable catalogue is built from an already-verified model manifest plus an
+explicit trusted ``tessdata`` directory, and every selected ``.traineddata``
+file is checked - present, a regular file, and SHA-256 equal to the manifest -
+*before* the engine is invoked.  Only the selected names are touched: no
+directory is scanned for whatever languages a host happens to have, and no
+model is ever downloaded.
+
+**The engine is pinned the same way the models are.** A catalogue carries the
+absolute executable the verified installation payload declares
+(:mod:`omnivia_core_runtime.distribution.packaged_runtime`), and
+:func:`run_tesseract` refuses anything else: there is no bare name, no ``PATH``
+lookup and no caller-supplied binary on this path. An installation with no
+verified payload therefore runs no recognition at all, rather than running
+whichever ``tesseract`` a host happens to have. Like ``tessdata_dir``, the
+engine's location is installation state and is deliberately absent from
+``ExtractionProfileV1``: where an installation keeps its engine cannot move a
+capture's identity.
 
 A selection that cannot be served that way returns :class:`OcrResources` with
 ``available`` false, carrying the requested order and the exact reason, so the
@@ -124,6 +136,14 @@ class OcrResources:
     languages: tuple[str, ...]
     model_hashes: tuple[str, ...] = ()
     tessdata_dir: str | None = None
+    #: The absolute packaged engine executable this selection is invoked through,
+    #: resolved from the verified installation payload. Like ``tessdata_dir`` it
+    #: is installation state rather than part of the capture's identity, so
+    #: :meth:`to_profile` leaves it out: where an installation keeps its engine
+    #: cannot move a capture's profile digest. ``None`` is an installation with
+    #: no verified packaged engine, which :func:`run_tesseract` refuses rather
+    #: than resolving a name against a search path.
+    tesseract_path: str | None = None
     available: bool = True
     reason: str | None = None
     unavailable_models: tuple[str, ...] = ()
@@ -248,6 +268,12 @@ class TrustedOcrCatalogue:
     engine_revision: str = TESSERACT_REVISION
     installed: Mapping[str, str] = field(default_factory=dict)
     tessdata_dir: str | None = None
+    #: The absolute packaged engine executable a resolution of this catalogue is
+    #: invoked through. It comes from the verified installation payload and from
+    #: nowhere else -- never from ``PATH``, an environment variable, a caller or
+    #: a document -- and a catalogue without one resolves selections that
+    #: :func:`run_tesseract` then refuses.
+    tesseract_path: str | None = None
 
     @classmethod
     def from_model_manifest(
@@ -255,6 +281,7 @@ class TrustedOcrCatalogue:
         manifest: VerifiedModelManifest,
         *,
         tessdata_dir: str,
+        tesseract_path: str | None = None,
         engine_revision: str = TESSERACT_REVISION,
     ) -> TrustedOcrCatalogue:
         """Build the catalogue from an already-verified model manifest's artifacts.
@@ -274,6 +301,7 @@ class TrustedOcrCatalogue:
             engine_revision=engine_revision,
             installed=installed,
             tessdata_dir=tessdata_dir,
+            tesseract_path=tesseract_path,
         )
 
     def resolve(self, requested: Sequence[str] = ()) -> OcrResources:
@@ -318,6 +346,7 @@ class TrustedOcrCatalogue:
             languages=languages,
             model_hashes=tuple(sorted({f"sha256:{digest}" for digest in verified})),
             tessdata_dir=self.tessdata_dir,
+            tesseract_path=self.tesseract_path,
         )
 
     def _unavailable(
@@ -333,6 +362,7 @@ class TrustedOcrCatalogue:
             engine_revision=self.engine_revision,
             languages=languages,
             tessdata_dir=self.tessdata_dir,
+            tesseract_path=self.tesseract_path,
             available=False,
             reason=reason,
             unavailable_models=models,
@@ -354,11 +384,25 @@ class ExtractionSettings:
     resources turned out to be unavailable: the selected profile keeps its
     identity and its requested languages either way. A text-only profile is an
     explicit trusted choice and carries no engine, model or language at all.
+
+    The two packaged-runtime members are installation state rather than part of
+    the decision: they say *where* this installation keeps the engines it
+    verified, not what the capture asked for. Neither reaches
+    ``ExtractionProfileV1``, so a capture's digest -- and the operation key
+    derived from it -- does not move with the location of an installation.
     """
 
     processing_mode: str = MODE_TEXT_AND_LOCAL_OCR
     ocr: OcrResources | None = None
     embedded_image_ocr: bool = False
+    #: The absolute packaged Pandoc executable the RTF reader is invoked as.
+    #: ``None`` leaves an RTF source with no pinned reader, which the adapter
+    #: refuses rather than resolving a bare name against a search path.
+    pandoc_path: str | None = None
+    #: The verified packaged runtime root, which is the one additional directory
+    #: the confined worker is allowed to read: the engines, their relocated
+    #: library closure and the packaged models all live under it.
+    runtime_root: str | None = None
 
     def __post_init__(self) -> None:
         if self.processing_mode not in {MODE_TEXT_ONLY, MODE_TEXT_AND_LOCAL_OCR}:
@@ -383,6 +427,8 @@ def local_ocr_settings(
     *,
     catalogue: TrustedOcrCatalogue | None = None,
     languages: Sequence[str] = (),
+    pandoc_path: str | None = None,
+    runtime_root: str | None = None,
 ) -> ExtractionSettings:
     """The default profile for PDF and image sources, with resources pinned.
 
@@ -391,7 +437,10 @@ def local_ocr_settings(
     """
     catalogue = catalogue if catalogue is not None else PACKAGED_OCR_CATALOGUE
     return ExtractionSettings(
-        processing_mode=MODE_TEXT_AND_LOCAL_OCR, ocr=catalogue.resolve(languages)
+        processing_mode=MODE_TEXT_AND_LOCAL_OCR,
+        ocr=catalogue.resolve(languages),
+        pandoc_path=pandoc_path,
+        runtime_root=runtime_root,
     )
 
 
@@ -417,15 +466,28 @@ def run_tesseract(
 ) -> Mapping[str, Sequence[Any]]:
     """Run the packaged Tesseract once and return its raw TSV word rows.
 
-    The model directory is the verified trusted one and is always passed, so the
-    engine never searches the host for a model. Resources whose bytes were not
-    verified are refused here rather than invoked. No argument is derived from
-    source bytes.
+    The engine is the absolute executable the verified installation payload
+    declares, and the model directory is the verified trusted one; both are
+    always passed, so nothing here searches the host for either. A selection
+    whose bytes were not verified, and an installation with no packaged engine
+    to invoke, are both refused rather than invoked -- there is no bare
+    executable name and no ``PATH`` lookup on this path at all. No argument is
+    derived from source bytes.
     """
     if not resources.available or not resources.tessdata_dir:
         raise OcrResourceRefused(
             "OCR resources were not verified before the engine invocation"
         )
+    engine = resources.tesseract_path
+    if not engine or not engine.startswith("/"):
+        raise OcrResourceRefused(
+            "no absolute packaged OCR engine is bound to these resources"
+        )
+    # `image_to_data` offers no per-call executable, so the pinned absolute path
+    # is installed as the module's command. This process extracts one document
+    # and the path is the same for every unit of it, so there is nothing here
+    # for a later call to disagree with.
+    pytesseract.pytesseract.tesseract_cmd = engine
     config = (
         f"--oem {TESSERACT_OEM} --psm {int(psm)} "
         f"--tessdata-dir {shlex.quote(resources.tessdata_dir)}"

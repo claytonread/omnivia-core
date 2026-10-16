@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
-from _trusted_ocr import catalogue_over, stand_in_models
+from _trusted_ocr import catalogue_over, reader_settings, stand_in_models
 from omnivia_core_runtime.service import ocr_resources, rtf_extractor
 from omnivia_core_runtime.service.document_intake import ExtractedSegment
 from omnivia_core_runtime.service.raster_extractors import (
@@ -231,7 +231,9 @@ def examined(
     return extract_rtf(
         content,
         capture_id=CAPTURE,
-        settings=settings,
+        # Production hands the adapter the absolute packaged reader; the reader
+        # itself is mocked here, so what matters is that one is bound at all.
+        settings=reader_settings(settings),
         ocr_engine=engine if engine is not None else RefusingOcr(),  # type: ignore[arg-type]
         budget=budget,
     )

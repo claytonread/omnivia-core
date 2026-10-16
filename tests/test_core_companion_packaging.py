@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -333,7 +335,7 @@ def test_manifest_binds_the_companion_and_both_extensions_as_one_component_set(
     module = _module()
     manifest = _manifest(_candidate(tmp_path, module))
 
-    assert manifest["schema_version"] == module.MANIFEST_SCHEMA_VERSION == 2
+    assert manifest["schema_version"] == module.MANIFEST_SCHEMA_VERSION == 3
     assert manifest["compatibility_id"] == module.COMPONENT_SET_COMPATIBILITY_ID
     assert manifest["version"] == manifest["build_version"] == "0.6.5"
     assert manifest["minimum_macos"] == "13.0"
@@ -365,6 +367,14 @@ def test_manifest_binds_the_companion_and_both_extensions_as_one_component_set(
     assert manifest["production_release_eligible"] is False
     assert manifest["signature_status"] == "unsigned"
     assert manifest["notarization_status"] == "not_notarized"
+    # A companion-only candidate packages no document runtime, and says so with
+    # an empty resource set rather than by leaving the member out.
+    assert manifest["resources"] == []
+    assert manifest["runtime_payload"] == {
+        "relocation": "loader_path_relative",
+        "seal": "ad_hoc",
+        "system_libraries_external": True,
+    }
 
     components = manifest["components"]
     assert isinstance(components, list)
@@ -856,13 +866,13 @@ def test_verifier_refuses_an_unknown_or_newer_manifest_schema_without_rewriting_
     candidate = _candidate(tmp_path, module)
     path = candidate / "companion-manifest.json"
     manifest = _manifest(candidate)
-    manifest["schema_version"] = 3
+    manifest["schema_version"] = 4
     manifest["unknown_future_field"] = {"kept": True}
     _rewrite(candidate, manifest)
     before = path.read_bytes()
 
     report = module.verify_candidate(candidate)
-    assert report.findings == ("manifest schema unsupported: 3",)
+    assert report.findings == ("manifest schema unsupported: 4",)
     assert report.release_eligible is False
     # A downgraded reader preserves the newer envelope exactly: nothing is
     # rewritten, downgraded or field-stripped (section 18.3, END-05).
@@ -1240,3 +1250,127 @@ def test_verifier_pins_the_release_version_form_and_the_deployment_target(
     )
     assert "component version skew across the set" not in report.findings
     assert module.MINIMUM_MACOS == "13.0"
+
+
+# -- the packaged document runtime, in the same manifest ---------------------
+
+
+def _with_payload(candidate: Path, module: ModuleType) -> dict[str, object]:
+    """Add a declarable synthetic payload to an assembled candidate.
+
+    The engines are plain files, which is enough for this gate: the verifier's
+    job is the manifest, and relocation is `tests/test_packaged_runtime.py`'s.
+    """
+    payload = module.packaged_runtime
+    root = payload.runtime_root(candidate)
+    declared: list[dict[str, object]] = []
+    for role, parts, body in (
+        (payload.ROLE_PANDOC, (payload.BIN_DIR, "pandoc"), b"pandoc"),
+        (payload.ROLE_TESSERACT, (payload.BIN_DIR, "tesseract"), b"tesseract"),
+        ("model:eng", (payload.TESSDATA_DIR, "eng.traineddata"), b"eng"),
+        ("model:osd", (payload.TESSDATA_DIR, "osd.traineddata"), b"osd"),
+        ("notice:NOTICE.txt", (payload.NOTICE_DIR, "NOTICE.txt"), b"notice"),
+    ):
+        target = root.joinpath(*parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+        declared.append(
+            {
+                "identity": "synthetic",
+                "path": target.relative_to(candidate).as_posix(),
+                "role": role,
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "size": len(body),
+            }
+        )
+    manifest = _manifest(candidate)
+    manifest["resources"] = declared
+    _rewrite(candidate, manifest)
+    return manifest
+
+
+def test_the_verifier_checks_the_packaged_runtime_in_the_same_pass(
+    tmp_path: Path,
+) -> None:
+    """One manifest binds the component set and the packaged document runtime.
+
+    A second manifest for the engines would be a second thing to forget, so the
+    resources go in the one the verifier already reads -- and it reads them in
+    both directions, through the module the service resolves the payload with.
+    """
+    module = _module()
+    candidate = _candidate(tmp_path, module)
+    _with_payload(candidate, module)
+
+    report = module.verify_candidate(candidate)
+
+    assert report.findings == ()
+    assert report.coherence_ok is True
+    # Still a qualification candidate: a packaged runtime is not a signature.
+    assert report.signature_status == "unavailable"
+    assert report.release_eligible is False
+
+
+def test_the_verifier_refuses_a_tampered_or_undeclared_packaged_file(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    candidate = _candidate(tmp_path, module)
+    _with_payload(candidate, module)
+    root = module.packaged_runtime.runtime_root(candidate)
+    (root / "bin" / "pandoc").write_bytes(b"xandoc")
+    (root / "lib").mkdir()
+    (root / "lib" / "libsmuggled.dylib").write_bytes(b"smuggled")
+
+    findings = module.verify_candidate(candidate).findings
+
+    assert "packaged resource digest differs: pandoc" in findings
+    assert any("undeclared file in the packaged runtime" in item for item in findings)
+
+
+def test_a_packaged_resource_reached_through_a_link_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The candidate-wide symlink refusal and the payload's own both fire."""
+    module = _module()
+    candidate = _candidate(tmp_path, module)
+    _with_payload(candidate, module)
+    root = module.packaged_runtime.runtime_root(candidate)
+    elsewhere = tmp_path / "host-pandoc"
+    elsewhere.write_bytes(b"pandoc")
+    (root / "bin" / "pandoc").unlink()
+    (root / "bin" / "pandoc").symlink_to(elsewhere)
+
+    findings = module.verify_candidate(candidate).findings
+
+    assert any(finding.startswith("symlink refused:") for finding in findings)
+    assert "packaged resource is not a regular file: pandoc" in findings
+
+
+def test_the_builder_refuses_a_partial_set_of_runtime_inputs(tmp_path: Path) -> None:
+    """All of the engine inputs or none: a half-packaged candidate is not one."""
+    module = _module()
+    namespace = argparse.Namespace(
+        pandoc=tmp_path / "pandoc",
+        tesseract=None,
+        tessdata_eng=tmp_path / "eng.traineddata",
+        tessdata_osd=None,
+        license=[tmp_path / "NOTICE.txt"],
+    )
+
+    with pytest.raises(module.PackagingError, match="--tesseract"):
+        module.runtime_inputs(namespace)
+
+    # And none at all is the companion-only build, which stays supported.
+    assert (
+        module.runtime_inputs(
+            argparse.Namespace(
+                pandoc=None,
+                tesseract=None,
+                tessdata_eng=None,
+                tessdata_osd=None,
+                license=[],
+            )
+        )
+        is None
+    )

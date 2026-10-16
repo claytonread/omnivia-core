@@ -53,7 +53,11 @@ from omnivia_core_runtime.service.raster_extractors import (
 from omnivia_core_runtime.service.raster_extractors import (
     WORKER_BUILD as RASTER_BUILD,
 )
-from omnivia_core_runtime.service.rtf_extractor import RTFExtractionInvalid, extract_rtf
+from omnivia_core_runtime.service.rtf_extractor import (
+    RTFExtractionInvalid,
+    RTFReaderUnavailable,
+    extract_rtf,
+)
 
 WORKER_BUILD: Final = "core-portable-text-1"
 #: The raster/OCR worker reports its own build, so a retried unit's result is
@@ -337,6 +341,13 @@ def extract_document(
             rtf_extraction = extract_rtf(
                 content, capture_id=capture_id, settings=settings
             )
+        except RTFReaderUnavailable as refusal:
+            # An installation that packages no reader qualifies no RTF adapter.
+            # That is not a verdict on the document, so it leaves here as the
+            # unsupported-format outcome rather than as an invalid source.
+            raise DocumentExtractionUnsupported(
+                "no qualified RTF adapter: this installation packages no reader"
+            ) from refusal
         except RTFExtractionInvalid as error:
             raise DocumentExtractionInvalid(str(error)) from error
         limitations = _embedded_image_outcome(

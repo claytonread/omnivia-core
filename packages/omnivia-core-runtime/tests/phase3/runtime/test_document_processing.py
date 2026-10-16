@@ -6,11 +6,12 @@ import io
 import json
 import zipfile
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Final
 
 import pytest
-from _trusted_ocr import catalogue_over, host_models, stand_in_models
+from _trusted_ocr import catalogue_over, host_models, host_runtime, stand_in_models
 from omnivia_core_runtime.service import (
     document_intake,
     document_worker,
@@ -173,6 +174,26 @@ def asked(
     return resolver, seen
 
 
+def _with_host_engines(
+    authority: ManagedSelectionAuthority | None, tessdata_dir: Path
+) -> ManagedSelectionAuthority:
+    """The composed installation, with this host's engines as its payload.
+
+    `installation_catalogue` resolves the packaged payload from the installation
+    root, and a test's root holds no assembled candidate -- so the authority it
+    returns names no engine and nothing can be invoked through it. These tests
+    are about what the frozen snapshot decides and what the managed cache holds,
+    not about the payload's own verification (which
+    `test_packaged_runtime.py` owns), so the host's own absolute binaries stand
+    in for the ones a manifest would declare.
+    """
+    assert authority is not None
+    runtime = host_runtime(tessdata_dir)
+    if runtime is None:  # pragma: no cover - host dependent
+        pytest.skip("no host OCR engine and RTF reader to bind as the payload")
+    return replace(authority, runtime=runtime)
+
+
 def managed_installation(
     root: Path, tmp_path: Path, *languages: str
 ) -> tuple[ManagedSelectionAuthority, ManagedOcrResources]:
@@ -201,8 +222,7 @@ def managed_installation(
                 sha256=hashlib.sha256(body).hexdigest(),
             ),
         )
-    authority = installation_catalogue(root)
-    assert authority is not None
+    authority = _with_host_engines(installation_catalogue(root), downloads)
     return authority, resources
 
 
@@ -235,8 +255,7 @@ def managed_host_installation(
                 sha256=hashlib.sha256(body).hexdigest(),
             ),
         )
-    authority = installation_catalogue(root)
-    assert authority is not None
+    authority = _with_host_engines(installation_catalogue(root), source)
     return authority, resources
 
 
@@ -1304,7 +1323,7 @@ def test_a_missing_language_is_never_substituted_with_an_installed_one(
 
 
 def test_service_executor_processes_rtf_through_the_retained_copy(
-    runner: ServiceRunner,
+    runner: ServiceRunner, tmp_path: Path
 ) -> None:
     capture_document_bytes(
         runner,
@@ -1316,7 +1335,12 @@ def test_service_executor_processes_rtf_through_the_retained_copy(
         intent_kind=store.INTENT_NEW_CAPTURE,
     )
 
-    results = DocumentProcessingExecutor(runner).run_pending(budget=1, force=True)
+    # The pinned RTF reader is the absolute executable the verified payload
+    # declares, so the executor is composed with one; without a payload an RTF
+    # capture settles as a refusal rather than reaching a host binary by name.
+    results = DocumentProcessingExecutor(
+        runner, catalogue_for=_with_host_engines(installation_catalogue(tmp_path), tmp_path)
+    ).run_pending(budget=1, force=True)
 
     assert [result.result_state for result in results] == ["succeeded"]
     projected = read_extraction_projection(

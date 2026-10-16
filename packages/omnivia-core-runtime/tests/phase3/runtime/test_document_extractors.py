@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
-from _trusted_ocr import catalogue_over, host_models
+from _trusted_ocr import catalogue_over, host_models, reader_settings
 from omnivia_core_runtime.service import rtf_extractor
 from omnivia_core_runtime.service.document_extractors import (
     DOCX_MEDIA_TYPE,
@@ -321,10 +321,12 @@ def xlsx_with_image(member: bytes) -> bytes:
 
 
 def embedded_image_settings(local_ocr: ExtractionSettings) -> ExtractionSettings:
-    return ExtractionSettings(
-        processing_mode=local_ocr.processing_mode,
-        ocr=local_ocr.ocr,
-        embedded_image_ocr=True,
+    return reader_settings(
+        ExtractionSettings(
+            processing_mode=local_ocr.processing_mode,
+            ocr=local_ocr.ocr,
+            embedded_image_ocr=True,
+        )
     )
 
 
@@ -530,7 +532,10 @@ def test_an_rtf_embedded_image_is_examined_only_under_settings_that_say_so(
     content = rtf_with_picture(legible_png())
 
     structural = extract_document(
-        content, media_type="application/rtf", capture_id=CAPTURE
+        content,
+        media_type="application/rtf",
+        capture_id=CAPTURE,
+        settings=reader_settings(),
     )
     assert structural.state == "succeeded"
     assert structural.limitations["embeddedImages"] == 1
@@ -823,7 +828,12 @@ def test_rtf_uses_fixed_local_reader_and_records_ast_locators() -> None:
         rb"{\rtf1\ansi\deff0 {\fonttbl {\f0 Arial;}}\fs24 Hello \b OmniVia\b0\par}"
     )
 
-    result = extract_document(content, media_type="application/rtf", capture_id=CAPTURE)
+    result = extract_document(
+        content,
+        media_type="application/rtf",
+        capture_id=CAPTURE,
+        settings=reader_settings(),
+    )
 
     assert result.state == "succeeded"
     assert "Hello OmniVia" in " ".join(item.text or "" for item in result.segments)
@@ -852,7 +862,14 @@ def test_rtf_refuses_unbalanced_groups_before_reader_execution() -> None:
 
 
 def rtf(content: bytes) -> ExtractionOutcome:
-    return extract_document(content, media_type="application/rtf", capture_id=CAPTURE)
+    return extract_document(
+        content,
+        media_type="application/rtf",
+        capture_id=CAPTURE,
+        # The pinned reader is an absolute packaged executable in production and
+        # the adapter refuses without one, so the host's own stands in here.
+        settings=reader_settings(),
+    )
 
 
 #: A ``{\object}`` whose ``\bin`` payload is nothing but structural bytes:
@@ -1066,8 +1083,13 @@ def test_rtf_reader_arguments_stay_fixed_and_carry_no_path(
     # The reader is invoked with the pinned argument vector and the bytes on
     # stdin: no document-derived argument, no path on the command line, no
     # shell, and the sandbox flag retained.
+    # Argument zero is the absolute packaged reader the frozen settings named;
+    # the rest is the fixed vector of 11.9.
     assert calls == [
-        (["pandoc", "--from=rtf", "--to=json", "--sandbox"], rb"{\rtf1\ansi body\par}")
+        (
+            [reader_settings().pandoc_path, "--from=rtf", "--to=json", "--sandbox"],
+            rb"{\rtf1\ansi body\par}",
+        )
     ]
 
 

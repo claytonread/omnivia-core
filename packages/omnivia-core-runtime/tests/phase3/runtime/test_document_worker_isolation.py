@@ -93,12 +93,12 @@ PORTABLE_SOURCES: Final = (
 #: on this same host, so the assertions below never have to assume what an
 #: unconfined connection or read would have done here.
 PROBE: Final = '''
-import json, os, socket, sys
+import json, os, socket, subprocess, sys
 from pathlib import Path
 
 from omnivia_core_runtime.service.document_worker import _import_roots, confine_process
 
-scratch, work, outside, model = (Path(argument) for argument in sys.argv[1:5])
+scratch, work, outside, model, runtime = (Path(argument) for argument in sys.argv[1:6])
 # The topmost named ancestor of the packaged code, so the traversal metadata
 # grant names it and no subpath grant covers it. Its *contents* are still
 # nobody's business, which is what separates the narrow grant from the blanket
@@ -111,6 +111,8 @@ def attempt(action):
     except PermissionError:
         return "denied"
     except OSError as error:
+        return f"other:{type(error).__name__}"
+    except subprocess.SubprocessError as error:
         return f"other:{type(error).__name__}"
     return "allowed"
 
@@ -141,6 +143,16 @@ ATTEMPTS = {
     "scratch_root_write": lambda: (scratch / "forged.txt").write_bytes(b"x"),
     "admitted_read": lambda: (scratch / "source.bin").read_bytes(),
     "model_read": lambda: (model / "eng.traineddata").read_bytes(),
+    # The verified packaged runtime: the engines the adapters invoke and the
+    # relocated library closure they load. Readable, mappable and runnable --
+    # and the package-manager prefixes that used to be in scope for exactly this
+    # purpose are not, which is the whole of what replacing the lookup bought.
+    "runtime_read": lambda: (runtime / "bin" / "probe-engine").read_bytes(),
+    "runtime_exec": lambda: subprocess.run(
+        [str(runtime / "bin" / "probe-engine")], check=True, capture_output=True
+    ),
+    "homebrew_listdir": lambda: os.listdir("/opt/homebrew/bin"),
+    "usr_local_listdir": lambda: os.listdir("/usr/local"),
     "work_write": lambda: (work / "spill.txt").write_bytes(b"x"),
     "package_import": lambda: __import__(
         "omnivia_core_runtime.service.ooxml_extractors"
@@ -148,7 +160,12 @@ ATTEMPTS = {
 }
 
 before = {name: attempt(action) for name, action in ATTEMPTS.items()}
-confinement = confine_process(scratch_root=scratch, work_dir=work, model_dirs=[model])
+confinement = confine_process(
+    scratch_root=scratch,
+    work_dir=work,
+    model_dirs=[model],
+    runtime_dirs=[runtime],
+)
 after = {name: attempt(action) for name, action in ATTEMPTS.items()}
 
 print(json.dumps({
@@ -306,6 +323,14 @@ def test_a_sealed_process_reaches_no_network_and_nothing_outside_its_scope(
     model = tmp_path / "models"
     model.mkdir()
     (model / "eng.traineddata").write_bytes(b"pinned model")
+    # A stand-in packaged runtime: one directory holding an executable, exactly
+    # the shape the verified payload has. The engines have to be readable,
+    # mappable and runnable from inside the seal, and the probe does all three.
+    runtime = tmp_path / "omnivia-runtime"
+    (runtime / "bin").mkdir(parents=True)
+    engine = runtime / "bin" / "probe-engine"
+    engine.write_text("#!/bin/sh\nexit 0\n")
+    engine.chmod(0o755)
     probe = tmp_path / "probe.py"
     probe.write_text(PROBE)
     monkeypatch.setenv("OMNIVIA_WORKER_PROBE_SECRET", "must-not-travel")
@@ -321,6 +346,7 @@ def test_a_sealed_process_reaches_no_network_and_nothing_outside_its_scope(
             str(attempt["work"]),
             str(outside),
             str(model),
+            str(runtime),
         ],
         env=document_worker._child_environment(attempt["work"]),
         cwd=attempt["work"],
@@ -351,6 +377,11 @@ def test_a_sealed_process_reaches_no_network_and_nothing_outside_its_scope(
     assert before["ancestor_listdir"] == "allowed", before
     assert before["outside_write"] == "allowed", before
     assert before["scratch_root_write"] == "allowed", before
+    # The package-manager prefixes are reachable here and must not be after:
+    # a host without them says so differently, so the claim is only made where
+    # the unsealed process could actually read them.
+    assert before["runtime_read"] == "allowed", before
+    assert before["runtime_exec"] == "allowed", before
 
     # Network: denied outright, for a stream and for a datagram alike.
     assert after["tcp"] == "denied"
@@ -385,6 +416,19 @@ def test_a_sealed_process_reaches_no_network_and_nothing_outside_its_scope(
     assert after["model_read"] == "allowed"
     assert after["work_write"] == "allowed"
     assert after["package_import"] == "allowed"
+    # The packaged runtime is in scope for reading *and* for execution, which
+    # is what the adapters need to invoke the pinned Pandoc and Tesseract.
+    assert after["runtime_read"] == "allowed"
+    assert after["runtime_exec"] == "allowed"
+    # And the prefixes the old executable lookup searched are not in scope at
+    # all any more: an engine is reached by verified absolute path or not at
+    # all. A host that never had them says `other:FileNotFoundError`, which is
+    # equally not `allowed`.
+    for probe_name in ("homebrew_listdir", "usr_local_listdir"):
+        if before[probe_name] == "allowed":
+            assert after[probe_name] == "denied", probe_name
+        else:
+            assert after[probe_name] != "allowed", probe_name
     assert report["inherited_secret"] == "absent"
 
 
@@ -394,13 +438,25 @@ def test_the_profile_denies_the_network_and_scopes_every_grant(
     attempt = _attempt(tmp_path)
     model = tmp_path / "models"
     model.mkdir()
+    runtime = tmp_path / "omnivia-runtime"
+    runtime.mkdir()
     profile = document_worker._seatbelt_profile(
-        scratch_root=attempt["scratch"], work_dir=attempt["work"], model_dirs=[model]
+        scratch_root=attempt["scratch"],
+        work_dir=attempt["work"],
+        model_dirs=[model],
+        runtime_dirs=[runtime],
     )
     assert "(deny default)" in profile
     assert "(deny network*)" in profile
     assert f'(subpath "{os.path.realpath(model)}")' in profile
+    assert f'(subpath "{os.path.realpath(runtime)}")' in profile
     assert f'(subpath "{os.path.realpath(attempt["scratch"])}")' in profile
+    # The locally administered prefixes the engine lookup used to search are not
+    # granted at all: an engine is an absolute path out of the verified payload,
+    # so nothing under them has to be readable for a document to be extracted.
+    assert '(subpath "/opt")' not in profile
+    assert '(subpath "/usr/local")' not in profile
+    assert '(subpath "/usr")' not in profile
     # The one write grant is the work directory. The scratch root, which holds
     # the admitted source, is readable and never writable.
     write_rule = next(
@@ -1290,3 +1346,120 @@ def test_the_applied_resource_limits_are_named_and_not_overstated() -> None:
     assert "RLIMIT_CORE" in names
     assert "RLIMIT_AS" not in names
     assert cpu == [120, 125]
+
+
+# -- the packaged runtime over the wire --------------------------------------
+
+
+def test_the_packaged_engine_paths_cross_the_protocol_unchanged() -> None:
+    """DOC-13/DOC-16: the engines travel as absolute paths, not as names.
+
+    The adapters in the child are handed the engines the *parent* resolved out
+    of the verified payload, so the child never searches for one. A round trip
+    has to preserve all three of them exactly -- two executables and the model
+    directory -- because a path that arrived subtly different is a different
+    binary.
+    """
+    runtime = "/opt/omnivia/candidate/OmniVia Core.app/Contents/Resources/omnivia-runtime"
+    settings = ExtractionSettings(
+        processing_mode=MODE_TEXT_AND_LOCAL_OCR,
+        ocr=OcrResources(
+            engine="tesseract",
+            engine_revision="5.5.3",
+            languages=("eng",),
+            model_hashes=("sha256:" + "a" * 64,),
+            tessdata_dir=f"{runtime}/tessdata",
+            tesseract_path=f"{runtime}/bin/tesseract",
+        ),
+        pandoc_path=f"{runtime}/bin/pandoc",
+        runtime_root=runtime,
+    )
+
+    carried = document_worker._decode_settings(
+        document_worker._encode_settings(settings)
+    )
+
+    assert carried == settings
+    assert carried is not None and carried.ocr is not None
+    assert carried.ocr.tesseract_path == f"{runtime}/bin/tesseract"
+    # And that root is the one directory the child then admits to its seal.
+    assert document_worker._runtime_dirs(carried) == (Path(runtime),)
+    assert document_worker._model_dirs(carried) == (Path(f"{runtime}/tessdata"),)
+
+
+def test_an_extraction_with_no_packaged_runtime_admits_no_engine_directory() -> None:
+    """The fail-closed shape: nothing packaged, so nothing extra is in scope."""
+    assert document_worker._runtime_dirs(text_only_settings()) == ()
+    assert document_worker._runtime_dirs(None) == ()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("pandocPath", "pandoc"),
+        ("pandocPath", "../../../usr/bin/pandoc"),
+        ("runtimeRoot", "omnivia-runtime"),
+        ("runtimeRoot", "/opt/omnivia/../../etc"),
+    ],
+)
+def test_an_engine_path_that_is_not_absolute_and_clean_is_refused(
+    field: str, value: str
+) -> None:
+    """A bare name, a relative path and a traversal are each refused.
+
+    The request arrives over the parent's private pipe, but it is decoded under
+    the same rule as everything else here: a field that is not what this
+    protocol sends did not come from it.
+    """
+    encoded = document_worker._encode_settings(text_only_settings())
+    assert encoded is not None
+
+    with pytest.raises(document_worker._ProtocolError):
+        document_worker._decode_settings({**encoded, field: value})
+
+
+def test_an_engine_outside_the_declared_packaged_root_is_refused() -> None:
+    """A packaged engine the seal would not cover is not read as a packaged one.
+
+    The root is the one directory admitted to the confinement, so an executable
+    that claims to be packaged and sits elsewhere would be invoked outside the
+    seal and was never declared in any manifest.
+    """
+    encoded = document_worker._encode_settings(
+        ExtractionSettings(
+            processing_mode="text_only",
+            pandoc_path="/opt/omnivia/runtime/bin/pandoc",
+            runtime_root="/opt/omnivia/runtime",
+        )
+    )
+    assert encoded is not None
+
+    assert document_worker._decode_settings(encoded) is not None
+    with pytest.raises(document_worker._ProtocolError):
+        document_worker._decode_settings(
+            {**encoded, "pandocPath": "/usr/bin/pandoc"}
+        )
+    with pytest.raises(document_worker._ProtocolError):
+        # Named engines with no root at all: nothing would be in scope for them.
+        document_worker._decode_settings({**encoded, "runtimeRoot": None})
+
+
+def test_the_child_search_path_holds_no_locally_administered_directory() -> None:
+    """DOC-16: the engine lookup those directories existed for is gone.
+
+    `/usr/local/bin` and `/opt/homebrew/bin` were in the child's search path so
+    that a bare `pandoc` or `tesseract` could be found. Both engines are now
+    absolute paths out of the verified payload, so the directories are gone with
+    the lookup -- a packaged engine pins its own bytes by digest, and a package
+    manager's prefix pins nothing.
+    """
+    assert document_worker._TRUSTED_PATH_DIRS == (
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    )
+    assert not any(
+        entry.startswith(("/opt/", "/usr/local"))
+        for entry in document_worker._SYSTEM_READ_SUBPATHS
+    )

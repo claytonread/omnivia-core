@@ -13,6 +13,7 @@ import io
 import struct
 import zlib
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -519,6 +520,10 @@ def test_the_engine_invocation_is_built_only_from_trusted_resources(
         f"--oem 1 --psm 3 --tessdata-dir {local_catalogue.tessdata_dir}"
     )
     assert seen["timeout"] == 5
+    # And the engine itself is the absolute executable the catalogue names,
+    # never a bare word resolved against whatever search path the child holds.
+    assert pytesseract.pytesseract.tesseract_cmd == local_catalogue.tesseract_path
+    assert str(local_catalogue.tesseract_path).startswith("/")
 
 
 def test_a_text_only_profile_pins_no_engine_model_or_language(
@@ -1433,3 +1438,28 @@ def _image_outcome(engine: ocr.OcrEngine) -> Any:
             ocr_engine=engine,
         )
     )
+
+
+def test_an_engine_that_is_not_an_absolute_packaged_path_is_never_invoked(
+    monkeypatch: pytest.MonkeyPatch, tessdata: Path
+) -> None:
+    """DOC-13/DOC-16: there is no bare-name or search-path route to the engine.
+
+    Resources whose model bytes verify but which name no packaged executable --
+    or name one by bare word -- are refused before any process is started. An
+    installation with no verified payload therefore runs no recognition at all,
+    rather than running whatever binary a host happens to have.
+    """
+    invoked: list[object] = []
+    monkeypatch.setattr(
+        pytesseract, "image_to_data", lambda *a, **k: invoked.append(a) or {}
+    )
+    verified = catalogue_over(tessdata, "eng").resolve(("eng",))
+
+    for engine in (None, "", "tesseract", "../../usr/bin/tesseract"):
+        resources = replace(verified, tesseract_path=engine)
+        with pytest.raises(ocr.OcrResourceRefused):
+            ocr.run_tesseract(
+                Image.new("RGB", (10, 10), "white"), resources=resources, psm=3
+            )
+    assert invoked == []

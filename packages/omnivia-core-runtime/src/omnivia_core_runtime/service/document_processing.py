@@ -87,6 +87,7 @@ from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from omnivia_core_runtime.distribution.packaged_runtime import VerifiedPackagedRuntime
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service import document_intake
 from omnivia_core_runtime.service.document_extractors import (
@@ -144,6 +145,7 @@ from omnivia_core_runtime.service.processing_settings import (
     capture_pin,
     capture_pin_prefix,
     managed_resources,
+    packaged_runtime,
     resolves_resources,
 )
 from omnivia_core_runtime.service.raster_extractors import (
@@ -347,8 +349,16 @@ def resolve_settings(
     settings: ProcessingSettings | None = DEFAULT_SETTINGS,
     catalogue_for: CatalogueFor | None = None,
     resources: OcrResources | None = None,
+    runtime: VerifiedPackagedRuntime | None = None,
 ) -> ExtractionSettings:
     """The trusted processing decisions for one capture.
+
+    `runtime` is this installation's verified packaged payload, and it decides
+    nothing: it says where the engines the adapters invoke actually are. It is
+    carried on the returned settings and deliberately not in the profile, so
+    two installations that keep their payload in different places still resolve
+    one capture to one profile digest. Handed none, the settings name no engine
+    and the adapters that need one refuse rather than resolving a bare name.
 
     Nothing here reads the document. `settings` is the capture's own frozen
     snapshot -- its mode, its ordered recognition languages and its
@@ -377,13 +387,19 @@ def resolve_settings(
     admitted under.
     """
     languages: Sequence[str] = () if settings is None else settings.languages
+    reader = None if runtime is None else str(runtime.pandoc)
+    root = None if runtime is None else str(runtime.root)
     if not resolves_resources(
         media_type=media_type, profile_ref=profile_ref, settings=settings
     ):
         # Returned before the catalogue is asked anything: a text-only capture
         # resolves no OCR resource, takes no lock on the managed cache and pins
-        # no model it would never read.
-        return ExtractionSettings(processing_mode=MODE_TEXT_ONLY)
+        # no model it would never read. It still carries the packaged engine
+        # paths, because RTF is one of these captures and its reader is one of
+        # those engines.
+        return ExtractionSettings(
+            processing_mode=MODE_TEXT_ONLY, pandoc_path=reader, runtime_root=root
+        )
     if resources is None:
         catalogue = (
             PACKAGED_OCR_CATALOGUE
@@ -397,6 +413,8 @@ def resolve_settings(
         embedded_image_ocr=(
             settings is not None and settings.embedded_image_ocr_for(media_type)
         ),
+        pandoc_path=reader,
+        runtime_root=root,
     )
 
 
@@ -747,6 +765,7 @@ def approved_reprocess_profiles(
     media_type: str,
     settings: ProcessingSettings = DEFAULT_SETTINGS,
     catalogue_for: CatalogueFor | None = None,
+    runtime: VerifiedPackagedRuntime | None = None,
 ) -> tuple[ReprocessProfileOption, ...]:
     """The profile selections Core will accept for a reprocess of this media type.
 
@@ -783,6 +802,7 @@ def approved_reprocess_profiles(
             profile_ref=reference,
             settings=settings,
             catalogue_for=catalogue_for,
+            runtime=runtime,
         )
         profile = portable_profile(
             media_type=media_type,
@@ -959,6 +979,10 @@ def _process_obligation(
                     profile_ref=capture.processing_profile_ref,
                     settings=settings,
                     resources=resources,
+                    # The engines this installation verified, which the frozen
+                    # decision neither names nor needs to: they are where the
+                    # payload is, not what the capture asked for.
+                    runtime=packaged_runtime(source),
                 ),
             )
     _release(source, operation_id)

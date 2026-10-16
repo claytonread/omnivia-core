@@ -16,10 +16,16 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import Any
 
 import pytest
+from _trusted_ocr import reader_settings
 from omnivia_core_runtime.service import rtf_extractor
+from omnivia_core_runtime.service.document_extractors import (
+    DocumentExtractionUnsupported,
+    extract_document,
+)
 from omnivia_core_runtime.service.rtf_extractor import (
     MAX_CONTROL_WORD_LETTERS,
     MAX_GROUP_DEPTH,
@@ -30,7 +36,14 @@ from omnivia_core_runtime.service.rtf_extractor import (
 )
 
 CAPTURE = "dcap-" + "a" * 64
-PANDOC_ARGUMENTS = ["pandoc", "--from=rtf", "--to=json", "--sandbox"]
+#: The whole invocation: the absolute packaged reader this extraction is bound
+#: to, then the fixed arguments of 11.9 and nothing else.
+PANDOC_ARGUMENTS = [
+    reader_settings().pandoc_path,
+    "--from=rtf",
+    "--to=json",
+    "--sandbox",
+]
 FIXED_AST = json.dumps(
     {
         "pandoc-api-version": [1, 23, 1],
@@ -63,7 +76,9 @@ def reader() -> Iterator[list[tuple[Any, dict[str, Any]]]]:
 
 
 def scan(content: bytes) -> dict[str, object]:
-    return dict(extract_rtf(content, capture_id=CAPTURE).limitations)
+    return dict(
+        extract_rtf(content, capture_id=CAPTURE, settings=reader_settings()).limitations
+    )
 
 
 def test_the_group_depth_bound_is_reachable_and_exclusive(
@@ -195,7 +210,7 @@ def test_the_reader_invocation_is_pinned_in_full(
 ) -> None:
     source = rb"{\rtf1\ansi Hello}"
 
-    extraction = extract_rtf(source, capture_id=CAPTURE)
+    extraction = extract_rtf(source, capture_id=CAPTURE, settings=reader_settings())
 
     arguments, options = reader[0]
     assert arguments == PANDOC_ARGUMENTS
@@ -224,3 +239,49 @@ def test_the_source_size_bound_is_reachable_and_checked_first(
     with pytest.raises(RTFExtractionInvalid, match="source exceeds"):
         scan(b"a" * (MAX_SOURCE_BYTES + 1))
     assert len(reader) == 1
+
+
+@pytest.mark.parametrize("named", ["", "pandoc", "../../usr/bin/pandoc"])
+def test_an_rtf_reader_that_is_not_an_absolute_packaged_path_is_refused(
+    named: str,
+) -> None:
+    """DOC-13/DOC-16: the pinned reader is a packaged absolute path or nothing.
+
+    A bare name, an empty value and a relative path are each refused, so there
+    is no spelling by which the adapter resolves a reader against the child's
+    search path -- whose identity no manifest pins.
+    """
+    with pytest.raises(RTFExtractionInvalid, match="packaged RTF reader"):
+        rtf_extractor.pinned_reader(replace(reader_settings(), pandoc_path=named))
+
+
+def test_an_installation_with_no_packaged_reader_reads_no_rtf(
+    reader: list[tuple[Any, dict[str, Any]]],
+) -> None:
+    """11.2 bundles the reader, so an installation without one has none.
+
+    The refusal happens before the reader would have been invoked, which the
+    recording fixture shows: nothing ran.
+    """
+    with pytest.raises(RTFExtractionInvalid, match="packaged RTF reader"):
+        extract_rtf(rb"{\rtf1\ansi Hello}", capture_id=CAPTURE)
+
+    assert reader == []
+
+
+def test_an_installation_with_no_reader_is_an_unqualified_format_not_a_bad_source() -> (
+    None
+):
+    """A well-formed RTF is not an invalid document because a reader is missing.
+
+    The refusal says something about the *installation*, so it leaves the
+    adapter seam as the unsupported-format outcome -- whose recovery is
+    repairing the installation and reprocessing the retained copy -- rather than
+    as a verdict on bytes that are fine.
+    """
+    with pytest.raises(DocumentExtractionUnsupported):
+        extract_document(
+            rb"{\rtf1\ansi Hello}",
+            media_type="application/rtf",
+            capture_id=CAPTURE,
+        )

@@ -911,7 +911,7 @@
         {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/UnknownOutcomeAcceptanceTests.swift",
           "symbol": "testTheDeliverysOwnDeadlineLeavesTheEntryUnknownAndShownAsChecking",
-          "covers": "The timeout arm through the production CLICaptureDelivery's own deadline, shortened via processDeadline. A real executable passes the status gate, then never answers the capture; the delivery ends it and returns unknown. The queue keeps the entry unknown with its attempt key, generation, intent and exact bytes; a second pass reuses the key. The production CaptureActivityStore and FilesAndFoldersModel show Checking status… with no receipt, and Clear completed activity removes nothing. Dropping the deadline, reporting not-sent, or not terminating fails it."
+          "covers": "The timeout arm through the production CLICaptureDelivery's own deadline, shortened via processDeadline. A real executable passes the status gate, then never answers the capture; the delivery ends it and returns unknown. The queue keeps the entry unknown with its attempt key, generation, intent and exact bytes; a second pass reuses the key. The production CaptureActivityStore and FilesAndFoldersModel show Checking status\u2026 with no receipt, and Clear completed activity removes nothing. Dropping the deadline, reporting not-sent, or not terminating fails it."
         },
         {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CLICaptureDeliveryTests.swift",
@@ -921,7 +921,7 @@
         {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/UnknownOutcomeAcceptanceTests.swift",
           "symbol": "testAnUnservableCommittedAnswerStaysUnknownAndCheckingThroughTheRealCLI",
-          "covers": "Expired replay and unknown admission, end to end. A live omnivia-core-service commits a real capture and the receipt is lost; with the service stopped, a test-only helper re-stores the claim's answer non-canonically; the real omnivia CLI's replay returns Core's own outcome_established false. Through the production queue and coordinator, two passes stay unknown under the same key and generation with exact bytes, show Checking status…, survive Clear completed activity, and Core holds one capture. A pre-tamper control is admitted; ignoring outcome_established or skipping the tamper fails it."
+          "covers": "Expired replay and unknown admission, end to end. A live omnivia-core-service commits a real capture and the receipt is lost; with the service stopped, a test-only helper re-stores the claim's answer non-canonically; the real omnivia CLI's replay returns Core's own outcome_established false. Through the production queue and coordinator, two passes stay unknown under the same key and generation with exact bytes, show Checking status\u2026, survive Clear completed activity, and Core holds one capture. A pre-tamper control is admitted; ignoring outcome_established or skipping the tamper fails it."
         }
       ],
       "status": "passed",
@@ -3433,8 +3433,32 @@
       "design_section": "20.2",
       "normative_summary": "OCR language. English works offline, two and three explicit languages are honoured, and an absent model refuses the OCR unit without auto-download and without silent language substitution.",
       "applicability": "Every qualified image and PDF raster unit, on hosts where the managed language resources have been installed.",
-      "evidence_type": "external_fixture_corpus",
+      "evidence_type": "real_host_measurement",
       "evidence": [
+        {
+          "path": "docs/development/qualification/doc13-packaged-runtime-macos-2026-10-16.json",
+          "covers": "The measurement itself: on arm64 macOS 27.0.0, an assembled candidate whose 23 packaged resources were digest-verified recognised a generated English image and read an RTF through the confined worker, with both engines run from an environment holding nothing but the operating system's own PATH."
+        },
+        {
+          "path": "scripts/check-doc13-packaged-runtime.py",
+          "symbol": "GATES",
+          "covers": "The lane that produced it, and the eight gates it holds a run to -- assembly, bundle coherence, payload verification, relocation, an offline engine start, offline English recognition, an offline RTF read and the refusal of a tampered packaged byte. Every gate starts closed."
+        },
+        {
+          "path": "tests/test_doc13_packaged_runtime_qualification.py",
+          "symbol": "test_the_committed_record_of_this_host_still_verifies",
+          "covers": "The committed record is re-verified offline on every repository run, so an edited record or a grown gate set fails rather than standing."
+        },
+        {
+          "path": "tests/test_packaged_runtime.py",
+          "symbol": "test_a_complete_payload_verifies_and_resolves_absolute_paths",
+          "covers": "The production resolution: English and the orientation data come from the verified packaged bytes, with an absolute packaged engine and model directory, and every resolved path is inside the payload."
+        },
+        {
+          "path": "tests/test_packaged_runtime.py",
+          "symbol": "test_resolution_fails_closed_on_anything_that_is_not_exactly_declared",
+          "covers": "A manifest that does not decode, a packaged byte that moved and a packaged file that is gone each resolve to no payload at all, so no engine is invoked and no model hash is claimed."
+        },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
           "symbol": "test_absent_model_is_a_needs_language_report_not_an_english_fallback",
@@ -3456,14 +3480,19 @@
           "covers": "A model whose bytes do not match its pinned digest is never invoked."
         },
         {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
+          "symbol": "test_an_engine_that_is_not_an_absolute_packaged_path_is_never_invoked",
+          "covers": "There is no bare-name or search-path route to the engine: resources naming no absolute packaged executable are refused before any process starts."
+        },
+        {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
           "symbol": "test_a_missing_ocr_language_settles_as_needs_ocr_language",
           "covers": "The service executor settles a missing language as needs-ocr-language rather than a failure or a success."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "English does not work offline in this checkout. The production catalogue names no model directory and installs no model, so recognition cannot run until an installation configures one explicitly, and no CI workflow or preflight step installs tesseract or any traineddata. The English-works-offline clause therefore has no run behind it.",
-      "limitations": "The refusal, ordering, pinning and no-substitution contracts are covered thoroughly and correctly, with test-owned stand-in models whose digests are pinned the same way an installation would. What no test can show from here is a real English recognition pass.",
+      "status": "blocked_external",
+      "missing_condition": "English now works offline, and the run is recorded rather than asserted: the committed record above was produced on this project's macOS host from an assembled candidate whose packaged Pandoc, Tesseract, relocated library closure and bundled English and orientation models were digest-verified first, and the recognition went through the production path -- the installation authority, the frozen resource identities and the confined worker -- not a harness around it. What the repository cannot do is make that measurement again. Pandoc and the Tesseract models are not redistributed here, so neither CI nor scripts/preflight has engine bytes to assemble a candidate from, and the lane refuses to run anywhere but macOS. The repository therefore re-verifies the record offline on every run and proves the packaging, verification, relocation, refusal and runtime-binding contracts with synthetic payloads, which is everything except repeating the recognition itself.",
+      "limitations": "The measurement is one host, one architecture and one engine build: arm64 macOS 27.0.0 with pandoc 3.12.1 and tesseract 5.5.3, whose source digests the record pins. Nothing has run on Intel. The resource manifest is not *signed*, which 11.12.2 asks for: the digests sit in plain JSON beside the payload, which catches a substituted file but not an attacker who rewrites both, and closing it needs the release owner WP-00 row 13 leaves unbound. The candidate is qualification-only, unsigned beyond the ad-hoc seal that makes a relocated Mach-O runnable on Apple silicon. A selection mixing a bundled language with a managed one is served by the managed cache alone, because one Tesseract invocation takes one model directory, so it reports English missing until that is installed through the managed route. The bundled models consume no managed-cache capacity and no second pool was introduced for them.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ocr_resources.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/raster_extractors.py"
@@ -3644,12 +3673,12 @@
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
           "symbol": "test_the_child_search_path_is_a_constant_and_not_the_services_own",
-          "covers": "The child's executable search path is a module constant and not the service's PATH, so whoever can set one variable on the service cannot choose which binary the RTF reader or the OCR engine actually is. The directories named are already readable under the profile, so nothing is widened to reach them, and no binary in them is a packaged artefact this build verifies -- recorded as a gap above rather than claimed as a pin."
+          "covers": "The child's executable search path is a module constant and not the service's PATH, so whoever can set one variable on the service cannot choose which binary a parser runs. It no longer names a locally administered prefix at all: the pinned Pandoc and the OCR engine are absolute paths out of the verified installation payload, so the lookup those directories existed for is gone and nothing under /opt or /usr/local is readable to a sealed child."
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
           "symbol": "test_a_sealed_process_reaches_no_network_and_nothing_outside_its_scope",
-          "covers": "A real child process sealed by the macOS adapter is refused a stream and a datagram socket and refused every read, write and stat outside the admitted source, the packaged code, the pinned models and its private scratch, while reads and writes inside that scope still succeed. The same process attempts the same things before sealing itself and is allowed them, so the refusals are read as the seal and not as the host. The stat attempts replaced an unrestricted file-read-metadata grant; test_the_metadata_grant_is_the_ancestors_in_scope_and_not_the_filesystem pins what is left."
+          "covers": "A real child process sealed by the macOS adapter is refused a stream and a datagram socket and refused every read, write and stat outside the admitted source, the packaged code, the pinned models, the verified packaged runtime root and its private scratch, while reads, writes and an execution inside that scope still succeed. The same process attempts the same things before sealing itself and is allowed them, so the refusals are read as the seal and not as the host, and the package-manager prefixes it could list before are refused after."
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
@@ -3729,7 +3758,7 @@
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_extractors.py",
           "symbol": "test_rtf_reader_arguments_stay_fixed_and_carry_no_path",
-          "covers": "The external reader's arguments stay fixed and carry no path from the document."
+          "covers": "The external reader's arguments stay fixed and carry no path from the document, and argument zero is the absolute packaged executable the frozen settings named rather than a bare word resolved against a search path."
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ooxml_package_validation.py",
@@ -3738,15 +3767,16 @@
         }
       ],
       "status": "not_executed",
-      "missing_condition": "The boundary exists and is enforced on macOS only. Production extraction no longer runs in the service process: both call sites run it in a child whose whole environment is seven fixed variables, a constant search path among them, under a bounded versioned JSON protocol, and the parent accounts that child's whole session group against the 1 GiB resident ceiling of 17.1 and one cumulative CPU budget per job. On macOS the child also seals itself with a deny-by-default seatbelt profile before reading a source byte, and a real child-process test proves the seal denies the network and every read, write and stat outside the admitted source, the packaged code, the models and the private scratch. Linux and Windows have neither adapter and fail closed under worker_supervision_unavailable, so there the claim is neither met nor violated and nothing is processed there -- a product gap, not evidence -- while the applicability above is every OS the runtime supports. One scope is absent everywhere: a packaged Pandoc or Tesseract, so the external engines are whichever binaries stand in the fixed search path.",
-      "limitations": "Containment is proven by a probe inside the sealed process making the reads, stats and connections itself, unsealed then sealed, so refusals are anchored against this host's unconfined behaviour. That is the worker's own authority, which a hostile parser holds too, but that path is not driven to one. mach-lookup stays open: dyld needs it and no bounded service list is qualified; the network denial closes what a looked-up service could offer. file-read-metadata is granted on the ancestors of in-scope paths, which macOS needs to resolve the /var symlink every scratch sits behind; their contents stay unreadable. OCR is not exercised under the seal: no verified model manifest is installed. Resident size is sampled every tenth of a second, which is the resolution of that ceiling and not a kernel-hard instantaneous cap: a spike inside one interval is never seen, and shared pages count once per mapping process, erring towards refusal. Cumulative CPU is not sampled so -- a descendant reaped anywhere in the group is charged in full by the kernel, the root's terminal burst included, since its exit is read while it is unreaped -- but one orphaned to launchd takes its unsampled tail with it.",
+      "missing_condition": "The boundary exists and is enforced on macOS only. Production extraction runs in a child whose whole environment is seven fixed variables, under a bounded versioned JSON protocol, and the parent accounts that child's whole session group against the 1 GiB resident ceiling of 17.1 and one cumulative CPU budget per job. On macOS the child seals itself with a deny-by-default seatbelt profile before reading a source byte, and a real child-process test proves the seal denies the network and every read, write and stat outside the admitted source, the packaged code, the models, the packaged runtime root and the private scratch. The packaged-engine scope is now closed: 11.2's Pandoc and Tesseract, their relocated library closure and the bundled models are staged into the candidate, digest-pinned in the manifest and reached by absolute path, so the child's search path names no package-manager prefix. What remains is the platform: Linux and Windows have neither adapter and fail closed under worker_supervision_unavailable, so nothing is processed there -- a product gap, not evidence -- while the applicability above is every OS Core supports.",
+      "limitations": "Containment is proven by a probe inside the sealed process making the reads, stats, executions and connections itself, unsealed then sealed, so refusals are anchored against this host's unconfined behaviour. That is the worker's own authority, which a hostile parser holds too, but that path is not driven to one. mach-lookup stays open: dyld needs it and no bounded service list is qualified; the network denial closes what a looked-up service could offer. file-read-metadata is granted on the ancestors of in-scope paths, which macOS needs to resolve the /var symlink every scratch sits behind. The packaged payload is unsigned beyond an ad-hoc seal, which is what makes a relocated Mach-O runnable on Apple silicon and is not a release identity. Resident size is sampled every tenth of a second, which is the resolution of that ceiling and not a kernel-hard cap, and shared pages count once per mapping process, erring towards refusal. Cumulative CPU is charged in full for any descendant reaped inside the group, but one orphaned to launchd takes its unsampled tail with it.",
       "source_bindings": [
-        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_worker.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/distribution/packaged_runtime.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_processing.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_worker.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/handlers/document_capture.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ocr_resources.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/raster_extractors.py",
-        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/rtf_extractor.py",
-        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ocr_resources.py"
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/rtf_extractor.py"
       ]
     },
     {

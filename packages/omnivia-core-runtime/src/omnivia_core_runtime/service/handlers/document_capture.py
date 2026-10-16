@@ -129,6 +129,8 @@ from omnivia_core_runtime.service.processing_settings import (
     ProcessingSettings,
     ProcessingSettingsInvalid,
     managed_resources,
+    packaged_identities,
+    packaged_runtime,
     read_settings,
 )
 from omnivia_core_runtime.service.source_capture import (
@@ -668,6 +670,7 @@ class DocumentCaptureHandlers:
                         media_type=media_type,
                         settings=settings,
                         catalogue_for=catalogue_for,
+                        runtime=packaged_runtime(self.catalogue_for),
                     )
                     for media_type in sorted(
                         {
@@ -1134,6 +1137,13 @@ class DocumentCaptureHandlers:
                     # from the installation being served: an admission that was
                     # not given it would freeze every capture out of recognition.
                     ocr_resources=managed_resources(self.catalogue_for),
+                    # The bundled English and orientation set of 11.2, from this
+                    # installation's own verified payload. A default-English
+                    # capture freezes against these identities and pins nothing:
+                    # the packaged bytes are not the managed cache's to evict.
+                    packaged_models=packaged_identities(
+                        packaged_runtime(self.catalogue_for)
+                    ),
                 )
             except DocumentCaptureSuppressed:
                 failure = "conflict"
@@ -1268,6 +1278,7 @@ class DocumentCaptureHandlers:
                         connection, context.workspace_id, _MESSAGE_NO_STORAGE
                     ),
                     catalogue_for=catalogue_for,
+                    runtime=packaged_runtime(self.catalogue_for),
                 )
             except OcrSelectionInvalid as error:
                 # The installation's recognition selection is not a selection at all, so there

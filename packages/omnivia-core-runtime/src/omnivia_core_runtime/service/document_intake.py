@@ -44,6 +44,7 @@ from omnivia_core.contracts.v1 import to_canonical_json
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service import processing_settings
 from omnivia_core_runtime.service.ocr_resource_lifecycle import ManagedOcrResources
+from omnivia_core_runtime.service.ocr_resource_store import OcrResourceSetIdentity
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
 from omnivia_core_runtime.service.source_capture import (
     _IDENTIFIER,
@@ -403,6 +404,7 @@ def capture_document_bytes(
     intent_kind: str,
     binding: BindingClaim | None = None,
     ocr_resources: ManagedOcrResources | None = None,
+    packaged_models: Mapping[str, OcrResourceSetIdentity] = {},
 ) -> DocumentCaptureResult:
     """Admit the exact immutable bytes supplied by a governed transfer boundary.
 
@@ -410,10 +412,11 @@ def capture_document_bytes(
     provide the complete snapshot bytes; Core recomputes identity and length here.
 
     `ocr_resources` is the installation's managed OCR cache, which the admission
-    freezes and pins the capture's exact resource identities against. It defaults to
-    `None` -- an installation with no managed cache -- rather than being required,
-    because this boundary admits under the fixed `legacy-default` profile reference
-    and has no production caller to forget it.
+    freezes and pins the capture's exact resource identities against, and
+    `packaged_models` is its bundled set. Both default to the empty answer -- an
+    installation with no managed cache and no verified payload -- rather than being
+    required, because this boundary admits under the fixed `legacy-default` profile
+    reference and has no production caller to forget them.
     """
     assert runner.connection is not None and runner.workspace_id is not None
     assert runner.generation is not None
@@ -531,6 +534,7 @@ def capture_document_bytes(
             profile_ref=_LEGACY_PROFILE_REF,
             profile_revision=_LEGACY_PROFILE_REVISION,
             resources=ocr_resources,
+            packaged=packaged_models,
         )
         try:
             written = _write_capture(
@@ -597,6 +601,7 @@ def _admitted_processing(
     profile_ref: str,
     profile_revision: str,
     resources: ManagedOcrResources | None,
+    packaged: Mapping[str, OcrResourceSetIdentity],
 ) -> tuple[str, str, str]:
     """What this capture is admitted under, against, and as: its three frozen facts.
 
@@ -661,6 +666,7 @@ def _admitted_processing(
                 resources,
                 pin=processing_settings.capture_pin(runner.workspace_id, capture_id),
                 languages=settings.languages,
+                packaged=packaged,
             )
         except processing_settings.ResourceStateIndeterminate as error:
             raise DocumentIntakeRefused(
@@ -728,6 +734,7 @@ def admit_document_capture_in_transaction(
     bulk_origin: Mapping[str, Any] | None,
     display_name: str | None,
     ocr_resources: ManagedOcrResources | None,
+    packaged_models: Mapping[str, OcrResourceSetIdentity],
 ) -> DocumentCaptureResult:
     """Write one transferred snapshot while the application mutation owns the transaction.
 
@@ -741,6 +748,15 @@ def admit_document_capture_in_transaction(
     nothing would admit a capture that can never recognise anything -- which is a
     decision no caller should be able to make by omission. ``None`` says there is no
     managed cache to ask, which is a determinate answer and not an absent one.
+
+    ``packaged_models`` is the same question for the bundled English and
+    orientation set of 11.2, whose identities come from the installation's own
+    verified payload, and it is required for the same reason: a caller that
+    silently passed nothing would admit a default-English capture that can never
+    recognise anything on an installation that packages the models for it. A
+    selection they cover whole is frozen against them and nothing is pinned,
+    because those bytes are the installation's rather than the managed cache's
+    and no eviction can reach them.
 
     The pin is taken before these rows are written, and therefore inside the
     mutation's transaction. A rollback leaves the pin without the capture that owns
@@ -855,6 +871,7 @@ def admit_document_capture_in_transaction(
         profile_ref=processing_profile_ref,
         profile_revision=processing_profile_revision,
         resources=ocr_resources,
+        packaged=packaged_models,
     )
     try:
         written = _write_capture(

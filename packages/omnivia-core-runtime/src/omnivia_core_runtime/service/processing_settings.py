@@ -58,6 +58,28 @@ inside one request. Both resolutions hold what they resolve, because resolving a
 selection and invoking the engine over it are two moments and the resources have
 to survive both.
 
+Two owners, one authority
+-------------------------
+
+§18.4 ships the engines and the default English resources as one signed
+component set and installs *additional* languages into the managed cache beside
+them, so an installation has two sources and :func:`installation_catalogue`
+composes both from the one root this process was given. The bundled English and
+orientation models are read straight out of the verified payload
+(:mod:`omnivia_core_runtime.distribution.packaged_runtime`): they are identified
+by the same five-field identity a managed set is, so a capture admitted against
+them freezes, compares and replays through the machinery every other selection
+uses, but nothing is pinned, projected or leased for them -- they are the
+installation's bytes rather than the cache's, and no eviction can reach them.
+Everything else is the managed path exactly as before, and either way the engine
+invoked is the absolute executable the payload declares.
+
+One Tesseract invocation takes one model directory, so a selection is served by
+exactly one source: a mixed order falls to the managed cache, and a bundled
+language the cache has not got is reported missing there. That is truthful and
+its recovery is the documented one -- install the language through the managed
+route -- rather than a projection mixing bytes from two owners under one digest.
+
 What this module still does not decide
 --------------------------------------
 
@@ -79,6 +101,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
+from omnivia_core_runtime.distribution.packaged_runtime import (
+    MODEL_IDENTITY,
+    VerifiedPackagedRuntime,
+    installed_runtime,
+)
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.service.ocr_resource_lifecycle import (
     MAX_PROJECTED_MODELS,
@@ -817,6 +844,7 @@ def admitted_resources(
     *,
     pin: str,
     languages: Sequence[str],
+    packaged: Mapping[str, OcrResourceSetIdentity] = {},
 ) -> AdmittedResources:
     """Freeze and pin the exact resources one capture is admitted against.
 
@@ -850,8 +878,26 @@ def admitted_resources(
     :meth:`~omnivia_core_runtime.service.ocr_resources.TrustedOcrCatalogue.resolve`
     answers for an explicit request against an unconfigured catalogue, so the
     condition a user sees does not depend on which of the two it was.
+
+    ``packaged`` is this installation's bundled set, from
+    :func:`packaged_identities` over a payload whose bytes were just verified,
+    and it is asked **first**: 11.12.2 says the model directory comes from the
+    signed installation manifest, so where the bundled set covers the whole
+    selection it is the answer even if the managed cache also holds one of those
+    languages. Such a selection is frozen against the packaged identities and
+    **not** pinned -- a pin is a claim on the managed cache's bytes against the
+    managed cache's own eviction, and these are neither its bytes nor evictable.
+    There is therefore nothing to hold, nothing to reclaim and no coordination
+    block to enter, which is also why a default English capture is admitted on an
+    installation whose managed cache does not exist at all.
     """
     requested = validated_languages(languages)
+    if packaged and all(language in packaged for language in requested):
+        selection = [packaged[language] for language in requested]
+        orientation = packaged.get(ORIENTATION_MODEL)
+        if orientation is not None:
+            selection.append(orientation)
+        return AdmittedResources(RESOURCES_FROZEN, selection=tuple(selection))
     if resources is None:
         return AdmittedResources(
             RESOURCES_UNAVAILABLE,
@@ -952,13 +998,92 @@ def selected_identities(
 
 
 def _catalogue_over(
-    selection: Sequence[OcrResourceSetIdentity], directory: Path
+    selection: Sequence[OcrResourceSetIdentity],
+    directory: Path,
+    tesseract_path: str | None,
 ) -> TrustedOcrCatalogue:
     """The trusted catalogue one published projection of `selection` serves."""
     return TrustedOcrCatalogue(
         installed={identity.language: identity.sha256 for identity in selection},
         tessdata_dir=str(directory),
+        tesseract_path=tesseract_path,
     )
+
+
+def packaged_identities(
+    runtime: VerifiedPackagedRuntime | None,
+) -> dict[str, OcrResourceSetIdentity]:
+    """The bundled models, as the same five-field identities the cache uses.
+
+    11.2 and 17.3 bundle English and the orientation data with the distribution,
+    and §18.4 ships them as part of one signed component set. They are therefore
+    identified exactly as a managed resource set is -- language, engine revision,
+    model version, size and digest -- so a capture admitted against them freezes,
+    compares and replays through the machinery every other selection already
+    uses, and its profile pins the same kind of model hash.
+
+    ``model_version`` is :data:`MODEL_IDENTITY`: the bundled set has one version,
+    which is the bytes the installation shipped, and the digest beside it is what
+    actually distinguishes them. The size and digest come from the verified
+    manifest and from nowhere else, so an identity here is a claim the
+    installation's own record just stood behind.
+    """
+    if runtime is None:
+        return {}
+    return {
+        language: OcrResourceSetIdentity(
+            language=language,
+            engine_version=TESSERACT_REVISION,
+            model_version=MODEL_IDENTITY,
+            byte_size=size,
+            sha256=digest,
+        )
+        for language, (size, digest) in runtime.models.items()
+    }
+
+
+def _packaged_catalogue(
+    runtime: VerifiedPackagedRuntime | None,
+) -> TrustedOcrCatalogue:
+    """What the bundled models serve, read straight out of the packaged payload.
+
+    The model directory is the one inside the verified candidate and the engine
+    is the absolute executable beside it, so a default English recognition runs
+    entirely out of bytes the installation manifest declared. No projection is
+    published and nothing is leased: packaged bytes belong to the installation
+    rather than to the managed cache, so there is no eviction for a lease to
+    stand in the way of.
+
+    An installation with no verified payload gets the empty catalogue, which
+    serves nothing -- the fail-closed default this build has always had.
+    """
+    if runtime is None:
+        return TrustedOcrCatalogue()
+    return TrustedOcrCatalogue(
+        installed={
+            language: digest for language, (_size, digest) in runtime.models.items()
+        },
+        tessdata_dir=str(runtime.tessdata_dir),
+        tesseract_path=str(runtime.tesseract),
+    )
+
+
+def _serves_packaged(
+    runtime: VerifiedPackagedRuntime | None, requested: Sequence[str]
+) -> bool:
+    """Whether the bundled models alone cover this whole ordered selection.
+
+    All of it or none of it. One Tesseract invocation takes one model directory,
+    so a selection mixing a bundled language with a managed one cannot be served
+    out of the packaged directory; such a selection goes to the managed cache,
+    and a language the cache has not got is reported as missing there. That is
+    the truthful answer and its recovery is the documented one -- install the
+    language through the managed route -- rather than a second projection that
+    would mix bytes from two owners under one digest.
+    """
+    if runtime is None:
+        return False
+    return all(language in runtime.models for language in requested)
 
 
 class _HeldSelections:
@@ -972,8 +1097,14 @@ class _HeldSelections:
     two.
     """
 
-    def __init__(self, resources: ManagedOcrResources) -> None:
+    def __init__(
+        self,
+        resources: ManagedOcrResources,
+        runtime: VerifiedPackagedRuntime | None = None,
+    ) -> None:
         self._resources = resources
+        self._runtime = runtime
+        self._packaged = _packaged_catalogue(runtime)
         self._stack = ExitStack()
         self._resolved: dict[tuple[str, ...], TrustedOcrCatalogue] = {}
 
@@ -1008,13 +1139,22 @@ class _HeldSelections:
         held = self._resolved.get(key)
         if held is not None:
             return held
+        if _serves_packaged(self._runtime, validated_languages(requested)):
+            # The bundled models cover the whole selection, so it is served out
+            # of the verified packaged directory. Nothing is projected and
+            # nothing is leased: these bytes are the installation's own and no
+            # managed eviction can reach them.
+            self._resolved[key] = self._packaged
+            return self._packaged
         try:
             selection = selected_identities(self._resources, requested)
             if selection:
                 directory = self._stack.enter_context(
                     self._resources.leased_selection(selection)
                 )
-                answer = _catalogue_over(selection, directory)
+                answer = _catalogue_over(
+                    selection, directory, self._packaged.tesseract_path
+                )
             else:
                 answer = TrustedOcrCatalogue()
         except (OcrResourceLifecycleRefused, OcrResourceStoreError, OSError):
@@ -1045,9 +1185,25 @@ class ManagedSelectionAuthority:
     It is deliberately not itself a resolver. A resolution that is not held is
     the defect this class exists to prevent, so the only way to resolve through
     it is to take a lease first and resolve inside it.
+
+    It also carries this installation's verified packaged runtime, because the
+    two halves of §18.4 are one component set: the bundled English and
+    orientation models and the engines that read them ship with the
+    distribution, and additional languages are installed into the managed cache
+    beside them. A selection the bundled models cover is served from the
+    packaged directory with no lease at all; anything else is the managed path
+    exactly as before, invoked through the same packaged engine.
     """
 
     resources: ManagedOcrResources
+    #: The verified payload, or ``None`` for an installation with none -- which
+    #: serves nothing and invokes no engine, the fail-closed default.
+    runtime: VerifiedPackagedRuntime | None = None
+
+    @property
+    def packaged(self) -> TrustedOcrCatalogue:
+        """What the bundled models serve, read out of the verified payload."""
+        return _packaged_catalogue(self.runtime)
 
     @contextmanager
     def lease(self) -> Iterator[Callable[[Sequence[str]], TrustedOcrCatalogue]]:
@@ -1064,7 +1220,7 @@ class ManagedSelectionAuthority:
         capture -- which returns before any catalogue is consulted -- leases
         nothing at all.
         """
-        held = _HeldSelections(self.resources)
+        held = _HeldSelections(self.resources, self.runtime)
         try:
             yield held.catalogue
         finally:
@@ -1128,6 +1284,49 @@ class ManagedSelectionAuthority:
                 f"this capture was admitted against OCR resources for another "
                 f"engine revision than {TESSERACT_REVISION}: {', '.join(foreign)}"
             )
+        bundled = tuple(
+            identity
+            for identity in admitted.selection
+            if identity.model_version == MODEL_IDENTITY
+        )
+        if bundled and len(bundled) == len(admitted.selection):
+            # Admitted wholly against the bundled set, which
+            # :data:`~omnivia_core_runtime.distribution.packaged_runtime.MODEL_IDENTITY`
+            # is the marker for: only the packaged path writes that model
+            # version, and a managed installation that claimed it would be
+            # misstating which bytes it installed.
+            packaged = packaged_identities(self.runtime)
+            if all(
+                packaged.get(identity.language) == identity
+                for identity in admitted.selection
+            ):
+                # The identities are compared whole -- size and digest included
+                # -- against the payload just verified. No pin was ever taken
+                # for these bytes and none is asserted: the managed cache does
+                # not own them and cannot evict them.
+                yield self.packaged.resolve(order)
+                return
+            # The payload is absent, or its bytes are not the ones this capture
+            # was admitted against -- a reinstalled or replaced installation.
+            # That is a resource *condition*, recorded against the extraction
+            # and terminal: deferring to the managed path would ask it for a
+            # durable pin nothing ever wrote, which pauses the obligation for
+            # ever over bytes no installation will put back under that name.
+            yield OcrResources(
+                engine=TESSERACT_ENGINE,
+                engine_revision=TESSERACT_REVISION,
+                languages=order,
+                available=False,
+                reason=REASON_UNVERIFIED,
+                unavailable_models=tuple(
+                    identity.language
+                    for identity in admitted.selection
+                    if packaged.get(identity.language) != identity
+                    and identity.language != ORIENTATION_MODEL
+                )
+                or order,
+            )
+            return
         with ExitStack() as stack:
             try:
                 directory = stack.enter_context(
@@ -1155,7 +1354,9 @@ class ManagedSelectionAuthority:
                 return
             except (OcrResourceStoreError, OSError) as error:
                 raise ResourceStateIndeterminate(str(error)) from error
-            yield _catalogue_over(admitted.selection, directory).resolve(order)
+            yield _catalogue_over(
+                admitted.selection, directory, self.packaged.tesseract_path
+            ).resolve(order)
 
 
 def installation_catalogue(
@@ -1163,9 +1364,21 @@ def installation_catalogue(
 ) -> ManagedSelectionAuthority | None:
     """How one installation resolves a selection, or ``None`` when it cannot.
 
+    Both halves of §18.4 are composed here, from the one trusted pointer this
+    process was given: the managed language cache under the installation-state
+    root, and the verified packaged runtime an installer placed beneath it. The
+    payload is re-verified on every composition -- every declared byte digested
+    -- because a cached verdict cannot notice a file that moved since. It is a
+    start-time cost and not a per-request one: this is called while the service
+    is being composed, and the authority it returns is then held. Measured at
+    0.16 s for a 286 MiB payload on Apple silicon, where SHA-256 is accelerated.
+
     ``None`` means this process has no installation root to ask, or the root is
     not one a managed cache may live under. The caller then falls back to the
-    packaged catalogue, which serves nothing -- fail-closed, not host-discovered.
+    packaged fail-closed catalogue, which serves nothing -- fail-closed, not
+    host-discovered. An installation with a cache but no verified payload is an
+    authority that serves managed languages and invokes no engine, which is the
+    same fail-closed answer one step further in.
     """
     if installation_root is None:
         return None
@@ -1173,7 +1386,9 @@ def installation_catalogue(
         resources = ManagedOcrResources(Path(installation_root) / OCR_RESOURCES_DIR)
     except OcrResourceStoreError:
         return None
-    return ManagedSelectionAuthority(resources)
+    return ManagedSelectionAuthority(
+        resources, runtime=installed_runtime(installation_root)
+    )
 
 
 def managed_resources(source: object) -> ManagedOcrResources | None:
@@ -1192,6 +1407,20 @@ def managed_resources(source: object) -> ManagedOcrResources | None:
     """
     if isinstance(source, ManagedSelectionAuthority):
         return source.resources
+    return None
+
+
+def packaged_runtime(source: object) -> VerifiedPackagedRuntime | None:
+    """The verified packaged runtime behind one resolution source, if there is one.
+
+    The same shape as :func:`managed_resources` and for the same reason: the
+    callers that need the packaged *paths* -- an admission that freezes the
+    bundled identities, and an extraction that invokes the engines -- hold the
+    composed source and not the payload, and the union of the shapes that source
+    may take is declared in the module that consumes it.
+    """
+    if isinstance(source, ManagedSelectionAuthority):
+        return source.runtime
     return None
 
 
@@ -1221,6 +1450,8 @@ __all__ = [
     "installation_catalogue",
     "installed_identities",
     "managed_resources",
+    "packaged_identities",
+    "packaged_runtime",
     "read_settings",
     "resolves_resources",
     "selected_identities",
