@@ -41,6 +41,10 @@ public struct NativeHandoffSlotV1: Codable, Equatable, Sendable {
     }
 }
 
+private struct OfferSchemaHeader: Decodable {
+    let schema: String
+}
+
 public struct NativeHandoffOfferV1: Codable, Equatable, Sendable {
     public let schema: String
     public let requestNonce: String
@@ -197,8 +201,14 @@ public final class NativeHandoffMailbox: @unchecked Sendable {
         ) else { return [] }
         var pending: [NativeHandoffOfferV1] = []
         for file in files where file.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: file),
-                  let offer = try? decoder.decode(NativeHandoffOfferV1.self, from: data)
+            guard let data = try? Data(contentsOf: file) else { continue }
+            // An offer from a schema this build does not know belongs to a newer one: blocked here,
+            // but left on disk with its snapshots for the build that wrote it.
+            if let header = try? decoder.decode(OfferSchemaHeader.self, from: data),
+               header.schema != "omnivia.native-handoff.offer.v1" {
+                continue
+            }
+            guard let offer = try? decoder.decode(NativeHandoffOfferV1.self, from: data)
             else {
                 try? fileManager.removeItem(at: file)
                 continue

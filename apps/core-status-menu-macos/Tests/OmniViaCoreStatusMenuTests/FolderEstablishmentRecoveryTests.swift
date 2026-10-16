@@ -363,7 +363,7 @@ final class FolderEstablishmentRecoveryTests: XCTestCase {
         _ = try await lane.environment.folderMonitoring.stop(
             subscriptionID: subscription.subscriptionID
         )
-        try admit(baseline[0], captureID: "dcap-" + String(repeating: "a", count: 64), in: lane)
+        try admit(baseline[0], captureID: "dcap-" + String(repeating: "a", count: 64), queue: lane.environment.queue)
 
         await lane.environment.folderMonitoring.reconcileReceipts()
         let reports = await lane.environment.folderMonitoring.reconcileAll()
@@ -383,6 +383,65 @@ final class FolderEstablishmentRecoveryTests: XCTestCase {
         _ = await reopened.reconcilePendingFolderEstablishment()
         await reopened.folderMonitoring.reconcileReceipts()
         try await assertStoppedForGood(reopened, subscriptionID: subscription.subscriptionID)
+    }
+
+    /// END-01: an add with Keep updated that Core has not yet confirmed keeps its identities across
+    /// a restart, observes nothing until the confirmation, and is then activated as the same watch.
+    func testAWaitingFolderWatchKeepsItsIdentitiesAcrossARestartAndObservesNothingUntilActivated() async throws {
+        let lane = try lane(files: 2)
+        let submission = FolderCaptureSubmission(
+            environment: lane.environment,
+            workspaceRef: "workspace-1"
+        )
+        let plan = try submission.plan(root: lane.root, policy: Self.keepUpdated)
+        let baseline = try await submission.submit(plan)
+        let submitted = try XCTUnwrap(lane.environment.folderSubscriptions.all().first)
+        XCTAssertEqual(submitted.state, .waitingForCore)
+
+        let reopened = try lane.reopen()
+        let recovered = await reopened.reconcilePendingFolderEstablishment()
+        XCTAssertTrue(recovered.isEmpty)
+        XCTAssertEqual(reopened.folderSubscriptions.all(), [submitted])
+        XCTAssertEqual(
+            reopened.queue.allEntries().map(\.intent.itemId).sorted(),
+            baseline.map(\.intent.itemId).sorted()
+        )
+        try Data("new before activation".utf8).write(to: lane.root.appendingPathComponent("new.md"))
+
+        let waiting = await reopened.folderMonitoring.reconcileAll()
+        XCTAssertEqual(waiting.map(\.state), [.waitingForCore])
+        let beforeActivation = await reopened.folderMonitoring.activeObservationRoots()
+        XCTAssertTrue(beforeActivation.isEmpty)
+        XCTAssertEqual(reopened.queue.allEntries().count, baseline.count)
+
+        for (index, entry) in baseline.enumerated() {
+            try admit(
+                entry,
+                captureID: "dcap-" + String(index) + String(repeating: "a", count: 63),
+                queue: reopened.queue
+            )
+        }
+        _ = await reopened.folderMonitoring.reconcileAll()
+
+        let activated = try XCTUnwrap(reopened.folderSubscriptions.all().first)
+        XCTAssertEqual(reopened.folderSubscriptions.all().count, 1)
+        XCTAssertEqual(activated.subscriptionID, submitted.subscriptionID)
+        XCTAssertEqual(activated.rootRef, submitted.rootRef)
+        // Each member is the one the add created, now holding the capture Core confirmed for it.
+        // The file that appeared while the watch was waiting is found only after activation.
+        let retained = Array(activated.members.prefix(submitted.members.count))
+        XCTAssertEqual(retained.map(\.memberID), submitted.members.map(\.memberID))
+        XCTAssertEqual(retained.map(\.accessRef), submitted.members.map(\.accessRef))
+        XCTAssertEqual(retained.map(\.baselineItemID), submitted.members.map(\.baselineItemID))
+        XCTAssertEqual(activated.members.count, submitted.members.count + 1)
+        XCTAssertEqual(
+            Set(submitted.members.compactMap(\.baselineItemID)),
+            Set(baseline.map(\.intent.itemId))
+        )
+        XCTAssertEqual(activated.members.compactMap(\.currentSuccessfulCaptureID).count, baseline.count)
+        XCTAssertEqual(activated.state, .active)
+        let afterActivation = await reopened.folderMonitoring.activeObservationRoots()
+        XCTAssertEqual(afterActivation.map(\.subscriptionID), [submitted.subscriptionID])
     }
 
     /// The other canonical outcome. A baseline Core refuses would normally send
@@ -447,14 +506,14 @@ final class FolderEstablishmentRecoveryTests: XCTestCase {
         }
     }
 
-    private func admit(_ entry: CaptureQueueEntry, captureID: String, in lane: Lane) throws {
+    private func admit(_ entry: CaptureQueueEntry, captureID: String, queue: CaptureIntentQueue) throws {
         let digest = "sha256:" + String(repeating: "b", count: 64)
-        let staging = try lane.environment.queue.beginStage(
+        let staging = try queue.beginStage(
             itemID: entry.intent.itemId,
             requestDigest: digest,
             descriptorDigest: digest
         )
-        _ = try lane.environment.queue.markAdmitted(
+        _ = try queue.markAdmitted(
             itemID: entry.intent.itemId,
             attemptGeneration: staging.attemptGeneration,
             captureID: captureID

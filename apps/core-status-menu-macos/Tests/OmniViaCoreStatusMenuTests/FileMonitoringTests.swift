@@ -112,6 +112,130 @@ final class FileMonitoringTests: XCTestCase {
         XCTAssertEqual(reopened.fileSubscriptions.all().map(\.state), [.active])
     }
 
+    /// END-01: an interrupted initial add keeps its identities. The watch is still waiting for
+    /// Core across a restart, nothing is read or observed until Core's admission is confirmed, and
+    /// the confirmation then activates the very subscription the add created.
+    func testAWaitingFileWatchKeepsItsIdentitiesAcrossARestartAndReadsNothingUntilActivated() async throws {
+        let root = try temporaryDirectory()
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        let original = root.appendingPathComponent("watched.txt")
+        try Data("baseline".utf8).write(to: original)
+        let reader = CountingReader()
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: BookmarkCodec(),
+            reader: reader
+        )
+        let baseline = try await ManualCaptureSubmission(
+            environment: environment,
+            workspaceRef: "workspace-1"
+        ).submit([ManualCaptureCandidate(url: original, keepUpdated: true)])
+        let submitted = try XCTUnwrap(environment.fileSubscriptions.all().first)
+        let readsForTheBaseline = reader.count
+        XCTAssertEqual(submitted.state, .waitingForCore)
+        try Data("changed before activation".utf8).write(to: original)
+
+        let reopenedReader = CountingReader()
+        let reopened = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: BookmarkCodec(),
+            reader: reopenedReader
+        )
+        let restored = try XCTUnwrap(reopened.fileSubscriptions.all().first)
+        XCTAssertEqual(reopened.fileSubscriptions.all().count, 1)
+        XCTAssertEqual(restored, submitted)
+        XCTAssertEqual(reopened.queue.allEntries().map(\.intent.itemId), baseline.map(\.intent.itemId))
+        XCTAssertEqual(restored.baselineItemID, baseline[0].intent.itemId)
+
+        await reopened.fileMonitoring.markDirty(subscriptionIDs: [restored.subscriptionID])
+        let waiting = await reopened.fileMonitoring.reconcileAll()
+        XCTAssertEqual(waiting.map(\.state), [.waitingForCore])
+        XCTAssertEqual(waiting.map(\.queued), [false])
+        let beforeActivation = await reopened.fileMonitoring.activeObservationRoots()
+        XCTAssertTrue(beforeActivation.isEmpty)
+        XCTAssertEqual(reopenedReader.count, 0)
+        XCTAssertEqual(readsForTheBaseline, 1)
+        XCTAssertEqual(reopened.queue.allEntries().count, 1)
+
+        let captureID = "dcap-" + String(repeating: "a", count: 64)
+        try admit(baseline[0], captureID: captureID, queue: reopened.queue)
+        let active = await reopened.fileMonitoring.reconcileAll()
+
+        XCTAssertEqual(active.map(\.state), [.active])
+        let activated = try XCTUnwrap(reopened.fileSubscriptions.all().first)
+        XCTAssertEqual(activated.subscriptionID, submitted.subscriptionID)
+        XCTAssertEqual(activated.accessRef, submitted.accessRef)
+        XCTAssertEqual(activated.baselineItemID, submitted.baselineItemID)
+        XCTAssertEqual(activated.currentSuccessfulCaptureID, captureID)
+        let afterActivation = await reopened.fileMonitoring.activeObservationRoots()
+        XCTAssertEqual(afterActivation.map(\.subscriptionID), [submitted.subscriptionID])
+    }
+
+    /// END-01: stopping a file watch whose initial capture Core has not yet answered is a one-way
+    /// door, whichever way the late answer goes. An admission is not recorded against the stopped
+    /// watch, and a refusal does not send it to `.paused`, which Resume accepts.
+    func testALateReceiptDoesNotReactivateALocallyStoppedFileWatch() async throws {
+        for outcome in ["admitted", "failed"] {
+            let root = try temporaryDirectory()
+            let state = root.appendingPathComponent("state", isDirectory: true)
+            let original = root.appendingPathComponent("watched.txt")
+            try Data("baseline".utf8).write(to: original)
+            let environment = try DocumentIntakeEnvironment(stateRoot: state, bookmarkCodec: BookmarkCodec())
+            let baseline = try await ManualCaptureSubmission(
+                environment: environment,
+                workspaceRef: "workspace-1"
+            ).submit([ManualCaptureCandidate(url: original, keepUpdated: true)])
+            let subscriptionID = try XCTUnwrap(environment.fileSubscriptions.all().first?.subscriptionID)
+            XCTAssertEqual(environment.fileSubscriptions.all().map(\.state), [.waitingForCore])
+
+            _ = try await environment.fileMonitoring.stop(subscriptionID: subscriptionID)
+            if outcome == "admitted" {
+                try admit(
+                    baseline[0],
+                    captureID: "dcap-" + String(repeating: "a", count: 64),
+                    queue: environment.queue
+                )
+            } else {
+                _ = try environment.queue.markFailed(
+                    itemID: baseline[0].intent.itemId,
+                    failureCode: "delivery-refused"
+                )
+            }
+
+            _ = await environment.fileMonitoring.reconcileReceipts()
+            let reports = await environment.fileMonitoring.reconcileAll()
+            XCTAssertEqual(reports.map(\.state), [.stopped], outcome)
+
+            try await assertStoppedForGood(environment, subscriptionID: subscriptionID, outcome: outcome)
+            // And the stop survives a restart.
+            let reopened = try DocumentIntakeEnvironment(stateRoot: state, bookmarkCodec: BookmarkCodec())
+            _ = await reopened.fileMonitoring.reconcileReceipts()
+            try await assertStoppedForGood(reopened, subscriptionID: subscriptionID, outcome: outcome)
+        }
+    }
+
+    private func assertStoppedForGood(
+        _ environment: DocumentIntakeEnvironment,
+        subscriptionID: String,
+        outcome: String
+    ) async throws {
+        let stopped = try XCTUnwrap(
+            environment.fileSubscriptions.all().first { $0.subscriptionID == subscriptionID },
+            outcome
+        )
+        XCTAssertEqual(stopped.state, .stopped, outcome)
+        XCTAssertNil(stopped.currentSuccessfulCaptureID, outcome)
+        XCTAssertFalse(stopped.needsReconciliation, outcome)
+        let observed = await environment.fileMonitoring.activeObservationRoots()
+        XCTAssertTrue(observed.isEmpty, outcome)
+        do {
+            _ = try await environment.fileMonitoring.resume(subscriptionID: subscriptionID)
+            XCTFail("a stopped watch must not resume: \(outcome)")
+        } catch {
+            XCTAssertEqual(error as? FolderMonitoringError, .subscriptionNotActive, outcome)
+        }
+    }
+
     func testRejectedAutomaticVersionPausesAndCompletesTheGenerationItPublished() async throws {
         let root = try temporaryDirectory()
         let original = root.appendingPathComponent("watched.txt")

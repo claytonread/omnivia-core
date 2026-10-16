@@ -4879,14 +4879,42 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderEstablishmentRecoveryTests.swift",
           "symbol": "testANewSubmissionFinishesAPendingEstablishmentBeforeCountingWatches",
           "covers": "A pending establishment is finished before a new submission counts watches, so a partial state is not double-counted."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderEstablishmentRecoveryTests.swift",
+          "symbol": "testAWaitingFolderWatchKeepsItsIdentitiesAcrossARestartAndObservesNothingUntilActivated",
+          "covers": "A Keep updated folder add still waiting for Core survives a restart with the same subscription, root, members and baseline items; nothing is observed or queued, and not even a file that appears meanwhile is looked at, until Core confirms the baselines, which activates that same watch."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderEstablishmentRecoveryTests.swift",
+          "symbol": "testALateBaselineAdmissionDoesNotReactivateALocallyStoppedWatch",
+          "covers": "A folder watch stopped while its baseline awaits Core stays stopped when the admission lands late, records no capture against itself, queues nothing, and does not resume, in the same process and after a restart."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderEstablishmentRecoveryTests.swift",
+          "symbol": "testALateBaselineFailureDoesNotReopenALocallyStoppedWatch",
+          "covers": "A late refusal of the baseline does not send a stopped folder watch to review, which Resume accepts."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FileMonitoringTests.swift",
+          "symbol": "testAWaitingFileWatchKeepsItsIdentitiesAcrossARestartAndReadsNothingUntilActivated",
+          "covers": "A Keep updated file add still waiting for Core survives a restart as the same subscription, access reference and baseline item; the source is never read again and nothing is observed, even after a change signal, until Core's admission is confirmed, which activates that same subscription."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FileMonitoringTests.swift",
+          "symbol": "testALateReceiptDoesNotReactivateALocallyStoppedFileWatch",
+          "covers": "A file watch stopped while its first capture awaits Core stays stopped whether the answer is an admission or a refusal: no capture is recorded against it, it is not paused (which Resume accepts), it is not observed, and it does not resume, in the same process and after a restart."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The no-late-reactivation-after-a-local-stop clause is not covered. No test stops a watch locally while its activation is still pending and then shows the late canonical confirmation failing to reactivate it, which is the one-way-door this gate requires.",
-      "limitations": "Crash-safe establishment is covered at every modelled boundary and is strong. The interruptions are store-level rather than real process kills, Core admission is a fake, and the bookmark codec is stubbed.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing on 2026-10-16 as unsigned swift test cases over temporary folders and the production DocumentIntakeEnvironment, queue and subscription stores, for both the folder and the individual-file path. The interruptions are store-level and a restart is a second environment over the same state rather than a real process kill; Core admission and refusal are applied to the queue directly, and the bookmark codec is stubbed. A file add registers its watch in the same critical section as the queue commit rather than behind a durable pending intent, so a kill between those two writes would leave the capture queued without a watch; the add reports that case as queued once only rather than hiding it, and it is not modelled here. The late-receipt guard is in FileMonitoringCoordinator and FolderMonitoringCoordinator; stopping is final for either, and re-adding is the only route back.",
       "source_bindings": [
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FileMonitoringCoordinator.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderCaptureSubmission.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderMonitoringCoordinator.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderSubscriptionStore.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ManualCaptureSubmission.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift"
       ]
     },
@@ -5121,16 +5149,46 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AutomaticSchedulingDurabilityTests.swift",
           "symbol": "testAPriorV1PublicationWithNoRefIsRecoveredAsALegacyUnresolvedIntent",
           "covers": "A prior v1 publication is recovered as an explicitly legacy unresolved intent rather than being reinterpreted."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/NativeAccessStoreTests.swift",
+          "symbol": "testV1AccessUpgradeSurvivesADowngradeThatBlocksANewerDocument",
+          "covers": "A v1 access store is upgraded and rolled back: every grant keeps its reference, document, generation and route, the migrated root group holds no owner, cannot enumerate and cannot enrol a sibling (no watch consent), and both a section the build does not define under a known schema name and an unknown schema name are refused whole with the bytes untouched."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIntentQueueTests.swift",
+          "symbol": "testV1QueueUpgradeSurvivesADowngradeThatBlocksANewerManifest",
+          "covers": "A v1 queue manifest is upgraded and rolled back: the queued request keeps its item, canonical digest, operation key and the attempt key derived from it, and a newer entry field or a newer schema name is refused with the bytes untouched."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/NativeHandoffMailboxTests.swift",
+          "symbol": "testAnOfferFromANewerSchemaIsBlockedWithoutRewritingTheMailbox",
+          "covers": "An offer from a newer mailbox schema is refused on decode and the offer already held is left exactly as written."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/NativeHandoffMailboxTests.swift",
+          "symbol": "testPendingOffersSweepLeavesANewerSchemasOfferAndItsSnapshotsInPlace",
+          "covers": "A newer schema's offer sitting in the mailbox is not returned as pending and is not deleted, with its snapshots, by the pending-offer sweep."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AutomaticSchedulingDurabilityTests.swift",
+          "symbol": "testANewerBuildsDocumentIsRefusedAndLeftExactlyAsItWas",
+          "covers": "A scheduling document under a newer schema name is refused and left byte for byte as it was."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AutomaticSchedulingDurabilityTests.swift",
+          "symbol": "testASectionThisBuildDoesNotDefineIsRefusedWholeAndLeftExactlyAsItWas",
+          "covers": "A scheduling document with a section this build does not define under its own schema name is refused whole rather than read as a subset and rewritten."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test performs a downgrade after the upgrade, so the round trip the gate names is never exercised. No test asserts that a migrated v1 access record acquires no watch consent either, which is the gate's one substantive behavioural clause beyond schema handling.",
-      "limitations": "Forward migration and unknown-schema preservation are covered thoroughly at every store. Both are proven by writing a legacy or future document and reopening it, with no build change and no second component version involved.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing on 2026-10-16 as unsigned swift test cases. A downgrade is never a second build: the current reader is the older reader, and the newer install is simulated by writing the documents a later full solution would leave, in both shapes it can take (an undefined section under a known schema name, and an unknown schema name). The round trip is proven per store (access, queue, mailbox, scheduling) rather than as one combined fixture. The stores refuse a document's unknown top-level keys; an unknown field inside an individual native-access record or handoff offer is still read as a subset.",
       "source_bindings": [
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/AutomaticSchedulingStateMachine.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeHandoffMailbox.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/AutomaticSchedulingStateMachine.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeHandoffMailbox.swift"
       ]
     },
     {

@@ -164,6 +164,31 @@ private struct AutomaticSchedulingDocument: Codable, Equatable {
     /// Where background rotation stands. It need not name a tracked scope: the entry it names may
     /// since have gone clean, and rotation simply resumes after whatever it names.
     var backgroundCursor: AutomaticSchedulingKeyRecord?
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schema
+        case entries
+        case backgroundCursor
+    }
+
+    init(schema: String, entries: [AutomaticSchedulingEntryRecord], backgroundCursor: AutomaticSchedulingKeyRecord?) {
+        self.schema = schema
+        self.entries = entries
+        self.backgroundCursor = backgroundCursor
+    }
+
+    init(from decoder: Decoder) throws {
+        // A later build can add a section under this schema name. Reading it as the subset this
+        // build knows would drop it on the next write, so it is refused with the bytes untouched.
+        try rejectUnknownKeys(decoder, CodingKeys.self)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try container.decode(String.self, forKey: .schema)
+        entries = try container.decode([AutomaticSchedulingEntryRecord].self, forKey: .entries)
+        backgroundCursor = try container.decodeIfPresent(
+            AutomaticSchedulingKeyRecord.self,
+            forKey: .backgroundCursor
+        )
+    }
 }
 
 private struct AutomaticSchedulingHeader: Codable {

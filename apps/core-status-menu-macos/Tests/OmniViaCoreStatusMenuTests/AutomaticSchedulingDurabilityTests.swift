@@ -693,6 +693,17 @@ final class AutomaticSchedulingDurabilityTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
     }
 
+    func testASectionThisBuildDoesNotDefineIsRefusedWholeAndLeftExactlyAsItWas() throws {
+        var document = try base()
+        document["publicationLeases"] = [["whatever": "a later slice adds"]]
+        let bytes = try write(document)
+
+        expectOpenFails(.invalidState)
+        // The same schema name, so it cannot be refused by header. Reading it as the subset this
+        // build knows would drop the section on the next write.
+        XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
+    }
+
     func testMalformedAndTamperedStateIsRefusedWithoutRewritingTheFile() throws {
         let cases: [(String, AutomaticSchedulingError, (inout [String: Any]) -> Void)] = [
             ("missing schema", .invalidState, { $0.removeValue(forKey: "schema") }),

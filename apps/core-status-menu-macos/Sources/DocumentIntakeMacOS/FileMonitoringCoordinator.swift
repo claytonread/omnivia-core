@@ -718,6 +718,11 @@ public actor FileMonitoringCoordinator {
         let entries = Dictionary(grouping: queue.allEntries(), by: \.intent.itemId)
             .compactMapValues { $0.count == 1 ? $0[0] : nil }
         return try subscriptions.update(id: persisted.subscriptionID) { value in
+            // Stopping is a one-way door. A receipt that lands after a local stop is an answer to
+            // work the watch no longer wants: it neither activates a watch that was waiting nor
+            // sends one to `.paused`, which `resume` accepts and so is the same reactivation by
+            // another name. Re-adding the file is the only way back.
+            guard value.state != .stopped else { return }
             if let baseline = entries[value.baselineItemID] {
                 if baseline.state == .admitted, let captureID = baseline.admittedCaptureID {
                     if value.state == .waitingForCore || value.currentSuccessfulCaptureID == nil {

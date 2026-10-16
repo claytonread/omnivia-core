@@ -327,6 +327,52 @@ final class NativeHandoffMailboxTests: XCTestCase {
         XCTAssertEqual(mailbox.pendingOffers(now: now), [offer])
     }
 
+    /// The same offer, but sitting in the mailbox: sweeping pending offers must treat a newer
+    /// schema's offer as someone else's, not as junk to delete along with its snapshots.
+    func testPendingOffersSweepLeavesANewerSchemasOfferAndItsSnapshotsInPlace() throws {
+        let root = try temporaryDirectory()
+        let mailbox = try NativeHandoffMailbox(root: root)
+        let now = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
+        func offer() -> NativeHandoffOfferV1 {
+            NativeHandoffOfferV1(
+                requestNonce: UUID().uuidString.lowercased(),
+                expectedOwnerBundleID: NativeHandoffMailbox.companionBundleID,
+                senderBundleID: NativeHandoffMailbox.finderBundleID,
+                surface: .finderQuickAction,
+                createdAt: now,
+                expiresAt: now.addingTimeInterval(60),
+                slots: [NativeHandoffSlotV1(
+                    slotID: UUID().uuidString.lowercased(),
+                    displayName: "brief.pdf",
+                    sourceKind: .originalBookmark,
+                    bookmark: Data("bookmark".utf8)
+                )]
+            )
+        }
+        let current = offer()
+        let newer = offer()
+        try mailbox.storeAuthenticatedOffer(current, now: now)
+        let newerFile = root
+            .appendingPathComponent("offers", isDirectory: true)
+            .appendingPathComponent("\(newer.requestNonce).json", isDirectory: false)
+        let newerBytes = Data(
+            String(decoding: try mailbox.encodedOffer(newer, now: now), as: UTF8.self)
+                .replacingOccurrences(
+                    of: "omnivia.native-handoff.offer.v1",
+                    with: "omnivia.native-handoff.offer.v2"
+                )
+                .utf8
+        )
+        try newerBytes.write(to: newerFile)
+        let snapshots = try mailbox.prepareSnapshotDirectory(nonce: newer.requestNonce)
+
+        XCTAssertEqual(mailbox.pendingOffers(now: now), [current])
+
+        XCTAssertEqual(try Data(contentsOf: newerFile), newerBytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: snapshots.path))
+        XCTAssertNil(mailbox.pendingOffer(nonce: newer.requestNonce, now: now))
+    }
+
     func testAnExtensionCompletesOnlyOnAdoptionOfEveryOfferedSlot() {
         let offered = (0..<3).map { _ in UUID().uuidString.lowercased() }
 
