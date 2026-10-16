@@ -401,7 +401,9 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
 
     public var statusLabel: String {
         switch self {
-        case let .file(value): Self.label(value.state)
+        // A refresh that failed, or bytes Core's copy cannot stand behind, is shown as that
+        // and never as the pause or the watch it sits beside.
+        case let .file(value): value.attention.map(Self.label) ?? Self.label(value.state)
         case let .folder(value): Self.label(value.state)
         // An unconfirmed establishment is not an addition that finished. It
         // says so in the shared "Waiting for Core" wording rather than
@@ -414,7 +416,7 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
 
     public var statusFilter: FilesAndFoldersStatusFilter {
         switch self {
-        case let .file(value): Self.bucket(value.state)
+        case let .file(value): value.attention == nil ? Self.bucket(value.state) : .needsAttention
         case let .folder(value): Self.bucket(value.state)
         // Progress persists until the association is confirmed, so a
         // provisional group never filters as stopped or complete.
@@ -525,6 +527,13 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
         case .updateRequired:
             "This app and Core could not agree on a version. Nothing was sent, and this stays queued on this Mac until the update is installed. Choose Try again once it is."
         default: nil
+        }
+    }
+
+    static func label(_ attention: FileAttention) -> String {
+        switch attention.kind {
+        case .refreshFailed: "Refresh failed"
+        case .copyNotCurrent: "Copy in Core not current"
         }
     }
 
@@ -1100,6 +1109,9 @@ public struct FilesAndFoldersModel: Sendable {
                 value: value.lastObservedAt ?? "No change recorded yet"
             ),
         ]
+        if let attention = value.attention {
+            facts.append(attentionFact(attention, for: value))
+        }
         if value.state == .stopped {
             facts.append(Self.retainedLinksFact)
         }
@@ -1108,6 +1120,65 @@ public struct FilesAndFoldersModel: Sendable {
         }
         facts += coreHistoryFacts(documentID: value.linkedDocumentID)
         return facts
+    }
+
+    /// The latest refresh outcome that was neither added nor up to date, stated beside the
+    /// capture it left in place and never instead of it (design §12, §13.2, §13.5).
+    private func attentionFact(_ attention: FileAttention, for value: FileSubscription) -> DetailFact {
+        switch attention.kind {
+        case .refreshFailed:
+            return DetailFact(
+                label: "Latest refresh",
+                value: "Failed at \(attention.recordedAt). Core did not accept the refreshed file "
+                    + "(\(attention.code)). Nothing was replaced. "
+                    + priorCaptureText(attention.priorCaptureID, for: value)
+                    + (attention.itemID.map { " The failed refresh is its own record in Recent additions (item \($0))." } ?? "")
+            )
+        case .copyNotCurrent:
+            return DetailFact(
+                label: "Latest check",
+                value: "The file has not changed since the last capture, but it is not up to "
+                    + "date: \(Self.shortfallText(attention.code)). Nothing was added or replaced, "
+                    + "the checked time was not advanced, and automatic updates do not add it "
+                    + "again. " + priorCaptureText(attention.priorCaptureID, for: value)
+            )
+        }
+    }
+
+    /// Whether the last successful capture is still available, from Core's own current read
+    /// of the document, and never from this Mac's memory of having captured it.
+    private func priorCaptureText(_ captureID: String?, for value: FileSubscription) -> String {
+        guard let captureID else { return "No earlier successful capture exists." }
+        guard case let .current(history) = coreHistory.availability(for: value.linkedDocumentID),
+              let capture = history.captures.first(where: { $0.captureID == captureID })
+        else {
+            return "The last successful capture (\(captureID)) is kept; whether Core still "
+                + "serves it could not be confirmed just now."
+        }
+        guard capture.retentionState == .retained else {
+            return "The last successful capture (\(captureID)) is no longer available: "
+                + "\(Self.retentionText(capture))."
+        }
+        let searchable = history.extraction.retrievalState == .retrievable
+            && history.extractions.first {
+                $0.extractionRevisionID == history.extraction.currentExtractionID
+            }?.captureID == captureID
+        return searchable
+            ? "The last successful capture (\(captureID)) remains available and searchable in Core."
+            : "The last successful capture (\(captureID)) is retained, but Core does not report it "
+                + "as the current searchable version."
+    }
+
+    static func shortfallText(_ code: String) -> String {
+        switch CurrentCaptureShortfall(rawValue: code) {
+        case .noSuccessfulCapture: "Core holds no successful capture of it"
+        case .sourceRemoved: "its source was removed in Core"
+        case .originalNotConnected: "Core holds no connected original for it"
+        case .captureDiffers: "Core's capture is not these bytes"
+        case .captureNotRetained: "Core's copy has expired or been deleted"
+        case .notRetrievable: "Core publishes no searchable version of it"
+        case nil: "Core could not confirm its copy (\(code))"
+        }
     }
 
     /// What a Locate still waiting on Core means (design §9.5): the old file is no longer read,
@@ -1194,7 +1265,7 @@ public struct FilesAndFoldersModel: Sendable {
             .map { capture in
                 DetailFact(
                     label: "Source capture \(capture.captureSequence)",
-                    value: captureText(capture)
+                    value: captureText(capture) + processingFailureText(capture, in: history)
                 )
             }
         facts.append(
@@ -1218,6 +1289,25 @@ public struct FilesAndFoldersModel: Sendable {
             }
         facts.append(Self.localActivityBoundaryFact)
         return facts
+    }
+
+    /// A capture whose newest extraction did not succeed says so on the capture itself, so a
+    /// refresh that failed in processing is not read as the current searchable version just
+    /// because it is the newest source.
+    private static func processingFailureText(
+        _ capture: CoreSourceCapture,
+        in history: CoreDocumentHistory
+    ) -> String {
+        guard let latest = history.extractions
+            .filter({ $0.captureID == capture.captureID })
+            .max(by: { $0.documentOrdinal < $1.documentOrdinal }),
+            !latest.isCurrentExtraction,
+            latest.resultState == .failed || latest.resultState == .unsupported
+        else { return "" }
+        let kept = history.extraction.retrievalState == .retrievable
+            ? ", so the earlier searchable version is unchanged" : ""
+        return " · its processing \(latest.resultState == .failed ? "failed" : "is not supported")"
+            + kept
     }
 
     private static func sourceStateText(_ history: CoreDocumentHistory) -> String {

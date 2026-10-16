@@ -205,7 +205,22 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         super.init()
         let intakeRoot = configuration.installationState.deletingLastPathComponent()
             .appendingPathComponent("native-intake", isDirectory: true)
-        if let environment = try? DocumentIntakeEnvironment(stateRoot: intakeRoot),
+        // Core's own statement about a document's current capture, over the same authenticated
+        // client the management window reads history through. Absent, no unchanged file is
+        // reported as checked.
+        let currentCapture = resolvedExecutable.map {
+            CoreHistoryCurrentCaptureVerifier(
+                transport: CLICoreDocumentHistoryTransport(
+                    executable: $0,
+                    installationState: configuration.installationState,
+                    workspaceRef: configuration.workspaceID
+                )
+            )
+        }
+        if let environment = try? DocumentIntakeEnvironment(
+            stateRoot: intakeRoot,
+            currentCapture: currentCapture
+        ),
            let snapshotStore = try? OwnedSnapshotStore(
                root: intakeRoot.appendingPathComponent("owned-snapshots", isDirectory: true)
            )

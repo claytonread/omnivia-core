@@ -24,6 +24,15 @@ final class FileMonitoringTests: XCTestCase {
         var reader: @Sendable () -> Int64 { { [self] in milliseconds } }
     }
 
+    /// Core's statement about the capture behind unchanged bytes, scripted. An unchanged file is
+    /// only "checked" on such a statement (design §8.5), so the tests that mean to reach that
+    /// outcome say that Core stands behind it.
+    private struct StandingCapture: CurrentCaptureVerifying {
+        func verify(documentID: String, captureID: String?, observedDigest: String) -> CurrentCaptureVerdict {
+            .current
+        }
+    }
+
     /// Counts the reads of the original, which is how a test says "no source read happened", and
     /// can be switched to failing to exercise the claim that is owed again.
     private final class CountingReader: CoordinatedOriginalReading, @unchecked Sendable {
@@ -1354,7 +1363,8 @@ final class FileMonitoringTests: XCTestCase {
             stateRoot: context.stateRoot,
             bookmarkCodec: BookmarkCodec(),
             reader: reader,
-            monotonicClock: TestClock().reader
+            monotonicClock: TestClock().reader,
+            currentCapture: StandingCapture()
         )
         let recovered = try XCTUnwrap(environment.automaticScheduling.state(of: context.key))
         XCTAssertTrue(recovered.restoredCandidate)
@@ -1414,7 +1424,8 @@ final class FileMonitoringTests: XCTestCase {
             stateRoot: stateRoot,
             bookmarkCodec: BookmarkCodec(),
             reader: reader,
-            monotonicClock: clock.reader
+            monotonicClock: clock.reader,
+            currentCapture: StandingCapture()
         )
         let baseline = try await ManualCaptureSubmission(
             environment: environment,

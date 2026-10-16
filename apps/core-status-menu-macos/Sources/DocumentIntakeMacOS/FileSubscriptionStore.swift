@@ -28,6 +28,46 @@ public struct FileSubscription: Codable, Equatable, Sendable {
     public var dirtyEpoch: UInt64
     public var needsReconciliation: Bool
     public var lastCheckedAt: String?
+    /// The latest outcome of a refresh that did not succeed, kept beside the successful capture
+    /// rather than over it. Absent for a watch whose latest check or refresh stood.
+    public var attention: FileAttention? = nil
+}
+
+/// A refresh outcome that is neither "added" nor "up to date" (design §12, §13.2, §13.5).
+///
+/// It is a record of its own: recording it changes nothing about
+/// `currentSuccessfulCaptureID`, and a later check that stands, or a refresh Core admits,
+/// replaces it. Persisted with the watch, so it survives a restart as the same fact.
+public struct FileAttention: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Equatable, Sendable {
+        /// A refresh was published and Core refused it. `code` is Core's failure code.
+        case refreshFailed = "refresh_failed"
+        /// The bytes did not change, but Core's copy cannot stand behind "up to date".
+        /// `code` is a `CurrentCaptureShortfall` raw value.
+        case copyNotCurrent = "copy_not_current"
+    }
+
+    public let kind: Kind
+    public let code: String
+    public let recordedAt: String
+    /// The queue item of a failed refresh, which is its own retrievable record.
+    public let itemID: String?
+    /// The successful capture this outcome left in place.
+    public let priorCaptureID: String?
+
+    public init(
+        kind: Kind,
+        code: String,
+        recordedAt: String,
+        itemID: String? = nil,
+        priorCaptureID: String? = nil
+    ) {
+        self.kind = kind
+        self.code = code
+        self.recordedAt = recordedAt
+        self.itemID = itemID
+        self.priorCaptureID = priorCaptureID
+    }
 }
 
 public enum FileSubscriptionStoreError: Error, Equatable {

@@ -1498,7 +1498,7 @@
       "gate_id": "AT-32",
       "design_section": "20",
       "normative_summary": "A refresh fails after a previous success. The prior capture remains available, and the failure is shown separately.",
-      "applicability": "The Core canonical capture boundary and the companion state projection.",
+      "applicability": "The Core canonical capture and history boundary and the companion state projection, on macOS 13 or later.",
       "evidence_type": "automated_repository_test",
       "evidence": [
         {
@@ -1510,21 +1510,64 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_intake.py",
           "symbol": "test_a_failed_head_advance_rolls_back_the_capture_it_followed",
           "covers": "A failed head advance rolls back rather than leaving a half-applied state."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_refresh_outcome_gates.py",
+          "symbol": "test_a_refresh_whose_processing_fails_leaves_the_prior_capture_retrievable_and_is_its_own_history_entry",
+          "covers": "Through document.capture and document.history, a refresh Core admits and cannot process is its own capture entry and its own failed, not-published extraction entry, while the prior capture stays retained, remains the capture behind the current extraction and stays retrievable."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_refresh_outcome_gates.py",
+          "symbol": "test_a_failed_refresh_outcome_and_the_prior_head_survive_a_restart",
+          "covers": "After a real close and reopen of the workspace the prior head and the failed result are still two separate stored facts, and document.history serves both."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_refresh_outcome_gates.py",
+          "symbol": "test_a_refresh_core_refuses_writes_no_outcome_and_leaves_the_head",
+          "covers": "A refresh refused at admission writes nothing in Core and leaves history exactly as it was."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureRecoveryAcceptanceTests.swift",
+          "symbol": "testAFailedRefreshKeepsThePriorCaptureAndIsItsOwnRetrievableOutcome",
+          "covers": "Core's refusal of a refresh leaves the watch's successful capture in place and is its own failed queue entry and activity record across a restart."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/RefreshOutcomeAcceptanceTests.swift",
+          "symbol": "testAFailedRefreshIsItsOwnRecordBesideThePriorCaptureAndSurvivesARestart",
+          "covers": "The watch records the failed refresh as a durable outcome naming the refused item, Core's reason and the capture it left in place, and the record survives a restart."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/RefreshOutcomeAcceptanceTests.swift",
+          "symbol": "testTheFilesWindowShowsTheFailedRefreshBesideTheCaptureItLeftInPlace",
+          "covers": "The real Files window shows Refresh failed beside the prior capture, says whether Core still serves it from Core's own current read, and lists the failure as its own Recent additions record."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/RefreshOutcomeAcceptanceTests.swift",
+          "symbol": "testARefreshWhoseProcessingFailedInCoreIsNotReadAsTheSearchableVersion",
+          "covers": "A refresh whose processing failed in Core is not read as the searchable version in the window; the earlier version stays the current one."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/RefreshOutcomeLiveCoreTests.swift",
+          "symbol": "testARefreshCoreAdmitsButCannotProcessLeavesThePriorVersionSearchableAndIsItsOwnEntryThroughTheRealCore",
+          "covers": "Against a live Core through the real CLI, an unprocessable refresh is a separate failed extraction while the prior version stays current, retained and retrievable, and the window reads the two as separate entries."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The prior head's survival is covered, but no test asserts the failed refresh is retrievable as its own distinct outcome. Nothing shows the failure recorded separately from the surviving success, which is the second half of the required result.",
-      "limitations": "Core side only. The companion projection that would show the two states side by side has no test for this pairing.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Core records only what it admitted. A refresh that never reaches Core, or that Core refuses at admission, is recorded by the companion (the failed queue entry, the activity record and the watch's outcome) and not in Core's history, so the Core-side evidence is the admitted-then-unprocessable case and the refusal case proves only that nothing was written. Core advances its capture head at admission, so after an admitted refresh that fails processing the failed refresh is the current source and the earlier capture stays the searchable version; the window states both. Bookmarks are a stub codec in the swift test process, and the live arm runs Core on this host's interpreter, not in a signed package.",
       "source_bindings": [
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FileMonitoringCoordinator.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FileSubscriptionStore.swift",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py",
-        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift"
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/handlers/document_capture.py"
       ]
     },
     {
       "gate_id": "AT-33",
       "design_section": "20",
       "normative_summary": "The same bytes, but the evidence has expired or been revoked. There is no false Already up to date, and the retention and authorisation policy is respected.",
-      "applicability": "The Core canonical retention boundary and the companion unchanged-digest path.",
+      "applicability": "The Core canonical retention boundary and the companion unchanged-digest path, on macOS 13 or later.",
       "evidence_type": "automated_repository_test",
       "evidence": [
         {
@@ -1541,14 +1584,57 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FileMonitoringTests.swift",
           "symbol": "testUnchangedDigestCompletesTheClaimWithoutPublication",
           "covers": "The unchanged-digest short circuit exists on the companion side, which is the behaviour this gate requires be suppressed when evidence has expired."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_refresh_outcome_gates.py",
+          "symbol": "test_identical_bytes_after_expiry_are_not_up_to_date_and_automatic_intents_cannot_reintroduce_them",
+          "covers": "Through document.capture, identical bytes after expiry are refused for an automatic intent and leave history unchanged; a manual refresh is admitted as a new capture and never revives the expired one."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_refresh_outcome_gates.py",
+          "symbol": "test_identical_bytes_after_the_source_is_removed_do_not_become_the_head",
+          "covers": "After a source removal, identical bytes never become the head or move the extraction head."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/RefreshOutcomeAcceptanceTests.swift",
+          "symbol": "testSameBytesWhoseCaptureExpiredAreNeverCheckedAndNothingIsRepublished",
+          "covers": "Through the production verifier and CLI transport, unchanged bytes whose capture expired record no checked time and no publication, and the shortfall is durable and shown in the window."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/RefreshOutcomeAcceptanceTests.swift",
+          "symbol": "testEveryShortfallOfCoresCopyBlocksTheUpToDateClaim",
+          "covers": "Deleted, removed, disconnected, unpublished, superseded and different-bytes copies each block the up-to-date claim."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/RefreshOutcomeAcceptanceTests.swift",
+          "symbol": "testCoreNotAnsweringEstablishesNothingAndAnAccessRefusalIsNeedsAccess",
+          "covers": "With no verifier, an unreadable answer or a refused credential, nothing is established; a refused credential is Needs access."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/RefreshOutcomeAcceptanceTests.swift",
+          "symbol": "testBytesCoreStandsBehindAreCheckedAndClearAnEarlierShortfall",
+          "covers": "Only Core's statement that the capture stands records the check, and it replaces an earlier shortfall."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/RefreshOutcomeLiveCoreTests.swift",
+          "symbol": "testSameBytesWhoseCaptureCoreNoLongerRetainsAreNeverCalledUpToDateThroughTheRealCore",
+          "covers": "Against a live Core through the real CLI, a retention decision on the capture stops the unchanged file being called checked, nothing is re-added, and a real change still flows."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FileMonitoringTests.swift",
+          "symbol": "testUnchangedBytesRecordNoCheckWhenTheBindingGenerationMovesDuringTheRead",
+          "covers": "Revoked local evidence mid-read records no check."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test combines the two conditions. The unchanged-digest short circuit is covered only with valid evidence, and expiry is covered only on the Core side, so nothing shows the companion declining to report up to date when the evidence behind those bytes has expired or been revoked.",
-      "limitations": "Each condition is covered alone, which is the configuration in which the defect this gate guards against cannot appear.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Retention is moved through the service's own expire_capture with the service stopped, because no application operation expires a capture. The authorisation limb is covered by Core's source removal, a disconnected original, a refused credential and a revoked or relinked native grant; no consent or configuration generation can change for an existing file watch, so those limbs are not testable on a production path. Core admits an automatic capture over a removed source as historical-only history rather than refusing it, so the removal case rests on the companion declining to publish. Bookmarks are a stub codec in the swift test process, and the live arm runs Core on this host's interpreter, not in a signed package.",
       "source_bindings": [
-        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FileMonitoringCoordinator.swift"
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CurrentCaptureVerifier.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FileMonitoringCoordinator.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FileSubscriptionStore.swift",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py"
       ]
     },
     {

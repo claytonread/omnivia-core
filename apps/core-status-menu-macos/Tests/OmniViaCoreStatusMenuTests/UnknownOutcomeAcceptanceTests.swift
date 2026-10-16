@@ -564,6 +564,43 @@ final class LiveCore {
         return nil
     }
 
+    /// The production history transport over the real CLI and this workspace.
+    var historyTransport: CLICoreDocumentHistoryTransport {
+        CLICoreDocumentHistoryTransport(
+            executable: cli, installationState: installation, workspaceRef: workspaceID
+        )
+    }
+
+    /// Test-only, with the service stopped (it holds the database exclusively): the retention
+    /// decision that moves a capture to expired, made through the service's own
+    /// `expire_capture` under a real workspace owner. Nothing in Core's storage is written
+    /// directly.
+    func expireRetention(captureID: String) throws {
+        let script = #"""
+        import sys
+        from pathlib import Path
+        from omnivia_core_runtime.service.document_intake import expire_capture, owned_workspace
+        from omnivia_core_runtime.service.versions import SERVER_VERSION
+
+        with owned_workspace(
+            workspace_root=Path(sys.argv[1]),
+            installation_root=Path(sys.argv[2]),
+            core_version=SERVER_VERSION,
+        ) as runner:
+            expire_capture(runner, capture_id=sys.argv[3])
+        """#
+        let output = Pipe()
+        let process = Process()
+        process.executableURL = python
+        process.arguments = ["-c", script, workspace.path, installation.path, captureID]
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        let text = String(decoding: try output.fileHandleForReading.readToEnd() ?? Data(), as: UTF8.self)
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw HarnessError.commandFailed(text) }
+    }
+
     /// Core's own statement of each capture of a document, by sequence: its disposition, the
     /// reason and association it was admitted under, and whether it is the current source.
     /// Read through `document history`, not through storage.

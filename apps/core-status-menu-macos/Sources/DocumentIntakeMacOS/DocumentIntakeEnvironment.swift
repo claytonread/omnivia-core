@@ -54,7 +54,10 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
         // Wall clock for the periodic folder schedule, whose intervals are 15 minutes and 24
         // hours, and for the monitoring scan's five-minute add/change burst window. A test moves
         // it by hand rather than waiting one out; production reads `Date`.
-        reconciliationClock: (@Sendable () -> Date)? = nil
+        reconciliationClock: (@Sendable () -> Date)? = nil,
+        // Core's own statement about a document's current capture, which is what lets an
+        // unchanged file be called checked. Absent, no unchanged file is.
+        currentCapture: (any CurrentCaptureVerifying)? = nil
     ) throws {
         self.reader = reader
         let clock = monotonicClock ?? Self.processUptimeMilliseconds()
@@ -145,6 +148,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             reader: reader,
             scheduling: automaticScheduling,
             publicationGate: gate,
+            currentCapture: currentCapture,
             clock: clock
         )
     }

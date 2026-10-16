@@ -20,6 +20,9 @@ public actor FileMonitoringCoordinator {
     /// The same gate the queue, the subscription stores and the scheduling machine were built with,
     /// so this owner can hold one critical section across all three. See `PublicationGate`.
     private let publicationGate: PublicationGate
+    /// Asks Core whether the capture this watch last succeeded with can stand behind "nothing
+    /// changed". Absent, nothing can: same bytes alone never establish that (design §8.5).
+    private let currentCapture: (any CurrentCaptureVerifying)?
     /// Process-monotonic milliseconds, which is what the scheduling machine's periods are measured
     /// in. See `DocumentIntakeEnvironment.processUptimeMilliseconds`.
     private let clock: @Sendable () -> Int64
@@ -36,6 +39,7 @@ public actor FileMonitoringCoordinator {
         reader: any CoordinatedOriginalReading,
         scheduling: AutomaticSchedulingStateMachine,
         publicationGate: PublicationGate,
+        currentCapture: (any CurrentCaptureVerifying)? = nil,
         clock: @escaping @Sendable () -> Int64
     ) {
         self.accessStore = accessStore
@@ -45,6 +49,7 @@ public actor FileMonitoringCoordinator {
         self.reader = reader
         self.scheduling = scheduling
         self.publicationGate = publicationGate
+        self.currentCapture = currentCapture
         self.clock = clock
     }
 
@@ -432,7 +437,11 @@ public actor FileMonitoringCoordinator {
             let digest = Self.digest(bytes)
             let checkedAt = ISO8601DateFormatter().string(from: Date())
             guard digest != value.lastObservedDigest else {
-                return unchanged(value, claim: claim, checkedAt: checkedAt)
+                // Same bytes are not yet "nothing to do": that needs Core's own statement that
+                // the capture behind them still stands. The call is a process round trip, so it
+                // runs off this actor and before the gate is taken.
+                let verdict = await currentCaptureVerdict(for: value, observedDigest: digest)
+                return unchanged(value, claim: claim, checkedAt: checkedAt, verdict: verdict)
             }
             let observedDirtyEpoch = value.dirtyEpoch
             value.dirtyEpoch += 1
@@ -563,46 +572,91 @@ public actor FileMonitoringCoordinator {
         }
     }
 
+    /// Core's statement about the capture behind bytes this scope already has.
+    private func currentCaptureVerdict(
+        for value: FileSubscription,
+        observedDigest: String
+    ) async -> CurrentCaptureVerdict {
+        guard let verifier = currentCapture else { return .unconfirmed(.unavailable) }
+        let documentID = value.linkedDocumentID
+        let captureID = value.currentSuccessfulCaptureID
+        return await Task.detached {
+            verifier.verify(
+                documentID: documentID,
+                captureID: captureID,
+                observedDigest: observedDigest
+            )
+        }.value
+    }
+
     /// Finishes a check whose read returned the bytes this scope already has.
     ///
     /// Same bytes is only "nothing to do" while the evidence that authorised the read still
-    /// stands. The read is the slow part of a check, and a disconnect, a pause, a reconfigure or
-    /// a withdrawal of consent can all land inside it — after which this scope was never checked
+    /// stands, and while Core's copy behind those bytes still stands (`currentCaptureVerdict`).
+    /// The read is the slow part of a check, and a disconnect, a pause, a reconfigure or a
+    /// withdrawal of consent can all land inside it — after which this scope was never checked
     /// under authority it still holds, and recording it as checked would report expired or
     /// revoked evidence as up to date. So the same facts the publication path revalidates before
     /// it commits are revalidated here before anything is recorded, on the same gate, so none of
-    /// them can land between the recheck and the two writes that follow it.
+    /// them can land between the recheck and the writes that follow it.
     ///
     /// Evidence that no longer stands records nothing at all: no completion, no checked time.
     /// The generation returns to the scope's one dirty obligation, exactly as a failed read
     /// leaves it, so the next check runs under evidence that does stand. The subscription's own
-    /// state is left to whoever moved it — a pause stays a pause.
+    /// state is left to whoever moved it — a pause stays a pause. Core not being able to answer
+    /// is the same: nothing is established, so nothing is recorded.
+    ///
+    /// When Core answers that its copy does not stand (expired, deleted, removed, never
+    /// published), the read still finished the generation, but it is recorded as exactly that
+    /// and not as a check: no checked time, an attention record naming the shortfall, and the
+    /// retained capture untouched. Nothing is published — an automatic watch does not re-add
+    /// what a retention or removal decision took out (design §13.5); a changed file still
+    /// publishes and Core's policy decides.
     private func unchanged(
         _ value: FileSubscription,
         claim: AutomaticSchedulingClaim,
-        checkedAt: String
+        checkedAt: String,
+        verdict: CurrentCaptureVerdict
     ) -> FileMonitoringReport {
-        let settled = try? accessStore.withValidatedGenerations([
-            NativeAccessExpectation(accessRef: value.accessRef, generation: value.bindingGeneration),
-        ]) { () -> FileSubscription in
-            guard let current = subscriptions.all().first(where: {
-                $0.subscriptionID == value.subscriptionID
-            }),
-                current.state == .active,
-                current.consentGeneration == value.consentGeneration,
-                current.configGeneration == value.configGeneration,
-                current.dirtyEpoch == value.dirtyEpoch
-            else { throw CapturePreparationError.consentChanged }
-            // The read happened and is what established there is nothing new, so this
-            // generation is finished rather than returned to dirty for another attempt.
-            try scheduling.markCompletedWithoutPublication(
-                claim.key,
-                generation: claim.generation,
-                at: clock()
-            )
-            return try subscriptions.update(id: value.subscriptionID) {
-                $0.lastCheckedAt = checkedAt
-                $0.needsReconciliation = false
+        var settled: FileSubscription?
+        if case .unconfirmed = verdict {
+            settled = nil
+        } else {
+            settled = try? accessStore.withValidatedGenerations([
+                NativeAccessExpectation(accessRef: value.accessRef, generation: value.bindingGeneration),
+            ]) { () -> FileSubscription in
+                guard let current = subscriptions.all().first(where: {
+                    $0.subscriptionID == value.subscriptionID
+                }),
+                    current.state == .active,
+                    current.consentGeneration == value.consentGeneration,
+                    current.configGeneration == value.configGeneration,
+                    current.dirtyEpoch == value.dirtyEpoch
+                else { throw CapturePreparationError.consentChanged }
+                // The read happened and is what established there is nothing new, so this
+                // generation is finished rather than returned to dirty for another attempt.
+                try scheduling.markCompletedWithoutPublication(
+                    claim.key,
+                    generation: claim.generation,
+                    at: clock()
+                )
+                return try subscriptions.update(id: value.subscriptionID) {
+                    switch verdict {
+                    case .current:
+                        $0.lastCheckedAt = checkedAt
+                        $0.attention = nil
+                    case let .notCurrent(shortfall):
+                        $0.attention = FileAttention(
+                            kind: .copyNotCurrent,
+                            code: shortfall.rawValue,
+                            recordedAt: checkedAt,
+                            priorCaptureID: $0.currentSuccessfulCaptureID
+                        )
+                    case .unconfirmed:
+                        break
+                    }
+                    $0.needsReconciliation = false
+                }
             }
         }
         guard let settled else {
@@ -610,6 +664,13 @@ public actor FileMonitoringCoordinator {
                 _ = try? scheduling.cancel(claim.key, generation: claim.generation, at: clock())
             }
             let dirty = try? subscriptions.update(id: value.subscriptionID) {
+                // Core refusing this Mac's credential is the same loss of access a failed read
+                // reports, and is shown as such; any other failure to ask changes nothing.
+                if case let .unconfirmed(.refused(code)) = verdict,
+                   Self.accessRefusals.contains(code), $0.state == .active
+                {
+                    $0.state = .needsAccess
+                }
                 $0.needsReconciliation = true
             }
             return FileMonitoringReport(
@@ -624,6 +685,11 @@ public actor FileMonitoringCoordinator {
             queued: false
         )
     }
+
+    private static let accessRefusals: Set<String> = [
+        "workspace_not_granted", "authorization_denied", "authentication_required",
+        "capability_not_granted",
+    ]
 
     /// Records what this scope's published intent observed. Every field is set to an absolute value
     /// derived from that intent, so applying it twice is applying it once.
@@ -767,6 +833,8 @@ public actor FileMonitoringCoordinator {
                         value.currentSuccessfulCaptureID = captureID
                     }
                     value.lastQueuedItemID = nil
+                    // A refresh Core admitted supersedes whatever the one before it left.
+                    value.attention = nil
                 } else if queued.state == .failed {
                     // The source digest was recorded when this version was durably queued. Clear
                     // it after a terminal refusal so Resume can deliberately prepare a new intent
@@ -777,6 +845,16 @@ public actor FileMonitoringCoordinator {
                     value.lastObservedAt = nil
                     value.needsReconciliation = true
                     value.state = .paused
+                    // The refusal is its own record beside the capture that was already
+                    // there: `currentSuccessfulCaptureID` is not touched, and the queue entry
+                    // `itemID` names keeps the full failure for as long as the person can see it.
+                    value.attention = FileAttention(
+                        kind: .refreshFailed,
+                        code: queued.failureCode ?? "unknown",
+                        recordedAt: ISO8601DateFormatter().string(from: Date()),
+                        itemID: queuedID,
+                        priorCaptureID: value.currentSuccessfulCaptureID
+                    )
                 }
             }
         }
