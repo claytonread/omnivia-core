@@ -309,7 +309,7 @@ private final class LostReceiptTransport: CaptureDeliveryTransport, @unchecked S
 /// launchers over this checkout's Python packages. Only the tamper is
 /// test-only; the service, the CLI and every request are the production ones.
 @MainActor
-private final class LiveCore {
+final class LiveCore {
     private let directory: URL
     private let cli: URL
     private let service: URL
@@ -512,6 +512,74 @@ private final class LiveCore {
         ])
         let result = try XCTUnwrap(document["result"] as? [String: Any])
         return try XCTUnwrap(result["captures"] as? [[String: Any]]).compactMap { $0["capture_id"] as? String }
+    }
+
+    /// The raw JSON answer of `document disconnect`, run once exactly as
+    /// `CLICaptureDelivery.disconnectArguments` builds it.
+    func runDisconnect(input: Data, operationKey: String) throws -> [String: Any] {
+        let process = Process()
+        let inputPipe = Pipe()
+        let output = Pipe()
+        process.executableURL = cli
+        process.arguments = delivery.disconnectArguments(operationKey: operationKey)
+        process.standardInput = inputPipe
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        try inputPipe.fileHandleForWriting.write(contentsOf: input)
+        try inputPipe.fileHandleForWriting.close()
+        let data = try output.fileHandleForReading.readToEnd() ?? Data()
+        process.waitUntilExit()
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    /// Core's own statement of a document's original-binding state, read through its
+    /// `document history` operation rather than its storage.
+    func bindingState(documentID: String) throws -> String {
+        let document = try Self.run(cli, [
+            "--installation-state", installation.path, "--workspace-id", workspaceID,
+            "document", "history", "--input-json", "{\"document_id\":\"\(documentID)\"}", "--json",
+        ])
+        let result = try XCTUnwrap(document["result"] as? [String: Any])
+        let source = try XCTUnwrap(result["source"] as? [String: Any])
+        return try XCTUnwrap(source["original_binding_state"] as? String)
+    }
+
+    /// Test-only, with the service stopped (it holds the database exclusively): what Core
+    /// stored for the disconnect operation. Read-only; nothing is changed.
+    func storedDisconnectRecords() throws -> (bindings: [[String]], claims: Int) {
+        let script = #"""
+        import json, sys
+        from pathlib import Path
+        from omnivia_core_runtime.storage.connection import OpenMode, open_database
+
+        connection = open_database(Path(sys.argv[1]) / "workspace.sqlite", OpenMode.EXCLUSIVE_MAINTENANCE)
+        bindings = connection.execute(
+            "SELECT owner_ref, document_id, connection_state, binding_generation "
+            "FROM omnivia_document_original_bindings ORDER BY owner_ref"
+        ).fetchall()
+        (claims,) = connection.execute(
+            "SELECT count(*) FROM omnivia_idempotency_claims WHERE operation = ?",
+            ("document.original.disconnect",),
+        ).fetchone()
+        print(json.dumps({"bindings": [[str(v) for v in row] for row in bindings], "claims": claims}))
+        connection.close()
+        """#
+        let output = Pipe()
+        let process = Process()
+        process.executableURL = python
+        process.arguments = ["-c", script, workspace.path]
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        let data = try output.fileHandleForReading.readToEnd() ?? Data()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let document = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let bindings = document["bindings"] as? [[String]],
+              let claims = document["claims"] as? Int
+        else { throw HarnessError.commandFailed(String(decoding: data, as: UTF8.self)) }
+        return (bindings, claims)
     }
 
     private enum HarnessError: Error { case serviceExited, commandFailed(String) }

@@ -227,33 +227,48 @@ def _move_original(
     runner: ServiceRunner, *, document_id: str, owner_ref: str, route_kind: str,
     root_ref: str | None, member_ref: str | None, connect: bool,
 ) -> store.StoredBinding:  # fmt: skip
-    assert runner.connection is not None and runner.workspace_id is not None
-    assert runner.generation is not None
     _identifier(document_id, "document id")
     _identifier(owner_ref, "owner reference")
     _check_route(route_kind, root_ref, member_ref)
-    state = store.BINDING_CONNECTED if connect else store.BINDING_DISCONNECTED
     with _fence(runner):
-        now_us = _now_us()
-        binding = _binding_for(
+        return move_original_in_transaction(
             runner, document_id=document_id, owner_ref=owner_ref, route_kind=route_kind,
-            root_ref=root_ref, member_ref=member_ref,
+            root_ref=root_ref, member_ref=member_ref, connect=connect,
         )  # fmt: skip
-        if binding is None:
-            store.ensure_document(
-                runner.connection, workspace_id=runner.workspace_id, document_id=document_id,
-                fencing_generation=runner.generation, now_us=now_us,
-            )  # fmt: skip
-            return store.insert_binding(
-                runner.connection, workspace_id=runner.workspace_id, owner_ref=owner_ref,
-                document_id=document_id, route_kind=route_kind, root_ref=root_ref, member_ref=member_ref,
-                state=state, fencing_generation=runner.generation, now_us=now_us,
-            )  # fmt: skip
-        if binding.connection_state == state:
-            return binding
-        return store.move_binding(
-            runner.connection, binding, connect=connect, fencing_generation=runner.generation, now_us=now_us
-        )
+
+
+def move_original_in_transaction(
+    runner: ServiceRunner, *, document_id: str, owner_ref: str, route_kind: str,
+    root_ref: str | None, member_ref: str | None, connect: bool,
+) -> store.StoredBinding:  # fmt: skip
+    """`_move_original`'s write, for a caller that already owns the fenced transaction.
+
+    `BEGIN IMMEDIATE` does not nest, so a governed mutation cannot call `disconnect_original`.
+    The identifiers and the route are the caller's to have validated.
+    """
+    assert runner.connection is not None and runner.workspace_id is not None
+    assert runner.generation is not None
+    state = store.BINDING_CONNECTED if connect else store.BINDING_DISCONNECTED
+    now_us = _now_us()
+    binding = _binding_for(
+        runner, document_id=document_id, owner_ref=owner_ref, route_kind=route_kind,
+        root_ref=root_ref, member_ref=member_ref,
+    )  # fmt: skip
+    if binding is None:
+        store.ensure_document(
+            runner.connection, workspace_id=runner.workspace_id, document_id=document_id,
+            fencing_generation=runner.generation, now_us=now_us,
+        )  # fmt: skip
+        return store.insert_binding(
+            runner.connection, workspace_id=runner.workspace_id, owner_ref=owner_ref,
+            document_id=document_id, route_kind=route_kind, root_ref=root_ref, member_ref=member_ref,
+            state=state, fencing_generation=runner.generation, now_us=now_us,
+        )  # fmt: skip
+    if binding.connection_state == state:
+        return binding
+    return store.move_binding(
+        runner.connection, binding, connect=connect, fencing_generation=runner.generation, now_us=now_us
+    )
 
 
 def connect_original(

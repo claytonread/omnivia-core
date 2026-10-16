@@ -38,10 +38,33 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
         if let refusal = Self.gate(await lifecycle(), binding: deliveryBinding) {
             return refusal
         }
+        let arguments = captureArguments(payloadURL: payloadURL, operationKey: operationKey)
+        switch await execute(arguments: arguments, input: input) {
+        case .notLaunched: return .notSent
+        case .unfinished: return .unknown
+        case let .finished(status, output, diagnostic):
+            return Self.outcome(status: status, output: output, diagnostic: diagnostic)
+        }
+    }
+
+    /// How one CLI run ended, before anything is read into it.
+    enum Run {
+        /// The executable could not be launched, so it never read the input.
+        case notLaunched
+        /// Written to, or killed at its deadline: the input may have been received.
+        case unfinished
+        case finished(status: Int32, output: Data, diagnostic: Data)
+    }
+
+    /// Runs the CLI once with `input` on stdin. Both transports in this file share it, so
+    /// the launch, the deadline and the "may have been received" rules are one set.
+    func execute(arguments: [String], input: Data) async -> Run {
+        let executable = executable
+        let processDeadline = processDeadline
         return await Task.detached(priority: .utility) {
             let process = Process()
             process.executableURL = executable
-            process.arguments = captureArguments(payloadURL: payloadURL, operationKey: operationKey)
+            process.arguments = arguments
             let inputPipe = Pipe()
             let outputPipe = Pipe()
             let errorPipe = Pipe()
@@ -50,7 +73,7 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
             process.standardError = errorPipe
             // A process that cannot be launched — the executable is gone —
             // never read the input, so nothing was sent.
-            do { try process.run() } catch { return .notSent }
+            do { try process.run() } catch { return .notLaunched }
             do {
                 try inputPipe.fileHandleForWriting.write(contentsOf: input)
                 try inputPipe.fileHandleForWriting.close()
@@ -60,16 +83,16 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
                 }
                 guard !process.isRunning else {
                     process.terminate()
-                    return .unknown
+                    return .unfinished
                 }
-                return Self.outcome(
+                return .finished(
                     status: process.terminationStatus,
                     output: try outputPipe.fileHandleForReading.readToEnd() ?? Data(),
                     diagnostic: try errorPipe.fileHandleForReading.readToEnd() ?? Data()
                 )
             } catch {
                 if process.isRunning { process.terminate() }
-                return .unknown
+                return .unfinished
             }
         }.value
     }
@@ -99,7 +122,7 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
 
     /// The CLI's own redacted `service status --json`, which attaches and never
     /// starts. The companion decides nothing from the host's files or processes.
-    private func lifecycle() async -> Result<LifecycleDocument, LifecycleRunnerError> {
+    fileprivate func lifecycle() async -> Result<LifecycleDocument, LifecycleRunnerError> {
         let runner = CLICommandRunner(
             executable: executable,
             installationState: installationState,
@@ -162,7 +185,7 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
 
     /// Service refusals that only the person can resolve. They are decided
     /// before a capture exists, so the intent is held rather than failed.
-    private static func pause(forServiceCode code: String) -> CaptureQueuePause? {
+    fileprivate static func pause(forServiceCode code: String) -> CaptureQueuePause? {
         switch code {
         case "authentication_required", "authorization_denied", "workspace_not_granted",
              "capability_not_granted":
@@ -192,6 +215,76 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
         if output.count <= 1024 * 1024,
            let document = try? JSONSerialization.jsonObject(with: output) as? [String: Any] {
             return outcome(from: document, terminationStatus: status)
+        }
+        guard output.isEmpty, diagnostic.count <= 256 else { return .unknown }
+        switch (status, String(decoding: diagnostic, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)) {
+        case (1, managedStartFailed), (1, notRunning): return .notSent
+        case (3, credentialRefused): return .held(.needsAccess)
+        case (4, versionDisagreed): return .held(.updateRequired)
+        case (2, refusedBeforeSend): return .definiteFailure(code: "refused_before_send")
+        default: return .unknown
+        }
+    }
+}
+
+/// `document disconnect` through the same CLI, gate and process rules as `document capture`.
+/// The request is the intent's frozen body and the key is the intent's one key, so a replay
+/// after an unknown answer is the identical command.
+extension CLICaptureDelivery: OriginalDisconnectTransport {
+    func deliver(input: Data, operationKey: String) async -> OriginalDisconnectOutcome {
+        if let refusal = Self.gate(await lifecycle(), binding: deliveryBinding) {
+            switch refusal {
+            case let .held(pause): return .held(pause)
+            default: return .notSent
+            }
+        }
+        switch await execute(arguments: disconnectArguments(operationKey: operationKey), input: input) {
+        case .notLaunched: return .notSent
+        case .unfinished: return .unknown
+        case let .finished(status, output, diagnostic):
+            return Self.disconnectOutcome(status: status, output: output, diagnostic: diagnostic)
+        }
+    }
+
+    /// Same attach-only, claimed-principal rules as `captureArguments`; the request is on stdin.
+    func disconnectArguments(operationKey: String) -> [String] {
+        [
+            "--require-running",
+            "--installation-state", installationState.path,
+            "--workspace-id", deliveryBinding.workspaceRef,
+            "--timeout-ms", "20000",
+            "document", "disconnect",
+            "--input-stdin",
+            "--idempotency-key", operationKey,
+            "--principal", deliveryBinding.callerContextBinding.principalRef,
+            "--json",
+        ]
+    }
+
+    /// Only a service answer that states the binding disconnected acknowledges the intent.
+    /// A refusal does not prove an earlier attempt had no effect, so it never retires anything.
+    static func disconnectOutcome(status: Int32, output: Data, diagnostic: Data) -> OriginalDisconnectOutcome {
+        if output.count <= 1024 * 1024,
+           let document = try? JSONSerialization.jsonObject(with: output) as? [String: Any] {
+            if status == 0,
+               let result = document["result"] as? [String: Any],
+               result["connection_state"] as? String == "disconnected",
+               let documentID = result["document_id"] as? String,
+               let ownerRef = result["owner_ref"] as? String {
+                return .acknowledged(documentID: documentID, ownerRef: ownerRef)
+            }
+            if let error = document["error"] as? [String: Any],
+               let code = error["code"] as? String,
+               !code.isEmpty {
+                if let details = error["details"] as? [String: Any],
+                   details["outcome_established"] as? Bool == false {
+                    return .unknown
+                }
+                if let pause = pause(forServiceCode: code) { return .held(pause) }
+                return .definiteFailure(code: code)
+            }
+            return .unknown
         }
         guard output.isEmpty, diagnostic.count <= 256 else { return .unknown }
         switch (status, String(decoding: diagnostic, as: UTF8.self)

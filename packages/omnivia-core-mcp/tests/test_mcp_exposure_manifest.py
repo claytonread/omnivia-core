@@ -182,7 +182,7 @@ def test_the_manifest_is_curated_not_the_whole_catalogue(profile: str) -> None:
     catalogue = {entry.name for entry in OPERATION_CATALOGUE}
     assert exposed < catalogue, "the manifest must be a strict subset"
     assert len(catalogue) > len(exposed) + 1, (
-        "the catalogue is a capability list of eighty-four operations; a manifest "
+        "the catalogue is a capability list of eighty-five operations; a manifest "
         "that had grown to nearly all of it would no longer be a curated surface"
     )
 

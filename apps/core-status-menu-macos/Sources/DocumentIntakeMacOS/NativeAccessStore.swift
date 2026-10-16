@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -178,6 +179,53 @@ public struct PendingFolderSubmission: Codable, Equatable, Sendable {
     /// The durable owners this intent's root grant is adopted for, and the only
     /// owners it ever gains.
     public var ownerRefs: [String] { [subscriptionID, runID].compactMap { $0 }.sorted() }
+}
+
+/// The canonical half of design §13.3 Disconnect: a fixed intent to tell Core that one
+/// original binding is disconnected.
+///
+/// It is written in the same durable write that revokes the local route, so there is no
+/// state in which this Mac has revoked a source and holds nothing that will tell Core. The
+/// request it describes is closed over here and never recomputed: the owner, document and
+/// route are the canonical binding Core was told about, the frozen binding is the
+/// workspace and caller that binding was captured under (never whichever account is signed
+/// in now), and `operationKey` is the one key every attempt carries. A lost or unknown
+/// answer is therefore reconciled by sending exactly the same request again.
+///
+/// The key is derived from the grant it closes (workspace, owner, document and the
+/// generation that was revoked), not drawn at random. A second Disconnect of the same
+/// grant cannot mint a second intent, and a later grant of the same owner revokes under a
+/// different generation and so a different key.
+public struct OriginalDisconnectIntent: Codable, Equatable, Sendable {
+    /// Core's `owner_ref` for the binding: this Mac's access record.
+    public let accessRef: String
+    /// Core's `document_id`.
+    public let linkedDocumentID: String
+    /// `direct_file` or `root_member`, as the capture that created the binding sent it.
+    public let routeKind: String
+    public let rootRef: String?
+    public let memberRef: String?
+    /// The local grant generation this revocation closed.
+    public let generation: UInt64
+    public let binding: NativeRootAccessBinding
+    public let operationKey: String
+    public let createdAt: String
+    /// Set once Core refused the request in a way no retry changes (a binding that is
+    /// another document's, a request it cannot read). The local revocation still stands,
+    /// and the intent is kept rather than dropped so the refusal stays on record.
+    public var refusalCode: String?
+
+    public static func operationKey(
+        workspaceRef: String,
+        accessRef: String,
+        linkedDocumentID: String,
+        generation: UInt64
+    ) -> String {
+        let material = [workspaceRef, accessRef, linkedDocumentID, String(generation)]
+            .joined(separator: "\u{0}")
+        let digest = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }
+        return "disconnect-" + digest.joined().prefix(32)
+    }
 }
 
 /// A retained root group's own lifecycle, which is not a file grant's two
@@ -463,24 +511,30 @@ private struct NativeAccessDocument: Codable {
     /// no such key. An absent key is an empty set, which is what that file
     /// meant; nothing else about v3 changed, so the schema name has not.
     let pending: [PendingFolderSubmission]?
+    /// Optional for the same reason as `pending`: a file written before source-level
+    /// Disconnect reached Core has no such key, and that meant an empty set.
+    let originalDisconnects: [OriginalDisconnectIntent]?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case schema
         case records
         case roots
         case pending
+        case originalDisconnects
     }
 
     init(
         schema: String,
         records: [NativeAccessRecord],
         roots: [NativeRootAccessRecord],
-        pending: [PendingFolderSubmission]?
+        pending: [PendingFolderSubmission]?,
+        originalDisconnects: [OriginalDisconnectIntent]?
     ) {
         self.schema = schema
         self.records = records
         self.roots = roots
         self.pending = pending
+        self.originalDisconnects = originalDisconnects
     }
 
     init(from decoder: Decoder) throws {
@@ -496,6 +550,10 @@ private struct NativeAccessDocument: Codable {
         records = try container.decode([NativeAccessRecord].self, forKey: .records)
         roots = try container.decode([NativeRootAccessRecord].self, forKey: .roots)
         pending = try container.decodeIfPresent([PendingFolderSubmission].self, forKey: .pending)
+        originalDisconnects = try container.decodeIfPresent(
+            [OriginalDisconnectIntent].self,
+            forKey: .originalDisconnects
+        )
     }
 }
 
@@ -535,6 +593,7 @@ public final class NativeAccessStore: @unchecked Sendable {
     private var records: [String: NativeAccessRecord]
     private var roots: [String: NativeRootAccessRecord]
     private var pending: [String: PendingFolderSubmission]
+    private var originalDisconnects: [String: OriginalDisconnectIntent]
 
     public init(
         stateDirectory: URL,
@@ -548,11 +607,13 @@ public final class NativeAccessStore: @unchecked Sendable {
         self.records = [:]
         self.roots = [:]
         self.pending = [:]
+        self.originalDisconnects = [:]
         try Self.prepareDirectory(stateDirectory)
         let loaded = try Self.load(from: stateFile, codec: codec)
         self.records = loaded.records
         self.roots = loaded.roots
         self.pending = loaded.pending
+        self.originalDisconnects = loaded.disconnects
         if loaded.migrated {
             try persist(records: loaded.records, roots: loaded.roots)
         }
@@ -1023,36 +1084,162 @@ public final class NativeAccessStore: @unchecked Sendable {
         }
     }
 
-    public func disconnect(linkedDocumentID: String) throws -> [NativeAccessDescriptor] {
+    /// The local half of a source-level Disconnect alone: routes revoked, nothing recorded for
+    /// Core. Production uses `disconnectSource`, which makes this same revocation and the
+    /// intent that tells Core in one durable write.
+    func disconnect(linkedDocumentID: String) throws -> [NativeAccessDescriptor] {
         try Self.validateIdentifier(linkedDocumentID)
         return try gate.withLock {
-            let matches = records.values.filter {
-                $0.linkedDocumentID == linkedDocumentID && $0.state == .connected
-            }
+            let matches = connectedRecords(of: linkedDocumentID)
             if matches.isEmpty { return [] }
-            var replacement = records
+            let revoked = Self.revoking(matches, records: records, roots: roots)
+            try persist(records: revoked.records, roots: revoked.roots)
+            records = revoked.records
+            roots = revoked.roots
+            return matches.map { Self.descriptor(revoked.records[$0.accessRef]!) }
+        }
+    }
+
+    /// Design §13.3 steps 1 to 4 as one atomic decision. Every connected route of this
+    /// logical source is marked disconnected and loses its bookmark (a shared root group
+    /// keeps its own while another member or owner needs it), and a fixed intent for the
+    /// canonical binding of each is recorded, all in one durable write under the same gate
+    /// as final queue publication. A preparation that has not yet published therefore finds
+    /// its route disconnected and cannot publish under the old generation, and there is no
+    /// moment at which a route is revoked but nothing owes Core the news.
+    ///
+    /// Repeating it for a source with no connected route changes nothing and records
+    /// nothing, so a second click cannot mint a second intent.
+    ///
+    /// `bindings` is the workspace and caller each route's work was frozen under, by access
+    /// reference. A member's root group already records its own; `fallback` is used only for
+    /// a route that has neither (a source that never published anything), because a
+    /// tombstone Core records before the first capture still needs a workspace to live in.
+    @discardableResult
+    public func disconnectSource(
+        linkedDocumentID: String,
+        bindings: [String: NativeRootAccessBinding] = [:],
+        fallback: NativeRootAccessBinding,
+        now: Date = Date()
+    ) throws -> [OriginalDisconnectIntent] {
+        try Self.validateIdentifier(linkedDocumentID)
+        return try gate.withLock {
+            let matches = connectedRecords(of: linkedDocumentID)
+            if matches.isEmpty { return [] }
+            let revoked = Self.revoking(matches, records: records, roots: roots)
+            let createdAt = ISO8601DateFormatter().string(from: now)
+            var replacement = originalDisconnects
+            var intents: [OriginalDisconnectIntent] = []
             for current in matches {
-                replacement[current.accessRef] = NativeAccessRecord(
+                let binding: NativeRootAccessBinding
+                let routeKind: String
+                let rootRef: String?
+                let memberRef: String?
+                switch current.route {
+                case .directFile:
+                    binding = bindings[current.accessRef] ?? fallback
+                    (routeKind, rootRef, memberRef) = ("direct_file", nil, nil)
+                case let .rootMember(root, member, _):
+                    binding = roots[root]?.binding ?? bindings[current.accessRef] ?? fallback
+                    (routeKind, rootRef, memberRef) = ("root_member", root, member)
+                }
+                let key = OriginalDisconnectIntent.operationKey(
+                    workspaceRef: binding.workspaceRef,
                     accessRef: current.accessRef,
                     linkedDocumentID: current.linkedDocumentID,
-                    generation: current.generation,
-                    rootBindingGeneration: current.rootBindingGeneration,
-                    state: .disconnected,
-                    route: current.route,
-                    bookmark: nil,
-                    lifecycle: current.lifecycle
+                    generation: current.generation
                 )
+                let intent = replacement[key] ?? OriginalDisconnectIntent(
+                    accessRef: current.accessRef,
+                    linkedDocumentID: current.linkedDocumentID,
+                    routeKind: routeKind,
+                    rootRef: rootRef,
+                    memberRef: memberRef,
+                    generation: current.generation,
+                    binding: binding,
+                    operationKey: key,
+                    createdAt: createdAt,
+                    refusalCode: nil
+                )
+                replacement[key] = intent
+                intents.append(intent)
             }
-            var replacementRoots = roots
-            for current in matches {
-                Self.pruneUnusedRoot(for: current.route, records: replacement, roots: &replacementRoots)
-            }
-            try persist(records: replacement, roots: replacementRoots)
-            records = replacement
-            roots = replacementRoots
-            return matches.map { Self.descriptor(replacement[$0.accessRef]!) }
-                .sorted { $0.accessRef < $1.accessRef }
+            try persist(
+                records: revoked.records,
+                roots: revoked.roots,
+                originalDisconnects: replacement
+            )
+            records = revoked.records
+            roots = revoked.roots
+            originalDisconnects = replacement
+            return intents
         }
+    }
+
+    /// The disconnect intents Core has not yet acknowledged, in a stable order. An intent
+    /// Core refused for good is still listed, with its `refusalCode`, so that it is visible
+    /// and not retried.
+    public func pendingOriginalDisconnects() -> [OriginalDisconnectIntent] {
+        gate.withLock { originalDisconnects.values.sorted { $0.operationKey < $1.operationKey } }
+    }
+
+    /// Core committed the disconnect, so nothing is owed any more. Repeating it, or naming an
+    /// intent that is already gone, does nothing: an acknowledgement that is itself replayed
+    /// is not an error.
+    public func acknowledgeOriginalDisconnect(operationKey: String) throws {
+        try gate.withLock {
+            guard originalDisconnects[operationKey] != nil else { return }
+            var replacement = originalDisconnects
+            replacement[operationKey] = nil
+            try persist(records: records, roots: roots, originalDisconnects: replacement)
+            originalDisconnects = replacement
+        }
+    }
+
+    /// Core refused the request and no retry can change that. The intent stays, marked.
+    public func recordOriginalDisconnectRefusal(operationKey: String, code: String) throws {
+        try gate.withLock {
+            guard var intent = originalDisconnects[operationKey], intent.refusalCode != code else {
+                return
+            }
+            intent.refusalCode = code
+            var replacement = originalDisconnects
+            replacement[operationKey] = intent
+            try persist(records: records, roots: roots, originalDisconnects: replacement)
+            originalDisconnects = replacement
+        }
+    }
+
+    /// Call inside the gate.
+    private func connectedRecords(of linkedDocumentID: String) -> [NativeAccessRecord] {
+        records.values
+            .filter { $0.linkedDocumentID == linkedDocumentID && $0.state == .connected }
+            .sorted { $0.accessRef < $1.accessRef }
+    }
+
+    private static func revoking(
+        _ matches: [NativeAccessRecord],
+        records: [String: NativeAccessRecord],
+        roots: [String: NativeRootAccessRecord]
+    ) -> (records: [String: NativeAccessRecord], roots: [String: NativeRootAccessRecord]) {
+        var replacement = records
+        for current in matches {
+            replacement[current.accessRef] = NativeAccessRecord(
+                accessRef: current.accessRef,
+                linkedDocumentID: current.linkedDocumentID,
+                generation: current.generation,
+                rootBindingGeneration: current.rootBindingGeneration,
+                state: .disconnected,
+                route: current.route,
+                bookmark: nil,
+                lifecycle: current.lifecycle
+            )
+        }
+        var replacementRoots = roots
+        for current in matches {
+            pruneUnusedRoot(for: current.route, records: replacement, roots: &replacementRoots)
+        }
+        return (replacement, replacementRoots)
     }
 
     /// Resolves one original behind a file or member route and hands `body` its
@@ -1346,14 +1533,17 @@ public final class NativeAccessStore: @unchecked Sendable {
     private func persist(
         records: [String: NativeAccessRecord],
         roots: [String: NativeRootAccessRecord],
-        pending: [String: PendingFolderSubmission]? = nil
+        pending: [String: PendingFolderSubmission]? = nil,
+        originalDisconnects: [String: OriginalDisconnectIntent]? = nil
     ) throws {
         let document = NativeAccessDocument(
             schema: Self.schema,
             records: records.values.sorted { $0.accessRef < $1.accessRef },
             roots: roots.values.sorted { $0.rootRef < $1.rootRef },
             pending: (pending ?? self.pending).values
-                .sorted { $0.submissionID < $1.submissionID }
+                .sorted { $0.submissionID < $1.submissionID },
+            originalDisconnects: (originalDisconnects ?? self.originalDisconnects).values
+                .sorted { $0.operationKey < $1.operationKey }
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -1402,10 +1592,11 @@ public final class NativeAccessStore: @unchecked Sendable {
         records: [String: NativeAccessRecord],
         roots: [String: NativeRootAccessRecord],
         pending: [String: PendingFolderSubmission],
+        disconnects: [String: OriginalDisconnectIntent],
         migrated: Bool
     ) {
         guard FileManager.default.fileExists(atPath: stateFile.path) else {
-            return ([:], [:], [:], false)
+            return ([:], [:], [:], [:], false)
         }
         do {
             let attributes = try FileManager.default.attributesOfItem(atPath: stateFile.path)
@@ -1513,7 +1704,15 @@ public final class NativeAccessStore: @unchecked Sendable {
                 else { throw NativeAccessError.invalidState }
                 loadedPending[intent.submissionID] = intent
             }
-            return (result, loadedRoots, loadedPending, false)
+            var loadedDisconnects: [String: OriginalDisconnectIntent] = [:]
+            for intent in document.originalDisconnects ?? [] {
+                try validate(intent)
+                guard loadedDisconnects[intent.operationKey] == nil else {
+                    throw NativeAccessError.invalidState
+                }
+                loadedDisconnects[intent.operationKey] = intent
+            }
+            return (result, loadedRoots, loadedPending, loadedDisconnects, false)
         } catch let error as NativeAccessError {
             throw error
         } catch {
@@ -1552,6 +1751,7 @@ public final class NativeAccessStore: @unchecked Sendable {
         records: [String: NativeAccessRecord],
         roots: [String: NativeRootAccessRecord],
         pending: [String: PendingFolderSubmission],
+        disconnects: [String: OriginalDisconnectIntent],
         migrated: Bool
     ) {
         let legacy = try JSONDecoder().decode(LegacyNativeAccessDocument.self, from: data)
@@ -1637,7 +1837,7 @@ public final class NativeAccessStore: @unchecked Sendable {
             guard roots[rootRef]?.state == .active else { throw NativeAccessError.invalidState }
         }
         // A v1 file predates durable establishment, so there is nothing pending.
-        return (records, roots, [:], true)
+        return (records, roots, [:], [:], true)
     }
 
     /// A v1 file has no root group, only per-member bookmarks. The migrated
@@ -1688,6 +1888,34 @@ public final class NativeAccessStore: @unchecked Sendable {
                 else { throw NativeAccessError.invalidRoute }
             }
         }
+    }
+
+    /// An intent is replayed under its key until Core answers, so a record that could not
+    /// have been written by `disconnectSource` is refused rather than sent.
+    private static func validate(_ intent: OriginalDisconnectIntent) throws {
+        for identifier in [
+            intent.accessRef, intent.linkedDocumentID, intent.operationKey,
+            intent.binding.targetRef, intent.binding.workspaceRef,
+            intent.binding.targetBindingRevision,
+        ] + [intent.rootRef, intent.memberRef].compactMap({ $0 }) {
+            try validateIdentifier(identifier)
+        }
+        let routed: Bool
+        switch intent.routeKind {
+        case "direct_file": routed = intent.rootRef == nil && intent.memberRef == nil
+        case "root_member": routed = intent.rootRef != nil && intent.memberRef != nil
+        default: routed = false
+        }
+        guard routed,
+              intent.generation > 0,
+              !intent.createdAt.isEmpty,
+              intent.operationKey == OriginalDisconnectIntent.operationKey(
+                  workspaceRef: intent.binding.workspaceRef,
+                  accessRef: intent.accessRef,
+                  linkedDocumentID: intent.linkedDocumentID,
+                  generation: intent.generation
+              )
+        else { throw NativeAccessError.invalidState }
     }
 
     /// A pending establishment is only as trustworthy as the identities it

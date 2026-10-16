@@ -243,7 +243,8 @@
         "document.history",
         "document.reprocess",
         "document.settings.get",
-        "document.settings.update"
+        "document.settings.update",
+        "document.original.disconnect"
       ]
     },
     {
@@ -390,7 +391,8 @@
         "project.context.switch",
         "document.capture",
         "document.reprocess",
-        "document.settings.update"
+        "document.settings.update",
+        "document.original.disconnect"
       ]
     },
     {
@@ -446,7 +448,8 @@
         "project.context.switch",
         "document.capture",
         "document.reprocess",
-        "document.settings.update"
+        "document.settings.update",
+        "document.original.disconnect"
       ]
     },
     {
@@ -566,7 +569,8 @@
         "document.history",
         "document.reprocess",
         "document.settings.get",
-        "document.settings.update"
+        "document.settings.update",
+        "document.original.disconnect"
       ]
     },
     {
@@ -659,7 +663,8 @@
         "document.history",
         "document.reprocess",
         "document.settings.get",
-        "document.settings.update"
+        "document.settings.update",
+        "document.original.disconnect"
       ]
     },
     {

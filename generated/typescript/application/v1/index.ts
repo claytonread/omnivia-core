@@ -5748,6 +5748,60 @@ export interface DocumentProcessingSettingsUpdateInput {
 }
 
 /**
+ * Closed input for `document.original.disconnect`. Names one opaque owner/device route of one
+ * document's original and asks Core to tombstone it at the generation Core currently holds; it
+ * carries no generation, path, URL or bookmark. A disconnect that arrives before any capture of
+ * the document records the tombstone anyway, so a stale later capture under that owner can never
+ * reactivate the route. Disconnecting a route that is already disconnected changes nothing.
+ */
+export interface DocumentOriginalDisconnectInput {
+  /**
+   * Logical document whose original route is disconnected.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Opaque native access-owner reference of the route.
+   */
+  readonly owner_ref: Identifier;
+  /**
+   * Closed value `direct_file` or `root_member`.
+   */
+  readonly route_kind: OpenCode;
+  /**
+   * Opaque selected-root reference for a root member.
+   */
+  readonly root_ref?: Identifier;
+  /**
+   * Opaque frozen member reference under the selected root.
+   */
+  readonly member_ref?: Identifier;
+}
+
+/**
+ * Canonical terminal receipt for one source-level disconnect or its exact replay: the route as
+ * Core now holds it.
+ */
+export interface DocumentOriginalDisconnectResult {
+  /**
+   * Logical document whose original route was disconnected.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Opaque native access-owner reference of the route.
+   */
+  readonly owner_ref: Identifier;
+  /**
+   * The binding generation Core tombstoned; a capture under it or an older one is historical
+   * only.
+   */
+  readonly binding_generation: number;
+  /**
+   * Closed value `disconnected`.
+   */
+  readonly connection_state: OpenCode;
+}
+
+/**
  * The identity of one asynchronous job: what it is, which application operation started it, its
  * immutable audit linkage, and, when applicable, which workspace it runs against.
  */
@@ -16788,6 +16842,39 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
     scope: { required_scopes: ["memory:write"], side_effect: "update", scope_kind: "workspace" },
     input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsUpdateInput",
     result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsUpdateResult",
+    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.original.disconnect",
+    scope: { required_scopes: ["memory:write"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalDisconnectInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalDisconnectResult",
     required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
     job: { completion_mode: "synchronous" },
     pagination: { paginated: false },

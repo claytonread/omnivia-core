@@ -321,6 +321,8 @@ __all__ = [
     "DocumentHistoryInput",
     "DocumentHistoryResult",
     "DocumentOriginalBindingInput",
+    "DocumentOriginalDisconnectInput",
+    "DocumentOriginalDisconnectResult",
     "DocumentProcessingProfileInput",
     "DocumentProcessingSettings",
     "DocumentProcessingSettingsGetInput",
@@ -9334,6 +9336,143 @@ class DocumentProcessingSettingsUpdateInput:
             mode=field_mode,
             recognition_languages=field_recognition_languages,
             embedded_image_ocr=field_embedded_image_ocr,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentOriginalDisconnectInput:
+    """Closed input for `document.original.disconnect`. Names one opaque owner/device route of
+    one document's original and asks Core to tombstone it at the generation Core currently
+    holds; it carries no generation, path, URL or bookmark. A disconnect that arrives before
+    any capture of the document records the tombstone anyway, so a stale later capture under
+    that owner can never reactivate the route. Disconnecting a route that is already
+    disconnected changes nothing.
+    """
+
+    document_id: Identifier
+    owner_ref: Identifier
+    route_kind: OpenCode
+    root_ref: Identifier | None = None
+    member_ref: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["document_id"] = self.document_id
+        wire["owner_ref"] = self.owner_ref
+        wire["route_kind"] = self.route_kind
+        if self.root_ref is not None:
+            wire["root_ref"] = self.root_ref
+        if self.member_ref is not None:
+            wire["member_ref"] = self.member_ref
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentOriginalDisconnectInput"
+    ) -> DocumentOriginalDisconnectInput:
+        """Decode a wire payload into a DocumentOriginalDisconnectInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_owner_ref = _decode_str(
+            _require_field(mapping, "owner_ref", path),
+            f"{path}.owner_ref",
+        )
+        field_route_kind = _decode_str(
+            _require_field(mapping, "route_kind", path),
+            f"{path}.route_kind",
+        )
+        field_root_ref: Identifier | None = None
+        if "root_ref" in mapping:
+            raw_root_ref = mapping["root_ref"]
+            if raw_root_ref is None:
+                raise ContractDecodeError(
+                    f"{path}.root_ref: null is not a valid value"
+                )
+            field_root_ref = _decode_str(raw_root_ref, f"{path}.root_ref")
+        field_member_ref: Identifier | None = None
+        if "member_ref" in mapping:
+            raw_member_ref = mapping["member_ref"]
+            if raw_member_ref is None:
+                raise ContractDecodeError(
+                    f"{path}.member_ref: null is not a valid value"
+                )
+            field_member_ref = _decode_str(raw_member_ref, f"{path}.member_ref")
+        return cls(
+            document_id=field_document_id,
+            owner_ref=field_owner_ref,
+            route_kind=field_route_kind,
+            root_ref=field_root_ref,
+            member_ref=field_member_ref,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentOriginalDisconnectResult:
+    """Canonical terminal receipt for one source-level disconnect or its exact replay: the route
+    as Core now holds it.
+    """
+
+    document_id: Identifier
+    owner_ref: Identifier
+    binding_generation: int
+    connection_state: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["document_id"] = self.document_id
+        wire["owner_ref"] = self.owner_ref
+        wire["binding_generation"] = self.binding_generation
+        wire["connection_state"] = self.connection_state
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentOriginalDisconnectResult"
+    ) -> DocumentOriginalDisconnectResult:
+        """Decode a wire payload into a DocumentOriginalDisconnectResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_owner_ref = _decode_str(
+            _require_field(mapping, "owner_ref", path),
+            f"{path}.owner_ref",
+        )
+        field_binding_generation = _decode_int(
+            _require_field(mapping, "binding_generation", path),
+            f"{path}.binding_generation",
+        )
+        field_connection_state = _decode_str(
+            _require_field(mapping, "connection_state", path),
+            f"{path}.connection_state",
+        )
+        return cls(
+            document_id=field_document_id,
+            owner_ref=field_owner_ref,
+            binding_generation=field_binding_generation,
+            connection_state=field_connection_state,
         )
 
 
@@ -31936,6 +32075,60 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
         result_schema_ref=(
             "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
             "#/$defs/DocumentProcessingSettingsUpdateResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="document.original.disconnect",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentOriginalDisconnectInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentOriginalDisconnectResult"
         ),
         required_capability=CapabilityRequirement(
             id="evidence.write",

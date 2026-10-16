@@ -54,6 +54,8 @@ from omnivia_core.contracts.v1.generated import (
     DocumentHistoryAction,
     DocumentHistoryInput,
     DocumentHistoryResult,
+    DocumentOriginalDisconnectInput,
+    DocumentOriginalDisconnectResult,
     DocumentProcessingProfileInput,
     DocumentReprocessInput,
     DocumentReprocessProfileOption,
@@ -82,6 +84,7 @@ from omnivia_core_runtime.service.document_intake import (
     _identifier,
     admit_document_capture_in_transaction,
     complete_reprocess_in_transaction,
+    move_original_in_transaction,
     read_retained_source,
 )
 from omnivia_core_runtime.service.document_processing import (
@@ -129,6 +132,7 @@ from omnivia_core_runtime.workspace.blob_publication import BlobPublicationRefus
 DOCUMENT_CAPTURE_OPERATION: Final = "document.capture"
 DOCUMENT_REPROCESS_OPERATION: Final = "document.reprocess"
 DOCUMENT_HISTORY_OPERATION: Final = "document.history"
+DOCUMENT_ORIGINAL_DISCONNECT_OPERATION: Final = "document.original.disconnect"
 _MAX_INLINE_BYTES: Final = 3 * 1024 * 1024 - 64 * 1024
 _MAX_ENCODED_BYTES: Final = 4 * ((_MAX_INLINE_BYTES + 2) // 3)
 _MESSAGE_INVALID: Final = "the request payload is not a valid document capture"
@@ -168,6 +172,14 @@ _REPROCESS_NESTED_KEYS: Final[dict[str, frozenset[str]]] = {
 _MESSAGE_REPROCESS_SUBSTITUTED: Final = (
     "the selected processing profile is no longer the approved profile this capture "
     "resolves to"
+)
+_MESSAGE_DISCONNECT_INVALID: Final = "the request payload is not a valid original disconnect"
+_MESSAGE_DISCONNECT_REFUSED: Final = (
+    "the original route belongs to another document or is on a different route"
+)
+_MESSAGE_DISCONNECT_UNAVAILABLE: Final = "the original disconnect could not be recorded"
+_DISCONNECT_KEYS: Final = frozenset(
+    {"document_id", "owner_ref", "route_kind", "root_ref", "member_ref"}
 )
 _MESSAGE_HISTORY_INVALID: Final = "the request payload is not a valid document history read"
 _MESSAGE_HISTORY_NOT_FOUND: Final = "this workspace holds no such document"
@@ -223,6 +235,10 @@ def _closed_reprocess(payload: object) -> bool:
         if value is not None and (not isinstance(value, Mapping) or not set(value) <= allowed):
             return False
     return True
+
+
+def _closed_disconnect(payload: object) -> bool:
+    return isinstance(payload, Mapping) and set(payload) <= _DISCONNECT_KEYS
 
 
 def _closed_history(payload: object) -> bool:
@@ -1316,6 +1332,117 @@ class DocumentCaptureHandlers:
                 allocate_identifier=self.allocate_identifier,
             )
             return AuditedOperationResult(outcome.result, outcome.audit_ref)
+
+    def document_original_disconnect(self, context: OperationContext) -> AuditedOperationResult:
+        """Tombstone one owner route of a document's original, once per idempotency key.
+
+        The route is tombstoned at the generation Core holds, so a stale capture or relink
+        result carrying that generation or an older one stays historical and can never
+        reactivate it. A disconnect that arrives before any capture still records the
+        tombstone. Disconnecting a route that is already disconnected changes nothing and
+        returns the same route, so a retry after a lost acknowledgement, under the same key
+        or a new one, is safe.
+        """
+        request: DocumentOriginalDisconnectInput | None = None
+        invalid = False
+        try:
+            if not _closed_disconnect(context.request.input):
+                raise DocumentIntakeRefused("the disconnect request is not closed")
+            request = DocumentOriginalDisconnectInput.from_wire(context.request.input)
+            _identifier(request.document_id, "document id")
+            _identifier(request.owner_ref, "owner reference")
+            _check_route(request.route_kind, request.root_ref, request.member_ref)
+        except (ContractDecodeError, DocumentIntakeRefused):
+            invalid = True
+        if invalid:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_DISCONNECT_INVALID)
+        assert request is not None
+        connection = getattr(self.service, "connection", None)
+        identity = getattr(self.service, "identity", None)
+        layout = getattr(self.service, "layout", None)
+        guard = None if connection is None else read_guard(connection)
+        if (
+            context.authorization is None
+            or connection is None
+            or identity is None
+            or guard is None
+            or layout is None
+        ):
+            raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            request.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+        grant = issue_mutation_grant(
+            context.authorization,
+            session=self.session,
+            binding=self.binding,
+            guard=guard,
+            equivalence=equivalence,
+            clock=self.clock,
+        )
+        capture_service: Any = _CaptureServiceView(
+            connection=connection,
+            identity=identity,
+            layout=layout,
+            workspace_id=context.workspace_id,
+            generation=guard.fencing_generation,
+        )
+
+        def mutate(_fenced: Any, _settlement: MutationSettlementContext) -> Mapping[str, Any]:
+            try:
+                binding = move_original_in_transaction(
+                    capture_service,
+                    document_id=request.document_id,
+                    owner_ref=request.owner_ref,
+                    route_kind=request.route_kind,
+                    root_ref=request.root_ref,
+                    member_ref=request.member_ref,
+                    connect=False,
+                )
+            except DocumentIntakeRefused as error:
+                raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_DISCONNECT_REFUSED) from error
+            except sqlite3.OperationalError as error:
+                # Same frozen class as the capture path: a busy store is retryable, and the
+                # default `non_retryable` would be rewritten to a bare internal failure.
+                raise OperationError(
+                    ERROR_CODE_INTERNAL_RECOVERABLE,
+                    _MESSAGE_DISCONNECT_UNAVAILABLE,
+                    retry_class=RETRY_CLASS_RETRYABLE,
+                ) from error
+            return DocumentOriginalDisconnectResult(
+                document_id=binding.document_id,
+                owner_ref=binding.owner_ref,
+                binding_generation=binding.binding_generation,
+                connection_state=binding.connection_state,
+            ).to_wire()
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                result = DocumentOriginalDisconnectResult.from_wire(wire)
+            except ContractDecodeError:
+                return False
+            return (
+                result.document_id == request.document_id
+                and result.owner_ref == request.owner_ref
+                and result.connection_state == store.BINDING_DISCONNECTED
+            )
+
+        outcome = execute_mutation(
+            connection,
+            identity,
+            grant=grant,
+            context=context.authorization,
+            equivalence=equivalence,
+            mutate=mutate,
+            validate_result=valid_result,
+            clock=self.clock,
+            allocate_identifier=self.allocate_identifier,
+        )
+        return AuditedOperationResult(outcome.result, outcome.audit_ref)
 
 
 def _terminal_outcome(state: str, limitation: str) -> ExtractionOutcome:

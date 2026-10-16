@@ -43,6 +43,9 @@ public final class FolderManagementWindowController: NSWindowController,
     /// pass, which checks the identity and the target again. `nil` offers no
     /// Try again.
     private let releaseHeld: ((Set<CaptureQueuePause>) async -> Void)?
+    /// Source-level Disconnect for one file (design §13.3): revokes it here and records what
+    /// Core is owed. Returns whether the revocation was made durable. `nil` offers none.
+    private let disconnectSource: ((FileSubscription) async -> Bool)?
     private let segments = NSSegmentedControl(
         labels: FilesAndFoldersSegment.allCases.map(\.title),
         trackingMode: .selectOne,
@@ -65,6 +68,7 @@ public final class FolderManagementWindowController: NSWindowController,
     )
     private let locateButton = NSButton(title: "Locate…", target: nil, action: nil)
     private let tryAgainButton = NSButton(title: "Try again", target: nil, action: nil)
+    private let disconnectButton = NSButton(title: "Disconnect…", target: nil, action: nil)
     private var segment = FilesAndFoldersSegment.files
     private var statusFilter = FilesAndFoldersStatusFilter.all
     /// Readable by tests so the projection they assert is the one this window built.
@@ -94,7 +98,8 @@ public final class FolderManagementWindowController: NSWindowController,
         historyTransport: CoreDocumentHistoryTransport? = nil,
         locateOriginal: (() -> Void)? = nil,
         identityAuthorises: ((CaptureDeliveryBinding) async -> Bool)? = nil,
-        releaseHeld: ((Set<CaptureQueuePause>) async -> Void)? = nil
+        releaseHeld: ((Set<CaptureQueuePause>) async -> Void)? = nil,
+        disconnectSource: ((FileSubscription) async -> Bool)? = nil
     ) {
         self.workspaceName = workspaceName
         self.folderStore = folderStore
@@ -111,6 +116,7 @@ public final class FolderManagementWindowController: NSWindowController,
         self.locateOriginal = locateOriginal
         self.identityAuthorises = identityAuthorises
         self.releaseHeld = releaseHeld
+        self.disconnectSource = disconnectSource
         model = FilesAndFoldersModel(workspaceName: workspaceName)
         super.init(window: nil)
     }
@@ -223,6 +229,9 @@ public final class FolderManagementWindowController: NSWindowController,
         tryAgainButton.target = self
         tryAgainButton.action = #selector(tryAgain)
         tryAgainButton.setAccessibilityLabel("Try again once access or the update is resolved")
+        disconnectButton.target = self
+        disconnectButton.action = #selector(disconnectFile)
+        disconnectButton.setAccessibilityLabel("Disconnect this file in this workspace on this Mac")
 
         let searchSpacer = NSView()
         searchSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -234,7 +243,7 @@ public final class FolderManagementWindowController: NSWindowController,
         let actions = NSStackView(
             views: [
                 statusLabel, actionSpacer, clearButton, revealButton, tryAgainButton, locateButton,
-                reprocessButton, checkButton, pauseResumeButton, stopButton,
+                reprocessButton, checkButton, pauseResumeButton, stopButton, disconnectButton,
             ]
         )
         actions.orientation = .horizontal
@@ -286,7 +295,8 @@ public final class FolderManagementWindowController: NSWindowController,
         }
         model = FilesAndFoldersModel(
             workspaceName: workspaceName,
-            files: fileStore.all(),
+            // A disconnected source is no longer an entry here (design §13.3 step 6).
+            files: FilesAndFoldersModel.connectedFiles(fileStore.all(), routes: documentRoutes()),
             folders: folders,
             retainedRoots: FilesAndFoldersModel.retainedRoots(
                 groups: rootGroups(),
@@ -346,6 +356,8 @@ public final class FolderManagementWindowController: NSWindowController,
         reprocessButton.isEnabled = actions.reprocessEnabled
         locateButton.isHidden = segment != .files
         locateButton.isEnabled = permitsOriginalAction(for: selected)
+        disconnectButton.isHidden = segment != .files
+        disconnectButton.isEnabled = actions.disconnectEnabled && disconnectSource != nil
         detailView.string = model.detail(for: selected)
             .map { "\($0.label): \($0.value)" }
             .joined(separator: "\n")
@@ -472,6 +484,39 @@ public final class FolderManagementWindowController: NSWindowController,
             reload()
             if let outcome { statusLabel.stringValue = outcome }
         }
+    }
+
+    /// The confirmation is the design's own wording (§13.3), and Cancel is the default.
+    @objc private func disconnectFile() {
+        guard let selected, case .file = selected else { return }
+        let alert = NSAlert()
+        alert.messageText = Self.disconnectConfirmation
+        alert.informativeText = selected.displayName
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Disconnect")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        Task { _ = await applyDisconnect(selected) }
+    }
+
+    static let disconnectConfirmation = "Disconnect this file in this workspace on this Mac? "
+        + "Core will stop reading it through all matching links here, including watched "
+        + "folders. Captured versions and already queued additions remain. Your original "
+        + "file will not change."
+
+    /// Revokes the file here, at once, and lets the owner record and reconcile what Core is
+    /// owed. Returns whether the revocation was made durable; Core being offline does not
+    /// change that and is not waited for.
+    @discardableResult
+    func applyDisconnect(_ selected: FilesAndFoldersItem) async -> Bool {
+        guard let disconnectSource, case let .file(value) = selected,
+              FilesAndFoldersModel.actions(for: selected).disconnectEnabled
+        else { return false }
+        let revoked = await disconnectSource(value)
+        reload()
+        statusLabel.stringValue = revoked
+            ? "Disconnected \(selected.displayName). Core will be told when it is reachable."
+            : "Could not disconnect \(selected.displayName). Nothing changed."
+        return revoked
     }
 
     @objc private func checkNow() {

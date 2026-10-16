@@ -520,6 +520,8 @@
     "DocumentProcessingSettingsGetResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsGetResult"},
     "DocumentProcessingSettingsUpdateInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsUpdateInput"},
     "DocumentProcessingSettingsUpdateResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsUpdateResult"},
+    "DocumentOriginalDisconnectInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalDisconnectInput"},
+    "DocumentOriginalDisconnectResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalDisconnectResult"},
     "GovernanceRationale": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/GovernanceRationale"
     },

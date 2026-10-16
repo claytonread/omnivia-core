@@ -14114,6 +14114,140 @@
           "retry_class": "non_retryable"
         }
       }
+    },
+    {
+      "id": "document.original.disconnect/primary-success",
+      "operation": "document.original.disconnect",
+      "description": "document.original.disconnect tombstones one owner route of a document's original at the generation Core holds, and returns the route as Core now holds it, disconnected.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.original.disconnect-primary-success",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.original.disconnect"
+        },
+        "operation": "document.original.disconnect",
+        "input": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-1",
+          "route_kind": "direct_file"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.original.disconnect-primary-success",
+          "audit_reference": "audit-document.original.disconnect"
+        },
+        "result": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-1",
+          "binding_generation": 1,
+          "connection_state": "disconnected"
+        }
+      }
+    },
+    {
+      "id": "document.original.disconnect/honest-replay",
+      "operation": "document.original.disconnect",
+      "description": "document.original.disconnect repeated with the same idempotency key and the same route: the recorded receipt is returned and the binding is not written a second time.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "document.original.disconnect/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.original.disconnect-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.original.disconnect"
+        },
+        "operation": "document.original.disconnect",
+        "input": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-1",
+          "route_kind": "direct_file"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.original.disconnect-honest-replay",
+          "audit_reference": "audit-document.original.disconnect"
+        },
+        "result": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-1",
+          "binding_generation": 1,
+          "connection_state": "disconnected"
+        }
+      }
+    },
+    {
+      "id": "document.original.disconnect/idempotency-conflict",
+      "operation": "document.original.disconnect",
+      "description": "document.original.disconnect reusing one idempotency key for a different route: refused rather than resolved to the first route's answer.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "document.original.disconnect/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.original.disconnect-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.original.disconnect"
+        },
+        "operation": "document.original.disconnect",
+        "input": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-2",
+          "route_kind": "direct_file"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.original.disconnect-idempotency-conflict",
+          "audit_reference": "audit-document.original.disconnect"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
     }
   ],
   "contract_version": "1.0",

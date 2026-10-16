@@ -1279,7 +1279,7 @@
       ],
       "status": "passed",
       "missing_condition": null,
-      "limitations": "Both orderings of the race are driven with the store's real Disconnect over the one shared gate, on separate threads for the contended case. The revoking operation is the store primitive NativeAccessStore.disconnect, which is what section 13.3 steps 1 to 3 describe; the companion has no Disconnect control that calls it yet, so the user-facing action is not part of this evidence. The canonical half of Disconnect, a persisted intent reconciled with Core, does not exist and is AT-30's concern, not this gate's.",
+      "limitations": "Both orderings of the race are driven with the store's real Disconnect over the one shared gate, on separate threads for the contended case. The revoking operation is the store primitive NativeAccessStore.disconnect, which is what section 13.3 steps 1 to 3 describe; the user-facing Disconnect control and the canonical half (a persisted intent reconciled with Core) are AT-30's evidence, not this gate's.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CapturePreparationCoordinator.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",
@@ -1329,27 +1329,65 @@
       "evidence_type": "automated_repository_test",
       "evidence": [
         {
-          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/NativeAccessStoreTests.swift",
-          "symbol": "testDisconnectDocumentRevokesEveryRouteAndNoOtherDocument",
-          "covers": "Local revocation covers every route for that document and no other."
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalDisconnectLiveCoreTests.swift",
+          "symbol": "testALostDisconnectAcknowledgementAfterCoreCommitsIsReconciledOnTheSameKeyThroughTheRealCLI",
+          "covers": "Against a live omnivia-core-service through the real CLI: Core commits document.original.disconnect, the first acknowledgement is discarded, the companion restarts, the one intent and the local revocation survive, and the restarted reconciler resends the identical bytes under the identical key and is acknowledged. Core's own storage then shows one disconnected binding and one committed claim, the key replays the same stored result and audit reference, and a refresh that was already queued is admitted as history without reactivating the binding."
         },
         {
-          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_intake.py",
-          "symbol": "test_a_disconnect_before_first_capture_is_an_owner_scoped_tombstone",
-          "covers": "The canonical side of the disconnect is idempotent under the same owner key."
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalDisconnectAcceptanceTests.swift",
+          "symbol": "testALostDisconnectAcknowledgementKeepsTheRevocationAndReconcilesOnTheSameKey",
+          "covers": "Production DocumentIntakeEnvironment.disconnectSource, the durable access-store intent and the reconciler, with a stand-in that models only Core's same-key idempotency: revocation and one intent are written together, survive a restart, no re-check mints a second grant, generation, intent or queued work, a second Disconnect records nothing, and the already queued addition is still delivered."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalDisconnectAcceptanceTests.swift",
+          "symbol": "testAnUnreachableCoreLeavesTheRevocationAndTheIntentUntouchedUntilItReturns",
+          "covers": "Core being unreachable leaves the revocation and the intent unchanged and allocates no key."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalDisconnectAcceptanceTests.swift",
+          "symbol": "testAFolderMemberRouteIsDisconnectedAndItsIntentNamesTheRootAndMember",
+          "covers": "A watched-folder member route is revoked with its source and gets its own intent naming the root and member; another document is untouched."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalDisconnectAcceptanceTests.swift",
+          "symbol": "testTheWindowDisconnectRevokesTheFileAndRemovesItFromTheFilesTab",
+          "covers": "The window's Disconnect control uses the design's confirmation, the production owner, and removes the entry from the Files tab."
         },
         {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureRecoveryAcceptanceTests.swift",
           "symbol": "testALostAcknowledgementKeepsTheDisconnectAndResumesOnTheSameKey",
-          "covers": "A lost capture-delivery acknowledgement, after the person disconnected the original, leaves the local revocation intact across a restart, creates no second intent and no rediscovery, and resumes under the same document, owner and source identity. This is the capture half; no disconnect acknowledgement is involved."
+          "covers": "The capture half: a lost capture-delivery acknowledgement after Disconnect keeps the revocation across a restart and resumes under the same document, owner and source identity."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_original_disconnect.py",
+          "symbol": "test_same_key_replay_returns_the_receipt_and_writes_nothing_more",
+          "covers": "Core replays a committed key with the stored receipt and writes nothing more."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_original_disconnect.py",
+          "symbol": "test_a_disconnect_before_any_capture_keeps_a_tombstone_a_later_capture_cannot_lift",
+          "covers": "A disconnect that arrives before any capture is an owner-scoped tombstone a later capture cannot lift."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_original_disconnect.py",
+          "symbol": "test_a_capture_under_a_disconnected_generation_is_historical_after_a_linked_capture",
+          "covers": "A capture under the disconnected generation is admitted as history and does not reactivate the binding."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_original_disconnect.py",
+          "symbol": "test_the_same_key_for_a_different_route_is_an_idempotency_conflict",
+          "covers": "A key reused with a different body is refused, which is why the intent's bytes are never recomputed."
         }
       ],
-      "status": "not_implemented",
-      "missing_condition": "The canonical half of Disconnect does not exist on the companion side. Section 13.3 steps 4 and 5 persist a fixed disconnect intent for the canonical original binding and reconcile it with its stable key. The companion persists no such intent and calls nothing: nothing outside tests calls NativeAccessStore.disconnect(linkedDocumentID:), and Core exposes disconnect_original only as a library function with no handler or operation on the wire, so there is no acknowledgement to lose. Building it needs a new Core application operation, a companion intent store and a reconciler, which is a cross-repository contract decision rather than a test.",
-      "limitations": "Evidence is two real halves that do not meet. Local revocation is durable and refuses every later read after a restart, and a lost capture acknowledgement resumes on the same canonical key without resurrecting or rediscovering the source. Core's own disconnect is idempotent under the same owner key. Neither crosses a dropped disconnect message because that message is never sent.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The live arm discards the answer after the real CLI has returned it, which is how a lost acknowledgement looks to the companion; it does not kill the CLI or the service mid-commit, and Core runs on this host's interpreter, not in a signed package. The Core-offline case is covered with a stand-in transport, not a stopped service. The section 21.8.3 automatic exclusion marker for a different file later found in the same folder slot is not exercised by this gate: a disconnected member's route stays on record so a scan neither reads nor re-enrols it, but a replacement file in that slot is not tested here.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift",
-        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/OriginalDisconnectReconciler.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/DocumentIntakeEnvironment.swift",
+        "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/CLICaptureDelivery.swift",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/handlers/document_capture.py"
       ]
     },
     {

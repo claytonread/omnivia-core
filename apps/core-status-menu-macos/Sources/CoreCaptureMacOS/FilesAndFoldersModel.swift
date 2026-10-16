@@ -308,6 +308,11 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
     /// linkage, a snapshot-only capture and a stale read all permit none of
     /// them. Reprocessing is deliberately separate: it works on retained bytes.
     public let originalActionsEnabled: Bool
+    /// Source-level Disconnect (design §13.3), offered for a listed file. A file whose route
+    /// is already disconnected is not listed (see `connectedFiles`), so every file row that
+    /// can be selected can be disconnected, whatever state its watch is in: a stopped,
+    /// paused or access-lost watch still holds a route to revoke.
+    public let disconnectEnabled: Bool
 
     public init(
         pauseTitle: String,
@@ -318,7 +323,8 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
         revealEnabled: Bool = false,
         tryAgainEnabled: Bool = false,
         reprocessEnabled: Bool = false,
-        originalActionsEnabled: Bool = false
+        originalActionsEnabled: Bool = false,
+        disconnectEnabled: Bool = false
     ) {
         self.pauseTitle = pauseTitle
         self.pauseEnabled = pauseEnabled
@@ -329,6 +335,7 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
         self.tryAgainEnabled = tryAgainEnabled
         self.reprocessEnabled = reprocessEnabled
         self.originalActionsEnabled = originalActionsEnabled
+        self.disconnectEnabled = disconnectEnabled
     }
 }
 
@@ -748,6 +755,19 @@ public struct FilesAndFoldersModel: Sendable {
         Set(routes.filter { $0.lifecycle == .provisional }.map(\.accessRef))
     }
 
+    /// The watched files whose route is still held. A disconnected source leaves the Files
+    /// tab (design §13.3 step 6): its subscription row is stopped history, not an active
+    /// entry, and listing it would offer actions over a route that no longer exists. What
+    /// Core captured of it stays available through Core's own history and the activity
+    /// receipts, which this filter does not touch.
+    public static func connectedFiles(
+        _ files: [FileSubscription],
+        routes: [NativeAccessDescriptor]
+    ) -> [FileSubscription] {
+        let disconnected = Set(routes.filter { $0.state == .disconnected }.map(\.accessRef))
+        return files.filter { !disconnected.contains($0.accessRef) }
+    }
+
     /// The documents that hold a direct route of their own, so a folder member whose
     /// root-mediated reads have stopped can be distinguished from one that is still being read.
     ///
@@ -907,7 +927,8 @@ public struct FilesAndFoldersModel: Sendable {
                 value.state,
                 resumable: [.paused, .needsAccess],
                 reprocessEnabled: reprocessable,
-                originalActionsEnabled: originalActions
+                originalActionsEnabled: originalActions,
+                disconnectEnabled: true
             )
         case let .folder(value):
             return subscriptionActions(
@@ -992,7 +1013,8 @@ public struct FilesAndFoldersModel: Sendable {
         _ state: FolderSubscriptionState,
         resumable: Set<FolderSubscriptionState>,
         reprocessEnabled: Bool = false,
-        originalActionsEnabled: Bool = false
+        originalActionsEnabled: Bool = false,
+        disconnectEnabled: Bool = false
     ) -> FilesAndFoldersActions {
         FilesAndFoldersActions(
             pauseTitle: state == .reviewRequired
@@ -1005,7 +1027,8 @@ public struct FilesAndFoldersModel: Sendable {
             // Reprocessing works on bytes Core already holds, so a stopped watch or a
             // missing original does not bar it. What bars it is Core saying so.
             reprocessEnabled: reprocessEnabled,
-            originalActionsEnabled: originalActionsEnabled
+            originalActionsEnabled: originalActionsEnabled,
+            disconnectEnabled: disconnectEnabled
         )
     }
 

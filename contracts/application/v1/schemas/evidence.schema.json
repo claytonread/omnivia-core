@@ -696,6 +696,33 @@
       },
       "required": ["settings"],
       "unevaluatedProperties": false
+    },
+    "DocumentOriginalDisconnectInput": {
+      "title": "DocumentOriginalDisconnectInput",
+      "description": "Closed input for `document.original.disconnect`. Names one opaque owner/device route of one document's original and asks Core to tombstone it at the generation Core currently holds; it carries no generation, path, URL or bookmark. A disconnect that arrives before any capture of the document records the tombstone anyway, so a stale later capture under that owner can never reactivate the route. Disconnecting a route that is already disconnected changes nothing.",
+      "type": "object",
+      "properties": {
+        "document_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Logical document whose original route is disconnected."},
+        "owner_ref": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Opaque native access-owner reference of the route."},
+        "route_kind": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Closed value `direct_file` or `root_member`."},
+        "root_ref": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Opaque selected-root reference for a root member."},
+        "member_ref": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Opaque frozen member reference under the selected root."}
+      },
+      "required": ["document_id", "owner_ref", "route_kind"],
+      "unevaluatedProperties": false
+    },
+    "DocumentOriginalDisconnectResult": {
+      "title": "DocumentOriginalDisconnectResult",
+      "description": "Canonical terminal receipt for one source-level disconnect or its exact replay: the route as Core now holds it.",
+      "type": "object",
+      "properties": {
+        "document_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Logical document whose original route was disconnected."},
+        "owner_ref": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Opaque native access-owner reference of the route."},
+        "binding_generation": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "The binding generation Core tombstoned; a capture under it or an older one is historical only."},
+        "connection_state": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Closed value `disconnected`."}
+      },
+      "required": ["document_id", "owner_ref", "binding_generation", "connection_state"],
+      "unevaluatedProperties": false
     }
   }
 }

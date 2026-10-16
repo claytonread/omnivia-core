@@ -14,7 +14,7 @@ This document is generated from
 `qualification/wp15/qualification-ledger.v1.json` and is verified against it
 by `scripts/check-wp15-qualification.py`. It records what this checkout can
 show and what it cannot. **It is not a claim that the release is qualified.**
-58 of 130 gates have direct production-path coverage
+59 of 130 gates have direct production-path coverage
 of every condition they name; the rest carry the exact condition still
 missing.
 
@@ -22,22 +22,22 @@ missing.
 
 | Status | Gates | Meaning |
 |---|---|---|
-| passed | 58 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
+| passed | 59 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
 | failed | 0 | Evidence exists and shows the required result is not met. |
 | blocked_external | 46 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
 | not_executed | 24 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
-| not_implemented | 2 | The production path the gate names does not exist in this checkout. |
+| not_implemented | 1 | The production path the gate names does not exist in this checkout. |
 
 ## Counts by family and status
 
 | Family | Section | Gates | passed | failed | blocked_external | not_executed | not_implemented |
 |---|---|---|---|---|---|---|---|
-| AT | 20 | 50 | 20 | 0 | 19 | 9 | 2 |
+| AT | 20 | 50 | 21 | 0 | 19 | 9 | 1 |
 | NAT | 20.1 | 17 | 0 | 0 | 17 | 0 | 0 |
 | DOC | 20.2 | 19 | 10 | 0 | 0 | 9 | 0 |
 | MON | 20.3 | 38 | 24 | 0 | 10 | 4 | 0 |
 | END | 20.4 | 6 | 4 | 0 | 0 | 2 | 0 |
-| **total** | | **130** | 58 | 0 | 46 | 24 | 2 |
+| **total** | | **130** | 59 | 0 | 46 | 24 | 1 |
 
 ## Counts by required evidence class
 
@@ -77,6 +77,7 @@ each one's scope limits.
 | AT-24 | A file changes during reading. |
 | AT-28 | Disconnect races a final multi-file publication. |
 | AT-29 | Disconnect after durable publication, including before the first admission. |
+| AT-30 | A disconnect acknowledgement is lost. |
 | AT-31 | Two refreshes finish in reverse order. |
 | AT-37 | One item fails before local publication, and separately a partial Core processing case. |
 | AT-47 | An earlier snapshot is admitted after a newer capture succeeds. |

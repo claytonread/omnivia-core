@@ -108,6 +108,10 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private var capturePanelController: CapturePanelController?
     private var folderManagementWindowController: FolderManagementWindowController?
     private var captureDeliveryCoordinator: CaptureDeliveryCoordinator?
+    /// Tells Core about the sources the person disconnected (design §13.3 steps 4 and 5). It
+    /// exists whenever delivery does, and every delivery pass, including the first after a
+    /// restart, runs it.
+    private var originalDisconnectReconciler: OriginalDisconnectReconciler?
     /// Kept so startup can finish any folder establishment an earlier process
     /// left pending, before monitoring reads a watched scope.
     private var intakeEnvironment: DocumentIntakeEnvironment?
@@ -266,6 +270,20 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                         _ = try? await delivery.releaseHeld(pause)
                     }
                     self?.deliverPendingCaptures()
+                },
+                // Source-level Disconnect: the revocation is local, durable and immediate; the
+                // reconciliation that tells Core runs with the next delivery pass and again
+                // after any restart for as long as Core has not acknowledged it.
+                disconnectSource: { [weak self] file in
+                    let revoked = (try? await environment.disconnectSource(
+                        linkedDocumentID: file.linkedDocumentID,
+                        fallback: .installedCompanion(
+                            installationState: configuration.installationState,
+                            workspaceRef: configuration.workspaceID
+                        )
+                    )) != nil
+                    self?.deliverPendingCaptures()
+                    return revoked
                 }
             )
             let companionBinding = CaptureDeliveryBinding.installedCompanion(
@@ -283,13 +301,17 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 binding: companionBinding
             )
             if let resolvedExecutable {
+                let delivery = CLICaptureDelivery(
+                    executable: resolvedExecutable,
+                    installationState: configuration.installationState,
+                    deliveryBinding: companionBinding
+                )
+                originalDisconnectReconciler = environment.originalDisconnectReconciler(
+                    transport: delivery
+                )
                 captureDeliveryCoordinator = CaptureDeliveryCoordinator(
                     queue: environment.queue,
-                    transport: CLICaptureDelivery(
-                        executable: resolvedExecutable,
-                        installationState: configuration.installationState,
-                        deliveryBinding: companionBinding
-                    ),
+                    transport: delivery,
                     // The watches a changed signed-in principal or target
                     // profile has to pause before anything reads a source
                     // again; see `pauseWorkUnderChangedIdentity`.
@@ -707,6 +729,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         let fileMonitoring = fileMonitoringCoordinator
         let bulkRuns = folderBulkRunCoordinator
         let environment = intakeEnvironment
+        let disconnects = originalDisconnectReconciler
         // Record before anything is staged, so a published item is on the Recent
         // additions surface while it is still only queued on this Mac, and again
         // after, so its outcome is durable whether or not the window is open.
@@ -716,6 +739,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         _ = try? environment?.recordCaptureActivity()
         Task {
             _ = await captureDeliveryCoordinator.deliverPending()
+            _ = await disconnects?.reconcilePending()
             _ = await bulkRuns?.reconcileReceipts()
             _ = await bulkRuns?.advanceAll()
             _ = await monitoring?.reconcileReceipts()

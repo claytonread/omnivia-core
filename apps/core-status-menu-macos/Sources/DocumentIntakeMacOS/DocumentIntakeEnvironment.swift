@@ -178,6 +178,57 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
         try captureActivity.observe(queue: queue.allEntries(), runs: folderBulkRuns.all())
     }
 
+    /// The Disconnect action behind design §13.3: revoke this logical source here, durably and
+    /// at once, and record the intent that tells Core.
+    ///
+    /// The revocation and the intent are one write in the access store, so nothing below can
+    /// leave a source revoked with no one owing Core the news. The watches of the source are
+    /// stopped after it: they would read nothing anyway (the grant refuses), and stopping
+    /// them keeps the revoked source out of automatic scheduling.
+    ///
+    /// Each route's intent is frozen under the workspace and caller its published work and
+    /// watch were frozen under. `fallback` is the companion's own binding, used only for a
+    /// route that never published anything.
+    @discardableResult
+    public func disconnectSource(
+        linkedDocumentID: String,
+        fallback: CaptureDeliveryBinding
+    ) async throws -> [OriginalDisconnectIntent] {
+        var bindings: [String: NativeRootAccessBinding] = [:]
+        for entry in queue.allEntries() {
+            guard let original = entry.intent.originalBinding,
+                  original.linkedDocumentId == linkedDocumentID
+            else { continue }
+            bindings[original.accessRecordId] = NativeRootAccessBinding(
+                targetRef: entry.intent.targetRef,
+                workspaceRef: entry.intent.workspaceRef,
+                targetBindingRevision: entry.intent.targetBindingRevision,
+                callerContextBinding: entry.intent.callerContextBinding
+            )
+        }
+        let watches = fileSubscriptions.all().filter { $0.linkedDocumentID == linkedDocumentID }
+        for watch in watches {
+            bindings[watch.accessRef] = NativeRootAccessBinding(CaptureDeliveryBinding(watch))
+        }
+        let intents = try accessStore.disconnectSource(
+            linkedDocumentID: linkedDocumentID,
+            bindings: bindings,
+            fallback: NativeRootAccessBinding(fallback)
+        )
+        for watch in watches where watch.state != .stopped {
+            _ = try? await fileMonitoring.stop(subscriptionID: watch.subscriptionID)
+        }
+        return intents
+    }
+
+    /// The reconciler for the intents `disconnectSource` records. The composition root owns
+    /// the transport, so this environment stays free of any process or CLI.
+    public func originalDisconnectReconciler(
+        transport: any OriginalDisconnectTransport
+    ) -> OriginalDisconnectReconciler {
+        OriginalDisconnectReconciler(accessStore: accessStore, transport: transport)
+    }
+
     /// The retained root groups, as projections that carry no bookmark and no
     /// absolute route. The management window reads these so a folder that was
     /// added once can be listed as retained rather than as a watch.
