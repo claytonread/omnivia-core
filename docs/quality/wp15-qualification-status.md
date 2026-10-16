@@ -14,7 +14,7 @@ This document is generated from
 `qualification/wp15/qualification-ledger.v1.json` and is verified against it
 by `scripts/check-wp15-qualification.py`. It records what this checkout can
 show and what it cannot. **It is not a claim that the release is qualified.**
-64 of 130 gates have direct production-path coverage
+68 of 130 gates have direct production-path coverage
 of every condition they name; the rest carry the exact condition still
 missing.
 
@@ -22,10 +22,10 @@ missing.
 
 | Status | Gates | Meaning |
 |---|---|---|
-| passed | 64 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
+| passed | 68 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
 | failed | 0 | Evidence exists and shows the required result is not met. |
 | blocked_external | 47 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
-| not_executed | 19 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
+| not_executed | 15 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
 | not_implemented | 0 | The production path the gate names does not exist in this checkout. |
 
 ## Counts by family and status
@@ -35,9 +35,9 @@ missing.
 | AT | 20 | 50 | 25 | 0 | 19 | 6 | 0 |
 | NAT | 20.1 | 17 | 0 | 0 | 17 | 0 | 0 |
 | DOC | 20.2 | 19 | 11 | 0 | 1 | 7 | 0 |
-| MON | 20.3 | 38 | 24 | 0 | 10 | 4 | 0 |
+| MON | 20.3 | 38 | 28 | 0 | 10 | 0 | 0 |
 | END | 20.4 | 6 | 4 | 0 | 0 | 2 | 0 |
-| **total** | | **130** | 64 | 0 | 47 | 19 | 0 |
+| **total** | | **130** | 68 | 0 | 47 | 15 | 0 |
 
 ## Counts by required evidence class
 
@@ -110,7 +110,9 @@ each one's scope limits.
 | MON-11 | A crash before the cursor update. |
 | MON-12 | Dropped or coalesced events. |
 | MON-13 | The event UUID changes or is missing. |
+| MON-17 | A child moves outside the root. |
 | MON-18 | Symlink, alias, nested mount and path traversal. |
+| MON-21 | Overlapping roots and a direct route. |
 | MON-22 | Stop watching. |
 | MON-23 | Source Disconnect versus folder Disconnect. |
 | MON-24 | Pause, configuration change or disconnect at the final rename. |
@@ -118,6 +120,8 @@ each one's scope limits.
 | MON-26 | A principal or target change. |
 | MON-29 | A byte or copy quota is reached. |
 | MON-30 | A known failed, unsupported or zero-text digest. |
+| MON-31 | A new parser or profile. |
+| MON-32 | Canonical retention and deletion. |
 | MON-33 | Reverse job completion and a stale base. |
 | MON-34 | An add or change burst threshold. |
 | MON-35 | A disappearance threshold. |

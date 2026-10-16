@@ -4537,11 +4537,21 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FilesAndFoldersModelTests.swift",
           "symbol": "testAChildThatLeftTheRootIsDisclosedAsContinuingThroughItsOwnRoute",
           "covers": "A child that left the root is disclosed by name as still read through its own link, and a folder whose children have no link of their own says so instead."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/MovedChildContinuationAcceptanceTests.swift",
+          "symbol": "testAChildThatLeavesTheRootStopsBeingReadThroughItAndItsOwnLinkIsDisclosed",
+          "covers": "The production environment creates a folder membership and an independent direct route over one canonical source, moves the child out of scope during preparation, proves no stale folder candidate publishes, and projects the surviving direct route into the disclosure model."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/MovedChildContinuationAcceptanceTests.swift",
+          "symbol": "testAChildFoundAndMovedBeforeItsFirstCaptureLeavesNoRouteBehind",
+          "covers": "A newly discovered child moved before first publication leaves neither a queue entry nor an orphaned root-member route."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The disclosure is proven only over the model itself. independentlyRoutedDocuments(routes:) is driven with NativeAccessDescriptor values built in the test and the detail facts are driven with a hand-written document-id set, so nothing carries real NativeAccessStore routes through DocumentIntakeEnvironment.documentAccessRoutes() into the folder window. No companion flow mints a direct route sharing a folder member's linkedDocumentID either -- every submission path mints a fresh one -- so the pairing the disclosure describes is a capability of the store rather than a state the person can reach.",
-      "limitations": "The reads-stop and cannot-publish halves are covered directly against real temporary directories, and the route filter and both disclosure sentences are asserted against production code. The grant behind them is a stub bookmark codec.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The end-to-end route lifecycle runs against real temporary directories and production stores, coordinators and model projection. The bookmark codec is a path-preserving test codec rather than an installed signed app's security-scoped bookmark, so installed bookmark continuity remains a separate qualification class.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderScopePolicy.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift",
@@ -4684,13 +4694,33 @@
         },
         {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderCaptureSubmissionTests.swift",
-          "symbol": "testOverlappingRootsAndADirectRouteKeepIndependentNonContentIdentities",
-          "covers": "Two genuinely overlapping roots plus a direct route over the same file are configured, and no source identity, document id or scheduling key contains the file's content digest -- a byte-identical twin shares none of them, and rewriting the bytes changes none of them."
+          "symbol": "testOverlappingRootsAndADirectRouteShareOneSourceAcrossThreeRoutes",
+          "covers": "Two overlapping roots and a direct route share one canonical workspace-local source, linked document and capture while retaining three membership routes; a byte-identical twin remains a distinct source."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CanonicalSourceIdentityTests.swift",
+          "symbol": "testAContainingRootWinsAndTheDirectRouteTakesOverWithoutADuplicateRead",
+          "covers": "The containing root is the sole reader and publisher; when it stops, the already-dirty direct route takes over and coalesces onto the same canonical revision rather than publishing a duplicate."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CanonicalSourceIdentityTests.swift",
+          "symbol": "testElectionPrefersTheMostSpecificRootThenFallsBackInStableOrder",
+          "covers": "Election prefers the most-specific active root, then stable root order, then the direct route."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CanonicalSourceIdentityTests.swift",
+          "symbol": "testRouteChangeBeforePublicationDiscardsTheOldRoutesCandidate",
+          "covers": "A route election change in the final publication window discards the old candidate and preserves its dirty obligation."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CanonicalSourceIdentityTests.swift",
+          "symbol": "testTheSameFileInAnotherWorkspaceIsAnotherSource",
+          "covers": "The same native file in another workspace receives a distinct source and linked document, proving there is no cross-workspace reuse."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No capture in the overlap reaches verified, and one capture with multiple memberships is not the structure this production path produces. Overlapping roots each mint their own member, source identity and queued intent, so the overlap test records three distinct operation keys for one file and admits none of them. What one verified source capture per workspace with multiple memberships should mean against that structure needs a design decision before a test could assert it.",
-      "limitations": "The no-hash-based-identity clause is now covered directly: every identity is a random-UUID identifier, the content digest occurs in none of them, and neither a byte-identical twin nor a rewrite changes that. Cross-workspace reuse is covered only as non-coalescing identities and a scheduling-key shape; a second workspace is never configured. Membership independence and duplicate rejection are covered. The grant is a stub bookmark codec.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The overlap, election, final-publication recheck and cross-workspace cases run through production stores and coordinators against temporary files. Native identity is the host file resource identity, while bookmark access uses a test codec rather than an installed signed app's security-scoped bookmark.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/AutomaticSchedulingStateMachine.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderSubscriptionStore.swift",
@@ -5098,11 +5128,26 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderCaptureSubmissionTests.swift",
           "symbol": "testLegacyFolderLedgersDefaultRootGenerationAndFreezeItAcrossUpdates",
           "covers": "A legacy ledger is frozen across updates rather than re-enrolled."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/ProcessingProfileTransitionTests.swift",
+          "symbol": "testFolderProfileTransitionDoesNotReprocessRetainedBytes",
+          "covers": "Reopening the same durable watch under profile revision 2 leaves retained revision-1 bytes alone; a later byte change freezes revision 2 into the new capture."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/ProcessingProfileTransitionTests.swift",
+          "symbol": "testExcludedBaselineStaysExcludedUntilItsBytesChange",
+          "covers": "An only-new-and-changed baseline excluded under revision 1 stays excluded after restart under revision 2 and is captured only after its bytes change."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/ProcessingProfileTransitionTests.swift",
+          "symbol": "testManualAndAutomaticFileCapturesUseTheNewApprovedProfile",
+          "covers": "New manual captures and later automatic file versions both freeze the newly approved profile revision."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test introduces a new parser or profile version and then shows that retained sources and baseline-excluded members are left alone. The no-mass-reprocess requirement is the gate's subject and has no assertion; the profile-conflict refusal covers a single explicit reprocess request instead.",
-      "limitations": "Profile immutability and the per-request conflict are covered directly. Behaviour across a version change at population scale is not covered on either side.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The transition runs through production native stores and coordinators with two explicit immutable profile revisions. The parser binary itself is not swapped; the profile binding is the approved parser/resource contract that every new capture freezes.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_processing.py",
@@ -5130,15 +5175,26 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AutomaticSchedulingDurabilityTests.swift",
           "symbol": "testGenerationsKeepRisingAcrossRepeatedRestarts",
           "covers": "Generations keep rising across restarts, so a suppressed generation cannot recur."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AutomaticCaptureSuppressionTests.swift",
+          "symbol": "testRemovalSuppressionSurvivesOverlapRenameRestartAndPeriodicChecks",
+          "covers": "A folder route learns Core's governed retention removal, an overlapping direct route cannot reconstruct the bytes, canonical identity carries the suppression through a rename, and a fresh process's periodic full reconciliation still publishes nothing."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AutomaticCaptureSuppressionTests.swift",
+          "symbol": "testOnlyGovernedRemovalOutcomesBecomeSuppression",
+          "covers": "Only source removal and capture-retention outcomes can create a durable suppression tombstone; an unrelated retrieval shortfall cannot."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Suppression is not shown surviving the four conditions the gate names. No test carries a suppressed source through an overlapping root, a rename, a restart and a daily check; the Core refusals are proven in one process without any of those events.",
-      "limitations": "The no-reconstruction half is covered on the Core side and is sound. The durability-of-suppression half, which is why this gate is distinct from MON-25, is not covered.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Core's disposition is supplied through the production verifier protocol by an in-process test verifier; the native overlap, rename, restart, durable owner-only store and periodic reconciliation paths are production code. A live Core process remains covered separately by environment-gated integration tests.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/AutomaticSchedulingStateMachine.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderSubscriptionStore.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/AutomaticCaptureSuppressionStore.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FileMonitoringCoordinator.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderMonitoringCoordinator.swift"
       ]
     },
     {
