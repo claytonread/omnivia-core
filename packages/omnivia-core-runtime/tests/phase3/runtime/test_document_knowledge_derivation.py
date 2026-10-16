@@ -1,12 +1,20 @@
 """AT-46 and DOC-19: a captured, extracted document's evidence and derived candidate.
 
-Every test here drives the real path -- `capture_document_bytes`, then
-`process_capture_outbox`, then `derive_document_knowledge` -- against a workspace a
-`ServiceRunner` owns, so the fence, the 0008/0009/0069 guard triggers and the seal
-rules are the ones the service meets. Nothing is hand-inserted into a governed
-table and no extraction outcome is hand-made: the segments these candidates carry
-were produced by the production extractor from bytes the production capture path
-preserved.
+The junction drives the real path and nothing else: `capture_document_bytes`, then
+`process_capture_outbox`, against a workspace a `ServiceRunner` owns. **No test of
+the junction calls `derive_document_knowledge`.** The processing pass is what
+derives, so the identifiers the assertions follow are read back out of the rows it
+wrote (`derived_chain`), and removing the wiring would fail these tests rather than
+leave them proving a seam nothing in the product reaches. The fence, the
+0008/0009/0069 guard triggers and the seal rules are therefore the ones the service
+meets, nothing is hand-inserted into a governed table, and no extraction outcome is
+hand-made: the segments these candidates carry were produced by the production
+extractor from bytes the production capture path preserved.
+
+`derive_document_knowledge` is still called directly in two places, and only
+there: the refusal tests, which pin the seam's own refusal messages, most of them
+over inputs the processing pass cannot produce at all; and the replay test, which
+asks the seam a second time for what the pass already derived.
 
 The two gates this file is the evidence for are one junction:
 
@@ -34,12 +42,14 @@ from __future__ import annotations
 import ast
 import inspect
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
-from omnivia_core_runtime.service import document_knowledge
+from omnivia_core_runtime.service import document_knowledge, document_processing
 from omnivia_core_runtime.service.document_intake import (
     capture_document_bytes,
 )
@@ -49,7 +59,6 @@ from omnivia_core_runtime.service.document_knowledge import (
     RECORD_TYPE,
     SEGMENT_RECORD_TYPE,
     SEGMENT_SPAN_KIND,
-    DocumentKnowledgeDerivation,
     DocumentKnowledgeRefused,
     derive_document_knowledge,
 )
@@ -120,7 +129,7 @@ FORBIDDEN_MODULE_MARKERS = (
 )
 
 
-def captured_and_extracted(
+def captured(
     runner: ServiceRunner,
     *,
     content: bytes = HOSTILE_BODY.encode("utf-8"),
@@ -128,9 +137,9 @@ def captured_and_extracted(
     key: str = "capture-derived-1",
     media_type: str = "text/plain",
     base: str | None = None,
-) -> tuple[store.StoredCapture, store.StoredResult]:
-    """One real capture driven through the real processing pass."""
-    capture = capture_document_bytes(
+) -> store.StoredCapture:
+    """One real capture, with its outbox obligation outstanding."""
+    admitted = capture_document_bytes(
         runner,
         content=content,
         document_id=document_id,
@@ -141,21 +150,126 @@ def captured_and_extracted(
             store.INTENT_NEW_CAPTURE if base is None else store.INTENT_REFRESH
         ),
     )
+    return admitted.capture
+
+
+def captured_and_extracted(
+    runner: ServiceRunner, **admission: Any
+) -> tuple[store.StoredCapture, store.StoredResult]:
+    """One real capture driven through the real processing pass."""
+    capture = captured(runner, **admission)
     [result] = process_capture_outbox(runner)
-    return capture.capture, result
+    return capture, result
 
 
-def derived(runner: ServiceRunner) -> tuple[
-    store.StoredCapture, store.StoredResult, DocumentKnowledgeDerivation
+@dataclass(frozen=True, slots=True)
+class Chain:
+    """One derived segment's identifiers, read back out of the rows that hold them."""
+
+    assembly_id: str
+    governed_record_id: str
+    governed_record_version_id: str
+    normalized_record_id: str
+    normalized_span_id: str
+
+
+def derived_chain(
+    runner: ServiceRunner, *, extraction_revision_id: str
+) -> tuple[Chain, ...]:
+    """What the processing pass derived for one extraction, joined as the chain is.
+
+    Read, never derived. The junction has to hold with nothing but
+    `capture_document_bytes` and `process_capture_outbox` having run, so every
+    identifier the assertions below follow comes out of the tables that pass wrote,
+    reached the way the chain itself is linked: the candidate assemblies correlated
+    to this extraction run, each joined to the evidence link naming its normalized
+    record and span.
+    """
+    assert runner.connection is not None
+    return tuple(
+        Chain(*found)
+        for found in runner.connection.execute(
+            "SELECT a.assembly_id, a.governed_record_id, "
+            "a.governed_record_version_id, l.normalized_record_id, "
+            "l.normalized_span_id "
+            "FROM omnivia_governed_version_assemblies AS a "
+            "JOIN omnivia_governed_version_evidence_links AS l "
+            "ON l.workspace_id = a.workspace_id AND l.assembly_id = a.assembly_id "
+            "WHERE a.workspace_id = ? AND a.correlation_kind = 'extraction_run' "
+            "AND a.correlation_id = ? ORDER BY a.append_ordinal",
+            (runner.workspace_id, extraction_revision_id),
+        )
+    )
+
+
+def derived(
+    runner: ServiceRunner,
+) -> tuple[
+    store.StoredCapture,
+    store.StoredRevision,
+    store.StoredResult,
+    store.StoredSegment,
+    Chain,
 ]:
+    """One hostile document captured, processed, and the one chain it produced.
+
+    Nothing here calls :func:`derive_document_knowledge`. `process_capture_outbox`
+    is the whole trigger, so were the production wiring removed every test built on
+    this would fail at the unpacking below rather than go on proving a seam that
+    nothing in the product reaches.
+    """
     capture, result = captured_and_extracted(runner)
     assert result.result_state == "succeeded"
-    derivation = derive_document_knowledge(
-        runner,
-        document_id=capture.document_id,
+    assert runner.connection is not None and runner.workspace_id is not None
+    revision = store.read_revision(
+        runner.connection,
+        workspace_id=runner.workspace_id,
         extraction_revision_id=result.extraction_revision_id,
     )
-    return capture, result, derivation
+    assert revision is not None
+    [segment] = store.read_segments(
+        runner.connection,
+        workspace_id=runner.workspace_id,
+        extraction_revision_id=result.extraction_revision_id,
+    )
+    [chain] = derived_chain(
+        runner, extraction_revision_id=result.extraction_revision_id
+    )
+    return capture, revision, result, segment, chain
+
+
+def derived_counts(runner: ServiceRunner) -> tuple[int, int, int, int]:
+    """The four row counts a derivation moves, in the order it writes them."""
+    return (
+        count(runner, "omnivia_normalized_source_records"),
+        count(runner, "omnivia_normalized_source_spans"),
+        count(runner, "omnivia_governed_version_assemblies"),
+        count(runner, "omnivia_governed_version_seals"),
+    )
+
+
+@contextmanager
+def nothing_derived(runner: ServiceRunner) -> Iterator[None]:
+    """No row of the derived chain moved while the body ran.
+
+    Absolute zeros stopped being the right assertion once the processing pass
+    derives: every refusal below is reached from a workspace that already holds the
+    candidates its own captures legitimately produced, so what each one has to show
+    is that the refused call added nothing, not that nothing exists.
+    """
+    before = derived_counts(runner)
+    yield
+    assert derived_counts(runner) == before
+
+
+def pending(runner: ServiceRunner) -> int:
+    """How many capture obligations are still owed."""
+    assert runner.connection is not None and runner.workspace_id is not None
+    return len(
+        store.pending_outbox(
+            runner.connection, workspace_id=runner.workspace_id, limit=16
+        )
+    )
 
 
 def row(runner: ServiceRunner, sql: str, parameters: tuple[Any, ...]) -> Any:
@@ -260,20 +374,11 @@ def module_closure(entry: Path) -> set[str]:
 def test_a_captured_document_derives_source_evidence_and_one_proposed_candidate(
     runner: ServiceRunner,
 ) -> None:
-    capture, result, derivation = derived(runner)
+    capture, _, result, segment, chain = derived(runner)
 
-    assert derivation.status == "derived"
-    assert derivation.capture_id == capture.capture_id
-    assert derivation.evidence_id == capture.evidence_id
-    assert derivation.extraction_revision_id == result.extraction_revision_id
-    [segment] = store.read_segments(
-        runner.connection,  # type: ignore[arg-type]
-        workspace_id=runner.workspace_id,  # type: ignore[arg-type]
-        extraction_revision_id=result.extraction_revision_id,
-    )
-    [item] = derivation.derived
-    assert item.segment_ordinal == segment.segment_ordinal
-    assert item.semantic_role == segment.semantic_role
+    # The processing pass, and nothing else, wrote one of each row.
+    assert derived_counts(runner) == (1, 1, 1, 1)
+    assert pending(runner) == 0
 
     # The source-evidence rows name the capture's artifact and the exact bytes the
     # parse read, and the span pointer is the segment's own locator verbatim.
@@ -282,7 +387,7 @@ def test_a_captured_document_derives_source_evidence_and_one_proposed_candidate(
         "SELECT evidence_id, evidence_blob_digest, record_type, parser_id, "
         "parser_version, content_json FROM omnivia_normalized_source_records "
         "WHERE workspace_id = ? AND normalized_record_id = ?",
-        (runner.workspace_id, item.normalized_record_id),
+        (runner.workspace_id, chain.normalized_record_id),
     )
     assert record is not None
     assert record[0] == capture.evidence_id
@@ -292,16 +397,17 @@ def test_a_captured_document_derives_source_evidence_and_one_proposed_candidate(
     assert json.loads(record[5])["extractionRevisionId"] == (
         result.extraction_revision_id
     )
+    assert json.loads(record[5])["segmentOrdinal"] == segment.segment_ordinal
 
     span = row(
         runner,
         "SELECT normalized_record_id, evidence_id, span_kind, span_pointer, "
         "span_start_offset, span_end_offset FROM omnivia_normalized_source_spans "
         "WHERE workspace_id = ? AND normalized_span_id = ?",
-        (runner.workspace_id, item.normalized_span_id),
+        (runner.workspace_id, chain.normalized_span_id),
     )
     assert span is not None
-    assert span[0] == item.normalized_record_id
+    assert span[0] == chain.normalized_record_id
     assert span[1] == capture.evidence_id
     assert span[2] == SEGMENT_SPAN_KIND
     assert json.loads(span[3]) == json.loads(segment.source_locator_json)
@@ -316,7 +422,7 @@ def test_a_captured_document_derives_source_evidence_and_one_proposed_candidate(
         "decision_source_id, record_type, domain_scope, evidence_disposition "
         "FROM omnivia_governed_version_assemblies "
         "WHERE workspace_id = ? AND assembly_id = ?",
-        (runner.workspace_id, item.assembly_id),
+        (runner.workspace_id, chain.assembly_id),
     )
     assert assembly == (
         "candidate",
@@ -334,23 +440,73 @@ def test_a_captured_document_derives_source_evidence_and_one_proposed_candidate(
     )
 
 
+def test_a_failed_extraction_derives_nothing_from_the_processing_pass(
+    runner: ServiceRunner,
+) -> None:
+    """The wiring's own gate: only a succeeded, promoted completion derives."""
+    _, result = captured_and_extracted(
+        runner,
+        content=b"%PDF-1.7\n",
+        document_id="doc-derived-pdf",
+        key="capture-derived-pdf",
+        media_type="application/pdf",
+    )
+
+    assert (result.result_state, result.publication_disposition) == (
+        "failed",
+        "not_published",
+    )
+    assert derived_counts(runner) == (0, 0, 0, 0)
+    assert pending(runner) == 0
+
+
+def test_a_superseded_extraction_keeps_its_candidate_and_the_new_one_derives(
+    runner: ServiceRunner,
+) -> None:
+    """A refresh derives against its own evidence and never against the old.
+
+    The point is which revision each candidate is correlated to. The superseded
+    extraction's candidate stays exactly as it was derived -- it was the current
+    extraction when it was written, and nothing here rewrites history -- and the
+    refresh's candidate cites the refresh's own artifact, bytes and segment.
+    """
+    first_capture, first = captured_and_extracted(runner)
+    second_capture, second = captured_and_extracted(
+        runner,
+        content=b"the document was edited and captured again",
+        key="capture-derived-refresh",
+        base=first_capture.capture_id,
+    )
+
+    [before] = derived_chain(
+        runner, extraction_revision_id=first.extraction_revision_id
+    )
+    [after] = derived_chain(
+        runner, extraction_revision_id=second.extraction_revision_id
+    )
+    assert before != after
+    assert derived_counts(runner) == (2, 2, 2, 2)
+    assert first_capture.evidence_id != second_capture.evidence_id
+    assert row(
+        runner,
+        "SELECT evidence_id, evidence_blob_digest "
+        "FROM omnivia_normalized_source_records "
+        "WHERE workspace_id = ? AND normalized_record_id = ?",
+        (runner.workspace_id, after.normalized_record_id),
+    ) == (second_capture.evidence_id, second_capture.source_digest)
+
+
 def test_the_candidate_content_carries_the_segment_verbatim_and_its_attribution(
     runner: ServiceRunner,
 ) -> None:
-    capture, result, derivation = derived(runner)
-    [segment] = store.read_segments(
-        runner.connection,  # type: ignore[arg-type]
-        workspace_id=runner.workspace_id,  # type: ignore[arg-type]
-        extraction_revision_id=result.extraction_revision_id,
-    )
-    [item] = derivation.derived
+    capture, revision, result, segment, chain = derived(runner)
 
     content = json.loads(
         row(
             runner,
             "SELECT content_json FROM omnivia_governed_version_assemblies "
             "WHERE workspace_id = ? AND assembly_id = ?",
-            (runner.workspace_id, item.assembly_id),
+            (runner.workspace_id, chain.assembly_id),
         )[0]
     )
 
@@ -362,7 +518,7 @@ def test_the_candidate_content_carries_the_segment_verbatim_and_its_attribution(
         "documentId": capture.document_id,
         "captureId": capture.capture_id,
         "extractionRevisionId": result.extraction_revision_id,
-        "profileDigest": derivation.profile_digest,
+        "profileDigest": revision.profile_digest,
         "evidenceId": capture.evidence_id,
         "sourceDigest": capture.source_digest,
         "mediaType": capture.media_type,
@@ -378,13 +534,7 @@ def test_the_candidate_content_carries_the_segment_verbatim_and_its_attribution(
 def test_the_attribution_chain_is_retrievable_through_the_production_reader(
     runner: ServiceRunner,
 ) -> None:
-    capture, result, derivation = derived(runner)
-    [segment] = store.read_segments(
-        runner.connection,  # type: ignore[arg-type]
-        workspace_id=runner.workspace_id,  # type: ignore[arg-type]
-        extraction_revision_id=result.extraction_revision_id,
-    )
-    [item] = derivation.derived
+    capture, _, _, segment, chain = derived(runner)
 
     [candidate] = read_governed_records(
         runner.connection,  # type: ignore[arg-type]
@@ -395,8 +545,8 @@ def test_the_attribution_chain_is_retrievable_through_the_production_reader(
 
     identity = candidate.provenance.identity
     assert (identity.record_id, identity.version) == (
-        item.governed_record_id,
-        item.governed_record_version_id,
+        chain.governed_record_id,
+        chain.governed_record_version_id,
     )
     assert (identity.layer, identity.governance_state) == ("l1", "candidate")
     assert candidate.authority_level == "proposed"
@@ -424,8 +574,7 @@ def test_the_attribution_chain_is_retrievable_through_the_production_reader(
 def test_the_extraction_lineage_names_the_revision_and_forbids_a_model(
     runner: ServiceRunner,
 ) -> None:
-    _, result, derivation = derived(runner)
-    [item] = derivation.derived
+    _, revision, result, _, chain = derived(runner)
 
     lineage = row(
         runner,
@@ -435,13 +584,13 @@ def test_the_extraction_lineage_names_the_revision_and_forbids_a_model(
         "prompt_template_id, prompt_template_digest "
         "FROM omnivia_governed_extraction_lineage "
         "WHERE workspace_id = ? AND assembly_id = ?",
-        (runner.workspace_id, item.assembly_id),
+        (runner.workspace_id, chain.assembly_id),
     )
     assert lineage is not None
     assert lineage[0] == "deterministic"
     assert lineage[1] == lineage[2] == result.extraction_revision_id
     assert (lineage[3], lineage[4]) == (EXTRACTOR_ID, result.worker_build)
-    assert lineage[5] == derivation.profile_digest
+    assert lineage[5] == revision.profile_digest
     assert lineage[6] == "plain-text"
     # The five columns 0009 forbids a deterministic extraction: no seed, no model,
     # no inference configuration and no prompt template.
@@ -500,9 +649,9 @@ def test_the_derivation_cannot_reach_a_workflow_provider_tool_or_agent_module(
 def test_a_hostile_document_is_derived_without_running_anything(
     runner: ServiceRunner,
 ) -> None:
-    _, _, derivation = derived(runner)
+    derived(runner)
 
-    assert derivation.status == "derived"
+    assert derived_counts(runner) == (1, 1, 1, 1)
     assert [count(runner, table) for table in WORKFLOW_TABLES] == [0] * len(
         WORKFLOW_TABLES
     )
@@ -511,8 +660,7 @@ def test_a_hostile_document_is_derived_without_running_anything(
 def test_a_derived_candidate_is_neither_approved_nor_admitted(
     runner: ServiceRunner,
 ) -> None:
-    _, _, derivation = derived(runner)
-    assert len(derivation.derived) == 1
+    derived(runner)
 
     # Nothing but the candidates view holds it, at any instant.
     for view in (None, "current_canonical", "history"):
@@ -564,7 +712,7 @@ def test_an_unknown_extraction_revision_is_refused_without_a_write(
 ) -> None:
     capture, _ = captured_and_extracted(runner)
 
-    with pytest.raises(DocumentKnowledgeRefused) as refusal:
+    with nothing_derived(runner), pytest.raises(DocumentKnowledgeRefused) as refusal:
         derive_document_knowledge(
             runner,
             document_id=capture.document_id,
@@ -572,8 +720,6 @@ def test_an_unknown_extraction_revision_is_refused_without_a_write(
         )
 
     assert str(refusal.value) == "this workspace holds no such extraction revision"
-    assert count(runner, "omnivia_normalized_source_records") == 0
-    assert count(runner, "omnivia_governed_version_assemblies") == 0
 
 
 def test_an_extraction_of_another_document_is_refused_without_a_write(
@@ -587,7 +733,7 @@ def test_an_extraction_of_another_document_is_refused_without_a_write(
         key="capture-derived-2",
     )
 
-    with pytest.raises(DocumentKnowledgeRefused) as refusal:
+    with nothing_derived(runner), pytest.raises(DocumentKnowledgeRefused) as refusal:
         derive_document_knowledge(
             runner,
             document_id="doc-derived-2",
@@ -595,8 +741,6 @@ def test_an_extraction_of_another_document_is_refused_without_a_write(
         )
 
     assert str(refusal.value) == "the extraction revision belongs to another document"
-    assert count(runner, "omnivia_normalized_source_records") == 0
-    assert count(runner, "omnivia_governed_version_assemblies") == 0
 
 
 def test_a_failed_extraction_is_refused_without_a_write(
@@ -611,7 +755,7 @@ def test_a_failed_extraction_is_refused_without_a_write(
     )
     assert result.result_state == "failed"
 
-    with pytest.raises(DocumentKnowledgeRefused) as refusal:
+    with nothing_derived(runner), pytest.raises(DocumentKnowledgeRefused) as refusal:
         derive_document_knowledge(
             runner,
             document_id="doc-derived-pdf",
@@ -619,8 +763,7 @@ def test_a_failed_extraction_is_refused_without_a_write(
         )
 
     assert str(refusal.value) == "this extraction did not succeed"
-    assert count(runner, "omnivia_normalized_source_records") == 0
-    assert count(runner, "omnivia_governed_version_assemblies") == 0
+    assert derived_counts(runner) == (0, 0, 0, 0)
 
 
 def test_a_superseded_extraction_is_refused_without_a_write(
@@ -635,7 +778,7 @@ def test_a_superseded_extraction_is_refused_without_a_write(
     )
     assert second.extraction_revision_id != first.extraction_revision_id
 
-    with pytest.raises(DocumentKnowledgeRefused) as refusal:
+    with nothing_derived(runner), pytest.raises(DocumentKnowledgeRefused) as refusal:
         derive_document_knowledge(
             runner,
             document_id=capture.document_id,
@@ -645,8 +788,6 @@ def test_a_superseded_extraction_is_refused_without_a_write(
     assert str(refusal.value) == (
         "this extraction is not the document's current extraction"
     )
-    assert count(runner, "omnivia_normalized_source_records") == 0
-    assert count(runner, "omnivia_governed_version_assemblies") == 0
 
 
 def test_an_unknown_semantic_role_is_refused_rather_than_deriving_nothing(
@@ -670,7 +811,7 @@ def test_an_extraction_with_no_segment_in_the_requested_roles_is_refused(
 ) -> None:
     capture, result = captured_and_extracted(runner)
 
-    with pytest.raises(DocumentKnowledgeRefused) as refusal:
+    with nothing_derived(runner), pytest.raises(DocumentKnowledgeRefused) as refusal:
         derive_document_knowledge(
             runner,
             document_id=capture.document_id,
@@ -681,34 +822,101 @@ def test_an_extraction_with_no_segment_in_the_requested_roles_is_refused(
     assert str(refusal.value) == (
         "this extraction holds no segment in the requested roles"
     )
-    assert count(runner, "omnivia_governed_version_assemblies") == 0
 
 
 def test_an_exact_replay_writes_nothing_and_returns_the_same_identities(
     runner: ServiceRunner,
 ) -> None:
-    capture, result, first = derived(runner)
-    before = (
-        count(runner, "omnivia_normalized_source_records"),
-        count(runner, "omnivia_normalized_source_spans"),
-        count(runner, "omnivia_governed_version_assemblies"),
-        count(runner, "omnivia_governed_version_seals"),
-    )
+    """The seam is idempotent, which is what makes the processing pass replayable.
 
-    replay = derive_document_knowledge(
-        runner,
-        document_id=capture.document_id,
-        extraction_revision_id=result.extraction_revision_id,
-    )
+    Here the processing pass has already derived, so the explicit call *is* the
+    replay: it recognises its own rows, reports `replayed`, writes nothing, and the
+    identities it returns are the ones in the tables.
+    """
+    capture, _, result, _, chain = derived(runner)
+
+    with nothing_derived(runner):
+        replay = derive_document_knowledge(
+            runner,
+            document_id=capture.document_id,
+            extraction_revision_id=result.extraction_revision_id,
+        )
 
     assert replay.status == "replayed"
-    assert replay.derived == first.derived
+    [item] = replay.derived
     assert (
-        count(runner, "omnivia_normalized_source_records"),
-        count(runner, "omnivia_normalized_source_spans"),
-        count(runner, "omnivia_governed_version_assemblies"),
-        count(runner, "omnivia_governed_version_seals"),
-    ) == before
+        item.assembly_id,
+        item.governed_record_id,
+        item.governed_record_version_id,
+        item.normalized_record_id,
+        item.normalized_span_id,
+    ) == (
+        chain.assembly_id,
+        chain.governed_record_id,
+        chain.governed_record_version_id,
+        chain.normalized_record_id,
+        chain.normalized_span_id,
+    )
+
+
+# -- interrupted processing ------------------------------------------------------
+#
+# The derivation runs after the extraction result is durable and before the outbox
+# obligation settles, so both crash boundaries of that window leave the obligation
+# owed and are replayed. These two tests are that window's two halves.
+
+
+def died(*_: Any, **__: Any) -> Any:
+    """Stand in for the process going away at exactly this call."""
+    raise InterruptedError("the process died here")
+
+
+def test_a_crash_before_the_derivation_leaves_the_obligation_to_be_replayed(
+    runner: ServiceRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured(runner)
+    monkeypatch.setattr(document_processing, "derive_document_knowledge", died)
+
+    with pytest.raises(InterruptedError):
+        process_capture_outbox(runner)
+
+    # The extraction completed and is durable; nothing was derived from it; and the
+    # obligation is still owed, which is the only reason the derivation is not lost.
+    assert derived_counts(runner) == (0, 0, 0, 0)
+    assert pending(runner) == 1
+
+    monkeypatch.undo()
+    [result] = process_capture_outbox(runner)
+
+    assert result.result_state == "succeeded"
+    assert derived_counts(runner) == (1, 1, 1, 1)
+    assert pending(runner) == 0
+    assert (
+        len(derived_chain(runner, extraction_revision_id=result.extraction_revision_id))
+        == 1
+    )
+
+
+def test_a_crash_after_the_derivation_replays_it_without_duplicating_a_row(
+    runner: ServiceRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured(runner)
+    monkeypatch.setattr(document_processing.store, "settle_outbox", died)
+
+    with pytest.raises(InterruptedError):
+        process_capture_outbox(runner)
+
+    # The derivation committed in its own transaction and survived the rollback of
+    # the settlement, so the replay meets rows that are already there.
+    assert derived_counts(runner) == (1, 1, 1, 1)
+    assert pending(runner) == 1
+
+    monkeypatch.undo()
+    [result] = process_capture_outbox(runner)
+
+    assert result.result_state == "succeeded"
+    assert derived_counts(runner) == (1, 1, 1, 1)
+    assert pending(runner) == 0
 
 
 # -- locator gates --------------------------------------------------------------

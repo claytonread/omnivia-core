@@ -96,6 +96,10 @@ from omnivia_core_runtime.service.document_extractors import (
     DocumentExtractionUnsupported,
     extract_document,
 )
+from omnivia_core_runtime.service.document_knowledge import (
+    DocumentKnowledgeRefused,
+    derive_document_knowledge,
+)
 from omnivia_core_runtime.service.ocr_resource_lifecycle import (
     OcrResourceLifecycleRefused,
 )
@@ -1016,6 +1020,10 @@ def _execute_obligation(
     settles under was derived from stays held until it returns -- including through
     the engine invocation and the terminal handling that records what the
     invocation produced.
+
+    A completion that succeeded *and* promoted also derives its governed knowledge
+    before the outbox row settles; :func:`_derive_knowledge` holds the ordering
+    argument and the one reason a derivation never becomes this obligation's answer.
     """
     assert runner.connection is not None and runner.workspace_id is not None
     assert runner.identity is not None and runner.generation is not None
@@ -1027,12 +1035,6 @@ def _execute_obligation(
     )
     with runner.sqlite_gate:
         profile_digest = document_intake.register_profile(runner, profile)
-        head = store.read_head(
-            runner.connection,
-            workspace_id=runner.workspace_id,
-            document_id=capture.document_id,
-        )
-    assert head is not None
     operation_key = (
         "extract-"
         + hashlib.sha256(
@@ -1040,12 +1042,8 @@ def _execute_obligation(
         ).hexdigest()
     )
     with runner.sqlite_gate:
-        revision, _ = document_intake.admit_extraction(
-            runner,
-            capture_id=capture.capture_id,
-            profile_digest=profile_digest,
-            expected_base_extraction_id=head.current_extraction_id,
-            operation_key=operation_key,
+        revision = _admitted_revision(
+            runner, capture, profile_digest=profile_digest, operation_key=operation_key
         )
     if unexecutable is not None:
         outcome = _terminal_without_segments("failed", unexecutable)
@@ -1073,6 +1071,7 @@ def _execute_obligation(
             extraction_revision_id=revision.extraction_revision_id,
             outcome=outcome,
         )
+        _derive_knowledge(runner, capture, result)
         with fenced_transaction(
             runner.connection,
             runner.identity,
@@ -1087,6 +1086,105 @@ def _execute_obligation(
                 now_us=time.time_ns() // 1000,
             )
     return result
+
+
+def _admitted_revision(
+    runner: ServiceRunner,
+    capture: store.StoredCapture,
+    *,
+    profile_digest: str,
+    operation_key: str,
+) -> store.StoredRevision:
+    """This obligation's extraction revision, admitted only the first time.
+
+    A revision already standing under this operation key is this obligation's own
+    and nothing else's: the key is derived from the capture id and the profile
+    digest, the revision id is derived from the key, and both are fixed for the life
+    of the row. Recognising it *here* is the replay.
+
+    It has to be recognised here rather than left to :func:`admit_extraction`'s own
+    replay branch, which compares a request digest that includes the extraction head
+    the admission expected to build on. A pass that completed and promoted before it
+    crashed has moved that head to this very revision, so re-admitting against the
+    head as it now stands hashes to a different request and is refused as a
+    different request under the same key -- leaving an obligation that is terminal in
+    every respect but its outbox row permanently unprocessable, and taking the whole
+    processing pass down with it on every later attempt. That window exists wherever
+    completion and settlement are two transactions, which they always were.
+    """
+    assert runner.connection is not None and runner.workspace_id is not None
+    existing = store.read_revision_by_key(
+        runner.connection,
+        workspace_id=runner.workspace_id,
+        operation_key=operation_key,
+    )
+    if existing is not None:
+        return existing
+    head = store.read_head(
+        runner.connection,
+        workspace_id=runner.workspace_id,
+        document_id=capture.document_id,
+    )
+    assert head is not None
+    revision, _ = document_intake.admit_extraction(
+        runner,
+        capture_id=capture.capture_id,
+        profile_digest=profile_digest,
+        expected_base_extraction_id=head.current_extraction_id,
+        operation_key=operation_key,
+    )
+    return revision
+
+
+def _derive_knowledge(
+    runner: ServiceRunner,
+    capture: store.StoredCapture,
+    result: store.StoredResult,
+) -> None:
+    """Turn this extraction's segments into source evidence and proposed candidates.
+
+    **Where it runs, and why there.** After :func:`complete_extraction`, because the
+    derivation needs the succeeded result and the extraction head that only a
+    promoted completion moves; before :func:`store.settle_outbox`, because that is
+    what makes a crash in this window recoverable. The obligation is still pending
+    while the derivation runs, so a process that dies here leaves the same row to be
+    replayed under the same operation key: the extraction is re-admitted, the
+    identical result is *recognised* rather than rewritten, and every identifier the
+    derivation writes comes from (workspace, revision, segment ordinal), so the
+    second pass finds its own rows and writes nothing. Deriving after settlement
+    would put the only record of the outstanding work in a row that had just been
+    removed, and the derivation would be lost with no trace that it was owed.
+
+    The pin is untouched. It is released once the obligation is terminal, which is
+    after this returns, and the derivation reads stored segments rather than source
+    bytes, so it needs nothing the pin holds.
+
+    **Only a succeeded and promoted result derives.** A failed, unsupported or
+    partial extraction, and a succeeded one whose completion was superseded,
+    historical, fenced or not published, moves no extraction head and gets no
+    candidate -- so a stale or losing result cannot become an active proposal.
+    :func:`derive_document_knowledge` re-checks the head itself, which is the gate
+    that holds if this one is ever relaxed.
+
+    **A refusal is not this obligation's outcome.** The extraction is already
+    terminal and is correct; a refusal says only that an *exact* attribution chain
+    could not be written for it, and the fail-closed answer to that is no candidate
+    rather than a candidate whose citation is approximate. Raising instead would be
+    strictly worse than fail-closed: the obligation would never settle and every
+    later pass would re-extract the same capture, forever. Anything that is not a
+    refusal -- a lost fence, a SQLite error -- does propagate, leaves the row
+    pending, and is replayed.
+    """
+    if result.result_state != "succeeded":
+        return
+    if result.publication_disposition != "promoted":
+        return
+    with suppress(DocumentKnowledgeRefused):
+        derive_document_knowledge(
+            runner,
+            document_id=capture.document_id,
+            extraction_revision_id=result.extraction_revision_id,
+        )
 
 
 def _terminal_without_segments(

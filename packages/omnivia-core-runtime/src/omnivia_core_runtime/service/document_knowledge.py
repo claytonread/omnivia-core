@@ -59,7 +59,10 @@ exact, and an inexact chain is worse than no chain.
 Like `legacy_import` and `source_capture` this is a service-owned path, not an
 application operation: it runs only while a `ServiceRunner` owns the workspace,
 it is in no operation catalogue and on no model-facing surface, and no document
-content, path or caller value appears in any refusal.
+content, path or caller value appears in any refusal. Its one caller is
+`document_processing._derive_knowledge`, which runs it for every succeeded,
+promoted completion after the result is durable and before the outbox obligation
+settles; that function holds the ordering and crash-recovery argument.
 
 Replay is exact. Every identifier is derived from
 `(workspace_id, extraction_revision_id, segment_ordinal)`, so a second call for

@@ -2004,7 +2004,27 @@
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
           "symbol": "test_a_captured_document_derives_source_evidence_and_one_proposed_candidate",
-          "covers": "A real capture, driven through the real processing pass, produces one normalized source record and span against the capture's own evidence artifact and blob digest plus one sealed candidate assembly that is layer candidate, authority proposed, origin extracted, with no governance disposition and no audit reference."
+          "covers": "capture_document_bytes followed by process_capture_outbox, and nothing else, produces one normalized source record and span against the capture's own evidence artifact and blob digest plus one sealed candidate assembly that is layer candidate, authority proposed, origin extracted, with no governance disposition and no audit reference. No test of the junction calls the derivation seam; the identifiers are read back out of the rows the processing pass wrote."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_a_failed_extraction_derives_nothing_from_the_processing_pass",
+          "covers": "The production trigger derives only for a succeeded and promoted completion: a failed extraction settles with no normalized record, span, assembly or seal anywhere in the workspace."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_a_superseded_extraction_keeps_its_candidate_and_the_new_one_derives",
+          "covers": "A refresh derives one further candidate, against its own evidence artifact and blob digest, and the superseded extraction's candidate is left exactly as it was derived rather than rewritten against the new bytes."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_a_crash_before_the_derivation_leaves_the_obligation_to_be_replayed",
+          "covers": "A process that dies between the durable extraction result and the derivation leaves the outbox obligation owed and nothing derived; the next pass recognises the same revision under the same operation key, derives exactly once and settles."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_a_crash_after_the_derivation_replays_it_without_duplicating_a_row",
+          "covers": "A process that dies after the derivation committed but before the obligation settled replays without duplicating a row: the four derived row counts are the same before and after the second pass."
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
@@ -2034,9 +2054,10 @@
       ],
       "status": "passed",
       "missing_condition": null,
-      "limitations": "Proved over the one intake route that derives knowledge. Document capture is the only route in this build that produces derived records at all; evidence captured through evidence.capture and connector ingestion has no derivation step, so for those routes the gate's derived half has no subject and its source half rests on the existing evidence tests. The derivation is a service-owned path, like legacy_import and source_capture: it runs only while a ServiceRunner owns the workspace and is in no operation catalogue, so the chain is proved through the production seam and the production reader rather than over the wire. Execution is on the single ubuntu-latest Core acceptance host; the governed-knowledge boundary is platform-independent Python over SQLite and the three-row Phase 2 platform matrix does not run this suite, so the every-OS clause is structural rather than observed.",
+      "limitations": "Driven by the route's own production trigger: the derivation runs inside the capture-outbox pass, after the extraction result is durable and before the obligation settles, so capture plus processing is sufficient and no listed evidence invokes the seam to make the gate hold. Proved over the one intake route that derives knowledge: document capture is the only route in this build producing derived records, so for evidence.capture and connector ingestion the gate's derived half has no subject and its source half rests on the existing evidence tests. The derivation stays service-owned, like legacy_import and source_capture, so it is proved through the processing pass and the production reader rather than over the wire. A candidate derived while its extraction was current is not retracted when a refresh supersedes that extraction, so a document refreshed n times carries n candidates; retracting them is a governance decision this gate does not reach. Execution is on the single ubuntu-latest Core acceptance host; the governed-knowledge boundary is platform-independent Python over SQLite and the Phase 2 platform matrix does not run this suite, so the every-OS clause is structural.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_knowledge.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_processing.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py",
         "src/omnivia_core"
       ]
@@ -3726,7 +3747,7 @@
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
           "symbol": "test_a_hostile_document_is_derived_without_running_anything",
-          "covers": "A captured document whose whole body is a model-directed instruction, an executable-looking formula and a business claim is derived to evidence and one proposed candidate while every workflow, provider, runtime-run, effect, chat-turn and tool-call table stays empty."
+          "covers": "A captured document whose whole body is a model-directed instruction, an executable-looking formula and a business claim is derived to evidence and one proposed candidate by capture_document_bytes followed by process_capture_outbox alone, while every workflow, provider, runtime-run, effect, chat-turn and tool-call table stays empty."
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
@@ -3761,9 +3782,10 @@
       ],
       "status": "passed",
       "missing_condition": null,
-      "limitations": "The hostile document is plain text, which the extractor renders as one segment, so the junction is proved once per capture rather than across many segments; the per-format inert-content half is proved separately by the delimited and HTML extractor tests cited above. No workflow engine participates in any of it, and that is asserted two ways -- the tables are empty afterwards, and the modules that could run one are not in the derivation's import closure at all -- but the second claim is scoped to omnivia_core_runtime: omnivia_core.contracts.v1 is reached for canonical JSON and carries workflow *schemas*, which validate wire shapes and start nothing. Execution is on the single ubuntu-latest Core acceptance host.",
+      "limitations": "Driven by the production trigger: the hostile document is captured and processed, and the derivation the capture-outbox pass performs is what the inert-content and no-approval assertions are made over, so no listed evidence invokes the derivation seam to make the gate hold. The document is plain text, which the extractor renders as one segment, so the junction is proved once per capture rather than across many segments; the per-format inert-content half is proved separately by the delimited and HTML extractor tests cited above. No workflow engine participates in any of it, asserted two ways -- the tables are empty afterwards, and the modules that could run one are not in the derivation's import closure at all -- but the second claim is scoped to omnivia_core_runtime and to the derivation module: omnivia_core.contracts.v1 is reached for canonical JSON and carries workflow *schemas*, which validate wire shapes and start nothing, and document_processing, which now calls the derivation, is the capture-outbox pass and is not itself closure-checked. Execution is on the single ubuntu-latest Core acceptance host.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_knowledge.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_processing.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py",
         "src/omnivia_core"
