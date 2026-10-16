@@ -12,6 +12,7 @@ import hashlib
 import io
 import struct
 import zlib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,11 @@ SAMPLE_PDF = "services/omnivia-memory/tests/fixtures/sample.pdf"
 PAGE_WIDTH_POINTS = 595.0
 #: The model names the tests install into their own trusted directory.
 MODEL_NAMES = ("eng", "deu", "fra", "osd")
+#: The words a prior OCR tool left behind in the invisible layer of a scan.
+SCAN_LINES = (
+    ("Invoice total is 4,210.00", 72.0, 700.0),
+    ("Terms thirty days net", 72.0, 660.0),
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -109,13 +115,82 @@ def rotated_pdf(content: bytes, degrees: int) -> bytes:
     return buffer.getvalue()
 
 
-def native_lines(content: bytes) -> list[tuple[str, tuple[float, ...]]]:
+def scanned_pdf(
+    lines: Sequence[tuple[str, float, float]], *, render_mode: int = 3
+) -> bytes:
+    """A page whose visible presentation is a raster, plus a text layer.
+
+    This is the shape a prior OCR tool leaves behind: the scan itself is an
+    image drawn over the whole page, and the words it recognised are written as
+    real page text in rendering mode 3, which paints no glyphs. ``render_mode``
+    is a parameter only so the same page can be built visibly, which is what
+    shows the raster path would have drawn the glyphs had they been visible.
+    Hand-built because no writer here emits mode 3, and bounded to one 2x2
+    greyscale raster and the base-14 font so the bytes stay deterministic.
+
+    ``lines`` are ``(text, x, y)`` in PDF user space, bottom-left origin.
+    """
+    raster = zlib.compress(bytes([0xFF, 0x40, 0x40, 0xFF]))
+    content = ["q 595 0 0 842 0 0 cm /Im0 Do Q"]
+    if lines:
+        content.append(f"BT /F1 12 Tf {render_mode} Tr")
+        content += [f"1 0 0 1 {x} {y} Tm ({text}) Tj" for text, x, y in lines]
+        content.append("ET")
+    stream = "\n".join(content).encode("ascii")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+            b"/Resources << /Font << /F1 5 0 R >> /XObject << /Im0 6 0 R >> >> "
+            b"/Contents 4 0 R >>"
+        ),
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 "
+        b"/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode "
+        b"/Length %d >>\nstream\n" % len(raster) + raster + b"\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.7\n")
+    offsets: list[int] = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    start = len(out)
+    out += b"xref\n0 %d\n" % (len(objects) + 1)
+    out += b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += b"%010d 00000 n \n" % offset
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1,
+        start,
+    )
+    return bytes(out)
+
+
+def rendered_page(content: bytes) -> bytes:
+    """The first page's rasterised pixels, as the decoder actually paints them."""
+    document = pdfium.PdfDocument(content)
+    page = document[0]
+    image = page.render(scale=0.5).to_pil()
+    try:
+        return image.tobytes()
+    finally:
+        image.close()
+        page.close()
+        document.close()
+
+
+def native_lines(
+    content: bytes,
+) -> list[tuple[str, tuple[float, float, float, float]]]:
     """The embedded text lines and their common-space boxes, read text-only."""
     result = extract_pdf(content, capture_id=CAPTURE, settings=ocr.text_only_settings())
-    return [
-        (segment.text or "", tuple(segment.source_locator["box"]))
-        for segment in result.segments
-    ]
+    lines: list[tuple[str, tuple[float, float, float, float]]] = []
+    for segment in result.segments:
+        left, top, width, height = segment.source_locator["box"]
+        lines.append((segment.text or "", (left, top, width, height)))
+    return lines
 
 
 class FakeOcr:
@@ -586,6 +661,102 @@ def test_identical_text_at_distinct_positions_is_never_deduplicated(
         if segment.text == "Confidential footer"
     }
     assert len(boxes) == 3
+
+
+def test_an_invisible_prior_ocr_layer_is_decoded_with_page_and_spatial_provenance() -> (
+    None
+):
+    content = scanned_pdf(SCAN_LINES)
+
+    # The layer really is invisible: the page paints exactly the raster it would
+    # paint with no text at all, while the same page built visibly does not.
+    assert rendered_page(content) == rendered_page(scanned_pdf(()))
+    assert rendered_page(content) != rendered_page(
+        scanned_pdf(SCAN_LINES, render_mode=0)
+    )
+
+    result = extract_pdf(content, capture_id=CAPTURE, settings=ocr.text_only_settings())
+
+    assert outcomes(result) == {OUTCOME_EMBEDDED_TEXT: 1}
+    assert searchable(result) == [text for text, _, _ in SCAN_LINES]
+    assert all(
+        segment.source_locator["page"] == 1
+        and segment.source_locator["method"] == "native_text"
+        and segment.source_locator["space"] == GEOMETRY_SPACE
+        and segment.source_locator["rotation"] == 0
+        and segment.source_locator["cropBox"] == [0.0, 0.0, 595.0, 842.0]
+        for segment in result.segments
+    )
+    # Top-left origin: the higher baseline is the smaller top, and the two
+    # lines keep distinct regions rather than one page-wide claim.
+    tops = [segment.source_locator["box"][1] for segment in result.segments]
+    assert tops == sorted(tops) and len(set(tops)) == 2
+    # The same bytes decode to the same geometry, so a reading stays traceable.
+    assert native_lines(content) == native_lines(content)
+
+
+def test_a_reading_agreeing_with_the_invisible_layer_adds_no_second_sentence() -> None:
+    content = scanned_pdf(SCAN_LINES)
+    lines = native_lines(content)
+    engine = FakeOcr(words=[(text, 93.0, box) for text, box in lines])
+
+    result = extract_pdf(content, capture_id=CAPTURE, ocr_engine=engine)
+
+    assert outcomes(result) == {OUTCOME_BOTH_DEDUPLICATED: 1}
+    # The raster is recognised even though the page already carries text.
+    assert engine.calls == [3]
+    assert searchable(result) == [text for text, _, _ in SCAN_LINES]
+    primary = result.segments[0]
+    assert primary.extraction_method == "direct"
+    assert primary.source_locator["methods"] == ["native_text", "ocr"]
+    assert primary.source_locator["ocrConfidence"] == pytest.approx(0.93)
+    # Two methods read the same words; they are stored once.
+    assert len(result.segments) == len(SCAN_LINES)
+
+
+def test_a_reading_conflicting_with_the_invisible_layer_keeps_both_apart() -> None:
+    content = scanned_pdf(SCAN_LINES)
+    lines = native_lines(content)
+    engine = FakeOcr(words=[("Invoice total is 9,999.00", 81.0, lines[0][1])])
+
+    result = extract_pdf(content, capture_id=CAPTURE, ocr_engine=engine)
+
+    assert outcomes(result)[OUTCOME_CONFLICTING_READINGS] == 1
+    # The prior layer's sentence stays the searchable one, unaltered.
+    assert searchable(result) == [text for text, _, _ in SCAN_LINES]
+    alternative = next(
+        segment
+        for segment in result.segments
+        if segment.source_locator.get("observation") == "alternative_reading"
+    )
+    assert alternative.text == "Invoice total is 9,999.00"
+    assert alternative.semantic_role == "hidden_content"
+    assert alternative.visibility == "hidden"
+    assert alternative.source_locator["conflict"] is True
+    assert alternative.source_locator["alternativeOfRectOrdinal"] == 0
+    # Neither amount was appended to the other.
+    assert all("9,999.00" not in text for text in searchable(result))
+
+
+def test_a_repeated_invisible_footer_pairs_each_position_with_its_own_reading() -> None:
+    footer = "Confidential footer"
+    content = scanned_pdf([(footer, 72, y) for y in (700, 500, 300)])
+    lines = native_lines(content)
+    assert [text for text, _ in lines] == [footer] * 3
+    engine = FakeOcr(words=[(text, 90.0, box) for text, box in lines])
+
+    result = extract_pdf(content, capture_id=CAPTURE, ocr_engine=engine)
+
+    assert outcomes(result) == {OUTCOME_BOTH_DEDUPLICATED: 1}
+    assert searchable(result) == [footer] * 3
+    # Identical text at distinct positions is three segments, and each one is
+    # paired with the reading over its own region rather than a sibling's.
+    assert len({tuple(item.source_locator["box"]) for item in result.segments}) == 3
+    assert len({item.source_locator["ocrLine"] for item in result.segments}) == 3
+    for segment in result.segments:
+        assert segment.source_locator["ocrBox"][1] == pytest.approx(
+            segment.source_locator["box"][1], abs=1.0
+        )
 
 
 def test_rotated_page_geometry_maps_both_methods_into_one_space(
