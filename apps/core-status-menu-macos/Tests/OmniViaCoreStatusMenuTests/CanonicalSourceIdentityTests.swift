@@ -28,6 +28,22 @@ final class CanonicalSourceIdentityTests: XCTestCase {
         var reader: @Sendable () -> Int64 { { [self] in self.lock.withLock { self.value } } }
     }
 
+    private final class CountingReader: CoordinatedOriginalReading, @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+
+        var count: Int { lock.withLock { value } }
+
+        func readStableBytes(from url: URL, maximumBytes: UInt64) throws -> Data {
+            lock.withLock { value += 1 }
+            let data = try Data(contentsOf: url)
+            guard UInt64(data.count) <= maximumBytes else {
+                throw CapturePreparationError.fileTooLarge
+            }
+            return data
+        }
+    }
+
     // MARK: - The identity rule
 
     /// The key is the volume's identity plus the file's resource identifier, so
@@ -355,21 +371,22 @@ final class CanonicalSourceIdentityTests: XCTestCase {
         )
     }
 
-    /// A direct watch's automatic refresh binds to the revision an overlapping
-    /// folder route already queued for the same source, against the same head,
-    /// instead of racing a second one. The watch is still recorded as having
-    /// published for the epoch it read: its obligation is discharged by the
-    /// capture that serves it.
-    func testADirectWatchRefreshBindsToTheOverlappingFolderRoutesRevision() async throws {
+    /// A containing root is the one automatic reader while it is eligible. The
+    /// direct route keeps its dirty obligation without reading; when the root is
+    /// stopped, that same obligation falls through to the direct route and it
+    /// binds to the already queued canonical revision.
+    func testAContainingRootWinsAndTheDirectRouteTakesOverWithoutADuplicateRead() async throws {
         let root = try temporaryDirectory()
         let watched = root.appendingPathComponent("watched", isDirectory: true)
         try FileManager.default.createDirectory(at: watched, withIntermediateDirectories: true)
         let shared = watched.appendingPathComponent("shared.txt")
         try Data("baseline".utf8).write(to: shared)
         let clock = TestClock()
+        let reader = CountingReader()
         let environment = try DocumentIntakeEnvironment(
             stateRoot: root.appendingPathComponent("state", isDirectory: true),
             bookmarkCodec: BookmarkCodec(),
+            reader: reader,
             monotonicClock: clock.reader
         )
         let folder = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
@@ -405,13 +422,14 @@ final class CanonicalSourceIdentityTests: XCTestCase {
         // The folder route reads the change first and queues the one revision.
         try Data("changed".utf8).write(to: shared)
         _ = await environment.folderMonitoring.reconcileAll()
+        let readsAfterWinner = reader.count
         let revision = try XCTUnwrap(
             environment.queue.allEntries().first { $0.intent.itemId != initial.first?.intent.itemId }
         )
         XCTAssertEqual(revision.intent.basePrecondition, .expected(captureID))
 
-        // The direct watch now reads the same change. It queues nothing, binds
-        // to that revision, and is recorded as having published it.
+        // The direct watch is dirty too, but the containing root is the elected
+        // scheduler. It neither reads nor publishes through its fallback route.
         let subscriptionID = try XCTUnwrap(
             environment.fileSubscriptions.all().first?.subscriptionID
         )
@@ -419,8 +437,20 @@ final class CanonicalSourceIdentityTests: XCTestCase {
         clock.advance(3_000)
         let refreshed = await environment.fileMonitoring.reconcileAll()
 
-        XCTAssertEqual(refreshed.map(\.queued), [true])
+        XCTAssertEqual(refreshed.map(\.queued), [false])
         XCTAssertEqual(environment.queue.allEntries().count, 2)
+        XCTAssertNil(environment.fileSubscriptions.all().first?.lastQueuedItemID)
+        XCTAssertEqual(reader.count, readsAfterWinner)
+
+        // Stopping only the folder route changes the deterministic winner. The
+        // direct route's existing dirty generation is still due and now runs;
+        // publication coalesces onto the winner's canonical revision.
+        let folderID = try XCTUnwrap(environment.folderSubscriptions.all().first?.subscriptionID)
+        _ = try await environment.folderMonitoring.stop(subscriptionID: folderID)
+        let fallback = await environment.fileMonitoring.reconcileAll()
+
+        XCTAssertEqual(fallback.map(\.queued), [true])
+        XCTAssertGreaterThan(reader.count, readsAfterWinner)
         XCTAssertEqual(
             environment.fileSubscriptions.all().first?.lastQueuedItemID,
             revision.intent.itemId
@@ -431,6 +461,144 @@ final class CanonicalSourceIdentityTests: XCTestCase {
                 .count,
             2
         )
+    }
+
+    func testElectionPrefersTheMostSpecificRootThenFallsBackInStableOrder() async throws {
+        let outer = try temporaryDirectory()
+        let inner = outer.appendingPathComponent("inner", isDirectory: true)
+        try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+        let shared = inner.appendingPathComponent("shared.txt")
+        try Data("content".utf8).write(to: shared)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: outer.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec()
+        )
+        for scope in [outer, inner] {
+            let folder = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+            _ = try await folder.submit(
+                try folder.plan(
+                    root: scope,
+                    policy: FolderCapturePolicy(mode: .keepUpdated, recursive: true, includeHidden: false)
+                )
+            )
+        }
+        _ = try await ManualCaptureSubmission(
+            environment: environment,
+            workspaceRef: "workspace-1"
+        ).submit([ManualCaptureCandidate(url: shared, keepUpdated: true)])
+        for entry in environment.queue.allEntries() {
+            try admit(entry, captureID: "dcap-" + String(repeating: "d", count: 64), queue: environment.queue)
+        }
+        _ = await environment.folderMonitoring.reconcileAll()
+        _ = await environment.fileMonitoring.reconcileAll()
+
+        let folders = environment.folderSubscriptions.all()
+        let innerSubscription = try XCTUnwrap(folders.first { $0.rootDisplayName == "inner" })
+        let outerSubscription = try XCTUnwrap(folders.first { $0.rootDisplayName != "inner" })
+        let innerMember = try XCTUnwrap(
+            innerSubscription.members.first { $0.displayName.hasSuffix("shared.txt") }
+        )
+        let outerMember = try XCTUnwrap(
+            outerSubscription.members.first { $0.displayName.hasSuffix("shared.txt") }
+        )
+        let direct = try XCTUnwrap(environment.fileSubscriptions.all().first)
+        let source = innerMember.requestedSourceIdentity
+
+        XCTAssertTrue(environment.automaticRouteElection.isElected(
+            .folder(subscriptionID: innerSubscription.subscriptionID, memberID: innerMember.memberID),
+            workspaceRef: "workspace-1",
+            sourceIdentity: source
+        ))
+        XCTAssertFalse(environment.automaticRouteElection.isElected(
+            .folder(subscriptionID: outerSubscription.subscriptionID, memberID: outerMember.memberID),
+            workspaceRef: "workspace-1",
+            sourceIdentity: source
+        ))
+        XCTAssertFalse(environment.automaticRouteElection.isElected(
+            .direct(subscriptionID: direct.subscriptionID),
+            workspaceRef: "workspace-1",
+            sourceIdentity: source
+        ))
+
+        _ = try await environment.folderMonitoring.pause(
+            subscriptionID: innerSubscription.subscriptionID
+        )
+        XCTAssertTrue(environment.automaticRouteElection.isElected(
+            .folder(subscriptionID: outerSubscription.subscriptionID, memberID: outerMember.memberID),
+            workspaceRef: "workspace-1",
+            sourceIdentity: source
+        ))
+
+        _ = try await environment.folderMonitoring.stop(
+            subscriptionID: outerSubscription.subscriptionID
+        )
+        XCTAssertTrue(environment.automaticRouteElection.isElected(
+            .direct(subscriptionID: direct.subscriptionID),
+            workspaceRef: "workspace-1",
+            sourceIdentity: source
+        ))
+    }
+
+    func testRouteChangeBeforePublicationDiscardsTheOldRoutesCandidate() async throws {
+        let root = try temporaryDirectory()
+        let watched = root.appendingPathComponent("watched", isDirectory: true)
+        try FileManager.default.createDirectory(at: watched, withIntermediateDirectories: true)
+        let shared = watched.appendingPathComponent("shared.txt")
+        try Data("baseline".utf8).write(to: shared)
+        let clock = TestClock()
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true),
+            bookmarkCodec: BookmarkCodec(),
+            monotonicClock: clock.reader
+        )
+        let folder = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        _ = try await folder.submit(
+            try folder.plan(
+                root: watched,
+                policy: FolderCapturePolicy(mode: .keepUpdated, recursive: true, includeHidden: false)
+            )
+        )
+        _ = try await ManualCaptureSubmission(
+            environment: environment,
+            workspaceRef: "workspace-1"
+        ).submit([ManualCaptureCandidate(url: shared, keepUpdated: true)])
+        for entry in environment.queue.allEntries() {
+            try admit(entry, captureID: "dcap-" + String(repeating: "e", count: 64), queue: environment.queue)
+        }
+        _ = await environment.folderMonitoring.reconcileAll()
+        _ = await environment.fileMonitoring.reconcileAll()
+
+        let folderID = try XCTUnwrap(environment.folderSubscriptions.all().first?.subscriptionID)
+        let direct = try XCTUnwrap(environment.fileSubscriptions.all().first)
+        _ = try await environment.folderMonitoring.pause(subscriptionID: folderID)
+        try Data("changed".utf8).write(to: shared)
+        await environment.fileMonitoring.markDirty(subscriptionIDs: [direct.subscriptionID])
+        clock.advance(3_000)
+        let queuedBefore = Set(environment.queue.allEntries().map(\.intent.itemId))
+
+        environment.preparation.afterCandidatePrepared = {
+            _ = try? environment.folderSubscriptions.update(id: folderID) {
+                $0.state = .active
+                $0.needsFullReconciliation = true
+            }
+        }
+        let reports = await environment.fileMonitoring.reconcileAll()
+        environment.preparation.afterCandidatePrepared = nil
+
+        XCTAssertEqual(reports.map(\.queued), [false])
+        XCTAssertEqual(environment.fileSubscriptions.all().map(\.state), [.active])
+        XCTAssertEqual(Set(environment.queue.allEntries().map(\.intent.itemId)), queuedBefore)
+        let scheduling = environment.automaticScheduling.state(
+            of: FileMonitoringCoordinator.schedulingKey(for: direct)
+        )
+        XCTAssertNotNil(scheduling?.dirtyGeneration)
+        XCTAssertNil(scheduling?.activeGeneration)
+        let winner = try XCTUnwrap(environment.folderSubscriptions.all().first?.members.first)
+        XCTAssertTrue(environment.automaticRouteElection.isElected(
+            .folder(subscriptionID: folderID, memberID: winner.memberID),
+            workspaceRef: direct.workspaceRef,
+            sourceIdentity: direct.requestedSourceIdentity
+        ))
     }
 
     // MARK: - Helpers

@@ -22,7 +22,8 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     /// Durable automatic-update scheduling: which verified scopes are dirty, what one candidate is
     /// in flight, and where background rotation stands. Individual file watches now decide every
     /// automatic check through it — `fileMonitoring` signals it and reads nothing it has not
-    /// claimed. Folder monitoring still goes straight to preparation.
+    /// claimed. The shared route election additionally prevents that file scope and an
+    /// overlapping folder scope from both reading one canonical source.
     public let automaticScheduling: AutomaticSchedulingStateMachine
     public let folderBulkRuns: FolderBulkRunStore
     public let folderBulkCoordinator: FolderBulkRunCoordinator
@@ -37,6 +38,9 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     /// discovery, a direct submission — takes its identities from here, so
     /// overlapping routes over one original share one source.
     public let canonicalSources: CanonicalSourceRegistry
+    /// Derived deterministic winner among every active route over one verified
+    /// source. Both file and folder monitors consult the same owner.
+    let automaticRouteElection: AutomaticSourceRouteElection
     /// The canonical native/Core-owned stores every folder scope excludes, so a
     /// scan can never ingest the companion's own bookmarks, queue or receipts.
     /// Resolved here, once, from the real state root rather than matched by name.
@@ -114,6 +118,13 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             gate: gate,
             identity: nativeIdentity ?? { NativeFileIdentity.key(for: $0) }
         )
+        automaticRouteElection = AutomaticSourceRouteElection(
+            accessStore: accessStore,
+            folders: folderSubscriptions,
+            files: fileSubscriptions,
+            canonicalSources: canonicalSources,
+            gate: gate
+        )
         // The publication boundary rechecks automatic consent against these
         // stores, so they exist before it does.
         preparation = CapturePreparationCoordinator(
@@ -132,6 +143,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             subscriptions: folderSubscriptions,
             reader: reader,
             canonicalSources: canonicalSources,
+            routeElection: automaticRouteElection,
             controlledStores: controlledStores,
             clock: reconciliationClock ?? { Date() }
         )
@@ -163,6 +175,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             subscriptions: fileSubscriptions,
             reader: reader,
             scheduling: automaticScheduling,
+            routeElection: automaticRouteElection,
             publicationGate: gate,
             currentCapture: currentCapture,
             clock: clock

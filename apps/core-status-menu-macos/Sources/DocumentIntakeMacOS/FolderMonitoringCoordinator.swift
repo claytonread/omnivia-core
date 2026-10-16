@@ -39,6 +39,9 @@ public actor FolderMonitoringCoordinator {
     /// `CanonicalSourceRegistry`. A newly discovered file takes its identities
     /// from here rather than minting its own.
     private let canonicalSources: CanonicalSourceRegistry
+    /// Shared with the individual-file monitor: exactly one active route reads
+    /// each canonical source automatically.
+    private let routeElection: AutomaticSourceRouteElection
     /// Core/native-owned stores every scan excludes; see `DocumentIntakeEnvironment`.
     private let controlledStores: [URL]
     /// Wall clock for the observation timestamp and the add/change burst window.
@@ -59,6 +62,7 @@ public actor FolderMonitoringCoordinator {
         subscriptions: FolderSubscriptionStore,
         reader: any CoordinatedOriginalReading,
         canonicalSources: CanonicalSourceRegistry,
+        routeElection: AutomaticSourceRouteElection,
         controlledStores: [URL] = [],
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
@@ -69,6 +73,7 @@ public actor FolderMonitoringCoordinator {
         self.subscriptions = subscriptions
         self.reader = reader
         self.canonicalSources = canonicalSources
+        self.routeElection = routeElection
         self.controlledStores = controlledStores
     }
 
@@ -124,7 +129,11 @@ public actor FolderMonitoringCoordinator {
 
     private func reconcile(subscriptionIDs: Set<String>?) async -> [FolderMonitoringReport] {
         var reports: [FolderMonitoringReport] = []
-        for persisted in subscriptions.all() {
+        let orderedSubscriptions = subscriptions.all().map { ($0, rootDepth($0)) }.sorted {
+            if $0.1 != $1.1 { return $0.1 > $1.1 }
+            return $0.0.subscriptionID < $1.0.subscriptionID
+        }.map(\.0)
+        for persisted in orderedSubscriptions {
             if let subscriptionIDs, !subscriptionIDs.contains(persisted.subscriptionID) { continue }
             guard let subscription = try? reconcileAdmissions(persisted) else { continue }
             // A subscription whose root group is still only prepared belongs to
@@ -438,6 +447,19 @@ public actor FolderMonitoringCoordinator {
                 // See `revoked`: a disconnected source is left exactly as it stands.
                 if revoked.contains(member.accessRef) { continue }
                 member.state = .present
+                let route = AutomaticSourceRoute.folder(
+                    subscriptionID: subscription.subscriptionID,
+                    memberID: member.memberID
+                )
+                let electionSourceIdentity = member.requestedSourceIdentity
+                guard routeElection.isElected(
+                    route,
+                    workspaceRef: subscription.workspaceRef,
+                    sourceIdentity: member.requestedSourceIdentity
+                ) else {
+                    Self.replace(member, in: &updated.members)
+                    continue
+                }
                 if unresolved.contains(member.memberID) {
                     Self.replace(member, in: &updated.members)
                     continue
@@ -492,6 +514,13 @@ public actor FolderMonitoringCoordinator {
                             ),
                         ],
                         binding: CaptureDeliveryBinding(subscription),
+                        validateBeforePublication: { [routeElection] in
+                            guard routeElection.isElected(
+                                route,
+                                workspaceRef: subscription.workspaceRef,
+                                sourceIdentity: electionSourceIdentity
+                            ) else { throw CapturePreparationError.automaticRouteChanged }
+                        },
                         onCoalesced: coalesced.record
                     )
                 } catch CaptureQueueError.capacityExceeded {
@@ -504,6 +533,8 @@ public actor FolderMonitoringCoordinator {
                     // nothing of the refused read is recorded, and the next pass
                     // closes the membership through the ordinary disappearance
                     // path, with the review thresholds that path applies.
+                    continue
+                } catch CapturePreparationError.automaticRouteChanged {
                     continue
                 }
                 // A capture of exactly these bytes already exists for this
@@ -565,6 +596,18 @@ public actor FolderMonitoringCoordinator {
                     dirtyEpoch: 1,
                     state: .present
                 )
+                guard routeElection.isElectedProvisionalFolder(
+                    subscription: subscription,
+                    member: member
+                ) else {
+                    // The membership is still real and durable; another route
+                    // owns the automatic read. It has no private baseline item
+                    // because it did not read or publish one of its own.
+                    member.baselineItemID = nil
+                    member.lastQueuedItemID = nil
+                    updated.members.append(member)
+                    continue
+                }
                 let seed = Self.seed(
                     subscription: subscription,
                     member: member,
@@ -579,6 +622,7 @@ public actor FolderMonitoringCoordinator {
                 )
                 let entries: [CaptureQueueEntry]
                 let coalesced = CoalescedItems()
+                let electionMember = member
                 do {
                     entries = try await preparation.prepareAndPublish(
                         [
@@ -594,6 +638,12 @@ public actor FolderMonitoringCoordinator {
                             ),
                         ],
                         binding: CaptureDeliveryBinding(subscription),
+                        validateBeforePublication: { [routeElection] in
+                            guard routeElection.isElectedProvisionalFolder(
+                                subscription: subscription,
+                                member: electionMember
+                            ) else { throw CapturePreparationError.automaticRouteChanged }
+                        },
                         onCoalesced: coalesced.record
                     )
                 } catch CaptureQueueError.capacityExceeded {
@@ -607,6 +657,11 @@ public actor FolderMonitoringCoordinator {
                     )
                     capacityDeferred = true
                     break
+                } catch CapturePreparationError.automaticRouteChanged {
+                    member.baselineItemID = nil
+                    member.lastQueuedItemID = nil
+                    updated.members.append(member)
+                    continue
                 } catch let incomplete as CapturePublicationIncomplete {
                     // Publication (or coalescence onto an existing capture) is
                     // already durable. Its queue entry owns the route even
@@ -712,6 +767,18 @@ public actor FolderMonitoringCoordinator {
             unchanged: unchanged,
             absent: absent
         )
+    }
+
+    /// Process overlapping roots in election order, so a file that appears in
+    /// two roots is first discovered through the most specific one. Resolving a
+    /// root reads no child bytes; an unavailable root sorts last and is handled
+    /// by its ordinary reconciliation path.
+    private func rootDepth(_ subscription: FolderSubscription) -> Int {
+        (try? accessStore.withRootReadAccess(
+            rootRef: subscription.rootRef,
+            expectedGeneration: subscription.rootBindingGeneration,
+            purpose: .memberDiscovery
+        ) { $0.pathComponents.count }) ?? -1
     }
 
     /// A one-item preparation is served by exactly one newly published or

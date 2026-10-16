@@ -17,6 +17,7 @@ public actor FileMonitoringCoordinator {
     private let subscriptions: FileSubscriptionStore
     private let reader: any CoordinatedOriginalReading
     private let scheduling: AutomaticSchedulingStateMachine
+    private let routeElection: AutomaticSourceRouteElection
     /// The same gate the queue, the subscription stores and the scheduling machine were built with,
     /// so this owner can hold one critical section across all three. See `PublicationGate`.
     private let publicationGate: PublicationGate
@@ -38,6 +39,7 @@ public actor FileMonitoringCoordinator {
         subscriptions: FileSubscriptionStore,
         reader: any CoordinatedOriginalReading,
         scheduling: AutomaticSchedulingStateMachine,
+        routeElection: AutomaticSourceRouteElection,
         publicationGate: PublicationGate,
         currentCapture: (any CurrentCaptureVerifying)? = nil,
         clock: @escaping @Sendable () -> Int64
@@ -48,6 +50,7 @@ public actor FileMonitoringCoordinator {
         self.subscriptions = subscriptions
         self.reader = reader
         self.scheduling = scheduling
+        self.routeElection = routeElection
         self.publicationGate = publicationGate
         self.currentCapture = currentCapture
         self.clock = clock
@@ -142,6 +145,11 @@ public actor FileMonitoringCoordinator {
                 queued: false
             ))
             guard resolved.value.state == .active, resolved.evidence == .clear else { continue }
+            guard routeElection.isElected(
+                .direct(subscriptionID: resolved.value.subscriptionID),
+                workspaceRef: resolved.value.workspaceRef,
+                sourceIdentity: resolved.value.requestedSourceIdentity
+            ) else { continue }
             checkable[Self.schedulingKey(for: resolved.value)] = (resolved.value, reports.count - 1)
         }
         for claim in claimDueWork(among: Set(checkable.keys)) {
@@ -490,6 +498,9 @@ public actor FileMonitoringCoordinator {
             // overlapping watched folder reading the same file. This watch then
             // binds to that capture rather than racing a second revision of it.
             let coalesced = CoalescedItems()
+            let route = AutomaticSourceRoute.direct(subscriptionID: value.subscriptionID)
+            let electionWorkspaceRef = value.workspaceRef
+            let electionSourceIdentity = value.requestedSourceIdentity
             do {
                 entries = try await preparation.prepareAndPublish(
                     [
@@ -503,6 +514,13 @@ public actor FileMonitoringCoordinator {
                         ),
                     ],
                     binding: CaptureDeliveryBinding(value),
+                    validateBeforePublication: { [routeElection] in
+                        guard routeElection.isElected(
+                            route,
+                            workspaceRef: electionWorkspaceRef,
+                            sourceIdentity: electionSourceIdentity
+                        ) else { throw CapturePreparationError.automaticRouteChanged }
+                    },
                     onCoalesced: coalesced.record,
                     onPublished: { published in
                         // Inside the publication critical section, under the gate the queue
@@ -566,6 +584,19 @@ public actor FileMonitoringCoordinator {
                 subscriptionID: value.subscriptionID,
                 state: value.state,
                 queued: true
+            )
+        } catch CapturePreparationError.automaticRouteChanged {
+            // Another eligible route won before this candidate committed. The
+            // source remains dirty and this route remains healthy; it is not an
+            // access failure. The winner will freeze its own intent through its
+            // own authority.
+            if scheduling.state(of: claim.key)?.published != true {
+                _ = try? scheduling.cancel(claim.key, generation: claim.generation, at: clock())
+            }
+            return FileMonitoringReport(
+                subscriptionID: value.subscriptionID,
+                state: value.state,
+                queued: false
             )
         } catch {
             // The read or the preparation failed, so nothing was published and the generation is
@@ -641,6 +672,11 @@ public actor FileMonitoringCoordinator {
             settled = try? accessStore.withValidatedGenerations([
                 NativeAccessExpectation(accessRef: value.accessRef, generation: value.bindingGeneration),
             ]) { () -> FileSubscription in
+                guard routeElection.isElected(
+                    .direct(subscriptionID: value.subscriptionID),
+                    workspaceRef: value.workspaceRef,
+                    sourceIdentity: value.requestedSourceIdentity
+                ) else { throw CapturePreparationError.automaticRouteChanged }
                 guard let current = subscriptions.all().first(where: {
                     $0.subscriptionID == value.subscriptionID
                 }),

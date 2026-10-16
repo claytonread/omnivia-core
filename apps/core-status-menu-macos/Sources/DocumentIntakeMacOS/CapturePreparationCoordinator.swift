@@ -54,6 +54,9 @@ public enum CapturePreparationError: Error, Equatable {
     /// The subscription an automatic item was prepared against has been
     /// suppressed, reconfigured, or has moved on to a later dirty epoch.
     case consentChanged
+    /// Another eligible route became the deterministic scheduler for this
+    /// canonical source before the queue commit.
+    case automaticRouteChanged
 }
 
 /// A caller's own post-publication update, run inside the publication critical
@@ -399,6 +402,7 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
     public func prepareAndPublish(
         _ items: [CapturePreparationItem],
         binding: CaptureDeliveryBinding,
+        validateBeforePublication: (@Sendable () throws -> Void)? = nil,
         onCoalesced: CaptureCoalescenceCompletion? = nil,
         onPublished: CapturePublicationCompletion? = nil
     ) async throws -> [CaptureQueueEntry] {
@@ -477,6 +481,7 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
                     )
                 }
                 self.afterConsentValidation?()
+                try validateBeforePublication?()
                 let published = try candidate.map { try self.queue.publish($0) } ?? []
                 do {
                     // The rename is the moment durable ownership exists, so it

@@ -94,13 +94,10 @@ private struct CanonicalSourceDocument: Codable {
 /// - a file macOS will not identify gets fresh identities that are registered
 ///   nowhere, so an unknown file never merges onto a known one.
 ///
-/// What this does not yet do is §21.8.1's other half: electing one eligible
-/// route per verified original to be its scheduler. Every route still reads and
-/// prepares, and the second one's capture coalesces onto the first at
-/// publication — one capture, but more than one read.
-/// ponytail: coalescing at publication is the whole of the duplicate-capture
-/// rule and none of the duplicate-read cost. Elect a route when the reads show
-/// up in a measurement.
+/// `AutomaticSourceRouteElection` supplies §21.8.1's other half: one eligible
+/// automatic reader per identity recorded here. Publication coalescence remains
+/// the final race-safe boundary if two reads that began under different
+/// elections overlap.
 public final class CanonicalSourceRegistry: @unchecked Sendable {
     private static let schema = "omnivia.canonical-sources.v1"
     private static let maximumStateBytes: UInt64 = 8 * 1024 * 1024
