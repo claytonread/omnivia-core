@@ -721,6 +721,12 @@ public struct FilesAndFoldersModel: Sendable {
         }
     }
 
+    /// The grants this Mac still holds as provisional (design §7.2): reviewed but not yet
+    /// owned by published work. None of them serves Refresh, Open original or Reveal.
+    public static func provisionalAccessRefs(routes: [NativeAccessDescriptor]) -> Set<String> {
+        Set(routes.filter { $0.lifecycle == .provisional }.map(\.accessRef))
+    }
+
     /// The documents that hold a direct route of their own, so a folder member whose
     /// root-mediated reads have stopped can be distinguished from one that is still being read.
     ///
@@ -842,7 +848,8 @@ public struct FilesAndFoldersModel: Sendable {
     public static func actions(
         for item: FilesAndFoldersItem?,
         activity: CaptureActivityAvailability = .current,
-        coreHistory: CoreHistoryState = .notRequested
+        coreHistory: CoreHistoryState = .notRequested,
+        provisionalAccessRefs: Set<String> = []
     ) -> FilesAndFoldersActions {
         guard let item else {
             return FilesAndFoldersActions(
@@ -862,7 +869,11 @@ public struct FilesAndFoldersModel: Sendable {
             let originalActions: Bool
             if case let .current(history) = coreHistory.availability(for: value.linkedDocumentID) {
                 reprocessable = !history.reprocessableCaptures.isEmpty
+                // Core's confirmation is necessary, not sufficient: a grant this Mac
+                // still holds as provisional is not an active route (design §7.2),
+                // whatever any answer says, so it serves none of the three.
                 originalActions = Self.permitsOriginalActions(history)
+                    && !provisionalAccessRefs.contains(value.accessRef)
             } else {
                 reprocessable = false
                 // Evidence may well be retrievable, but nothing here has a
@@ -985,6 +996,9 @@ public struct FilesAndFoldersModel: Sendable {
                 label: "Updates",
                 value: value.state == .stopped
                     ? "Stopped. This file is no longer kept updated."
+                    : value.state == .waitingForCore
+                    ? "Not confirmed. Updates were requested, but Core has not yet accepted the "
+                        + "first capture, so this file is not yet kept updated."
                     : "Kept updated when this file changes."
             ),
             DetailFact(label: "Status", value: FilesAndFoldersItem.label(value.state)),

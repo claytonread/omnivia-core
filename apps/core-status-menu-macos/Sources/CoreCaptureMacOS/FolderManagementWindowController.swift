@@ -56,7 +56,8 @@ public final class FolderManagementWindowController: NSWindowController,
     private let locateButton = NSButton(title: "Locate…", target: nil, action: nil)
     private var segment = FilesAndFoldersSegment.files
     private var statusFilter = FilesAndFoldersStatusFilter.all
-    private var model: FilesAndFoldersModel
+    /// Readable by tests so the projection they assert is the one this window built.
+    private(set) var model: FilesAndFoldersModel
     private var items: [FilesAndFoldersItem] = []
     /// What Core last said about the selected document. Held here rather than rebuilt
     /// from the stores, because no store holds it. Internal rather than private so the
@@ -248,7 +249,7 @@ public final class FolderManagementWindowController: NSWindowController,
         statusFilterButton.selectItem(at: applicable.firstIndex(of: statusFilter) ?? 0)
     }
 
-    private func reload() {
+    func reload() {
         let folders = folderStore.all()
         let runs = bulkStore.all()
         // Records first, so the surface shows what the durable owners prove now
@@ -478,7 +479,10 @@ public final class FolderManagementWindowController: NSWindowController,
         return FilesAndFoldersModel.actions(
             for: item,
             activity: model.activityAvailability,
-            coreHistory: historyState
+            coreHistory: historyState,
+            // Read now, not from the last reload: a provisional grant must refuse here
+            // even if the list on screen predates its promotion or its creation.
+            provisionalAccessRefs: FilesAndFoldersModel.provisionalAccessRefs(routes: documentRoutes())
         ).originalActionsEnabled
     }
 

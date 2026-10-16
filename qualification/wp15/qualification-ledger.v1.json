@@ -1809,15 +1809,22 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/NativeHandoffReceiverTests.swift",
           "symbol": "testShareLostAcknowledgementRestoresCandidatesWithoutCopyingAgain",
           "covers": "Recovery restores candidates without copying the source again."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CoreDocumentHistoryTests.swift",
+          "symbol": "testAnUnsubmittedCandidateIsNeverReadAndServesNoOriginalActionUntilPublished",
+          "covers": "Real environment, counting bookmark codec. An unsubmitted candidate is read zero times and is provisional. With Core reporting connected, the model, the window's permit and invoke all refuse, the native owner is never called, and the broker refuses originalAction with routeNotActive; a wrong generation or unknown ref cannot prepare. Submitting prepares its own grant, publication promotes it, and then the action is permitted once. After deleting the original and restarting, recovery reads it zero times and the entry and bytes are unchanged."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test covers Refresh, Open or Reveal against a provisional binding. Those three actions live in FilesAndFoldersModel and FolderManagementWindowController, and neither has a case that attempts one before the binding is durable.",
-      "limitations": "Three of the four named conditions are covered directly. The denial of the three user actions, which is the clause naming specific operations, has no assertion anywhere.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing on 2026-10-16. The window's only original action is Locate, which opens the chooser; there is no separate Refresh, Open or Reveal operation in this build, and no production caller passes the originalAction purpose to the broker. The denial is therefore proven at the one enablement and invocation seam all three would share (model, window and broker), not against three distinct operations. Preparation is scoped by accessRef, generation and submission token; an in-process caller using the default purpose on a provisional grant is not refused by the broker, and nothing external can reach it. Published direct-file recovery is proven by an unreadable original and a zero read count after a restart; the folder recovery evidence compares published digests rather than counting reads. All of it runs in an unsigned swift test process with a stub bookmark codec, not a real security-scoped bookmark.",
       "source_bindings": [
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift",
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FolderManagementWindowController.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CapturePreparationCoordinator.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeIntakeCandidateStore.swift",
-        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeIntakeCandidateStore.swift"
       ]
     },
     {
@@ -1836,14 +1843,21 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureDraftTests.swift",
           "symbol": "testSnapshotSubmissionDoesNotInventOriginalBinding",
           "covers": "A snapshot submission does not invent an original binding, which is the no-provisional-row rule at submission."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CoreDocumentHistoryTests.swift",
+          "symbol": "testAHeldPendingLinkageRequestStaysProgressUntilCoreAcceptsAndKeepsItsIdentity",
+          "covers": "A real keep-updated submission held queued, never delivered. Through the window's own reload it is one Waiting for Core row whose detail says Not confirmed, no folder row, the addition Queued on this Mac 0/1, and no original action is permitted or invoked. A restart and reconciliation leave entry, key, bytes, grant generation and projection identical. Only when Core accepts does it become Watching, and only with a connected binding is the action permitted."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test holds a pending linkage request and then asserts the projected row stays in progress or attention until the canonical association is confirmed. FilesAndFoldersModel has no pending-linkage case, so the persistence requirement is unproven.",
-      "limitations": "The two references show a link is never fabricated at submission time. They say nothing about the state shown while a real linkage request is outstanding.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing on 2026-10-16. The pending request is a real queued keep-updated submission, but acceptance is simulated by marking the queue entry admitted rather than by a live Core, and Core's answers are decoded fixtures, so the canonical association is not carried end to end through a service. The folder-side pending row (a provisional root group) is covered by the earlier projection change and not re-driven here. Displayed state is the production projection and window decision, not a rendered view. It runs in an unsigned swift test process with a stub bookmark codec.",
       "source_bindings": [
-        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift",
         "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/CaptureDraft.swift",
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift",
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FolderManagementWindowController.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ManualCaptureSubmission.swift",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py"
       ]
     },

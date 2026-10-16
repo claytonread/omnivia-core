@@ -1381,13 +1381,17 @@ final class CoreDocumentHistoryTests: XCTestCase {
     /// not a layout.
     @MainActor
     private func managementWindow(
-        locateOriginal: (() -> Void)?
+        locateOriginal: (() -> Void)?,
+        environment suppliedEnvironment: DocumentIntakeEnvironment? = nil
     ) throws -> FolderManagementWindowController {
-        let stateRoot = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
-            .appendingPathComponent("omnivia-at50-" + UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: stateRoot, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: stateRoot) }
-        let environment = try DocumentIntakeEnvironment(stateRoot: stateRoot)
+        let environment: DocumentIntakeEnvironment
+        if let suppliedEnvironment {
+            environment = suppliedEnvironment
+        } else {
+            let stateRoot = try scratchDirectory().appendingPathComponent("state", isDirectory: true)
+            try FileManager.default.createDirectory(at: stateRoot, withIntermediateDirectories: true)
+            environment = try DocumentIntakeEnvironment(stateRoot: stateRoot)
+        }
         return FolderManagementWindowController(
             workspaceName: "workspace-1",
             folderStore: environment.folderSubscriptions,
@@ -1397,12 +1401,20 @@ final class CoreDocumentHistoryTests: XCTestCase {
             bulkStore: environment.folderBulkRuns,
             bulkCoordinator: environment.folderBulkCoordinator,
             activityStore: environment.captureActivity,
-            observeActivity: { [] },
-            rootGroups: { [] },
-            documentRoutes: { [] },
+            observeActivity: { try environment.recordCaptureActivity() },
+            rootGroups: { environment.rootAccessGroups() },
+            documentRoutes: { environment.documentAccessRoutes() },
             historyTransport: nil,
             locateOriginal: locateOriginal
         )
+    }
+
+    private func scratchDirectory() throws -> URL {
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("omnivia-at50-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return root
     }
 
     /// AT-50 on the control itself, not just on the decision behind it.
@@ -1479,15 +1491,230 @@ final class CoreDocumentHistoryTests: XCTestCase {
         XCTAssertFalse(unwired.permitsOriginalAction(for: item))
         XCTAssertFalse(unwired.invokeOriginalAction(for: item))
     }
+
+    // MARK: - AT-49 and AT-50 over the real stores
+
+    private func environment(
+        in root: URL,
+        codec: CountingBookmarkCodec
+    ) throws -> DocumentIntakeEnvironment {
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        return try DocumentIntakeEnvironment(stateRoot: state, bookmarkCodec: codec)
+    }
+
+    /// AT-49. A reviewed but unsubmitted candidate holds a provisional grant. Nothing reads it,
+    /// the broker refuses Refresh/Open/Reveal on it, the management window's real model and
+    /// controller entry points refuse even when Core's answer alone would have offered them,
+    /// and preparation is allowed for exactly that grant at exactly that generation. Its own
+    /// publication promotes it, and a restart then recovers without reading the original.
+    @MainActor
+    func testAnUnsubmittedCandidateIsNeverReadAndServesNoOriginalActionUntilPublished() async throws {
+        let root = try scratchDirectory()
+        let original = root.appendingPathComponent("invoice.txt")
+        try Data("invoice".utf8).write(to: original)
+        let codec = CountingBookmarkCodec()
+        let environment = try environment(in: root, codec: codec)
+        let submission = ManualCaptureSubmission(
+            environment: environment, binding: .companion(workspaceRef: "workspace-1")
+        )
+        let candidate = try submission.adoptOriginal(
+            original, displayName: "invoice.txt", surface: .finderQuickAction
+        )
+        guard case let .adoptedOriginal(accessRef, generation, _) = candidate.source else {
+            return XCTFail("an adopted original carries its own grant")
+        }
+
+        // Candidate reads are denied: adopting reads nothing and queues nothing.
+        XCTAssertEqual(codec.starts, 0)
+        XCTAssertEqual(environment.queue.allEntries(), [])
+        XCTAssertEqual(
+            FilesAndFoldersModel.provisionalAccessRefs(routes: environment.documentAccessRoutes()),
+            [accessRef]
+        )
+
+        // The row, Core's confirmation and the window are all as permissive as they can be.
+        let row = CoreHistoryFixtures.file(accessRef: accessRef)
+        let item = FilesAndFoldersItem.file(row)
+        let confirmed = CoreHistoryState(
+            documentID: row.linkedDocumentID,
+            availability: .current(try history(Wire.page(binding: "connected")))
+        )
+        XCTAssertTrue(
+            FilesAndFoldersModel.actions(for: item, coreHistory: confirmed).originalActionsEnabled,
+            "control: Core's answer alone offers the three actions"
+        )
+        XCTAssertFalse(
+            FilesAndFoldersModel.actions(
+                for: item,
+                coreHistory: confirmed,
+                provisionalAccessRefs: FilesAndFoldersModel.provisionalAccessRefs(
+                    routes: environment.documentAccessRoutes()
+                )
+            ).originalActionsEnabled
+        )
+        var invocations = 0
+        let window = try managementWindow(
+            locateOriginal: { invocations += 1 }, environment: environment
+        )
+        window.historyState = confirmed
+        XCTAssertFalse(window.permitsOriginalAction(for: item))
+        XCTAssertFalse(window.invokeOriginalAction(for: item))
+        XCTAssertEqual(invocations, 0)
+
+        // The broker agrees, and a refusal reads nothing.
+        XCTAssertThrowsError(
+            try environment.accessStore.withReadAccess(
+                accessRef: accessRef, expectedGeneration: generation, purpose: .originalAction
+            ) { _ in () }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .routeNotActive) }
+        // Preparation is scoped to its own grant at its own generation.
+        XCTAssertThrowsError(
+            try environment.accessStore.withReadAccess(
+                accessRef: accessRef, expectedGeneration: generation + 1
+            ) { _ in () }
+        )
+        XCTAssertThrowsError(
+            try environment.accessStore.withReadAccess(
+                accessRef: "access-other", expectedGeneration: generation
+            ) { _ in () }
+        )
+        XCTAssertEqual(codec.starts, 0)
+
+        // Publication is the only thing that promotes it, and only by preparing its own intent.
+        let entries = try await submission.submit([candidate])
+        XCTAssertGreaterThan(codec.starts, 0)
+        XCTAssertEqual(entries.first?.intent.originalBinding?.accessRecordId, accessRef)
+        XCTAssertEqual(
+            FilesAndFoldersModel.provisionalAccessRefs(routes: environment.documentAccessRoutes()),
+            []
+        )
+        XCTAssertTrue(window.permitsOriginalAction(for: item))
+        XCTAssertTrue(window.invokeOriginalAction(for: item))
+        XCTAssertEqual(invocations, 1)
+
+        // Published recovery never rereads the original: it is gone, and nothing reads it.
+        try FileManager.default.removeItem(at: original)
+        let restartCodec = CountingBookmarkCodec()
+        let restarted = try self.environment(in: root, codec: restartCodec)
+        _ = await restarted.fileMonitoring.reconcileReceipts()
+        _ = try restarted.recordCaptureActivity()
+        XCTAssertEqual(restarted.queue.allEntries(), entries)
+        XCTAssertEqual(
+            try Data(contentsOf: restarted.queue.payloadURL(for: entries[0].intent.itemId)),
+            Data("invoice".utf8)
+        )
+        XCTAssertEqual(restartCodec.starts, 0)
+    }
+
+    /// AT-50. A real keep-updated request is held pending: queued on this Mac, not yet accepted
+    /// by Core. Through the window's own projection it stays progress, never a linked row or a
+    /// completed capture, and a restart's reconciliation changes none of its frozen identity.
+    /// Only Core accepting the capture moves it, and only then does Core's confirmation offer
+    /// the original actions.
+    @MainActor
+    func testAHeldPendingLinkageRequestStaysProgressUntilCoreAcceptsAndKeepsItsIdentity() async throws {
+        let root = try scratchDirectory()
+        let original = root.appendingPathComponent("invoice.txt")
+        try Data("invoice".utf8).write(to: original)
+        let environment = try environment(in: root, codec: CountingBookmarkCodec())
+        let entries = try await ManualCaptureSubmission(
+            environment: environment, binding: .companion(workspaceRef: "workspace-1")
+        ).submit([ManualCaptureCandidate(url: original, keepUpdated: true)])
+        let entry = try XCTUnwrap(entries.first)
+        let itemID = entry.intent.itemId
+        let frozenBytes = try Data(contentsOf: environment.queue.payloadURL(for: itemID))
+        let subscription = try XCTUnwrap(environment.fileSubscriptions.all().first)
+        XCTAssertEqual(subscription.state, .waitingForCore)
+
+        let pending = try history(
+            Wire.page(binding: "none", captures: [Wire.capture(association: "snapshot_only")])
+        )
+        func project(
+            _ environment: DocumentIntakeEnvironment,
+            _ answer: CoreDocumentHistory
+        ) throws -> FolderManagementWindowController {
+            let window = try managementWindow(locateOriginal: {}, environment: environment)
+            window.historyState = CoreHistoryState(
+                documentID: subscription.linkedDocumentID, availability: .current(answer)
+            )
+            window.reload()
+            return window
+        }
+        func assertPending(_ window: FolderManagementWindowController) throws {
+            let model = window.model
+            let file = try XCTUnwrap(model.items(segment: .files).first)
+            XCTAssertEqual(model.items(segment: .files).count, 1)
+            XCTAssertEqual(file.statusLabel, "Waiting for Core")
+            XCTAssertEqual(file.statusFilter, .activeOrPending)
+            XCTAssertEqual(model.items(segment: .folders), [], "no provisional active-link row")
+            let facts = Dictionary(
+                uniqueKeysWithValues: model.detail(for: file).map { ($0.label, $0.value) }
+            )
+            XCTAssertTrue(facts["Updates"]?.hasPrefix("Not confirmed") ?? false, "\(facts)")
+            XCTAssertFalse(facts.values.contains { $0.contains("Kept updated") })
+            let addition = try XCTUnwrap(model.items(segment: .recentAdditions).first)
+            XCTAssertEqual(addition.statusLabel, "Queued on this Mac")
+            XCTAssertEqual(addition.countText, "0/1", "nothing is accepted, so nothing succeeded")
+            XCTAssertFalse(window.permitsOriginalAction(for: file))
+            XCTAssertFalse(window.invokeOriginalAction(for: file))
+        }
+        try assertPending(try project(environment, pending))
+
+        // Reconciliation after a restart: same entry, key, bytes and grant generation.
+        let reopened = try self.environment(in: root, codec: CountingBookmarkCodec())
+        _ = await reopened.fileMonitoring.reconcileReceipts()
+        XCTAssertEqual(reopened.queue.allEntries(), entries)
+        XCTAssertEqual(reopened.queue.allEntries().first?.intent.operationKey, entry.intent.operationKey)
+        XCTAssertEqual(
+            try Data(contentsOf: reopened.queue.payloadURL(for: itemID)), frozenBytes
+        )
+        let after = try XCTUnwrap(reopened.fileSubscriptions.all().first)
+        XCTAssertEqual(after, subscription)
+        XCTAssertEqual(
+            reopened.documentAccessRoutes().first { $0.accessRef == subscription.accessRef }?.generation,
+            subscription.bindingGeneration
+        )
+        XCTAssertEqual(
+            try reopened.recordCaptureActivity().first { $0.itemID == itemID }?.operationKey,
+            entry.intent.operationKey
+        )
+        try assertPending(try project(reopened, pending))
+
+        // The canonical association: Core accepts the capture, and only now does the row move.
+        let digest = "sha256:" + String(repeating: "d", count: 64)
+        let staging = try reopened.queue.beginStage(
+            itemID: itemID, requestDigest: digest, descriptorDigest: digest
+        )
+        _ = try reopened.queue.markAdmitted(
+            itemID: itemID,
+            attemptGeneration: staging.attemptGeneration,
+            captureID: "dcap-" + String(repeating: "a", count: 64)
+        )
+        _ = await reopened.fileMonitoring.reconcileReceipts()
+        let accepted = try XCTUnwrap(reopened.fileSubscriptions.all().first)
+        XCTAssertEqual(accepted.state, .active)
+        XCTAssertEqual(accepted.accessRef, subscription.accessRef)
+        XCTAssertEqual(accepted.bindingGeneration, subscription.bindingGeneration)
+        XCTAssertEqual(reopened.queue.allEntries().first?.intent.operationKey, entry.intent.operationKey)
+        let linked = try project(reopened, try history(Wire.page(binding: "connected")))
+        let file = try XCTUnwrap(linked.model.items(segment: .files).first)
+        XCTAssertEqual(file.statusLabel, "Watching")
+        XCTAssertTrue(linked.permitsOriginalAction(for: file))
+    }
 }
 
 // MARK: - Helpers
 
 private enum CoreHistoryFixtures {
-    static func file(id: String = "file-1", name: String = "Notes.pdf") -> FileSubscription {
+    static func file(
+        id: String = "file-1",
+        name: String = "Notes.pdf",
+        accessRef: String? = nil
+    ) -> FileSubscription {
         FileSubscription(
             subscriptionID: id,
-            accessRef: "access-\(id)",
+            accessRef: accessRef ?? "access-\(id)",
             linkedDocumentID: "document-\(id)",
             requestedSourceIdentity: "identity-\(id)",
             displayName: name,
@@ -1590,4 +1817,21 @@ extension Result where Failure == CoreHistoryError {
         if case let .failure(error) = self { return error }
         return nil
     }
+}
+
+private final class CountingBookmarkCodec: SecurityScopedBookmarkCoding, @unchecked Sendable {
+    private(set) var starts = 0
+
+    func makeReadOnlyBookmark(for url: URL) throws -> Data { Data(url.path.utf8) }
+
+    func resolveReadOnlyBookmark(_ data: Data) throws -> (url: URL, stale: Bool) {
+        (URL(fileURLWithPath: String(decoding: data, as: UTF8.self)), false)
+    }
+
+    func startAccessing(_ url: URL) -> Bool {
+        starts += 1
+        return true
+    }
+
+    func stopAccessing(_ url: URL) {}
 }
