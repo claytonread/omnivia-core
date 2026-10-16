@@ -80,6 +80,14 @@ public actor OriginalDisconnectReconciler {
         var settlements: [OriginalDisconnectSettlement] = []
         for intent in accessStore.pendingOriginalDisconnects() where intent.refusalCode == nil {
             let key = intent.operationKey
+            // A disconnect names no generation: Core tombstones whichever one it holds. A
+            // relink of the same route that Core has not yet answered must therefore land
+            // first, or this would tombstone the old generation and the relink would then
+            // reconnect the route the person just revoked.
+            guard !accessStore.hasUnresolvedRelink(accessRef: intent.accessRef) else {
+                settlements.append(.owed(operationKey: key))
+                continue
+            }
             // A switch to another account or target pauses the intent where it stands. The
             // frozen binding is never rewritten to the current one.
             guard transport.deliveryBinding == CaptureDeliveryBinding(intent.binding),

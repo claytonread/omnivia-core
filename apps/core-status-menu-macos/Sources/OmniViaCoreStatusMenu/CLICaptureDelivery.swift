@@ -265,14 +265,36 @@ extension CLICaptureDelivery: OriginalDisconnectTransport {
     /// Only a service answer that states the binding disconnected acknowledges the intent.
     /// A refusal does not prove an earlier attempt had no effect, so it never retires anything.
     static func disconnectOutcome(status: Int32, output: Data, diagnostic: Data) -> OriginalDisconnectOutcome {
-        if output.count <= 1024 * 1024,
-           let document = try? JSONSerialization.jsonObject(with: output) as? [String: Any] {
-            if status == 0,
-               let result = document["result"] as? [String: Any],
-               result["connection_state"] as? String == "disconnected",
+        switch serviceAnswer(status: status, output: output, diagnostic: diagnostic) {
+        case let .result(result):
+            if result["connection_state"] as? String == "disconnected",
                let documentID = result["document_id"] as? String,
                let ownerRef = result["owner_ref"] as? String {
                 return .acknowledged(documentID: documentID, ownerRef: ownerRef)
+            }
+            return .unknown
+        case let .failure(code): return .definiteFailure(code: code)
+        case let .held(pause): return .held(pause)
+        case .notSent: return .notSent
+        case .unknown: return .unknown
+        }
+    }
+
+    /// What one finished CLI run says, before any operation reads its result.
+    enum ServiceAnswer {
+        /// A zero exit with a service result document.
+        case result([String: Any])
+        case failure(code: String)
+        case held(CaptureQueuePause)
+        case notSent
+        case unknown
+    }
+
+    static func serviceAnswer(status: Int32, output: Data, diagnostic: Data) -> ServiceAnswer {
+        if output.count <= 1024 * 1024,
+           let document = try? JSONSerialization.jsonObject(with: output) as? [String: Any] {
+            if status == 0, let result = document["result"] as? [String: Any] {
+                return .result(result)
             }
             if let error = document["error"] as? [String: Any],
                let code = error["code"] as? String,
@@ -282,7 +304,7 @@ extension CLICaptureDelivery: OriginalDisconnectTransport {
                     return .unknown
                 }
                 if let pause = pause(forServiceCode: code) { return .held(pause) }
-                return .definiteFailure(code: code)
+                return .failure(code: code)
             }
             return .unknown
         }
@@ -292,8 +314,68 @@ extension CLICaptureDelivery: OriginalDisconnectTransport {
         case (1, managedStartFailed), (1, notRunning): return .notSent
         case (3, credentialRefused): return .held(.needsAccess)
         case (4, versionDisagreed): return .held(.updateRequired)
-        case (2, refusedBeforeSend): return .definiteFailure(code: "refused_before_send")
+        case (2, refusedBeforeSend): return .failure(code: "refused_before_send")
         default: return .unknown
+        }
+    }
+}
+
+/// `document relink` through the same CLI, gate and process rules. The request is the
+/// intent's frozen body and the key is the intent's one key, so a replay after an unknown
+/// answer is the identical command.
+extension CLICaptureDelivery: OriginalRelinkTransport {
+    func deliverRelink(input: Data, operationKey: String) async -> OriginalRelinkOutcome {
+        if let refusal = Self.gate(await lifecycle(), binding: deliveryBinding) {
+            switch refusal {
+            case let .held(pause): return .held(pause)
+            default: return .notSent
+            }
+        }
+        switch await execute(arguments: relinkArguments(operationKey: operationKey), input: input) {
+        case .notLaunched: return .notSent
+        case .unfinished: return .unknown
+        case let .finished(status, output, diagnostic):
+            return Self.relinkOutcome(status: status, output: output, diagnostic: diagnostic)
+        }
+    }
+
+    /// Same attach-only, claimed-principal rules as `captureArguments`; the request is on stdin.
+    func relinkArguments(operationKey: String) -> [String] {
+        [
+            "--require-running",
+            "--installation-state", installationState.path,
+            "--workspace-id", deliveryBinding.workspaceRef,
+            "--timeout-ms", "20000",
+            "document", "relink",
+            "--input-stdin",
+            "--idempotency-key", operationKey,
+            "--principal", deliveryBinding.callerContextBinding.principalRef,
+            "--json",
+        ]
+    }
+
+    /// Only a service answer that states the binding connected at a generation acknowledges
+    /// the intent, and the reconciler checks that generation is the one it reserved. A
+    /// refusal does not prove an earlier attempt had no effect, so it never retires anything.
+    static func relinkOutcome(status: Int32, output: Data, diagnostic: Data) -> OriginalRelinkOutcome {
+        switch serviceAnswer(status: status, output: output, diagnostic: diagnostic) {
+        case let .result(result):
+            if result["connection_state"] as? String == "connected",
+               let documentID = result["document_id"] as? String,
+               let ownerRef = result["owner_ref"] as? String,
+               let generation = (result["binding_generation"] as? NSNumber)?.uint64Value {
+                return .acknowledged(
+                    documentID: documentID,
+                    ownerRef: ownerRef,
+                    bindingGeneration: generation,
+                    currentCaptureID: result["current_capture_id"] as? String
+                )
+            }
+            return .unknown
+        case let .failure(code): return .definiteFailure(code: code)
+        case let .held(pause): return .held(pause)
+        case .notSent: return .notSent
+        case .unknown: return .unknown
         }
     }
 }

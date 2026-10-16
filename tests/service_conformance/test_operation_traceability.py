@@ -168,10 +168,10 @@ def test_every_fixture_operation_has_exactly_the_two_expected_top_level_keys() -
 
 
 def test_the_fixture_covers_exactly_the_frozen_operations_in_catalogue_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 85
+    assert len(OPERATION_CATALOGUE) == 86
     assert FIXTURE_NAMES == [entry.name for entry in OPERATION_CATALOGUE]
-    assert len(FIXTURE_NAMES) == 85
-    assert len(set(FIXTURE_NAMES)) == 85
+    assert len(FIXTURE_NAMES) == 86
+    assert len(set(FIXTURE_NAMES)) == 86
 
 
 def test_the_fixture_names_no_operation_outside_the_generated_catalogue() -> None:
@@ -299,7 +299,7 @@ def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
     assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
     assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
     assert len(exposed) == 35
-    assert len(omitted) == 50
+    assert len(omitted) == 51
 
 
 def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() -> None:
@@ -373,16 +373,16 @@ def test_the_fixture_references_the_accepted_corpus_by_name_and_format() -> None
     )
     assert reference["file"].endswith(ADAPTER_CONFORMANCE_CORPUS_FILE)
     assert reference["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
-    assert reference["case_count"] == 224
+    assert reference["case_count"] == 227
 
 
-def test_the_referenced_corpus_file_exists_and_holds_exactly_224_unique_cases() -> None:
+def test_the_referenced_corpus_file_exists_and_holds_exactly_227_unique_cases() -> None:
     assert CORPUS_PATH.is_file(), f"referenced corpus is missing at {CORPUS_PATH}"
     document = _load_json(CORPUS_PATH)
     assert document["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
     case_ids = [case["id"] for case in document["cases"]]
-    assert len(case_ids) == 224
-    assert len(set(case_ids)) == 224
+    assert len(case_ids) == 227
+    assert len(set(case_ids)) == 227
 
 
 def test_the_fixture_copies_no_case_from_the_referenced_corpus() -> None:

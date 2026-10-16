@@ -1206,32 +1206,106 @@
       "evidence_type": "automated_repository_test",
       "evidence": [
         {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalRelinkAcceptanceTests.swift",
+          "symbol": "testALocateThatWinsAfterThePreparationReadItsOriginalPublishesNothingUnderTheOldAssociation",
+          "covers": "The deterministic race through the production environment: a refresh has read its original and written its whole candidate when a confirmed Locate lands. The reserved generation makes the final validation refuse the batch, so nothing is published, neither generation can read, and the chosen file is never resolved through a grant. Only Core's canonical confirmation activates the new grant; the watch stays paused until the explicit Resume, which then publishes the chosen file under the new generation for the same document."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalRelinkAcceptanceTests.swift",
+          "symbol": "testARefreshThatStartsAfterALocateIsRefusedBeforeItReadsEitherFile",
+          "covers": "The other order: a preparation that starts after the Locate is confirmed is refused before it reads, so neither the old file nor the new one is read and nothing is published."
+        },
+        {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CapturePreparationCoordinatorTests.swift",
-          "symbol": "testGenerationChangeAfterReadsRejectsWholeBatch",
-          "covers": "A generation change after the reads rejects the whole batch rather than publishing under the old association."
+          "symbol": "testALocateRacingTheFinalPublicationPreventsTheEntireBatch",
+          "covers": "At the publication boundary: a Locate that lands after the whole multi-file candidate is prepared prevents the entire batch, including the item whose own grant nobody touched, and the reservation is durable across a reopen."
         },
         {
-          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderOneOffIntakeTests.swift",
-          "symbol": "testAStaleRootGenerationCannotReadOrPublish",
-          "covers": "A stale root generation can neither read nor publish."
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalRelinkAcceptanceTests.swift",
+          "symbol": "testALostAcknowledgementKeepsTheRouteHeldAndReconcilesOnTheSameKeyAfterARestart",
+          "covers": "Core commits the relink and the answer is lost; after a restart the route is still held on the reserved generation with the one intent, a second candidate is refused, a restart reads nothing, and the reconciler resends the identical bytes under the identical key. Core acted once, the request names an owner, a document and a generation and never a path, and the activation survives another restart."
         },
         {
-          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/NativeAccessStoreTests.swift",
-          "symbol": "testDisconnectRevokesBytesAndRelinkAdvancesTheGeneration",
-          "covers": "Relink is what advances the generation the rejection keys on."
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalRelinkAcceptanceTests.swift",
+          "symbol": "testNoAnswerShortOfTheCanonicalConfirmationActivatesTheNewGrant",
+          "covers": "Offline, another identity, an answer about another document, owner or generation and a superseded generation all leave the intent owed under the same key and the route held."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalRelinkAcceptanceTests.swift",
+          "symbol": "testAPermanentRefusalIsRecordedKeepsTheRouteHeldAndMayBeReplacedByANewLocate",
+          "covers": "A refusal no retry can change is recorded and not resent, the route stays held, and only a refused relink can be replaced by a new Locate under a new generation and key."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalRelinkAcceptanceTests.swift",
+          "symbol": "testAnOldGenerationRefreshAdmittedAsHistoryIsNeverTheBaseOfTheNextRefresh",
+          "covers": "A refresh published before the Locate and admitted as history after it is preserved, is not adopted as the watch's current capture, and the next refresh names the head Core reported with the relink."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalRelinkAcceptanceTests.swift",
+          "symbol": "testADisconnectDuringALocateRevokesAtOnceAndReachesCoreAfterTheRelink",
+          "covers": "A Disconnect during a relink revokes at once, Core hears the relink before the disconnect, and the candidate is never activated over the revocation."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalRelinkAcceptanceTests.swift",
+          "symbol": "testTheComparisonIsExactAndStatesWhenThereIsNothingToCompareWith",
+          "covers": "The staged candidate is compared exactly (length and SHA-256) with the last captured version, or reported as not comparable, and staging binds, reserves and publishes nothing."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalRelinkAcceptanceTests.swift",
+          "symbol": "testTheLocateFlowReservesOnlyOnAnExplicitUseThisFile",
+          "covers": "The production Locate flow, with only the picker and alert replaced: cancel and Add separately reserve nothing, Use this file reserves, and a second Locate while one is owed is refused."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalRelinkAcceptanceTests.swift",
+          "symbol": "testThePromptStatesTheDesignsWordingAndNeverCallsAChangedHashUnrelated",
+          "covers": "The confirmation says This file differs from the last captured version, does not call a changed hash unrelated, and says the selected file is not captured now and updates stay paused."
         },
         {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CoreDocumentHistoryTests.swift",
-          "symbol": "testLocateDuringARefreshPreparationNeverPublishesTheChosenFileUnderTheOldAssociation",
-          "covers": "The management window's own Locate action, invoked while a watched file's refresh is held mid-read, publishes the chosen file under a new document and grant and leaves the in-flight refresh publishing its own bytes under the old association and generation."
+          "symbol": "testLocateIsOfferedWhereTheOriginalActionsAreNotAndIsHeldWhileARelinkIsOwed",
+          "covers": "The Files tab's Locate control is gated by Core's confirmed binding, by a grant published work owns and by no relink already owed; resume and check are held while one is owed."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CoreDocumentHistoryTests.swift",
+          "symbol": "testTheLocateControlHandsTheOwnerTheFileAndTheCurrentAnswerOnlyWhenPermitted",
+          "covers": "The window's real Locate selector re-checks the same decision and hands the owner the file and the current answer only when permitted."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/OriginalRelinkLiveCoreTests.swift",
+          "symbol": "testALostRelinkAcknowledgementIsReconciledOnTheSameKeyAndTheOldGenerationStaysHistoryThroughTheRealCLI",
+          "covers": "Against a live omnivia-core-service through the real CLI and the production Locate flow: Core commits document.original.relink, the first acknowledgement is discarded, the companion restarts, and the restarted reconciler resends the identical bytes under the identical key. Core stores one binding at the reserved generation and one claim; a refresh published before the Locate is kept as superseded-generation history and the explicit Resume captures the chosen file as the new head."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_original_relink.py",
+          "symbol": "test_relink_of_a_connected_binding_moves_it_to_the_new_generation_and_replays",
+          "covers": "Core moves a connected binding to the named generation once per idempotency key and replays the stored receipt without writing again."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_original_relink.py",
+          "symbol": "test_an_older_generation_capture_after_a_relink_is_history_and_the_new_one_is_head",
+          "covers": "A capture under the old generation after the relink is admitted historical-only and the new generation's capture is head eligible."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_original_relink.py",
+          "symbol": "test_a_relink_before_any_capture_records_the_route_and_a_later_old_capture_is_history",
+          "covers": "A relink that reaches Core before any capture records the route, so a later capture under the old generation is history."
         }
       ],
-      "status": "not_implemented",
-      "missing_condition": "Locate as the design specifies it does not exist. Section 9.5 has Locate stage a candidate binding for the named logical file, reserve a new binding generation and persist a recoverable relink intent through Core, with the old grant refused for the newly chosen file until Core confirms. The companion's Locate action only opens the file chooser, and the chosen file is added through the ordinary Add path under a fresh document and grant, so no Locate ever advances the generation of the file it was invoked for. Core has no relink operation on the wire either: connect_original is a library function with no handler. The gate's scenario, an old generation publishing a newly located file, therefore cannot be constructed from the product, and it is not recorded as passed on the strength of that absence.",
-      "limitations": "What is proven is the as-built behaviour: the real Locate action during an in-flight refresh cannot put the chosen file's bytes under the old document, grant, source identity or generation, and the generation fence rejects a same-grant relink that lands mid-preparation. The native file chooser needs a run loop, so the test replaces only the pick with a fixed one and otherwise runs the companion's own review and Add path. Section 9.5 relink, its comparison and confirmation, and its Core intent remain to be built before this gate can be asked its real question.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The Core side runs on this host's interpreter, not in a signed package, and the live arm discards the answer after the real CLI has returned it, which is how a lost acknowledgement looks to the companion; it does not kill the CLI or the service mid-commit. Bookmarks are a stub codec in the swift test process, not a real security-scoped bookmark, so the property that the candidate is never resolved before Core confirms is proven by a recording codec, not by the operating system's access prompts. The native picker and the confirmation alert need a run loop and are the only parts the tests replace. Locate is built for a direct file in the Files tab; a watched-folder member is not relocated (the design admits a replacement as a new member under folder consent) and a root relink with scope and membership comparison is not part of this gate. A relink Core refuses for good leaves the route held and replaceable by another Locate; there is no Cancel for an owed relink, by the design's rule against alternating between candidates.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CapturePreparationCoordinator.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/OriginalRelink.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/OriginalRelinkReconciler.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FileMonitoringCoordinator.swift",
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/OriginalRelinkFlow.swift",
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift",
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FolderManagementWindowController.swift",
+        "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/CLICaptureDelivery.swift",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/handlers/document_capture.py"
       ]
     },
     {
@@ -1966,7 +2040,7 @@
       ],
       "status": "passed",
       "missing_condition": null,
-      "limitations": "Executed and passing on 2026-10-16. The window's only original action is Locate, which opens the chooser; there is no separate Refresh, Open or Reveal operation in this build, and no production caller passes the originalAction purpose to the broker. The denial is therefore proven at the one enablement and invocation seam all three would share (model, window and broker), not against three distinct operations. Preparation is scoped by accessRef, generation and submission token; an in-process caller using the default purpose on a provisional grant is not refused by the broker, and nothing external can reach it. Published direct-file recovery is proven by an unreadable original and a zero read count after a restart; the folder recovery evidence compares published digests rather than counting reads. All of it runs in an unsigned swift test process with a stub bookmark codec, not a real security-scoped bookmark.",
+      "limitations": "Executed and passing on 2026-10-16. The window's only original-file control is Locate, which stages a relink for the named file (design 9.5); there is no separate Refresh, Open or Reveal operation in this build, and no production caller passes the originalAction purpose to the broker. The denial is therefore proven at the one enablement and invocation seam Locate shares with the model and the broker (the model's original-action flag is proven separately), not against three distinct operations. Preparation is scoped by accessRef, generation and submission token; an in-process caller using the default purpose on a provisional grant is not refused by the broker, and nothing external can reach it. Published direct-file recovery is proven by an unreadable original and a zero read count after a restart; the folder recovery evidence compares published digests rather than counting reads. All of it runs in an unsigned swift test process with a stub bookmark codec, not a real security-scoped bookmark.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift",
         "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FolderManagementWindowController.swift",

@@ -167,6 +167,7 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "document.capture": CONTENT_INGESTION_PURPOSE,
         "document.reprocess": CONTENT_INGESTION_PURPOSE,
         "document.original.disconnect": CONTENT_INGESTION_PURPOSE,
+        "document.original.relink": CONTENT_INGESTION_PURPOSE,
         "document.settings.update": DOCUMENT_CONFIGURATION_PURPOSE,
         "job.cancel": JOB_CONTROL_PURPOSE,
         "job.retry": JOB_CONTROL_PURPOSE,
@@ -238,6 +239,7 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "document.capture": WORKSPACE_CONTRIBUTOR_ROLE,
         "document.reprocess": WORKSPACE_CONTRIBUTOR_ROLE,
         "document.original.disconnect": WORKSPACE_CONTRIBUTOR_ROLE,
+        "document.original.relink": WORKSPACE_CONTRIBUTOR_ROLE,
         # Choosing how this workspace reads future documents is contributor work: it
         # reviews nothing, administers nothing and reaches no other workspace.
         "document.settings.update": WORKSPACE_CONTRIBUTOR_ROLE,

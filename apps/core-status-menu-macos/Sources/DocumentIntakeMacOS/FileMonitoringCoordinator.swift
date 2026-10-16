@@ -549,13 +549,15 @@ public actor FileMonitoringCoordinator {
             if scheduling.state(of: claim.key)?.published != true {
                 _ = try? scheduling.cancel(claim.key, generation: claim.generation, at: clock())
             }
-            _ = try? subscriptions.update(id: value.subscriptionID) {
-                $0.state = .needsAccess
+            // A watch that was paused while this read was in flight (a Locate pauses it) stays
+            // paused: the refusal is the pause working, not a loss of access.
+            let updated = try? subscriptions.update(id: value.subscriptionID) {
+                if $0.state == .active { $0.state = .needsAccess }
                 $0.needsReconciliation = true
             }
             return FileMonitoringReport(
                 subscriptionID: value.subscriptionID,
-                state: .needsAccess,
+                state: updated?.state ?? .needsAccess,
                 queued: false
             )
         }
@@ -691,13 +693,26 @@ public actor FileMonitoringCoordinator {
 
     @discardableResult
     public func resume(subscriptionID: String) throws -> FileSubscription {
-        try subscriptions.update(id: subscriptionID) {
+        let resumed = try subscriptions.update(id: subscriptionID) {
+            let subscriptionAccessRef = $0.accessRef
             guard $0.state == .paused || $0.state == .needsAccess else {
                 throw FolderMonitoringError.subscriptionNotActive
             }
+            // A Locate Core has not confirmed (or refused) leaves nothing to read, and
+            // resuming is the person's decision to start reading the new file (design
+            // §9.5), which cannot be made before it exists.
+            guard accessStore.descriptors().first(where: { $0.accessRef == subscriptionAccessRef })?
+                .state != .relinking
+            else { throw NativeAccessError.relinkPending }
             $0.state = .active
             $0.needsReconciliation = true
         }
+        // The reconciliation it just recorded as owed is the scheduler's dirty obligation
+        // too. A change this watch could not signal while it was paused (events for a paused
+        // watch are dropped) or a file it was moved to (design §9.5) is read at the next
+        // check rather than waiting for an event that may never come.
+        _ = try? scheduling.signal(Self.schedulingKey(for: resumed), priority: .background, at: clock())
+        return resumed
     }
 
     @discardableResult
@@ -742,7 +757,15 @@ public actor FileMonitoringCoordinator {
                let queued = entries[queuedID]
             {
                 if queued.state == .admitted, let captureID = queued.admittedCaptureID {
-                    value.currentSuccessfulCaptureID = captureID
+                    // A capture published under an older generation of the route (before a
+                    // Locate moved it) is history in Core once the relink lands: it is not
+                    // the base the next refresh may name. The relink's own confirmation
+                    // carries Core's head, which is what this watch is re-based on.
+                    if (queued.intent.originalBinding?.bindingGeneration ?? value.bindingGeneration)
+                        >= value.bindingGeneration
+                    {
+                        value.currentSuccessfulCaptureID = captureID
+                    }
                     value.lastQueuedItemID = nil
                 } else if queued.state == .failed {
                     // The source digest was recorded when this version was durably queued. Clear

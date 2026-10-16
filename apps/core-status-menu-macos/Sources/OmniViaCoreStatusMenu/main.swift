@@ -112,6 +112,14 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     /// exists whenever delivery does, and every delivery pass, including the first after a
     /// restart, runs it.
     private var originalDisconnectReconciler: OriginalDisconnectReconciler?
+    /// Tells Core about the Locate the person confirmed (design §9.5) and activates the new
+    /// grant only on its answer. It runs ahead of the disconnect reconciler on every pass,
+    /// because a disconnect names no generation and must not overtake a relink of its route.
+    private var originalRelinkReconciler: OriginalRelinkReconciler?
+    /// The Files tab's Locate: native picker, exact comparison, explicit confirmation, then a
+    /// reserved generation and a recoverable relink intent. Built with the capture panel,
+    /// which an "Add separately" choice hands the file to.
+    private var originalRelinkFlow: OriginalRelinkFlow?
     /// Kept so startup can finish any folder establishment an earlier process
     /// left pending, before monitoring reads a watched scope.
     private var intakeEnvironment: DocumentIntakeEnvironment?
@@ -251,9 +259,13 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                         workspaceRef: configuration.workspaceID
                     )
                 },
-                locateOriginal: { [weak self] in
-                    self?.capturePanelController?.openOriginalChooser()
+                locateOriginal: { [weak self] file, history in
+                    Task { @MainActor [weak self] in
+                        _ = await self?.originalRelinkFlow?.locate(file, history: history)
+                        self?.folderManagementWindowController?.refresh()
+                    }
                 },
+                pendingRelinks: { environment.pendingRelinks() },
                 // Resume and Check now read a watched source, so each asks the
                 // delivery coordinator whether the signed-in identity is the one
                 // the watch froze; without a coordinator the answer is no.
@@ -309,6 +321,9 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 originalDisconnectReconciler = environment.originalDisconnectReconciler(
                     transport: delivery
                 )
+                originalRelinkReconciler = environment.originalRelinkReconciler(
+                    transport: delivery
+                )
                 captureDeliveryCoordinator = CaptureDeliveryCoordinator(
                     queue: environment.queue,
                     transport: delivery,
@@ -325,6 +340,15 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 submitter: submitter,
                 folderSubmitter: folderSubmitter,
                 onQueued: { [weak self] in self?.deliverPendingCaptures() }
+            )
+            originalRelinkFlow = OriginalRelinkFlow(
+                environment: environment,
+                fallback: companionBinding,
+                addSeparately: { [weak self] url in
+                    self?.capturePanelController?.openOrFocus()
+                    self?.capturePanelController?.addIncoming([url])
+                },
+                onReserved: { [weak self] in self?.deliverPendingCaptures() }
             )
             ShortcutIntakeRuntime.configure(
                 snapshotStore: snapshotStore,
@@ -730,6 +754,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         let bulkRuns = folderBulkRunCoordinator
         let environment = intakeEnvironment
         let disconnects = originalDisconnectReconciler
+        let relinks = originalRelinkReconciler
         // Record before anything is staged, so a published item is on the Recent
         // additions surface while it is still only queued on this Mac, and again
         // after, so its outcome is durable whether or not the window is open.
@@ -739,6 +764,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         _ = try? environment?.recordCaptureActivity()
         Task {
             _ = await captureDeliveryCoordinator.deliverPending()
+            _ = await relinks?.reconcilePending()
             _ = await disconnects?.reconcilePending()
             _ = await bulkRuns?.reconcileReceipts()
             _ = await bulkRuns?.advanceAll()

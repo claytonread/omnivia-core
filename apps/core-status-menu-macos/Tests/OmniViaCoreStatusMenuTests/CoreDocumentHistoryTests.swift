@@ -1381,7 +1381,7 @@ final class CoreDocumentHistoryTests: XCTestCase {
     /// not a layout.
     @MainActor
     private func managementWindow(
-        locateOriginal: (() -> Void)?,
+        locateOriginal: ((FileSubscription, CoreDocumentHistory?) -> Void)?,
         environment suppliedEnvironment: DocumentIntakeEnvironment? = nil
     ) throws -> FolderManagementWindowController {
         let environment: DocumentIntakeEnvironment
@@ -1433,23 +1433,23 @@ final class CoreDocumentHistoryTests: XCTestCase {
             )
         )
         var invocations = 0
-        let window = try managementWindow { invocations += 1 }
+        let window = try managementWindow { _, _ in invocations += 1 }
         window.historyState = CoreHistoryState(
             documentID: "document-file-1", availability: .current(pending)
         )
         let item = FilesAndFoldersItem.file(CoreHistoryFixtures.file())
 
         XCTAssertFalse(
-            window.permitsOriginalAction(for: item),
+            window.permitsLocate(for: item),
             "a requested but unconfirmed association permits no original action"
         )
-        XCTAssertFalse(window.invokeOriginalAction(for: item))
+        XCTAssertFalse(window.invokeLocate(for: item))
         XCTAssertEqual(invocations, 0, "a pending association must never reach the native owner")
 
         // Nothing selected, and a selection that is not this document, are both closed
         // for the same reason: neither is a file Core has confirmed an association for.
-        XCTAssertFalse(window.permitsOriginalAction(for: nil))
-        XCTAssertFalse(window.invokeOriginalAction(for: nil))
+        XCTAssertFalse(window.permitsLocate(for: nil))
+        XCTAssertFalse(window.invokeLocate(for: nil))
         XCTAssertEqual(invocations, 0)
     }
 
@@ -1458,28 +1458,28 @@ final class CoreDocumentHistoryTests: XCTestCase {
     func testAConfirmedAssociationEnablesAndInvokesTheOriginalActionExactlyOnce() throws {
         let confirmed = try history(Wire.page(binding: "connected"))
         var invocations = 0
-        let window = try managementWindow { invocations += 1 }
+        let window = try managementWindow { _, _ in invocations += 1 }
         window.historyState = CoreHistoryState(
             documentID: "document-file-1", availability: .current(confirmed)
         )
         let item = FilesAndFoldersItem.file(CoreHistoryFixtures.file())
 
-        XCTAssertTrue(window.permitsOriginalAction(for: item))
-        XCTAssertTrue(window.invokeOriginalAction(for: item))
+        XCTAssertTrue(window.permitsLocate(for: item))
+        XCTAssertTrue(window.invokeLocate(for: item))
         XCTAssertEqual(invocations, 1)
 
         // The held answer is about exactly one document, so another file's row is not
         // covered by it however confirmed that one is.
         let other = FilesAndFoldersItem.file(CoreHistoryFixtures.file(id: "file-2"))
-        XCTAssertFalse(window.permitsOriginalAction(for: other))
-        XCTAssertFalse(window.invokeOriginalAction(for: other))
+        XCTAssertFalse(window.permitsLocate(for: other))
+        XCTAssertFalse(window.invokeLocate(for: other))
 
         // Those are the last facts Core reported, not a current permission.
         window.historyState = CoreHistoryState(
             documentID: "document-file-1", availability: .stale(confirmed)
         )
-        XCTAssertFalse(window.permitsOriginalAction(for: item))
-        XCTAssertFalse(window.invokeOriginalAction(for: item))
+        XCTAssertFalse(window.permitsLocate(for: item))
+        XCTAssertFalse(window.invokeLocate(for: item))
         XCTAssertEqual(invocations, 1)
 
         // And with no owner of native access wired there is nothing to invoke, whatever
@@ -1488,8 +1488,163 @@ final class CoreDocumentHistoryTests: XCTestCase {
         unwired.historyState = CoreHistoryState(
             documentID: "document-file-1", availability: .current(confirmed)
         )
-        XCTAssertFalse(unwired.permitsOriginalAction(for: item))
-        XCTAssertFalse(unwired.invokeOriginalAction(for: item))
+        XCTAssertFalse(unwired.permitsLocate(for: item))
+        XCTAssertFalse(unwired.invokeLocate(for: item))
+    }
+
+    // MARK: - Locate (design §9.5)
+
+    /// Locate is the remedy for an original that cannot be read, so Core's reason reading it
+    /// again is unavailable does not bar it the way it bars Refresh, Open and Reveal. What
+    /// bars it is anything that is not a confirmed, connected binding on an active source, a
+    /// grant published work does not own yet, and a relink Core has not yet answered.
+    @MainActor
+    func testLocateIsOfferedWhereTheOriginalActionsAreNotAndIsHeldWhileARelinkIsOwed() throws {
+        let unreadable = try history(
+            Wire.page(
+                binding: "connected",
+                actions: """
+                [{"action": "refresh_original", "available": false,
+                  "unavailable_reason": "source_not_retained"}]
+                """
+            )
+        )
+        let row = CoreHistoryFixtures.file()
+        let item = FilesAndFoldersItem.file(row)
+        func actions(
+            _ answer: CoreHistoryState,
+            provisional: Set<String> = [],
+            relinks: [OriginalRelinkProgress] = []
+        ) -> FilesAndFoldersActions {
+            FilesAndFoldersModel.actions(
+                for: item, coreHistory: answer, provisionalAccessRefs: provisional, relinks: relinks
+            )
+        }
+        let current = CoreHistoryState(documentID: row.linkedDocumentID, availability: .current(unreadable))
+        XCTAssertFalse(actions(current).originalActionsEnabled)
+        XCTAssertTrue(actions(current).locateEnabled)
+
+        // Not a confirmed connected binding on an active source, or not a current answer.
+        for answer in [
+            Wire.page(binding: "none"),
+            Wire.page(binding: "disconnected"),
+            Wire.page(sourceState: "removed", binding: "connected"),
+        ] {
+            let state = CoreHistoryState(
+                documentID: row.linkedDocumentID, availability: .current(try history(answer))
+            )
+            XCTAssertFalse(actions(state).locateEnabled, answer)
+        }
+        for state in [
+            CoreHistoryState(documentID: row.linkedDocumentID, availability: .stale(unreadable)),
+            CoreHistoryState(documentID: row.linkedDocumentID, availability: .loading),
+            CoreHistoryState(documentID: "document-other", availability: .current(unreadable)),
+            .notRequested,
+        ] {
+            XCTAssertFalse(actions(state).locateEnabled)
+        }
+        XCTAssertFalse(actions(current, provisional: [row.accessRef]).locateEnabled)
+
+        // A relink Core has not answered permits no second candidate and no resume; one it
+        // refused for good may be replaced but still holds the route.
+        func progress(_ refusal: String?) -> OriginalRelinkProgress {
+            OriginalRelinkProgress(
+                accessRef: row.accessRef, linkedDocumentID: row.linkedDocumentID,
+                generation: 2, candidateName: "Notes v2.pdf", refusalCode: refusal
+            )
+        }
+        let owed = actions(current, relinks: [progress(nil)])
+        XCTAssertFalse(owed.locateEnabled)
+        XCTAssertFalse(owed.pauseEnabled)
+        XCTAssertFalse(owed.checkEnabled)
+        XCTAssertFalse(owed.originalActionsEnabled)
+        XCTAssertTrue(owed.disconnectEnabled, "Disconnect always revokes")
+        let refused = actions(current, relinks: [progress("conflict")])
+        XCTAssertTrue(refused.locateEnabled)
+        XCTAssertFalse(refused.pauseEnabled)
+        // Another file's relink changes nothing here.
+        XCTAssertTrue(
+            actions(
+                current,
+                relinks: [OriginalRelinkProgress(
+                    accessRef: "access-other", linkedDocumentID: "document-other",
+                    generation: 2, candidateName: "x.pdf", refusalCode: nil
+                )]
+            ).locateEnabled
+        )
+
+        // The detail says what the person is waiting for, in terms of the design.
+        let model = FilesAndFoldersModel(
+            workspaceName: "workspace-1", files: [row], coreHistory: current, relinks: [progress(nil)]
+        )
+        let facts = Dictionary(uniqueKeysWithValues: model.detail(for: item).map { ($0.label, $0.value) })
+        XCTAssertTrue(facts["Locate"]?.contains("Moving to Notes v2.pdf") ?? false, "\(facts)")
+        XCTAssertTrue(facts["Locate"]?.contains("Nothing from the new file has been captured") ?? false)
+        let refusedFacts = Dictionary(
+            uniqueKeysWithValues: FilesAndFoldersModel(
+                workspaceName: "workspace-1", files: [row], coreHistory: current, relinks: [progress("conflict")]
+            ).detail(for: item).map { ($0.label, $0.value) }
+        )
+        XCTAssertTrue(refusedFacts["Locate"]?.contains("Core refused") ?? false)
+    }
+
+    /// The Locate control: the same decision gates the button and the selector, and the
+    /// owner is handed the file and the current answer, nothing else.
+    @MainActor
+    func testTheLocateControlHandsTheOwnerTheFileAndTheCurrentAnswerOnlyWhenPermitted() throws {
+        let confirmed = try history(Wire.page(binding: "connected"))
+        var handed: [(String, String?)] = []
+        let window = try managementWindow { file, answer in handed.append((file.subscriptionID, answer?.documentID)) }
+        let item = FilesAndFoldersItem.file(CoreHistoryFixtures.file())
+
+        XCTAssertFalse(window.invokeLocate(for: item), "no answer, no Locate")
+        window.historyState = CoreHistoryState(
+            documentID: "document-file-1", availability: .current(confirmed)
+        )
+        XCTAssertTrue(window.invokeLocate(for: item))
+        XCTAssertEqual(handed.map(\.0), ["file-1"])
+        XCTAssertEqual(handed.map(\.1), ["document-file-1"])
+        window.historyState = CoreHistoryState(
+            documentID: "document-file-1", availability: .stale(confirmed)
+        )
+        XCTAssertFalse(window.invokeLocate(for: item))
+        XCTAssertEqual(handed.count, 1)
+    }
+
+    func testTheRelinkPickerChoosesExactlyOneOrdinaryFile() {
+        let policy = CapturePickerPolicy.relinkFile
+        XCTAssertTrue(policy.canChooseFiles)
+        XCTAssertFalse(policy.canChooseDirectories)
+        XCTAssertFalse(policy.allowsMultipleSelection)
+        XCTAssertFalse(policy.treatsFilePackagesAsDirectories)
+        XCTAssertFalse(policy.resolvesAliases)
+    }
+
+    func testTheLocateBaselineIsTheCaptureCoreCallsCurrent() throws {
+        let both = try history(
+            Wire.page(
+                currentCapture: "dcap-2",
+                headSequence: 2,
+                captures: [
+                    Wire.capture(id: "dcap-1", sequence: 1, current: false),
+                    Wire.capture(id: "dcap-2", sequence: 2, current: true),
+                ],
+                captureCount: 2
+            )
+        )
+        XCTAssertEqual(
+            OriginalRelinkFlow.baseline(from: both),
+            OriginalRelinkBaseline(sourceDigest: "sha256:cccc", sourceLengthBytes: 11)
+        )
+        XCTAssertNil(OriginalRelinkFlow.baseline(from: nil))
+        let none = try history(
+            Wire.page(
+                currentCapture: nil, headSequence: 0, binding: "none",
+                currentExtraction: nil, headOrdinal: 0, retrieval: "none", published: nil,
+                captures: [], captureCount: 0, extractions: [], extractionCount: 0
+            )
+        )
+        XCTAssertNil(OriginalRelinkFlow.baseline(from: none))
     }
 
     // MARK: - AT-49 and AT-50 over the real stores
@@ -1555,11 +1710,11 @@ final class CoreDocumentHistoryTests: XCTestCase {
         )
         var invocations = 0
         let window = try managementWindow(
-            locateOriginal: { invocations += 1 }, environment: environment
+            locateOriginal: { _, _ in invocations += 1 }, environment: environment
         )
         window.historyState = confirmed
-        XCTAssertFalse(window.permitsOriginalAction(for: item))
-        XCTAssertFalse(window.invokeOriginalAction(for: item))
+        XCTAssertFalse(window.permitsLocate(for: item))
+        XCTAssertFalse(window.invokeLocate(for: item))
         XCTAssertEqual(invocations, 0)
 
         // The broker agrees, and a refusal reads nothing.
@@ -1589,8 +1744,8 @@ final class CoreDocumentHistoryTests: XCTestCase {
             FilesAndFoldersModel.provisionalAccessRefs(routes: environment.documentAccessRoutes()),
             []
         )
-        XCTAssertTrue(window.permitsOriginalAction(for: item))
-        XCTAssertTrue(window.invokeOriginalAction(for: item))
+        XCTAssertTrue(window.permitsLocate(for: item))
+        XCTAssertTrue(window.invokeLocate(for: item))
         XCTAssertEqual(invocations, 1)
 
         // Published recovery never rereads the original: it is gone, and nothing reads it.
@@ -1634,7 +1789,7 @@ final class CoreDocumentHistoryTests: XCTestCase {
             _ environment: DocumentIntakeEnvironment,
             _ answer: CoreDocumentHistory
         ) throws -> FolderManagementWindowController {
-            let window = try managementWindow(locateOriginal: {}, environment: environment)
+            let window = try managementWindow(locateOriginal: { _, _ in }, environment: environment)
             window.historyState = CoreHistoryState(
                 documentID: subscription.linkedDocumentID, availability: .current(answer)
             )
@@ -1656,8 +1811,8 @@ final class CoreDocumentHistoryTests: XCTestCase {
             let addition = try XCTUnwrap(model.items(segment: .recentAdditions).first)
             XCTAssertEqual(addition.statusLabel, "Queued on this Mac")
             XCTAssertEqual(addition.countText, "0/1", "nothing is accepted, so nothing succeeded")
-            XCTAssertFalse(window.permitsOriginalAction(for: file))
-            XCTAssertFalse(window.invokeOriginalAction(for: file))
+            XCTAssertFalse(window.permitsLocate(for: file))
+            XCTAssertFalse(window.invokeLocate(for: file))
         }
         try assertPending(try project(environment, pending))
 
@@ -1700,131 +1855,7 @@ final class CoreDocumentHistoryTests: XCTestCase {
         let linked = try project(reopened, try history(Wire.page(binding: "connected")))
         let file = try XCTUnwrap(linked.model.items(segment: .files).first)
         XCTAssertEqual(file.statusLabel, "Watching")
-        XCTAssertTrue(linked.permitsOriginalAction(for: file))
-    }
-
-    // MARK: - AT-27 · Locate during preparation
-
-    /// AT-27. A watched file's refresh is mid-preparation — its bytes are being
-    /// read — when the person uses the management window's Locate action. The
-    /// action is the window's own, gated by the same decision as the button, and
-    /// its owner does what the companion wires it to: it puts the chosen file
-    /// through review and the one Add path (the native chooser, which needs a
-    /// run loop, is the only thing replaced, by a fixed pick).
-    ///
-    /// Locate adds the chosen file as its own logical document under a grant of
-    /// its own. The refresh that was already in flight therefore publishes what
-    /// it read, under the association it was prepared for, and the located file
-    /// is published under its own — the chosen file's bytes never appear under
-    /// the old document, grant or generation. The generation fence that guards a
-    /// same-grant relink is `testGenerationChangeAfterReadsRejectsWholeBatch`.
-    @MainActor
-    func testLocateDuringARefreshPreparationNeverPublishesTheChosenFileUnderTheOldAssociation() async throws {
-        let root = try scratchDirectory()
-        let original = root.appendingPathComponent("watched.txt")
-        let chosen = root.appendingPathComponent("chosen.txt")
-        try Data("baseline".utf8).write(to: original)
-        try Data("the file Locate chose".utf8).write(to: chosen)
-        let reader = PausingReader()
-        let clock = SchedulingClock()
-        let state = root.appendingPathComponent("state", isDirectory: true)
-        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
-        let environment = try DocumentIntakeEnvironment(
-            stateRoot: state,
-            bookmarkCodec: CountingBookmarkCodec(),
-            reader: reader,
-            monotonicClock: clock.reader
-        )
-        let submission = ManualCaptureSubmission(
-            environment: environment, binding: .companion(workspaceRef: "workspace-1")
-        )
-
-        // One admitted baseline, which is what makes the watch active.
-        let baseline = try await submission.submit(
-            [ManualCaptureCandidate(url: original, keepUpdated: true)]
-        )
-        let digest = "sha256:" + String(repeating: "d", count: 64)
-        let staging = try environment.queue.beginStage(
-            itemID: baseline[0].intent.itemId, requestDigest: digest, descriptorDigest: digest
-        )
-        _ = try environment.queue.markAdmitted(
-            itemID: baseline[0].intent.itemId,
-            attemptGeneration: staging.attemptGeneration,
-            captureID: "dcap-" + String(repeating: "a", count: 64)
-        )
-        _ = await environment.fileMonitoring.reconcileReceipts()
-        let watch = try XCTUnwrap(environment.fileSubscriptions.all().first)
-        XCTAssertEqual(watch.state, .active)
-
-        // The window, over the same stores, with Locate wired as the companion
-        // wires it.
-        let panel = CapturePanelController(
-            workspaceName: "workspace-1",
-            submitter: submission,
-            folderSubmitter: nil,
-            onQueued: nil,
-            opensWindow: false
-        )
-        var located: Task<Void, Never>?
-        let window = try managementWindow(
-            locateOriginal: {
-                panel.addIncoming([chosen])
-                located = panel.beginSubmit()
-            },
-            environment: environment
-        )
-        window.historyState = CoreHistoryState(
-            documentID: watch.linkedDocumentID,
-            availability: .current(try history(Wire.page(binding: "connected")))
-        )
-        window.reload()
-        let row = try XCTUnwrap(window.model.items(segment: .files).first)
-        XCTAssertTrue(window.permitsOriginalAction(for: row))
-
-        // The refresh starts preparing and stops with its original open.
-        try Data("a newer version".utf8).write(to: original)
-        await environment.fileMonitoring.markDirty(subscriptionIDs: [watch.subscriptionID])
-        clock.advance(3_000)
-        reader.arm(original.lastPathComponent)
-        let refresh = Task.detached { await environment.fileMonitoring.reconcileAll() }
-        await Task.detached { XCTAssertTrue(reader.waitUntilReached()) }.value
-
-        // Locate lands while that read is in flight, and runs to completion.
-        XCTAssertTrue(window.invokeOriginalAction(for: row))
-        await located?.value
-        reader.release()
-        _ = await refresh.value
-
-        let entries = environment.queue.allEntries()
-        // An admitted entry's payload is already gone, so it reads as nil.
-        func payload(_ entry: CaptureQueueEntry) -> Data? {
-            try? Data(contentsOf: environment.queue.payloadURL(for: entry.intent.itemId))
-        }
-        let refreshed = try XCTUnwrap(entries.first {
-            $0.intent.originalBinding?.accessRecordId == watch.accessRef
-                && $0.intent.itemId != watch.baselineItemID
-        })
-        let chosenEntry = try XCTUnwrap(
-            entries.first { payload($0) == Data("the file Locate chose".utf8) }
-        )
-        // The old association published exactly what it read, at its own generation.
-        XCTAssertEqual(payload(refreshed), Data("a newer version".utf8))
-        XCTAssertEqual(refreshed.intent.originalBinding?.bindingGeneration, watch.bindingGeneration)
-        XCTAssertEqual(refreshed.intent.originalBinding?.linkedDocumentId, watch.linkedDocumentID)
-        // The chosen file is somebody else's association entirely.
-        XCTAssertNotEqual(chosenEntry.intent.originalBinding?.accessRecordId, watch.accessRef)
-        XCTAssertNotEqual(chosenEntry.intent.originalBinding?.linkedDocumentId, watch.linkedDocumentID)
-        XCTAssertNotEqual(chosenEntry.intent.requestedSourceIdentity, watch.requestedSourceIdentity)
-        // Nothing carrying the old document, grant or source identity holds the chosen bytes,
-        // and the old grant was neither relinked nor revoked by the action.
-        for entry in entries where entry.intent.originalBinding?.accessRecordId == watch.accessRef {
-            XCTAssertNotEqual(payload(entry), Data("the file Locate chose".utf8))
-        }
-        let grant = try XCTUnwrap(
-            environment.accessStore.descriptors().first { $0.accessRef == watch.accessRef }
-        )
-        XCTAssertEqual(grant.generation, watch.bindingGeneration)
-        XCTAssertEqual(grant.state, .connected)
+        XCTAssertTrue(linked.permitsLocate(for: file))
     }
 }
 
@@ -1832,7 +1863,7 @@ final class CoreDocumentHistoryTests: XCTestCase {
 
 /// Stops one named original's read until the test lets it go, and reads every
 /// other file straight through. Lets a test hold a preparation mid-read.
-private final class PausingReader: CoordinatedOriginalReading, @unchecked Sendable {
+final class PausingReader: CoordinatedOriginalReading, @unchecked Sendable {
     private let lock = NSLock()
     private var blocked: String?
     private let reached = DispatchSemaphore(value: 0)
@@ -1857,7 +1888,7 @@ private final class PausingReader: CoordinatedOriginalReading, @unchecked Sendab
 }
 
 /// The process-monotonic clock the scheduler measures its quiet period in.
-private final class SchedulingClock: @unchecked Sendable {
+final class SchedulingClock: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Int64 = 0
 
@@ -1978,7 +2009,7 @@ extension Result where Failure == CoreHistoryError {
     }
 }
 
-private final class CountingBookmarkCodec: SecurityScopedBookmarkCoding, @unchecked Sendable {
+final class CountingBookmarkCodec: SecurityScopedBookmarkCoding, @unchecked Sendable {
     private(set) var starts = 0
 
     func makeReadOnlyBookmark(for url: URL) throws -> Data { Data(url.path.utf8) }

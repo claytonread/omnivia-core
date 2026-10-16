@@ -323,6 +323,8 @@ __all__ = [
     "DocumentOriginalBindingInput",
     "DocumentOriginalDisconnectInput",
     "DocumentOriginalDisconnectResult",
+    "DocumentOriginalRelinkInput",
+    "DocumentOriginalRelinkResult",
     "DocumentProcessingProfileInput",
     "DocumentProcessingSettings",
     "DocumentProcessingSettingsGetInput",
@@ -9473,6 +9475,135 @@ class DocumentOriginalDisconnectResult:
             owner_ref=field_owner_ref,
             binding_generation=field_binding_generation,
             connection_state=field_connection_state,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentOriginalRelinkInput:
+    """Closed input for `document.original.relink`. Names one opaque owner/device route of one
+    document's original (a direct file) and asks Core to move it to the new binding
+    generation the companion reserved locally before it read any byte of the newly chosen
+    file, connected. A capture claiming an older generation of that route is thereafter
+    historical only and can never reactivate or promote under the new one. A relink that
+    reaches Core before the first capture of the document is recorded anyway. It carries no
+    path, URL or bookmark.
+    """
+
+    document_id: Identifier
+    owner_ref: Identifier
+    binding_generation: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["document_id"] = self.document_id
+        wire["owner_ref"] = self.owner_ref
+        wire["binding_generation"] = self.binding_generation
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentOriginalRelinkInput"
+    ) -> DocumentOriginalRelinkInput:
+        """Decode a wire payload into a DocumentOriginalRelinkInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_owner_ref = _decode_str(
+            _require_field(mapping, "owner_ref", path),
+            f"{path}.owner_ref",
+        )
+        field_binding_generation = _decode_int(
+            _require_field(mapping, "binding_generation", path),
+            f"{path}.binding_generation",
+        )
+        return cls(
+            document_id=field_document_id,
+            owner_ref=field_owner_ref,
+            binding_generation=field_binding_generation,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentOriginalRelinkResult:
+    """Canonical terminal receipt for one source-level relink or its exact replay: the route as
+    Core now holds it, connected at the named generation.
+    """
+
+    document_id: Identifier
+    owner_ref: Identifier
+    binding_generation: int
+    connection_state: OpenCode
+    current_capture_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["document_id"] = self.document_id
+        wire["owner_ref"] = self.owner_ref
+        wire["binding_generation"] = self.binding_generation
+        wire["connection_state"] = self.connection_state
+        if self.current_capture_id is not None:
+            wire["current_capture_id"] = self.current_capture_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentOriginalRelinkResult"
+    ) -> DocumentOriginalRelinkResult:
+        """Decode a wire payload into a DocumentOriginalRelinkResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_owner_ref = _decode_str(
+            _require_field(mapping, "owner_ref", path),
+            f"{path}.owner_ref",
+        )
+        field_binding_generation = _decode_int(
+            _require_field(mapping, "binding_generation", path),
+            f"{path}.binding_generation",
+        )
+        field_connection_state = _decode_str(
+            _require_field(mapping, "connection_state", path),
+            f"{path}.connection_state",
+        )
+        field_current_capture_id: Identifier | None = None
+        if "current_capture_id" in mapping:
+            raw_current_capture_id = mapping["current_capture_id"]
+            if raw_current_capture_id is None:
+                raise ContractDecodeError(
+                    f"{path}.current_capture_id: null is not a valid value"
+                )
+            field_current_capture_id = _decode_str(
+                raw_current_capture_id,
+                f"{path}.current_capture_id",
+            )
+        return cls(
+            document_id=field_document_id,
+            owner_ref=field_owner_ref,
+            binding_generation=field_binding_generation,
+            connection_state=field_connection_state,
+            current_capture_id=field_current_capture_id,
         )
 
 
@@ -32129,6 +32260,60 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
         result_schema_ref=(
             "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
             "#/$defs/DocumentOriginalDisconnectResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="document.original.relink",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentOriginalRelinkInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentOriginalRelinkResult"
         ),
         required_capability=CapabilityRequirement(
             id="evidence.write",

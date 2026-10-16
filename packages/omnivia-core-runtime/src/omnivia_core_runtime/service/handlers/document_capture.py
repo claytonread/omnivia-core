@@ -56,6 +56,8 @@ from omnivia_core.contracts.v1.generated import (
     DocumentHistoryResult,
     DocumentOriginalDisconnectInput,
     DocumentOriginalDisconnectResult,
+    DocumentOriginalRelinkInput,
+    DocumentOriginalRelinkResult,
     DocumentProcessingProfileInput,
     DocumentReprocessInput,
     DocumentReprocessProfileOption,
@@ -86,6 +88,7 @@ from omnivia_core_runtime.service.document_intake import (
     complete_reprocess_in_transaction,
     move_original_in_transaction,
     read_retained_source,
+    relink_original_in_transaction,
 )
 from omnivia_core_runtime.service.document_processing import (
     CatalogueSource,
@@ -133,6 +136,7 @@ DOCUMENT_CAPTURE_OPERATION: Final = "document.capture"
 DOCUMENT_REPROCESS_OPERATION: Final = "document.reprocess"
 DOCUMENT_HISTORY_OPERATION: Final = "document.history"
 DOCUMENT_ORIGINAL_DISCONNECT_OPERATION: Final = "document.original.disconnect"
+DOCUMENT_ORIGINAL_RELINK_OPERATION: Final = "document.original.relink"
 _MAX_INLINE_BYTES: Final = 3 * 1024 * 1024 - 64 * 1024
 _MAX_ENCODED_BYTES: Final = 4 * ((_MAX_INLINE_BYTES + 2) // 3)
 _MESSAGE_INVALID: Final = "the request payload is not a valid document capture"
@@ -181,6 +185,14 @@ _MESSAGE_DISCONNECT_UNAVAILABLE: Final = "the original disconnect could not be r
 _DISCONNECT_KEYS: Final = frozenset(
     {"document_id", "owner_ref", "route_kind", "root_ref", "member_ref"}
 )
+_MESSAGE_RELINK_INVALID: Final = "the request payload is not a valid original relink"
+_MESSAGE_RELINK_REFUSED: Final = (
+    "the original route belongs to another document, is on a different route, or the "
+    "relink generation is not a newer generation Core can reach"
+)
+_MESSAGE_RELINK_UNAVAILABLE: Final = "the original relink could not be recorded"
+_MAX_BINDING_GENERATION: Final = 2**63 - 1
+_RELINK_KEYS: Final = frozenset({"document_id", "owner_ref", "binding_generation"})
 _MESSAGE_HISTORY_INVALID: Final = "the request payload is not a valid document history read"
 _MESSAGE_HISTORY_NOT_FOUND: Final = "this workspace holds no such document"
 _MESSAGE_HISTORY_UNREADABLE: Final = "this document's recorded intake history is not readable"
@@ -239,6 +251,10 @@ def _closed_reprocess(payload: object) -> bool:
 
 def _closed_disconnect(payload: object) -> bool:
     return isinstance(payload, Mapping) and set(payload) <= _DISCONNECT_KEYS
+
+
+def _closed_relink(payload: object) -> bool:
+    return isinstance(payload, Mapping) and set(payload) <= _RELINK_KEYS
 
 
 def _closed_history(payload: object) -> bool:
@@ -1429,6 +1445,124 @@ class DocumentCaptureHandlers:
                 result.document_id == request.document_id
                 and result.owner_ref == request.owner_ref
                 and result.connection_state == store.BINDING_DISCONNECTED
+            )
+
+        outcome = execute_mutation(
+            connection,
+            identity,
+            grant=grant,
+            context=context.authorization,
+            equivalence=equivalence,
+            mutate=mutate,
+            validate_result=valid_result,
+            clock=self.clock,
+            allocate_identifier=self.allocate_identifier,
+        )
+        return AuditedOperationResult(outcome.result, outcome.audit_ref)
+
+    def document_original_relink(self, context: OperationContext) -> AuditedOperationResult:
+        """Move one direct-file owner route of a document's original to a newer generation, connected.
+
+        The companion reserved `binding_generation` locally before it read any byte of the newly
+        chosen file, so a capture claiming an older generation of this route is thereafter
+        historical only and can never reactivate or promote under the new one. A relink that
+        arrives before any capture still records the route. Replay under the same key returns
+        the stored receipt and writes nothing more.
+        """
+        request: DocumentOriginalRelinkInput | None = None
+        invalid = False
+        try:
+            if not _closed_relink(context.request.input):
+                raise DocumentIntakeRefused("the relink request is not closed")
+            request = DocumentOriginalRelinkInput.from_wire(context.request.input)
+            _identifier(request.document_id, "document id")
+            _identifier(request.owner_ref, "owner reference")
+            # The decoders apply no range, and a relink always names a generation after the first.
+            if not 2 <= request.binding_generation <= _MAX_BINDING_GENERATION:
+                raise DocumentIntakeRefused("the relink generation is out of range")
+        except (ContractDecodeError, DocumentIntakeRefused):
+            invalid = True
+        if invalid:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_RELINK_INVALID)
+        assert request is not None
+        connection = getattr(self.service, "connection", None)
+        identity = getattr(self.service, "identity", None)
+        layout = getattr(self.service, "layout", None)
+        guard = None if connection is None else read_guard(connection)
+        if (
+            context.authorization is None
+            or connection is None
+            or identity is None
+            or guard is None
+            or layout is None
+        ):
+            raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            request.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+        grant = issue_mutation_grant(
+            context.authorization,
+            session=self.session,
+            binding=self.binding,
+            guard=guard,
+            equivalence=equivalence,
+            clock=self.clock,
+        )
+        capture_service: Any = _CaptureServiceView(
+            connection=connection,
+            identity=identity,
+            layout=layout,
+            workspace_id=context.workspace_id,
+            generation=guard.fencing_generation,
+        )
+
+        def mutate(_fenced: Any, _settlement: MutationSettlementContext) -> Mapping[str, Any]:
+            try:
+                binding = relink_original_in_transaction(
+                    capture_service,
+                    document_id=request.document_id,
+                    owner_ref=request.owner_ref,
+                    generation=request.binding_generation,
+                )
+            except DocumentIntakeRefused as error:
+                raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_RELINK_REFUSED) from error
+            except sqlite3.OperationalError as error:
+                # Same frozen class as the capture path: a busy store is retryable, and the
+                # default `non_retryable` would be rewritten to a bare internal failure.
+                raise OperationError(
+                    ERROR_CODE_INTERNAL_RECOVERABLE,
+                    _MESSAGE_RELINK_UNAVAILABLE,
+                    retry_class=RETRY_CLASS_RETRYABLE,
+                ) from error
+            # The head as of this commit, stored with the receipt: a replay returns this value, not
+            # whatever the head has become, so the companion re-bases on what the relink saw.
+            head = store.read_head(
+                capture_service.connection,
+                workspace_id=capture_service.workspace_id,
+                document_id=binding.document_id,
+            )
+            return DocumentOriginalRelinkResult(
+                document_id=binding.document_id,
+                owner_ref=binding.owner_ref,
+                binding_generation=binding.binding_generation,
+                connection_state=binding.connection_state,
+                current_capture_id=None if head is None else head.current_capture_id,
+            ).to_wire()
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                result = DocumentOriginalRelinkResult.from_wire(wire)
+            except ContractDecodeError:
+                return False
+            return (
+                result.document_id == request.document_id
+                and result.owner_ref == request.owner_ref
+                and result.binding_generation == request.binding_generation
+                and result.connection_state == store.BINDING_CONNECTED
             )
 
         outcome = execute_mutation(

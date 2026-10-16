@@ -533,6 +533,59 @@ final class LiveCore {
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
+    /// The raw JSON answer of `document relink`, run once exactly as
+    /// `CLICaptureDelivery.relinkArguments` builds it.
+    func runRelink(input: Data, operationKey: String) throws -> [String: Any] {
+        let process = Process()
+        let inputPipe = Pipe()
+        let output = Pipe()
+        process.executableURL = cli
+        process.arguments = delivery.relinkArguments(operationKey: operationKey)
+        process.standardInput = inputPipe
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        try inputPipe.fileHandleForWriting.write(contentsOf: input)
+        try inputPipe.fileHandleForWriting.close()
+        let data = try output.fileHandleForReading.readToEnd() ?? Data()
+        process.waitUntilExit()
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    /// What the Files tab reads from Core for one document, through the production reader
+    /// and the real CLI transport.
+    func currentHistory(documentID: String) -> CoreDocumentHistory? {
+        let reader = CoreDocumentHistoryReader(
+            transport: CLICoreDocumentHistoryTransport(
+                executable: cli, installationState: installation, workspaceRef: workspaceID
+            )
+        )
+        if case let .success(history) = reader.read(documentID: documentID) { return history }
+        return nil
+    }
+
+    /// Core's own statement of each capture of a document, by sequence: its disposition, the
+    /// reason and association it was admitted under, and whether it is the current source.
+    /// Read through `document history`, not through storage.
+    func captureDispositions(documentID: String) throws -> [(id: String, sequence: Int, disposition: String, reason: String, association: String, current: Bool)] {
+        let document = try Self.run(cli, [
+            "--installation-state", installation.path, "--workspace-id", workspaceID,
+            "document", "history", "--input-json", "{\"document_id\":\"\(documentID)\"}", "--json",
+        ])
+        let result = try XCTUnwrap(document["result"] as? [String: Any])
+        let captures = try XCTUnwrap(result["captures"] as? [[String: Any]])
+        return try captures.map {
+            (
+                id: try XCTUnwrap($0["capture_id"] as? String),
+                sequence: try XCTUnwrap($0["capture_sequence"] as? Int),
+                disposition: try XCTUnwrap($0["capture_disposition"] as? String),
+                reason: try XCTUnwrap($0["disposition_reason"] as? String),
+                association: try XCTUnwrap($0["association_kind"] as? String),
+                current: try XCTUnwrap($0["is_current_source"] as? Bool)
+            )
+        }.sorted { $0.sequence < $1.sequence }
+    }
+
     /// Core's own statement of a document's original-binding state, read through its
     /// `document history` operation rather than its storage.
     func bindingState(documentID: String) throws -> String {
@@ -548,6 +601,12 @@ final class LiveCore {
     /// Test-only, with the service stopped (it holds the database exclusively): what Core
     /// stored for the disconnect operation. Read-only; nothing is changed.
     func storedDisconnectRecords() throws -> (bindings: [[String]], claims: Int) {
+        try storedBindingRecords(operation: "document.original.disconnect")
+    }
+
+    /// Test-only, with the service stopped: every binding Core stores, and how many
+    /// idempotency claims the named operation committed.
+    func storedBindingRecords(operation: String) throws -> (bindings: [[String]], claims: Int) {
         let script = #"""
         import json, sys
         from pathlib import Path
@@ -560,7 +619,7 @@ final class LiveCore {
         ).fetchall()
         (claims,) = connection.execute(
             "SELECT count(*) FROM omnivia_idempotency_claims WHERE operation = ?",
-            ("document.original.disconnect",),
+            (sys.argv[2],),
         ).fetchone()
         print(json.dumps({"bindings": [[str(v) for v in row] for row in bindings], "claims": claims}))
         connection.close()
@@ -568,7 +627,7 @@ final class LiveCore {
         let output = Pipe()
         let process = Process()
         process.executableURL = python
-        process.arguments = ["-c", script, workspace.path]
+        process.arguments = ["-c", script, workspace.path, operation]
         process.standardOutput = output
         process.standardError = output
         try process.run()

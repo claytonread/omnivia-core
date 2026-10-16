@@ -5802,6 +5802,59 @@ export interface DocumentOriginalDisconnectResult {
 }
 
 /**
+ * Closed input for `document.original.relink`. Names one opaque owner/device route of one
+ * document's original (a direct file) and asks Core to move it to the new binding generation the
+ * companion reserved locally before it read any byte of the newly chosen file, connected. A
+ * capture claiming an older generation of that route is thereafter historical only and can never
+ * reactivate or promote under the new one. A relink that reaches Core before the first capture
+ * of the document is recorded anyway. It carries no path, URL or bookmark.
+ */
+export interface DocumentOriginalRelinkInput {
+  /**
+   * Logical document whose original route is relinked.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Opaque native access-owner reference of the direct-file route.
+   */
+  readonly owner_ref: Identifier;
+  /**
+   * The NEW binding generation the companion reserved locally before reading any byte of the
+   * newly chosen file.
+   */
+  readonly binding_generation: number;
+}
+
+/**
+ * Canonical terminal receipt for one source-level relink or its exact replay: the route as Core
+ * now holds it, connected at the named generation.
+ */
+export interface DocumentOriginalRelinkResult {
+  /**
+   * Logical document whose original route was relinked.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Opaque native access-owner reference of the route.
+   */
+  readonly owner_ref: Identifier;
+  /**
+   * The binding generation Core now holds connected; a capture under an older generation of
+   * this route is historical only.
+   */
+  readonly binding_generation: number;
+  /**
+   * Closed value `connected`.
+   */
+  readonly connection_state: OpenCode;
+  /**
+   * The document's current successful capture as Core held it when the relink committed;
+   * absent when the document has none. The companion bases its next refresh on it.
+   */
+  readonly current_capture_id?: Identifier;
+}
+
+/**
  * The identity of one asynchronous job: what it is, which application operation started it, its
  * immutable audit linkage, and, when applicable, which workspace it runs against.
  */
@@ -16875,6 +16928,39 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
     scope: { required_scopes: ["memory:write"], side_effect: "update", scope_kind: "workspace" },
     input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalDisconnectInput",
     result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalDisconnectResult",
+    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.original.relink",
+    scope: { required_scopes: ["memory:write"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalRelinkInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalRelinkResult",
     required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
     job: { completion_mode: "synchronous" },
     pagination: { paginated: false },

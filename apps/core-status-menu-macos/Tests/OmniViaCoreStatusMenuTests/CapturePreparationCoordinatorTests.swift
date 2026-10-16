@@ -1407,6 +1407,83 @@ final class CapturePreparationCoordinatorTests: XCTestCase {
         XCTAssertEqual(queueNames(root, in: "candidates"), [])
     }
 
+    // MARK: - AT-27 · a Locate that wins takes the whole batch
+
+    /// A confirmed Locate of one grant, landing after every original was read and before
+    /// the batch commits. The reserved generation wins: the stale batch is refused whole,
+    /// including the item whose own grant nobody touched, and the file that was chosen is
+    /// neither published nor resolved. The route holds no grant until Core confirms.
+    func testALocateRacingTheFinalPublicationPreventsTheEntireBatch() async throws {
+        let root = try temporaryRoot()
+        let gate = PublicationGate()
+        let accessStore = try NativeAccessStore(
+            stateDirectory: root.appendingPathComponent("access"),
+            codec: PreparationBookmarkCodec(),
+            gate: gate
+        )
+        let queue = try CaptureIntentQueue(root: root.appendingPathComponent("queue"), gate: gate)
+        var items: [CapturePreparationItem] = []
+        for index in 1...2 {
+            let item = "item-\(index)"
+            try adoptFile(accessStore, root: root, item: item, access: "access-\(index)")
+            items.append(
+                CapturePreparationItem(
+                    access: NativeAccessExpectation(accessRef: "access-\(index)", generation: 1),
+                    seed: seed(item: item, access: "access-\(index)")
+                )
+            )
+        }
+        // Both grants are published work's, which is what a Locate can move.
+        try accessStore.activateGrants(accessRefs: ["access-1", "access-2"])
+        let chosen = root.appendingPathComponent("chosen.pdf")
+        try Data("the file Locate chose".utf8).write(to: chosen)
+        let coordinator = CapturePreparationCoordinator(
+            accessStore: accessStore,
+            queue: queue,
+            reader: TestOriginalReader { try Data(contentsOf: $0) },
+            gate: gate
+        )
+        let candidatesAtLocate = NamesBox()
+        coordinator.afterCandidatePrepared = {
+            candidatesAtLocate.names = self.queueNames(root, in: "candidates")
+            _ = try? accessStore.reserveRelink(
+                accessRef: "access-1",
+                selectedURL: chosen,
+                binding: NativeRootAccessBinding(publicationBinding)
+            )
+        }
+
+        do {
+            _ = try await coordinator.prepareAndPublish(items, binding: publicationBinding)
+            XCTFail("expected the reserved generation to prevent the batch")
+        } catch {
+            XCTAssertEqual(error as? NativeAccessError, .relinkPending)
+        }
+
+        XCTAssertEqual(
+            candidatesAtLocate.names.count, 1,
+            "the Locate landed with the complete batch prepared and unpublished"
+        )
+        XCTAssertTrue(queue.allEntries().isEmpty)
+        XCTAssertTrue(payloadFiles(root).isEmpty)
+        XCTAssertEqual(queueNames(root, in: "published"), [])
+        XCTAssertEqual(queueNames(root, in: "candidates"), [], "the refused candidate is discarded")
+        XCTAssertEqual(
+            accessStore.descriptors().map { "\($0.accessRef)=\($0.state)@\($0.generation)" },
+            ["access-1=relinking@2", "access-2=connected@1"]
+        )
+        // The reservation is durable and the refused batch undid nothing.
+        let reopened = try NativeAccessStore(
+            stateDirectory: root.appendingPathComponent("access"),
+            codec: PreparationBookmarkCodec()
+        )
+        XCTAssertEqual(
+            reopened.descriptors().map { "\($0.accessRef)=\($0.state)@\($0.generation)" },
+            ["access-1=relinking@2", "access-2=connected@1"]
+        )
+        XCTAssertEqual(reopened.pendingOriginalRelinks().map(\.generation), [2])
+    }
+
     // MARK: - AT-28 · a Disconnect that wins takes the whole batch
 
     /// A real Disconnect of one grant, landing after every original was read and

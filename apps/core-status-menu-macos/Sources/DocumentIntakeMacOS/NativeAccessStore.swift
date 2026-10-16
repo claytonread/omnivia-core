@@ -31,6 +31,9 @@ public enum NativeAccessError: Error, Equatable {
     /// capture intent is permitted; acting on the original as a linked file
     /// needs an established owner.
     case routeNotActive
+    /// A Locate for this grant has reserved its next generation and Core has not yet
+    /// confirmed it. The old grant reads nothing and the new one is not yet active.
+    case relinkPending
 }
 
 /// What a retained root group is allowed to do, mirroring the design's
@@ -107,6 +110,11 @@ public struct NativeRootAccessBinding: Codable, Equatable, Sendable {
 public enum NativeAccessState: String, Codable, Sendable {
     case connected
     case disconnected
+    /// Design §9.5: a confirmed Locate reserved this grant's next generation and Core has
+    /// not yet confirmed it. The superseded bookmark is gone and the candidate's is held
+    /// only by the relink intent, so nothing can be read through this route in either
+    /// direction until `completeOriginalRelink` activates the new grant.
+    case relinking
 }
 
 /// A direct-file grant's own lifecycle.
@@ -225,6 +233,55 @@ public struct OriginalDisconnectIntent: Codable, Equatable, Sendable {
             .joined(separator: "\u{0}")
         let digest = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }
         return "disconnect-" + digest.joined().prefix(32)
+    }
+}
+
+/// The canonical half of design §9.5 Relink: a fixed intent to move one original binding to
+/// the generation this Mac reserved for the file the person confirmed.
+///
+/// It is written in the same durable write that reserves that generation and pauses the
+/// route, so there is no state in which this Mac has stopped reading the old file and
+/// owes Core nothing. The request it describes is closed over here and never recomputed:
+/// the owner, document and generation, the frozen workspace and caller of the work the
+/// route already published, and the one `operationKey` every attempt carries. A lost or
+/// unknown answer is therefore reconciled by sending exactly the same request again, and
+/// there is never a second candidate: a new Locate is refused until this intent is
+/// answered for good.
+///
+/// The candidate itself is `candidateBookmark`. It is held here and nowhere else, never
+/// resolved while the intent is owed, and becomes the route's grant only when Core has
+/// confirmed the generation (`NativeAccessStore.completeOriginalRelink`). Like the
+/// disconnect key, the operation key is derived from the generation it reserves, not drawn
+/// at random.
+public struct OriginalRelinkIntent: Codable, Equatable, Sendable {
+    /// Core's `owner_ref` for the binding: this Mac's access record.
+    public let accessRef: String
+    /// Core's `document_id`.
+    public let linkedDocumentID: String
+    /// The binding generation reserved for the new file. The route's own generation is
+    /// already this value while the relink is owed.
+    public let generation: UInt64
+    public let binding: NativeRootAccessBinding
+    public let operationKey: String
+    public let createdAt: String
+    /// The file name of the confirmed candidate, for display only.
+    public let candidateName: String
+    let candidateBookmark: Data
+    /// Set once Core refused the request in a way no retry changes. The route stays
+    /// paused, the refusal stays on record, and only a refused intent may be replaced by
+    /// another Locate.
+    public var refusalCode: String?
+
+    public static func operationKey(
+        workspaceRef: String,
+        accessRef: String,
+        linkedDocumentID: String,
+        generation: UInt64
+    ) -> String {
+        let material = [workspaceRef, accessRef, linkedDocumentID, String(generation)]
+            .joined(separator: "\u{0}")
+        let digest = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }
+        return "relink-" + digest.joined().prefix(32)
     }
 }
 
@@ -467,6 +524,21 @@ private struct NativeAccessRecord: Codable, Equatable {
             lifecycle: lifecycle
         )
     }
+
+    /// The same direct-file route at another generation, state and grant. The lifecycle is
+    /// what owns the route and a relink does not change it.
+    func with(generation: UInt64, state: NativeAccessState, bookmark: Data?) -> NativeAccessRecord {
+        NativeAccessRecord(
+            accessRef: accessRef,
+            linkedDocumentID: linkedDocumentID,
+            generation: generation,
+            rootBindingGeneration: rootBindingGeneration,
+            state: state,
+            route: route,
+            bookmark: bookmark,
+            lifecycle: lifecycle
+        )
+    }
 }
 
 private struct NativeRootAccessRecord: Codable, Equatable {
@@ -514,6 +586,9 @@ private struct NativeAccessDocument: Codable {
     /// Optional for the same reason as `pending`: a file written before source-level
     /// Disconnect reached Core has no such key, and that meant an empty set.
     let originalDisconnects: [OriginalDisconnectIntent]?
+    /// Optional for the same reason: a file written before Locate reached Core has no such
+    /// key, and that meant an empty set.
+    let originalRelinks: [OriginalRelinkIntent]?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case schema
@@ -521,6 +596,7 @@ private struct NativeAccessDocument: Codable {
         case roots
         case pending
         case originalDisconnects
+        case originalRelinks
     }
 
     init(
@@ -528,13 +604,15 @@ private struct NativeAccessDocument: Codable {
         records: [NativeAccessRecord],
         roots: [NativeRootAccessRecord],
         pending: [PendingFolderSubmission]?,
-        originalDisconnects: [OriginalDisconnectIntent]?
+        originalDisconnects: [OriginalDisconnectIntent]?,
+        originalRelinks: [OriginalRelinkIntent]?
     ) {
         self.schema = schema
         self.records = records
         self.roots = roots
         self.pending = pending
         self.originalDisconnects = originalDisconnects
+        self.originalRelinks = originalRelinks
     }
 
     init(from decoder: Decoder) throws {
@@ -553,6 +631,10 @@ private struct NativeAccessDocument: Codable {
         originalDisconnects = try container.decodeIfPresent(
             [OriginalDisconnectIntent].self,
             forKey: .originalDisconnects
+        )
+        originalRelinks = try container.decodeIfPresent(
+            [OriginalRelinkIntent].self,
+            forKey: .originalRelinks
         )
     }
 }
@@ -594,6 +676,7 @@ public final class NativeAccessStore: @unchecked Sendable {
     private var roots: [String: NativeRootAccessRecord]
     private var pending: [String: PendingFolderSubmission]
     private var originalDisconnects: [String: OriginalDisconnectIntent]
+    private var originalRelinks: [String: OriginalRelinkIntent]
 
     public init(
         stateDirectory: URL,
@@ -608,12 +691,14 @@ public final class NativeAccessStore: @unchecked Sendable {
         self.roots = [:]
         self.pending = [:]
         self.originalDisconnects = [:]
+        self.originalRelinks = [:]
         try Self.prepareDirectory(stateDirectory)
         let loaded = try Self.load(from: stateFile, codec: codec)
         self.records = loaded.records
         self.roots = loaded.roots
         self.pending = loaded.pending
         self.originalDisconnects = loaded.disconnects
+        self.originalRelinks = loaded.relinks
         if loaded.migrated {
             try persist(records: loaded.records, roots: loaded.roots)
         }
@@ -654,6 +739,8 @@ public final class NativeAccessStore: @unchecked Sendable {
             if existing?.state == .connected {
                 throw NativeAccessError.duplicateConnectedAccess
             }
+            // A route owed to Core for a relink is repaired by that relink and nothing else.
+            if existing?.state == .relinking { throw NativeAccessError.relinkPending }
             if let existing, existing.linkedDocumentID != linkedDocumentID || existing.route != route {
                 throw NativeAccessError.invalidRoute
             }
@@ -1210,10 +1297,155 @@ public final class NativeAccessStore: @unchecked Sendable {
         }
     }
 
+    // MARK: - Locate (design §9.5)
+
+    /// Design §9.5, on confirmation: reserve the route's next binding generation, drop the
+    /// grant for the file being replaced, and record the fixed intent that tells Core, all
+    /// in one durable write under the gate every final queue publication takes.
+    ///
+    /// From this write on, the route is `relinking`. A preparation that read the old file
+    /// under the old generation finds the generation changed at its final validation and
+    /// publishes nothing; one that starts now is refused before it reads. Neither the old
+    /// grant nor the candidate's can read anything until Core has confirmed the generation
+    /// and `completeOriginalRelink` activates the candidate.
+    ///
+    /// Only an established direct-file route can be relinked, and only one relink may be
+    /// owed at a time: the person does not alternate between candidate originals. A relink
+    /// Core refused for good is the one exception, because it is finished and has left the
+    /// route paused with nothing else to try.
+    ///
+    /// `binding` is the workspace and caller the route's published work was frozen under.
+    @discardableResult
+    public func reserveRelink(
+        accessRef: String,
+        selectedURL: URL,
+        binding: NativeRootAccessBinding,
+        now: Date = Date()
+    ) throws -> OriginalRelinkIntent {
+        try Self.validateIdentifier(accessRef)
+        try Self.validateSelection(selectedURL, for: .directFile)
+        // Bookmark creation reads the file system, so it happens before the gate is taken.
+        let candidate: Data
+        do {
+            candidate = try codec.makeReadOnlyBookmark(for: selectedURL)
+        } catch {
+            throw NativeAccessError.accessDenied
+        }
+        let name = String(selectedURL.lastPathComponent.replacingOccurrences(of: "\0", with: "").prefix(255))
+        return try gate.withLock {
+            guard let current = records[accessRef] else { throw NativeAccessError.unknownAccess }
+            guard current.route == .directFile else { throw NativeAccessError.invalidRoute }
+            switch current.state {
+            case .disconnected:
+                throw NativeAccessError.disconnected
+            case .relinking:
+                guard originalRelinks.values.contains(where: {
+                    $0.accessRef == accessRef && $0.refusalCode != nil
+                }) else { throw NativeAccessError.relinkPending }
+            case .connected:
+                break
+            }
+            // A grant adopted for a candidate nothing has published yet is not established
+            // work (design §7.2), so there is no binding of Core's to move.
+            guard current.lifecycle == .active else { throw NativeAccessError.routeNotActive }
+            guard current.generation < UInt64(Int64.max) else { throw NativeAccessError.generationMismatch }
+            let generation = current.generation + 1
+            let key = OriginalRelinkIntent.operationKey(
+                workspaceRef: binding.workspaceRef,
+                accessRef: accessRef,
+                linkedDocumentID: current.linkedDocumentID,
+                generation: generation
+            )
+            let intent = OriginalRelinkIntent(
+                accessRef: accessRef,
+                linkedDocumentID: current.linkedDocumentID,
+                generation: generation,
+                binding: binding,
+                operationKey: key,
+                createdAt: ISO8601DateFormatter().string(from: now),
+                candidateName: name.isEmpty ? "file" : name,
+                candidateBookmark: candidate,
+                refusalCode: nil
+            )
+            var replacementRelinks = originalRelinks.filter { $0.value.accessRef != accessRef }
+            replacementRelinks[key] = intent
+            var replacement = records
+            replacement[accessRef] = current.with(generation: generation, state: .relinking, bookmark: nil)
+            try persist(records: replacement, roots: roots, originalRelinks: replacementRelinks)
+            records = replacement
+            originalRelinks = replacementRelinks
+            return intent
+        }
+    }
+
+    /// The relink intents Core has not yet confirmed, in a stable order. One Core refused
+    /// for good is still listed, with its `refusalCode`, so that it is visible and not resent.
+    public func pendingOriginalRelinks() -> [OriginalRelinkIntent] {
+        gate.withLock { originalRelinks.values.sorted { $0.operationKey < $1.operationKey } }
+    }
+
+    /// Whether a relink for this route still has to be settled with Core. A refused one is
+    /// settled: nothing more will be sent for it.
+    public func hasUnresolvedRelink(accessRef: String) -> Bool {
+        gate.withLock {
+            originalRelinks.values.contains { $0.accessRef == accessRef && $0.refusalCode == nil }
+        }
+    }
+
+    /// Core confirmed the generation, so the confirmed candidate becomes the route's grant
+    /// and the intent is retired, in one durable write. Repeating it, or naming an intent
+    /// that is already gone, does nothing.
+    ///
+    /// A route that was disconnected while the relink was owed stays disconnected: the
+    /// person's revocation outranks a confirmation that arrives afterwards, and the
+    /// candidate's bookmark is dropped with the intent.
+    @discardableResult
+    public func completeOriginalRelink(operationKey: String) throws -> NativeAccessDescriptor? {
+        try gate.withLock {
+            guard let intent = originalRelinks[operationKey] else { return nil }
+            var replacementRelinks = originalRelinks
+            replacementRelinks[operationKey] = nil
+            var replacement = records
+            if let current = records[intent.accessRef],
+               current.state == .relinking,
+               current.generation == intent.generation
+            {
+                replacement[intent.accessRef] = current.with(
+                    generation: intent.generation,
+                    state: .connected,
+                    bookmark: intent.candidateBookmark
+                )
+            }
+            try persist(records: replacement, roots: roots, originalRelinks: replacementRelinks)
+            records = replacement
+            originalRelinks = replacementRelinks
+            return replacement[intent.accessRef].map(Self.descriptor)
+        }
+    }
+
+    /// Core refused the request and no retry can change that. The intent stays, marked, and
+    /// the route stays paused.
+    public func recordOriginalRelinkRefusal(operationKey: String, code: String) throws {
+        try gate.withLock {
+            guard var intent = originalRelinks[operationKey], intent.refusalCode != code else {
+                return
+            }
+            intent.refusalCode = code
+            var replacementRelinks = originalRelinks
+            replacementRelinks[operationKey] = intent
+            try persist(records: records, roots: roots, originalRelinks: replacementRelinks)
+            originalRelinks = replacementRelinks
+        }
+    }
+
+    /// The routes of one logical source that still hold, or are about to hold, a grant. A
+    /// route in the middle of a relink counts: Disconnect revokes it, and the relink intent
+    /// is settled with Core before the disconnect one is sent.
+    ///
     /// Call inside the gate.
     private func connectedRecords(of linkedDocumentID: String) -> [NativeAccessRecord] {
         records.values
-            .filter { $0.linkedDocumentID == linkedDocumentID && $0.state == .connected }
+            .filter { $0.linkedDocumentID == linkedDocumentID && $0.state != .disconnected }
             .sorted { $0.accessRef < $1.accessRef }
     }
 
@@ -1261,6 +1493,7 @@ public final class NativeAccessStore: @unchecked Sendable {
     ) throws -> T {
         let resolvedAccess = try gate.withLock { () throws -> (NativeAccessRecord, Data) in
             guard let record = records[accessRef] else { throw NativeAccessError.unknownAccess }
+            guard record.state != .relinking else { throw NativeAccessError.relinkPending }
             guard record.state == .connected else { throw NativeAccessError.disconnected }
             guard record.generation == expectedGeneration else {
                 throw NativeAccessError.generationMismatch
@@ -1474,6 +1707,7 @@ public final class NativeAccessStore: @unchecked Sendable {
                 guard let record = records[expectation.accessRef] else {
                     throw NativeAccessError.unknownAccess
                 }
+                guard record.state != .relinking else { throw NativeAccessError.relinkPending }
                 guard record.state == .connected else { throw NativeAccessError.disconnected }
                 guard record.generation == expectation.generation else {
                     throw NativeAccessError.generationMismatch
@@ -1534,7 +1768,8 @@ public final class NativeAccessStore: @unchecked Sendable {
         records: [String: NativeAccessRecord],
         roots: [String: NativeRootAccessRecord],
         pending: [String: PendingFolderSubmission]? = nil,
-        originalDisconnects: [String: OriginalDisconnectIntent]? = nil
+        originalDisconnects: [String: OriginalDisconnectIntent]? = nil,
+        originalRelinks: [String: OriginalRelinkIntent]? = nil
     ) throws {
         let document = NativeAccessDocument(
             schema: Self.schema,
@@ -1543,6 +1778,8 @@ public final class NativeAccessStore: @unchecked Sendable {
             pending: (pending ?? self.pending).values
                 .sorted { $0.submissionID < $1.submissionID },
             originalDisconnects: (originalDisconnects ?? self.originalDisconnects).values
+                .sorted { $0.operationKey < $1.operationKey },
+            originalRelinks: (originalRelinks ?? self.originalRelinks).values
                 .sorted { $0.operationKey < $1.operationKey }
         )
         let encoder = JSONEncoder()
@@ -1593,10 +1830,11 @@ public final class NativeAccessStore: @unchecked Sendable {
         roots: [String: NativeRootAccessRecord],
         pending: [String: PendingFolderSubmission],
         disconnects: [String: OriginalDisconnectIntent],
+        relinks: [String: OriginalRelinkIntent],
         migrated: Bool
     ) {
         guard FileManager.default.fileExists(atPath: stateFile.path) else {
-            return ([:], [:], [:], [:], false)
+            return ([:], [:], [:], [:], [:], false)
         }
         do {
             let attributes = try FileManager.default.attributesOfItem(atPath: stateFile.path)
@@ -1712,7 +1950,33 @@ public final class NativeAccessStore: @unchecked Sendable {
                 }
                 loadedDisconnects[intent.operationKey] = intent
             }
-            return (result, loadedRoots, loadedPending, loadedDisconnects, false)
+            var loadedRelinks: [String: OriginalRelinkIntent] = [:]
+            for intent in document.originalRelinks ?? [] {
+                try validate(intent)
+                guard loadedRelinks[intent.operationKey] == nil,
+                      !loadedRelinks.values.contains(where: { $0.accessRef == intent.accessRef })
+                else { throw NativeAccessError.invalidState }
+                loadedRelinks[intent.operationKey] = intent
+            }
+            // A route is `relinking` exactly while an intent owes Core the generation it
+            // reserved. A record that says so without one could never be activated, and an
+            // intent against a connected record would activate a second time.
+            for record in result.values where record.state == .relinking {
+                guard record.route == .directFile,
+                      loadedRelinks.values.contains(where: {
+                          $0.accessRef == record.accessRef && $0.generation == record.generation
+                      })
+                else { throw NativeAccessError.invalidState }
+            }
+            for intent in loadedRelinks.values {
+                guard let record = result[intent.accessRef],
+                      record.route == .directFile,
+                      record.linkedDocumentID == intent.linkedDocumentID,
+                      record.state != .connected,
+                      record.generation == intent.generation
+                else { throw NativeAccessError.invalidState }
+            }
+            return (result, loadedRoots, loadedPending, loadedDisconnects, loadedRelinks, false)
         } catch let error as NativeAccessError {
             throw error
         } catch {
@@ -1752,6 +2016,7 @@ public final class NativeAccessStore: @unchecked Sendable {
         roots: [String: NativeRootAccessRecord],
         pending: [String: PendingFolderSubmission],
         disconnects: [String: OriginalDisconnectIntent],
+        relinks: [String: OriginalRelinkIntent],
         migrated: Bool
     ) {
         let legacy = try JSONDecoder().decode(LegacyNativeAccessDocument.self, from: data)
@@ -1837,7 +2102,7 @@ public final class NativeAccessStore: @unchecked Sendable {
             guard roots[rootRef]?.state == .active else { throw NativeAccessError.invalidState }
         }
         // A v1 file predates durable establishment, so there is nothing pending.
-        return (records, roots, [:], [:], true)
+        return (records, roots, [:], [:], [:], true)
     }
 
     /// A v1 file has no root group, only per-member bookmarks. The migrated
@@ -1910,6 +2175,32 @@ public final class NativeAccessStore: @unchecked Sendable {
               intent.generation > 0,
               !intent.createdAt.isEmpty,
               intent.operationKey == OriginalDisconnectIntent.operationKey(
+                  workspaceRef: intent.binding.workspaceRef,
+                  accessRef: intent.accessRef,
+                  linkedDocumentID: intent.linkedDocumentID,
+                  generation: intent.generation
+              )
+        else { throw NativeAccessError.invalidState }
+    }
+
+    /// A relink intent is replayed under its key until Core answers, so a record that could
+    /// not have been written by `reserveRelink` is refused rather than sent.
+    private static func validate(_ intent: OriginalRelinkIntent) throws {
+        for identifier in [
+            intent.accessRef, intent.linkedDocumentID, intent.operationKey,
+            intent.binding.targetRef, intent.binding.workspaceRef,
+            intent.binding.targetBindingRevision,
+        ] {
+            try validateIdentifier(identifier)
+        }
+        guard intent.generation > 1,
+              intent.generation <= UInt64(Int64.max),
+              !intent.createdAt.isEmpty,
+              !intent.candidateName.isEmpty,
+              intent.candidateName.count <= 255,
+              !intent.candidateName.contains("\0"),
+              !intent.candidateBookmark.isEmpty,
+              intent.operationKey == OriginalRelinkIntent.operationKey(
                   workspaceRef: intent.binding.workspaceRef,
                   accessRef: intent.accessRef,
                   linkedDocumentID: intent.linkedDocumentID,

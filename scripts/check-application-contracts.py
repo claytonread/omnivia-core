@@ -1238,6 +1238,11 @@ _DOCUMENT_SETTINGS_UPDATE: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "confli
 #: another document's, or on a different route; no `not_found`, because a disconnect that
 #: arrives before any capture records the tombstone rather than failing to find a document.
 _DOCUMENT_ORIGINAL_DISCONNECT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
+#: Moving one direct-file owner route to a newer generation. `conflict` is a route that is
+#: another document's or on a different route, or a generation that is not newer than the one
+#: Core holds (or too far ahead); no `not_found`, because a relink that arrives before any
+#: capture records the route rather than failing to find a document.
+_DOCUMENT_ORIGINAL_RELINK: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
 #: Deliberately excludes ``conflict``: a state-based cancel/retry refusal is a
 #: successful explicit disposition returning the unchanged handle, not an error.
 _JOB_CONTROL: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
@@ -1369,6 +1374,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "DOCUMENT_REPROCESS": _DOCUMENT_REPROCESS,
     "DOCUMENT_SETTINGS_UPDATE": _DOCUMENT_SETTINGS_UPDATE,
     "DOCUMENT_ORIGINAL_DISCONNECT": _DOCUMENT_ORIGINAL_DISCONNECT,
+    "DOCUMENT_ORIGINAL_RELINK": _DOCUMENT_ORIGINAL_RELINK,
     "GOV_MUT": _GOV_MUT,
     "CHAT_MUT": _CHAT_MUT,
     "IMPORT_START": _IMPORT_START,
@@ -1806,6 +1812,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "document.original.disconnect": FrozenOperation(
         "workspace", ("memory:write",), "update", "evidence.write",
         "evidence", "DocumentOriginalDisconnect", "DOCUMENT_ORIGINAL_DISCONNECT", False,
+    ),
+    "document.original.relink": FrozenOperation(
+        "workspace", ("memory:write",), "update", "evidence.write",
+        "evidence", "DocumentOriginalRelink", "DOCUMENT_ORIGINAL_RELINK", False,
     ),
 }
 

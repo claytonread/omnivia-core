@@ -273,13 +273,7 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
     /// Applies one reviewed picker policy. Both native pickers are configured
     /// here and nowhere else, so neither can drift from `CapturePickerPolicy`.
     private static func panel(for policy: CapturePickerPolicy) -> NSOpenPanel {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = policy.canChooseFiles
-        panel.canChooseDirectories = policy.canChooseDirectories
-        panel.allowsMultipleSelection = policy.allowsMultipleSelection
-        panel.treatsFilePackagesAsDirectories = policy.treatsFilePackagesAsDirectories
-        panel.resolvesAliases = policy.resolvesAliases
-        return panel
+        policy.openPanel()
     }
 
     @objc private func chooseFilesAction() {

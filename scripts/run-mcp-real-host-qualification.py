@@ -203,7 +203,7 @@ PROFILE_TOOLS: Final = {"restricted": RESTRICTED_TOOLS, "authoring": AUTHORING_T
 SAFE_AUXILIARY_TOOLS: Final = frozenset(
     {"workspace_inspect", "evidence_search", "knowledge_search", "memory_search"}
 )
-#: The fifty of the eighty-five catalogue operations that the exposure
+#: The fifty-one of the eighty-six catalogue operations that the exposure
 #: manifest does not admit (the other thirty-five are the authoring inventory),
 #: under their MCP-facing names.  The manifest
 #: stays the authority; ``test_the_unexposed_tools_are_exactly_the_catalogue_outside_the_manifest``
@@ -222,8 +222,8 @@ UNEXPOSED_TOOLS: Final = tuple(
         "decision.model.remove", "decision.outcome.submit",
         "decision.result_use.evaluate", "decision.settings.get",
         "decision.settings.update", "document.capture", "document.history",
-        "document.original.disconnect", "document.reprocess", "document.settings.get",
-        "document.settings.update",
+        "document.original.disconnect", "document.original.relink",
+        "document.reprocess", "document.settings.get", "document.settings.update",
         "engineering.repository.register",
         "engineering.review.record", "engineering.source.capture.commit",
         "engineering.source.record", "job.cancel", "job.retry", "knowledge.propose",

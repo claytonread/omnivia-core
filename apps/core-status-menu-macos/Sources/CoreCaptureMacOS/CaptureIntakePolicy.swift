@@ -19,6 +19,16 @@ public struct CapturePickerPolicy: Equatable, Sendable {
         resolvesAliases: false
     )
 
+    /// Locate (design §9.5): exactly one ordinary file, never a directory. It is chosen to
+    /// stand in for the named document's original, so it is one file and nothing else.
+    public static let relinkFile = CapturePickerPolicy(
+        canChooseFiles: true,
+        canChooseDirectories: false,
+        allowsMultipleSelection: false,
+        treatsFilePackagesAsDirectories: false,
+        resolvesAliases: false
+    )
+
     /// One folder, which is then reviewed for scope on its own.
     public static let folder = CapturePickerPolicy(
         canChooseFiles: false,

@@ -194,6 +194,25 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
         linkedDocumentID: String,
         fallback: CaptureDeliveryBinding
     ) async throws -> [OriginalDisconnectIntent] {
+        let (bindings, watches) = frozenBindings(of: linkedDocumentID)
+        let intents = try accessStore.disconnectSource(
+            linkedDocumentID: linkedDocumentID,
+            bindings: bindings,
+            fallback: NativeRootAccessBinding(fallback)
+        )
+        for watch in watches where watch.state != .stopped {
+            _ = try? await fileMonitoring.stop(subscriptionID: watch.subscriptionID)
+        }
+        return intents
+    }
+
+    /// The workspace and caller each route of one logical source was frozen under, by access
+    /// reference: the queued work that bound the route, then the watch registered for it,
+    /// which wins because it is the more recent statement of the same freeze. Also the
+    /// watches themselves.
+    func frozenBindings(
+        of linkedDocumentID: String
+    ) -> (bindings: [String: NativeRootAccessBinding], watches: [FileSubscription]) {
         var bindings: [String: NativeRootAccessBinding] = [:]
         for entry in queue.allEntries() {
             guard let original = entry.intent.originalBinding,
@@ -210,15 +229,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
         for watch in watches {
             bindings[watch.accessRef] = NativeRootAccessBinding(CaptureDeliveryBinding(watch))
         }
-        let intents = try accessStore.disconnectSource(
-            linkedDocumentID: linkedDocumentID,
-            bindings: bindings,
-            fallback: NativeRootAccessBinding(fallback)
-        )
-        for watch in watches where watch.state != .stopped {
-            _ = try? await fileMonitoring.stop(subscriptionID: watch.subscriptionID)
-        }
-        return intents
+        return (bindings, watches)
     }
 
     /// The reconciler for the intents `disconnectSource` records. The composition root owns

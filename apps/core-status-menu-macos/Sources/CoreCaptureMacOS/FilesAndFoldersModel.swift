@@ -196,6 +196,13 @@ public enum CoreHistoryAvailability: Equatable, Sendable {
     case stale(CoreDocumentHistory)
     case unavailable(CoreHistoryError)
 
+    /// The history only when it is the answer to the most recent read; a stale one is the
+    /// last thing Core said and not a statement to act on.
+    public var currentHistory: CoreDocumentHistory? {
+        if case let .current(value) = self { return value }
+        return nil
+    }
+
     /// The history itself, when there is one to show at all.
     public var history: CoreDocumentHistory? {
         switch self {
@@ -313,6 +320,12 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
     /// can be selected can be disconnected, whatever state its watch is in: a stopped,
     /// paused or access-lost watch still holds a route to revoke.
     public let disconnectEnabled: Bool
+    /// Locate (design §9.5), which moves the named document's original to a file the person
+    /// picks. Unlike Refresh, Open and Reveal it is also the remedy for an original that
+    /// cannot be read, so Core's reason reading it again is unavailable does not bar it; it
+    /// needs the binding Core confirmed to still be a connected one, a route that published
+    /// work owns, and no relink already owed.
+    public let locateEnabled: Bool
 
     public init(
         pauseTitle: String,
@@ -324,7 +337,8 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
         tryAgainEnabled: Bool = false,
         reprocessEnabled: Bool = false,
         originalActionsEnabled: Bool = false,
-        disconnectEnabled: Bool = false
+        disconnectEnabled: Bool = false,
+        locateEnabled: Bool = false
     ) {
         self.pauseTitle = pauseTitle
         self.pauseEnabled = pauseEnabled
@@ -336,6 +350,7 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
         self.reprocessEnabled = reprocessEnabled
         self.originalActionsEnabled = originalActionsEnabled
         self.disconnectEnabled = disconnectEnabled
+        self.locateEnabled = locateEnabled
     }
 }
 
@@ -563,6 +578,10 @@ public struct FilesAndFoldersModel: Sendable {
     /// in its own field, never folded into `activity`, because the two answer different
     /// questions and one of them is not this Mac's to answer.
     public let coreHistory: CoreHistoryState
+    /// The Locate requests Core has not yet confirmed, as projections without a bookmark
+    /// or a path. A file with one is mid-relink: its updates are paused and it reads
+    /// nothing until Core answers.
+    public let relinks: [OriginalRelinkProgress]
 
     public init(
         workspaceName: String,
@@ -573,7 +592,8 @@ public struct FilesAndFoldersModel: Sendable {
         activity: [CaptureActivityRecord] = [],
         activityAvailability: CaptureActivityAvailability = .current,
         independentlyRoutedDocuments: Set<String> = [],
-        coreHistory: CoreHistoryState = .notRequested
+        coreHistory: CoreHistoryState = .notRequested,
+        relinks: [OriginalRelinkProgress] = []
     ) {
         self.workspaceName = workspaceName
         self.files = files
@@ -584,6 +604,7 @@ public struct FilesAndFoldersModel: Sendable {
         self.activityAvailability = activityAvailability
         self.independentlyRoutedDocuments = independentlyRoutedDocuments
         self.coreHistory = coreHistory
+        self.relinks = relinks
         activityGroups = Self.activityGroups(records: activity, runs: runs)
     }
 
@@ -599,7 +620,8 @@ public struct FilesAndFoldersModel: Sendable {
             activity: activity,
             activityAvailability: activityAvailability,
             independentlyRoutedDocuments: independentlyRoutedDocuments,
-            coreHistory: history
+            coreHistory: history,
+            relinks: relinks
         )
     }
 
@@ -890,7 +912,8 @@ public struct FilesAndFoldersModel: Sendable {
         for item: FilesAndFoldersItem?,
         activity: CaptureActivityAvailability = .current,
         coreHistory: CoreHistoryState = .notRequested,
-        provisionalAccessRefs: Set<String> = []
+        provisionalAccessRefs: Set<String> = [],
+        relinks: [OriginalRelinkProgress] = []
     ) -> FilesAndFoldersActions {
         guard let item else {
             return FilesAndFoldersActions(
@@ -908,7 +931,15 @@ public struct FilesAndFoldersModel: Sendable {
             // from a failed one, and not inferred from the file's local state.
             let reprocessable: Bool
             let originalActions: Bool
+            var locate = false
+            let relink = relinks.first { $0.accessRef == value.accessRef }
             if case let .current(history) = coreHistory.availability(for: value.linkedDocumentID) {
+                // A refused relink is finished, so another Locate may replace it; one Core
+                // has not answered is not, because the person does not alternate between
+                // candidate originals.
+                locate = Self.permitsLocate(history)
+                    && !provisionalAccessRefs.contains(value.accessRef)
+                    && (relink == nil || relink?.refusalCode != nil)
                 reprocessable = !history.reprocessableCaptures.isEmpty
                 // Core's confirmation is necessary, not sufficient: a grant this Mac
                 // still holds as provisional is not an active route (design §7.2),
@@ -927,8 +958,12 @@ public struct FilesAndFoldersModel: Sendable {
                 value.state,
                 resumable: [.paused, .needsAccess],
                 reprocessEnabled: reprocessable,
-                originalActionsEnabled: originalActions,
-                disconnectEnabled: true
+                originalActionsEnabled: originalActions && relink == nil,
+                disconnectEnabled: true,
+                locateEnabled: locate,
+                // Nothing can be read while the route waits on Core, so there is nothing to
+                // resume, and resuming is the person's decision about the new file.
+                pauseBlocked: relink != nil
             )
         case let .folder(value):
             return subscriptionActions(
@@ -1009,26 +1044,37 @@ public struct FilesAndFoldersModel: Sendable {
             && history.refreshUnavailableReason == nil
     }
 
+    /// Locate is the remedy for an original that cannot be read, so it asks only that Core
+    /// still holds a connected binding for an active source. See `locateEnabled`.
+    private static func permitsLocate(_ history: CoreDocumentHistory) -> Bool {
+        history.source.sourceState == .active
+            && history.source.originalBindingState == .connected
+    }
+
     private static func subscriptionActions(
         _ state: FolderSubscriptionState,
         resumable: Set<FolderSubscriptionState>,
         reprocessEnabled: Bool = false,
         originalActionsEnabled: Bool = false,
-        disconnectEnabled: Bool = false
+        disconnectEnabled: Bool = false,
+        locateEnabled: Bool = false,
+        pauseBlocked: Bool = false
     ) -> FilesAndFoldersActions {
         FilesAndFoldersActions(
             pauseTitle: state == .reviewRequired
                 ? "Continue changes"
                 : resumable.contains(state) ? "Resume" : "Pause",
-            pauseEnabled: [.active, .paused, .needsAccess, .reviewRequired].contains(state),
+            pauseEnabled: [.active, .paused, .needsAccess, .reviewRequired].contains(state)
+                && !pauseBlocked,
             stopTitle: "Stop updating",
             stopEnabled: state != .stopped,
-            checkEnabled: state == .active,
+            checkEnabled: state == .active && !pauseBlocked,
             // Reprocessing works on bytes Core already holds, so a stopped watch or a
             // missing original does not bar it. What bars it is Core saying so.
             reprocessEnabled: reprocessEnabled,
             originalActionsEnabled: originalActionsEnabled,
-            disconnectEnabled: disconnectEnabled
+            disconnectEnabled: disconnectEnabled,
+            locateEnabled: locateEnabled
         )
     }
 
@@ -1057,8 +1103,30 @@ public struct FilesAndFoldersModel: Sendable {
         if value.state == .stopped {
             facts.append(Self.retainedLinksFact)
         }
+        if let relink = relinks.first(where: { $0.accessRef == value.accessRef }) {
+            facts.append(Self.relinkFact(relink))
+        }
         facts += coreHistoryFacts(documentID: value.linkedDocumentID)
         return facts
+    }
+
+    /// What a Locate still waiting on Core means (design §9.5): the old file is no longer read,
+    /// the new one has not been, and nothing of it has been captured.
+    static func relinkFact(_ relink: OriginalRelinkProgress) -> DetailFact {
+        if let code = relink.refusalCode {
+            return DetailFact(
+                label: "Locate",
+                value: "Core refused to move this file to \(relink.candidateName) (\(code)). "
+                    + "Nothing was read from it and updates stay paused. Choose Locate to pick "
+                    + "the file again."
+            )
+        }
+        return DetailFact(
+            label: "Locate",
+            value: "Moving to \(relink.candidateName). Core has not yet confirmed the new file, "
+                + "so neither the old file nor the new one is read and updates stay paused. "
+                + "Nothing from the new file has been captured."
+        )
     }
 
     /// The canonical Core history of one document, as rows, or the exact reason there is

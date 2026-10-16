@@ -30,9 +30,14 @@ public final class FolderManagementWindowController: NSWindowController,
     /// operations this surface uses. `nil` when no client could be resolved, which is a
     /// state the detail pane states rather than a reason to show nothing.
     private let historyTransport: CoreDocumentHistoryTransport?
-    /// Re-choosing the original through the existing native access flow. The window owns
-    /// no picker and no bookmark: this is the one owner's own entry point, invoked.
-    private let locateOriginal: (() -> Void)?
+    /// Locate (design §9.5) for one file, handed what Core last said about it so the owner can
+    /// compare the chosen file with the last captured version. The window owns no picker and
+    /// no bookmark: the picker, the comparison, the confirmation and the relink are the one
+    /// owner's own, invoked with the file and nothing else.
+    private let locateOriginal: ((FileSubscription, CoreDocumentHistory?) -> Void)?
+    /// The Locate requests Core has not yet confirmed, read through a closure so the window
+    /// never holds the access store. Projections only: no bookmark, no path.
+    private let pendingRelinks: () -> [OriginalRelinkProgress]
     /// Answers whether the identity this Mac is authenticated for is the one a
     /// watch froze, after pausing every watch that is not. Resuming or checking
     /// a watch reads its source, so neither runs on a "no": a watch paused for a
@@ -96,7 +101,8 @@ public final class FolderManagementWindowController: NSWindowController,
         rootGroups: @escaping () -> [NativeRootAccessDescriptor],
         documentRoutes: @escaping () -> [NativeAccessDescriptor],
         historyTransport: CoreDocumentHistoryTransport? = nil,
-        locateOriginal: (() -> Void)? = nil,
+        locateOriginal: ((FileSubscription, CoreDocumentHistory?) -> Void)? = nil,
+        pendingRelinks: @escaping () -> [OriginalRelinkProgress] = { [] },
         identityAuthorises: ((CaptureDeliveryBinding) async -> Bool)? = nil,
         releaseHeld: ((Set<CaptureQueuePause>) async -> Void)? = nil,
         disconnectSource: ((FileSubscription) async -> Bool)? = nil
@@ -114,6 +120,7 @@ public final class FolderManagementWindowController: NSWindowController,
         self.documentRoutes = documentRoutes
         self.historyTransport = historyTransport
         self.locateOriginal = locateOriginal
+        self.pendingRelinks = pendingRelinks
         self.identityAuthorises = identityAuthorises
         self.releaseHeld = releaseHeld
         self.disconnectSource = disconnectSource
@@ -276,6 +283,10 @@ public final class FolderManagementWindowController: NSWindowController,
         statusFilterButton.selectItem(at: applicable.firstIndex(of: statusFilter) ?? 0)
     }
 
+    /// Re-reads the durable stores behind the window. The composition root calls it when work
+    /// that finished off the main actor (a Locate) changed what the window lists.
+    public func refresh() { reload() }
+
     func reload() {
         let folders = folderStore.all()
         let runs = bulkStore.all()
@@ -309,7 +320,8 @@ public final class FolderManagementWindowController: NSWindowController,
             independentlyRoutedDocuments: FilesAndFoldersModel.independentlyRoutedDocuments(
                 routes: documentRoutes()
             ),
-            coreHistory: historyState
+            coreHistory: historyState,
+            relinks: pendingRelinks()
         )
         applyFilters()
     }
@@ -335,7 +347,8 @@ public final class FolderManagementWindowController: NSWindowController,
         let actions = FilesAndFoldersModel.actions(
             for: selected,
             activity: model.activityAvailability,
-            coreHistory: historyState
+            coreHistory: historyState,
+            relinks: model.relinks
         )
         pauseResumeButton.title = actions.pauseTitle
         pauseResumeButton.isEnabled = actions.pauseEnabled
@@ -350,12 +363,12 @@ public final class FolderManagementWindowController: NSWindowController,
         clearButton.isEnabled = model.canMutateActivity && model.clearableActivityCount > 0
         // Both canonical controls belong to one file, so neither appears on a surface
         // that is not listing files. Reprocess is enabled only when Core reported the
-        // action available; the original action only when the central decision permits
-        // it -- a wired owner and a selected file are necessary, never sufficient.
+        // action available; Locate only when the central decision permits it -- a wired
+        // owner and a selected file are necessary, never sufficient.
         reprocessButton.isHidden = segment != .files
         reprocessButton.isEnabled = actions.reprocessEnabled
         locateButton.isHidden = segment != .files
-        locateButton.isEnabled = permitsOriginalAction(for: selected)
+        locateButton.isEnabled = permitsLocate(for: selected)
         disconnectButton.isHidden = segment != .files
         disconnectButton.isEnabled = actions.disconnectEnabled && disconnectSource != nil
         detailView.string = model.detail(for: selected)
@@ -574,7 +587,7 @@ public final class FolderManagementWindowController: NSWindowController,
             .joined(separator: "\n")
     }
 
-    /// Whether the original-file action may be offered for `item`, or taken on it.
+    /// Whether Locate may be offered for `item`, or taken on it.
     ///
     /// One rule in one place, because the button's enabled state and the action's own
     /// check must not be able to disagree: a pass that left the button enabled is not a
@@ -585,26 +598,32 @@ public final class FolderManagementWindowController: NSWindowController,
     ///
     /// Fail-closed: no owner, a selection that is not a file, a requested but
     /// unconfirmed association, a snapshot-only capture, a held answer about another
-    /// document, a stale read and a read that never happened all permit nothing.
-    func permitsOriginalAction(for item: FilesAndFoldersItem?) -> Bool {
+    /// document, a stale read, a read that never happened and a relink already waiting on
+    /// Core all permit nothing.
+    func permitsLocate(for item: FilesAndFoldersItem?) -> Bool {
         guard locateOriginal != nil, case .file? = item else { return false }
         return FilesAndFoldersModel.actions(
             for: item,
             activity: model.activityAvailability,
             coreHistory: historyState,
             // Read now, not from the last reload: a provisional grant must refuse here
-            // even if the list on screen predates its promotion or its creation.
-            provisionalAccessRefs: FilesAndFoldersModel.provisionalAccessRefs(routes: documentRoutes())
-        ).originalActionsEnabled
+            // even if the list on screen predates its promotion or its creation, and a
+            // relink Core has not answered must refuse a second candidate.
+            provisionalAccessRefs: FilesAndFoldersModel.provisionalAccessRefs(routes: documentRoutes()),
+            relinks: pendingRelinks()
+        ).locateEnabled
     }
 
     /// Enforces that rule again from the facts held now, then hands the selection to the
-    /// one owner of native access. Returns whether the owner was invoked, which is what
-    /// makes the refused path observable without a click.
+    /// one owner of Locate. Returns whether the owner was invoked, which is what makes the
+    /// refused path observable without a click.
     @discardableResult
-    func invokeOriginalAction(for item: FilesAndFoldersItem?) -> Bool {
-        guard permitsOriginalAction(for: item), let locateOriginal else { return false }
-        locateOriginal()
+    func invokeLocate(for item: FilesAndFoldersItem?) -> Bool {
+        guard permitsLocate(for: item), let locateOriginal, case let .file(value)? = item else {
+            return false
+        }
+        locateOriginal(value, historyState.availability(for: value.linkedDocumentID).currentHistory)
+        reload()
         return true
     }
 
@@ -781,7 +800,7 @@ public final class FolderManagementWindowController: NSWindowController,
     /// held answer as they are now, rather than trusting a button an earlier pass left
     /// enabled. This window chooses no file, holds no bookmark and replaces no frozen key.
     @objc private func locateOriginalFile() {
-        invokeOriginalAction(for: selected)
+        invokeLocate(for: selected)
     }
 
     @objc private func clearCompletedActivity() {

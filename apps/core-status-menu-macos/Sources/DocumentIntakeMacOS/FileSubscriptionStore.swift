@@ -8,7 +8,9 @@ public struct FileSubscription: Codable, Equatable, Sendable {
     public let requestedSourceIdentity: String
     public let displayName: String
     public let contentKind: CaptureContentKind
-    public let bindingGeneration: UInt64
+    /// The generation of the route this watch reads through. A Locate moves it, once Core has
+    /// confirmed the generation the route reserved.
+    public var bindingGeneration: UInt64
     public let baselineItemID: String
     public let targetRef: String
     public let workspaceRef: String

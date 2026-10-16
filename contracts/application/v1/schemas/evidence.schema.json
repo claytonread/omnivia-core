@@ -723,6 +723,32 @@
       },
       "required": ["document_id", "owner_ref", "binding_generation", "connection_state"],
       "unevaluatedProperties": false
+    },
+    "DocumentOriginalRelinkInput": {
+      "title": "DocumentOriginalRelinkInput",
+      "description": "Closed input for `document.original.relink`. Names one opaque owner/device route of one document's original (a direct file) and asks Core to move it to the new binding generation the companion reserved locally before it read any byte of the newly chosen file, connected. A capture claiming an older generation of that route is thereafter historical only and can never reactivate or promote under the new one. A relink that reaches Core before the first capture of the document is recorded anyway. It carries no path, URL or bookmark.",
+      "type": "object",
+      "properties": {
+        "document_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Logical document whose original route is relinked."},
+        "owner_ref": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Opaque native access-owner reference of the direct-file route."},
+        "binding_generation": {"type": "integer", "minimum": 2, "maximum": 9223372036854775807, "description": "The NEW binding generation the companion reserved locally before reading any byte of the newly chosen file."}
+      },
+      "required": ["document_id", "owner_ref", "binding_generation"],
+      "unevaluatedProperties": false
+    },
+    "DocumentOriginalRelinkResult": {
+      "title": "DocumentOriginalRelinkResult",
+      "description": "Canonical terminal receipt for one source-level relink or its exact replay: the route as Core now holds it, connected at the named generation.",
+      "type": "object",
+      "properties": {
+        "document_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Logical document whose original route was relinked."},
+        "owner_ref": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Opaque native access-owner reference of the route."},
+        "binding_generation": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "The binding generation Core now holds connected; a capture under an older generation of this route is historical only."},
+        "connection_state": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Closed value `connected`."},
+        "current_capture_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "The document's current successful capture as Core held it when the relink committed; absent when the document has none. The companion bases its next refresh on it."}
+      },
+      "required": ["document_id", "owner_ref", "binding_generation", "connection_state"],
+      "unevaluatedProperties": false
     }
   }
 }

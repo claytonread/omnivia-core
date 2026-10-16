@@ -73,6 +73,11 @@ _LEGACY_PROFILE_REF: Final = "legacy-default"
 #: revision are both inputs to the profile digest this admission freezes, so the pair
 #: the digest was taken over has to be the pair the row stores.
 _LEGACY_PROFILE_REVISION: Final = "1"
+#: The most generations one relink may advance a route. The storage triggers allow only
+#: disconnected-to-connected at generation + 1, so a relink walks the route one cycle per
+#: generation inside its one transaction; the companion reserves generations one at a time,
+#: so a larger gap is not a relink it could have sent.
+_MAX_RELINK_ADVANCE: Final = 16
 
 
 class DocumentIntakeRefused(RuntimeError):
@@ -269,6 +274,50 @@ def move_original_in_transaction(
     return store.move_binding(
         runner.connection, binding, connect=connect, fencing_generation=runner.generation, now_us=now_us
     )
+
+
+def relink_original_in_transaction(
+    runner: ServiceRunner, *, document_id: str, owner_ref: str, generation: int,
+) -> store.StoredBinding:  # fmt: skip
+    """Leave the owner's direct-file route connected at exactly `generation`, in the caller's fenced transaction.
+
+    Migration 0069 allows only connected-to-disconnected at the same generation and
+    disconnected-to-connected one generation later, so the route advances by cycles. A route Core has not
+    seen yet is recorded connected at generation one first, so a capture under an older generation that
+    arrives later is historical. A generation that is not newer than the stored one, or more than
+    `_MAX_RELINK_ADVANCE` ahead of it, is refused before anything is written.
+    """
+    assert runner.connection is not None and runner.workspace_id is not None
+    assert runner.generation is not None
+    binding = _binding_for(
+        runner, document_id=document_id, owner_ref=owner_ref, route_kind=store.ROUTE_DIRECT_FILE,
+        root_ref=None, member_ref=None,
+    )  # fmt: skip
+    current = 1 if binding is None else binding.binding_generation
+    if current >= generation:
+        raise DocumentIntakeRefused("the relink generation is not newer than the one Core holds")
+    if generation - current > _MAX_RELINK_ADVANCE:
+        raise DocumentIntakeRefused("the relink generation is too far ahead of the one Core holds")
+    now_us = _now_us()
+    if binding is None:
+        store.ensure_document(
+            runner.connection, workspace_id=runner.workspace_id, document_id=document_id,
+            fencing_generation=runner.generation, now_us=now_us,
+        )  # fmt: skip
+        binding = store.insert_binding(
+            runner.connection, workspace_id=runner.workspace_id, owner_ref=owner_ref,
+            document_id=document_id, route_kind=store.ROUTE_DIRECT_FILE, root_ref=None, member_ref=None,
+            state=store.BINDING_CONNECTED, fencing_generation=runner.generation, now_us=now_us,
+        )  # fmt: skip
+    while binding.binding_generation < generation:
+        if binding.connection_state == store.BINDING_CONNECTED:
+            binding = store.move_binding(
+                runner.connection, binding, connect=False, fencing_generation=runner.generation, now_us=now_us
+            )
+        binding = store.move_binding(
+            runner.connection, binding, connect=True, fencing_generation=runner.generation, now_us=now_us
+        )
+    return binding
 
 
 def connect_original(
