@@ -682,8 +682,8 @@ public final class CapturePanelController: NSObject, NSWindowDelegate, NSTableVi
                     outcome: .queued(queued: entries.count),
                     detail: [
                         entries.count == 1
-                            ? "Queued on this Mac."
-                            : "\(entries.count) items queued on this Mac.",
+                            ? ShareInboxStore.queuedWording
+                            : "\(entries.count) items queued on this Mac. Open OmniVia Core to send.",
                         unrecorded,
                     ].compactMap { $0 }.joined(separator: " ")
                 ))

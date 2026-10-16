@@ -4,6 +4,10 @@ import Foundation
 public enum CaptureDeliveryOutcome: Equatable, Sendable {
     case admitted(captureID: String)
     case definiteFailure(code: String)
+    /// Nothing reached the target: it is absent or could not be started, so the
+    /// attempt provably had no effect. The intent returns to pending, bytes and
+    /// identity untouched, and is never retargeted to anything that is present.
+    case notSent
     case unknown
 }
 
@@ -391,6 +395,20 @@ public actor CaptureDeliveryCoordinator {
                     ))
                 case let .definiteFailure(code):
                     outcomes.append(try queue.markFailed(itemID: entry.intent.itemId, failureCode: code))
+                case .notSent:
+                    // The queue's own evidence path: the attempt is settled as
+                    // known-no-effect against its exact digests, so a later
+                    // pass sends under a fresh attempt key rather than this one.
+                    _ = try queue.markUnknownOutcome(
+                        itemID: entry.intent.itemId,
+                        attemptGeneration: staging.attemptGeneration
+                    )
+                    outcomes.append(try queue.recoverKnownNoEffect(
+                        itemID: entry.intent.itemId,
+                        attemptGeneration: staging.attemptGeneration,
+                        requestDigest: requestDigest,
+                        descriptorDigest: transport.descriptorDigest
+                    ))
                 case .unknown:
                     outcomes.append(try queue.markUnknownOutcome(
                         itemID: entry.intent.itemId,
@@ -398,7 +416,11 @@ public actor CaptureDeliveryCoordinator {
                     ))
                 }
             } catch {
-                if let current = queue.allEntries().first(where: { $0.intent.itemId == entry.intent.itemId }),
+                let current = queue.allEntries().first { $0.intent.itemId == entry.intent.itemId }
+                // An attempt already settled as unknown stays unknown: failing
+                // it would claim a definite outcome nobody established.
+                if current?.state == .unknownOutcome { continue }
+                if let current,
                    current.state == .staging,
                    let changed = try? queue.markUnknownOutcome(
                        itemID: current.intent.itemId,

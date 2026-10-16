@@ -38,11 +38,14 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
             ]
             let inputPipe = Pipe()
             let outputPipe = Pipe()
+            let errorPipe = Pipe()
             process.standardInput = inputPipe
             process.standardOutput = outputPipe
-            process.standardError = FileHandle.nullDevice
+            process.standardError = errorPipe
+            // A process that cannot be launched — the executable is gone —
+            // never read the input, so nothing was sent.
+            do { try process.run() } catch { return .notSent }
             do {
-                try process.run()
                 try inputPipe.fileHandleForWriting.write(contentsOf: input)
                 try inputPipe.fileHandleForWriting.close()
                 let deadline = Date().addingTimeInterval(25)
@@ -53,13 +56,10 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
                     process.terminate()
                     return .unknown
                 }
-                let output = try outputPipe.fileHandleForReading.readToEnd() ?? Data()
-                guard output.count <= 1024 * 1024,
-                      let document = try JSONSerialization.jsonObject(with: output) as? [String: Any]
-                else { return .unknown }
                 return Self.outcome(
-                    from: document,
-                    terminationStatus: process.terminationStatus
+                    status: process.terminationStatus,
+                    output: try outputPipe.fileHandleForReading.readToEnd() ?? Data(),
+                    diagnostic: try errorPipe.fileHandleForReading.readToEnd() ?? Data()
                 )
             } catch {
                 if process.isRunning { process.terminate() }
@@ -91,5 +91,34 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
             return .definiteFailure(code: code)
         }
         return .unknown
+    }
+
+    /// The CLI's fixed diagnostics for a refusal that happens before anything is
+    /// sent (`omnivia_core_cli.main`, which a test pins verbatim). They go to
+    /// stderr only, so the exit status and the sentence are read together: the
+    /// exit status alone is shared with failures that can follow a send.
+    static let managedStartFailed = "the managed service could not be started"
+    static let credentialRefused = "the service did not accept this client's credential"
+    static let versionDisagreed = "this client and the service could not agree on a version"
+    static let refusedBeforeSend = "the call was refused here and never sent"
+
+    /// What one finished CLI run established. Only a service answer or one of
+    /// the fixed pre-send refusals is definite; every other shape — a missing
+    /// answer, an oversized one, an unlisted diagnostic — stays unknown, so an
+    /// attempt that may have been received is never reported as not sent.
+    static func outcome(status: Int32, output: Data, diagnostic: Data) -> CaptureDeliveryOutcome {
+        if output.count <= 1024 * 1024,
+           let document = try? JSONSerialization.jsonObject(with: output) as? [String: Any] {
+            return outcome(from: document, terminationStatus: status)
+        }
+        guard output.isEmpty, diagnostic.count <= 256 else { return .unknown }
+        switch (status, String(decoding: diagnostic, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)) {
+        case (1, managedStartFailed): return .notSent
+        case (3, credentialRefused): return .definiteFailure(code: "target_credential_refused")
+        case (4, versionDisagreed): return .definiteFailure(code: "target_incompatible")
+        case (2, refusedBeforeSend): return .definiteFailure(code: "refused_before_send")
+        default: return .unknown
+        }
     }
 }
