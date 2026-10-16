@@ -1112,11 +1112,31 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CapturePreparationCoordinatorTests.swift",
           "symbol": "testPublishesCompletePreparedSelectionWithFrozenBytes",
           "covers": "The companion freezes the bytes it publishes."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CapturePreparationCoordinatorTests.swift",
+          "symbol": "testAFileRewrittenWhileTheProductionReaderHasItOpenIsNeverCapturedAsAMix",
+          "covers": "A real file rewritten in place, at the same length, while the production reader has it open: the pass is refused and the one that settles publishes one whole version with that version's length and digest."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CapturePreparationCoordinatorTests.swift",
+          "symbol": "testAFileThatGrowsWhileTheProductionReaderHasItOpenPublishesLengthAndBytesTogether",
+          "covers": "A real file that grows mid-read is refused for that pass, and the settling pass carries the grown payload and the grown length together."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CapturePreparationCoordinatorTests.swift",
+          "symbol": "testAFileRewrittenOnEveryReadIsABoundedFailureThatPublishesNothing",
+          "covers": "A real file rewritten on every chunk never settles: three attempts, a fileChanged failure, and no entry, payload or candidate."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CapturePreparationCoordinatorTests.swift",
+          "symbol": "testMetadataFromOneVersionOverAnotherVersionsBytesCannotCommit",
+          "covers": "The queue refuses one version's length and digest over another version's bytes at the commit boundary."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The Python refusals belong to the engineering source-capture read path, not to the macOS document-intake preparation path the gate is about. No test on the companion side changes a file while CapturePreparationCoordinator is reading it, so the metadata-payload pairing invariant is unproven where it matters.",
-      "limitations": "Mid-read refusal is demonstrated on a different read path in a different language. Reusing it as evidence here would be exactly the similarly-named-test substitution this ledger is meant to prevent, so it is listed as partial only.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The companion tests drive the production SystemCoordinatedOriginalReader over a real file in the temporary directory, through CapturePreparationCoordinator, with the rewrite injected at a chunk boundary by a seam that is nil in production; no second process writes concurrently. Detection is the reader's own: size, modification time, file resource identifier and the length actually read, each taken from a fresh stat. A rewrite that keeps all four unchanged within the file system's timestamp resolution is not detectable by this reader, and no test claims otherwise. The Python source-capture refusals are a separate read path and are listed for the Core runtime half only. Writing this gate found that the reader's closing stat came from the same cached URL as its opening one, so only the length check could ever fire; that defect is fixed in the same change.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/source_capture.py",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CapturePreparationCoordinator.swift"
@@ -1199,11 +1219,16 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/NativeAccessStoreTests.swift",
           "symbol": "testDisconnectRevokesBytesAndRelinkAdvancesTheGeneration",
           "covers": "Relink is what advances the generation the rejection keys on."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CoreDocumentHistoryTests.swift",
+          "symbol": "testLocateDuringARefreshPreparationNeverPublishesTheChosenFileUnderTheOldAssociation",
+          "covers": "The management window's own Locate action, invoked while a watched file's refresh is held mid-read, publishes the chosen file under a new document and grant and leaves the in-flight refresh publishing its own bytes under the old association and generation."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The generation fence is covered, but it is never driven by an actual Locate action. No test invokes Locate, because the chooser that performs it lives in the panel and management UI, neither of which has a test that reaches the preparation coordinator.",
-      "limitations": "The fence is the right mechanism and is well covered as a mechanism. The gate asks about the Locate path specifically, and that path is not connected to it in any test.",
+      "status": "not_implemented",
+      "missing_condition": "Locate as the design specifies it does not exist. Section 9.5 has Locate stage a candidate binding for the named logical file, reserve a new binding generation and persist a recoverable relink intent through Core, with the old grant refused for the newly chosen file until Core confirms. The companion's Locate action only opens the file chooser, and the chosen file is added through the ordinary Add path under a fresh document and grant, so no Locate ever advances the generation of the file it was invoked for. Core has no relink operation on the wire either: connect_original is a library function with no handler. The gate's scenario, an old generation publishing a newly located file, therefore cannot be constructed from the product, and it is not recorded as passed on the strength of that absence.",
+      "limitations": "What is proven is the as-built behaviour: the real Locate action during an in-flight refresh cannot put the chosen file's bytes under the old document, grant, source identity or generation, and the generation fence rejects a same-grant relink that lands mid-preparation. The native file chooser needs a run loop, so the test replaces only the pick with a fixed one and otherwise runs the companion's own review and Add path. Section 9.5 relink, its comparison and confirmation, and its Core intent remain to be built before this gate can be asked its real question.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CapturePreparationCoordinator.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift"
@@ -1235,11 +1260,26 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIntentQueueTests.swift",
           "symbol": "testRefusedTwoItemBatchExposesNeitherItem",
           "covers": "A refused two-item batch exposes neither item."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CapturePreparationCoordinatorTests.swift",
+          "symbol": "testADisconnectThatWinsAfterTheCandidateIsPreparedPublishesNoneOfTheBatch",
+          "covers": "The store's document-level Disconnect lands with the whole multi-file batch written and unpublished: the revocation wins, neither item publishes, the candidate is discarded, the untouched document stays connected and the revocation survives a reopen."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CapturePreparationCoordinatorTests.swift",
+          "symbol": "testADisconnectRacingTheFinalPublicationPreventsTheEntireBatch",
+          "covers": "A real Disconnect of one grant landing during the last read rejects the whole batch, including the item whose grant was untouched."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CapturePreparationCoordinatorTests.swift",
+          "symbol": "testADisconnectRaisedInsideTheCriticalSectionCannotSplitTheBatch",
+          "covers": "The other ordering: a Disconnect raised inside the critical section blocks on the shared gate and lands after the whole batch committed."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Every covered interleaving is a pause or a subscription change. No test commits an actual Disconnect against an in-flight multi-file publication, so the specific revocation-wins ordering the gate names is not exercised.",
-      "limitations": "Atomicity, whole-batch rejection and the single gate are all well covered. The revoking operation used is not the one the gate names.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Both orderings of the race are driven with the store's real Disconnect over the one shared gate, on separate threads for the contended case. The revoking operation is the store primitive NativeAccessStore.disconnect, which is what section 13.3 steps 1 to 3 describe; the companion has no Disconnect control that calls it yet, so the user-facing action is not part of this evidence. The canonical half of Disconnect, a persisted intent reconciled with Core, does not exist and is AT-30's concern, not this gate's.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CapturePreparationCoordinator.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",
@@ -1297,11 +1337,16 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_intake.py",
           "symbol": "test_a_disconnect_before_first_capture_is_an_owner_scoped_tombstone",
           "covers": "The canonical side of the disconnect is idempotent under the same owner key."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureRecoveryAcceptanceTests.swift",
+          "symbol": "testALostAcknowledgementKeepsTheDisconnectAndResumesOnTheSameKey",
+          "covers": "A lost capture-delivery acknowledgement, after the person disconnected the original, leaves the local revocation intact across a restart, creates no second intent and no rediscovery, and resumes under the same document, owner and source identity. This is the capture half; no disconnect acknowledgement is involved."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test loses a disconnect acknowledgement. Lost-acknowledgement recovery is covered for handoff adoption and for capture publication, but not for revocation, so nothing shows the local revocation surviving and the reconciliation resuming on the same key.",
-      "limitations": "Both halves exist as separate capabilities on separate sides. The gate is about their interaction across a dropped message, and no test spans the two.",
+      "status": "not_implemented",
+      "missing_condition": "The canonical half of Disconnect does not exist on the companion side. Section 13.3 steps 4 and 5 persist a fixed disconnect intent for the canonical original binding and reconcile it with its stable key. The companion persists no such intent and calls nothing: nothing outside tests calls NativeAccessStore.disconnect(linkedDocumentID:), and Core exposes disconnect_original only as a library function with no handler or operation on the wire, so there is no acknowledgement to lose. Building it needs a new Core application operation, a companion intent store and a reconciler, which is a cross-repository contract decision rather than a test.",
+      "limitations": "Evidence is two real halves that do not meet. Local revocation is durable and refuses every later read after a restart, and a lost capture acknowledgement resumes on the same canonical key without resurrecting or rediscovering the source. Core's own disconnect is idempotent under the same owner key. Neither crosses a dropped disconnect message because that message is never sent.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py"

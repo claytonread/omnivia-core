@@ -1702,9 +1702,168 @@ final class CoreDocumentHistoryTests: XCTestCase {
         XCTAssertEqual(file.statusLabel, "Watching")
         XCTAssertTrue(linked.permitsOriginalAction(for: file))
     }
+
+    // MARK: - AT-27 · Locate during preparation
+
+    /// AT-27. A watched file's refresh is mid-preparation — its bytes are being
+    /// read — when the person uses the management window's Locate action. The
+    /// action is the window's own, gated by the same decision as the button, and
+    /// its owner does what the companion wires it to: it puts the chosen file
+    /// through review and the one Add path (the native chooser, which needs a
+    /// run loop, is the only thing replaced, by a fixed pick).
+    ///
+    /// Locate adds the chosen file as its own logical document under a grant of
+    /// its own. The refresh that was already in flight therefore publishes what
+    /// it read, under the association it was prepared for, and the located file
+    /// is published under its own — the chosen file's bytes never appear under
+    /// the old document, grant or generation. The generation fence that guards a
+    /// same-grant relink is `testGenerationChangeAfterReadsRejectsWholeBatch`.
+    @MainActor
+    func testLocateDuringARefreshPreparationNeverPublishesTheChosenFileUnderTheOldAssociation() async throws {
+        let root = try scratchDirectory()
+        let original = root.appendingPathComponent("watched.txt")
+        let chosen = root.appendingPathComponent("chosen.txt")
+        try Data("baseline".utf8).write(to: original)
+        try Data("the file Locate chose".utf8).write(to: chosen)
+        let reader = PausingReader()
+        let clock = SchedulingClock()
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: CountingBookmarkCodec(),
+            reader: reader,
+            monotonicClock: clock.reader
+        )
+        let submission = ManualCaptureSubmission(
+            environment: environment, binding: .companion(workspaceRef: "workspace-1")
+        )
+
+        // One admitted baseline, which is what makes the watch active.
+        let baseline = try await submission.submit(
+            [ManualCaptureCandidate(url: original, keepUpdated: true)]
+        )
+        let digest = "sha256:" + String(repeating: "d", count: 64)
+        let staging = try environment.queue.beginStage(
+            itemID: baseline[0].intent.itemId, requestDigest: digest, descriptorDigest: digest
+        )
+        _ = try environment.queue.markAdmitted(
+            itemID: baseline[0].intent.itemId,
+            attemptGeneration: staging.attemptGeneration,
+            captureID: "dcap-" + String(repeating: "a", count: 64)
+        )
+        _ = await environment.fileMonitoring.reconcileReceipts()
+        let watch = try XCTUnwrap(environment.fileSubscriptions.all().first)
+        XCTAssertEqual(watch.state, .active)
+
+        // The window, over the same stores, with Locate wired as the companion
+        // wires it.
+        let panel = CapturePanelController(
+            workspaceName: "workspace-1",
+            submitter: submission,
+            folderSubmitter: nil,
+            onQueued: nil,
+            opensWindow: false
+        )
+        var located: Task<Void, Never>?
+        let window = try managementWindow(
+            locateOriginal: {
+                panel.addIncoming([chosen])
+                located = panel.beginSubmit()
+            },
+            environment: environment
+        )
+        window.historyState = CoreHistoryState(
+            documentID: watch.linkedDocumentID,
+            availability: .current(try history(Wire.page(binding: "connected")))
+        )
+        window.reload()
+        let row = try XCTUnwrap(window.model.items(segment: .files).first)
+        XCTAssertTrue(window.permitsOriginalAction(for: row))
+
+        // The refresh starts preparing and stops with its original open.
+        try Data("a newer version".utf8).write(to: original)
+        await environment.fileMonitoring.markDirty(subscriptionIDs: [watch.subscriptionID])
+        clock.advance(3_000)
+        reader.arm(original.lastPathComponent)
+        let refresh = Task.detached { await environment.fileMonitoring.reconcileAll() }
+        await Task.detached { XCTAssertTrue(reader.waitUntilReached()) }.value
+
+        // Locate lands while that read is in flight, and runs to completion.
+        XCTAssertTrue(window.invokeOriginalAction(for: row))
+        await located?.value
+        reader.release()
+        _ = await refresh.value
+
+        let entries = environment.queue.allEntries()
+        // An admitted entry's payload is already gone, so it reads as nil.
+        func payload(_ entry: CaptureQueueEntry) -> Data? {
+            try? Data(contentsOf: environment.queue.payloadURL(for: entry.intent.itemId))
+        }
+        let refreshed = try XCTUnwrap(entries.first {
+            $0.intent.originalBinding?.accessRecordId == watch.accessRef
+                && $0.intent.itemId != watch.baselineItemID
+        })
+        let chosenEntry = try XCTUnwrap(
+            entries.first { payload($0) == Data("the file Locate chose".utf8) }
+        )
+        // The old association published exactly what it read, at its own generation.
+        XCTAssertEqual(payload(refreshed), Data("a newer version".utf8))
+        XCTAssertEqual(refreshed.intent.originalBinding?.bindingGeneration, watch.bindingGeneration)
+        XCTAssertEqual(refreshed.intent.originalBinding?.linkedDocumentId, watch.linkedDocumentID)
+        // The chosen file is somebody else's association entirely.
+        XCTAssertNotEqual(chosenEntry.intent.originalBinding?.accessRecordId, watch.accessRef)
+        XCTAssertNotEqual(chosenEntry.intent.originalBinding?.linkedDocumentId, watch.linkedDocumentID)
+        XCTAssertNotEqual(chosenEntry.intent.requestedSourceIdentity, watch.requestedSourceIdentity)
+        // Nothing carrying the old document, grant or source identity holds the chosen bytes,
+        // and the old grant was neither relinked nor revoked by the action.
+        for entry in entries where entry.intent.originalBinding?.accessRecordId == watch.accessRef {
+            XCTAssertNotEqual(payload(entry), Data("the file Locate chose".utf8))
+        }
+        let grant = try XCTUnwrap(
+            environment.accessStore.descriptors().first { $0.accessRef == watch.accessRef }
+        )
+        XCTAssertEqual(grant.generation, watch.bindingGeneration)
+        XCTAssertEqual(grant.state, .connected)
+    }
 }
 
 // MARK: - Helpers
+
+/// Stops one named original's read until the test lets it go, and reads every
+/// other file straight through. Lets a test hold a preparation mid-read.
+private final class PausingReader: CoordinatedOriginalReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var blocked: String?
+    private let reached = DispatchSemaphore(value: 0)
+    private let released = DispatchSemaphore(value: 0)
+
+    func arm(_ name: String) { lock.withLock { blocked = name } }
+    func waitUntilReached() -> Bool { reached.wait(timeout: .now() + 10) == .success }
+    func release() { released.signal() }
+
+    func readStableBytes(from url: URL, maximumBytes: UInt64) throws -> Data {
+        let hold = lock.withLock { () -> Bool in
+            guard blocked == url.lastPathComponent else { return false }
+            blocked = nil
+            return true
+        }
+        if hold {
+            reached.signal()
+            _ = released.wait(timeout: .now() + 10)
+        }
+        return try Data(contentsOf: url)
+    }
+}
+
+/// The process-monotonic clock the scheduler measures its quiet period in.
+private final class SchedulingClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Int64 = 0
+
+    func advance(_ delta: Int64) { lock.withLock { value += delta } }
+    var reader: @Sendable () -> Int64 { { [self] in self.lock.withLock { self.value } } }
+}
 
 private enum CoreHistoryFixtures {
     static func file(

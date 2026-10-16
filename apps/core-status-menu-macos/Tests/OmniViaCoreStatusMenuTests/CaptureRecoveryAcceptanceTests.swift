@@ -5,8 +5,11 @@ import XCTest
 /// Two acceptance gates about what survives when an exchange with Core does not
 /// finish, each against the production path the gate names.
 ///
-/// * AT-30 a disconnect whose acknowledgement is lost keeps the local
-///   revocation, and the reconciliation that resumes is the same canonical key.
+/// * AT-30 (the capture half only) an original disconnected while a capture for
+///   it is in flight, whose acknowledgement is lost, keeps the local revocation,
+///   and the reconciliation that resumes is the same canonical key. The
+///   companion sends no disconnect to Core, so a lost disconnect acknowledgement
+///   is not exercised here; the ledger records that gate as not implemented.
 /// * AT-32 a refresh that fails leaves the prior successful capture in place and
 ///   is itself a separate, retrievable outcome.
 final class CaptureRecoveryAcceptanceTests: XCTestCase {
@@ -56,7 +59,7 @@ final class CaptureRecoveryAcceptanceTests: XCTestCase {
         }
     }
 
-    // MARK: - AT-30 · a lost acknowledgement keeps the revocation
+    // MARK: - AT-30 (capture half) · a lost acknowledgement keeps the revocation
 
     /// The person disconnects an original while a capture for it is still in
     /// flight, and the answer to that attempt never comes back. The revocation

@@ -199,28 +199,54 @@ public protocol CoordinatedOriginalReading: Sendable {
 public struct SystemCoordinatedOriginalReader: CoordinatedOriginalReading {
     private static let bufferSize = 1024 * 1024
 
-    public init() {}
+    /// Test seam: runs after each chunk is read, while the file is still open
+    /// and before the closing stat that decides whether it held still. Production
+    /// leaves it nil.
+    private let afterChunk: (@Sendable (URL) -> Void)?
+
+    public init() { afterChunk = nil }
+
+    init(afterChunk: @escaping @Sendable (URL) -> Void) { self.afterChunk = afterChunk }
 
     public func readStableBytes(from url: URL, maximumBytes: UInt64) throws -> Data {
         let coordinator = NSFileCoordinator(filePresenter: nil)
         var coordinationError: NSError?
         var result: Result<Data, Error>?
         coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
-            result = Result { try Self.readAndVerify(coordinatedURL, maximumBytes: maximumBytes) }
+            result = Result {
+                try Self.readAndVerify(coordinatedURL, maximumBytes: maximumBytes, afterChunk: afterChunk)
+            }
         }
         if let coordinationError { throw coordinationError }
         guard let result else { throw CapturePreparationError.coordinatedReadFailed }
         return try result.get()
     }
 
-    private static func readAndVerify(_ url: URL, maximumBytes: UInt64) throws -> Data {
+    /// `URL` caches the resource values it has already fetched, so a second
+    /// `resourceValues` call on the same instance answers from the first and the
+    /// closing comparison below would compare a stat with itself. Each stat has to
+    /// drop that cache or only the length check can ever notice a rewrite.
+    private static func freshResourceValues(
+        _ url: URL,
+        _ keys: Set<URLResourceKey>
+    ) throws -> URLResourceValues {
+        var probe = url
+        probe.removeAllCachedResourceValues()
+        return try probe.resourceValues(forKeys: keys)
+    }
+
+    private static func readAndVerify(
+        _ url: URL,
+        maximumBytes: UInt64,
+        afterChunk: (@Sendable (URL) -> Void)?
+    ) throws -> Data {
         let keys: Set<URLResourceKey> = [
             .isRegularFileKey,
             .fileSizeKey,
             .contentModificationDateKey,
             .fileResourceIdentifierKey,
         ]
-        let before = try url.resourceValues(forKeys: keys)
+        let before = try Self.freshResourceValues(url, keys)
         guard before.isRegularFile == true else { throw CapturePreparationError.unsupportedFile }
         guard let declaredSize = before.fileSize, declaredSize >= 0,
               UInt64(declaredSize) <= maximumBytes
@@ -235,8 +261,9 @@ public struct SystemCoordinatedOriginalReader: CoordinatedOriginalReading {
                 throw CapturePreparationError.fileTooLarge
             }
             data.append(chunk)
+            afterChunk?(url)
         }
-        let after = try url.resourceValues(forKeys: keys)
+        let after = try Self.freshResourceValues(url, keys)
         guard after.isRegularFile == true,
               after.fileSize == before.fileSize,
               after.contentModificationDate == before.contentModificationDate,
@@ -277,6 +304,12 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
     /// item's consent has been revalidated and before the queue commits. Set it
     /// before the call that should observe it; production leaves it nil.
     var afterConsentValidation: (() -> Void)?
+
+    /// Test seam: runs once the whole batch is written and verified as a queue
+    /// candidate and before the publication critical section is entered, which
+    /// is the last point a Disconnect can land and still be the one that wins.
+    /// Production leaves it nil.
+    var afterCandidatePrepared: (() -> Void)?
 
     /// Leaf under `gate`: taken while the gate is held and never takes it.
     private let ticketLock = NSLock()
@@ -402,6 +435,7 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
             // authority is locked. Publication below is a directory rename.
             let candidate = try self.queue.prepareCandidate(prepared)
             defer { self.queue.discard(candidate) }
+            self.afterCandidatePrepared?()
             return try self.accessStore.withValidatedGenerations(items.map(\.access)) {
                 try self.consume(submissionId: submissionId, tokens: tokens)
                 for (item, frozen) in zip(items, prepared) {
