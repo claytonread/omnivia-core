@@ -238,6 +238,130 @@ final class MovedChildContinuationAcceptanceTests: XCTestCase {
         ) { XCTAssertEqual($0 as? NativeAccessError, .disconnected) }
     }
 
+    /// The other side of the same refusal: a child this pass had only just found
+    /// leaves the root before its first capture commits. Adoption is the one thing
+    /// the pass had already made durable for it, and nothing owns that grant, so no
+    /// route of this root may be left pointing at a file the root cannot read.
+    ///
+    /// A member that was already established and leaves the same way is the
+    /// contrast: its membership and its route are history the scope keeps, and they
+    /// must survive as an absent one.
+    func testAChildFoundAndMovedBeforeItsFirstCaptureLeavesNoRouteBehind() async throws {
+        let root = try temporaryDirectory()
+        let watched = root.appendingPathComponent("watched", isDirectory: true)
+        let elsewhere = root.appendingPathComponent("elsewhere", isDirectory: true)
+        for directory in [watched, elsewhere] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let settled = watched.appendingPathComponent("settled.txt")
+        try Data("settled".utf8).write(to: settled)
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: RelocatingBookmarkCodec()
+        )
+        let folder = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        _ = try await folder.submit(
+            try folder.plan(
+                root: watched,
+                policy: FolderCapturePolicy(mode: .keepUpdated, recursive: true, includeHidden: false)
+            )
+        )
+        for entry in environment.queue.allEntries() {
+            try admit(entry, captureID: "dcap-" + String(repeating: "a", count: 64), queue: environment.queue)
+        }
+        _ = await environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(environment.folderSubscriptions.all().map(\.state), [.active])
+        let settledMember = try XCTUnwrap(
+            environment.folderSubscriptions.all().first?.members.first
+        )
+
+        // 1. A file appears, is adopted and read, and leaves the root before the
+        //    candidate it was adopted for is committed.
+        let late = watched.appendingPathComponent("late.txt")
+        try Data("late".utf8).write(to: late)
+        let lateMoved = elsewhere.appendingPathComponent("late.txt")
+        let queuedBefore = Set(environment.queue.allEntries().map(\.intent.itemId))
+        let routesBefore = environment.accessStore.descriptors().map(\.accessRef).sorted()
+        let enrolledBefore = environment.accessStore.rootDescriptors().map(\.memberRefs)
+        environment.preparation.afterCandidatePrepared = {
+            guard !FileManager.default.fileExists(atPath: lateMoved.path) else { return }
+            try? FileManager.default.moveItem(at: late, to: lateMoved)
+        }
+        let reports = await environment.folderMonitoring.reconcileAll()
+        environment.preparation.afterCandidatePrepared = nil
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: lateMoved.path),
+            "the race must have run"
+        )
+        XCTAssertEqual(reports.map(\.queued), [0])
+        XCTAssertEqual(environment.folderSubscriptions.all().map(\.state), [.active])
+        XCTAssertEqual(
+            Set(environment.queue.allEntries().map(\.intent.itemId)),
+            queuedBefore,
+            "a candidate refused for leaving the root publishes nothing"
+        )
+        XCTAssertEqual(
+            environment.folderSubscriptions.all().first?.members.map(\.displayName),
+            ["settled.txt"],
+            "a child that left before its first capture is not enrolled at all"
+        )
+        XCTAssertEqual(
+            environment.accessStore.descriptors().map(\.accessRef).sorted(),
+            routesBefore,
+            "the adoption nothing owns does not stay behind as a route of this root"
+        )
+        XCTAssertEqual(environment.accessStore.rootDescriptors().map(\.memberRefs), enrolledBefore)
+
+        // Both halves were one durable write, so a restart agrees.
+        let reopened = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: RelocatingBookmarkCodec()
+        )
+        XCTAssertEqual(reopened.accessStore.descriptors().map(\.accessRef).sorted(), routesBefore)
+        XCTAssertEqual(reopened.accessStore.rootDescriptors().map(\.memberRefs), enrolledBefore)
+        XCTAssertEqual(
+            reopened.folderSubscriptions.all().first?.members.map(\.displayName),
+            ["settled.txt"]
+        )
+        XCTAssertEqual(Set(reopened.queue.allEntries().map(\.intent.itemId)), queuedBefore)
+
+        // 2. The established member leaves the same way, in the same race. That
+        //    membership is durable history: the refusal publishes nothing, and
+        //    neither the membership nor its route is abandoned.
+        let settledMoved = elsewhere.appendingPathComponent("settled.txt")
+        try Data("settled, revised".utf8).write(to: settled)
+        environment.preparation.afterCandidatePrepared = {
+            guard !FileManager.default.fileExists(atPath: settledMoved.path) else { return }
+            try? FileManager.default.moveItem(at: settled, to: settledMoved)
+        }
+        _ = await environment.folderMonitoring.reconcileAll()
+        environment.preparation.afterCandidatePrepared = nil
+
+        XCTAssertEqual(Set(environment.queue.allEntries().map(\.intent.itemId)), queuedBefore)
+        XCTAssertEqual(
+            environment.accessStore.descriptors().map(\.accessRef).sorted(),
+            routesBefore
+        )
+        XCTAssertEqual(environment.accessStore.rootDescriptors().map(\.memberRefs), enrolledBefore)
+
+        // The next pass closes it through the ordinary disappearance path, and it
+        // is kept as an absent membership with the route it was read through.
+        let closing = await environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(closing.map(\.absent), [1])
+        XCTAssertEqual(
+            environment.folderSubscriptions.all().first?.members.map(\.state),
+            [.absent]
+        )
+        XCTAssertEqual(
+            environment.accessStore.descriptors().first { $0.accessRef == settledMember.accessRef }?.state,
+            .connected,
+            "an established membership keeps its route as absent history (MON-17)"
+        )
+        XCTAssertEqual(environment.accessStore.rootDescriptors().map(\.memberRefs), enrolledBefore)
+    }
+
     // MARK: - Helpers
 
     /// The window the companion opens, over this environment's own stores and

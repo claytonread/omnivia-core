@@ -1693,6 +1693,62 @@ public final class NativeAccessStore: @unchecked Sendable {
         }
     }
 
+    /// Abandons a child that was adopted for its first capture and then left the
+    /// root before that capture published (design §21.8.2). The adoption is the
+    /// only durable trace such a refusal leaves: no membership and no queue entry
+    /// owns it, so the grant and its enrolment in the group go together, in one
+    /// write, and the root is left as if the child had never been found.
+    ///
+    /// Everything the caller adopted under is named again and must still match
+    /// exactly, so this can only ever remove that one unowned adoption: the
+    /// generation it was given, the root generation it was bound to, and the whole
+    /// locator. A direct-file route has no root to leave and is not expressible
+    /// here. A record re-adopted, relinked or disconnected since carries another
+    /// generation or state and is refused, as is a member of a frozen reviewed
+    /// plan, whose enrolment that plan owns rather than this adoption. A mismatch
+    /// — including the exact replay that finds the adoption already gone — changes
+    /// nothing and reports `false` rather than failing the pass.
+    @discardableResult
+    public func abandonUnownedRootMember(
+        accessRef: String,
+        rootRef: String,
+        memberRef: String,
+        relativeComponents: [String],
+        expectedGeneration: UInt64,
+        expectedRootGeneration: UInt64
+    ) throws -> Bool {
+        try Self.validateIdentifier(accessRef)
+        let route = NativeAccessRoute.rootMember(
+            rootRef: rootRef,
+            memberRef: memberRef,
+            relativeComponents: relativeComponents
+        )
+        try Self.validate(route)
+        return try gate.withLock {
+            guard let record = records[accessRef],
+                  record.route == route,
+                  record.state == .connected,
+                  record.bookmark == nil,
+                  record.generation == expectedGeneration,
+                  record.rootBindingGeneration == expectedRootGeneration,
+                  let root = roots[rootRef],
+                  root.generation == expectedRootGeneration,
+                  !root.membersFrozen,
+                  root.authority != .frozenMembersOnly
+            else { return false }
+            var replacement = records
+            replacement[accessRef] = nil
+            var replacementRoots = roots
+            replacementRoots[rootRef] = root.with(
+                memberRefs: root.memberRefs.filter { $0 != memberRef }
+            )
+            try persist(records: replacement, roots: replacementRoots)
+            records = replacement
+            roots = replacementRoots
+            return true
+        }
+    }
+
     /// Rechecks a complete prepared batch while preventing relink/disconnect from interleaving with
     /// its publication. The body must only perform the bounded local queue commit.
     public func withValidatedGenerations<T>(

@@ -602,7 +602,22 @@ public actor FolderMonitoringCoordinator {
                     // The same rule as above for a file this pass had only just
                     // found: it left before its first capture committed, so it is
                     // not enrolled at all rather than enrolled as a member this
-                    // root can no longer read.
+                    // root can no longer read. The adoption above is the one
+                    // durable trace of it, and nothing owns that grant — no
+                    // membership is appended below and no entry was published —
+                    // so it goes with the candidate rather than being left as a
+                    // route of this root to a file the root cannot read. A
+                    // failure to make that removal durable is the scope's
+                    // problem and is raised as one: the route is never reported
+                    // as gone while it is still recorded.
+                    try accessStore.abandonUnownedRootMember(
+                        accessRef: accessRef,
+                        rootRef: subscription.rootRef,
+                        memberRef: memberID,
+                        relativeComponents: candidate.relativeComponents,
+                        expectedGeneration: descriptor.generation,
+                        expectedRootGeneration: expectedGeneration
+                    )
                     continue
                 }
                 // The same rule as above: a source another route already

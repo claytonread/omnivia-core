@@ -1127,6 +1127,238 @@ final class NativeAccessStoreTests: XCTestCase {
         XCTAssertEqual(released.lifecycle, .provisional)
     }
 
+    /// MON-17, design §21.8.2: a child adopted for its first capture that then
+    /// leaves the root publishes nothing, and the adoption nothing now owns does
+    /// not stay behind as a route of this root. The grant and the enrolment go in
+    /// one durable write, and every other route — a sibling member, and the direct
+    /// link to the very same source — is left exactly as it stands.
+    func testAbandoningAnUnownedRootMemberRemovesItsGrantAndItsEnrolmentOnly() throws {
+        let state = try temporaryDirectory()
+        let root = state.deletingLastPathComponent().appendingPathComponent("root", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let member = root.appendingPathComponent("a.txt")
+        try Data("a".utf8).write(to: member)
+        try Data("b".utf8).write(to: root.appendingPathComponent("b.txt"))
+        let store = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        let grant = try store.adoptRoot(
+            rootRef: "root-a",
+            ownerRef: "subscription-a",
+            selectedURL: root,
+            binding: Self.binding,
+            authority: .watchAndMembers
+        )
+        let adopted = try store.adoptRootMember(
+            accessRef: "access-a",
+            linkedDocumentID: "doc-a",
+            rootRef: "root-a",
+            memberRef: "member-a",
+            relativeComponents: ["a.txt"],
+            expectedRootGeneration: grant.generation
+        )
+        _ = try store.adoptRootMember(
+            accessRef: "access-b",
+            linkedDocumentID: "doc-b",
+            rootRef: "root-a",
+            memberRef: "member-b",
+            relativeComponents: ["b.txt"],
+            expectedRootGeneration: grant.generation
+        )
+        // The same source, under its own keep-updated link (MON-21).
+        let direct = try store.adopt(
+            accessRef: "access-direct",
+            linkedDocumentID: "doc-a",
+            selectedURL: member,
+            route: .directFile
+        )
+
+        XCTAssertTrue(
+            try store.abandonUnownedRootMember(
+                accessRef: "access-a",
+                rootRef: "root-a",
+                memberRef: "member-a",
+                relativeComponents: ["a.txt"],
+                expectedGeneration: adopted.generation,
+                expectedRootGeneration: grant.generation
+            )
+        )
+
+        XCTAssertEqual(
+            store.descriptors().map(\.accessRef).sorted(),
+            ["access-b", "access-direct"]
+        )
+        XCTAssertEqual(store.rootDescriptors().map(\.memberRefs), [["member-b"]])
+        // The direct route to the same file is a route of its own and still reads.
+        XCTAssertEqual(
+            try store.withReadAccess(
+                accessRef: "access-direct",
+                expectedGeneration: direct.generation
+            ) { try String(contentsOf: $0, encoding: .utf8) },
+            "a"
+        )
+        XCTAssertEqual(
+            try store.withReadAccess(
+                accessRef: "access-b",
+                expectedGeneration: 1,
+                expectedRootBindingGeneration: grant.generation
+            ) { try String(contentsOf: $0, encoding: .utf8) },
+            "b"
+        )
+
+        // Both halves were one persisted update, so a reopen sees the same store.
+        let reopened = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        XCTAssertEqual(
+            reopened.descriptors().map(\.accessRef).sorted(),
+            ["access-b", "access-direct"]
+        )
+        XCTAssertEqual(reopened.rootDescriptors().map(\.memberRefs), [["member-b"]])
+
+        // The exact replay of a cleanup that already ran changes nothing.
+        XCTAssertFalse(
+            try reopened.abandonUnownedRootMember(
+                accessRef: "access-a",
+                rootRef: "root-a",
+                memberRef: "member-a",
+                relativeComponents: ["a.txt"],
+                expectedGeneration: adopted.generation,
+                expectedRootGeneration: grant.generation
+            )
+        )
+        XCTAssertEqual(
+            reopened.descriptors().map(\.accessRef).sorted(),
+            ["access-b", "access-direct"]
+        )
+        XCTAssertEqual(reopened.rootDescriptors().map(\.memberRefs), [["member-b"]])
+    }
+
+    /// The cleanup is for one unowned adoption and nothing else: everything it was
+    /// adopted under is named again, and any difference — the locator, the member
+    /// identity, either generation, a route that is not this root's, a record
+    /// another path has since revoked or re-adopted, or a reviewed plan that owns
+    /// its membership — removes nothing at all.
+    func testAbandoningARootMemberRefusesMismatchesAndAFrozenPlan() throws {
+        let state = try temporaryDirectory()
+        let root = state.deletingLastPathComponent().appendingPathComponent("root", isDirectory: true)
+        let frozenRoot = state.deletingLastPathComponent()
+            .appendingPathComponent("frozen", isDirectory: true)
+        for directory in [root, frozenRoot] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try Data("a".utf8).write(to: root.appendingPathComponent("a.txt"))
+        try Data("c".utf8).write(to: frozenRoot.appendingPathComponent("c.txt"))
+        let direct = state.deletingLastPathComponent().appendingPathComponent("direct.txt")
+        try Data("d".utf8).write(to: direct)
+        let store = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
+        let grant = try store.adoptRoot(
+            rootRef: "root-a",
+            ownerRef: "subscription-a",
+            selectedURL: root,
+            binding: Self.binding,
+            authority: .watchAndMembers
+        )
+        let adopted = try store.adoptRootMember(
+            accessRef: "access-a",
+            linkedDocumentID: "doc-a",
+            rootRef: "root-a",
+            memberRef: "member-a",
+            relativeComponents: ["a.txt"],
+            expectedRootGeneration: grant.generation
+        )
+        _ = try store.adopt(
+            accessRef: "access-direct",
+            linkedDocumentID: "doc-d",
+            selectedURL: direct,
+            route: .directFile
+        )
+        // A reviewed one-off plan whose membership is final.
+        let frozenGrant = try store.adoptRoot(
+            rootRef: "root-frozen",
+            ownerRef: "run-a",
+            selectedURL: frozenRoot,
+            binding: Self.binding
+        )
+        _ = try store.adoptRootMember(
+            accessRef: "access-c",
+            linkedDocumentID: "doc-c",
+            rootRef: "root-frozen",
+            memberRef: "member-c",
+            relativeComponents: ["c.txt"],
+            expectedRootGeneration: frozenGrant.generation
+        )
+        try store.freezeRootMembers(rootRef: "root-frozen", memberRefs: ["member-c"])
+
+        let before = store.descriptors()
+        let beforeRoots = store.rootDescriptors()
+        let mismatches: [(String, String, String, [String], UInt64, UInt64)] = [
+            // A different member of this root, and a different locator for this one.
+            ("access-a", "root-a", "member-z", ["a.txt"], adopted.generation, grant.generation),
+            ("access-a", "root-a", "member-a", ["z.txt"], adopted.generation, grant.generation),
+            // Either generation.
+            ("access-a", "root-a", "member-a", ["a.txt"], adopted.generation + 1, grant.generation),
+            ("access-a", "root-a", "member-a", ["a.txt"], adopted.generation, grant.generation + 1),
+            // Another root entirely, known or not.
+            ("access-a", "root-frozen", "member-a", ["a.txt"], adopted.generation, grant.generation),
+            ("access-a", "root-missing", "member-a", ["a.txt"], adopted.generation, grant.generation),
+            // A direct-file route has no root to leave, so none of this reaches it.
+            ("access-direct", "root-a", "member-a", ["a.txt"], 1, grant.generation),
+            // The frozen plan owns this enrolment.
+            ("access-c", "root-frozen", "member-c", ["c.txt"], 1, frozenGrant.generation),
+        ]
+        for mismatch in mismatches {
+            XCTAssertFalse(
+                try store.abandonUnownedRootMember(
+                    accessRef: mismatch.0,
+                    rootRef: mismatch.1,
+                    memberRef: mismatch.2,
+                    relativeComponents: mismatch.3,
+                    expectedGeneration: mismatch.4,
+                    expectedRootGeneration: mismatch.5
+                ),
+                "\(mismatch) must remove nothing"
+            )
+        }
+        XCTAssertEqual(store.descriptors(), before)
+        XCTAssertEqual(store.rootDescriptors(), beforeRoots)
+
+        // A record another path has revoked, and then the re-adoption that path
+        // owns under its own generation: the first cleanup's expectation matches
+        // neither.
+        try store.disconnect(accessRef: "access-a")
+        XCTAssertFalse(
+            try store.abandonUnownedRootMember(
+                accessRef: "access-a",
+                rootRef: "root-a",
+                memberRef: "member-a",
+                relativeComponents: ["a.txt"],
+                expectedGeneration: adopted.generation,
+                expectedRootGeneration: grant.generation
+            )
+        )
+        let readopted = try store.adoptRootMember(
+            accessRef: "access-a",
+            linkedDocumentID: "doc-a",
+            rootRef: "root-a",
+            memberRef: "member-a",
+            relativeComponents: ["a.txt"],
+            expectedRootGeneration: grant.generation
+        )
+        XCTAssertEqual(readopted.generation, adopted.generation + 1)
+        XCTAssertFalse(
+            try store.abandonUnownedRootMember(
+                accessRef: "access-a",
+                rootRef: "root-a",
+                memberRef: "member-a",
+                relativeComponents: ["a.txt"],
+                expectedGeneration: adopted.generation,
+                expectedRootGeneration: grant.generation
+            )
+        )
+        XCTAssertEqual(store.descriptors().map(\.accessRef).sorted(), ["access-a", "access-c", "access-direct"])
+        XCTAssertEqual(
+            store.rootDescriptors().first { $0.rootRef == "root-a" }?.memberRefs,
+            ["member-a"]
+        )
+    }
+
     func testRoutesAndPeerRequirementsFailClosed() throws {
         let state = try temporaryDirectory()
         let store = try NativeAccessStore(stateDirectory: state, codec: TestBookmarkCodec())
