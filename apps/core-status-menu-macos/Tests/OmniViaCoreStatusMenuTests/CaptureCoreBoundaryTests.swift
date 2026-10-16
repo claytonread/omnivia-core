@@ -50,7 +50,7 @@ final class CaptureCoreBoundaryTests: XCTestCase {
         }
     }
 
-    func testLostReceiptAfterCoreCommitReconcilesOnTheRetainedKeyToOneCapture() async throws {
+    func testRestartedCoordinatorReconcilesALostReceiptOnTheRetainedKeyToOneCapture() async throws {
         let core = try startCore()
         let root = try temporaryDirectory()
         let queue = try CaptureIntentQueue(root: root)
@@ -75,20 +75,18 @@ final class CaptureCoreBoundaryTests: XCTestCase {
         let retained = try XCTUnwrap(entry.attempts.last)
         XCTAssertEqual(retained.operationKey, sent.key)
 
-        // Reconcile with exactly that key and the unchanged request.
-        let replay = await core.delivery.deliver(
-            input: try DocumentCaptureWireEncoder().encode(entry: entry),
-            payloadURL: try restarted.payloadURL(for: intent.itemId),
-            operationKey: retained.operationKey
-        )
-        XCTAssertEqual(replay, .admitted(captureID: captureID))
-        let admitted = try restarted.markAdmitted(
-            itemID: intent.itemId,
-            attemptGeneration: entry.attemptGeneration,
-            captureID: captureID
-        )
+        // The production startup path: the coordinator replays the frozen
+        // request under that same key and settles the entry on the admitted
+        // answer. Nothing here sends, stages or settles by hand.
+        let settled = await CaptureDeliveryCoordinator(queue: restarted, transport: core.delivery)
+            .deliverPending()
+        let admitted = try XCTUnwrap(settled.first)
+        XCTAssertEqual(settled.count, 1)
         XCTAssertEqual(admitted.state, .admitted)
         XCTAssertEqual(admitted.admittedCaptureID, captureID)
+        XCTAssertEqual(admitted.attemptGeneration, entry.attemptGeneration)
+        XCTAssertEqual(admitted.attempts.map(\.operationKey), [sent.key])
+        XCTAssertEqual(try XCTUnwrap(restarted.allEntries().first).state, .admitted)
 
         // One canonical effect on the Core side.
         XCTAssertEqual(try captureIDs(core, documentID: "doc-1"), [captureID])

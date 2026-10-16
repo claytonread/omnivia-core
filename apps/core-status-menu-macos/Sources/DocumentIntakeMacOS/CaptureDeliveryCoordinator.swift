@@ -350,6 +350,9 @@ public actor CaptureDeliveryCoordinator {
         // on the next tick.
         _ = try? pauseWorkUnderChangedIdentity()
         var outcomes: [CaptureQueueEntry] = []
+        // Taken before any send, so an attempt this pass leaves unknown is
+        // reconciled by the next pass, not immediately replayed by this one.
+        let unresolved = queue.allEntries().filter { $0.state == .unknownOutcome }
         for entry in queue.allEntries() where entry.state == .pending {
             // The same comparison the pass above reported, applied again here as
             // the send boundary itself: paused before any payload read, stage
@@ -360,12 +363,7 @@ public actor CaptureDeliveryCoordinator {
             guard transport.deliveryBinding.matches(entry.intent) else { continue }
             do {
                 let payloadURL = try queue.payloadURL(for: entry.intent.itemId)
-                let attributes = try FileManager.default.attributesOfItem(atPath: payloadURL.path)
-                guard (attributes[.size] as? NSNumber)?.uint64Value == entry.intent.byteLength,
-                      try Self.digestPayload(at: payloadURL) == entry.intent.localIntegrityDigest
-                else {
-                    throw CaptureDeliveryError.missingPayload
-                }
+                try Self.verifyPayload(at: payloadURL, of: entry)
                 let input = try encoder.encode(entry: entry)
                 let requestDigest = Self.digest(
                     input,
@@ -415,7 +413,57 @@ public actor CaptureDeliveryCoordinator {
                 }
             }
         }
+        for entry in unresolved {
+            if let admitted = await reconcile(entry) { outcomes.append(admitted) }
+        }
         return outcomes
+    }
+
+    /// Re-sends the exact request an unknown attempt froze, under that attempt's
+    /// own operation key, so Core answers with the effect it already has
+    /// instead of making a second one. It starts no attempt, allocates no key
+    /// and rewrites nothing the intent froze.
+    ///
+    /// Only an admitted replay settles the entry. A refusal does not prove the
+    /// earlier attempt had no effect (Core may have refused this replay for a
+    /// reason unrelated to it), and an unknown answer proves nothing, so both
+    /// leave the entry unknown with its bytes and key. Anything that does not
+    /// match what was frozen is skipped untouched for the same reason.
+    private func reconcile(_ entry: CaptureQueueEntry) async -> CaptureQueueEntry? {
+        guard transport.deliveryBinding.matches(entry.intent),
+              let attempt = entry.attempts.last,
+              entry.state == .unknownOutcome,
+              attempt.disposition == .unknown,
+              attempt.generation == entry.attemptGeneration,
+              attempt.operationKey == CaptureAttemptRecord.childOperationKey(
+                  parent: entry.intent.operationKey,
+                  generation: attempt.generation
+              ),
+              attempt.requestDigest == entry.stageRequestDigest,
+              attempt.descriptorDigest == entry.stageDescriptorDigest,
+              attempt.descriptorDigest == transport.descriptorDigest,
+              let payloadURL = try? queue.payloadURL(for: entry.intent.itemId),
+              (try? Self.verifyPayload(at: payloadURL, of: entry)) != nil,
+              let input = try? encoder.encode(entry: entry),
+              Self.digest(input, payloadDigest: entry.intent.localIntegrityDigest) == attempt.requestDigest
+        else { return nil }
+        guard case let .admitted(captureID) = await transport.deliver(
+            input: input,
+            payloadURL: payloadURL,
+            operationKey: attempt.operationKey
+        ) else { return nil }
+        return try? queue.markAdmitted(
+            itemID: entry.intent.itemId,
+            attemptGeneration: attempt.generation,
+            captureID: captureID
+        )
+    }
+
+    private static func verifyPayload(at url: URL, of entry: CaptureQueueEntry) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard (attributes[.size] as? NSNumber)?.uint64Value == entry.intent.byteLength,
+              try digestPayload(at: url) == entry.intent.localIntegrityDigest
+        else { throw CaptureDeliveryError.missingPayload }
     }
 
     private static func digest(_ data: Data, payloadDigest: String) -> String {

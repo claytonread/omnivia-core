@@ -5,7 +5,7 @@ import XCTest
 
 final class CaptureDeliveryCoordinatorTests: XCTestCase {
     private final class Transport: @unchecked Sendable, CaptureDeliveryTransport {
-        let descriptorDigest = "sha256:" + String(repeating: "b", count: 64)
+        let descriptorDigest: String
         let deliveryBinding: CaptureDeliveryBinding
         let outcome: CaptureDeliveryOutcome
         private let lock = NSLock()
@@ -15,9 +15,11 @@ final class CaptureDeliveryCoordinatorTests: XCTestCase {
 
         init(
             _ outcome: CaptureDeliveryOutcome,
-            binding: CaptureDeliveryBinding = .companion(workspaceRef: "workspace-1")
+            binding: CaptureDeliveryBinding = .companion(workspaceRef: "workspace-1"),
+            descriptorDigest: String = "sha256:" + String(repeating: "b", count: 64)
         ) {
             self.outcome = outcome
+            self.descriptorDigest = descriptorDigest
             deliveryBinding = binding
         }
 
@@ -77,6 +79,108 @@ final class CaptureDeliveryCoordinatorTests: XCTestCase {
         XCTAssertNotNil(outcomes[0].stageRequestDigest)
         XCTAssertNotNil(outcomes[0].stageDescriptorDigest)
         XCTAssertNoThrow(try queue.payloadURL(for: intent.itemId))
+    }
+
+    // MARK: - Same-key reconciliation of an unknown outcome
+
+    /// A queue holding one entry whose first attempt ended unknown, as a
+    /// restart leaves it.
+    private func unknownEntry() async throws -> (
+        queue: CaptureIntentQueue, entry: CaptureQueueEntry, payload: URL
+    ) {
+        let queue = try CaptureIntentQueue(root: try temporaryDirectory())
+        let payload = Data("hello".utf8)
+        let intent = try makeIntent(payload: payload)
+        try queue.enqueue(intent: intent, payload: payload)
+        _ = await CaptureDeliveryCoordinator(queue: queue, transport: Transport(.unknown)).deliverPending()
+        let entry = try XCTUnwrap(queue.allEntries().first)
+        XCTAssertEqual(entry.state, .unknownOutcome)
+        return (queue, entry, try queue.payloadURL(for: intent.itemId))
+    }
+
+    private func assertUnchanged(
+        _ queue: CaptureIntentQueue,
+        _ entry: CaptureQueueEntry,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(queue.allEntries(), [entry], line: line)
+        XCTAssertNoThrow(try queue.payloadURL(for: entry.intent.itemId), line: line)
+    }
+
+    func testAdmittedReplaySettlesTheUnknownEntryOnItsOwnKey() async throws {
+        let (queue, entry, _) = try await unknownEntry()
+        let captureID = "dcap-" + String(repeating: "a", count: 64)
+        let transport = Transport(.admitted(captureID: captureID))
+
+        let outcomes = await CaptureDeliveryCoordinator(queue: queue, transport: transport).deliverPending()
+
+        XCTAssertEqual(outcomes.map(\.state), [.admitted])
+        XCTAssertEqual(outcomes[0].admittedCaptureID, captureID)
+        XCTAssertEqual(transport.deliveredOperationKeys(), [entry.attempts[0].operationKey])
+        XCTAssertEqual(outcomes[0].attempts.map(\.operationKey), [entry.attempts[0].operationKey])
+        XCTAssertEqual(outcomes[0].attemptGeneration, entry.attemptGeneration)
+    }
+
+    func testRefusedReplayLeavesTheEntryUnknownWithItsKeyAndBytes() async throws {
+        let (queue, entry, _) = try await unknownEntry()
+        let transport = Transport(.definiteFailure(code: "invalid_request"))
+
+        let outcomes = await CaptureDeliveryCoordinator(queue: queue, transport: transport).deliverPending()
+
+        XCTAssertTrue(outcomes.isEmpty)
+        XCTAssertEqual(transport.deliveredOperationKeys(), [entry.attempts[0].operationKey])
+        assertUnchanged(queue, entry)
+    }
+
+    func testUnknownReplayLeavesTheEntryUnknownAndNeverAllocatesAKey() async throws {
+        let (queue, entry, _) = try await unknownEntry()
+        let transport = Transport(.unknown)
+        let delivery = CaptureDeliveryCoordinator(queue: queue, transport: transport)
+
+        for _ in 0..<3 { _ = await delivery.deliverPending() }
+
+        XCTAssertEqual(transport.deliveredOperationKeys(), Array(repeating: entry.attempts[0].operationKey, count: 3))
+        assertUnchanged(queue, entry)
+    }
+
+    func testReplayIsRefusedWhenTheDescriptorDiffers() async throws {
+        let (queue, entry, _) = try await unknownEntry()
+        let transport = Transport(
+            .admitted(captureID: "dcap-" + String(repeating: "a", count: 64)),
+            descriptorDigest: "sha256:" + String(repeating: "c", count: 64)
+        )
+
+        let outcomes = await CaptureDeliveryCoordinator(queue: queue, transport: transport).deliverPending()
+
+        XCTAssertTrue(outcomes.isEmpty)
+        XCTAssertTrue(transport.delivered().isEmpty)
+        assertUnchanged(queue, entry)
+    }
+
+    func testReplayIsRefusedWhenTheBindingDiffers() async throws {
+        let (queue, entry, _) = try await unknownEntry()
+        let transport = Transport(
+            .admitted(captureID: "dcap-" + String(repeating: "a", count: 64)),
+            binding: .companion(workspaceRef: "workspace-2")
+        )
+
+        let outcomes = await CaptureDeliveryCoordinator(queue: queue, transport: transport).deliverPending()
+
+        XCTAssertTrue(outcomes.isEmpty)
+        XCTAssertTrue(transport.delivered().isEmpty)
+        assertUnchanged(queue, entry)
+    }
+
+    func testReplayIsRefusedWhenThePayloadBytesChanged() async throws {
+        let (queue, entry, payload) = try await unknownEntry()
+        try Data("HELLO".utf8).write(to: payload)
+        let transport = Transport(.admitted(captureID: "dcap-" + String(repeating: "a", count: 64)))
+
+        let outcomes = await CaptureDeliveryCoordinator(queue: queue, transport: transport).deliverPending()
+
+        XCTAssertTrue(outcomes.isEmpty)
+        XCTAssertTrue(transport.delivered().isEmpty)
+        XCTAssertEqual(queue.allEntries(), [entry])
     }
 
     private func makeIntent(
