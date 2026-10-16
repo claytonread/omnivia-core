@@ -1727,12 +1727,32 @@ public final class NativeAccessStore: @unchecked Sendable {
                           let expected = expectation.rootBindingGeneration,
                           frozen == expected,
                           root.generation == expected,
-                          root.bookmark != nil
+                          let bookmark = root.bookmark
                     else { throw NativeAccessError.generationMismatch }
+                    // The bytes were read while the member was inside this root,
+                    // but publication is the commit, so containment is proved
+                    // again here. A child that left the grant between the read
+                    // and this moment publishes nothing through the root it has
+                    // left (design §21.8.1, §21.8.2 "child moved outside its
+                    // watched root"): the candidate is abandoned rather than
+                    // committed against a locator that no longer resolves.
+                    try resolveMemberTarget(record: record, rootBookmark: bookmark)
                 }
             }
             return try body()
         }
+    }
+
+    /// Walks a member's locator under its root again and throws if it no longer
+    /// resolves. Called while the gate is held, so it records nothing against
+    /// the group: this is a check of one member, not a statement about the root.
+    private func resolveMemberTarget(record: NativeAccessRecord, rootBookmark: Data) throws {
+        guard let resolved = try? codec.resolveReadOnlyBookmark(rootBookmark),
+              !resolved.stale
+        else { throw NativeAccessError.accessDenied }
+        guard codec.startAccessing(resolved.url) else { throw NativeAccessError.accessDenied }
+        defer { codec.stopAccessing(resolved.url) }
+        _ = try Self.targetURL(root: resolved.url, route: record.route)
     }
 
     /// Records a root-level access failure against the group, so the next read

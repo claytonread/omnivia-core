@@ -496,6 +496,14 @@ public actor FolderMonitoringCoordinator {
                 } catch CaptureQueueError.capacityExceeded {
                     capacityDeferred = true
                     break
+                } catch NativeAccessError.memberOutsideRoot {
+                    // This child left the watched root between the read and the
+                    // commit, so its candidate was refused (design §21.8.2). That
+                    // is this one membership's condition and not the scope's:
+                    // nothing of the refused read is recorded, and the next pass
+                    // closes the membership through the ordinary disappearance
+                    // path, with the review thresholds that path applies.
+                    continue
                 }
                 // A capture of exactly these bytes already exists for this
                 // source, published by another of its routes. This membership
@@ -590,6 +598,12 @@ public actor FolderMonitoringCoordinator {
                 } catch CaptureQueueError.capacityExceeded {
                     capacityDeferred = true
                     break
+                } catch NativeAccessError.memberOutsideRoot {
+                    // The same rule as above for a file this pass had only just
+                    // found: it left before its first capture committed, so it is
+                    // not enrolled at all rather than enrolled as a member this
+                    // root can no longer read.
+                    continue
                 }
                 // The same rule as above: a source another route already
                 // captured at exactly these bytes gains a membership here, not
