@@ -2002,25 +2002,41 @@
       "evidence_type": "automated_repository_test",
       "evidence": [
         {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_a_captured_document_derives_source_evidence_and_one_proposed_candidate",
+          "covers": "A real capture, driven through the real processing pass, produces one normalized source record and span against the capture's own evidence artifact and blob digest plus one sealed candidate assembly that is layer candidate, authority proposed, origin extracted, with no governance disposition and no audit reference."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_the_attribution_chain_is_retrievable_through_the_production_reader",
+          "covers": "The chain is followed back out through storage/governed.read_governed_records: the candidate's source is the capture's artifact, and the event's evidence reference carries a span whose pointer is the extracted segment's own source locator."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_the_candidate_content_carries_the_segment_verbatim_and_its_attribution",
+          "covers": "The derived content repeats the exact document id, capture id, extraction revision id, profile digest, evidence id, source digest and segment ordinal the rows hold."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_the_extraction_lineage_names_the_revision_and_forbids_a_model",
+          "covers": "The extraction lineage's extraction_run_id and correlation_id are both the extraction revision id and its configuration digest is the revision's profile digest, which is the attribution back through extraction revision."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_a_derived_candidate_is_neither_approved_nor_admitted",
+          "covers": "The derived record is absent from the current_canonical, history and default views at any instant, no governed-layer assembly, supersession, approval or governance transition exists in the workspace, and the seam takes no parameter by which a caller could ask for one."
+        },
+        {
           "path": "tests/governed_knowledge/test_feedback.py",
           "symbol": "test_proposal_cannot_self_approve_without_admission_reference",
-          "covers": "A derived proposal cannot approve itself without an admission reference."
-        },
-        {
-          "path": "tests/governed_knowledge/test_feedback.py",
-          "symbol": "test_verified_role_and_unverified_claim_are_distinct",
-          "covers": "A verified role and an unverified claim stay distinct, which is the attribution requirement."
-        },
-        {
-          "path": "tests/governed_knowledge/test_stage2_evaluation.py",
-          "symbol": "test_ki_t50_feedback_derived_case_stays_proposed_until_owner_review",
-          "covers": "A derived case stays proposed until an owner reviews it, so there is no auto-approval."
+          "covers": "The domain-level rule that a proposal cannot approve itself without an admission reference, which the derived candidate's storage shape enforces independently."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The governed-knowledge tests operate on knowledge items that did not come from a document capture. No test derives a claim from a captured document's extracted evidence and then checks the attribution chain back to that source, which is the linkage this gate is about.",
-      "limitations": "No-auto-approval is well covered in the governance layer. Its connection to document intake attribution is not covered at all, so the two halves of the gate are proven over different subjects.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Proved over the one intake route that derives knowledge. Document capture is the only route in this build that produces derived records at all; evidence captured through evidence.capture and connector ingestion has no derivation step, so for those routes the gate's derived half has no subject and its source half rests on the existing evidence tests. The derivation is a service-owned path, like legacy_import and source_capture: it runs only while a ServiceRunner owns the workspace and is in no operation catalogue, so the chain is proved through the production seam and the production reader rather than over the wire. Execution is on the single ubuntu-latest Core acceptance host; the governed-knowledge boundary is platform-independent Python over SQLite and the three-row Phase 2 platform matrix does not run this suite, so the every-OS clause is structural rather than observed.",
       "source_bindings": [
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_knowledge.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py",
         "src/omnivia_core"
       ]
@@ -3708,30 +3724,46 @@
       "evidence_type": "automated_repository_test",
       "evidence": [
         {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_a_hostile_document_is_derived_without_running_anything",
+          "covers": "A captured document whose whole body is a model-directed instruction, an executable-looking formula and a business claim is derived to evidence and one proposed candidate while every workflow, provider, runtime-run, effect, chat-turn and tool-call table stays empty."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_the_candidate_content_carries_the_segment_verbatim_and_its_attribution",
+          "covers": "That same body arrives in the derived content as one JSON string, byte for byte, with nothing resolved, expanded or evaluated."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_the_derivation_cannot_reach_a_workflow_provider_tool_or_agent_module",
+          "covers": "The derivation's whole first-party runtime import closure, resolved statically by file and excluding type-checking-only imports, contains no workflow, provider, chat, agent, tool, decision-runtime, execution or MCP module, so no document content can reach one."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_the_extraction_lineage_names_the_revision_and_forbids_a_model",
+          "covers": "The lineage records the extraction as deterministic, which is the one variant migration 0009 forbids a model, an inference configuration, a prompt template and a randomness seed, and all six of those columns are asserted null."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
+          "symbol": "test_a_derived_candidate_is_neither_approved_nor_admitted",
+          "covers": "No approval or admission appears: the record is visible only as a candidate, and no governed assembly, supersession, approval or governance transition exists."
+        },
+        {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_extractors_delimited.py",
           "symbol": "test_formula_like_strings_are_values_and_nothing_is_run",
-          "covers": "Executable-looking content stays a value and nothing is run."
+          "covers": "Executable-looking content stays a value in the extractor that produced the segment."
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_html_non_body_roles.py",
           "symbol": "test_a_script_body_and_an_event_handler_are_inert_text",
-          "covers": "A script body and an event handler are inert text."
-        },
-        {
-          "path": "tests/governed_knowledge/test_stage2_evaluation.py",
-          "symbol": "test_ki_t50_feedback_derived_case_stays_proposed_until_owner_review",
-          "covers": "A derived case stays proposed until an owner reviews it, so nothing is auto-approved."
-        },
-        {
-          "path": "tests/governed_knowledge/test_feedback.py",
-          "symbol": "test_proposal_cannot_self_approve_without_admission_reference",
-          "covers": "A proposal cannot approve itself."
+          "covers": "A script body and an event handler are inert text in the extractor that produced the segment."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test captures a document containing a business claim and then shows the resulting records. The inert-content half is proven in the extractors and the no-auto-approval half in the governance layer, but the two are proven over different subjects, so nothing shows a captured document producing evidence and derived records only.",
-      "limitations": "Both halves are individually well covered. Their junction, which is what this gate is about, has no test, and no workflow engine participates in any of them.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The hostile document is plain text, which the extractor renders as one segment, so the junction is proved once per capture rather than across many segments; the per-format inert-content half is proved separately by the delimited and HTML extractor tests cited above. No workflow engine participates in any of it, and that is asserted two ways -- the tables are empty afterwards, and the modules that could run one are not in the derivation's import closure at all -- but the second claim is scoped to omnivia_core_runtime: omnivia_core.contracts.v1 is reached for canonical JSON and carries workflow *schemas*, which validate wire shapes and start nothing. Execution is on the single ubuntu-latest Core acceptance host.",
       "source_bindings": [
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_knowledge.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py",
         "src/omnivia_core"
