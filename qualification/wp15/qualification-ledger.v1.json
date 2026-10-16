@@ -479,23 +479,58 @@
         },
         {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
-          "symbol": "testPreSendRefusalsAreDefiniteAndAnythingElseStaysUnknown",
-          "covers": "The CLI's credential and version refusals classify as definite failures and every other shape stays unknown."
-        },
-        {
-          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
           "symbol": "testTheDiagnosticsAreTheCLIsOwnFixedSentences",
           "covers": "The sentences the companion matches are the CLI source's own."
         },
         {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
-          "symbol": "testARevokedTargetFailsTheItemWithItsReasonAndKeepsTheRecoveryCopy",
-          "covers": "A refused credential or version fails the item with its reason, keeps the last recovery copy across a restart and is never resent."
+          "symbol": "testPreSendRefusalsAreDefiniteAndAnythingElseStaysUnknown",
+          "covers": "The CLI's credential and version refusals classify as holds (Needs access, Update required), and every other shape stays unknown."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testServiceAnswersAboutAccessAndVersionHoldAndAnUnestablishedOutcomeStaysUnknown",
+          "covers": "Service refusals about access or version hold the item, an outcome the runtime could not establish stays unknown, and any other refusal is still a definite failure."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testARevokedOrIncompatibleTargetHoldsTheItemInsteadOfFailingIt",
+          "covers": "Through the coordinator a refused credential or version leaves the original item pending and held, with its bytes, frozen intent, settled attempt and key intact across a restart, no later pass or restart sends it, and the activity says Needs access or Update required with no reason code."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testHeldWorkIsNotHandedToAnotherTargetAndResumesOnlyOnRelease",
+          "covers": "A target that now accepts the credential is handed nothing until the hold is explicitly released, the wrong reason releases nothing, and release lets the next pass send under the next attempt's own key."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testAnAbsentTargetStillReturnsToPendingWithNoHold",
+          "covers": "An absent target stays known-no-effect and plain pending with no hold."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIntentQueueTests.swift",
+          "symbol": "testAHeldAttemptReturnsToPendingWithItsBytesAndSettledAttemptAcrossRestart",
+          "covers": "A hold settles the refused attempt as known-no-effect and keeps the payload and operation key across a restart."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIntentQueueTests.swift",
+          "symbol": "testAHeldItemStartsNoAttemptUntilItIsReleasedAndThenUsesTheNextKey",
+          "covers": "A held item starts no attempt, release needs the matching reason, and the next attempt uses the next generation's key."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIntentQueueTests.swift",
+          "symbol": "testOnlyTheExactActiveAttemptCanBeHeld",
+          "covers": "Only the exact active attempt can be held, never an unknown-outcome one."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIntentQueueTests.swift",
+          "symbol": "testAHoldThatIsNotWhatTheQueueCouldHaveWrittenIsRefusedWithoutRewriting",
+          "covers": "A tampered hold is refused without rewriting, a held manifest carries its own schema so an older build refuses it, and releasing writes the ordinary schema."
         }
       ],
       "status": "not_executed",
-      "missing_condition": "Absent is now observed, but revoked and incompatible are still classified rather than produced, and what the companion does with them is not what the design says. The revoked and incompatible tests hand the CLI's fixed stderr sentence and exit status to CLICaptureDelivery.outcome and pin the sentences against the CLI source; no test has a real revoked credential or a real version disagreement produce them through the companion. The behaviour differs from the design: both outcomes mark the item failed, no queue operation leaves failed, and the panel shows the raw reason code, where the design has a revoked authorisation pause the old intent with Access to this workspace is required, and an incompatible helper retain the queue with Update required.",
-      "limitations": "The no-silent-fallback property is strong and now includes an absent target through the real CLI. Input retention for the failed arm is the last payload file left on disk, which the queue no longer resolves; it is retained, not recoverable through the queue. Delivery elsewhere in the older coordinator tests still uses a fake client.",
+      "missing_condition": "Absent is observed through the real CLI, and revoked and incompatible now hold the original pending intent as Needs access or Update required, durably, with bytes, frozen intent, attempt history and key kept and nothing resent, retargeted or failed. Two named conditions are still not exercised through the production path: no test has a real revoked credential or a real version disagreement produce the refusal through the companion (the tests hand the CLI's fixed stderr sentence, exit status and service error codes to CLICaptureDelivery.outcome and pin the sentences against the CLI source), and CaptureDeliveryCoordinator.releaseHeld has no production caller, because no companion access or update flow exists yet to release a hold, so explicit release is exercised only by tests. The design's Access to this workspace is required wording for a revoked authorisation is also not shown; the panel says Needs access.",
+      "limitations": "The no-silent-fallback property is strong and includes an absent target through the real CLI. A held item is queue-resolvable, so unlike the old failed arm its bytes are recoverable through the queue, and release starts the next generation under a new key, which is correct only because the refused attempt is settled as known-no-effect. Two tests that drive the real CLI skip without OMNIVIA_CORE_TEST_PYTHON. Delivery elsewhere in the older coordinator tests still uses a fake client.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureDeliveryCoordinator.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",

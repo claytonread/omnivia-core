@@ -410,7 +410,7 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
     /// a claim that the addition as a whole succeeded.
     static func statusLabel(_ group: CaptureActivityGroup) -> String {
         let order: [CaptureActivityFact] =
-            [.failed, .checking, .sending, .queued, .planned, .processing, .stopped]
+            [.failed, .needsAccess, .updateRequired, .checking, .sending, .queued, .planned, .processing, .stopped]
         guard let fact = order.first(where: { group.count($0) > 0 }) else {
             return "No activity recorded"
         }
@@ -421,7 +421,7 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
     /// fact no item reports.
     static func progressText(_ group: CaptureActivityGroup) -> String {
         let order: [CaptureActivityFact] =
-            [.processing, .sending, .queued, .planned, .checking, .failed, .stopped]
+            [.processing, .sending, .queued, .planned, .checking, .needsAccess, .updateRequired, .failed, .stopped]
         let parts = order.compactMap { fact -> String? in
             let count = group.count(fact)
             return count > 0 ? phrase(fact, count: count) : nil
@@ -436,6 +436,8 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
         case .sending: "\(count) sending to Core"
         case .checking: "\(count) checking status"
         case .processing: "\(count) accepted by Core for processing"
+        case .needsAccess: "\(count) need access"
+        case .updateRequired: "\(count) need an update"
         case .failed: "\(count) need attention"
         case .stopped: "\(count) stopped"
         }
@@ -464,8 +466,22 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
         case .sending: "Sending to Core…"
         case .checking: "Checking status…"
         case .processing: "Processing in Core"
+        case .needsAccess: "Needs access"
+        case .updateRequired: "Update required"
         case .failed: "Needs attention"
         case .stopped: "Stopped"
+        }
+    }
+
+    /// What a held item is waiting for, in fixed words. Nothing was sent, and
+    /// the item is not sent again until the person resolves it.
+    static func holdExplanation(_ fact: CaptureActivityFact) -> String? {
+        switch fact {
+        case .needsAccess:
+            "Core did not accept this Mac's access. Nothing was sent, and this stays queued on this Mac until access is restored."
+        case .updateRequired:
+            "This app and Core could not agree on a version. Nothing was sent, and this stays queued on this Mac until the update is installed."
+        default: nil
         }
     }
 
@@ -1458,6 +1474,9 @@ public struct FilesAndFoldersModel: Sendable {
             FilesAndFoldersItem.label(record.fact),
             "item \(record.itemID)",
         ]
+        if let explanation = FilesAndFoldersItem.holdExplanation(record.fact) {
+            parts.insert(explanation, at: 1)
+        }
         if let code = record.failureCode { parts.append("reason \(code)") }
         if let captureID = record.admittedCaptureID { parts.append("capture \(captureID)") }
         parts.append(

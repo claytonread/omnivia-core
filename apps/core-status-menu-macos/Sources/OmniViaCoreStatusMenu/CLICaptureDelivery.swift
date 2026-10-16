@@ -88,9 +88,24 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
                details["outcome_established"] as? Bool == false {
                 return .unknown
             }
+            if let pause = pause(forServiceCode: code) { return .held(pause) }
             return .definiteFailure(code: code)
         }
         return .unknown
+    }
+
+    /// Service refusals that only the person can resolve. They are decided
+    /// before a capture exists, so the intent is held rather than failed.
+    private static func pause(forServiceCode code: String) -> CaptureQueuePause? {
+        switch code {
+        case "authentication_required", "authorization_denied", "workspace_not_granted",
+             "capability_not_granted":
+            .needsAccess
+        case "incompatible_version", "unsupported_minor_version", "upgrade_required":
+            .updateRequired
+        default:
+            nil
+        }
     }
 
     /// The CLI's fixed diagnostics for a refusal that happens before anything is
@@ -115,8 +130,8 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
         switch (status, String(decoding: diagnostic, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)) {
         case (1, managedStartFailed): return .notSent
-        case (3, credentialRefused): return .definiteFailure(code: "target_credential_refused")
-        case (4, versionDisagreed): return .definiteFailure(code: "target_incompatible")
+        case (3, credentialRefused): return .held(.needsAccess)
+        case (4, versionDisagreed): return .held(.updateRequired)
         case (2, refusedBeforeSend): return .definiteFailure(code: "refused_before_send")
         default: return .unknown
         }

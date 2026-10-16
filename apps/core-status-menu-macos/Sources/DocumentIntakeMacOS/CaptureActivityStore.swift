@@ -24,6 +24,12 @@ public enum CaptureActivityFact: String, Codable, Equatable, Sendable {
     /// this side will never learn of one. It is therefore unresolved work that
     /// nothing local may clear, age out or count against a retention bound.
     case processing
+    /// Core no longer accepts this Mac's credential. Nothing was sent; the item
+    /// is queued whole and waits for access to be restored.
+    case needsAccess
+    /// This app and Core could not agree on a version. Nothing was sent; the
+    /// item is queued whole and waits for the update.
+    case updateRequired
     /// A known failed outcome for this item.
     case failed
     /// An unstarted member was cancelled before anything was sent.
@@ -39,7 +45,7 @@ public enum CaptureActivityFact: String, Codable, Equatable, Sendable {
     /// separate question — see `CaptureActivityRecord.isReceipt`.
     public var isResolved: Bool {
         switch self {
-        case .planned, .queued, .sending, .checking, .processing: false
+        case .planned, .queued, .sending, .checking, .processing, .needsAccess, .updateRequired: false
         case .failed, .stopped: true
         }
     }
@@ -47,7 +53,9 @@ public enum CaptureActivityFact: String, Codable, Equatable, Sendable {
     /// An unknown outcome needs a decision as much as a known failure does:
     /// neither resolves on its own. A run ledger that disagrees with the queue
     /// reaches `checking` for the same reason.
-    public var needsAttention: Bool { self == .checking || self == .failed }
+    public var needsAttention: Bool {
+        self == .checking || self == .failed || self == .needsAccess || self == .updateRequired
+    }
 }
 
 /// One item's local activity. Its identity fields are frozen when the item is
@@ -97,7 +105,7 @@ public struct CaptureActivityRecord: Codable, Equatable, Sendable {
     /// pending work and its recovery copy and key stay in the queue regardless.
     public var isReceipt: Bool {
         switch fact {
-        case .planned, .queued, .sending, .checking, .processing: false
+        case .planned, .queued, .sending, .checking, .processing, .needsAccess, .updateRequired: false
         case .stopped: true
         case .failed: runID == nil
         }
@@ -483,7 +491,12 @@ public final class CaptureActivityStore: @unchecked Sendable {
 
     private static func fact(_ entry: CaptureQueueEntry) -> CaptureActivityFact {
         switch entry.state {
-        case .pending: .queued
+        case .pending:
+            switch entry.pause {
+            case .none: .queued
+            case .needsAccess: .needsAccess
+            case .updateRequired: .updateRequired
+            }
         case .staging: .sending
         case .unknownOutcome: .checking
         case .admitted: .processing

@@ -322,7 +322,7 @@ final class CaptureIntentQueueTests: XCTestCase {
         var document = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any]
         )
-        document["schema"] = "omnivia.macos.capture-queue.v3"
+        document["schema"] = "omnivia.macos.capture-queue.v4"
         let futureBytes = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
         try futureBytes.write(to: manifest)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifest.path)
@@ -400,7 +400,7 @@ final class CaptureIntentQueueTests: XCTestCase {
         var future = try XCTUnwrap(
             JSONSerialization.jsonObject(with: upgradedBytes) as? [String: Any]
         )
-        future["schema"] = "omnivia.macos.capture-queue.v3"
+        future["schema"] = "omnivia.macos.capture-queue.v4"
         for document in [newer, future] {
             let bytes = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
             try bytes.write(to: manifest)
@@ -766,5 +766,180 @@ final class CaptureIntentQueueTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: batch.appendingPathComponent("payload-item-1.payload").path
         ))
+    }
+
+    // MARK: - Holds (AT-12): refused before send, retained, not failed
+
+    private func stagedItem(_ root: URL, payload: Data) throws -> (CaptureIntentQueue, String, String) {
+        let queue = try CaptureIntentQueue(root: root)
+        _ = try queue.enqueue(intent: intent(payload: payload), payload: payload)
+        let request = digest(Data("request".utf8))
+        let descriptor = digest(Data("descriptor".utf8))
+        _ = try queue.beginStage(itemID: "item-1", requestDigest: request, descriptorDigest: descriptor)
+        return (queue, request, descriptor)
+    }
+
+    private func rewriteManifest(_ root: URL, _ change: (inout [String: Any], inout [[String: Any]]) -> Void) throws -> Data {
+        let manifest = root.appendingPathComponent("capture-queue-v1.json")
+        var document = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any]
+        )
+        var entries = try XCTUnwrap(document["entries"] as? [[String: Any]])
+        change(&document, &entries)
+        document["entries"] = entries
+        let bytes = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+        try bytes.write(to: manifest)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifest.path)
+        return bytes
+    }
+
+    func testAHeldAttemptReturnsToPendingWithItsBytesAndSettledAttemptAcrossRestart() throws {
+        for pause in [CaptureQueuePause.needsAccess, .updateRequired] {
+            let root = try temporaryQueue()
+            let payload = Data("pdf-body".utf8)
+            let (queue, request, descriptor) = try stagedItem(root, payload: payload)
+            let key = CaptureAttemptRecord.childOperationKey(parent: "operation-item-1", generation: 1)
+
+            let held = try queue.hold(
+                itemID: "item-1",
+                attemptGeneration: 1,
+                requestDigest: request,
+                descriptorDigest: descriptor,
+                pause: pause
+            )
+
+            for entry in [held, try CaptureIntentQueue(root: root).allEntries()[0]] {
+                XCTAssertEqual(entry.state, .pending, "\(pause)")
+                XCTAssertEqual(entry.pause, pause)
+                XCTAssertNil(entry.failureCode)
+                XCTAssertEqual(entry.attemptGeneration, 1)
+                XCTAssertEqual(entry.attempts.map(\.disposition), [.knownNoEffect])
+                XCTAssertEqual(entry.attempts.map(\.operationKey), [key])
+            }
+            let reopened = try CaptureIntentQueue(root: root)
+            XCTAssertEqual(try Data(contentsOf: reopened.payloadURL(for: "item-1")), payload)
+        }
+    }
+
+    func testAHeldItemStartsNoAttemptUntilItIsReleasedAndThenUsesTheNextKey() throws {
+        let root = try temporaryQueue()
+        let (queue, request, descriptor) = try stagedItem(root, payload: Data("pdf-body".utf8))
+        _ = try queue.hold(
+            itemID: "item-1",
+            attemptGeneration: 1,
+            requestDigest: request,
+            descriptorDigest: descriptor,
+            pause: .needsAccess
+        )
+
+        XCTAssertThrowsError(
+            try queue.beginStage(itemID: "item-1", requestDigest: request, descriptorDigest: descriptor)
+        ) { XCTAssertEqual($0 as? CaptureQueueError, .invalidTransition) }
+        // The wrong reason releases nothing.
+        XCTAssertThrowsError(try queue.releaseHold(itemID: "item-1", pause: .updateRequired)) {
+            XCTAssertEqual($0 as? CaptureQueueError, .invalidTransition)
+        }
+        XCTAssertEqual(queue.allEntries()[0].pause, .needsAccess)
+        XCTAssertEqual(queue.allEntries()[0].attemptGeneration, 1)
+
+        let released = try queue.releaseHold(itemID: "item-1", pause: .needsAccess)
+        XCTAssertNil(released.pause)
+        XCTAssertEqual(released.state, .pending)
+        XCTAssertEqual(released.attempts.map(\.disposition), [.knownNoEffect])
+        let next = try queue.beginStage(itemID: "item-1", requestDigest: request, descriptorDigest: descriptor)
+        XCTAssertEqual(next.attempts.map(\.generation), [1, 2])
+        XCTAssertNotEqual(next.attempts[0].operationKey, next.attempts[1].operationKey)
+        XCTAssertEqual(next.intent, released.intent, "the frozen intent is never rewritten")
+    }
+
+    func testOnlyTheExactActiveAttemptCanBeHeld() throws {
+        let root = try temporaryQueue()
+        let (queue, request, descriptor) = try stagedItem(root, payload: Data("pdf-body".utf8))
+        let other = digest(Data("other".utf8))
+        for (generation, requestDigest, descriptorDigest) in [
+            (UInt64(2), request, descriptor), (1, other, descriptor), (1, request, other),
+        ] {
+            XCTAssertThrowsError(try queue.hold(
+                itemID: "item-1",
+                attemptGeneration: generation,
+                requestDigest: requestDigest,
+                descriptorDigest: descriptorDigest,
+                pause: .needsAccess
+            )) { XCTAssertEqual($0 as? CaptureQueueError, .invalidTransition) }
+        }
+        XCTAssertEqual(queue.allEntries()[0].state, .staging)
+        // An unknown attempt may have had an effect, so it can never be held.
+        _ = try queue.markUnknownOutcome(itemID: "item-1", attemptGeneration: 1)
+        XCTAssertThrowsError(try queue.hold(
+            itemID: "item-1",
+            attemptGeneration: 1,
+            requestDigest: request,
+            descriptorDigest: descriptor,
+            pause: .needsAccess
+        )) { XCTAssertEqual($0 as? CaptureQueueError, .invalidTransition) }
+        XCTAssertEqual(queue.allEntries()[0].state, .unknownOutcome)
+    }
+
+    func testAHoldThatIsNotWhatTheQueueCouldHaveWrittenIsRefusedWithoutRewriting() throws {
+        let root = try temporaryQueue()
+        let (queue, request, descriptor) = try stagedItem(root, payload: Data("pdf-body".utf8))
+        _ = try queue.hold(
+            itemID: "item-1",
+            attemptGeneration: 1,
+            requestDigest: request,
+            descriptorDigest: descriptor,
+            pause: .updateRequired
+        )
+        let manifest = root.appendingPathComponent("capture-queue-v1.json")
+        let valid = try Data(contentsOf: manifest)
+
+        // A reason this build does not define, a hold on work that is not
+        // pending, and a hold with no refused attempt behind it.
+        let tampered: [(inout [String: Any], inout [[String: Any]]) -> Void] = [
+            { _, entries in entries[0]["pause"] = "revoked_forever" },
+            { _, entries in
+                entries[0]["state"] = "failed"
+                entries[0]["failureCode"] = "x"
+                entries[0].removeValue(forKey: "stageRequestDigest")
+                entries[0].removeValue(forKey: "stageDescriptorDigest")
+            },
+            { _, entries in
+                entries[0]["attempts"] = []
+                entries[0]["attemptGeneration"] = 0
+            },
+        ]
+        for change in tampered {
+            try valid.write(to: manifest)
+            let bytes = try rewriteManifest(root, change)
+            XCTAssertThrowsError(try CaptureIntentQueue(root: root))
+            XCTAssertEqual(try Data(contentsOf: manifest), bytes)
+        }
+        // And an older or newer reader still fails closed rather than reading
+        // the hold as a subset.
+        try valid.write(to: manifest)
+        let future = try rewriteManifest(root) { document, _ in
+            document["schema"] = "omnivia.macos.capture-queue.v4"
+        }
+        XCTAssertThrowsError(try CaptureIntentQueue(root: root)) {
+            XCTAssertEqual($0 as? CaptureQueueError, .incompatibleSchema)
+        }
+        XCTAssertEqual(try Data(contentsOf: manifest), future)
+        try valid.write(to: manifest)
+        XCTAssertEqual(try CaptureIntentQueue(root: root).allEntries()[0].pause, .updateRequired)
+        // A held manifest carries its own schema, so a build that predates holds
+        // refuses it; releasing the hold writes the ordinary schema again.
+        XCTAssertTrue(try String(contentsOf: manifest, encoding: .utf8).contains("omnivia.macos.capture-queue.v3"))
+        let reopened = try CaptureIntentQueue(root: root)
+        _ = try reopened.releaseHold(itemID: "item-1", pause: .updateRequired)
+        XCTAssertTrue(try String(contentsOf: manifest, encoding: .utf8).contains("omnivia.macos.capture-queue.v2"))
+    }
+
+    func testAQueueWrittenWithoutAnyHoldCarriesNoPauseKey() throws {
+        let root = try temporaryQueue()
+        _ = try stagedItem(root, payload: Data("pdf-body".utf8))
+        let manifest = root.appendingPathComponent("capture-queue-v1.json")
+        let text = try String(contentsOf: manifest, encoding: .utf8)
+        XCTAssertFalse(text.contains("\"pause\""))
+        XCTAssertTrue(text.contains("omnivia.macos.capture-queue.v2"))
     }
 }

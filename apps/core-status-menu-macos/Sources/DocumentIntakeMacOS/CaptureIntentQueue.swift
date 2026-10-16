@@ -20,6 +20,17 @@ public enum CaptureQueueState: String, Codable, Sendable {
     case failed
 }
 
+/// Why a pending intent is held. Both holds follow a refusal that provably
+/// happened before anything was sent, so the intent keeps its bytes, its stable
+/// key and its history, and nothing is sent or re-keyed while it is held. Only
+/// an explicit release returns it to ordinary pending work.
+public enum CaptureQueuePause: String, Codable, Equatable, Sendable {
+    /// The target no longer accepts this client's credential.
+    case needsAccess = "needs_access"
+    /// This client and the target could not agree on a protocol version.
+    case updateRequired = "update_required"
+}
+
 /// What is conclusively known about one externally visible attempt.
 /// `active` and `unknown` are open: the attempt may still have had an effect.
 public enum CaptureAttemptDisposition: String, Codable, Equatable, Sendable {
@@ -106,6 +117,9 @@ public struct CaptureQueueEntry: Codable, Equatable, Sendable {
     public let stageDescriptorDigest: String?
     public let admittedCaptureID: String?
     public let failureCode: String?
+    /// Set only on a pending item whose last attempt was refused before it was
+    /// sent. A held item is not delivered.
+    public let pause: CaptureQueuePause?
     /// Every attempt started for this item, oldest first. Append-only.
     public let attempts: [CaptureAttemptRecord]
 
@@ -118,6 +132,7 @@ public struct CaptureQueueEntry: Codable, Equatable, Sendable {
         case stageDescriptorDigest
         case admittedCaptureID
         case failureCode
+        case pause
         case attempts
     }
 
@@ -130,6 +145,7 @@ public struct CaptureQueueEntry: Codable, Equatable, Sendable {
         stageDescriptorDigest: String?,
         admittedCaptureID: String?,
         failureCode: String?,
+        pause: CaptureQueuePause?,
         attempts: [CaptureAttemptRecord]
     ) {
         self.intent = intent
@@ -140,6 +156,7 @@ public struct CaptureQueueEntry: Codable, Equatable, Sendable {
         self.stageDescriptorDigest = stageDescriptorDigest
         self.admittedCaptureID = admittedCaptureID
         self.failureCode = failureCode
+        self.pause = pause
         self.attempts = attempts
     }
 
@@ -154,6 +171,7 @@ public struct CaptureQueueEntry: Codable, Equatable, Sendable {
         stageDescriptorDigest = try container.decodeIfPresent(String.self, forKey: .stageDescriptorDigest)
         admittedCaptureID = try container.decodeIfPresent(String.self, forKey: .admittedCaptureID)
         failureCode = try container.decodeIfPresent(String.self, forKey: .failureCode)
+        pause = try container.decodeIfPresent(CaptureQueuePause.self, forKey: .pause)
         if let recorded = try container.decodeIfPresent([CaptureAttemptRecord].self, forKey: .attempts) {
             attempts = recorded
         } else if attemptGeneration > 0,
@@ -204,6 +222,7 @@ public struct CaptureQueueEntry: Codable, Equatable, Sendable {
         stageDescriptorDigest: String? = nil,
         admittedCaptureID: String? = nil,
         failureCode: String? = nil,
+        pause: CaptureQueuePause? = nil,
         attempts: [CaptureAttemptRecord]? = nil
     ) -> CaptureQueueEntry {
         CaptureQueueEntry(
@@ -215,6 +234,7 @@ public struct CaptureQueueEntry: Codable, Equatable, Sendable {
             stageDescriptorDigest: stageDescriptorDigest,
             admittedCaptureID: admittedCaptureID,
             failureCode: failureCode,
+            pause: pause,
             attempts: attempts ?? self.attempts
         )
     }
@@ -351,6 +371,10 @@ public final class CaptureIntentQueue: @unchecked Sendable {
     public static let maximumOwnedBytes: UInt64 = 1024 * 1024 * 1024
 
     private static let schema = "omnivia.macos.capture-queue.v2"
+    /// Written only while an item is held, so a build that predates holds
+    /// refuses the manifest instead of reading the hold as plain pending work
+    /// and sending it.
+    private static let holdSchema = "omnivia.macos.capture-queue.v3"
     private static let legacySchema = "omnivia.macos.capture-queue.v1"
     private static let batchDomain = Data("omnivia.macos.capture-batch.v1".utf8)
     /// Shared with the other publication owners; see `PublicationGate`. Enqueue
@@ -723,7 +747,10 @@ public final class CaptureIntentQueue: @unchecked Sendable {
         return try mutate(itemID) { current in
             // Only a pending item may start an attempt, so an attempt whose effect is
             // still unknown can never be superseded by a replacement.
-            guard current.state == .pending else { throw CaptureQueueError.invalidTransition }
+            // A held intent starts no attempt until its hold is released.
+            guard current.state == .pending, current.pause == nil else {
+                throw CaptureQueueError.invalidTransition
+            }
             let generation = current.attemptGeneration + 1
             let attempt = CaptureAttemptRecord(
                 generation: generation,
@@ -783,6 +810,48 @@ public final class CaptureIntentQueue: @unchecked Sendable {
                   open.descriptorDigest == descriptorDigest
             else { throw CaptureQueueError.invalidTransition }
             return current.replacing(state: .pending, attempts: current.settlingLast(.knownNoEffect))
+        }
+    }
+
+    /// Holds an attempt that was refused before anything was sent: the exact
+    /// attempt is settled as known-no-effect and the intent returns to pending,
+    /// in one durable step, with a pause that stops every later pass from
+    /// sending it. No replacement attempt is started, so no key is allocated.
+    @discardableResult
+    public func hold(
+        itemID: String,
+        attemptGeneration: UInt64,
+        requestDigest: String,
+        descriptorDigest: String,
+        pause: CaptureQueuePause
+    ) throws -> CaptureQueueEntry {
+        try mutate(itemID) { current in
+            guard current.state == .staging,
+                  current.attemptGeneration == attemptGeneration,
+                  current.stageRequestDigest == requestDigest,
+                  current.stageDescriptorDigest == descriptorDigest,
+                  let open = current.attempts.last,
+                  open.disposition == .active,
+                  open.generation == attemptGeneration
+            else { throw CaptureQueueError.invalidTransition }
+            return current.replacing(
+                state: .pending,
+                pause: pause,
+                attempts: current.settlingLast(.knownNoEffect)
+            )
+        }
+    }
+
+    /// Returns a held intent to ordinary pending work. Only the owner of the
+    /// condition that caused the hold calls this; the next pass then starts a
+    /// fresh attempt under the next generation's key, exactly as it would after
+    /// any other known-no-effect attempt.
+    @discardableResult
+    public func releaseHold(itemID: String, pause: CaptureQueuePause) throws -> CaptureQueueEntry {
+        try mutate(itemID) { current in
+            guard current.state == .pending, current.pause == pause
+            else { throw CaptureQueueError.invalidTransition }
+            return current.replacing(state: .pending)
         }
     }
 
@@ -869,7 +938,7 @@ public final class CaptureIntentQueue: @unchecked Sendable {
         do {
             let data = try encoder.encode(
                 CaptureQueueDocument(
-                    schema: Self.schema,
+                    schema: values.values.contains { $0.pause != nil } ? Self.holdSchema : Self.schema,
                     entries: values.values.sorted { $0.intent.itemId < $1.intent.itemId }
                 )
             )
@@ -909,7 +978,7 @@ public final class CaptureIntentQueue: @unchecked Sendable {
             let raw = try JSONSerialization.jsonObject(with: data)
             guard let rawDocument = raw as? [String: Any],
                   let storedSchema = rawDocument["schema"] as? String,
-                  storedSchema == schema || storedSchema == legacySchema
+                  storedSchema == schema || storedSchema == holdSchema || storedSchema == legacySchema
             else { throw CaptureQueueError.incompatibleSchema }
             let document = try JSONDecoder().decode(CaptureQueueDocument.self, from: data)
             var result: [String: CaptureQueueEntry] = [:]
@@ -931,6 +1000,13 @@ public final class CaptureIntentQueue: @unchecked Sendable {
 
     private static func valid(_ entry: CaptureQueueEntry) -> Bool {
         guard validHistory(entry) else { return false }
+        // A hold is a property of pending work that was refused before it was
+        // sent, so it needs the settled attempt that was refused.
+        if entry.pause != nil {
+            guard entry.state == .pending,
+                  entry.attempts.last?.disposition == .knownNoEffect
+            else { return false }
+        }
         switch entry.state {
         case .pending:
             return entry.stageRequestDigest == nil
@@ -1153,6 +1229,7 @@ public final class CaptureIntentQueue: @unchecked Sendable {
             stageDescriptorDigest: nil,
             admittedCaptureID: nil,
             failureCode: nil,
+            pause: nil,
             attempts: []
         )
     }

@@ -179,8 +179,8 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
     // MARK: - AT-12 · revoked and incompatible targets are definite refusals
 
     /// The CLI's pre-send refusals, read as the companion reads them. The
-    /// credential and version refusals are definite and are shown as failures
-    /// with their reason — not as Checking status, and not as queued.
+    /// credential and version refusals are definite and put the item on hold —
+    /// not failed, not Checking status, and not plain queued.
     func testPreSendRefusalsAreDefiniteAndAnythingElseStaysUnknown() {
         func outcome(_ status: Int32, _ diagnostic: String, output: String = "") -> CaptureDeliveryOutcome {
             CLICaptureDelivery.outcome(
@@ -192,11 +192,11 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
         XCTAssertEqual(outcome(1, CLICaptureDelivery.managedStartFailed), .notSent)
         XCTAssertEqual(
             outcome(3, CLICaptureDelivery.credentialRefused),
-            .definiteFailure(code: "target_credential_refused")
+            .held(.needsAccess)
         )
         XCTAssertEqual(
             outcome(4, CLICaptureDelivery.versionDisagreed),
-            .definiteFailure(code: "target_incompatible")
+            .held(.updateRequired)
         )
         XCTAssertEqual(
             outcome(2, CLICaptureDelivery.refusedBeforeSend),
@@ -220,6 +220,33 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
         )
     }
 
+    /// A service answer that says access or the version is the problem holds the
+    /// item too, unless the runtime says it could not establish the outcome.
+    func testServiceAnswersAboutAccessAndVersionHoldAndAnUnestablishedOutcomeStaysUnknown() {
+        func answer(_ code: String, details: String = "") -> CaptureDeliveryOutcome {
+            CLICaptureDelivery.outcome(
+                from: try! XCTUnwrap(JSONSerialization.jsonObject(
+                    with: Data(#"{"error":{"code":"\#(code)"\#(details)}}"#.utf8)
+                ) as? [String: Any]),
+                terminationStatus: 3
+            )
+        }
+        for code in ["authentication_required", "authorization_denied", "workspace_not_granted",
+                     "capability_not_granted"] {
+            XCTAssertEqual(answer(code), .held(.needsAccess), code)
+        }
+        for code in ["incompatible_version", "unsupported_minor_version", "upgrade_required"] {
+            XCTAssertEqual(answer(code), .held(.updateRequired), code)
+        }
+        // AT-19: an outcome the runtime could not establish is never a hold.
+        XCTAssertEqual(
+            answer("authorization_denied", details: #","details":{"outcome_established":false}"#),
+            .unknown
+        )
+        // Every other refusal is still a terminal definite failure.
+        XCTAssertEqual(answer("invalid_request"), .definiteFailure(code: "invalid_request"))
+    }
+
     /// The sentences are the CLI's, byte for byte; a reworded CLI would
     /// otherwise turn these refusals back into unknown outcomes unnoticed.
     func testTheDiagnosticsAreTheCLIsOwnFixedSentences() throws {
@@ -239,13 +266,14 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
         }
     }
 
-    /// A revoked or incompatible target through the coordinator: a failed
-    /// item with the reason, delivered nowhere else, its recovery copy kept
-    /// across a restart.
-    func testARevokedTargetFailsTheItemWithItsReasonAndKeepsTheRecoveryCopy() async throws {
-        for (status, diagnostic, code) in [
-            (Int32(3), CLICaptureDelivery.credentialRefused, "target_credential_refused"),
-            (Int32(4), CLICaptureDelivery.versionDisagreed, "target_incompatible"),
+    /// A revoked or incompatible target through the coordinator: the item is held
+    /// — pending, never failed — with its bytes, its history and its key. It is
+    /// sent nowhere else, not sent again by any later pass or restart, and shows
+    /// the fixed wording.
+    func testARevokedOrIncompatibleTargetHoldsTheItemInsteadOfFailingIt() async throws {
+        for (status, diagnostic, pause, label) in [
+            (Int32(3), CLICaptureDelivery.credentialRefused, CaptureQueuePause.needsAccess, "Needs access"),
+            (Int32(4), CLICaptureDelivery.versionDisagreed, CaptureQueuePause.updateRequired, "Update required"),
         ] {
             let root = try temporaryDirectory()
             let queue = try CaptureIntentQueue(root: root)
@@ -257,30 +285,110 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
                 output: Data(),
                 diagnostic: Data((diagnostic + "\n").utf8)
             )
+            XCTAssertEqual(refused, .held(pause))
             let transport = PresentTargetTransport(refused, binding: .companion(workspaceRef: "workspace-1"))
 
             let outcomes = await CaptureDeliveryCoordinator(queue: queue, transport: transport)
                 .deliverPending()
 
-            XCTAssertEqual(outcomes.map(\.state), [.failed], code)
-            XCTAssertEqual(outcomes.first?.failureCode, code)
+            XCTAssertEqual(outcomes.map(\.state), [.pending], label)
+            XCTAssertEqual(outcomes.first?.pause, pause)
+            XCTAssertNil(outcomes.first?.failureCode)
+            let key = CaptureAttemptRecord.childOperationKey(parent: "capture-1", generation: 1)
             let restarted = try CaptureIntentQueue(root: root)
-            XCTAssertEqual(restarted.allEntries().first?.state, .failed)
-            // The queue stops resolving a failed item's bytes, but the last
-            // recovery copy is still on disk, whole.
-            let retained = try XCTUnwrap(
-                FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?
-                    .compactMap { $0 as? URL }
-                    .first { $0.lastPathComponent == "payload-1.payload" },
-                "the failed item keeps its recovery copy"
-            )
-            XCTAssertEqual(try Data(contentsOf: retained), payload)
-            // A later pass does not resend it anywhere.
+            for entry in [try XCTUnwrap(queue.allEntries().first), try XCTUnwrap(restarted.allEntries().first)] {
+                XCTAssertEqual(entry.state, .pending)
+                XCTAssertEqual(entry.pause, pause)
+                XCTAssertEqual(entry.attemptGeneration, 1)
+                XCTAssertEqual(entry.attempts.map(\.disposition), [.knownNoEffect])
+                XCTAssertEqual(entry.attempts.map(\.operationKey), [key])
+                XCTAssertEqual(entry.intent, intent, "the frozen intent is never rewritten")
+            }
+            XCTAssertEqual(try Data(contentsOf: try restarted.payloadURL(for: intent.itemId)), payload)
+
+            // No later pass — in this process or after a restart — sends it,
+            // starts an attempt or allocates a key.
             let again = await CaptureDeliveryCoordinator(queue: restarted, transport: transport)
                 .deliverPending()
             XCTAssertEqual(again, [])
             XCTAssertEqual(transport.sentCount, 1)
+            XCTAssertEqual(restarted.allEntries().first?.attemptGeneration, 1)
+
+            // The activity says the fixed words and no reason code.
+            let records = try CaptureActivityStore(stateDirectory: root.appendingPathComponent("activity"))
+                .observe(queue: restarted.allEntries(), runs: [])
+            let group = try XCTUnwrap(FilesAndFoldersModel.activityGroups(records: records, runs: []).first)
+            let item = FilesAndFoldersItem.activity(group)
+            XCTAssertEqual(item.statusLabel, label)
+            XCTAssertEqual(item.statusFilter, .needsAttention)
+            XCTAssertNil(records.first?.failureCode)
+            XCTAssertEqual(records.first?.fact.needsAttention, true)
+            XCTAssertEqual(records.first?.isReceipt, false, "held work is never a clearable receipt")
+            XCTAssertEqual(records.first?.resolvedAt, nil)
+            let rawCodes = ["target_credential_refused", "target_incompatible", "needs_access", "update_required"]
+            for text in [item.statusLabel, item.activityText] {
+                XCTAssertFalse(rawCodes.contains { text.contains($0) }, text)
+            }
         }
+    }
+
+    /// The same items, a different target: a present target with another binding
+    /// is never handed held work, and nothing is retargeted.
+    func testHeldWorkIsNotHandedToAnotherTargetAndResumesOnlyOnRelease() async throws {
+        let root = try temporaryDirectory()
+        let queue = try CaptureIntentQueue(root: root)
+        let payload = Data("hello".utf8)
+        let binding = CaptureDeliveryBinding.companion(workspaceRef: "workspace-1")
+        let intent = try makeIntent(payload: payload, binding: binding)
+        try queue.enqueue(intent: intent, payload: payload)
+        let revoked = PresentTargetTransport(.held(.needsAccess), binding: binding)
+        _ = await CaptureDeliveryCoordinator(queue: queue, transport: revoked).deliverPending()
+
+        // The target now accepts the credential, but nothing releases the hold.
+        let accepting = PresentTargetTransport(
+            .admitted(captureID: "dcap-" + String(repeating: "a", count: 64)),
+            binding: binding
+        )
+        let delivery = CaptureDeliveryCoordinator(queue: queue, transport: accepting)
+        let idle = await delivery.deliverPending()
+        XCTAssertEqual(idle, [])
+        XCTAssertEqual(accepting.sentCount, 0)
+
+        // Releasing the other reason releases nothing.
+        let wrong = try await delivery.releaseHeld(.updateRequired)
+        XCTAssertEqual(wrong, [])
+        XCTAssertEqual(queue.allEntries().first?.pause, .needsAccess)
+
+        // The owner releases it: the next pass sends under the next attempt's
+        // own key, never the refused attempt's.
+        let released = try await delivery.releaseHeld(.needsAccess)
+        XCTAssertEqual(released.map(\.state), [.pending])
+        XCTAssertNil(released.first?.pause)
+        let sent = await delivery.deliverPending()
+        XCTAssertEqual(sent.map(\.state), [.admitted])
+        XCTAssertEqual(accepting.sentCount, 1)
+        XCTAssertEqual(
+            accepting.keys,
+            [CaptureAttemptRecord.childOperationKey(parent: "capture-1", generation: 2)]
+        )
+        XCTAssertEqual(sent.first?.attempts.map(\.disposition), [.knownNoEffect, .admitted])
+    }
+
+    /// Missing or not-started stays known-no-effect: back to plain pending, with
+    /// no hold, so a later pass retries it under a fresh attempt key.
+    func testAnAbsentTargetStillReturnsToPendingWithNoHold() async throws {
+        let root = try temporaryDirectory()
+        let queue = try CaptureIntentQueue(root: root)
+        let payload = Data("hello".utf8)
+        let intent = try makeIntent(payload: payload, binding: .companion(workspaceRef: "workspace-1"))
+        try queue.enqueue(intent: intent, payload: payload)
+        let gone = PresentTargetTransport(.notSent, binding: .companion(workspaceRef: "workspace-1"))
+        _ = await CaptureDeliveryCoordinator(queue: queue, transport: gone).deliverPending()
+
+        let entry = try XCTUnwrap(queue.allEntries().first)
+        XCTAssertEqual(entry.state, .pending)
+        XCTAssertNil(entry.pause)
+        XCTAssertEqual(entry.attempts.map(\.disposition), [.knownNoEffect])
     }
 
     // MARK: - Helpers
@@ -357,6 +465,7 @@ private final class PresentTargetTransport: @unchecked Sendable, CaptureDelivery
     private let outcome: CaptureDeliveryOutcome
     private let lock = NSLock()
     private var sent = 0
+    private var sentKeys: [String] = []
 
     init(_ outcome: CaptureDeliveryOutcome, binding: CaptureDeliveryBinding) {
         self.outcome = outcome
@@ -364,9 +473,13 @@ private final class PresentTargetTransport: @unchecked Sendable, CaptureDelivery
     }
 
     var sentCount: Int { lock.withLock { sent } }
+    var keys: [String] { lock.withLock { sentKeys } }
 
     func deliver(input: Data, payloadURL: URL, operationKey: String) async -> CaptureDeliveryOutcome {
-        lock.withLock { sent += 1 }
+        lock.withLock {
+            sent += 1
+            sentKeys.append(operationKey)
+        }
         return outcome
     }
 }

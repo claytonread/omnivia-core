@@ -8,6 +8,10 @@ public enum CaptureDeliveryOutcome: Equatable, Sendable {
     /// attempt provably had no effect. The intent returns to pending, bytes and
     /// identity untouched, and is never retargeted to anything that is present.
     case notSent
+    /// The target refused before anything was sent, and only the person can
+    /// change why: access was revoked, or the versions disagree. The intent is
+    /// held with its bytes and key, sent nowhere and never failed.
+    case held(CaptureQueuePause)
     case unknown
 }
 
@@ -357,7 +361,7 @@ public actor CaptureDeliveryCoordinator {
         // Taken before any send, so an attempt this pass leaves unknown is
         // reconciled by the next pass, not immediately replayed by this one.
         let unresolved = queue.allEntries().filter { $0.state == .unknownOutcome }
-        for entry in queue.allEntries() where entry.state == .pending {
+        for entry in queue.allEntries() where entry.state == .pending && entry.pause == nil {
             // The same comparison the pass above reported, applied again here as
             // the send boundary itself: paused before any payload read, stage
             // transition or transport call, including for an intent published
@@ -409,6 +413,14 @@ public actor CaptureDeliveryCoordinator {
                         requestDigest: requestDigest,
                         descriptorDigest: transport.descriptorDigest
                     ))
+                case let .held(pause):
+                    outcomes.append(try queue.hold(
+                        itemID: entry.intent.itemId,
+                        attemptGeneration: staging.attemptGeneration,
+                        requestDigest: requestDigest,
+                        descriptorDigest: transport.descriptorDigest,
+                        pause: pause
+                    ))
                 case .unknown:
                     outcomes.append(try queue.markUnknownOutcome(
                         itemID: entry.intent.itemId,
@@ -439,6 +451,18 @@ public actor CaptureDeliveryCoordinator {
             if let admitted = await reconcile(entry) { outcomes.append(admitted) }
         }
         return outcomes
+    }
+
+    /// Returns every intent held for `pause` to ordinary pending work. The
+    /// owner of the condition calls it once access is restored or the update is
+    /// installed; nothing calls it on its own, so a held intent is never sent
+    /// just because a pass ran. The next pass starts the next attempt as for any
+    /// other known-no-effect attempt.
+    @discardableResult
+    public func releaseHeld(_ pause: CaptureQueuePause) throws -> [CaptureQueueEntry] {
+        try queue.allEntries().filter { $0.pause == pause }.map {
+            try queue.releaseHold(itemID: $0.intent.itemId, pause: pause)
+        }
     }
 
     /// Re-sends the exact request an unknown attempt froze, under that attempt's
