@@ -1,5 +1,4 @@
 """AT-32 and AT-33 as Core stores and serves them.
-
 AT-32: a refresh that fails after a previous success leaves the prior capture available, and
 the failure is shown separately. AT-33: identical bytes whose evidence is no longer retained
 are not read as "already up to date"; the retention decision is respected.
