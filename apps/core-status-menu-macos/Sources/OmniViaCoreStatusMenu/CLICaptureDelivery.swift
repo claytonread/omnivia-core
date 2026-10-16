@@ -57,21 +57,39 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
                 guard output.count <= 1024 * 1024,
                       let document = try JSONSerialization.jsonObject(with: output) as? [String: Any]
                 else { return .unknown }
-                if process.terminationStatus == 0,
-                   let result = document["result"] as? [String: Any],
-                   let captureID = result["capture_id"] as? String {
-                    return .admitted(captureID: captureID)
-                }
-                if let error = document["error"] as? [String: Any],
-                   let code = error["code"] as? String,
-                   !code.isEmpty {
-                    return .definiteFailure(code: code)
-                }
-                return .unknown
+                return Self.outcome(
+                    from: document,
+                    terminationStatus: process.terminationStatus
+                )
             } catch {
                 if process.isRunning { process.terminate() }
                 return .unknown
             }
         }.value
+    }
+
+    /// Interpret only facts Core actually returned. Error codes classify the
+    /// refusal itself; they do not establish whether this operation key already
+    /// committed. The runtime adds this explicit detail only when it found this
+    /// exact request's committed claim but could not re-serve its answer.
+    static func outcome(
+        from document: [String: Any],
+        terminationStatus: Int32
+    ) -> CaptureDeliveryOutcome {
+        if terminationStatus == 0,
+           let result = document["result"] as? [String: Any],
+           let captureID = result["capture_id"] as? String {
+            return .admitted(captureID: captureID)
+        }
+        if let error = document["error"] as? [String: Any],
+           let code = error["code"] as? String,
+           !code.isEmpty {
+            if let details = error["details"] as? [String: Any],
+               details["outcome_established"] as? Bool == false {
+                return .unknown
+            }
+            return .definiteFailure(code: code)
+        }
+        return .unknown
     }
 }

@@ -2404,6 +2404,7 @@ class ApplicationDispatcher:
                 principal=context.principal_id,
                 audit_reference=error.audit_reference,
                 job_reference=error.job_reference,
+                details=error.details,
             )
 
         audit_reference: str | None = None

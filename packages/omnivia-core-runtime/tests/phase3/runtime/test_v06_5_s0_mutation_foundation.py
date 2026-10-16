@@ -81,7 +81,7 @@ from omnivia_core_runtime.service.mutation import (
     execute_mutation,
     issue_mutation_grant,
 )
-from omnivia_core_runtime.service.operations import APPLICATION_OPERATIONS
+from omnivia_core_runtime.service.operations import APPLICATION_OPERATIONS, failure
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
     StorageError,
@@ -1192,8 +1192,21 @@ def test_v06_5_s2_idempotency_conflict_carries_original_audit_reference(
         )
     assert conflict.value.code == ERROR_CODE_IDEMPOTENCY_CONFLICT
     assert conflict.value.audit_reference == first.audit_ref
+    assert conflict.value.details is None
     assert conflict_spy.calls == 0
     assert counts(owned.connection) == settled
+
+
+def test_unestablished_outcome_detail_survives_the_contract_wire() -> None:
+    """The native client can distinguish an unknown effect from an ordinary refusal."""
+    response = failure(
+        envelope_for(ENTRY),
+        ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+        "the committed answer cannot be served",
+        details={"outcome_established": False},
+    )
+
+    assert response.to_wire()["error"]["details"] == {"outcome_established": False}
 
 
 # --- S0-06: precondition before the mutation, fencing around all of it --------
@@ -2028,6 +2041,7 @@ def test_v06_5_s0_replay_verifies_digest_and_ijson(owned: m1.Owned) -> None:
                 equivalence=equivalence,
             )
         assert fault.value.code == ERROR_CODE_INTERNAL_NON_RECOVERABLE, case
+        assert fault.value.details == {"outcome_established": False}, case
         # No domain code ran, and the refusal rolled back -- so the fresh grant the
         # replay was offered is not spent either.
         assert spy.calls == 0, case
@@ -2054,7 +2068,7 @@ def test_v06_5_s0_replay_verifies_digest_and_ijson(owned: m1.Owned) -> None:
     # And the validator is consulted on the way out, not only on the way in: a stored
     # answer this build will no longer serve is refused rather than re-served.
     rejecting_spy = DomainMutationSpy()
-    with pytest.raises(MutationSeamFault):
+    with pytest.raises(MutationSeamFault) as rejected:
         run(
             owned,
             grant=issue(owned, authorize()),
@@ -2063,6 +2077,7 @@ def test_v06_5_s0_replay_verifies_digest_and_ijson(owned: m1.Owned) -> None:
             validate_result=lambda _result: False,
         )
     assert rejecting_spy.calls == 0
+    assert rejected.value.details == {"outcome_established": False}
 
 
 def seed_settled_claim(

@@ -400,6 +400,24 @@ _MESSAGE_RESULT_REJECTED: Final = (
     "this mutation produced a result the server will not serve for this operation"
 )
 
+#: `ApiError.details` on a refusal that does not establish what the admission under
+#: this idempotency key did.
+#:
+#: Every other refusal this seam raises is decided before the domain mutation runs or
+#: rolls it back with the claim, so it is proof the effect did not happen; a caller may
+#: settle its work on one. A refusal raised while serving an *existing* claim is not:
+#: the claim is only visible because its transaction committed, so the effect stands and
+#: only its answer is missing. A caller must then keep the same request, key and
+#: attempt and reconcile, rather than settling a failure or allocating a new key.
+#:
+#: The error code says what went wrong and stays frozen to its own retry class. This
+#: says what the refusal proves about the effect, which no code in the v1 vocabulary
+#: distinguishes -- `internal_non_recoverable` is raised for both a rolled-back
+#: mutation and an unservable committed one.
+ADMISSION_OUTCOME_UNESTABLISHED: Final[Mapping[str, Any]] = MappingProxyType(
+    {"outcome_established": False}
+)
+
 
 def _monotonic_us(clock: Clock) -> int:
     """The clock's monotonic reading, in microseconds.
@@ -945,29 +963,46 @@ def execute_mutation(
         if existing is not None:
             claim_id, stored_digest, original_audit_ref = existing
             if stored_digest not in accepted_fingerprints:
+                # One key, two requests. This says something definite about *this*
+                # request: the key is bound to a different one, so this request was
+                # never the claim and never committed. It is marked below as a
+                # refusal that does establish the outcome, and a caller may settle it.
                 raise MutationIdempotencyConflict(audit_reference=original_audit_ref)
-            if replay_authority is not None:
-                replay_authority(fenced)
-            # An honest replay runs no domain code, but it does spend the fresh grant it
-            # was presented with: the row below is what makes that durable, so the grant
-            # cannot later authorize a mutation that would actually write something.
-            replayed = _replay(fenced, claim_id)
-            # Validated on the way out as well as on the way in. A stored answer that
-            # this build no longer considers servable is refused rather than re-served
-            # from the claim for as long as the claim exists.
-            if not validate_result(replayed.result):
-                raise MutationSeamFault(_MESSAGE_RESULT_REJECTED)
-            settled_monotonic_us = _require_current(grant, clock)
-            _record_execution(
-                fenced,
-                grant,
-                kind="replayed",
-                claim_id=claim_id,
-                audit_ref=replayed.audit_ref,
-                settled_at_us=_wall_us(clock),
-                settled_monotonic_us=settled_monotonic_us,
-            )
-            _require_current(grant, clock)
+            # Past this point the claim is this exact request's own, and a claim is
+            # visible only because the transaction that inserted it -- and the domain
+            # rows written beside it -- committed. So the effect already happened, and
+            # every refusal below withholds its answer rather than preventing it. That
+            # is not the same fact as an ordinary refusal, and a caller recovering an
+            # in-flight mutation has to tell them apart: one is settled work, the other
+            # is work whose outcome this answer cannot establish. See
+            # `ADMISSION_OUTCOME_UNESTABLISHED`.
+            try:
+                if replay_authority is not None:
+                    replay_authority(fenced)
+                # An honest replay runs no domain code, but it does spend the fresh
+                # grant it was presented with: the row below is what makes that durable,
+                # so the grant cannot later authorize a mutation that would actually
+                # write something.
+                replayed = _replay(fenced, claim_id)
+                # Validated on the way out as well as on the way in. A stored answer
+                # that this build no longer considers servable is refused rather than
+                # re-served from the claim for as long as the claim exists.
+                if not validate_result(replayed.result):
+                    raise MutationSeamFault(_MESSAGE_RESULT_REJECTED)
+                settled_monotonic_us = _require_current(grant, clock)
+                _record_execution(
+                    fenced,
+                    grant,
+                    kind="replayed",
+                    claim_id=claim_id,
+                    audit_ref=replayed.audit_ref,
+                    settled_at_us=_wall_us(clock),
+                    settled_monotonic_us=settled_monotonic_us,
+                )
+                _require_current(grant, clock)
+            except OperationError as unserved:
+                unserved.details = ADMISSION_OUTCOME_UNESTABLISHED
+                raise
             return replayed
 
         if precondition is not None:
@@ -1326,6 +1361,7 @@ def _digest(canonical: str) -> str:
 
 
 __all__ = [
+    "ADMISSION_OUTCOME_UNESTABLISHED",
     "CHAT_AUTHORING_PURPOSE",
     "CONTENT_INGESTION_PURPOSE",
     "DEFAULT_GRANT_LIFETIME_US",
