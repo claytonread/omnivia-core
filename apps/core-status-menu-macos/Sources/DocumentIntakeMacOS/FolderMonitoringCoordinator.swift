@@ -371,9 +371,9 @@ public actor FolderMonitoringCoordinator {
         // configuration and consent it was given for, and nothing else. A further
         // material change signs differently, so the scope returns to review with
         // the new counts rather than draining on the earlier approval.
-        if (changeBurstCrossed || disappearanceThresholdCrossed),
-           subscription.approvedReviewSignature != reviewSignature
-        {
+        let thresholdCrossed = (changeBurstCrossed && !credibleChanges.isEmpty)
+            || disappearanceThresholdCrossed
+        if thresholdCrossed, subscription.approvedReviewSignature != reviewSignature {
             let examples = credibleChanges.map(\.displayName)
                 + credibleDisappearances.map { $0.displayName + " (missing)" }
             let reviewed = try subscriptions.update(id: subscription.subscriptionID) { value in
@@ -567,8 +567,16 @@ public actor FolderMonitoringCoordinator {
         // The window survives a completing pass. Resetting it here would mean
         // several quick passes, each below the threshold, never adding up to the
         // burst they are.
-        updated.changeBurstWindowStartedAt = burstWindowStartedAt
-        updated.changeBurstCount = burstCount
+        // A pass that got here over the threshold did so on an approval, and what
+        // was approved is exempt: it is not counted again, or the quiet pass after
+        // a backfill would find a burst of nothing and reopen review.
+        if thresholdCrossed {
+            updated.changeBurstWindowStartedAt = observedAt
+            updated.changeBurstCount = 0
+        } else {
+            updated.changeBurstWindowStartedAt = burstWindowStartedAt
+            updated.changeBurstCount = burstCount
+        }
         updated.needsFullReconciliation = capacityDeferred
         if !capacityDeferred {
             updated.pendingReviewSignature = nil

@@ -1043,6 +1043,41 @@ final class FolderCaptureSubmissionTests: XCTestCase {
         XCTAssertNil(drained.pendingReviewSignature)
     }
 
+    /// MON-34 and MON-37: an approval is spent by the pass that drains it. The
+    /// hundred changes it published stay in the five-minute rate window, but a
+    /// quiet pass after them has nothing to review and must not reopen the scope.
+    func testAQuietPassAfterAnApprovedBackfillDoesNotReopenReview() async throws {
+        let root = try temporaryDirectory()
+        let watched = try watchedFolder(in: root)
+        let edited = watched.appendingPathComponent("edited.txt")
+        try Data("baseline".utf8).write(to: edited)
+        let clock = Clock(Date(timeIntervalSince1970: 1_760_000_000))
+        let watch = try await activeWatch(root: root, clock: clock)
+
+        // The hundredth change is an edit: the queue holds a hundred at most.
+        try writeFiles(99, into: watched, prefix: "added")
+        try Data("baseline rewritten".utf8).write(to: edited)
+        let paused = await watch.environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(paused.map(\.state), [.reviewRequired])
+        _ = try await watch.environment.folderMonitoring.resume(subscriptionID: watch.subscriptionID)
+        let drained = await watch.environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(drained.map(\.queued), [100])
+
+        clock.advance(30)
+        let quiet = await watch.environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(quiet.map(\.state), [.active])
+        XCTAssertEqual(quiet.map(\.queued), [0])
+        XCTAssertNil(watch.environment.folderSubscriptions.all().first?.reviewChangeCount)
+
+        // And the backfill is spent, not remembered: one more file in the same
+        // window is the first of a new count, not the hundred-and-first (the
+        // queue is full, so it is counted but waits).
+        try Data("later".utf8).write(to: watched.appendingPathComponent("later.txt"))
+        let after = await watch.environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(after.map(\.state), [.active])
+        XCTAssertEqual(watch.environment.folderSubscriptions.all().first?.changeBurstCount, 1)
+    }
+
     /// MON-35: a disappearance needs both twenty items and a tenth of the
     /// inventory, and the tenth is of the inventory that was present. Either
     /// condition alone is an ordinary absence, recorded without review.

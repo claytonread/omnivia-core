@@ -4643,14 +4643,30 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderReconciliationSchedulerTests.swift",
           "symbol": "testAPausedSubscriptionSchedulesNoAutomaticMetadataOrContentRead",
           "covers": "The paused scope schedules no automatic metadata or content read."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderCaptureSubmissionTests.swift",
+          "symbol": "testAnAddBurstReachesReviewOnlyAtAHundredChangesInsideFiveMinutes",
+          "covers": "Ninety-nine additions are published without review; after the five-minute window runs out the next item starts a new window at count 1; accumulating to the hundredth observation inside one window pauses the scope with no further read or publication."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderCaptureSubmissionTests.swift",
+          "symbol": "testAnApprovedBackfillExemptionCoversOnlyTheExactReviewedInventory",
+          "covers": "The approved backfill drains exactly the reviewed hundred; a reviewed member changing size afterwards returns the scope to review with nothing published."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderCaptureSubmissionTests.swift",
+          "symbol": "testAQuietPassAfterAnApprovedBackfillDoesNotReopenReview",
+          "covers": "The approval is spent by the pass that drains it: a quiet pass inside the same five minutes does not reopen review, and the next change counts as the first of a new window."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Neither the 100-item count nor the five-minute window is asserted anywhere, so the threshold the gate specifies is not pinned by a test. The approved backfill exemption is not covered at all, so nothing shows it being exact rather than a blanket resumption.",
-      "limitations": "The pause-on-unusual-growth behaviour is covered, which is the right mechanism. Its trigger values and its exemption are the gate's substance and have no assertions.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing on 2026-10-16 as unsigned swift test cases under a controllable clock, over temporary folders and the production DocumentIntakeEnvironment, queue and subscription store. The window is a rate signal rather than an audit: a pass that returns for review leaves its changes undrained, so the next pass counts them again. Time is the injected reconciliation clock, not real elapsed time, and the queue's own hundred-item capacity means the hundredth change is built as an edit.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderCaptureSubmission.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderReconciliationScheduler.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderReconciliationScheduler.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderMonitoringCoordinator.swift"
       ]
     },
     {
@@ -4679,15 +4695,26 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderScopePolicyTests.swift",
           "symbol": "testARootTheTraversalCannotListIsNotReportedAsAnEmptyFolder",
           "covers": "An unlistable root is not reported as an empty folder."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderCaptureSubmissionTests.swift",
+          "symbol": "testADisappearanceNeedsBothTwentyItemsAndATenthOfThePresentInventory",
+          "covers": "Twenty absences below a tenth are ordinary; 28 of 280 present reaches review though it is under a tenth of the 300 ever enrolled, so the share is of the present inventory; fifteen of 150 is exactly a tenth and one item short of twenty, so also ordinary."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderCaptureSubmissionTests.swift",
+          "symbol": "testAPartialScanOrAnUnavailableRootMarksNothingAbsent",
+          "covers": "Thirty of 101 members gone, past both thresholds, with an unreadable subtree then with the root moved away: both end needsAccess, nothing is marked absent, no review is raised and nothing is queued."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Neither threshold value is asserted. No test shows that both the 20-item and the 10 per cent conditions must hold together, nor that the complete-coverage precondition gates them, so the conjunction the gate specifies is unproven.",
-      "limitations": "The no-false-deletion half is covered unusually well across three different layers. The threshold conjunction, which is the other half, has no coverage.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing on 2026-10-16 as unsigned swift test cases under a controllable clock, over temporary folders and the production DocumentIntakeEnvironment, queue and subscription store. Remount failure is simulated by moving the watched folder away, not by unmounting a volume. Coverage is enforced by the scan throwing before the thresholds are reached, so the partial-scan test is the only evidence of that precondition at this layer.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderCaptureSubmission.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderReconciliationExecutor.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderScopePolicy.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderScopePolicy.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderMonitoringCoordinator.swift"
       ]
     },
     {
@@ -4762,14 +4789,25 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderObservationLedgerTests.swift",
           "symbol": "testAConfigGenerationThatMovedOnInTheStoreIsStale",
           "covers": "A configuration generation that moved on is stale, so an approval cannot outlive its configuration."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderCaptureSubmissionTests.swift",
+          "symbol": "testAnApprovedBackfillExemptionCoversOnlyTheExactReviewedInventory",
+          "covers": "The approval is recorded against the reviewed inventory's signature. A reviewed member arriving at a different size is a materially changed scope: it is refreshed and reviewed again, nothing is published, the outrun approval is cleared, and approving the new screen drains exactly that."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderCaptureSubmissionTests.swift",
+          "symbol": "testAReviewApprovalIsSignedAgainstItsInventoryConfigurationAndConsent",
+          "covers": "The signature differs by subscription, configuration generation, consent generation, a changed member's size, and a member shown as missing; the same inventory signs identically."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test performs an unusual-change review and then delivers further changes to show the reviewed inventory being updated when the scope has materially changed. The generation staleness rules exist and are covered, but nothing binds an approval to a specific reviewed inventory.",
-      "limitations": "Configuration and epoch scoping are covered precisely at the ledger. The review inventory itself is not a tested subject, so neither clause of the required result is demonstrated on its own terms.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing on 2026-10-16 as unsigned swift test cases under a controllable clock, over temporary folders and the production DocumentIntakeEnvironment, queue and subscription store. This build has no path that reconfigures a subscription or re-grants consent, so the configuration and consent half of the binding is proven as a difference in the signature the production scan compares, not by reconfiguring a live watch.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderCaptureSubmission.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderObservationLedger.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderObservationLedger.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderMonitoringCoordinator.swift"
       ]
     },
     {

@@ -14,7 +14,7 @@ This document is generated from
 `qualification/wp15/qualification-ledger.v1.json` and is verified against it
 by `scripts/check-wp15-qualification.py`. It records what this checkout can
 show and what it cannot. **It is not a claim that the release is qualified.**
-46 of 130 gates have direct production-path coverage
+49 of 130 gates have direct production-path coverage
 of every condition they name; the rest carry the exact condition still
 missing.
 
@@ -22,10 +22,10 @@ missing.
 
 | Status | Gates | Meaning |
 |---|---|---|
-| passed | 46 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
+| passed | 49 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
 | failed | 0 | Evidence exists and shows the required result is not met. |
 | blocked_external | 46 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
-| not_executed | 38 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
+| not_executed | 35 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
 | not_implemented | 0 | The production path the gate names does not exist in this checkout. |
 
 ## Counts by family and status
@@ -35,9 +35,9 @@ missing.
 | AT | 20 | 50 | 14 | 0 | 19 | 17 | 0 |
 | NAT | 20.1 | 17 | 0 | 0 | 17 | 0 | 0 |
 | DOC | 20.2 | 19 | 10 | 0 | 0 | 9 | 0 |
-| MON | 20.3 | 38 | 20 | 0 | 10 | 8 | 0 |
+| MON | 20.3 | 38 | 23 | 0 | 10 | 5 | 0 |
 | END | 20.4 | 6 | 2 | 0 | 0 | 4 | 0 |
-| **total** | | **130** | 46 | 0 | 46 | 38 | 0 |
+| **total** | | **130** | 49 | 0 | 46 | 35 | 0 |
 
 ## Counts by required evidence class
 
@@ -106,7 +106,10 @@ each one's scope limits.
 | MON-29 | A byte or copy quota is reached. |
 | MON-30 | A known failed, unsupported or zero-text digest. |
 | MON-33 | Reverse job completion and a stale base. |
+| MON-34 | An add or change burst threshold. |
+| MON-35 | A disappearance threshold. |
 | MON-36 | Scan and recursion limits. |
+| MON-37 | An unusual review, then more changes. |
 | END-03 | A new source capture races reprocessing of an older capture. |
 | END-04 | Mixed ordinary files and multiple folder modes. |
 
