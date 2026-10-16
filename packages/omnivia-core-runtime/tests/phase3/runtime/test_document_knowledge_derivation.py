@@ -864,6 +864,13 @@ def test_an_exact_replay_writes_nothing_and_returns_the_same_identities(
 # The derivation runs after the extraction result is durable and before the outbox
 # obligation settles, so both crash boundaries of that window leave the obligation
 # owed and are replayed. These two tests are that window's two halves.
+#
+# Both replays run with the extractor and the retained-source read allowed exactly
+# one call each across the crash and the replay. A completed revision's stored
+# result is its answer; an OCR or external extractor need not repeat itself, and a
+# second, different outcome would be refused by `complete_extraction` and strand
+# the obligation. Plain text is deterministic, so without these counters a replay
+# that re-extracted would pass unnoticed.
 
 
 def died(*_: Any, **__: Any) -> Any:
@@ -871,24 +878,74 @@ def died(*_: Any, **__: Any) -> Any:
     raise InterruptedError("the process died here")
 
 
+class Once:
+    """A production callable that may run once; a second call fails the test."""
+
+    def __init__(self, real: Callable[..., Any]) -> None:
+        self.real = real
+        self.calls = 0
+
+    def __call__(self, *arguments: Any, **keywords: Any) -> Any:
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError(f"{self.real.__name__} ran again on replay")
+        return self.real(*arguments, **keywords)
+
+
+def interrupted_at(
+    runner: ServiceRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    owner: Any,
+    name: str,
+) -> tuple[Once, Once, tuple[int, int, int]]:
+    """Capture, crash the processing pass at `owner.name`, and arm the replay.
+
+    Returns the two once-only wrappers and the extraction row counts (revisions,
+    results, segments) the crash left behind.
+    """
+    captured(runner)
+    extract = Once(document_processing.extract_document)
+    read = Once(document_processing.document_intake.read_retained_source)
+    monkeypatch.setattr(document_processing, "extract_document", extract)
+    monkeypatch.setattr(
+        document_processing.document_intake, "read_retained_source", read
+    )
+    with monkeypatch.context() as crash:
+        crash.setattr(owner, name, died)
+        with pytest.raises(InterruptedError):
+            process_capture_outbox(runner)
+    return extract, read, extraction_counts(runner)
+
+
+def extraction_counts(runner: ServiceRunner) -> tuple[int, int, int]:
+    return (
+        count(runner, "omnivia_extraction_revisions"),
+        count(runner, "omnivia_extraction_results"),
+        count(runner, "omnivia_extracted_segments"),
+    )
+
+
 def test_a_crash_before_the_derivation_leaves_the_obligation_to_be_replayed(
     runner: ServiceRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    captured(runner)
-    monkeypatch.setattr(document_processing, "derive_document_knowledge", died)
-
-    with pytest.raises(InterruptedError):
-        process_capture_outbox(runner)
+    extract, read, crashed = interrupted_at(
+        runner, monkeypatch, document_processing, "derive_document_knowledge"
+    )
 
     # The extraction completed and is durable; nothing was derived from it; and the
     # obligation is still owed, which is the only reason the derivation is not lost.
+    assert crashed == (1, 1, 1)
     assert derived_counts(runner) == (0, 0, 0, 0)
     assert pending(runner) == 1
 
-    monkeypatch.undo()
     [result] = process_capture_outbox(runner)
 
-    assert result.result_state == "succeeded"
+    assert (result.result_state, result.publication_disposition) == (
+        "succeeded",
+        "promoted",
+    )
+    assert (extract.calls, read.calls) == (1, 1)
+    assert extraction_counts(runner) == (1, 1, 1)
     assert derived_counts(runner) == (1, 1, 1, 1)
     assert pending(runner) == 0
     assert (
@@ -900,22 +957,38 @@ def test_a_crash_before_the_derivation_leaves_the_obligation_to_be_replayed(
 def test_a_crash_after_the_derivation_replays_it_without_duplicating_a_row(
     runner: ServiceRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    captured(runner)
-    monkeypatch.setattr(document_processing.store, "settle_outbox", died)
-
-    with pytest.raises(InterruptedError):
-        process_capture_outbox(runner)
+    extract, read, crashed = interrupted_at(
+        runner, monkeypatch, document_processing.store, "settle_outbox"
+    )
 
     # The derivation committed in its own transaction and survived the rollback of
     # the settlement, so the replay meets rows that are already there.
+    assert crashed == (1, 1, 1)
     assert derived_counts(runner) == (1, 1, 1, 1)
     assert pending(runner) == 1
+    assert runner.connection is not None and runner.workspace_id is not None
+    [revision_id] = [
+        found
+        for (found,) in runner.connection.execute(
+            "SELECT extraction_revision_id FROM omnivia_extraction_results"
+        )
+    ]
+    before = derived_chain(runner, extraction_revision_id=revision_id)
+    stored = store.read_result(
+        runner.connection,
+        workspace_id=runner.workspace_id,
+        extraction_revision_id=revision_id,
+    )
 
-    monkeypatch.undo()
     [result] = process_capture_outbox(runner)
 
-    assert result.result_state == "succeeded"
+    # The replay settled the stored result itself, without reading the source or
+    # invoking the extractor a second time.
+    assert result == stored
+    assert (extract.calls, read.calls) == (1, 1)
+    assert extraction_counts(runner) == (1, 1, 1)
     assert derived_counts(runner) == (1, 1, 1, 1)
+    assert derived_chain(runner, extraction_revision_id=revision_id) == before
     assert pending(runner) == 0
 
 

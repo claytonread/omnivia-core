@@ -2019,12 +2019,12 @@
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
           "symbol": "test_a_crash_before_the_derivation_leaves_the_obligation_to_be_replayed",
-          "covers": "A process that dies between the durable extraction result and the derivation leaves the outbox obligation owed and nothing derived; the next pass recognises the same revision under the same operation key, derives exactly once and settles."
+          "covers": "A process that dies between the durable extraction result and the derivation leaves the outbox obligation owed and nothing derived; the next pass recognises the same revision under the same operation key, reuses its stored terminal result without reading the source again or invoking the extractor a second time (either would fail the test), derives exactly once and settles, leaving one revision, result and segment."
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",
           "symbol": "test_a_crash_after_the_derivation_replays_it_without_duplicating_a_row",
-          "covers": "A process that dies after the derivation committed but before the obligation settled replays without duplicating a row: the four derived row counts are the same before and after the second pass."
+          "covers": "A process that dies after the derivation committed but before the obligation settled replays without duplicating a row: the second pass returns the stored result unchanged, never reads the source or invokes the extractor again (either would fail the test, so an OCR or external extractor's differing second output can never meet complete_extraction's refusal), and the revision, result, segment and four derived row counts and the derived chain's identifiers are the same before and after it."
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_knowledge_derivation.py",

@@ -1045,6 +1045,19 @@ def _execute_obligation(
         revision = _admitted_revision(
             runner, capture, profile_digest=profile_digest, operation_key=operation_key
         )
+        stored = store.read_result(
+            runner.connection,
+            workspace_id=runner.workspace_id,
+            extraction_revision_id=revision.extraction_revision_id,
+        )
+        if stored is not None:
+            # A pass that completed this revision and died before settling. The
+            # stored result is the immutable answer: extracting again could only
+            # disagree with it (OCR need not repeat itself), and a disagreement is
+            # refused by `complete_extraction`, stranding the obligation for good.
+            _derive_knowledge(runner, capture, stored)
+            _settle(runner, capture)
+            return stored
     if unexecutable is not None:
         outcome = _terminal_without_segments("failed", unexecutable)
     else:
@@ -1072,20 +1085,27 @@ def _execute_obligation(
             outcome=outcome,
         )
         _derive_knowledge(runner, capture, result)
-        with fenced_transaction(
-            runner.connection,
-            runner.identity,
-            workspace_id=runner.workspace_id,
-            fencing_generation=runner.generation,
-        ):
-            store.settle_outbox(
-                runner.connection,
-                workspace_id=runner.workspace_id,
-                capture_id=capture.capture_id,
-                fencing_generation=runner.generation,
-                now_us=time.time_ns() // 1000,
-            )
+        _settle(runner, capture)
     return result
+
+
+def _settle(runner: ServiceRunner, capture: store.StoredCapture) -> None:
+    """Settle one capture's outbox row; the caller holds ``runner.sqlite_gate``."""
+    assert runner.connection is not None and runner.workspace_id is not None
+    assert runner.identity is not None and runner.generation is not None
+    with fenced_transaction(
+        runner.connection,
+        runner.identity,
+        workspace_id=runner.workspace_id,
+        fencing_generation=runner.generation,
+    ):
+        store.settle_outbox(
+            runner.connection,
+            workspace_id=runner.workspace_id,
+            capture_id=capture.capture_id,
+            fencing_generation=runner.generation,
+            now_us=time.time_ns() // 1000,
+        )
 
 
 def _admitted_revision(
@@ -1148,8 +1168,8 @@ def _derive_knowledge(
     promoted completion moves; before :func:`store.settle_outbox`, because that is
     what makes a crash in this window recoverable. The obligation is still pending
     while the derivation runs, so a process that dies here leaves the same row to be
-    replayed under the same operation key: the extraction is re-admitted, the
-    identical result is *recognised* rather than rewritten, and every identifier the
+    replayed under the same operation key: the revision is recognised, its stored
+    result is reused without extracting again, and every identifier the
     derivation writes comes from (workspace, revision, segment ordinal), so the
     second pass finds its own rows and writes nothing. Deriving after settlement
     would put the only record of the outstanding work in a row that had just been
