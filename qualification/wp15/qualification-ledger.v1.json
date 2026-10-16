@@ -289,15 +289,36 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CapturePreparationCoordinatorTests.swift",
           "symbol": "testPublishesCompletePreparedSelectionWithFrozenBytes",
           "covers": "The companion publishes a prepared selection with frozen bytes."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/fixtures/at09/utf8-bom-mixed-eol.txt.sha256",
+          "covers": "The committed UTF-8, BOM and CRLF/LF/lone-CR fixture has its SHA-256 recorded beside it, as section 20 requires of fixture hashes."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_at09_selected_source_end_to_end.py",
+          "symbol": "test_fixture_is_the_recorded_utf8_bom_mixed_line_ending_source",
+          "covers": "The fixture is the recorded one: digest, leading BOM, two CRLF, one lone CR, two lone LF and no terminator."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_at09_selected_source_end_to_end.py",
+          "symbol": "test_selected_source_reaches_core_exact_and_is_left_unchanged",
+          "covers": "Drives the Swift half against a managed Core, then reads the retained copy and the extraction projection back out of the Core workspace and compares both to the recorded digest and bytes."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/SelectedSourceIngestionTests.swift",
+          "symbol": "testSelectedOriginalReachesCoreByteForByteAndIsLeftUnchanged",
+          "covers": "The selected original goes through ManualCaptureSubmission, the frozen payload equals the fixture, CaptureDeliveryCoordinator over CLICaptureDelivery admits it through the real omnivia CLI, and the original's bytes, size, mode, owner, inode, flags, mtime/birthtime/ctime, extended attributes, sibling listing and directory mtime are identical before and after."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No before-and-after filesystem-attribute comparison exists on the individual selected-source path; only the folder run has one. The BOM and line-ending fixture is synthesised in-test with no recorded fixture digest, and section 20 requires fixture hashes be recorded with the result.",
-      "limitations": "Byte preservation is covered on the Core read path and on the companion publication path separately. The two never meet in one test, so end-to-end byte identity from a selected original to a Core capture is inferred rather than observed.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing on macOS with a Swift toolchain on 2026-10-16. The end-to-end half is a macOS-only pytest that runs `swift test`; it skips elsewhere, so core-acceptance's Linux row runs only the fixture-digest and extraction tests, and no required CI row runs the end-to-end half. The original is chosen by handing its URL to ManualCaptureSubmission rather than through a real picker, drag or Services invocation, and atime is deliberately excluded from the before-and-after comparison because a read may move it. Core's retained copy is read through read_retained_source against the stopped service's workspace rather than over the wire. One text fixture covers the gate; no OS or Xcode version is recorded with the result.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/source_capture.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CapturePreparationCoordinator.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CapturePreparationCoordinator.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ManualCaptureSubmission.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureDeliveryCoordinator.swift"
       ]
     },
     {
@@ -390,17 +411,28 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureSurfaceAcceptanceTests.swift",
           "symbol": "testADurableShareRequestIsQueuedWordingAndNamesNoDestination",
           "covers": "ShareInboxStore.queuedWording is the design's exact sentence, and the published manifest on disk names no destination, workspace, target or principal."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testAnOfflineAddIsQueuedWithTheDesignSentenceAndStaysQueuedAfterAFailedPass",
+          "covers": "The production panel receipt for a single Add reads Queued on this Mac. Open OmniVia Core to send., and a delivery pass through the real CLI against an installation that is not there leaves the item pending with its exact bytes and the activity label Queued on this Mac."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testTheShareExtensionDisplaysTheDesignSentenceForBothQueuedStates",
+          "covers": "The Share extension source assigns ShareInboxStore.queuedWording to its status in both queued states and never assigns Added."
         }
       ],
       "status": "not_executed",
-      "missing_condition": "Offline is still not produced, and the wording is only half proven on the surface the person actually sees. No test makes delivery fail from an absent network: the durable-publication tests never attempt delivery at all, so offline is modelled as not-yet-delivered. And the panel's own receipt detail stops at Queued on this Mac.; the design's full sentence, Queued on this Mac. Open OmniVia Core to send, exists only as the ShareInboxStore.queuedWording constant, and no test shows it being displayed, because Extensions/Share is outside the Swift test target.",
-      "limitations": "Durable publication, the never-Added rule and the never-name-a-destination rule are each asserted against the real queue, the real ShareInboxStore manifest and the real panel receipt. Eligibility of the target is not modelled, and the no-destination assertions search only for the workspace name the test configured.",
+      "missing_condition": "The target is absent, not a known eligible stopped one. The failed delivery pass runs the real CLI against an installation state that does not exist, so a Core that is installed, eligible and merely not running is never produced, no test fails delivery from an absent network, and eligibility of the target is not modelled at all. The wording is also unsettled for the panel: the full sentence is now what the panel receipt shows, but the design ties it to a closed companion and gives Queued on this Mac for a stopped Core, and the panel runs inside the open companion. The Share extension's display is pinned by matching its source text, because Extensions/Share is outside the Swift test target.",
+      "limitations": "Durable publication, the never-Added rule, the never-name-a-destination rule and the pending-with-bytes result of a failed pass are each asserted against the real queue, the real ShareInboxStore manifest, the real panel receipt and the real CLI. The no-destination assertions search only for the workspace name the test configured. The AbsentTarget tests need a Python that can import the packages and skip, naming OMNIVIA_CORE_TEST_PYTHON, when none is configured.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ManualCaptureSubmission.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareInboxStore.swift",
         "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/CapturePanelController.swift",
-        "apps/core-status-menu-macos/Extensions/Share/ShareViewController.swift"
+        "apps/core-status-menu-macos/Extensions/Share/ShareViewController.swift",
+        "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/CLICaptureDelivery.swift"
       ]
     },
     {
@@ -429,14 +461,46 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIntentQueueTests.swift",
           "symbol": "testDefiniteFailureRetainsTheLastRecoveryPayloadAcrossRestart",
           "covers": "A definite failure retains the recovery payload across restart, which is the input-retained half."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testAnExecutableThatIsGoneIsReportedAsNotSent",
+          "covers": "A target whose executable is gone fails to launch and is reported as not sent."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testAnAbsentInstallationLeavesTheItemPendingAndNeverFallsBack",
+          "covers": "The real CLI against an absent installation returns the item to pending with its bytes and an unchanged frozen intent on every pass, and a present target with a different binding is handed nothing."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testTheQueuedBytesSurviveARestartWhileTheTargetIsAbsent",
+          "covers": "The queued bytes survive a queue restart while the target is absent."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testPreSendRefusalsAreDefiniteAndAnythingElseStaysUnknown",
+          "covers": "The CLI's credential and version refusals classify as definite failures and every other shape stays unknown."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testTheDiagnosticsAreTheCLIsOwnFixedSentences",
+          "covers": "The sentences the companion matches are the CLI source's own."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testARevokedTargetFailsTheItemWithItsReasonAndKeepsTheRecoveryCopy",
+          "covers": "A refused credential or version fails the item with its reason, keeps the last recovery copy across a restart and is never resent."
         }
       ],
       "status": "not_executed",
-      "missing_condition": "No case covers an absent target: the three refusals all mismatch a target that exists. Revocation is modelled as a binding-revision mismatch rather than an actually revoked credential or authorisation.",
-      "limitations": "Delivery is exercised against a fake delivery client, so no real Core service refuses the target. The no-silent-fallback property is strong; missing and revoked are approximations.",
+      "missing_condition": "Absent is now observed, but revoked and incompatible are still classified rather than produced, and what the companion does with them is not what the design says. The revoked and incompatible tests hand the CLI's fixed stderr sentence and exit status to CLICaptureDelivery.outcome and pin the sentences against the CLI source; no test has a real revoked credential or a real version disagreement produce them through the companion. The behaviour differs from the design: both outcomes mark the item failed, no queue operation leaves failed, and the panel shows the raw reason code, where the design has a revoked authorisation pause the old intent with Access to this workspace is required, and an incompatible helper retain the queue with Update required.",
+      "limitations": "The no-silent-fallback property is strong and now includes an absent target through the real CLI. Input retention for the failed arm is the last payload file left on disk, which the queue no longer resolves; it is retained, not recoverable through the queue. Delivery elsewhere in the older coordinator tests still uses a fake client.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureDeliveryCoordinator.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",
+        "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/CLICaptureDelivery.swift",
+        "packages/omnivia-core-cli/src/omnivia_core_cli/main.py"
       ]
     },
     {
@@ -623,14 +687,30 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_capture_vertical.py",
           "symbol": "test_document_capture_changed_body_replay_is_refused_without_domain_effect",
           "covers": "A replay whose body changed is refused without a domain effect."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureCoreBoundaryTests.swift",
+          "symbol": "testRestartedCoordinatorReconcilesALostReceiptOnTheRetainedKeyToOneCapture",
+          "covers": "The real durable queue, wire encoder and CLICaptureDelivery deliver to a live omnivia-core-service; the receipt is dropped after Core commits, the queue is reopened from disk, the restarted coordinator replays the frozen request under the retained attempt key and settles the entry on the admitted answer, and Core history still holds exactly one capture with that id."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureCoreBoundaryTests.swift",
+          "symbol": "testReconcilingUnderAFreshKeyWouldHaveDuplicatedTheCapture",
+          "covers": "Control: the same lost receipt reconciled under a different key yields two captures, so the one-capture assertion can see a duplicate."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureDeliveryCoordinatorTests.swift",
+          "symbol": "testAdmittedReplaySettlesTheUnknownEntryOnItsOwnKey",
+          "covers": "The production coordinator replays an unknown entry on its own key and generation, and settles it only on an admitted answer."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The two sides of this gate are never joined. Swift tests stop at a CaptureDeliveryCoordinator with a fake client, and the Python tests call the service directly; no test has a real companion talking to a real Core service across a simulated crash.",
-      "limitations": "Idempotency is proven independently on each side with compatible but separately asserted key semantics. Nothing demonstrates that the key the companion retains is the key Core deduplicates on.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing against a live service on 2026-10-16. The crash is simulated by dropping the receipt after the CLI returns and reopening the queue over the same root, not by killing a process mid-flight. The two Core boundary tests skip when omnivia and omnivia-core-service are not installed side by side on PATH, and fail instead when CI is set, so a row that lost the toolchain cannot go green. One text item, one document and one workspace; a lost receipt after a multi-item batch is not covered.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureDeliveryCoordinator.swift",
-        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py"
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py",
+        "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/CLICaptureDelivery.swift"
       ]
     },
     {
@@ -659,11 +739,36 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureSurfaceAcceptanceTests.swift",
           "symbol": "testATimedOutSubmissionIsShownAsCheckingStatus",
           "covers": "An unknown delivery outcome projects through the production CaptureActivityStore and FilesAndFoldersModel to the Checking status label, with the activity record preserved rather than cleared."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CLICaptureDeliveryTests.swift",
+          "symbol": "testExplicitUnestablishedOutcomeRemainsUnknown",
+          "covers": "A Core refusal carrying outcome_established false is read as an unknown outcome, not a definite failure."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CLICaptureDeliveryTests.swift",
+          "symbol": "testOrdinaryIdempotencyConflictIsADefiniteFailure",
+          "covers": "An ordinary idempotency conflict, which proves the request never committed, stays a definite failure."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_v06_5_s0_mutation_foundation.py",
+          "symbol": "test_unestablished_outcome_detail_survives_the_contract_wire",
+          "covers": "The outcome_established false detail reaches the wire in the error envelope."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureDeliveryCoordinatorTests.swift",
+          "symbol": "testRefusedReplayLeavesTheEntryUnknownWithItsKeyAndBytes",
+          "covers": "A refused replay leaves the entry unknown with its key and bytes and settles nothing."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureDeliveryCoordinatorTests.swift",
+          "symbol": "testUnknownReplayLeavesTheEntryUnknownAndNeverAllocatesAKey",
+          "covers": "Repeated unknown replays all use the one retained key and never allocate another."
         }
       ],
       "status": "not_executed",
-      "missing_condition": "The expired-replay arm has no displayed-state evidence. The Checking status label is now proven for the unknown-outcome arm, through CaptureActivityStore.fact and FilesAndFoldersModel, but an expired replay is refused on the Core side and nothing shows what the companion then displays, so the required state is unproven for one of the three scenarios the gate names.",
-      "limitations": "No destructive removal and no new-key resubmission are covered on both sides, and the displayed state is now asserted against the production projection rather than a rendered view. The timeout itself is stood in for by a transport returning unknown: CLICaptureDelivery's own 25-second deadline is never driven, and the folder window's separate Checking status strings are not covered.",
+      "missing_condition": "The expired-replay arm still has no displayed-state evidence. The Core side now marks a committed claim it cannot re-serve as outcome_established false and the CLI maps that to unknown, but each link is a separate unit test: no test carries an unservable replay from Core through the CLI into the queue and on to the Checking status label. The timeout arm is also still stood in for by a transport returning unknown; CLICaptureDelivery's own 25-second deadline is never driven.",
+      "limitations": "No destructive removal and no new-key resubmission are covered on both sides, and the displayed state for the unknown-outcome arm is asserted against the production projection rather than a rendered view. The folder window's separate Checking status strings are not covered. Core claims do not expire in this build, so expired replay can only mean a claim whose answer is withheld.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureActivityStore.swift",
@@ -2796,11 +2901,31 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
           "symbol": "test_output_identity_separates_method_language_and_confidence",
           "covers": "Output identity separates method, language and confidence, which is how alternatives stay distinguishable."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
+          "symbol": "test_an_invisible_prior_ocr_layer_is_decoded_with_page_and_spatial_provenance",
+          "covers": "A hand-built page whose text is rendering mode 3 over a full-page raster paints identically to the raster alone and differently when the same text is visible; the layer is decoded as native text with page, geometry space, rotation, crop box and distinct per-line boxes."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
+          "symbol": "test_a_reading_agreeing_with_the_invisible_layer_adds_no_second_sentence",
+          "covers": "An OCR reading that agrees with the invisible layer is stored once, with both methods recorded."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
+          "symbol": "test_a_reading_conflicting_with_the_invisible_layer_keeps_both_apart",
+          "covers": "A conflicting reading is kept as a hidden alternative linked to the layer line, and neither amount is appended to the other."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
+          "symbol": "test_a_repeated_invisible_footer_pairs_each_position_with_its_own_reading",
+          "covers": "A footer repeated at three positions in the invisible layer stays three segments, each paired with the reading over its own region."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The invisible prior OCR layer is not covered. No test supplies a PDF whose embedded text is an invisible recognition layer from an earlier tool, which is the case that makes native-versus-OCR agreement ambiguous and is the distinctive risk in this gate.",
-      "limitations": "Disagreement handling and position-sensitive deduplication are covered precisely. The engine is injected throughout and no fixture or engine digest is recorded.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The recognition engine is injected throughout, which is the right instrument for a gate about how disagreement and position are handled, but it means no pinned engine build or language-model digest is recorded with the result. The invisible-layer PDF is hand-built in-test with no recorded fixture hash, and the three conditions are exercised in separate tests rather than on one page.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/raster_extractors.py"
       ]
