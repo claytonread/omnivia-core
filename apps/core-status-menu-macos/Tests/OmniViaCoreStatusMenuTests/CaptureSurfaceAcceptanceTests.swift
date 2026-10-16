@@ -291,8 +291,8 @@ final class CaptureSurfaceAcceptanceTests: NativeHandoffTestCase {
 ///
 /// `.unknown` is exactly what the production transport returns when its own
 /// deadline passes with the CLI still running, or when the answer cannot be
-/// read — see `CLICaptureDelivery.deliver`. Driving that path for real would
-/// mean waiting out a 25-second deadline, so the outcome stands in for it.
+/// read — see `CLICaptureDelivery.deliver`. This stand-in only isolates the
+/// projection; `UnknownOutcomeAcceptanceTests` drives the real deadline.
 private struct TimingOutTransport: CaptureDeliveryTransport {
     let descriptorDigest = "sha256:" + String(repeating: "b", count: 64)
     let deliveryBinding = CaptureDeliveryBinding.companion(workspaceRef: "workspace-1")

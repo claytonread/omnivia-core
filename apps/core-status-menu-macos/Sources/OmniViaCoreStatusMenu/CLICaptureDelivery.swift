@@ -6,6 +6,14 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
     let executable: URL
     let installationState: URL
     let deliveryBinding: CaptureDeliveryBinding
+    /// How long one capture process may run before its answer is given up on
+    /// as unknown. Production never sets it; a test shortens it to drive the
+    /// real timeout path without waiting the full production deadline.
+    var processDeadline: TimeInterval = CLICaptureDelivery.productionProcessDeadline
+
+    /// The deadline production uses, and the CLI's own `--timeout-ms` stays
+    /// inside it, so the CLI normally reports its own timeout before this fires.
+    static let productionProcessDeadline: TimeInterval = 25
 
     var descriptorDigest: String {
         let fields = [
@@ -46,7 +54,7 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
             do {
                 try inputPipe.fileHandleForWriting.write(contentsOf: input)
                 try inputPipe.fileHandleForWriting.close()
-                let deadline = Date().addingTimeInterval(25)
+                let deadline = Date().addingTimeInterval(processDeadline)
                 while process.isRunning && Date() < deadline {
                     try? await Task.sleep(nanoseconds: 50_000_000)
                 }

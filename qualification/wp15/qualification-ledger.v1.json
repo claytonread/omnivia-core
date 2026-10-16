@@ -842,15 +842,31 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureDeliveryCoordinatorTests.swift",
           "symbol": "testUnknownReplayLeavesTheEntryUnknownAndNeverAllocatesAKey",
           "covers": "Repeated unknown replays all use the one retained key and never allocate another."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/UnknownOutcomeAcceptanceTests.swift",
+          "symbol": "testTheDeliverysOwnDeadlineLeavesTheEntryUnknownAndShownAsChecking",
+          "covers": "The timeout arm through the production CLICaptureDelivery's own deadline, shortened via processDeadline. A real executable passes the status gate, then never answers the capture; the delivery ends it and returns unknown. The queue keeps the entry unknown with its attempt key, generation, intent and exact bytes; a second pass reuses the key. The production CaptureActivityStore and FilesAndFoldersModel show Checking status… with no receipt, and Clear completed activity removes nothing. Dropping the deadline, reporting not-sent, or not terminating fails it."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CLICaptureDeliveryTests.swift",
+          "symbol": "testTheProductionProcessDeadlineIsTwentyFiveSeconds",
+          "covers": "A CLICaptureDelivery nobody configured waits exactly 25 seconds; the CLI --timeout-ms 20000 is pinned beside it in testTheCaptureCommandAttachesOnlyAndNeverStartsCore."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/UnknownOutcomeAcceptanceTests.swift",
+          "symbol": "testAnUnservableCommittedAnswerStaysUnknownAndCheckingThroughTheRealCLI",
+          "covers": "Expired replay and unknown admission, end to end. A live omnivia-core-service commits a real capture and the receipt is lost; with the service stopped, a test-only helper re-stores the claim's answer non-canonically; the real omnivia CLI's replay returns Core's own outcome_established false. Through the production queue and coordinator, two passes stay unknown under the same key and generation with exact bytes, show Checking status…, survive Clear completed activity, and Core holds one capture. A pre-tamper control is admitted; ignoring outcome_established or skipping the tamper fails it."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The expired-replay arm still has no displayed-state evidence. The Core side now marks a committed claim it cannot re-serve as outcome_established false and the CLI maps that to unknown, but each link is a separate unit test: no test carries an unservable replay from Core through the CLI into the queue and on to the Checking status label. The timeout arm is also still stood in for by a transport returning unknown; CLICaptureDelivery's own 25-second deadline is never driven.",
-      "limitations": "No destructive removal and no new-key resubmission are covered on both sides, and the displayed state for the unknown-outcome arm is asserted against the production projection rather than a rendered view. The folder window's separate Checking status strings are not covered. Core claims do not expire in this build, so expired replay can only mean a claim whose answer is withheld.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing on 2026-10-16. Expired replay means a committed claim whose answer Core cannot re-serve; claims do not expire in this build, and a test-only helper builds that state by editing the stored outcome with the service stopped. The timeout arm's status read is a recorded running-Core document served by a wrapper; the capture process, deadline and termination are real, but the timeout is not driven against a live Core. The live arm skips without a configured Python, and fails if CI is set and python3 cannot run it. Displayed state is the production projection, not a rendered view. The folder window's reprocess Checking status sentences belong to a different operation than this gate's in-flight submission and are untested, as is Stop adding remaining files against a Checking folder member.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureActivityStore.swift",
-        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift"
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift",
+        "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/CLICaptureDelivery.swift"
       ]
     },
     {

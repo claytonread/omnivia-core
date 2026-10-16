@@ -50,6 +50,19 @@ final class CLICaptureDeliveryTests: XCTestCase {
         )
     }
 
+    /// AT-19 drives the timeout path with a shortened deadline, so what
+    /// production runs with is pinned here: a delivery nobody configured waits
+    /// exactly 25 seconds, and the CLI's own `--timeout-ms` (pinned above) is 20 s.
+    func testTheProductionProcessDeadlineIsTwentyFiveSeconds() {
+        let delivery = CLICaptureDelivery(
+            executable: URL(fileURLWithPath: "/omnivia"),
+            installationState: URL(fileURLWithPath: "/state"),
+            deliveryBinding: binding
+        )
+        XCTAssertEqual(CLICaptureDelivery.productionProcessDeadline, 25)
+        XCTAssertEqual(delivery.processDeadline, 25)
+    }
+
     // MARK: - The pre-send lifecycle gate
 
     private let binding = CaptureDeliveryBinding.companion(
