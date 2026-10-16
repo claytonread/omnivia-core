@@ -5,13 +5,28 @@ import hashlib
 import io
 import json
 import zipfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final
 
 import pytest
-from _trusted_ocr import catalogue_over, host_models, host_runtime, stand_in_models
+from _trusted_ocr import (
+    MODEL_SUFFIX,
+    catalogue_over,
+    digest_of,
+    host_models,
+    host_runtime,
+    stand_in_models,
+)
+from omnivia_core_runtime.distribution.model_manifest_trust import (
+    DEV_TEST_ANCHOR_FLAG,
+    dev_test_anchor,
+    model_manifest_identity,
+    sign_model_manifest,
+    verify_model_manifest,
+)
 from omnivia_core_runtime.service import (
     document_intake,
     document_worker,
@@ -49,8 +64,10 @@ from omnivia_core_runtime.service.ocr_resource_lifecycle import (
     OcrResourceLifecycleRefused,
 )
 from omnivia_core_runtime.service.ocr_resource_store import (
+    DEFAULT_OCR_RESOURCE_CAPACITY_BYTES,
     OcrResourceSetIdentity,
     OcrResourceStoreError,
+    OcrResourceStoreState,
 )
 from omnivia_core_runtime.service.ocr_resources import (
     MODE_TEXT_ONLY,
@@ -63,11 +80,14 @@ from omnivia_core_runtime.service.processing_settings import (
     RESOURCES_UNAVAILABLE,
     AdmittedResources,
     CaptureNotExecutable,
+    LanguageStorageFull,
     ManagedSelectionAuthority,
     ProcessingSettings,
     capture_pin,
+    declared_installable,
     installation_catalogue,
     installed_identities,
+    packaged_identities,
     read_settings,
     write_settings,
 )
@@ -672,12 +692,24 @@ def admit(
     content: bytes,
     media_type: str,
     resources: ManagedOcrResources | None = None,
+    packaged: Mapping[str, OcrResourceSetIdentity] = {},
+    installable: Mapping[str, OcrResourceSetIdentity] = {},
 ) -> store.StoredCapture:
     """One admitted capture, frozen and pinned against `resources`.
 
     `resources` is the installation's managed cache, and passing it is what makes
     the admission able to freeze exact identities: without one there is nothing
     installed to freeze, which the capture records as the condition it is.
+
+    `packaged` is the installation's *bundled* set, which the admission asks
+    first. A selection it covers whole is frozen against those identities and
+    pinned nowhere, because the packaged bytes are not the managed cache's to
+    evict -- so a test about that half passes it and leaves `resources` empty.
+
+    `installable` is the resource owner's declared catalogue of sets that are not
+    installed, which is what gives §18.4's capacity reservation a size. Left empty
+    by every test about an installed selection, because such an admission needs no
+    set installing and asks no capacity question at all.
     """
     captured = capture_document_bytes(
         runner,
@@ -688,6 +720,8 @@ def admit(
         media_type=media_type,
         intent_kind=store.INTENT_NEW_CAPTURE,
         ocr_resources=resources,
+        packaged_models=packaged,
+        installable_models=installable,
     )
     return captured.capture
 
@@ -2349,3 +2383,588 @@ def test_identities_admitted_for_another_engine_revision_are_never_relabelled(
         requested=("deu",),
     ):
         raise AssertionError("a foreign engine revision was served")
+
+
+# --- the pending input itself, across both kinds of update (§18.4, END-02)
+
+
+def extraction_key(capture_id: str, profile_digest: str) -> str:
+    """The operation key one capture's extraction is admitted under.
+
+    Derived here the way `_execute_obligation` derives it, from the capture
+    identifier and the profile digest, because that is the point: the key is a
+    function of the admitted digest, so a test that pins the digest has pinned
+    the key only if it also shows the key the revision actually carries is this
+    one.
+    """
+    return (
+        "extract-"
+        + hashlib.sha256(f"{capture_id}\0{profile_digest}".encode()).hexdigest()
+    )
+
+
+def pending_input(runner: ServiceRunner, capture_id: str) -> dict[str, Any]:
+    """Everything one queued capture froze about its own input, read from the row.
+
+    The admitted bytes and the three frozen documents in one value, so a
+    before-and-after is one comparison rather than six that could each be
+    forgotten. The bytes come through `read_retained_source`, which is the
+    production reader and re-hashes the blob against the digest and length the
+    row recorded -- so a row and a blob that had drifted apart could not both be
+    read and compared here at all.
+    """
+    assert runner.connection is not None and runner.workspace_id is not None
+    capture = store.read_capture(
+        runner.connection, workspace_id=runner.workspace_id, capture_id=capture_id
+    )
+    assert capture is not None
+    return {
+        "bytes": read_retained_source(runner, capture_id=capture_id),
+        "digest": capture.source_digest,
+        "length": capture.source_length_bytes,
+        "operation_key": capture.operation_key,
+        "profile_digest": capture.processing_profile_digest,
+        "resources": capture.processing_resources_json,
+        "settings": capture.processing_settings_json,
+    }
+
+
+def test_a_profile_and_resource_update_leave_the_pending_input_untouched(
+    paths: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """END-02's first clause over the input itself, not only over the identity.
+
+    The capture is queued; the workspace's profile preferences are then rewritten
+    and a newer model revision of its own language installed -- both kinds of
+    update the gate names, at once -- and the admitting process stops so nothing
+    in memory can carry the old answers forward.
+
+    What is asserted is every part of the pending input: the retained bytes, the
+    source digest and length the row recorded, the frozen preferences, the frozen
+    resource identities and their digests, the admitted profile digest, and the
+    capture's own operation key. Then the work runs, and the extraction's
+    operation key is the key derived from that admitted digest -- so the identity
+    the obligation settles under is the identity it was admitted with, and the
+    updates reached neither half.
+    """
+    authority, resources = managed_installation(
+        tmp_path / "inst-frozen-input", tmp_path, "deu", "osd"
+    )
+    admitted_identity = installed_identities(resources)["deu"]
+    source = image_bytes("Frozen")
+    with owned_workspace(
+        workspace_root=paths[0], installation_root=paths[1], core_version=SERVER_VERSION
+    ) as first:
+        set_languages(first, "deu")
+        capture = admit(
+            first,
+            document_id="doc-frozen-input",
+            content=source,
+            media_type="image/png",
+            resources=resources,
+        )
+        admitted = pending_input(first, capture.capture_id)
+        # Taken at admission, so what follows is compared against the row as it
+        # was written rather than against a second reading of the same row.
+        assert admitted["bytes"] == source
+        assert admitted["digest"] == f"sha256:{hashlib.sha256(source).hexdigest()}"
+        assert admitted["length"] == len(source)
+        # The frozen resource identities, decoded: the exact identity and digest
+        # the admission resolved, which is what the stored document has to keep.
+        assert frozen(first, capture.capture_id).selection == (
+            admitted_identity,
+            installed_identities(resources)["osd"],
+        )
+
+    # Both updates the gate names, while the obligation is queued and unresolved.
+    with owned_workspace(
+        workspace_root=paths[0], installation_root=paths[1], core_version=SERVER_VERSION
+    ) as between:
+        set_preferences(between, languages=("fra",), embedded_image_ocr=True)
+    newer = install_revision(resources, tmp_path, "deu", "tessdata_fast-4.2.0")
+    assert installed_identities(resources)["deu"] == newer
+
+    with owned_workspace(
+        workspace_root=paths[0], installation_root=paths[1], core_version=SERVER_VERSION
+    ) as second:
+        # Nothing about the pending input moved: not one of the seven values.
+        assert pending_input(second, capture.capture_id) == admitted
+
+        results = DocumentProcessingExecutor(
+            second, catalogue_for=authority
+        ).run_pending(budget=4, force=True)
+
+        assert len(results) == 1
+        # The admitted digest, and therefore the admitted key. Looked up *by* the
+        # derived key, so the revision that settled is the revision that key
+        # names and not merely one with a digest that happens to match.
+        assert _profile_digest(second, results[0]) == admitted["profile_digest"]
+        assert second.connection is not None and second.workspace_id is not None
+        assert admitted["profile_digest"] is not None
+        keyed = store.read_revision_by_key(
+            second.connection,
+            workspace_id=second.workspace_id,
+            operation_key=extraction_key(
+                capture.capture_id, admitted["profile_digest"]
+            ),
+        )
+        assert keyed is not None
+        assert keyed.extraction_revision_id == results[0].extraction_revision_id
+        # And the input is still the admitted input after the extraction read it.
+        assert pending_input(second, capture.capture_id) == admitted
+        profile = executed_profile(second, results[0])
+        assert profile["ocr"]["modelHashes"] == sorted(
+            {
+                f"sha256:{admitted_identity.sha256}",
+                f"sha256:{installed_identities(resources)['osd'].sha256}",
+            }
+        )
+        assert f"sha256:{newer.sha256}" not in profile["ocr"]["modelHashes"]
+
+
+# --- a full managed cache defers a new profile (§18.4, END-02)
+
+
+def fill_to_the_cap(resources: ManagedOcrResources, language: str) -> None:
+    """Account this cache to exactly the design's 512 MiB, without writing it.
+
+    One declared entry takes up whatever the real installed sets leave, which is
+    how `test_installing_exactly_up_to_the_cap_is_accepted` reaches the same
+    figure: the cap the reservation runs against is the product's own rather than
+    a shrunken one, and no test writes half a gigabyte. The filler has no bytes
+    on disk, so it is never reclaimable and never serves a language either.
+    """
+    state = resources.store.load()
+    resources.store.save(
+        OcrResourceStoreState(
+            entries=(
+                *state.entries,
+                OcrResourceSetIdentity(
+                    language=language,
+                    engine_version=TESSERACT_REVISION,
+                    model_version="tessdata_fast-4.1.0",
+                    byte_size=DEFAULT_OCR_RESOURCE_CAPACITY_BYTES
+                    - sum(entry.byte_size for entry in state.entries),
+                    sha256="e" * 64,
+                ),
+            ),
+            pins=state.pins,
+        )
+    )
+    assert resources.inventory().available_bytes == 0
+
+
+def trusted_catalogue(
+    monkeypatch: pytest.MonkeyPatch, sizes: Mapping[str, int]
+) -> dict[str, OcrResourceSetIdentity]:
+    """The resource owner's installable sets, through the real trust gate.
+
+    §18.4 installs additional languages from the owner's declared sizes/digests,
+    and the only authority this build accepts for one is a model manifest that
+    `verify_model_manifest` has verified completely. So the catalogue these tests
+    size a reservation against is built by signing a manifest, verifying it under
+    a dev anchor, and mapping the verified artifacts -- not by handing
+    `admitted_resources` a dictionary it could not have obtained. The anchor is a
+    dev/test one behind its own flag and is never production trust; what it proves
+    is that the mechanism carries declared sizes end to end.
+    """
+    monkeypatch.setenv(DEV_TEST_ANCHOR_FLAG, "1")
+    moment = datetime(2026, 10, 16, 12, 0, 0, tzinfo=UTC)
+    private_key, anchor = dev_test_anchor(
+        not_before=moment - timedelta(days=1), not_after=moment + timedelta(days=365)
+    )
+    document: dict[str, Any] = {
+        "schema_version": "model-manifest.v1",
+        "manifest_identity": "",
+        "identifier": "core.ocr-language-resources",
+        "version": "tessdata_fast-4.1.0",
+        "runtime_contract_version": "1.3",
+        "artifacts": [
+            {
+                "name": f"{language}{MODEL_SUFFIX}",
+                "sha256": hashlib.sha256(f"declared-{language}".encode()).hexdigest(),
+                "size": size,
+            }
+            for language, size in sizes.items()
+        ],
+        "signing": {"key_id": anchor.key_id},
+    }
+    signature = sign_model_manifest(
+        document, key_id=anchor.key_id, private_key=private_key
+    )
+    document["manifest_identity"] = model_manifest_identity(document)
+    return declared_installable(
+        verify_model_manifest(
+            document,
+            dict(signature),
+            trust_anchors=[anchor],
+            verification_time=moment,
+        )
+    )
+
+
+def test_a_new_profile_meeting_a_full_cache_is_deferred_not_refused_as_missing(
+    runner: ServiceRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§18.4 defers a new-profile admission the cap leaves no room for.
+
+    The managed cache is accounted to its full 512 MiB and every set with bytes
+    is pinned by a capture whose obligation has not settled, so nothing is
+    reclaimable and not one of the declared bytes could be installed. A second
+    capture then asks for a language the cache has not got, and the owner's
+    catalogue says what installing it would cost.
+
+    Recording the missing-language condition would be terminal for that capture
+    and would name an install the full cache must itself refuse. So the admission
+    is deferred instead, with the required and available bytes stated: nothing is
+    written, no pin is taken, the cap and the existing pins stand, the queued work
+    is untouched -- and once that work settles and releases its claim, the same
+    admission goes through.
+    """
+    authority, resources = managed_installation(
+        tmp_path / "inst-cap-defer", tmp_path, "eng", "osd"
+    )
+    held = installed_identities(resources)
+    # Declared at exactly what this cache's own installed sets could supply if
+    # nothing held them, so the deferral and the later acceptance differ in one
+    # thing only: whether the queued obligation still pins those bytes.
+    declared = sum(identity.byte_size for identity in held.values())
+    catalogue = trusted_catalogue(monkeypatch, {"deu": declared})
+    set_languages(runner, "eng")
+    queued = admit(
+        runner,
+        document_id="doc-cap-queued",
+        content=image_bytes(),
+        media_type="image/png",
+        resources=resources,
+    )
+    assert frozen(runner, queued.capture_id).kind == RESOURCES_FROZEN
+    fill_to_the_cap(resources, "jpn")
+    before = resources.store.state_path.read_bytes()
+
+    set_languages(runner, "deu")
+    with pytest.raises(LanguageStorageFull) as deferred:
+        admit(
+            runner,
+            document_id="doc-cap-new",
+            content=image_bytes(),
+            media_type="image/png",
+            resources=resources,
+            installable=catalogue,
+        )
+
+    assert deferred.value.code == "language_storage_full"
+    # The capacity §18.4 requires to be visible, as typed facts rather than prose:
+    # the declared size of the set this profile needs, the bytes the cache could
+    # actually have supplied, and the exact identity it was asked for.
+    assert deferred.value.required_bytes == declared
+    assert deferred.value.available_bytes == 0
+    assert deferred.value.languages == ("deu",)
+    assert deferred.value.identities == (catalogue["deu"],)
+    # Deferred, not admitted: no capture row, so no obligation and no pin.
+    assert runner.connection is not None and runner.workspace_id is not None
+    assert (
+        store.read_capture_by_key(
+            runner.connection,
+            workspace_id=runner.workspace_id,
+            operation_key="capture-doc-cap-new",
+        )
+        is None
+    )
+    # The cap, the pins and the existing queued work are exactly as they stood,
+    # and the deferral installed and downloaded nothing.
+    assert resources.store.state_path.read_bytes() == before
+    inventory = resources.inventory()
+    assert inventory.installed_bytes == DEFAULT_OCR_RESOURCE_CAPACITY_BYTES
+    assert inventory.installed_bytes <= inventory.capacity_bytes
+    assert installed_identities(resources) == held
+    assert {pin.operation_id for pin in resources.store.load().pins} == {
+        capture_pin(runner.workspace_id, queued.capture_id)
+    }
+    outbox = store.read_outbox(
+        runner.connection,
+        workspace_id=runner.workspace_id,
+        capture_id=queued.capture_id,
+    )
+    assert outbox is not None and outbox.outbox_state == store.OUTBOX_PENDING
+    # And the operator's own install of that language is deferred too, against
+    # this same real admission pin rather than a synthetic one: §18.4's "an
+    # attempted install cannot cancel that pin" over the claim an admission
+    # actually wrote.
+    body = b"model-deu-arriving"
+    arriving = tmp_path / "ocr-downloads" / "deu-arriving.bin"
+    arriving.write_bytes(body)
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        resources.install(
+            arriving,
+            OcrResourceSetIdentity(
+                language="deu",
+                engine_version=TESSERACT_REVISION,
+                model_version="tessdata_fast-4.1.0",
+                byte_size=len(body),
+                sha256=hashlib.sha256(body).hexdigest(),
+            ),
+        )
+    assert refused.value.code == "language_storage_full"
+    assert resources.store.state_path.read_bytes() == before
+
+    # Deferred *until room exists*: the queued obligation settles, its pin goes,
+    # and the very same admission is now accepted.
+    assert len(process_capture_outbox(runner, catalogue_for=authority)) == 1
+    assert resources.store.load().pins == ()
+
+    readmitted = admit(
+        runner,
+        document_id="doc-cap-new",
+        content=image_bytes(),
+        media_type="image/png",
+        resources=resources,
+        installable=catalogue,
+    )
+
+    # Accepted, and honest about the language it still has not got: this is the
+    # condition the deferral existed to avoid recording prematurely, recorded now
+    # that installing the language is something the cache can actually do.
+    snapshot = frozen(runner, readmitted.capture_id)
+    assert snapshot.kind == RESOURCES_UNAVAILABLE
+    assert snapshot.reason == NEEDS_OCR_LANGUAGE
+    assert snapshot.unavailable_models == ("deu",)
+
+
+def test_a_declared_requirement_no_reclaimable_set_covers_defers_the_admission(
+    runner: ServiceRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reclaimable set is not capacity unless it covers what the profile needs.
+
+    This is the defect the sized reservation exists to remove. The cache is at its
+    cap with one *unpinned, verified* set of a few bytes beside the filler, so
+    something is reclaimable -- and the language the new profile selects is
+    declared at a megabyte. An admission that asked only whether some set could be
+    evicted would admit this capture, whose install the same cache must then refuse
+    for exactly the capacity it was just told about.
+
+    So the comparison is made, the admission is deferred, and the figures are the
+    real ones: the declared megabyte against the handful of bytes the cache could
+    have reclaimed. Nothing is evicted to find out -- the reclaimable set is still
+    installed with its bytes, because §18.4 reserves by refusing and a deferral
+    deletes nothing.
+    """
+    _authority, resources = managed_installation(
+        tmp_path / "inst-cap-small", tmp_path, "eng", "osd"
+    )
+    held = installed_identities(resources)
+    reclaimable = sum(identity.byte_size for identity in held.values())
+    catalogue = trusted_catalogue(monkeypatch, {"deu": 1 << 20})
+    fill_to_the_cap(resources, "jpn")
+    before = resources.store.state_path.read_bytes()
+
+    set_languages(runner, "deu")
+    with pytest.raises(LanguageStorageFull) as deferred:
+        admit(
+            runner,
+            document_id="doc-cap-small",
+            content=image_bytes(),
+            media_type="image/png",
+            resources=resources,
+            installable=catalogue,
+        )
+
+    assert deferred.value.required_bytes == 1 << 20
+    assert deferred.value.available_bytes == reclaimable
+    assert 0 < reclaimable < (1 << 20)
+    assert resources.store.state_path.read_bytes() == before
+    assert installed_identities(resources) == held
+    assert resources.inventory().installed_bytes == DEFAULT_OCR_RESOURCE_CAPACITY_BYTES
+
+    # And the same cache admits the same profile the moment the requirement is one
+    # it can cover: a set declared at what those reclaimable bytes can supply is
+    # recorded as the missing language it is, with its install left possible.
+    smaller = trusted_catalogue(monkeypatch, {"deu": reclaimable})
+    admitted = admit(
+        runner,
+        document_id="doc-cap-small-fits",
+        content=image_bytes(),
+        media_type="image/png",
+        resources=resources,
+        installable=smaller,
+    )
+
+    snapshot = frozen(runner, admitted.capture_id)
+    assert snapshot.kind == RESOURCES_UNAVAILABLE
+    assert snapshot.reason == NEEDS_OCR_LANGUAGE
+    assert snapshot.unavailable_models == ("deu",)
+    assert resources.store.state_path.read_bytes() == before
+
+
+def test_a_language_no_trusted_catalogue_declares_establishes_no_requirement(
+    runner: ServiceRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An undeclared language has no trusted size, so there is nothing to reserve.
+
+    The cache is full and nothing is reclaimable, which is exactly the state that
+    defers an admission for a *declared* set -- and this selection names one the
+    owner's catalogue does not carry at all. Inventing a size for it would be
+    reserving against a figure nobody declared, and refusing without one would
+    defer a capture on no evidence, so the honest answer is the missing-language
+    condition this installation has always recorded.
+
+    The same for a selection the catalogue covers only in part: the admission is
+    all or nothing, so a requirement assembled from half of it would be a figure
+    for work that is not being done.
+    """
+    _authority, resources = managed_installation(
+        tmp_path / "inst-cap-undeclared", tmp_path, "eng", "osd"
+    )
+    held = installed_identities(resources)
+    queued = admit(
+        runner,
+        document_id="doc-cap-undeclared-queued",
+        content=image_bytes(),
+        media_type="image/png",
+        resources=resources,
+    )
+    assert frozen(runner, queued.capture_id).kind == RESOURCES_FROZEN
+    fill_to_the_cap(resources, "jpn")
+
+    set_languages(runner, "deu", "fra")
+    for name, catalogue in (
+        ("doc-cap-undeclared", {}),
+        ("doc-cap-partly-declared", trusted_catalogue(monkeypatch, {"deu": 4096})),
+    ):
+        admitted = admit(
+            runner,
+            document_id=name,
+            content=image_bytes(),
+            media_type="image/png",
+            resources=resources,
+            installable=catalogue,
+        )
+        snapshot = frozen(runner, admitted.capture_id)
+        assert snapshot.kind == RESOURCES_UNAVAILABLE
+        assert snapshot.reason == NEEDS_OCR_LANGUAGE
+        assert snapshot.unavailable_models == ("deu", "fra")
+
+    assert installed_identities(resources) == held
+
+
+# --- a replaced packaged payload pauses rather than settling (§18.4, END-02)
+
+
+def declared_models(directory: Path, *languages: str) -> dict[str, tuple[int, str]]:
+    """The size and digest of each bundled model, as a verified manifest names it."""
+    return {
+        language: (
+            (directory / f"{language}{MODEL_SUFFIX}").stat().st_size,
+            digest_of(directory / f"{language}{MODEL_SUFFIX}"),
+        )
+        for language in languages
+    }
+
+
+def packaged_authority(
+    root: Path, models: Path, *languages: str
+) -> ManagedSelectionAuthority:
+    """An installation whose selection is served by its *bundled* models.
+
+    The managed cache at `root` is never created: a selection the packaged set
+    covers whole is frozen against the installation's own identities and pinned
+    nowhere, so there is nothing for the cache to hold.
+    """
+    runtime = host_runtime(models, declared_models(models, *languages))
+    if runtime is None:  # pragma: no cover - host dependent
+        pytest.skip("no host OCR engine and RTF reader to bind as the payload")
+    return ManagedSelectionAuthority(
+        ManagedOcrResources(root / OCR_RESOURCES_DIR), runtime=runtime
+    )
+
+
+def test_replaced_packaged_model_bytes_pause_the_obligation(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    """§18.4's "pause with a specific compatibility/resource issue", for the
+    bundled set.
+
+    This capture was admitted wholly against the packaged English and orientation
+    models, so no pin was ever taken for it -- those bytes are the installation's
+    rather than the managed cache's. The installation is then replaced: the
+    payload still declares both models, but not the exact bytes this obligation
+    was admitted against.
+
+    Settling it as an unverified model would make the capture terminal over a
+    fact about the installation, and spend the only admission a repair could have
+    served. So the obligation pauses: its outbox row stays pending, no extraction
+    revision is admitted, and nothing is served in the admitted bytes' place.
+    Pausing costs nothing here, because an obligation holding no managed pin
+    occupies no managed capacity -- and it is not a dead end, which the restored
+    payload shows.
+    """
+    models = tmp_path / "packaged-tessdata"
+    models.mkdir()
+    stand_in_models(models, "eng", "osd")
+    original = (models / f"eng{MODEL_SUFFIX}").read_bytes()
+    authority = packaged_authority(tmp_path / "inst-pkg", models, "eng", "osd")
+    set_languages(runner, "eng")
+    capture = admit(
+        runner,
+        document_id="doc-pkg-replaced",
+        content=image_bytes(),
+        media_type="image/png",
+        packaged=packaged_identities(authority.runtime),
+    )
+    snapshot = frozen(runner, capture.capture_id)
+    assert snapshot.kind == RESOURCES_FROZEN
+    # Frozen against the bundled identities, and holding no managed claim.
+    assert not (tmp_path / "inst-pkg" / OCR_RESOURCES_DIR).exists()
+
+    # The installation is replaced: both models are still declared, and English
+    # is not the bytes this capture was admitted against.
+    (models / f"eng{MODEL_SUFFIX}").write_bytes(b"a-different-english-model")
+    replaced = packaged_authority(tmp_path / "inst-pkg", models, "eng", "osd")
+
+    assert process_capture_outbox(runner, catalogue_for=replaced) == []
+
+    paused(runner, capture, "doc-pkg-replaced")
+    # Restored, and the same row settles under the digest its admission recorded.
+    (models / f"eng{MODEL_SUFFIX}").write_bytes(original)
+    restored = packaged_authority(tmp_path / "inst-pkg", models, "eng", "osd")
+
+    results = process_capture_outbox(runner, catalogue_for=restored)
+
+    assert len(results) == 1
+    assert _profile_digest(runner, results[0]) == stored_digest(
+        runner, capture.capture_id
+    )
+
+
+def test_an_absent_packaged_payload_pauses_rather_than_reporting_unverified(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    """The same answer when the payload is not there at all.
+
+    An installation with no verified payload declares no model, so it cannot
+    declare the ones this capture was admitted against either. That is the same
+    unrecoverable-exact-resource fact as replaced bytes and takes the same pause,
+    rather than becoming a missing-language condition the operator would try to
+    repair by installing a managed language this capture would never consult.
+    """
+    models = tmp_path / "packaged-absent"
+    models.mkdir()
+    stand_in_models(models, "eng", "osd")
+    authority = packaged_authority(tmp_path / "inst-absent", models, "eng", "osd")
+    set_languages(runner, "eng")
+    capture = admit(
+        runner,
+        document_id="doc-pkg-absent",
+        content=image_bytes(),
+        media_type="image/png",
+        packaged=packaged_identities(authority.runtime),
+    )
+    assert frozen(runner, capture.capture_id).kind == RESOURCES_FROZEN
+
+    gone = ManagedSelectionAuthority(
+        ManagedOcrResources(tmp_path / "inst-absent" / OCR_RESOURCES_DIR)
+    )
+
+    assert process_capture_outbox(runner, catalogue_for=gone) == []
+
+    paused(runner, capture, "doc-pkg-absent")

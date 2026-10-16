@@ -1213,19 +1213,23 @@ def _ocr_resources(args: argparse.Namespace) -> int:
         return 2
     except (OcrResourceLifecycleRefused, OcrResourceStoreError) as refused:
         code = getattr(refused, "code", "ocr_resource_store_error")
-        sys.stdout.write(
-            json.dumps(
-                {
-                    "ocr_resource_result_version": OCR_RESOURCE_DOCUMENT_VERSION,
-                    "action": args.ocr_resources,
-                    "status": "refused",
-                    "code": code,
-                    "reason": str(refused),
-                },
-                sort_keys=True,
-            )
-            + "\n"
-        )
+        document = {
+            "ocr_resource_result_version": OCR_RESOURCE_DOCUMENT_VERSION,
+            "action": args.ocr_resources,
+            "status": "refused",
+            "code": code,
+            "reason": str(refused),
+        }
+        # §18.4 requires the required capacity to be *visible*, so a capacity
+        # deferral states its figures as fields. The settings surface reads this
+        # document; making it parse the operator's sentence for the bytes it has
+        # to free would be reading a message as a contract.
+        required = getattr(refused, "required_bytes", None)
+        available = getattr(refused, "available_bytes", None)
+        if required is not None and available is not None:
+            document["requiredBytes"] = required
+            document["availableBytes"] = available
+        sys.stdout.write(json.dumps(document, sort_keys=True) + "\n")
         sys.stdout.flush()
         sys.stderr.write(f"{code}: {refused}\n")
         return 1

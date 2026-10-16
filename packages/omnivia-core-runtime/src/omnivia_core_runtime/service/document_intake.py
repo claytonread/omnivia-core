@@ -405,6 +405,7 @@ def capture_document_bytes(
     binding: BindingClaim | None = None,
     ocr_resources: ManagedOcrResources | None = None,
     packaged_models: Mapping[str, OcrResourceSetIdentity] = {},
+    installable_models: Mapping[str, OcrResourceSetIdentity] = {},
 ) -> DocumentCaptureResult:
     """Admit the exact immutable bytes supplied by a governed transfer boundary.
 
@@ -412,11 +413,14 @@ def capture_document_bytes(
     provide the complete snapshot bytes; Core recomputes identity and length here.
 
     `ocr_resources` is the installation's managed OCR cache, which the admission
-    freezes and pins the capture's exact resource identities against, and
-    `packaged_models` is its bundled set. Both default to the empty answer -- an
-    installation with no managed cache and no verified payload -- rather than being
-    required, because this boundary admits under the fixed `legacy-default` profile
-    reference and has no production caller to forget them.
+    freezes and pins the capture's exact resource identities against,
+    `packaged_models` is its bundled set, and `installable_models` is the resource
+    owner's declared catalogue of sets that could be installed, which is what lets
+    §18.4's capacity reservation be a figure. All three default to the empty answer
+    -- an installation with no managed cache, no verified payload and no verified
+    published catalogue -- rather than being required, because this boundary admits
+    under the fixed `legacy-default` profile reference and has no production caller
+    to forget them.
     """
     assert runner.connection is not None and runner.workspace_id is not None
     assert runner.generation is not None
@@ -535,6 +539,7 @@ def capture_document_bytes(
             profile_revision=_LEGACY_PROFILE_REVISION,
             resources=ocr_resources,
             packaged=packaged_models,
+            installable=installable_models,
         )
         try:
             written = _write_capture(
@@ -602,6 +607,7 @@ def _admitted_processing(
     profile_revision: str,
     resources: ManagedOcrResources | None,
     packaged: Mapping[str, OcrResourceSetIdentity],
+    installable: Mapping[str, OcrResourceSetIdentity],
 ) -> tuple[str, str, str]:
     """What this capture is admitted under, against, and as: its three frozen facts.
 
@@ -636,6 +642,18 @@ def _admitted_processing(
     than a capture permanently frozen out of recognition because an administrator was
     installing a language at that instant.
 
+    A managed cache without room for the sets this admission needs is a different
+    refusal and is deliberately propagated rather than translated. §18.4 defers a
+    new-profile admission that needs another managed resource set with **Language
+    storage is full**, and
+    :class:`~omnivia_core_runtime.service.processing_settings.LanguageStorageFull`
+    is that deferral: a determinate answer with a determinate recovery, carrying
+    the bytes the admission required and the bytes it could have had, which the
+    caller reports as its own retryable state rather than as the generic "could
+    not be preserved". It is raised before any pin is written, so nothing of this
+    admission survives it -- and because the capture row is never inserted, the
+    queued work, the pins and the cap are exactly as they were.
+
     The third fact is the ExtractionProfileV1 digest those two documents resolve to,
     written as `processing_profile_digest` (migration 0072). It is computed from the
     settings and the identities decided *here*, in this call, and from nothing else:
@@ -667,6 +685,7 @@ def _admitted_processing(
                 pin=processing_settings.capture_pin(runner.workspace_id, capture_id),
                 languages=settings.languages,
                 packaged=packaged,
+                installable=installable,
             )
         except processing_settings.ResourceStateIndeterminate as error:
             raise DocumentIntakeRefused(
@@ -735,6 +754,7 @@ def admit_document_capture_in_transaction(
     display_name: str | None,
     ocr_resources: ManagedOcrResources | None,
     packaged_models: Mapping[str, OcrResourceSetIdentity],
+    installable_models: Mapping[str, OcrResourceSetIdentity] = {},
 ) -> DocumentCaptureResult:
     """Write one transferred snapshot while the application mutation owns the transaction.
 
@@ -757,6 +777,15 @@ def admit_document_capture_in_transaction(
     selection they cover whole is frozen against them and nothing is pinned,
     because those bytes are the installation's rather than the managed cache's
     and no eviction can reach them.
+
+    ``installable_models`` is the resource owner's declared catalogue of sets that
+    *could* be installed, and it does have a default: an installation with no
+    verified published catalogue declares nothing, and nothing is the honest
+    answer. It is what gives §18.4's admission-time reservation a size to reserve,
+    so a selection naming languages the cache has not got is deferred with
+    **Language storage is full** when their declared bytes cannot be made room
+    for, instead of being recorded as a missing language whose install would meet
+    the same full cache.
 
     The pin is taken before these rows are written, and therefore inside the
     mutation's transaction. A rollback leaves the pin without the capture that owns
@@ -872,6 +901,7 @@ def admit_document_capture_in_transaction(
         profile_revision=processing_profile_revision,
         resources=ocr_resources,
         packaged=packaged_models,
+        installable=installable_models,
     )
     try:
         written = _write_capture(

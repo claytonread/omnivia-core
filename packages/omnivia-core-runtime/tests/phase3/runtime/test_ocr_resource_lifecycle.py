@@ -24,6 +24,17 @@ actually have had, deleting nothing; that a payload which fails verification and
 a state write which fails leave every chosen victim installed with its bytes;
 and that repeating an install of something already installed reclaims nothing.
 
+For the admission-time reservation (§18.4, END-02): that the requirement is the
+summed declared size of the requested sets this cache has not already installed,
+compared against the free remainder *plus* what it verifies as reclaimable; that
+a smaller reclaimable set is not sufficiency; that the boundary is inclusive on
+both sides; that an already-installed requested set costs nothing and is not
+counted as room for its siblings either; that a pinned, leased or divergent set
+is in neither figure; that the deferral names the bytes required, the bytes
+available and the exact sets asked for; that the identical requirement is
+accommodated once the pin, the lease or the divergence is gone; and that asking
+installs, evicts and creates nothing.
+
 For pins (§18.4, END-02): that a pinned identity cannot be removed and is never
 dropped by reconciliation even when its bytes have gone, and that a pin on one
 identity does not protect another.
@@ -672,6 +683,381 @@ def test_repeating_an_install_of_a_full_cache_evicts_nothing(tmp_path: Path) -> 
     assert outcome.evicted == ()
     assert managed.store.state_path.read_bytes() == before
     assert managed.payload_path(installed["eng"]).read_bytes() == _body("eng", 100)
+
+
+# --- reserving space for the resource sets an admission needs (§18.4, END-02)
+#
+# `install` reserves against the payload it is handed. An admission that needs
+# languages this cache has not got holds no payload, but it does hold the trusted
+# catalogue's declaration of each set -- the same five fields, with the same
+# declared `byte_size` -- so its requirement is the sum of those sizes and the
+# question is the same arithmetic against the same candidate rules.
+#
+# What these pin is that the requirement is *exact*. An arbitrary reclaimable set
+# is not sufficiency: a cache that can free 300 bytes cannot accommodate 500, and
+# a reservation that answered "something is reclaimable" would admit work whose
+# install must then be refused. They also pin the figures, because §18.4 requires
+# the required capacity to be visible, and that asking changes nothing at all.
+
+
+def _declared(language: str, size: int) -> OcrResourceSetIdentity:
+    """One trusted catalogue declaration of a set, at a declared size.
+
+    Deliberately not built from bytes: nothing is downloaded to ask this
+    question, so a declaration is a size and a digest and no payload exists.
+    """
+    return _identity(
+        language=language,
+        byte_size=size,
+        sha256=_digest(f"declared-{language}-{size}".encode()),
+    )
+
+
+def _full_at_the_real_cap(
+    tmp_path: Path, body: bytes
+) -> tuple[ManagedOcrResources, OcrResourceSetIdentity]:
+    """A cache holding `body` and accounted to exactly the design's 512 MiB.
+
+    The cap reached arithmetically, as `test_installing_exactly_up_to_the_cap_is_accepted`
+    reaches it: one bulk entry declares the rest of the 512 MiB, so the real
+    figure is the one the reservation runs against without writing 512 MiB. The
+    bulk entry has no bytes, so it is never reclaimable either -- which is why
+    the installed set beside it is the only thing that can be room, and what
+    holds *that* is the whole of each test below.
+    """
+    managed = _managed(tmp_path)
+    identity = _identity(body)
+    managed.install(_payload(tmp_path, body), identity)
+    bulk = _identity(
+        language="deu",
+        byte_size=DEFAULT_OCR_RESOURCE_CAPACITY_BYTES - len(body),
+        sha256="e" * 64,
+    )
+    managed.store.save(OcrResourceStoreState(entries=(identity, bulk)))
+    assert managed.inventory().available_bytes == 0
+    return managed, identity
+
+
+def test_a_requirement_the_free_remainder_covers_reserves_on_the_arithmetic(
+    tmp_path: Path,
+) -> None:
+    """A requirement below the free capacity is accepted without digesting anything.
+
+    The one installed set has been tampered with, so it is neither reclaimable nor
+    room -- and the reservation still succeeds, which it can only do by returning
+    on the free remainder before any candidate is considered. That is what keeps
+    this cheap on the path a running installation actually takes.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+    tampered = _body("x", 300)
+    managed.payload_path(installed["deu"]).write_bytes(tampered)
+
+    managed.reserve_resource_set([_declared("fra", 99)])
+
+    assert managed.payload_path(installed["deu"]).read_bytes() == tampered
+
+
+def test_a_requirement_exactly_equal_to_the_free_remainder_is_enough(
+    tmp_path: Path,
+) -> None:
+    """The boundary is inclusive: the cap may be filled, not exceeded.
+
+    And one byte past it is not, which is the other half of the same assertion --
+    a reservation that rounded either way would either refuse work that fits or
+    admit work that does not. The installed set is pinned, so the free remainder
+    is the whole of the capacity and the boundary is the only thing under test.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+    managed.pin("op-queued", (installed["deu"],))
+
+    managed.reserve_resource_set([_declared("fra", 100)])
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.reserve_resource_set([_declared("fra", 101)])
+
+    assert refused.value.code == REFUSAL_CAPACITY
+    assert refused.value.required_bytes == 101
+    assert refused.value.available_bytes == 100
+
+
+def test_a_smaller_reclaimable_set_is_not_sufficient_capacity(tmp_path: Path) -> None:
+    """The defect this reservation exists to remove.
+
+    300 reclaimable bytes beside 100 free ones is 400 bytes of capacity, and the
+    requirement is 500. An answer of "some set is reclaimable" would admit work
+    whose install the same cache must then refuse -- so the requirement is
+    compared, and the deferral states both figures. Nothing is evicted to find
+    that out: the reclaimable set is still installed with its bytes, and the state
+    document is byte-for-byte what it was.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+    before = managed.store.state_path.read_bytes()
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.reserve_resource_set([_declared("fra", 500)])
+
+    assert refused.value.code == REFUSAL_CAPACITY
+    assert refused.value.required_bytes == 500
+    assert refused.value.available_bytes == 400
+    assert [identity.language for identity in refused.value.identities] == ["fra"]
+    assert managed.store.state_path.read_bytes() == before
+    assert managed.payload_path(installed["deu"]).read_bytes() == _body("deu", 300)
+    assert managed.store.load().entries == (installed["deu"],)
+
+
+def test_a_reclaimable_set_that_does_cover_the_requirement_reserves_room(
+    tmp_path: Path,
+) -> None:
+    """The other side of the same comparison, so the deferral is not "full refuses".
+
+    400 bytes is exactly what the free remainder plus the one reclaimable set can
+    supply, and an install of it would reclaim that set and proceed -- so the
+    capture needing it is a capture whose recovery works, and recording the
+    missing-language condition is the honest answer rather than a deferral. Still
+    nothing is evicted here: reserving chooses, it does not delete.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+
+    managed.reserve_resource_set([_declared("fra", 400)])
+
+    assert managed.store.load().entries == (installed["deu"],)
+    assert managed.payload_path(installed["deu"]).read_bytes() == _body("deu", 300)
+
+
+def test_a_multi_language_requirement_is_summed_and_excludes_installed_members(
+    tmp_path: Path,
+) -> None:
+    """Three selected languages, one of them already here, and one requirement.
+
+    §17.3 allows three recognition languages per profile, so the requirement is
+    the sum of the sets this cache has not got. The installed member costs
+    nothing -- its bytes are already accounted against the cap -- and it is not
+    counted as *room* for its siblings either, because the admission needs it:
+    it is pinned here, and the 180 bytes the deferral names is the sum of the two
+    missing sets alone, not 480 and not 90.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+    managed.pin("op-queued", (installed["deu"],))
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.reserve_resource_set(
+            [installed["deu"], _declared("fra", 90), _declared("ita", 90)]
+        )
+
+    assert refused.value.required_bytes == 180
+    assert refused.value.available_bytes == 100
+    assert sorted(identity.language for identity in refused.value.identities) == [
+        "deu",
+        "fra",
+        "ita",
+    ]
+
+
+def test_a_requested_set_that_is_installed_is_not_room_for_its_siblings(
+    tmp_path: Path,
+) -> None:
+    """Nothing holds this set but the admission itself, and that is enough.
+
+    It is installed, unpinned and verified, so every other rule would make it a
+    candidate -- and reclaiming it to fit the two languages beside it would leave
+    the admission needing it reinstalled, which is the requirement growing by the
+    act of satisfying it. So the 100 bytes available are the free remainder alone,
+    not 400, and the 180 the two missing sets need is refused against it.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.reserve_resource_set(
+            [installed["deu"], _declared("fra", 90), _declared("ita", 90)]
+        )
+
+    assert refused.value.required_bytes == 180
+    assert refused.value.available_bytes == 100
+    assert managed.store.load().entries == (installed["deu"],)
+
+
+def test_a_summed_requirement_the_cache_can_cover_is_reserved(tmp_path: Path) -> None:
+    """The same selection, priced at what the free remainder holds.
+
+    Two missing sets of 50 bytes against 100 free ones, with the installed member
+    excluded from the requirement rather than added to it: a sum that counted it
+    would be 400 and would refuse work that fits.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+    managed.pin("op-queued", (installed["deu"],))
+
+    managed.reserve_resource_set(
+        [installed["deu"], _declared("fra", 50), _declared("ita", 50)]
+    )
+
+
+def test_a_requirement_of_only_installed_sets_costs_nothing_at_the_cap(
+    tmp_path: Path,
+) -> None:
+    """Work needing exactly what is installed needs no capacity at all.
+
+    The cache is accounted to the full 512 MiB and the requirement is a set it
+    already holds, so there is nothing to reserve. Refusing here would defer every
+    admission against a full cache, which is what §18.4's own pin arrangement
+    exists to make unnecessary: those bytes are retained by the pin, not
+    reinstalled.
+    """
+    managed, identity = _full_at_the_real_cap(tmp_path, BODY)
+    managed.pin("op-queued", (identity,))
+
+    managed.reserve_resource_set([identity])
+
+
+def test_a_pinned_set_is_not_room_for_a_requested_resource_set(
+    tmp_path: Path,
+) -> None:
+    """§18.4's deferral, asked before an admission rather than before an install.
+
+    The real 512 MiB is fully accounted and the one set with bytes is pinned by
+    work that has not settled, so there is nothing to reclaim and no managed set
+    could be installed. The refusal is the same **Language storage is full** an
+    install would get, it names the exact set it was asked for and the zero bytes
+    it could have had, and it reserves by refusing: the cap, the pin and the state
+    document are exactly as they were.
+    """
+    managed, identity = _full_at_the_real_cap(tmp_path, BODY)
+    managed.pin("op-queued", (identity,))
+    before = managed.store.state_path.read_bytes()
+    wanted = _declared("fra", 1)
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.reserve_resource_set([wanted])
+
+    assert refused.value.code == REFUSAL_CAPACITY
+    assert refused.value.required_bytes == 1
+    assert refused.value.available_bytes == 0
+    assert refused.value.identities == (wanted,)
+    assert managed.store.state_path.read_bytes() == before
+    assert managed.inventory().installed_bytes == DEFAULT_OCR_RESOURCE_CAPACITY_BYTES
+    assert [pin.operation_id for pin in managed.store.load().pins] == ["op-queued"]
+    assert managed.payload_path(identity).read_bytes() == BODY
+
+
+def test_the_same_requirement_is_reserved_once_the_pin_is_released(
+    tmp_path: Path,
+) -> None:
+    """§14.5's **Try again** after capacity is available, as the lifecycle sees it.
+
+    The pin is the whole of the obstruction, so the identical requirement -- the
+    same declared sets, at the same sizes -- is accommodated the moment the
+    operation holding those bytes reaches its terminal disposition. Nothing about
+    the request changes, which is what makes resending the capture the recovery.
+    """
+    managed, identity = _full_at_the_real_cap(tmp_path, BODY)
+    managed.pin("op-queued", (identity,))
+    wanted = [_declared("fra", len(BODY))]
+
+    with pytest.raises(OcrResourceLifecycleRefused):
+        managed.reserve_resource_set(wanted)
+
+    managed.release("op-queued")
+
+    managed.reserve_resource_set(wanted)
+
+
+def test_a_leased_set_is_not_room_for_a_requested_resource_set(tmp_path: Path) -> None:
+    """A running extraction's bytes are no more reclaimable here than in `install`.
+
+    And the hold is the whole of the obstruction: the same cache reserves the
+    moment the lease ends.
+    """
+    managed, identity = _full_at_the_real_cap(tmp_path, BODY)
+    wanted = [_declared("fra", len(BODY))]
+
+    with managed.leased_selection([identity]):
+        with pytest.raises(OcrResourceLifecycleRefused) as refused:
+            managed.reserve_resource_set(wanted)
+        assert refused.value.code == REFUSAL_CAPACITY
+        assert refused.value.available_bytes == 0
+
+    managed.reserve_resource_set(wanted)
+
+
+def test_a_divergent_set_is_not_counted_as_room_for_a_requested_set(
+    tmp_path: Path,
+) -> None:
+    """Bytes that no longer match their digest are capacity nothing can supply.
+
+    So they are in neither figure: the 100 available bytes are the free remainder
+    alone, and the 300 the entry still declares are not promised. Restoring the
+    bytes is what makes them room again -- which is the same requirement, accepted
+    without being restated.
+    """
+    managed, installed = _filled(tmp_path, 400, {"deu": 300})
+    sound = managed.payload_path(installed["deu"]).read_bytes()
+    managed.payload_path(installed["deu"]).write_bytes(_body("x", 300))
+    wanted = [_declared("fra", 200)]
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.reserve_resource_set(wanted)
+
+    assert refused.value.required_bytes == 200
+    assert refused.value.available_bytes == 100
+
+    managed.payload_path(installed["deu"]).write_bytes(sound)
+
+    managed.reserve_resource_set(wanted)
+
+
+def test_an_absent_cache_reserves_the_whole_cap_without_creating_itself(
+    tmp_path: Path,
+) -> None:
+    """Nothing is installed, so the whole cap is free and the question is arithmetic.
+
+    Answered rather than inspected, by the same rule the inventory read follows: a
+    question about capacity must not be the thing that creates the cache. A
+    requirement larger than the cap itself is still refused, and still creates
+    nothing.
+    """
+    managed = _managed(tmp_path)
+
+    managed.reserve_resource_set([_declared("fra", DEFAULT_OCR_RESOURCE_CAPACITY_BYTES)])
+
+    with pytest.raises(OcrResourceLifecycleRefused) as refused:
+        managed.reserve_resource_set(
+            [_declared("fra", DEFAULT_OCR_RESOURCE_CAPACITY_BYTES + 1)]
+        )
+
+    assert refused.value.required_bytes == DEFAULT_OCR_RESOURCE_CAPACITY_BYTES + 1
+    assert refused.value.available_bytes == DEFAULT_OCR_RESOURCE_CAPACITY_BYTES
+    assert not managed.root.exists()
+
+
+def test_reserving_no_resource_set_asks_nothing(tmp_path: Path) -> None:
+    """Work that needs no managed set has no requirement, and takes no lock.
+
+    A Text-only capture, or one the bundled models cover whole, reaches no
+    reservation at all; this is the same answer one layer down, so a caller that
+    passes an empty selection does not contend for the coordination lock or bring
+    a cache into existence to be told zero bytes are needed.
+    """
+    managed = _managed(tmp_path)
+
+    managed.reserve_resource_set([])
+
+    assert not managed.root.exists()
+
+
+def test_a_requested_identity_that_is_not_one_is_a_usage_fault(tmp_path: Path) -> None:
+    """A size reserved against the cap must have come through the identity's own validation.
+
+    Anything else would let a caller's claim about a set decide how much capacity
+    was demanded of the cache -- which is the one input §18.4 gives the trusted
+    catalogue and nobody else.
+    """
+    managed = _managed(tmp_path)
+
+    with pytest.raises(OcrResourceStoreError):
+        managed.reserve_resource_set(["eng"])  # type: ignore[list-item]
+    with pytest.raises(OcrResourceStoreError):
+        managed.reserve_resource_set("eng")  # type: ignore[arg-type]
+
+    assert not managed.root.exists()
 
 
 # --- refused payload paths

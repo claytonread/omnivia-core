@@ -115,6 +115,15 @@ bytes it could actually have had: the free capacity *plus* what it verified as
 reclaimable, rather than a figure that ignores either. The cap is never exceeded
 to avoid that refusal, and a deferral deletes nothing.
 
+:meth:`ManagedOcrResources.reserve_resource_set` is §18.4's *other* reservation
+-- "before ... admitting work that needs another managed resource set" -- and it
+is the same arithmetic over the same candidate rules. It is given the trusted
+catalogue's declarations of the exact sets the work needs, sums the declared
+sizes of the ones this cache has not already installed, and defers the admission
+with the same code and the same two figures when free plus verified-reclaimable
+capacity does not cover them. It installs, downloads and deletes nothing: it
+reserves by *refusing*.
+
 **One selection, one directory.** The managed layout keeps each identity's bytes
 in their own directory so two model revisions of one language can coexist, which
 is what §17.3's "including retained older managed model versions" requires. The
@@ -549,6 +558,33 @@ def _installed_bytes(state: OcrResourceStoreState) -> int:
     rather than left counting toward the cap.
     """
     return sum(entry.byte_size for entry in state.entries)
+
+
+def _validated_identities(
+    identities: Sequence[OcrResourceSetIdentity],
+) -> tuple[OcrResourceSetIdentity, ...]:
+    """One requested resource set per distinct identity, or a usage fault.
+
+    The type is checked rather than trusted, as :meth:`ManagedOcrResources.install`
+    checks the one it is handed: a size this module reserves against the cap has
+    to have come through
+    :class:`~omnivia_core_runtime.service.ocr_resource_store.OcrResourceSetIdentity`'s
+    own validation, which is what makes ``byte_size`` a positive integer rather
+    than whatever a caller passed. Duplicates are collapsed, in first-asked
+    order, so one language named twice is one requirement.
+    """
+    if isinstance(identities, (str, bytes)) or not isinstance(
+        identities, (tuple, list)
+    ):
+        raise OcrResourceStoreError("identities must be a sequence")
+    distinct: dict[str, OcrResourceSetIdentity] = {}
+    for identity in identities:
+        if not isinstance(identity, OcrResourceSetIdentity):
+            raise OcrResourceStoreError(
+                "every requested identity must be an OcrResourceSetIdentity"
+            )
+        distinct.setdefault(identity.stable_key, identity)
+    return tuple(distinct.values())
 
 
 class ManagedOcrResources:
@@ -1284,6 +1320,84 @@ class ManagedOcrResources:
 
     # -- install -------------------------------------------------------------
 
+    def reserve_resource_set(
+        self, identities: Sequence[OcrResourceSetIdentity]
+    ) -> None:
+        """Refuse unless the cap can accommodate these exact resource sets.
+
+        §18.4 reserves managed language-cache space against the 512 MiB cap
+        before an installation *or update* **and before admitting work that needs
+        another managed resource set**. :meth:`install` does the first half over
+        the payload it is handed; this is the second, for a caller that is about
+        to admit work whose profile names managed sets this cache has not got.
+
+        ``identities`` are those sets, and they are the *trusted catalogue's*
+        declarations of them -- the same five fields :meth:`install` is given,
+        with the declared ``byte_size`` that makes the requirement a figure
+        rather than a guess. Nothing here derives a size from a caller's claim
+        about a payload, because nothing here has a payload: the question is
+        asked before any download and the answer installs nothing.
+
+        The requirement is the sum of the declared sizes of the requested sets
+        **this cache has not already installed**. An already-installed member is
+        excluded because its bytes are already accounted against the cap and
+        needing it again costs nothing; a duplicate is counted once. The capacity
+        is the free remainder plus everything :meth:`_reclaimable` yields -- an
+        installed set that is verified, unpinned and unleased. Neither a pinned
+        set nor a leased one is room, because §18.4 forbids reclaiming either to
+        make room; a set whose bytes are missing or no longer match its digest is
+        not room it could supply; and a requested set that *is* installed is
+        excluded from the candidates too, since reclaiming a set this admission
+        needs to make room for its siblings would defeat the reservation.
+
+        When the requirement is not covered the admission is deferred with
+        :data:`REFUSAL_CAPACITY` -- §14.5's **Language storage is full** --
+        carrying the bytes it needed, the bytes it could actually have had and
+        the exact sets it was asked for, so a caller can say what capacity has to
+        be released rather than reporting an opaque "full". The cap, the pins and
+        every installed set are left exactly as they stand: this reserves by
+        *refusing*, as :meth:`_reserve` chooses by refusing, and installs,
+        downloads and deletes nothing.
+
+        Cheap on the path a running installation takes. A requirement the free
+        remainder already covers returns on the arithmetic alone, before a byte
+        of payload is touched, and the candidate walk is lazy, so a shortfall the
+        first reclaimable set covers costs one digest. The whole-cache read
+        happens only for a shortfall no prefix covers, which is the deferral, and
+        an honest "could have had" has to have tried them all.
+
+        An absent cache is answered rather than inspected, by
+        :meth:`coordinated`'s own rule: nothing is installed, so the whole cap is
+        free and the requirement is pure arithmetic against it.
+        """
+        requested = _validated_identities(identities)
+        if not requested:
+            return
+        with self.coordinated(create=False) as coordinated:
+            state = self._store.load() if coordinated else OcrResourceStoreState()
+            installed = frozenset(state.entries)
+            required = sum(
+                identity.byte_size
+                for identity in requested
+                if identity not in installed
+            )
+            if not required:
+                return
+            remaining = self._capacity_bytes - _installed_bytes(state)
+            if required <= remaining:
+                return
+            self._cover(
+                state,
+                required=required,
+                remaining=remaining,
+                # An absent cache has no leases to read, and reading them would
+                # be the inspection this path exists to avoid.
+                live=self._live_leases() if coordinated else set(),
+                identities=requested,
+                exclude=frozenset(requested),
+                subject="admitting work that needs",
+            )
+
     def install(
         self, payload: Path, identity: OcrResourceSetIdentity
     ) -> ManagedOcrInstallation:
@@ -1433,39 +1547,71 @@ class ManagedOcrResources:
         """Which installed sets to reclaim so `identity` fits, or refuse.
 
         Chooses only; nothing is deleted here, which is what lets a payload that
-        then fails its own verification leave the cache untouched.
+        then fails its own verification leave the cache untouched. The whole of
+        the decision is :meth:`_cover`, which
+        :meth:`reserve_resource_set` asks the same question of over a requested
+        set's declared size instead of an install's own.
+        """
+        return self._cover(
+            state,
+            required=identity.byte_size,
+            remaining=remaining,
+            live=live,
+            identities=(identity,),
+            exclude=frozenset(),
+            subject=f"installing {identity.stable_key} needs",
+        )
+
+    def _cover(
+        self,
+        state: OcrResourceStoreState,
+        *,
+        required: int,
+        remaining: int,
+        live: set[str],
+        identities: Sequence[OcrResourceSetIdentity],
+        exclude: frozenset[OcrResourceSetIdentity],
+        subject: str,
+    ) -> tuple[OcrResourceSetIdentity, ...]:
+        """The installed sets whose bytes cover `required`, or §18.4's deferral.
 
         The shortest prefix of :meth:`_reclaimable`'s order whose bytes cover the
         shortfall, which is exactly what stopping at the first candidate that
         covers it yields: one more candidate is only ever taken because the ones
         before it were not enough. A shortfall no prefix covers is §18.4's
         deferral, and it reports what an operator can act on: the bytes the
-        installation needed, and the bytes it could actually have had -- the free
-        capacity plus everything this call *verified* as reclaimable. Unverified
-        bytes are counted into neither, because room that cannot be proven is not
-        room -- which is why a deferral is the one path that digests every
-        installed set: an honest "could have had" has to have tried them all.
+        operation needed, the bytes it could actually have had -- the free
+        capacity plus everything this call *verified* as reclaimable -- and the
+        exact sets it was asked for. Unverified bytes are counted into neither
+        figure, because room that cannot be proven is not room, which is why a
+        deferral is the one path that digests every installed set: an honest
+        "could have had" has to have tried them all.
         """
-        needed = identity.byte_size - remaining
+        needed = required - remaining
         chosen: list[OcrResourceSetIdentity] = []
         reclaimable = 0
-        for candidate in self._reclaimable(state, live):
+        for candidate in self._reclaimable(state, live, exclude=exclude):
             chosen.append(candidate)
             reclaimable += candidate.byte_size
             if reclaimable >= needed:
                 return tuple(chosen)
         raise OcrResourceLifecycleRefused(
             REFUSAL_CAPACITY,
-            f"installing {identity.byte_size} bytes would exceed the managed OCR "
+            f"{subject} {required} bytes, which would exceed the managed OCR "
             f"resource cap of {self._capacity_bytes} bytes; {remaining} bytes "
             f"remain and {reclaimable} further bytes could be reclaimed from "
             f"installed resources nothing holds",
-            required_bytes=identity.byte_size,
+            required_bytes=required,
             available_bytes=remaining + reclaimable,
+            identities=identities,
         )
 
     def _reclaimable(
-        self, state: OcrResourceStoreState, live: set[str]
+        self,
+        state: OcrResourceStoreState,
+        live: set[str],
+        *,
+        exclude: frozenset[OcrResourceSetIdentity] = frozenset(),
     ) -> Iterator[OcrResourceSetIdentity]:
         """The sets it is safe to evict, in the order to take them.
 
@@ -1477,18 +1623,24 @@ class ManagedOcrResources:
         reached -- so nothing here can choose to delete the bytes it is making
         room for.
 
+        ``exclude`` is that same rule for a *set* of requested identities, which
+        :meth:`reserve_resource_set` needs because one of several requested sets
+        may already be installed: counting it as room for its siblings would
+        promise capacity the admission is itself relying on.
+
         The order is ``state.entries``' own, which
         :class:`~omnivia_core_runtime.service.ocr_resource_store.OcrResourceStoreState`
         sorts by stable key at construction: total, identity-derived and
         therefore the same in every process reading the same cache.
 
-        Three exclusions, each of them a thing the design says is unevictable. A
-        §18.4 pin means a queued or executing operation durably holds the exact
-        identity. A live selection lease means an extraction is between resolving
-        those exact bytes and finishing with them. And a set whose bytes are
-        missing or no longer match its digest is *not* a safe victim: deleting it
-        would destroy the evidence :meth:`reconcile` quarantines for inspection,
-        and counting it as room would promise capacity its bytes cannot supply.
+        Three exclusions beyond that, each of them a thing the design says is
+        unevictable. A §18.4 pin means a queued or executing operation durably
+        holds the exact identity. A live selection lease means an extraction is
+        between resolving those exact bytes and finishing with them. And a set
+        whose bytes are missing or no longer match its digest is *not* a safe
+        victim: deleting it would destroy the evidence :meth:`reconcile`
+        quarantines for inspection, and counting it as room would promise
+        capacity its bytes cannot supply.
 
         Verified last, because it is the only expensive test: the digest is read
         over the whole payload, and this generator is consumed lazily, so a
@@ -1498,7 +1650,7 @@ class ManagedOcrResources:
         pinned = {pin.identity for pin in state.pins}
         leased = self._leased_inodes(live)
         for entry in state.entries:
-            if entry in pinned or self._leased(entry, leased):
+            if entry in pinned or entry in exclude or self._leased(entry, leased):
                 continue
             if self._payload_matches(entry):
                 yield entry

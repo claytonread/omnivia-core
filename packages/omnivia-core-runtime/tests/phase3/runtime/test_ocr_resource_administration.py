@@ -412,7 +412,13 @@ def test_a_full_cache_refuses_with_language_storage_full(
     admin.managed().store.save(OcrResourceStoreState(entries=(bulk,)))
     code, out, err = admin.install(capsys, admin.payload())
     assert code == 1
-    assert json.loads(out)["code"] == REFUSAL_CAPACITY
+    document = json.loads(out)
+    assert document["code"] == REFUSAL_CAPACITY
+    # §18.4's "make the required capacity visible", as fields: the bytes this
+    # install needed and the bytes the cache could have supplied. The filler
+    # entry has no payload, so it is not reclaimable and nothing was available.
+    assert document["requiredBytes"] == len(BODY)
+    assert document["availableBytes"] == 0
     assert REFUSAL_CAPACITY in err
     assert not admin.managed().resource_directory(_identity()).exists()
 

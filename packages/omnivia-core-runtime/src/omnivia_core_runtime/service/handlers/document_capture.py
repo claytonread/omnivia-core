@@ -126,8 +126,10 @@ from omnivia_core_runtime.service.pagination import (
     token_digest,
 )
 from omnivia_core_runtime.service.processing_settings import (
+    LanguageStorageFull,
     ProcessingSettings,
     ProcessingSettingsInvalid,
+    installable_models,
     managed_resources,
     packaged_identities,
     packaged_runtime,
@@ -155,6 +157,18 @@ _MESSAGE_REPROCESS_INVALID: Final = "the request payload is not a valid document
 _MESSAGE_TOO_LARGE: Final = "the transferred document exceeds the capture size limit"
 _MESSAGE_NO_STORAGE: Final = "this service instance is not serving authoritative storage"
 _MESSAGE_UNAVAILABLE: Final = "the transferred document could not be preserved"
+#: §18.4's **Language storage is full**, reported as its own retryable state so a
+#: deferred admission is distinguishable from a capture whose bytes could not be
+#: preserved. The narrow recovery is named because that is the only action that
+#: works: no install can make room while the cache's bytes are held by unresolved
+#: work. The *figures* are deliberately not in this sentence -- they travel as
+#: `ApiError.details`, so a surface showing the required capacity reads fields
+#: rather than parsing prose.
+_MESSAGE_LANGUAGE_STORAGE_FULL: Final = (
+    "language storage is full: this capture needs recognition languages the "
+    "managed resource cache has no room to install, so it was not admitted; it "
+    "can be sent again once the work holding those resources has finished"
+)
 _TOP_LEVEL_KEYS: Final = frozenset(
     {
         "document_id", "content_base64", "staged_source", "media_type", "requested_source_identity",
@@ -1112,6 +1126,7 @@ class DocumentCaptureHandlers:
             digest = "sha256:" + hashlib.sha256(content).hexdigest()
             admitted = None
             failure: str | None = None
+            deferred: LanguageStorageFull | None = None
             try:
                 publish_blob(blobs_root, digest, content)
                 admitted = admit_document_capture_in_transaction(
@@ -1144,13 +1159,43 @@ class DocumentCaptureHandlers:
                     packaged_models=packaged_identities(
                         packaged_runtime(self.catalogue_for)
                     ),
+                    # The resource owner's declared installable sets, which is
+                    # what lets §18.4's admission-time reservation be a size
+                    # rather than a guess. Composed with the rest of the
+                    # installation in `service/main`, and empty on an installation
+                    # with no verified published catalogue -- which establishes no
+                    # capacity requirement rather than inventing one.
+                    installable_models=installable_models(self.catalogue_for),
                 )
             except DocumentCaptureSuppressed:
                 failure = "conflict"
+            except LanguageStorageFull as full:
+                # §18.4 defers a new-profile admission whose managed resource sets
+                # the cap leaves no room for. Its own state, because the recovery
+                # is its own: nothing about this document or its bytes is wrong,
+                # and resending it unchanged succeeds once the work holding the
+                # cache's resources has settled. Kept rather than flattened to a
+                # flag, because the figures it carries are the answer.
+                deferred = full
             except (DocumentIntakeRefused, SourceCaptureRefused, BlobPublicationRefused, OSError):
                 failure = "unavailable"
             if failure == "conflict":
                 raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_INVALID)
+            if deferred is not None:
+                # Retryable for the same reason the unavailable case is, and with
+                # the same frozen class: the capture is deferred, not rejected.
+                #
+                # The figures travel as `ApiError.details`, because §18.4 requires
+                # the required capacity to be *visible* and a surface that had to
+                # parse the sentence for it would be reading an operator's message
+                # as a contract. The message stays for the operator; the bytes and
+                # the exact resource sets are typed fields beside it.
+                raise OperationError(
+                    ERROR_CODE_INTERNAL_RECOVERABLE,
+                    _MESSAGE_LANGUAGE_STORAGE_FULL,
+                    retry_class=RETRY_CLASS_RETRYABLE,
+                    details=deferred.to_details(),
+                )
             if failure == "unavailable":
                 # Same frozen class as the history race above: `internal_recoverable` is
                 # retryable, and the default `non_retryable` contradicts it, which the

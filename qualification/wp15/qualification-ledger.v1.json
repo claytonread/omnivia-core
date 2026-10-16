@@ -5480,16 +5480,6 @@
           "covers": "The capacity constant the gate names is pinned at exactly 512 MiB."
         },
         {
-          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_store.py",
-          "symbol": "test_state_refuses_duplicate_pins",
-          "covers": "Pin bookkeeping refuses duplicates, which is the record that would protect a resource from eviction."
-        },
-        {
-          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_store.py",
-          "symbol": "test_one_operation_may_pin_two_resource_sets",
-          "covers": "One operation may pin two resource sets, so a pending job can retain everything it needs."
-        },
-        {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
           "symbol": "test_a_model_whose_bytes_do_not_match_the_manifest_is_never_invoked",
           "covers": "A resource whose bytes do not match its digest is never invoked, so nothing is substituted beneath its key."
@@ -5511,11 +5501,6 @@
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
-          "symbol": "test_a_pinned_resource_of_another_language_is_never_evicted",
-          "covers": "A pinned resource is never a victim: the install is refused with language_storage_full and the pin survives."
-        },
-        {
-          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
           "symbol": "test_a_leased_resource_is_never_evicted_to_fit_an_installation",
           "covers": "A leased resource is never a victim either, so a running extraction cannot lose its bytes to an install."
         },
@@ -5528,16 +5513,6 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
           "symbol": "test_a_pinned_resource_is_never_evicted_to_fit_an_installation",
           "covers": "When eviction cannot free enough, the installation is deferred with the capacity it needed, the pins stay held and the accounted bytes stay at or under the cap."
-        },
-        {
-          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
-          "symbol": "test_a_capacity_refusal_evicts_nothing",
-          "covers": "A capacity deferral leaves the state document byte-for-byte unchanged, so nothing is spent on a refusal."
-        },
-        {
-          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
-          "symbol": "test_the_capacity_is_the_designs_512_mib",
-          "covers": "The cap the eviction and deferral arithmetic runs against is the design's 512 MiB."
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_coordination.py",
@@ -5563,16 +5538,75 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
           "symbol": "test_the_resolved_selection_is_held_for_the_whole_extraction",
           "covers": "During active work the resolved selection is held: a removal attempted mid-extraction is refused as pinned and reconciliation changes nothing."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
+          "symbol": "test_a_profile_and_resource_update_leave_the_pending_input_untouched",
+          "covers": "A profile rewrite and a model-revision install together, across a real restart, leave the queued capture's retained bytes, source digest, source length, frozen preferences, frozen resource identities, admitted profile digest and operation key at the admitted values, and the extraction is admitted under the key derived from that digest."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
+          "symbol": "test_a_new_profile_meeting_a_full_cache_is_deferred_not_refused_as_missing",
+          "covers": "A new profile needing an uninstalled language the owner's verified catalogue declares, against a cache accounted to the full 512 MiB with every byte-bearing set pinned, is deferred as language_storage_full with the declared required bytes, the zero available bytes and the exact requested identity -- not refused as missing: no capture row, no pin, the cap, the pins and the queued obligation intact, an install of that language refused against the same real admission pin, and the identical admission accepted once that obligation settles."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
+          "symbol": "test_replaced_packaged_model_bytes_pause_the_obligation",
+          "covers": "A capture admitted wholly against the bundled models whose packaged bytes are then replaced pauses rather than settling under a resource condition, and the restored payload settles the same row under the admitted digest."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
+          "symbol": "test_an_absent_packaged_payload_pauses_rather_than_reporting_unverified",
+          "covers": "The same pause when the verified payload is gone entirely, so an unrecoverable exact bundled resource never silently takes a different terminal path."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
+          "symbol": "test_a_smaller_reclaimable_set_is_not_sufficient_capacity",
+          "covers": "The admission-time reservation compares the requested sets' summed declared size against the free remainder plus what it verifies as reclaimable, so 300 reclaimable bytes beside 100 free ones does not accommodate a 500-byte requirement; the deferral states both figures and the exact sets, and evicts nothing."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
+          "symbol": "test_a_multi_language_requirement_is_summed_and_excludes_installed_members",
+          "covers": "A three-language selection's requirement is the sum of the sets this cache has not installed: the already-installed member costs nothing and is not counted as room for its siblings either, and the figure named is that sum alone."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_lifecycle.py",
+          "symbol": "test_a_pinned_set_is_not_room_for_a_requested_resource_set",
+          "covers": "A cache accounted to the real 512 MiB whose byte-bearing set is pinned reserves nothing, refuses with language_storage_full, zero available bytes and the exact requested identity, and leaves the state document byte-for-byte unchanged."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
+          "symbol": "test_a_declared_requirement_no_reclaimable_set_covers_defers_the_admission",
+          "covers": "Through production admission: a cache at its cap with a small unpinned verified set defers a profile whose declared language costs a megabyte, naming the declared requirement and the reclaimable bytes, evicting nothing; and the same cache admits the same profile as a missing language once the requirement is one those bytes cover."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
+          "symbol": "test_a_language_no_trusted_catalogue_declares_establishes_no_requirement",
+          "covers": "A selection the verified catalogue does not declare, in whole or in part, establishes no capacity requirement and is recorded as the missing-language condition rather than deferred on an invented size."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_capture_vertical.py",
+          "symbol": "test_a_capture_deferred_for_language_storage_is_its_own_retryable_state",
+          "covers": "Through the production dispatcher: the deferral reaches a caller as its own retryable error carrying typed required_bytes, available_bytes, requested_languages and requested resource identities in ApiError.details, surviving the contract encoding, with no capture row or outbox row written."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ocr_resource_administration.py",
+          "symbol": "test_a_full_cache_refuses_with_language_storage_full",
+          "covers": "The installation half of the same reservation through the owner-local administrative CLI: a full cache refuses the install with language_storage_full and the required and available byte figures as fields of the result document."
         }
       ],
       "status": "not_executed",
-      "missing_condition": "Two conditions remain. New-profile admission is never deferred for capacity: language_storage_full is raised only inside the resource lifecycle, and no admission path maps it, so a new profile meeting a full cache is refused for a resource that is not installed rather than deferred until room exists. And no test asserts the pending input itself is unchanged across a profile or resource update -- the in-flight evidence pins the frozen profile, its model hashes and its digest, not the queued bytes.",
-      "limitations": "Eviction, its three exclusions -- pinned, leased and unverified -- the shortest-prefix victim order, the capacity deferral, and the intactness of both the pins and the cap are each covered against the production lifecycle, including across two processes. Profile and language-resource updates during queued and active work are covered over a real capture runner. The 512 MiB figure is pinned as a constant and the arithmetic reached by writing a large byte_size into the state: every eviction test shrinks the capacity, because evicting against a real 512 MiB cache would mean writing 512 MiB. Model payloads are stand-in bytes pinned by their real digests, not Tesseract data. No test combines a real admission pin with an install that would need eviction. The in-flight evidence lives in a module that imports Pillow at import time, so it needs the declared raster dependencies present to collect at all.",
+      "missing_condition": "One condition remains, and it is the trusted source rather than the mechanism. Deferring a new-profile admission for capacity needs the declared byte_size of the managed resource sets the profile names and this cache has not got, and the only authority this build accepts for one is a model manifest verified by distribution.model_manifest_trust. No production trust anchor for that manifest is published (WP-00 binding ledger row 13; gates G-3a and G-3b), so installation_catalogue composes an empty installable catalogue, a production admission establishes no capacity requirement, and the deferral cannot arise on a production installation. The cited admission evidence reaches it with a manifest signed and verified under the dev/test anchor its own environment flag unlocks, which proves the path carries declared sizes end to end but is not the owner's authority.",
+      "limitations": "Eviction, its exclusions -- pinned, leased and unverified -- the shortest-prefix victim order, the deferral and the intactness of the pins and the cap are covered against the production lifecycle, across two processes. The admission reservation is sized against the requested sets' declared byte_size, excludes already-installed members from both the requirement and the candidates, and runs inside the same coordination block as the inventory read it decides on. Further tests beyond those cited cover the inclusive boundary, the lease and divergence exclusions, the free-capacity shortcut, an absent cache, retry after a pin is released and the identity usage fault. The in-flight half runs over a real capture runner through production admission, outbox, replay, settlement and a real restart. Three limits remain. The 512 MiB cap is reached by declaring a large byte_size rather than writing it, and that filler has no bytes, so it is never a victim. Model payloads are stand-in bytes pinned by real digests, not Tesseract data. And the native surface that would display the required capacity is not in this repository, so what is covered is the contract it reads and not its display.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ocr_resource_store.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ocr_resource_lifecycle.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_processing.py",
-        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ocr_resources.py"
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ocr_resources.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_intake.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/handlers/document_capture.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/distribution/model_manifest_trust.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/main.py"
       ]
     },
     {

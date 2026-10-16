@@ -97,10 +97,13 @@ import hashlib
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
+from omnivia_core_runtime.distribution.model_manifest_trust import (
+    VerifiedModelManifest,
+)
 from omnivia_core_runtime.distribution.packaged_runtime import (
     MODEL_IDENTITY,
     VerifiedPackagedRuntime,
@@ -109,7 +112,9 @@ from omnivia_core_runtime.distribution.packaged_runtime import (
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.service.ocr_resource_lifecycle import (
     MAX_PROJECTED_MODELS,
+    MODEL_SUFFIX,
     OCR_RESOURCES_DIR,
+    REFUSAL_CAPACITY,
     REFUSAL_DIVERGENT,
     REFUSAL_NOT_INSTALLED,
     REFUSAL_UNPINNED,
@@ -285,6 +290,94 @@ class CaptureNotExecutable(Exception):
     The obligation is left exactly as it was in both cases: its outbox row still
     pending, its durable pins still held, and no extraction revision admitted.
     """
+
+
+class LanguageStorageFull(Exception):
+    """This capture needs managed resource sets the cap leaves no room for.
+
+    §18.4 reserves managed language-cache space before admitting work that needs
+    another managed resource set, and defers the admission with **Language
+    storage is full** when the remaining capacity is insufficient. That is this:
+    the capture's recognition selection names languages the cache has not got,
+    the trusted catalogue declares what installing them would cost, and the cache
+    can neither spare those bytes nor reclaim enough to cover them -- what is
+    installed is pinned by work that is still unresolved, leased by an extraction
+    that is running, or no longer verifies.
+
+    The three facts a caller needs are carried as fields rather than left in the
+    sentence. §18.4 requires the required capacity to be *visible*, and a native
+    settings surface that had to parse prose to show it would be reading an
+    operator's message as a contract. ``required_bytes`` is the summed declared
+    size of the sets this admission needs and does not have, ``available_bytes``
+    is the free capacity plus everything the reservation verified as reclaimable,
+    and ``identities`` are the exact sets it was asked for -- so **Review pending
+    processing** can say which languages and how much, and **Try again** has a
+    figure to wait for.
+
+    Deliberately *not* :data:`RESOURCES_UNAVAILABLE`. That snapshot is terminal
+    for the capture and its recovery is "install the language", which is the one
+    recovery a full cache cannot perform: the install would itself be deferred
+    with :data:`~omnivia_core_runtime.service.ocr_resource_lifecycle.REFUSAL_CAPACITY`.
+    Recording it would hand the operator an action that refuses, and would spend
+    the capture's one admission on a condition that was about the cache's
+    capacity rather than about the language.
+
+    And deliberately not :class:`ResourceStateIndeterminate` either, which is the
+    absence of an answer. This is a determinate answer with a determinate
+    recovery: room appears when an operation holding the cache's bytes reaches a
+    terminal disposition, and resending the same operation key then admits the
+    capture normally. So the admission is *deferred* -- nothing is written, no pin
+    is taken, no byte is installed or downloaded, the cap and every existing pin
+    stand exactly as they were, and queued work is untouched.
+    """
+
+    #: The lifecycle's own stable code, so a caller branches on
+    #: ``language_storage_full`` rather than on a sentence.
+    code: Final = REFUSAL_CAPACITY
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        required_bytes: int,
+        available_bytes: int,
+        identities: Sequence[OcrResourceSetIdentity],
+    ) -> None:
+        super().__init__(message)
+        self.required_bytes = required_bytes
+        self.available_bytes = available_bytes
+        self.identities = tuple(identities)
+
+    @property
+    def languages(self) -> tuple[str, ...]:
+        """The recognition languages whose sets could not be made room for."""
+        return tuple(identity.language for identity in self.identities)
+
+    def to_details(self) -> dict[str, Any]:
+        """The typed facts for ``ApiError.details``, and the whole of them.
+
+        One place, because the caller that answers a request and the caller that
+        answers an administrative action must not describe one deferral two ways.
+        The figures are bytes and the identities are the same five fields every
+        other managed-resource document carries, so a surface reads the capacity
+        it has to wait for without parsing the message beside it.
+        """
+        return {
+            "resource_condition": REFUSAL_CAPACITY,
+            "required_bytes": self.required_bytes,
+            "available_bytes": self.available_bytes,
+            "requested_languages": list(self.languages),
+            "requested_resources": [
+                {
+                    "language": identity.language,
+                    "engine_version": identity.engine_version,
+                    "model_version": identity.model_version,
+                    "byte_size": identity.byte_size,
+                    "sha256": identity.sha256,
+                }
+                for identity in self.identities
+            ],
+        }
 
 
 class ResourceStateIndeterminate(Exception):
@@ -845,6 +938,7 @@ def admitted_resources(
     pin: str,
     languages: Sequence[str],
     packaged: Mapping[str, OcrResourceSetIdentity] = {},
+    installable: Mapping[str, OcrResourceSetIdentity] = {},
 ) -> AdmittedResources:
     """Freeze and pin the exact resources one capture is admitted against.
 
@@ -864,12 +958,35 @@ def admitted_resources(
     :meth:`~omnivia_core_runtime.service.ocr_resource_lifecycle.ManagedOcrResources.reclaim`
     takes back. A leaked pin is recoverable; a removal in the gap is not.
 
-    Three answers, never a fourth. The selection is served and frozen; or the
+    Four answers, never a fifth. The selection is served and frozen; or the
     installation demonstrably cannot serve it, which is recorded as the condition
     it is and is final for this capture; or the cache could not be read at all,
     which is :class:`ResourceStateIndeterminate` and no answer -- the caller
     declines the admission rather than freezing a capture out of recognition
     because a lock was briefly held.
+
+    The fourth is :class:`LanguageStorageFull`, and it is the one answer that is
+    neither frozen nor recorded. §18.4 reserves managed cache space before
+    admitting work that needs another managed resource set, so a selection naming
+    languages the cache has not got asks
+    :meth:`~omnivia_core_runtime.service.ocr_resource_lifecycle.ManagedOcrResources.reserve_resource_set`
+    for exactly those sets, at the sizes ``installable`` declares. When free plus
+    reclaimable capacity does not cover them the admission is *deferred* rather
+    than settled: recording the missing-language condition would be terminal for
+    the capture and would name an install the cache must itself refuse for the
+    same capacity. Nothing is written on that path, because the question is asked
+    before any pin.
+
+    ``installable`` is the trusted catalogue of installable sets, from
+    :func:`declared_installable` over a verified published manifest. It is
+    consulted only for the languages that are missing, and the reservation is
+    asked only when it declares **every** one of them: a requirement assembled
+    from part of the selection would be a figure for work the admission is not
+    doing -- the selection is all or nothing -- and a language the catalogue does
+    not name has no trusted size at all. Either way the capacity question is not
+    decidable, and the honest answer is the missing-language condition this
+    installation has always recorded, whose recovery -- install the language --
+    is the one the operator can actually perform.
 
     ``resources=None`` is an installation with no managed cache to ask, which is
     the same determinate answer as a cache with nothing in it: the requested
@@ -923,6 +1040,23 @@ def admitted_resources(
                 language for language in requested if language not in present
             )
             if missing:
+                # §18.4 reserves the space for the managed resource sets before
+                # admitting work that needs them, and this capture needs sets the
+                # cache has not got. The requirement is their declared sizes, so
+                # a cache with room for them records the condition and names the
+                # install that repairs it, and a cache without defers the
+                # admission instead -- because that install would itself be
+                # refused for the same capacity, and a condition whose recovery
+                # cannot be performed is not a recovery. Inside the same
+                # coordination block as the inventory read above, so the capacity
+                # this decides on is the capacity that read saw.
+                requested_sets = tuple(
+                    installable[language]
+                    for language in missing
+                    if language in installable
+                )
+                if len(requested_sets) == len(missing):
+                    resources.reserve_resource_set(requested_sets)
                 # All or nothing, which is what `resolve` does with a partial
                 # selection anyway. Pinning the installed half would hold bytes
                 # against the operator's own removal for an extraction that
@@ -938,6 +1072,24 @@ def admitted_resources(
                 selection.append(orientation)
             resources.pin(pin, selection)
     except OcrResourceLifecycleRefused as refusal:
+        if refusal.code == REFUSAL_CAPACITY:
+            # The determinate fourth answer: the selection needs managed sets the
+            # cap leaves no room for. Nothing was written on the way here -- the
+            # refusal is raised before any pin -- so the admission is deferred
+            # with every pin, every installed set and the cap intact.
+            if refusal.required_bytes is None or refusal.available_bytes is None:
+                # A capacity refusal that does not state what it needed cannot be
+                # made visible, which is the whole of §18.4's requirement here, and
+                # an unsized one would be the defect this reservation replaced. It
+                # is the absence of an answer rather than one to record, so the
+                # caller declines the admission instead of freezing the capture.
+                raise ResourceStateIndeterminate(str(refusal)) from refusal
+            raise LanguageStorageFull(
+                str(refusal),
+                required_bytes=refusal.required_bytes,
+                available_bytes=refusal.available_bytes,
+                identities=refusal.identities,
+            ) from refusal
         if refusal.code in (REFUSAL_NOT_INSTALLED, REFUSAL_DIVERGENT):
             # Determinate, and only reachable from the pin itself: between the
             # inventory read and the claim nothing can have moved, because both
@@ -1039,6 +1191,55 @@ def packaged_identities(
             sha256=digest,
         )
         for language, (size, digest) in runtime.models.items()
+    }
+
+
+def declared_installable(
+    manifest: VerifiedModelManifest | None,
+) -> dict[str, OcrResourceSetIdentity]:
+    """The managed owner's installable sets, as the cache's own five-field identity.
+
+    §18.4 installs additional languages "through the existing managed Core
+    resource/distribution owner, with declared sizes/digests", and §14.5 is the
+    surface that shows those sizes. This is that declaration, read from a manifest
+    :func:`~omnivia_core_runtime.distribution.model_manifest_trust.verify_model_manifest`
+    has already verified completely -- the signature, the key's window and the
+    manifest identity all checked by that call -- and from nothing else. A
+    caller-supplied size or digest is not release authority and never reaches
+    here: an admission sizing its reservation against one would be reserving
+    against a figure whoever asked for the work had chosen.
+
+    ``model_version`` is the manifest's own version, which is how the owner
+    distinguishes one published build of a language from the next, and
+    ``engine_version`` is :data:`TESSERACT_REVISION` -- the revision this build
+    actually invokes -- so an identity named here is one the managed cache can
+    install and this installation can then execute. The size and digest are the
+    artifact's, exactly as declared.
+
+    Only ``*.traineddata`` artifacts are read, by the same rule
+    :meth:`~omnivia_core_runtime.service.ocr_resources.TrustedOcrCatalogue.from_model_manifest`
+    applies: a manifest may carry notices or other artifacts alongside the models,
+    and only a model is an installable recognition resource.
+
+    ``None`` is an installation with no verified published catalogue, which is
+    every installation until the resource owner's trust anchor is published
+    (WP-00 binding ledger row 13). The empty catalogue is fail-closed in the one
+    direction that matters: an admission can establish no requirement for a
+    language it cannot price, so it records the missing-language condition it
+    always recorded rather than inventing a size to reserve against.
+    """
+    if manifest is None:
+        return {}
+    return {
+        artifact.name[: -len(MODEL_SUFFIX)]: OcrResourceSetIdentity(
+            language=artifact.name[: -len(MODEL_SUFFIX)],
+            engine_version=TESSERACT_REVISION,
+            model_version=manifest.version,
+            byte_size=artifact.size,
+            sha256=artifact.sha256,
+        )
+        for artifact in manifest.artifacts
+        if artifact.name.endswith(MODEL_SUFFIX)
     }
 
 
@@ -1199,6 +1400,12 @@ class ManagedSelectionAuthority:
     #: The verified payload, or ``None`` for an installation with none -- which
     #: serves nothing and invokes no engine, the fail-closed default.
     runtime: VerifiedPackagedRuntime | None = None
+    #: The resource owner's declared installable sets, from
+    #: :func:`declared_installable`. Empty for an installation with no verified
+    #: published catalogue, which is the fail-closed default: an admission can
+    #: then establish no capacity requirement and records the missing-language
+    #: condition instead of reserving against a size nothing declared.
+    installable: Mapping[str, OcrResourceSetIdentity] = field(default_factory=dict)
 
     @property
     def packaged(self) -> TrustedOcrCatalogue:
@@ -1256,13 +1463,18 @@ class ManagedSelectionAuthority:
         exception: an identity that is no longer installed is a missing language,
         and bytes that no longer match their digest are an unverified model. Both
         are recorded against the extraction and recovered by installing or
-        reinstalling, and neither degrades into a smaller selection. Two cases
-        raise instead, because neither is a condition: a cache that could not be
-        read at all, which is the absence of an answer, and a durable claim that
-        is not there, which is :class:`CaptureNotExecutable` -- the bytes may be
-        installed and verifiable, and what is missing is the record that this
-        obligation held them, which no installation repairs and which this end
-        deliberately does not write back.
+        reinstalling, and neither degrades into a smaller selection -- the pin
+        they were held by is released with the settlement, which is what lets the
+        managed cache be reclaimed again. Three cases raise instead, because none
+        of them is a condition: a cache that could not be read at all, which is
+        the absence of an answer; a durable claim that is not there, which is
+        :class:`CaptureNotExecutable` -- the bytes may be installed and
+        verifiable, and what is missing is the record that this obligation held
+        them, which no installation repairs and which this end deliberately does
+        not write back; and a capture admitted against the *bundled* set whose
+        bytes this installation no longer declares, which is
+        :class:`CaptureNotExecutable` for §18.4's own reason and is set out at
+        that branch.
 
         An identity admitted for an engine revision this build does not invoke
         raises too, before anything is projected. The alternative would be to
@@ -1307,26 +1519,36 @@ class ManagedSelectionAuthority:
                 yield self.packaged.resolve(order)
                 return
             # The payload is absent, or its bytes are not the ones this capture
-            # was admitted against -- a reinstalled or replaced installation.
-            # That is a resource *condition*, recorded against the extraction
-            # and terminal: deferring to the managed path would ask it for a
-            # durable pin nothing ever wrote, which pauses the obligation for
-            # ever over bytes no installation will put back under that name.
-            yield OcrResources(
-                engine=TESSERACT_ENGINE,
-                engine_revision=TESSERACT_REVISION,
-                languages=order,
-                available=False,
-                reason=REASON_UNVERIFIED,
-                unavailable_models=tuple(
-                    identity.language
-                    for identity in admitted.selection
-                    if packaged.get(identity.language) != identity
-                    and identity.language != ORIENTATION_MODEL
-                )
-                or order,
+            # was admitted against -- a replaced, repaired or downgraded
+            # installation. §18.4's "if an older exact resource cannot be
+            # recovered, pause with a specific compatibility/resource issue" is
+            # exactly this case, so the obligation pauses: its outbox row stays
+            # pending and no extraction revision is admitted under it.
+            #
+            # Settling it as an unverified-model condition would be the "silently
+            # takes a different terminal path" half of END-02. The capture would
+            # become terminal over a fact about the *installation* -- bytes a
+            # compatible release still declares and a repair puts straight back
+            # -- and the operator's recovery would arrive after the only
+            # admission it could have repaired had been spent.
+            #
+            # Nothing is held hostage by waiting. These are the installation's
+            # own bytes, not the managed cache's: no pin was ever taken for them,
+            # so a paused packaged obligation occupies no managed capacity and
+            # blocks no installation. That is what separates it from the managed
+            # conditions below, where the pin *is* the retention guarantee and
+            # releasing it is what lets the cache be reclaimed.
+            unavailable = tuple(
+                identity.stable_key
+                for identity in admitted.selection
+                if packaged.get(identity.language) != identity
             )
-            return
+            raise CaptureNotExecutable(
+                f"this capture was admitted against the bundled OCR resources "
+                f"{', '.join(unavailable)}, and this installation's verified "
+                f"payload does not declare those exact bytes; the obligation is "
+                f"paused rather than settled under the bytes it has"
+            )
         with ExitStack() as stack:
             try:
                 directory = stack.enter_context(
@@ -1372,6 +1594,16 @@ def installation_catalogue(
     start-time cost and not a per-request one: this is called while the service
     is being composed, and the authority it returns is then held. Measured at
     0.16 s for a 286 MiB payload on Apple silicon, where SHA-256 is accelerated.
+
+    What it does *not* compose is the resource owner's installable catalogue. That
+    declaration is a signed published manifest, and verifying one needs the owner's
+    trust anchor, which is the caller's authority and never installation metadata
+    -- an installation that could nominate the key approving its own catalogue
+    would be declaring its own sizes. No anchor is published yet (WP-00 binding
+    ledger row 13, G-3a/G-3b), so :attr:`ManagedSelectionAuthority.installable`
+    is composed empty here and an admission establishes no capacity requirement
+    from this installation. :func:`declared_installable` is the path that fills it
+    once an anchored manifest exists.
 
     ``None`` means this process has no installation root to ask, or the root is
     not one a managed cache may live under. The caller then falls back to the
@@ -1424,6 +1656,20 @@ def packaged_runtime(source: object) -> VerifiedPackagedRuntime | None:
     return None
 
 
+def installable_models(source: object) -> Mapping[str, OcrResourceSetIdentity]:
+    """The declared installable sets behind one resolution source, if any.
+
+    The same shape as :func:`managed_resources` and :func:`packaged_runtime`, for
+    the caller that needs the *sizes* of the sets an admission would have to make
+    room for. Anything that is not an authority declares nothing, which is the
+    fail-closed answer :func:`admitted_resources` treats as "no requirement can be
+    established".
+    """
+    if isinstance(source, ManagedSelectionAuthority):
+        return source.installable
+    return {}
+
+
 __all__ = [
     "CAPTURE_RESOURCES_SCHEMA",
     "DEFAULT_SETTINGS",
@@ -1438,6 +1684,7 @@ __all__ = [
     "TEXT_ONLY_PROFILE_REF",
     "AdmittedResources",
     "CaptureNotExecutable",
+    "LanguageStorageFull",
     "ManagedSelectionAuthority",
     "ProcessingResourcesInvalid",
     "ProcessingSettings",
@@ -1447,6 +1694,8 @@ __all__ = [
     "apply_settings",
     "capture_pin",
     "capture_pin_prefix",
+    "declared_installable",
+    "installable_models",
     "installation_catalogue",
     "installed_identities",
     "managed_resources",

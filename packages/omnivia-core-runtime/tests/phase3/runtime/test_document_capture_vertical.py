@@ -29,6 +29,9 @@ from omnivia_core_runtime.service.handlers.document_capture import (
     DOCUMENT_CAPTURE_OPERATION,
     DOCUMENT_REPROCESS_OPERATION,
 )
+from omnivia_core_runtime.service.ocr_resource_store import OcrResourceSetIdentity
+from omnivia_core_runtime.service.ocr_resources import TESSERACT_REVISION
+from omnivia_core_runtime.service.processing_settings import LanguageStorageFull
 from omnivia_core_runtime.storage import document_intake as store
 from omnivia_core_runtime.workspace.blob_publication import BlobPublicationRefused
 from test_evidence_capture_vertical import (
@@ -290,6 +293,78 @@ def test_temporarily_unavailable_capture_work_is_served_as_retryable(
     assert response.error.retry_class == RETRY_CLASS_RETRYABLE
     assert response.error.message == "the transferred document could not be preserved"
     assert count(owned, "omnivia_document_captures") == 0
+
+
+def test_a_capture_deferred_for_language_storage_is_its_own_retryable_state(
+    owned: Served, monkeypatch: Any
+) -> None:
+    """§18.4's **Language storage is full**, as a caller actually receives it.
+
+    The deferral is retryable for the same reason the unavailable case above is
+    -- resending the identical request is the recovery -- but it is not the same
+    answer, and the message is what makes that visible: nothing about this
+    document or its bytes is wrong, and what the caller has to wait for is the
+    work holding the managed resources rather than the workspace taking bytes.
+
+    And the capacity §18.4 requires to be *visible* arrives as typed fields, not
+    as a sentence to be parsed: the bytes the admission required, the bytes the
+    cache could have supplied, and the exact resource sets it was asked for. A
+    settings surface showing **Review pending processing** reads those; the
+    message beside them stays the operator's.
+
+    The refusal is injected at the admission seam, because what is under test
+    here is the wire state it becomes. That the production admission raises it,
+    with these figures, against a cache accounted to its full cap is
+    `test_document_processing.test_a_new_profile_meeting_a_full_cache_is_deferred_not_refused_as_missing`.
+    """
+    dispatcher = build_dispatcher(owned, tag="document-language-storage")
+    wanted = OcrResourceSetIdentity(
+        language="deu",
+        engine_version=TESSERACT_REVISION,
+        model_version="tessdata_fast-4.1.0",
+        byte_size=4096,
+        sha256="b" * 64,
+    )
+
+    def full(*args: Any, **kwargs: Any) -> Any:
+        raise LanguageStorageFull(
+            "the managed OCR resource cap is fully occupied",
+            required_bytes=4096,
+            available_bytes=512,
+            identities=(wanted,),
+        )
+
+    monkeypatch.setattr(
+        document_handlers, "admit_document_capture_in_transaction", full
+    )
+    response = dispatcher.dispatch(request(request_id="req-document-language-full"))
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == ERROR_CODE_INTERNAL_RECOVERABLE
+    assert response.error.retry_class == RETRY_CLASS_RETRYABLE
+    assert "language storage is full" in response.error.message
+    assert "could not be preserved" not in response.error.message
+    # The typed facts, on the wire, in the shape a caller may rely on.
+    assert response.error.details == {
+        "resource_condition": "language_storage_full",
+        "required_bytes": 4096,
+        "available_bytes": 512,
+        "requested_languages": ["deu"],
+        "requested_resources": [
+            {
+                "language": "deu",
+                "engine_version": TESSERACT_REVISION,
+                "model_version": "tessdata_fast-4.1.0",
+                "byte_size": 4096,
+                "sha256": "b" * 64,
+            }
+        ],
+    }
+    # And they survive the contract encoding rather than only the handler's call.
+    assert response.error.to_wire()["details"] == response.error.details
+    # Deferred, so nothing of the capture exists to be resumed or reconciled.
+    assert count(owned, "omnivia_document_captures") == 0
+    assert count(owned, "omnivia_document_capture_outbox") == 0
 
 
 def test_document_reprocess_publishes_retained_bytes_and_exact_replay(
