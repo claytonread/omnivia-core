@@ -127,6 +127,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
     private let subscriptions: FolderSubscriptionStore
     private let bulkRuns: FolderBulkRunStore
     private let bulkCoordinator: FolderBulkRunCoordinator
+    private let canonicalSources: CanonicalSourceRegistry
     /// One source of truth for the target, workspace and caller facts frozen
     /// into every intent this submission queues; delivery requires an exact
     /// match against the transport's binding.
@@ -168,6 +169,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         subscriptions = environment.folderSubscriptions
         bulkRuns = environment.folderBulkRuns
         bulkCoordinator = environment.folderBulkCoordinator
+        canonicalSources = environment.canonicalSources
         binding = .companion(workspaceRef: workspaceRef, targetRef: targetRef)
         controlledStores = environment.controlledStores
         limits = .standard
@@ -185,6 +187,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         subscriptions = environment.folderSubscriptions
         bulkRuns = environment.folderBulkRuns
         bulkCoordinator = environment.folderBulkCoordinator
+        canonicalSources = environment.canonicalSources
         binding = .companion(workspaceRef: workspaceRef, targetRef: targetRef)
         controlledStores = environment.controlledStores
         self.limits = limits
@@ -201,6 +204,7 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         subscriptions = environment.folderSubscriptions
         bulkRuns = environment.folderBulkRuns
         bulkCoordinator = environment.folderBulkCoordinator
+        canonicalSources = environment.canonicalSources
         self.binding = binding
         controlledStores = environment.controlledStores
         self.limits = limits
@@ -314,9 +318,26 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
         if !keepsUpdated && !hasBulkRun {
             return FolderCaptureReceipt(submissionID: nil, entries: [])
         }
-        // Every identity this submission will ever use is minted here, once,
-        // and frozen into the intent before any authority exists. A retry or a
-        // restart reconciles that same intent: it never mints a replacement.
+        // The logical identities come from the workspace's canonical source
+        // registry, so a file another root or a direct route already enrolled
+        // keeps the one source and linked document it already has. A file macOS
+        // will not identify, and a second path to one file inside this one
+        // reviewed scope, each get identities of their own: every member of one
+        // submission must carry its own durable row, grant and queued item.
+        var claimed: Set<String> = []
+        let canonical = try plan.members.map { member -> CanonicalSourceIdentities in
+            let identities = try canonicalSources.resolve(
+                url: member.url,
+                workspaceRef: binding.workspaceRef,
+                claimedNativeKeys: claimed
+            )
+            if let key = identities.nativeKey { claimed.insert(key) }
+            return identities
+        }
+        // Every other identity this submission will ever use is minted here,
+        // once, and frozen into the intent before any authority exists. A retry
+        // or a restart reconciles that same intent: it never mints a
+        // replacement.
         let intent = PendingFolderSubmission(
             submissionID: Self.identifier(prefix: "submission"),
             rootRef: Self.identifier(prefix: "root"),
@@ -336,12 +357,12 @@ public final class FolderCaptureSubmission: @unchecked Sendable {
             configGeneration: 1,
             consentGeneration: 1,
             createdAt: ISO8601DateFormatter().string(from: Date()),
-            members: plan.members.map { member in
+            members: zip(plan.members, canonical).map { member, identities in
                 PendingFolderMember(
                     memberID: Self.identifier(prefix: "member"),
                     accessRef: Self.identifier(prefix: "access"),
-                    linkedDocumentID: Self.identifier(prefix: "doc"),
-                    requestedSourceIdentity: Self.identifier(prefix: "source"),
+                    linkedDocumentID: identities.linkedDocumentID,
+                    requestedSourceIdentity: identities.requestedSourceIdentity,
                     relativeComponents: member.relativeComponents,
                     displayName: member.displayName,
                     contentKind: member.contentKind,

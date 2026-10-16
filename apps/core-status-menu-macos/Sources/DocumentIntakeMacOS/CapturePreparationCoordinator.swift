@@ -61,6 +61,13 @@ public enum CapturePreparationError: Error, Equatable {
 /// `CapturePreparationCoordinator.prepareAndPublish`.
 public typealias CapturePublicationCompletion = @Sendable ([CaptureQueueEntry]) throws -> Void
 
+/// Told, for each item that was not queued because its canonical source already
+/// holds an initial capture of exactly these bytes, which item the caller asked
+/// for and which queued capture now serves it. Runs in the publication critical
+/// section alongside `CapturePublicationCompletion`.
+public typealias CaptureCoalescenceCompletion =
+    @Sendable ([(requestedItemID: String, existing: CaptureQueueEntry)]) throws -> Void
+
 /// Queue publication committed and the caller's completion, run in the same
 /// critical section, did not.
 ///
@@ -298,6 +305,10 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
     private let reader: any CoordinatedOriginalReading
     private let fileSubscriptions: FileSubscriptionStore?
     private let folderSubscriptions: FolderSubscriptionStore?
+    /// Where one workspace's canonical sources live. Absent, nothing coalesces
+    /// and every route queues its own capture, which is what a store assembled
+    /// outside `DocumentIntakeEnvironment` gets.
+    private let canonicalSources: CanonicalSourceRegistry?
     private let gate: PublicationGate
 
     /// Test seam: runs inside the publication critical section, after every
@@ -328,6 +339,7 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
         reader: any CoordinatedOriginalReading = SystemCoordinatedOriginalReader(),
         fileSubscriptions: FileSubscriptionStore? = nil,
         folderSubscriptions: FolderSubscriptionStore? = nil,
+        canonicalSources: CanonicalSourceRegistry? = nil,
         gate: PublicationGate = .processShared
     ) {
         self.accessStore = accessStore
@@ -335,6 +347,7 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
         self.reader = reader
         self.fileSubscriptions = fileSubscriptions
         self.folderSubscriptions = folderSubscriptions
+        self.canonicalSources = canonicalSources
         self.gate = gate
     }
 
@@ -373,9 +386,20 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
     /// Promoting the published entries' own grants out of `provisional` happens
     /// in the same place, under the same rule, whether a completion was passed
     /// or not.
+    ///
+    /// An item whose canonical source already holds an initial capture of
+    /// exactly the bytes this read froze is not queued a second time (design
+    /// §21.8.1, FR-16: overlapping routes over one proven original share one
+    /// capture). It is reported through `onCoalesced` instead, with the queued
+    /// capture that now serves it, so the caller binds its own route to that
+    /// capture. Its grant is promoted out of `provisional` exactly as a
+    /// published item's is: the route is real and must stay readable on its
+    /// own. Only an initial capture coalesces; a refresh carries a base
+    /// precondition of its own and is never folded into another route's.
     public func prepareAndPublish(
         _ items: [CapturePreparationItem],
         binding: CaptureDeliveryBinding,
+        onCoalesced: CaptureCoalescenceCompletion? = nil,
         onPublished: CapturePublicationCompletion? = nil
     ) async throws -> [CaptureQueueEntry] {
         guard !items.isEmpty else { throw CapturePreparationError.emptySelection }
@@ -431,10 +455,15 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
                 }
                 prepared.append((try item.seed.freeze(payload: payload), payload))
             }
+            // The bytes are now known, so the canonical source's own version is
+            // too: an item whose source already holds an initial capture of
+            // exactly these bytes has nothing to queue.
+            let coalesced = self.coalesce(prepared.map(\.intent))
+            let fresh = prepared.filter { coalesced[$0.intent.itemId] == nil }
             // Every payload byte is written and verified here, before any
             // authority is locked. Publication below is a directory rename.
-            let candidate = try self.queue.prepareCandidate(prepared)
-            defer { self.queue.discard(candidate) }
+            let candidate = fresh.isEmpty ? nil : try self.queue.prepareCandidate(fresh)
+            defer { if let candidate { self.queue.discard(candidate) } }
             self.afterCandidatePrepared?()
             return try self.accessStore.withValidatedGenerations(items.map(\.access)) {
                 try self.consume(submissionId: submissionId, tokens: tokens)
@@ -448,18 +477,24 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
                     )
                 }
                 self.afterConsentValidation?()
-                let published = try self.queue.publish(candidate)
+                let published = try candidate.map { try self.queue.publish($0) } ?? []
                 do {
                     // The rename is the moment durable ownership exists, so it
                     // is the moment these grants stop being provisional. Exactly
                     // the grants the committed entries are bound to are
                     // promoted, which are also the grants the watches registered
-                    // below are bound to.
+                    // below are bound to. A coalesced item's grant is promoted
+                    // with them: its route is as durable as theirs, it is simply
+                    // bound to a capture that already exists.
                     try self.accessStore.activateGrants(
                         accessRefs: published.compactMap {
                             $0.intent.originalBinding?.accessRecordId
-                        }
+                        } + items.filter { coalesced[$0.seed.itemId] != nil }
+                            .compactMap { $0.seed.originalBinding?.accessRecordId }
                     )
+                    if !coalesced.isEmpty {
+                        try onCoalesced?(coalesced.map { ($0.key, $0.value) })
+                    }
                     try onPublished?(published)
                 } catch {
                     // The rename already happened, so this is not a failed
@@ -470,6 +505,55 @@ public final class CapturePreparationCoordinator: @unchecked Sendable {
                 return published
             }
         }.value
+    }
+
+    /// The queued capture that already serves each of these frozen intents,
+    /// keyed by the item id its caller asked for.
+    ///
+    /// Sameness is the canonical source, the exact version, and the exact head
+    /// that version is claimed against: the source identity frozen into the
+    /// intent, which the registry minted from the file's own native identity,
+    /// plus this read's digest and length, plus the base precondition. Two
+    /// files with identical bytes carry different source identities, so they
+    /// never meet here; two routes over one file reading one version against
+    /// one head always do, which is how overlapping roots and a direct route
+    /// share a capture (design §21.8.1, FR-16) instead of racing three
+    /// revisions of it.
+    ///
+    /// A failed capture serves nobody: a route is never bound to it, and reads
+    /// its own capture instead.
+    ///
+    /// The head is compared through `claimedHead`, because a direct submission
+    /// says `.create` and a folder route says `.expected(nil)` for the very
+    /// same claim.
+    private func coalesce(_ intents: [CaptureIntentV3]) -> [String: CaptureQueueEntry] {
+        // Without a registry no route shares a source identity with another, so
+        // nothing can match and the queue is not even read.
+        guard canonicalSources != nil else { return [:] }
+        var serving: [CaptureQueueEntry]?
+        var result: [String: CaptureQueueEntry] = [:]
+        for intent in intents {
+            let entries = serving ?? queue.allEntries().filter { $0.state != .failed }
+            serving = entries
+            guard let existing = entries.first(where: {
+                $0.intent.requestedSourceIdentity == intent.requestedSourceIdentity
+                    && $0.intent.localIntegrityDigest == intent.localIntegrityDigest
+                    && $0.intent.byteLength == intent.byteLength
+                    && Self.claimedHead(of: $0.intent) == Self.claimedHead(of: intent)
+            }) else { continue }
+            result[intent.itemId] = existing
+        }
+        return result
+    }
+
+    /// The successful capture this intent claims to follow, or nil when it
+    /// claims none. `.create` and `.expected(nil)` are the same claim — no
+    /// earlier head — worded differently by a direct submission and a folder
+    /// route, so they must compare equal wherever two intents are asked
+    /// whether they are the same revision of the same source.
+    static func claimedHead(of intent: CaptureIntentV3) -> String? {
+        if case let .expected(captureID) = intent.basePrecondition { return captureID }
+        return nil
     }
 
     /// Rechecks the subscription an automatic item was prepared against. The

@@ -32,6 +32,11 @@ public struct FolderBulkRunMember: Codable, Equatable, Sendable {
     public let declaredByteLength: UInt64
     public var state: FolderBulkMemberState
     public var failureCode: String?
+    /// The queued capture that serves this member when its canonical source
+    /// already held an initial capture of exactly its bytes, so this member
+    /// queued none of its own. Its outcome is this member's outcome; the
+    /// member's own route, grant and generation are unchanged.
+    public var coalescedItemID: String?
 }
 
 public struct FolderBulkRun: Codable, Equatable, Sendable {
@@ -250,6 +255,7 @@ public final class FolderBulkRunStore: @unchecked Sendable {
         var rebased = updated
         rebased.state = frozen.state
         rebased.failureCode = frozen.failureCode
+        rebased.coalescedItemID = frozen.coalescedItemID
         return rebased == frozen
     }
 

@@ -34,6 +34,10 @@ public actor FolderMonitoringCoordinator {
     private let queue: CaptureIntentQueue
     private let subscriptions: FolderSubscriptionStore
     private let reader: any CoordinatedOriginalReading
+    /// One logical source per workspace per native file; see
+    /// `CanonicalSourceRegistry`. A newly discovered file takes its identities
+    /// from here rather than minting its own.
+    private let canonicalSources: CanonicalSourceRegistry
     /// Core/native-owned stores every scan excludes; see `DocumentIntakeEnvironment`.
     private let controlledStores: [URL]
     /// Wall clock for the observation timestamp and the add/change burst window.
@@ -53,6 +57,7 @@ public actor FolderMonitoringCoordinator {
         queue: CaptureIntentQueue,
         subscriptions: FolderSubscriptionStore,
         reader: any CoordinatedOriginalReading,
+        canonicalSources: CanonicalSourceRegistry,
         controlledStores: [URL] = [],
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
@@ -62,6 +67,7 @@ public actor FolderMonitoringCoordinator {
         self.queue = queue
         self.subscriptions = subscriptions
         self.reader = reader
+        self.canonicalSources = canonicalSources
         self.controlledStores = controlledStores
     }
 
@@ -226,6 +232,27 @@ public actor FolderMonitoringCoordinator {
         return subscription
     }
 
+    /// The queued capture that is this membership's baseline.
+    ///
+    /// Usually the item the membership froze. A membership established over a
+    /// file whose canonical source was already being captured at exactly those
+    /// bytes queued no item of its own, so its frozen id names no entry; the
+    /// capture that serves it is its source's own initial capture, the one
+    /// claiming no earlier head. Nothing is inferred: with no such entry the
+    /// baseline is simply unresolved, which leaves the watch waiting rather
+    /// than wrongly active.
+    private static func baseline(
+        of member: FolderSubscriptionMember,
+        in entries: [String: CaptureQueueEntry]
+    ) -> CaptureQueueEntry? {
+        guard let baselineID = member.baselineItemID else { return nil }
+        if let entry = entries[baselineID] { return entry }
+        return entries.values.first {
+            $0.intent.requestedSourceIdentity == member.requestedSourceIdentity
+                && CapturePreparationCoordinator.claimedHead(of: $0.intent) == nil
+        }
+    }
+
     private func reconcileAdmissions(_ persisted: FolderSubscription) throws -> FolderSubscription {
         // Stopping is a one-way door, including for a watch stopped while Core
         // had not yet confirmed its baseline. Whatever that confirmation turns
@@ -238,9 +265,7 @@ public actor FolderMonitoringCoordinator {
             var baselineResolved = true
             var baselineFailed = false
             for index in value.members.indices {
-                if let baselineID = value.members[index].baselineItemID,
-                   let baseline = entries[baselineID]
-                {
+                if let baseline = Self.baseline(of: value.members[index], in: entries) {
                     if baseline.state == .admitted, let captureID = baseline.admittedCaptureID {
                         if value.state == .waitingForCore
                             || value.members[index].currentSuccessfulCaptureID == nil
@@ -451,6 +476,7 @@ public actor FolderMonitoringCoordinator {
                     rootBindingGeneration: expectedGeneration
                 )
                 let entries: [CaptureQueueEntry]
+                let coalesced = CoalescedItems()
                 do {
                     entries = try await preparation.prepareAndPublish(
                         [
@@ -464,19 +490,28 @@ public actor FolderMonitoringCoordinator {
                                 observedDirtyEpoch: observedDirtyEpoch
                             ),
                         ],
-                        binding: CaptureDeliveryBinding(subscription)
+                        binding: CaptureDeliveryBinding(subscription),
+                        onCoalesced: coalesced.record
                     )
                 } catch CaptureQueueError.capacityExceeded {
                     capacityDeferred = true
                     break
                 }
-                guard let entry = entries.first else { continue }
+                // A capture of exactly these bytes already exists for this
+                // source, published by another of its routes. This membership
+                // binds to it and queues nothing — and is then up to date, not
+                // waiting on work of its own.
+                guard let entry = (entries + coalesced.entries()).first else { continue }
                 member.lastObservedDigest = entry.intent.localIntegrityDigest
                 member.lastObservedByteLength = entry.intent.byteLength
                 member.lastQueuedItemID = entry.intent.itemId
                 Self.replace(member, in: &updated.members)
-                queued += 1
-                unresolvedCount += 1
+                if entries.isEmpty {
+                    unchanged += 1
+                } else {
+                    queued += 1
+                    unresolvedCount += 1
+                }
             } else {
                 if unresolvedCount >= CaptureIntentQueue.maximumUnresolvedItems {
                     capacityDeferred = true
@@ -484,8 +519,16 @@ public actor FolderMonitoringCoordinator {
                 }
                 let memberID = Self.identifier(prefix: "member")
                 let accessRef = Self.identifier(prefix: "access")
-                let documentID = Self.identifier(prefix: "doc")
-                let sourceIdentity = Self.identifier(prefix: "source")
+                // A file this scan has just found may already be a source of
+                // this workspace — under another watched root, or under a
+                // direct route, or under the name it had before it was
+                // renamed. It keeps the identities it has.
+                let identities = try canonicalSources.resolve(
+                    url: candidate.url,
+                    workspaceRef: subscription.workspaceRef
+                )
+                let documentID = identities.linkedDocumentID
+                let sourceIdentity = identities.requestedSourceIdentity
                 let descriptor = try accessStore.adoptRootMember(
                     accessRef: accessRef,
                     linkedDocumentID: documentID,
@@ -526,6 +569,7 @@ public actor FolderMonitoringCoordinator {
                     rootBindingGeneration: expectedGeneration
                 )
                 let entries: [CaptureQueueEntry]
+                let coalesced = CoalescedItems()
                 do {
                     entries = try await preparation.prepareAndPublish(
                         [
@@ -540,19 +584,29 @@ public actor FolderMonitoringCoordinator {
                                 observedDirtyEpoch: 0
                             ),
                         ],
-                        binding: CaptureDeliveryBinding(subscription)
+                        binding: CaptureDeliveryBinding(subscription),
+                        onCoalesced: coalesced.record
                     )
                 } catch CaptureQueueError.capacityExceeded {
                     capacityDeferred = true
                     break
                 }
-                guard let entry = entries.first else { continue }
+                // The same rule as above: a source another route already
+                // captured at exactly these bytes gains a membership here, not
+                // a second capture.
+                guard let entry = (entries + coalesced.entries()).first else { continue }
+                member.baselineItemID = entry.intent.itemId
+                member.lastQueuedItemID = entry.intent.itemId
                 member.lastObservedDigest = entry.intent.localIntegrityDigest
                 member.lastObservedByteLength = entry.intent.byteLength
                 member.lastObservedAt = observedAt
                 updated.members.append(member)
-                queued += 1
-                unresolvedCount += 1
+                if entries.isEmpty {
+                    unchanged += 1
+                } else {
+                    queued += 1
+                    unresolvedCount += 1
+                }
             }
         }
 

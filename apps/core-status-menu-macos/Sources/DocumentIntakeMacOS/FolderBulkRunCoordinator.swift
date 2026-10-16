@@ -19,6 +19,36 @@ public struct FolderBulkRunReport: Equatable, Sendable {
     }
 }
 
+/// Collects what `CapturePreparationCoordinator` coalesced, from the thread its
+/// publication critical section runs on.
+final class CoalescedItems: @unchecked Sendable {
+    private let lock = NSLock()
+    private var byRequestedItem: [String: CaptureQueueEntry] = [:]
+
+    var record: CaptureCoalescenceCompletion {
+        { [self] pairs in
+            lock.withLock {
+                for pair in pairs { byRequestedItem[pair.requestedItemID] = pair.existing }
+            }
+        }
+    }
+
+    /// Requested item id to the id of the capture that serves it.
+    func all() -> [String: String] {
+        lock.withLock { byRequestedItem.mapValues { $0.intent.itemId } }
+    }
+
+    /// The serving captures themselves, each named once.
+    func entries() -> [CaptureQueueEntry] {
+        lock.withLock {
+            Dictionary(
+                byRequestedItem.values.map { ($0.intent.itemId, $0) },
+                uniquingKeysWith: { first, _ in first }
+            ).values.sorted { $0.intent.itemId < $1.intent.itemId }
+        }
+    }
+}
+
 /// Progresses frozen folder plans in ordinary bounded queue batches. The durable run ledger is the
 /// source of truth for unstarted members, so queue capacity never forces truncation or rediscovery.
 public actor FolderBulkRunCoordinator {
@@ -107,8 +137,16 @@ public actor FolderBulkRunCoordinator {
         let items = selected.map { preparationItem(run: run, member: $0) }
         let binding = Self.binding(of: run)
         var published: [CaptureQueueEntry] = []
+        // Members whose canonical source already held an initial capture of
+        // exactly their bytes: this run queued nothing for them, and binds them
+        // to the capture that serves them instead.
+        let coalesced = CoalescedItems()
         do {
-            published = try await preparation.prepareAndPublish(items, binding: binding)
+            published = try await preparation.prepareAndPublish(
+                items,
+                binding: binding,
+                onCoalesced: coalesced.record
+            )
         } catch CaptureQueueError.capacityExceeded {
             return report(run, newlyPublished: [])
         } catch {
@@ -117,7 +155,11 @@ public actor FolderBulkRunCoordinator {
             for item in items {
                 do {
                     published.append(
-                        contentsOf: try await preparation.prepareAndPublish([item], binding: binding)
+                        contentsOf: try await preparation.prepareAndPublish(
+                            [item],
+                            binding: binding,
+                            onCoalesced: coalesced.record
+                        )
                     )
                 } catch CaptureQueueError.capacityExceeded {
                     break
@@ -132,10 +174,17 @@ public actor FolderBulkRunCoordinator {
                 }
             }
         }
-        if !published.isEmpty {
+        let served = coalesced.all()
+        if !published.isEmpty || !served.isEmpty {
             let publishedIDs = Set(published.map { $0.intent.itemId })
             run = (try? runs.update(id: run.runID) { value in
-                for index in value.members.indices where publishedIDs.contains(value.members[index].itemID) {
+                for index in value.members.indices {
+                    let itemID = value.members[index].itemID
+                    if let existing = served[itemID] {
+                        value.members[index].coalescedItemID = existing
+                    } else if !publishedIDs.contains(itemID) {
+                        continue
+                    }
                     value.members[index].state = .published
                     value.members[index].failureCode = nil
                 }
@@ -214,7 +263,8 @@ public actor FolderBulkRunCoordinator {
         let entries = Dictionary(uniqueKeysWithValues: queue.allEntries().map { ($0.intent.itemId, $0) })
         return try runs.update(id: run.runID) { value in
             for index in value.members.indices {
-                guard let entry = entries[value.members[index].itemID] else { continue }
+                let served = value.members[index].coalescedItemID ?? value.members[index].itemID
+                guard let entry = entries[served] else { continue }
                 switch entry.state {
                 case .admitted:
                     value.members[index].state = .admitted

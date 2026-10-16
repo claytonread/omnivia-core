@@ -727,9 +727,12 @@ final class FolderCaptureSubmissionTests: XCTestCase {
     }
 
     /// MON-21: two genuinely overlapping watched roots and a direct route over the
-    /// same file. Each membership is its own, every identity is minted rather than
-    /// derived from the bytes, and nothing is shared with another workspace.
-    func testOverlappingRootsAndADirectRouteKeepIndependentNonContentIdentities() async throws {
+    /// same file. The three routes are each their own — their own grant, membership
+    /// and generation — but they name one canonical source and one linked document,
+    /// and one capture of it serves all three. No identity anywhere is derived from
+    /// the bytes, so byte-identical twins stay apart, and nothing is shared with
+    /// another workspace.
+    func testOverlappingRootsAndADirectRouteShareOneSourceAcrossThreeRoutes() async throws {
         let outer = try temporaryDirectory()
         let inner = outer.appendingPathComponent("inner", isDirectory: true)
         try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
@@ -795,26 +798,90 @@ final class FolderCaptureSubmissionTests: XCTestCase {
             }
         )
 
-        // No identity anywhere is derived from the file's bytes. The two
-        // byte-identical twins get different identities, the overlapping
-        // memberships of one file get different identities again, and none of
-        // them contains the digest of what it names.
+        // The three routes over one file name one source and one document, and
+        // no identity anywhere is derived from the file's bytes: the two
+        // byte-identical twins are a different source again, and nothing
+        // contains the digest of what it names.
         let digest = "sha256:" + SHA256.hash(data: try Data(contentsOf: shared))
             .map { String(format: "%02x", $0) }.joined()
         let identities = subscriptions.flatMap(\.members).map(\.requestedSourceIdentity)
             + [direct.requestedSourceIdentity]
         XCTAssertEqual(identities.count, 5)
-        XCTAssertEqual(Set(identities).count, 5)
+        XCTAssertEqual(
+            Set(memberships.map(\.requestedSourceIdentity) + [direct.requestedSourceIdentity])
+                .count,
+            1
+        )
+        XCTAssertEqual(
+            Set(memberships.map(\.linkedDocumentID) + [direct.linkedDocumentID]).count,
+            1
+        )
         XCTAssertTrue(identities.allSatisfy { !$0.contains(digest.dropFirst(7)) })
         XCTAssertTrue(identities.allSatisfy { $0.hasPrefix("source-") })
         let twins = subscriptions.flatMap(\.members)
             .filter { $0.displayName.hasSuffix("twin.txt") }
         XCTAssertEqual(twins.count, 2)
+        // Both memberships of the twin are the twin's one source — and it is
+        // never the shared file's, though their bytes are the same.
+        XCTAssertEqual(Set(twins.map(\.requestedSourceIdentity)).count, 1)
         XCTAssertTrue(
             Set(twins.map(\.requestedSourceIdentity))
                 .isDisjoint(with: Set(memberships.map(\.requestedSourceIdentity)))
         )
-        // Changing the bytes does not change any recorded identity.
+        // Two files, so two canonical sources in this workspace and no more.
+        XCTAssertEqual(environment.canonicalSources.all().count, 2)
+        XCTAssertEqual(Set(environment.canonicalSources.all().map(\.workspaceRef)), ["workspace-1"])
+
+        // One capture of one proven original, not three of the same bytes: the
+        // first route to read it queued it, and the two that followed coalesced
+        // onto that one capture. It names the shared source, and it is the
+        // direct route's baseline as much as the folder routes'.
+        let initial = environment.queue.allEntries().filter {
+            $0.intent.displayName?.hasSuffix("shared.txt") == true
+        }
+        XCTAssertEqual(initial.count, 1)
+        let serving = try XCTUnwrap(initial.first)
+        XCTAssertEqual(
+            serving.intent.requestedSourceIdentity,
+            direct.requestedSourceIdentity
+        )
+        XCTAssertEqual(direct.baselineItemID, serving.intent.itemId)
+        // Each route still binds to its own membership, so the one that queued
+        // the capture is the only one named in it — the other two are routes to
+        // the same source, not copies of this intent.
+        XCTAssertTrue(
+            memberships.map(\.memberID)
+                .contains(try XCTUnwrap(serving.intent.originalBinding?.memberId))
+        )
+
+        // Admitting that one capture makes every route over the file current at
+        // it: one initial capture answers all three. The twin's own capture is
+        // admitted alongside it, because a watch is active only once every one
+        // of its memberships has a confirmed baseline.
+        let baselineCaptureID = "dcap-" + String(repeating: "a", count: 64)
+        try admit(serving, captureID: baselineCaptureID, queue: environment.queue)
+        for entry in environment.queue.allEntries() where entry.state == .pending {
+            try admit(entry, captureID: "dcap-" + String(repeating: "b", count: 64), queue: environment.queue)
+        }
+        let activated = await environment.folderMonitoring.reconcileAll()
+        XCTAssertEqual(Set(activated.map(\.state)), [.active])
+        XCTAssertEqual(
+            Set(environment.folderSubscriptions.all().flatMap(\.members)
+                .filter { $0.displayName.hasSuffix("shared.txt") }
+                .compactMap(\.currentSuccessfulCaptureID)),
+            [baselineCaptureID]
+        )
+        // Nothing was read a second time for an unchanged file.
+        XCTAssertEqual(
+            environment.queue.allEntries().filter {
+                $0.intent.displayName?.hasSuffix("shared.txt") == true
+            }.count,
+            1
+        )
+
+        // Changed bytes are exactly one new revision of the one canonical
+        // source, claimed against the head it now has — not one revision per
+        // route racing the others for it. No recorded identity moves.
         try Data("rewritten entirely".utf8).write(to: shared)
         _ = await environment.folderMonitoring.reconcileAll()
         XCTAssertEqual(
@@ -822,19 +889,21 @@ final class FolderCaptureSubmissionTests: XCTestCase {
                 .map(\.requestedSourceIdentity)),
             Set(subscriptions.flatMap(\.members).map(\.requestedSourceIdentity))
         )
-
-        // One verified capture per membership and never two for the same one:
-        // each of the three routes over this file published exactly one intent,
-        // under its own operation key, and the two folder memberships stay
-        // distinct members rather than collapsing into each other.
-        let overlapping = environment.queue.allEntries().filter {
-            $0.intent.displayName?.hasSuffix("shared.txt") == true
+        let revisions = environment.queue.allEntries().filter {
+            $0.intent.requestedSourceIdentity == serving.intent.requestedSourceIdentity
+                && $0.intent.itemId != serving.intent.itemId
         }
-        XCTAssertEqual(overlapping.count, 3)
-        XCTAssertEqual(Set(overlapping.map(\.intent.operationKey)).count, 3)
+        XCTAssertEqual(revisions.count, 1)
         XCTAssertEqual(
-            Set(overlapping.compactMap { $0.intent.originalBinding?.memberId }),
-            Set(memberships.map(\.memberID))
+            revisions.first?.intent.basePrecondition,
+            .expected(baselineCaptureID)
+        )
+        // Both memberships are waiting on that single revision.
+        XCTAssertEqual(
+            Set(environment.folderSubscriptions.all().flatMap(\.members)
+                .filter { $0.displayName.hasSuffix("shared.txt") }
+                .compactMap(\.lastQueuedItemID)),
+            [try XCTUnwrap(revisions.first?.intent.itemId)]
         )
 
         // The memberships are held independently: stopping the inner watch

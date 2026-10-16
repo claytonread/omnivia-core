@@ -11,7 +11,10 @@ public struct FileSubscription: Codable, Equatable, Sendable {
     /// The generation of the route this watch reads through. A Locate moves it, once Core has
     /// confirmed the generation the route reserved.
     public var bindingGeneration: UInt64
-    public let baselineItemID: String
+    /// The queued capture this watch's baseline is. Usually the item its own
+    /// submission froze; when the canonical source already held an initial
+    /// capture of exactly those bytes, the capture that already serves it.
+    public var baselineItemID: String
     public let targetRef: String
     public let workspaceRef: String
     public let targetBindingRevision: String

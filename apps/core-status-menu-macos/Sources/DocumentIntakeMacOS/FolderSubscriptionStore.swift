@@ -24,7 +24,11 @@ public struct FolderSubscriptionMember: Codable, Equatable, Sendable {
     public let displayName: String
     public let contentKind: CaptureContentKind
     public let membershipGeneration: UInt64
-    public let baselineItemID: String?
+    /// The queued capture this membership's baseline is. Usually the item its
+    /// own establishment or discovery froze; when the canonical source already
+    /// held an initial capture of exactly those bytes, the capture that already
+    /// serves it. Nil when the watch excluded the initial content.
+    public var baselineItemID: String?
     public var currentSuccessfulCaptureID: String?
     public var lastObservedDigest: String?
     public var lastObservedByteLength: UInt64?

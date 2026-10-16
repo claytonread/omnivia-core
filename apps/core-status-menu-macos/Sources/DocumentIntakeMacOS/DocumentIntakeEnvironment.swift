@@ -32,6 +32,11 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     public let captureActivity: CaptureActivityStore
     public let fileSubscriptions: FileSubscriptionStore
     public let fileMonitoring: FileMonitoringCoordinator
+    /// One logical source and one linked document per workspace per native
+    /// file. Every route that enrols a file — a folder scan, a later folder
+    /// discovery, a direct submission — takes its identities from here, so
+    /// overlapping routes over one original share one source.
+    public let canonicalSources: CanonicalSourceRegistry
     /// The canonical native/Core-owned stores every folder scope excludes, so a
     /// scan can never ingest the companion's own bookmarks, queue or receipts.
     /// Resolved here, once, from the real state root rather than matched by name.
@@ -57,7 +62,11 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
         reconciliationClock: (@Sendable () -> Date)? = nil,
         // Core's own statement about a document's current capture, which is what lets an
         // unchanged file be called checked. Absent, no unchanged file is.
-        currentCapture: (any CurrentCaptureVerifying)? = nil
+        currentCapture: (any CurrentCaptureVerifying)? = nil,
+        // How a file's qualified native identity is read. Production asks macOS for the
+        // volume identity and file resource identifier; a test substitutes one to prove
+        // what happens when macOS will not identify a file at all.
+        nativeIdentity: (@Sendable (URL) -> String?)? = nil
     ) throws {
         self.reader = reader
         let clock = monotonicClock ?? Self.processUptimeMilliseconds()
@@ -100,6 +109,11 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             stateDirectory: stateRoot.appendingPathComponent("file-subscriptions", isDirectory: true),
             gate: gate
         )
+        canonicalSources = try CanonicalSourceRegistry(
+            stateDirectory: stateRoot.appendingPathComponent("canonical-sources", isDirectory: true),
+            gate: gate,
+            identity: nativeIdentity ?? { NativeFileIdentity.key(for: $0) }
+        )
         // The publication boundary rechecks automatic consent against these
         // stores, so they exist before it does.
         preparation = CapturePreparationCoordinator(
@@ -108,6 +122,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             reader: reader,
             fileSubscriptions: fileSubscriptions,
             folderSubscriptions: folderSubscriptions,
+            canonicalSources: canonicalSources,
             gate: gate
         )
         folderMonitoring = FolderMonitoringCoordinator(
@@ -116,6 +131,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             queue: queue,
             subscriptions: folderSubscriptions,
             reader: reader,
+            canonicalSources: canonicalSources,
             controlledStores: controlledStores,
             clock: reconciliationClock ?? { Date() }
         )

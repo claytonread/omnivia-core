@@ -484,7 +484,12 @@ public actor FileMonitoringCoordinator {
             let generation = claim.generation
             let injectedPublicationFailure = failNextSchedulingPublication
             failNextSchedulingPublication = false
-            let entries: [CaptureQueueEntry]
+            var entries: [CaptureQueueEntry]
+            // Another route over this same canonical source may already have
+            // queued exactly this version against exactly this head — an
+            // overlapping watched folder reading the same file. This watch then
+            // binds to that capture rather than racing a second revision of it.
+            let coalesced = CoalescedItems()
             do {
                 entries = try await preparation.prepareAndPublish(
                     [
@@ -497,22 +502,29 @@ public actor FileMonitoringCoordinator {
                             observedDirtyEpoch: observedDirtyEpoch
                         ),
                     ],
-                    binding: CaptureDeliveryBinding(value)
-                ) { published in
-                    // Inside the publication critical section, under the gate the queue commit was
-                    // taken on: the scope's candidate reached an intent, named by the item ID the
-                    // queue published it under. This batch is always exactly one item.
-                    guard let itemID = published.first?.intent.itemId else { return }
-                    if injectedPublicationFailure {
-                        throw AutomaticSchedulingError.stateUnavailable
+                    binding: CaptureDeliveryBinding(value),
+                    onCoalesced: coalesced.record,
+                    onPublished: { published in
+                        // Inside the publication critical section, under the gate the queue
+                        // commit was taken on: the scope's candidate reached an intent, named
+                        // by the item ID the queue published it under — or, when it coalesced,
+                        // by the capture that now serves it, which is just as published and is
+                        // what this scope's obligation is discharged against. This batch is
+                        // always exactly one item.
+                        guard let itemID = (published + coalesced.entries())
+                            .first?.intent.itemId
+                        else { return }
+                        if injectedPublicationFailure {
+                            throw AutomaticSchedulingError.stateUnavailable
+                        }
+                        try scheduling.markPublished(
+                            key,
+                            generation: generation,
+                            intentRef: itemID,
+                            at: clock()
+                        )
                     }
-                    try scheduling.markPublished(
-                        key,
-                        generation: generation,
-                        intentRef: itemID,
-                        at: clock()
-                    )
-                }
+                )
             } catch let failure as CapturePublicationIncomplete {
                 // The queue rename is the commit point, so the candidate did reach an intent and
                 // only this owner's own record of it is missing. Nothing is read, published or
@@ -538,6 +550,10 @@ public actor FileMonitoringCoordinator {
                     )
                 }
             }
+            // A coalesced refresh queued nothing of its own, but it did reach a
+            // capture of exactly this version, so it is recorded against that
+            // one rather than reported as nothing having happened.
+            entries += coalesced.entries()
             guard let entry = entries.first else {
                 return FileMonitoringReport(
                     subscriptionID: value.subscriptionID,

@@ -107,6 +107,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
     /// into every intent this submission queues; delivery requires an exact
     /// match against the transport's binding.
     private let binding: CaptureDeliveryBinding
+    private let canonicalSources: CanonicalSourceRegistry
 
     public init(
         stateRoot: URL,
@@ -124,6 +125,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         preparation = environment.preparation
         subscriptions = environment.fileSubscriptions
         queue = environment.queue
+        canonicalSources = environment.canonicalSources
         snapshotStore = try OwnedSnapshotStore(
             root: stateRoot.appendingPathComponent("owned-snapshots", isDirectory: true)
         )
@@ -142,6 +144,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         preparation = environment.preparation
         subscriptions = environment.fileSubscriptions
         queue = environment.queue
+        canonicalSources = environment.canonicalSources
         self.snapshotStore = snapshotStore
         candidateStore = candidates
         binding = .companion(workspaceRef: workspaceRef, targetRef: targetRef)
@@ -157,6 +160,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         preparation = environment.preparation
         subscriptions = environment.fileSubscriptions
         queue = environment.queue
+        canonicalSources = environment.canonicalSources
         self.snapshotStore = snapshotStore
         candidateStore = candidates
         self.binding = binding
@@ -207,6 +211,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
             let itemID = Self.identifier(prefix: "item")
             let documentID: String
             let descriptor: NativeAccessDescriptor
+            var canonical: CanonicalSourceIdentities?
             switch candidate.source {
             case let .adoptedOriginal(accessRef, generation, linkedDocumentID):
                 documentID = linkedDocumentID
@@ -224,7 +229,18 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                 // as if it were a direct file.
                 throw ManualCaptureSubmissionError.unsupportedType
             case .original, .capturedSnapshot:
-                documentID = Self.identifier(prefix: "doc")
+                // A direct route over an original takes the workspace's
+                // canonical identities for that native file, so a file a
+                // watched folder already enrolled keeps the one source and
+                // linked document it has. A snapshot is not the original — it
+                // is a copy this companion owns — so it is never canonicalised.
+                canonical = candidate.source.isSnapshot
+                    ? nil
+                    : try canonicalSources.resolve(
+                        url: candidate.url,
+                        workspaceRef: binding.workspaceRef
+                    )
+                documentID = canonical?.linkedDocumentID ?? Self.identifier(prefix: "doc")
                 descriptor = try accessStore.adopt(
                     accessRef: Self.identifier(prefix: "access"),
                     linkedDocumentID: documentID,
@@ -243,7 +259,8 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                 surface: candidate.surface,
                 contentKind: kind,
                 payloadRef: Self.identifier(prefix: "payload"),
-                requestedSourceIdentity: Self.identifier(prefix: "source"),
+                requestedSourceIdentity: canonical?.requestedSourceIdentity
+                    ?? Self.identifier(prefix: "source"),
                 operationKey: Self.identifier(prefix: "capture"),
                 intentKind: .newCapture,
                 basePrecondition: .create,
@@ -304,9 +321,25 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         // never added. The baseline facts come from the entry that proves what
         // was frozen, so a watch is never live without them.
         let watches = pendingSubscriptions
-        let entries = try await preparation.prepareAndPublish(items, binding: binding) { published in
-            let byItem = Dictionary(uniqueKeysWithValues: published.map { ($0.intent.itemId, $0) })
+        // A candidate whose canonical source already held an initial capture of
+        // exactly these bytes queued none of its own; its watch's baseline is
+        // that capture, which is the one this source has.
+        let coalesced = CoalescedItems()
+        let entries = try await preparation.prepareAndPublish(
+            items,
+            binding: binding,
+            onCoalesced: coalesced.record
+        ) { published in
+            let served = coalesced.all()
+            let byItem = Dictionary(
+                uniqueKeysWithValues: (published + coalesced.entries())
+                    .map { ($0.intent.itemId, $0) }
+            )
             for var watch in watches {
+                if let existing = served[watch.baselineItemID] {
+                    watch.baselineItemID = existing
+                    watch.lastQueuedItemID = existing
+                }
                 if let entry = byItem[watch.baselineItemID] {
                     watch.lastObservedDigest = entry.intent.localIntegrityDigest
                     watch.lastObservedByteLength = entry.intent.byteLength
@@ -320,7 +353,10 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         // grants, and the snapshots' bytes were just consumed. Only the
         // candidate records are released here; no grant is disconnected.
         releaseRecords(of: candidates)
-        return entries
+        // A coalesced candidate added no capture of its own, but it did add a
+        // route to one. The caller is told which capture serves it rather than
+        // being told nothing happened.
+        return entries + coalesced.entries()
     }
 
     /// Converts a live implicit handoff URL into a companion-owned persistent
