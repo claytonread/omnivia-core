@@ -680,9 +680,14 @@ final class NativeAccessStoreTests: XCTestCase {
             Data("body".utf8)
         )
 
-        // A promotion names what was published. A reference nothing published
-        // names promotes nothing at all.
-        try store.activateGrants(accessRefs: ["access-b"])
+        // A promotion names exactly the grants a committed batch is bound to. A
+        // reference this owner does not hold cannot be the active route that
+        // batch promises, so it is refused rather than passed over — and
+        // refused before anything is written, so the grant named beside it is
+        // not promoted either.
+        XCTAssertThrowsError(
+            try store.activateGrants(accessRefs: ["access-a", "access-b"])
+        ) { XCTAssertEqual($0 as? NativeAccessError, .unknownAccess) }
         XCTAssertEqual(store.descriptors().map(\.lifecycle), [.provisional])
 
         try store.activateGrants(accessRefs: ["access-a"])

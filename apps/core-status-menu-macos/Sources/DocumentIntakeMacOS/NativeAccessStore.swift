@@ -868,20 +868,29 @@ public final class NativeAccessStore: @unchecked Sendable {
     /// before that commit promotes anything, so a batch that fails or is
     /// discarded leaves every grant it adopted provisional.
     ///
-    /// A reference naming no connected direct-file grant is skipped rather than
-    /// refused: this records what was published, and a member's lifecycle is its
-    /// root group's.
+    /// A member reference is passed over, because a member's lifecycle is its
+    /// root group's and there is nothing of its own to promote. Everything else
+    /// must be a connected direct grant: a reference this owner does not hold,
+    /// or holds disconnected, means the active route the committed entry
+    /// promises does not exist, and passing it over would leave published work
+    /// permanently unable to serve Refresh/Open/Reveal with nothing on record
+    /// to say why. It is refused instead, before anything is written, so the
+    /// batch promotes either all of its grants or none of them and its caller
+    /// reports an incomplete publication over the entries that did commit.
     public func activateGrants(accessRefs: [String]) throws {
         guard !accessRefs.isEmpty else { return }
         try gate.withLock {
             var replacement = records
             var promoted = false
             for accessRef in Set(accessRefs) {
-                guard let current = replacement[accessRef],
-                      current.route == .directFile,
-                      current.state == .connected,
-                      current.lifecycle == .provisional
-                else { continue }
+                guard let current = replacement[accessRef] else {
+                    throw NativeAccessError.unknownAccess
+                }
+                guard current.route == .directFile else { continue }
+                guard current.state == .connected else {
+                    throw NativeAccessError.disconnected
+                }
+                guard current.lifecycle == .provisional else { continue }
                 replacement[accessRef] = current.with(lifecycle: .active)
                 promoted = true
             }
