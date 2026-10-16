@@ -59,17 +59,20 @@ public actor FolderBulkRunCoordinator {
     private let queue: CaptureIntentQueue
     private let runs: FolderBulkRunStore
     private let accessStore: NativeAccessStore
+    private let processingProfile: ProcessingProfileBinding
 
     init(
         accessStore: NativeAccessStore,
         preparation: CapturePreparationCoordinator,
         queue: CaptureIntentQueue,
-        runs: FolderBulkRunStore
+        runs: FolderBulkRunStore,
+        processingProfile: ProcessingProfileBinding
     ) {
         self.accessStore = accessStore
         self.preparation = preparation
         self.queue = queue
         self.runs = runs
+        self.processingProfile = processingProfile
     }
 
     @discardableResult
@@ -299,10 +302,7 @@ public actor FolderBulkRunCoordinator {
             operationKey: member.operationKey,
             intentKind: .folderCapture,
             basePrecondition: .expected(nil),
-            processingProfile: ProcessingProfileBinding(
-                profileRef: "document-default",
-                revision: "1"
-            ),
+            processingProfile: processingProfile,
             originalBinding: OriginalBindingIntent(
                 accessRecordId: member.accessRef,
                 bindingGeneration: member.bindingGeneration,

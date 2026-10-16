@@ -108,24 +108,28 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
     /// match against the transport's binding.
     private let binding: CaptureDeliveryBinding
     private let canonicalSources: CanonicalSourceRegistry
+    private let processingProfile: ProcessingProfileBinding
 
     public init(
         stateRoot: URL,
         workspaceRef: String,
         targetRef: String = "local",
         bookmarkCodec: any SecurityScopedBookmarkCoding = SystemSecurityScopedBookmarkCodec(),
-        reader: any CoordinatedOriginalReading = SystemCoordinatedOriginalReader()
+        reader: any CoordinatedOriginalReading = SystemCoordinatedOriginalReader(),
+        processingProfile: ProcessingProfileBinding = .documentDefault
     ) throws {
         let environment = try DocumentIntakeEnvironment(
             stateRoot: stateRoot,
             bookmarkCodec: bookmarkCodec,
-            reader: reader
+            reader: reader,
+            processingProfile: processingProfile
         )
         self.accessStore = environment.accessStore
         preparation = environment.preparation
         subscriptions = environment.fileSubscriptions
         queue = environment.queue
         canonicalSources = environment.canonicalSources
+        self.processingProfile = environment.processingProfile
         snapshotStore = try OwnedSnapshotStore(
             root: stateRoot.appendingPathComponent("owned-snapshots", isDirectory: true)
         )
@@ -145,6 +149,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         subscriptions = environment.fileSubscriptions
         queue = environment.queue
         canonicalSources = environment.canonicalSources
+        processingProfile = environment.processingProfile
         self.snapshotStore = snapshotStore
         candidateStore = candidates
         binding = .companion(workspaceRef: workspaceRef, targetRef: targetRef)
@@ -161,6 +166,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
         subscriptions = environment.fileSubscriptions
         queue = environment.queue
         canonicalSources = environment.canonicalSources
+        processingProfile = environment.processingProfile
         self.snapshotStore = snapshotStore
         candidateStore = candidates
         self.binding = binding
@@ -264,10 +270,7 @@ public final class ManualCaptureSubmission: @unchecked Sendable {
                 operationKey: Self.identifier(prefix: "capture"),
                 intentKind: .newCapture,
                 basePrecondition: .create,
-                processingProfile: ProcessingProfileBinding(
-                    profileRef: "document-default",
-                    revision: "1"
-                ),
+                processingProfile: processingProfile,
                 originalBinding: candidate.source.isSnapshot
                     ? nil
                     : OriginalBindingIntent(

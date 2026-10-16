@@ -18,6 +18,7 @@ public actor FileMonitoringCoordinator {
     private let reader: any CoordinatedOriginalReading
     private let scheduling: AutomaticSchedulingStateMachine
     private let routeElection: AutomaticSourceRouteElection
+    private let processingProfile: ProcessingProfileBinding
     /// The same gate the queue, the subscription stores and the scheduling machine were built with,
     /// so this owner can hold one critical section across all three. See `PublicationGate`.
     private let publicationGate: PublicationGate
@@ -40,6 +41,7 @@ public actor FileMonitoringCoordinator {
         reader: any CoordinatedOriginalReading,
         scheduling: AutomaticSchedulingStateMachine,
         routeElection: AutomaticSourceRouteElection,
+        processingProfile: ProcessingProfileBinding,
         publicationGate: PublicationGate,
         currentCapture: (any CurrentCaptureVerifying)? = nil,
         clock: @escaping @Sendable () -> Int64
@@ -51,6 +53,7 @@ public actor FileMonitoringCoordinator {
         self.reader = reader
         self.scheduling = scheduling
         self.routeElection = routeElection
+        self.processingProfile = processingProfile
         self.publicationGate = publicationGate
         self.currentCapture = currentCapture
         self.clock = clock
@@ -468,10 +471,7 @@ public actor FileMonitoringCoordinator {
                 operationKey: Self.identifier(prefix: "capture"),
                 intentKind: .automaticCapture,
                 basePrecondition: .expected(value.currentSuccessfulCaptureID),
-                processingProfile: ProcessingProfileBinding(
-                    profileRef: "document-default",
-                    revision: "1"
-                ),
+                processingProfile: processingProfile,
                 originalBinding: OriginalBindingIntent(
                     accessRecordId: value.accessRef,
                     bindingGeneration: value.bindingGeneration,

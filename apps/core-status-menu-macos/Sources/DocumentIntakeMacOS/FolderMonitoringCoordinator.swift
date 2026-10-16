@@ -42,6 +42,7 @@ public actor FolderMonitoringCoordinator {
     /// Shared with the individual-file monitor: exactly one active route reads
     /// each canonical source automatically.
     private let routeElection: AutomaticSourceRouteElection
+    private let processingProfile: ProcessingProfileBinding
     /// Core/native-owned stores every scan excludes; see `DocumentIntakeEnvironment`.
     private let controlledStores: [URL]
     /// Wall clock for the observation timestamp and the add/change burst window.
@@ -63,6 +64,7 @@ public actor FolderMonitoringCoordinator {
         reader: any CoordinatedOriginalReading,
         canonicalSources: CanonicalSourceRegistry,
         routeElection: AutomaticSourceRouteElection,
+        processingProfile: ProcessingProfileBinding,
         controlledStores: [URL] = [],
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
@@ -74,6 +76,7 @@ public actor FolderMonitoringCoordinator {
         self.reader = reader
         self.canonicalSources = canonicalSources
         self.routeElection = routeElection
+        self.processingProfile = processingProfile
         self.controlledStores = controlledStores
     }
 
@@ -496,7 +499,8 @@ public actor FolderMonitoringCoordinator {
                     bulkRunID: bulkRunID,
                     manifestRevision: manifestRevision,
                     observedAt: observedAt,
-                    rootBindingGeneration: expectedGeneration
+                    rootBindingGeneration: expectedGeneration,
+                    processingProfile: processingProfile
                 )
                 let entries: [CaptureQueueEntry]
                 let coalesced = CoalescedItems()
@@ -618,7 +622,8 @@ public actor FolderMonitoringCoordinator {
                     bulkRunID: bulkRunID,
                     manifestRevision: manifestRevision,
                     observedAt: observedAt,
-                    rootBindingGeneration: expectedGeneration
+                    rootBindingGeneration: expectedGeneration,
+                    processingProfile: processingProfile
                 )
                 let entries: [CaptureQueueEntry]
                 let coalesced = CoalescedItems()
@@ -804,7 +809,8 @@ public actor FolderMonitoringCoordinator {
         bulkRunID: String,
         manifestRevision: String,
         observedAt: String,
-        rootBindingGeneration: UInt64
+        rootBindingGeneration: UInt64,
+        processingProfile: ProcessingProfileBinding
     ) -> CaptureIntentSeed {
         CaptureIntentSeed(
             submissionId: identifier(prefix: "submission"),
@@ -820,7 +826,7 @@ public actor FolderMonitoringCoordinator {
             operationKey: operationKey,
             intentKind: .folderCapture,
             basePrecondition: base,
-            processingProfile: ProcessingProfileBinding(profileRef: "document-default", revision: "1"),
+            processingProfile: processingProfile,
             originalBinding: OriginalBindingIntent(
                 accessRecordId: member.accessRef,
                 bindingGeneration: member.membershipGeneration,

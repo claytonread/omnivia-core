@@ -38,6 +38,9 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     /// discovery, a direct submission — takes its identities from here, so
     /// overlapping routes over one original share one source.
     public let canonicalSources: CanonicalSourceRegistry
+    /// Approved immutable profile frozen into every capture this environment
+    /// creates. It affects future captures only.
+    public let processingProfile: ProcessingProfileBinding
     /// Derived deterministic winner among every active route over one verified
     /// source. Both file and folder monitors consult the same owner.
     let automaticRouteElection: AutomaticSourceRouteElection
@@ -67,12 +70,14 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
         // Core's own statement about a document's current capture, which is what lets an
         // unchanged file be called checked. Absent, no unchanged file is.
         currentCapture: (any CurrentCaptureVerifying)? = nil,
+        processingProfile: ProcessingProfileBinding = .documentDefault,
         // How a file's qualified native identity is read. Production asks macOS for the
         // volume identity and file resource identifier; a test substitutes one to prove
         // what happens when macOS will not identify a file at all.
         nativeIdentity: (@Sendable (URL) -> String?)? = nil
     ) throws {
         self.reader = reader
+        self.processingProfile = processingProfile
         let clock = monotonicClock ?? Self.processUptimeMilliseconds()
         controlledStores = [stateRoot.resolvingSymlinksInPath().standardizedFileURL]
         // Exactly one gate for the whole process: access relink/disconnect/adopt,
@@ -144,6 +149,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             reader: reader,
             canonicalSources: canonicalSources,
             routeElection: automaticRouteElection,
+            processingProfile: processingProfile,
             controlledStores: controlledStores,
             clock: reconciliationClock ?? { Date() }
         )
@@ -163,7 +169,8 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             accessStore: accessStore,
             preparation: preparation,
             queue: queue,
-            runs: folderBulkRuns
+            runs: folderBulkRuns,
+            processingProfile: processingProfile
         )
         captureActivity = try CaptureActivityStore(
             stateDirectory: stateRoot.appendingPathComponent("capture-activity", isDirectory: true)
@@ -176,6 +183,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             reader: reader,
             scheduling: automaticScheduling,
             routeElection: automaticRouteElection,
+            processingProfile: processingProfile,
             publicationGate: gate,
             currentCapture: currentCapture,
             clock: clock

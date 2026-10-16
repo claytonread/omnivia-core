@@ -73,6 +73,14 @@ public struct ProcessingProfileBinding: Codable, Equatable, Sendable {
         self.profileRef = profileRef
         self.revision = revision
     }
+
+    /// Product default for captures made without a workspace-specific approved
+    /// selection. A new build may advance this for future captures; queued and
+    /// retained captures keep the immutable binding already frozen into them.
+    public static let documentDefault = ProcessingProfileBinding(
+        profileRef: "document-default",
+        revision: "1"
+    )
 }
 
 public struct OriginalBindingIntent: Codable, Equatable, Sendable {
