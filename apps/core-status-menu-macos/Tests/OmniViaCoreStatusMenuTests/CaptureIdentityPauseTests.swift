@@ -1,4 +1,5 @@
 import CryptoKit
+@testable import CoreCaptureMacOS
 @testable import DocumentIntakeMacOS
 import Foundation
 import XCTest
@@ -79,6 +80,26 @@ final class CaptureIdentityPauseTests: XCTestCase {
                 clientContextRef: binding.callerContextBinding.clientContextRef,
                 principalRef: "other-user",
                 contextRevision: binding.callerContextBinding.contextRevision
+            )
+        )
+    }
+
+    /// The same target and principal at a different generation of the caller
+    /// context or of the target binding, which is what a re-issued credential or
+    /// a re-bound target profile looks like to a frozen intent.
+    private static func changedGeneration(
+        of binding: CaptureDeliveryBinding,
+        context: String? = nil,
+        target: String? = nil
+    ) -> CaptureDeliveryBinding {
+        CaptureDeliveryBinding(
+            targetRef: binding.targetRef,
+            workspaceRef: binding.workspaceRef,
+            targetBindingRevision: target ?? binding.targetBindingRevision,
+            callerContextBinding: CallerContextBinding(
+                clientContextRef: binding.callerContextBinding.clientContextRef,
+                principalRef: binding.callerContextBinding.principalRef,
+                contextRevision: context ?? binding.callerContextBinding.contextRevision
             )
         )
     }
@@ -213,6 +234,34 @@ final class CaptureIdentityPauseTests: XCTestCase {
         XCTAssertTrue(pause.isEmpty)
         XCTAssertEqual(outcomes.map(\.state), [.admitted])
         XCTAssertEqual(restoredTransport.sentOperationKeys.count, 1)
+    }
+
+    /// A new generation of the caller context, or of the target binding, is a
+    /// changed identity as much as a new principal is: the intent froze the
+    /// generation it was authorised under and neither is sent under the next.
+    func testACallerContextOrTargetBindingGenerationChangePausesTheFrozenIntent() async throws {
+        for changed in [
+            Self.changedGeneration(of: Self.identity("profile-a"), context: "2"),
+            Self.changedGeneration(of: Self.identity("profile-a"), target: "2"),
+        ] {
+            let (lane, submitted) = try await lane()
+            let itemID = try XCTUnwrap(submitted.first?.intent.itemId)
+            XCTAssertNotEqual(changed, lane.authorised)
+            let (coordinator, transport) = delivery(lane, authenticatedAs: changed)
+
+            let pause = try await coordinator.pauseWorkUnderChangedIdentity()
+            let outcomes = await coordinator.deliverPending()
+
+            XCTAssertEqual(pause.pausedItemIDs, [itemID])
+            XCTAssertEqual(pause.pausedFileSubscriptionIDs.count, 1)
+            XCTAssertTrue(outcomes.isEmpty)
+            XCTAssertTrue(transport.sentOperationKeys.isEmpty)
+            let entry = try XCTUnwrap(lane.environment.queue.allEntries().first)
+            XCTAssertEqual(entry.state, .pending)
+            XCTAssertTrue(entry.attempts.isEmpty)
+            XCTAssertEqual(entry.intent.callerContextBinding, lane.authorised.callerContextBinding)
+            XCTAssertEqual(entry.intent.targetBindingRevision, lane.authorised.targetBindingRevision)
+        }
     }
 
     /// The recovery variant. An attempt whose outcome is unknown is a recovery
@@ -373,6 +422,35 @@ final class CaptureIdentityPauseTests: XCTestCase {
         )
     }
 
+    /// The demand `runReconciliation` hands the executor was armed before the
+    /// identity changed. Startup, the periodic tick, wake and remount all reach
+    /// the executor with demands of that kind, so a demand armed under the
+    /// authorised identity is not permission to read once it has changed: after
+    /// the pass the executor skips it as `notActive` and reads nothing.
+    func testADemandArmedBeforeTheIdentityChangedIsNotReadAfterIt() async throws {
+        let (lane, _) = try await lane()
+        let environment = lane.environment
+        try environment.folderSubscriptions.register(
+            Self.folderSubscription("folder-1", binding: lane.authorised)
+        )
+        let armed = try environment.folderReconciliation.request(
+            subscriptionIDs: ["folder-1"],
+            trigger: .wake
+        )
+        XCTAssertFalse(armed.isEmpty, "the demand was armed while the identity held")
+        let (coordinator, _) = delivery(
+            lane,
+            authenticatedAs: Self.changedPrincipal(of: lane.authorised)
+        )
+
+        _ = try await coordinator.pauseWorkUnderChangedIdentity()
+        let runs = await environment.folderReconciliationExecutor.run(armed)
+
+        XCTAssertEqual(Set(runs.map(\.skipped)), [.notActive])
+        XCTAssertTrue(runs.allSatisfy { $0.result == nil }, "nothing was read")
+        XCTAssertEqual(environment.folderSubscriptions.all().map(\.state), [.paused])
+    }
+
     /// A registration still waiting for Core pauses as well: it can reach active
     /// work without a new reviewed consent, and that acknowledgement can never
     /// arrive for the identity it froze.
@@ -469,6 +547,82 @@ final class CaptureIdentityPauseTests: XCTestCase {
             environment.queue.allEntries().first { $0.intent.itemId == submitted[0].intent.itemId }
         )
         XCTAssertEqual(entry.state, .pending)
+    }
+
+    /// The window is the one route a person can read a watched source by hand:
+    /// Resume re-arms a paused watch and Check now reconciles it. Neither is a
+    /// pass the companion runs on a timer, so neither is covered by one having
+    /// paused the watch earlier: under a changed identity both are refused and
+    /// read nothing, and under the authorised identity both are allowed.
+    @MainActor
+    func testResumeAndCheckNowReadNothingUnderAChangedIdentity() async throws {
+        let (lane, submitted) = try await lane()
+        let environment = lane.environment
+        try Self.admit(try XCTUnwrap(submitted.first), queue: environment.queue)
+        _ = await environment.fileMonitoring.reconcileAll()
+        let fileID = try XCTUnwrap(environment.fileSubscriptions.all().first?.subscriptionID)
+        try environment.folderSubscriptions.register(
+            Self.folderSubscription("folder-1", binding: lane.authorised)
+        )
+        func file() throws -> FilesAndFoldersItem {
+            .file(try XCTUnwrap(environment.fileSubscriptions.all().first { $0.subscriptionID == fileID }))
+        }
+        func folder() throws -> FilesAndFoldersItem {
+            .folder(try XCTUnwrap(environment.folderSubscriptions.all().first { $0.subscriptionID == "folder-1" }))
+        }
+        let readsBefore = lane.reader.count
+
+        let (changed, _) = delivery(lane, authenticatedAs: Self.changedPrincipal(of: lane.authorised))
+        let refusing = window(environment, changed)
+        // Check now on watches the pass has not yet seen change: refused, and
+        // the pass it asks for leaves both paused.
+        await refusing.applyCheck(try file())
+        await refusing.applyCheck(try folder())
+        XCTAssertEqual(environment.fileSubscriptions.all().map(\.state), [.paused])
+        XCTAssertEqual(environment.folderSubscriptions.all().map(\.state), [.paused])
+        // Resume on a paused watch frozen against another account: refused.
+        await refusing.applyPauseResume(try file())
+        await refusing.applyPauseResume(try folder())
+        XCTAssertEqual(environment.fileSubscriptions.all().map(\.state), [.paused])
+        XCTAssertEqual(environment.folderSubscriptions.all().map(\.state), [.paused])
+        XCTAssertEqual(lane.reader.count, readsBefore, "no original was read")
+
+        // A window with no identity authority to ask refuses as well.
+        let unauthenticated = window(environment, nil)
+        await unauthenticated.applyPauseResume(try file())
+        XCTAssertEqual(environment.fileSubscriptions.all().map(\.state), [.paused])
+
+        // The authorised identity resumes both, and Check now is not refused.
+        let (authorised, _) = delivery(lane, authenticatedAs: lane.authorised)
+        let allowing = window(environment, authorised)
+        await allowing.applyPauseResume(try file())
+        await allowing.applyPauseResume(try folder())
+        XCTAssertEqual(environment.fileSubscriptions.all().map(\.state), [.active])
+        XCTAssertEqual(environment.folderSubscriptions.all().map(\.state), [.active])
+        await allowing.applyCheck(try file())
+        XCTAssertEqual(environment.fileSubscriptions.all().map(\.state), [.active])
+        XCTAssertEqual(environment.folderSubscriptions.all().map(\.state), [.active])
+    }
+
+    @MainActor
+    private func window(
+        _ environment: DocumentIntakeEnvironment,
+        _ delivery: CaptureDeliveryCoordinator?
+    ) -> FolderManagementWindowController {
+        FolderManagementWindowController(
+            workspaceName: "workspace-1",
+            folderStore: environment.folderSubscriptions,
+            folderMonitoring: environment.folderMonitoring,
+            fileStore: environment.fileSubscriptions,
+            fileMonitoring: environment.fileMonitoring,
+            bulkStore: environment.folderBulkRuns,
+            bulkCoordinator: environment.folderBulkCoordinator,
+            activityStore: environment.captureActivity,
+            observeActivity: { try environment.recordCaptureActivity() },
+            rootGroups: { environment.rootAccessGroups() },
+            documentRoutes: { environment.documentAccessRoutes() },
+            identityAuthorises: delivery.map { delivery in { await delivery.confirmsIdentity(of: $0) } }
+        )
     }
 
     // MARK: - Fixtures

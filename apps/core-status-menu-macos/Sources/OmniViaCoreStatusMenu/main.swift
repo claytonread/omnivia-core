@@ -249,6 +249,23 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 },
                 locateOriginal: { [weak self] in
                     self?.capturePanelController?.openOriginalChooser()
+                },
+                // Resume and Check now read a watched source, so each asks the
+                // delivery coordinator whether the signed-in identity is the one
+                // the watch froze; without a coordinator the answer is no.
+                identityAuthorises: { [weak self] frozen in
+                    guard let delivery = self?.captureDeliveryCoordinator else { return false }
+                    return await delivery.confirmsIdentity(of: frozen)
+                },
+                // The person's own "access or update is resolved". Releasing
+                // only returns the held intents to pending; the delivery pass
+                // that follows is the one that checks the target again.
+                releaseHeld: { [weak self] pauses in
+                    guard let delivery = self?.captureDeliveryCoordinator else { return }
+                    for pause in pauses.sorted(by: { $0.rawValue < $1.rawValue }) {
+                        _ = try? await delivery.releaseHeld(pause)
+                    }
+                    self?.deliverPendingCaptures()
                 }
             )
             let companionBinding = CaptureDeliveryBinding.installedCompanion(

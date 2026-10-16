@@ -363,6 +363,16 @@ public actor CaptureDeliveryCoordinator {
         }
     }
 
+    /// Whether the identity this companion is authenticated for is exactly
+    /// `frozen`, asked after the pass above has run so that a watch frozen
+    /// against anything else is already paused. It is the answer a person's
+    /// Resume or Check now needs before a watched source is read: `false` when
+    /// the identity differs, and also when a pause owed could not be persisted.
+    public func confirmsIdentity(of frozen: CaptureDeliveryBinding) -> Bool {
+        guard (try? pauseWorkUnderChangedIdentity()) != nil else { return false }
+        return transport.deliveryBinding == frozen
+    }
+
     /// Automatic work is armed from `active`, and both `waiting_for_core` and
     /// `needs_access` can still reach it without a new reviewed consent, so all
     /// three pause. This is the transition `FileMonitoringCoordinator.pause` and

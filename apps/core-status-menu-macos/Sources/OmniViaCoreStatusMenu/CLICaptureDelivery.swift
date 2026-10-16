@@ -76,6 +76,12 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
 
     /// `--require-running` makes the CLI attach only. Without it the capture
     /// connects through `connect_managed_local`, which starts a stopped service.
+    ///
+    /// `--principal` claims the principal the intent froze, so the service
+    /// compares it with the one it actually authenticates and refuses a
+    /// difference (`authorization_denied`). Without a claim the service answers
+    /// under its own principal, which would send an intent frozen for one
+    /// account under whichever account is signed in now.
     func captureArguments(payloadURL: URL, operationKey: String) -> [String] {
         [
             "--require-running",
@@ -86,6 +92,7 @@ struct CLICaptureDelivery: CaptureDeliveryTransport {
             "--input-stdin",
             "--payload-file", payloadURL.path,
             "--idempotency-key", operationKey,
+            "--principal", deliveryBinding.callerContextBinding.principalRef,
             "--json",
         ]
     }

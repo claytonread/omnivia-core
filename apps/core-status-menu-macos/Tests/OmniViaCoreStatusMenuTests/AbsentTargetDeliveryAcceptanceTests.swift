@@ -505,6 +505,327 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
         XCTAssertEqual(entry.attempts.map(\.disposition), [.knownNoEffect])
     }
 
+    // MARK: - AT-12 / AT-13 · a revoked or incompatible target, against a real Core
+
+    /// A revoked authorisation as the real service reports it. The companion
+    /// claims the principal the intent froze; the real service authenticates a
+    /// different one and refuses (`authorization_denied`), which the real CLI
+    /// prints as the service's own answer. Nothing here is a classification
+    /// handed in. The original intent is held, never failed, resent or moved to
+    /// the principal that is authenticated now.
+    func testARevokedPrincipalIsRefusedByTheRealServiceAndHoldsTheOriginalIntent() async throws {
+        let root = try temporaryDirectory()
+        let cli = try realCLI(root)
+        let core = try installStoppedCore(cli)
+        XCTAssertEqual(try core.run(cli, "start").code, "start_started")
+        let captures = try countingCLI(cli, in: root)
+        let authorised = CaptureDeliveryBinding.installedCompanion(
+            installationState: core.state,
+            workspaceRef: core.workspaceID
+        )
+        let former = Self.principal("former-user", of: authorised)
+        let payload = Data("hello".utf8)
+
+        // The control: the same real path, the principal the service
+        // authenticates, is admitted. The refusal below is the principal alone.
+        let control = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("control", isDirectory: true)
+        )
+        try control.queue.enqueue(intent: try makeIntent(payload: payload, binding: authorised), payload: payload)
+        let admitted = await CaptureDeliveryCoordinator(
+            queue: control.queue,
+            transport: CLICaptureDelivery(
+                executable: cli, installationState: core.state, deliveryBinding: authorised
+            )
+        ).deliverPending()
+        XCTAssertEqual(admitted.map(\.state), [.admitted], "failure: \(admitted.first?.failureCode ?? "none")")
+
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true)
+        )
+        let intent = try makeIntent(payload: payload, binding: former)
+        try environment.queue.enqueue(intent: intent, payload: payload)
+        let delivery = CaptureDeliveryCoordinator(
+            queue: environment.queue,
+            transport: CLICaptureDelivery(
+                executable: captures.launcher, installationState: core.state, deliveryBinding: former
+            )
+        )
+
+        let outcomes = await delivery.deliverPending()
+
+        XCTAssertEqual(outcomes.map(\.state), [.pending])
+        XCTAssertEqual(outcomes.first?.pause, .needsAccess)
+        XCTAssertNil(outcomes.first?.failureCode)
+        let launches = captures.launches()
+        XCTAssertEqual(launches.count, 1)
+        XCTAssertTrue(launches[0].contains("--principal former-user"), launches[0])
+        let held = try XCTUnwrap(environment.queue.allEntries().first)
+        XCTAssertEqual(held.intent, intent, "the frozen intent is never rewritten")
+        XCTAssertEqual(held.attempts.map(\.disposition), [.knownNoEffect])
+        XCTAssertEqual(try Data(contentsOf: try environment.queue.payloadURL(for: intent.itemId)), payload)
+
+        // Held means no later pass sends it, in this process or after a restart.
+        let restarted = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true)
+        )
+        let idle = await CaptureDeliveryCoordinator(
+            queue: restarted.queue,
+            transport: CLICaptureDelivery(
+                executable: captures.launcher, installationState: core.state, deliveryBinding: former
+            )
+        ).deliverPending()
+        XCTAssertEqual(idle, [])
+        XCTAssertEqual(captures.launches().count, 1)
+        XCTAssertEqual(restarted.queue.allEntries().first?.pause, .needsAccess)
+        let records = try restarted.recordCaptureActivity()
+        let group = try XCTUnwrap(FilesAndFoldersModel.activityGroups(records: records, runs: []).first)
+        XCTAssertEqual(FilesAndFoldersItem.activity(group).statusLabel, "Needs access")
+
+        // The person says it is resolved, but the service still authenticates
+        // someone else: the item is released, tried once, and held again. It is
+        // never sent under the principal that is authenticated now.
+        _ = try await delivery.releaseHeld(.needsAccess)
+        let again = await delivery.deliverPending()
+        XCTAssertEqual(again.map(\.state), [.pending])
+        XCTAssertEqual(again.first?.pause, .needsAccess)
+        XCTAssertEqual(again.first?.attempts.map(\.disposition), [.knownNoEffect, .knownNoEffect])
+        XCTAssertEqual(again.first?.intent, intent)
+        XCTAssertEqual(captures.launches().count, 2)
+    }
+
+    /// AT-13 during recovery, against the real service. An attempt whose outcome
+    /// is unknown is replayed only under its own key, and the replay claims the
+    /// principal the intent froze, so a replay under a changed account is
+    /// refused by the service rather than admitted: the entry stays unknown with
+    /// the same attempt and key, and nothing is retargeted.
+    func testARecoveryReplayUnderAChangedPrincipalIsRefusedAndStaysUnknown() async throws {
+        let root = try temporaryDirectory()
+        let cli = try realCLI(root)
+        let core = try installStoppedCore(cli)
+        XCTAssertEqual(try core.run(cli, "start").code, "start_started")
+        let captures = try countingCLI(cli, in: root)
+        let authorised = CaptureDeliveryBinding.installedCompanion(
+            installationState: core.state,
+            workspaceRef: core.workspaceID
+        )
+        let former = Self.principal("former-user", of: authorised)
+        let payload = Data("hello".utf8)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true)
+        )
+        let intent = try makeIntent(payload: payload, binding: former)
+        try environment.queue.enqueue(intent: intent, payload: payload)
+        let real = CLICaptureDelivery(
+            executable: captures.launcher, installationState: core.state, deliveryBinding: former
+        )
+        // The first attempt is lost without an answer, so the entry is a real
+        // recovery obligation with the request digest the coordinator froze.
+        let lost = FirstAnswerLostTransport(real)
+        let uncertain = await CaptureDeliveryCoordinator(queue: environment.queue, transport: lost)
+            .deliverPending()
+        XCTAssertEqual(uncertain.map(\.state), [.unknownOutcome])
+        XCTAssertEqual(captures.launches().count, 0)
+        let before = try XCTUnwrap(environment.queue.allEntries().first)
+
+        let outcomes = await CaptureDeliveryCoordinator(queue: environment.queue, transport: lost)
+            .deliverPending()
+
+        XCTAssertEqual(outcomes, [])
+        XCTAssertEqual(captures.launches().count, 1, "the replay really reached the service")
+        let after = try XCTUnwrap(environment.queue.allEntries().first)
+        XCTAssertEqual(after.state, .unknownOutcome)
+        XCTAssertNil(after.admittedCaptureID)
+        XCTAssertEqual(after.attempts, before.attempts, "no attempt, key or digest was rewritten")
+        XCTAssertEqual(after.intent, intent)
+        XCTAssertTrue(captures.launches().allSatisfy { $0.contains("--principal former-user") })
+    }
+
+    /// A version disagreement as the real service publishes it: a service that
+    /// now speaks only a newer API than this client. The real `service status`
+    /// reports it incompatible before any capture is launched; the real capture
+    /// command, run directly, refuses with the CLI's fixed sentence and exit 4;
+    /// and the item is held as Update required. Restoring the compatible
+    /// descriptor changes nothing until the person chooses Try again, which is
+    /// the production route that releases the hold and lets the next pass send.
+    func testARealVersionDisagreementHoldsTheItemUntilTheWindowsTryAgain() async throws {
+        let root = try temporaryDirectory()
+        let cli = try realCLI(root)
+        let core = try installStoppedCore(cli)
+        XCTAssertEqual(try core.run(cli, "start").code, "start_started")
+        let captures = try countingCLI(cli, in: root)
+        let binding = CaptureDeliveryBinding.installedCompanion(
+            installationState: core.state,
+            workspaceRef: core.workspaceID
+        )
+        let descriptor = try core.descriptorURL()
+        let compatible = try Data(contentsOf: descriptor)
+        var newer = try XCTUnwrap(JSONSerialization.jsonObject(with: compatible) as? [String: Any])
+        newer["supported_api_versions"] = ["minimum": "2.0", "maximum": "2.0"]
+        let incompatible = try JSONSerialization.data(withJSONObject: newer, options: [.sortedKeys])
+        func publish(_ data: Data) throws {
+            try data.write(to: descriptor, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: descriptor.path)
+        }
+        // Teardown stops the service, which it cannot do under a descriptor for a
+        // newer API, so a failed assertion below must not leave one behind.
+        addTeardownBlock { try? publish(compatible) }
+        try publish(incompatible)
+        XCTAssertEqual(try core.status(cli).code, "status_incompatible")
+
+        // The CLI's own refusal, from a real process.
+        let direct = try Self.runCapture(
+            CLICaptureDelivery(executable: cli, installationState: core.state, deliveryBinding: binding),
+            input: Data(#"{"media_type":"text/plain"}"#.utf8),
+            payload: root.appendingPathComponent("direct.txt"),
+            key: "direct-1"
+        )
+        XCTAssertEqual(direct.status, 4)
+        XCTAssertEqual(direct.outcome, .held(.updateRequired))
+
+        let payload = Data("hello".utf8)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: root.appendingPathComponent("state", isDirectory: true)
+        )
+        let intent = try makeIntent(payload: payload, binding: binding)
+        try environment.queue.enqueue(intent: intent, payload: payload)
+        let delivery = CaptureDeliveryCoordinator(
+            queue: environment.queue,
+            transport: CLICaptureDelivery(
+                executable: captures.launcher, installationState: core.state, deliveryBinding: binding
+            ),
+            fileSubscriptions: environment.fileSubscriptions,
+            folderSubscriptions: environment.folderSubscriptions,
+            gate: environment.publicationGate
+        )
+        let outcomes = await delivery.deliverPending()
+
+        XCTAssertEqual(outcomes.map(\.state), [.pending])
+        XCTAssertEqual(outcomes.first?.pause, .updateRequired)
+        XCTAssertEqual(captures.launches().count, 0, "the status gate held it before any capture ran")
+        let window = try managementWindow(environment, delivery: delivery)
+        window.reload()
+        let item = try XCTUnwrap(window.model.items(segment: .recentAdditions).first)
+        XCTAssertEqual(item.statusLabel, "Update required")
+        XCTAssertTrue(FilesAndFoldersModel.actions(for: item).tryAgainEnabled)
+
+        // The update is installed. Nothing sends by itself.
+        try publish(compatible)
+        XCTAssertEqual(try core.status(cli).code, "status_running")
+        let idle = await delivery.deliverPending()
+        XCTAssertEqual(idle, [])
+        XCTAssertEqual(captures.launches().count, 0)
+
+        // The person's own Try again is the production release route.
+        let released = await window.applyTryAgain(item)
+        XCTAssertTrue(released)
+        let sent = try XCTUnwrap(environment.queue.allEntries().first)
+        XCTAssertEqual(sent.state, .admitted, "failure: \(sent.failureCode ?? "none")")
+        XCTAssertNil(sent.pause)
+        XCTAssertEqual(sent.intent, intent)
+        XCTAssertEqual(sent.attempts.map(\.disposition), [.knownNoEffect, .admitted])
+        XCTAssertEqual(captures.launches().count, 1)
+        XCTAssertEqual(
+            sent.attempts.last?.operationKey,
+            CaptureAttemptRecord.childOperationKey(parent: intent.operationKey, generation: 2)
+        )
+    }
+
+    /// Try again is offered for what is held and for nothing else, and choosing
+    /// it while the refusal still stands holds the same item again.
+    func testTryAgainReleasesOnlyHeldWorkAndAStandingRefusalHoldsItAgain() async throws {
+        let root = try temporaryDirectory()
+        let environment = try DocumentIntakeEnvironment(stateRoot: root)
+        let payload = Data("hello".utf8)
+        let binding = CaptureDeliveryBinding.companion(workspaceRef: "workspace-1")
+        let intent = try makeIntent(payload: payload, binding: binding)
+        try environment.queue.enqueue(intent: intent, payload: payload)
+        let transport = SwitchableTransport(.held(.needsAccess), binding: binding)
+        let delivery = CaptureDeliveryCoordinator(queue: environment.queue, transport: transport)
+        let window = try managementWindow(environment, delivery: delivery)
+        window.reload()
+        let queued = try XCTUnwrap(window.model.items(segment: .recentAdditions).first)
+        XCTAssertFalse(FilesAndFoldersModel.actions(for: queued).tryAgainEnabled, "nothing is held yet")
+        let notHeld = await window.applyTryAgain(queued)
+        XCTAssertFalse(notHeld)
+        XCTAssertEqual(transport.sentCount, 0)
+
+        _ = await delivery.deliverPending()
+        window.reload()
+        let held = try XCTUnwrap(window.model.items(segment: .recentAdditions).first)
+        XCTAssertEqual(held.statusLabel, "Needs access")
+        XCTAssertTrue(FilesAndFoldersModel.actions(for: held).tryAgainEnabled)
+        let detail = window.model.detail(for: held).map(\.value).joined(separator: "\n")
+        XCTAssertTrue(detail.contains("Access to this workspace is required"), detail)
+
+        let stillRefused = await window.applyTryAgain(held)
+        XCTAssertTrue(stillRefused)
+        XCTAssertEqual(transport.sentCount, 2)
+        let again = try XCTUnwrap(environment.queue.allEntries().first)
+        XCTAssertEqual(again.pause, .needsAccess)
+        XCTAssertEqual(again.attempts.map(\.disposition), [.knownNoEffect, .knownNoEffect])
+
+        transport.outcome = .admitted(captureID: "dcap-" + String(repeating: "a", count: 64))
+        window.reload()
+        let retry = try XCTUnwrap(window.model.items(segment: .recentAdditions).first)
+        let released = await window.applyTryAgain(retry)
+        XCTAssertTrue(released)
+        XCTAssertEqual(environment.queue.allEntries().first?.state, .admitted)
+        XCTAssertEqual(transport.sentCount, 3)
+    }
+
+    /// AT-13 for a cached Share, end to end on the production path: a request
+    /// the Share extension published while no companion ran is adopted into
+    /// review, added under the account it was added under, and queued with that
+    /// account frozen. The account then changes, both in this process and after
+    /// a restart. The frozen intent pauses with its bytes and key; no account
+    /// that is signed in later is handed it.
+    func testACachedShareAddedUnderOneAccountIsNeverSentUnderAnother() async throws {
+        let root = try temporaryDirectory()
+        try publishShare(try shareInbox(root), [("shared.txt", "shared")])
+        let former = CaptureDeliveryBinding.companion(workspaceRef: "workspace-1")
+        let companion = try launch(root: root, withPanel: true, binding: former)
+        XCTAssertEqual(companion.shareAdopter.reconcile().adopted.count, 1)
+        await companion.panel?.beginSubmit()?.value
+        let queued = try XCTUnwrap(companion.environment.queue.allEntries().first)
+        XCTAssertEqual(queued.intent.surface, .share)
+        XCTAssertEqual(queued.intent.callerContextBinding, former.callerContextBinding)
+
+        let current = Self.principal("current-user", of: former)
+        let signedIn = PresentTargetTransport(
+            .admitted(captureID: "dcap-" + String(repeating: "a", count: 64)),
+            binding: current
+        )
+        let delivery = CaptureDeliveryCoordinator(
+            queue: companion.environment.queue,
+            transport: signedIn,
+            fileSubscriptions: companion.environment.fileSubscriptions,
+            folderSubscriptions: companion.environment.folderSubscriptions,
+            gate: companion.environment.publicationGate
+        )
+        let pause = try await delivery.pauseWorkUnderChangedIdentity()
+        XCTAssertEqual(pause.pausedItemIDs, [queued.intent.itemId])
+        let outcomes = await delivery.deliverPending()
+        XCTAssertEqual(outcomes, [])
+        XCTAssertEqual(signedIn.sentCount, 0)
+
+        // The companion restarts under the new account: same item, same frozen
+        // intent, same bytes, still paused and still sent to nobody.
+        let restarted = try launch(root: root, binding: current)
+        let waiting = try XCTUnwrap(restarted.environment.queue.allEntries().first)
+        XCTAssertEqual(waiting.intent, queued.intent)
+        XCTAssertEqual(waiting.state, .pending)
+        XCTAssertTrue(waiting.attempts.isEmpty)
+        XCTAssertEqual(
+            try Data(contentsOf: try restarted.environment.queue.payloadURL(for: waiting.intent.itemId)),
+            Data("shared".utf8)
+        )
+        let again = await CaptureDeliveryCoordinator(queue: restarted.environment.queue, transport: signedIn)
+            .deliverPending()
+        XCTAssertEqual(again, [])
+        XCTAssertEqual(signedIn.sentCount, 0)
+    }
+
     // MARK: - Helpers
 
     private func repositoryRoot(_ file: StaticString = #filePath) -> URL {
@@ -565,6 +886,11 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
         }
 
         func status(_ cli: URL) throws -> (status: Int32, code: String) { try run(cli, "status") }
+
+        /// The descriptor this installation's service published.
+        func descriptorURL() throws -> URL {
+            state.appendingPathComponent("runtime/\(workspaceID)/service.json")
+        }
     }
 
     private func installStoppedCore(_ cli: URL) throws -> InstalledCore {
@@ -601,6 +927,95 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
         XCTAssertEqual(try core.run(cli, "stop").code, "stop_stopped")
         XCTAssertEqual(try core.status(cli).code, "status_not_running")
         return core
+    }
+
+    private static func principal(_ ref: String, of binding: CaptureDeliveryBinding) -> CaptureDeliveryBinding {
+        CaptureDeliveryBinding(
+            targetRef: binding.targetRef,
+            workspaceRef: binding.workspaceRef,
+            targetBindingRevision: binding.targetBindingRevision,
+            callerContextBinding: CallerContextBinding(
+                clientContextRef: binding.callerContextBinding.clientContextRef,
+                principalRef: ref,
+                contextRevision: binding.callerContextBinding.contextRevision
+            )
+        )
+    }
+
+    /// The real CLI behind a launcher that records every capture it is asked to
+    /// run, so a test can say how many times anything was sent at all.
+    private func countingCLI(_ cli: URL, in root: URL) throws -> (launcher: URL, launches: () -> [String]) {
+        let log = root.appendingPathComponent("captures.log")
+        let launcher = root.appendingPathComponent("omnivia-counting")
+        try """
+        #!/bin/sh
+        case " $* " in
+          *" capture "*) echo "$*" >> '\(log.path)' ;;
+        esac
+        exec '\(cli.path)' "$@"
+        """.write(to: launcher, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
+        return (launcher, {
+            ((try? String(contentsOf: log, encoding: .utf8)) ?? "")
+                .split(separator: "\n").map(String.init)
+        })
+    }
+
+    /// One production capture command run as a real process, answered by the
+    /// production classifier.
+    private static func runCapture(
+        _ transport: CLICaptureDelivery,
+        input: Data,
+        payload: URL,
+        key: String
+    ) throws -> (status: Int32, outcome: CaptureDeliveryOutcome) {
+        try Data("hello".utf8).write(to: payload)
+        let process = Process()
+        let inputPipe = Pipe(), outputPipe = Pipe(), errorPipe = Pipe()
+        process.executableURL = transport.executable
+        process.arguments = transport.captureArguments(payloadURL: payload, operationKey: key)
+        process.standardInput = inputPipe
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        try process.run()
+        try inputPipe.fileHandleForWriting.write(contentsOf: input)
+        try inputPipe.fileHandleForWriting.close()
+        let output = try outputPipe.fileHandleForReading.readToEnd() ?? Data()
+        let diagnostic = try errorPipe.fileHandleForReading.readToEnd() ?? Data()
+        process.waitUntilExit()
+        return (
+            process.terminationStatus,
+            CLICaptureDelivery.outcome(status: process.terminationStatus, output: output, diagnostic: diagnostic)
+        )
+    }
+
+    /// The window as the companion builds it: Resume and Check now ask the
+    /// delivery coordinator about the identity, and Try again releases the holds
+    /// and runs the next delivery pass.
+    private func managementWindow(
+        _ environment: DocumentIntakeEnvironment,
+        delivery: CaptureDeliveryCoordinator
+    ) throws -> FolderManagementWindowController {
+        FolderManagementWindowController(
+            workspaceName: "workspace-1",
+            folderStore: environment.folderSubscriptions,
+            folderMonitoring: environment.folderMonitoring,
+            fileStore: environment.fileSubscriptions,
+            fileMonitoring: environment.fileMonitoring,
+            bulkStore: environment.folderBulkRuns,
+            bulkCoordinator: environment.folderBulkCoordinator,
+            activityStore: environment.captureActivity,
+            observeActivity: { try environment.recordCaptureActivity() },
+            rootGroups: { environment.rootAccessGroups() },
+            documentRoutes: { environment.documentAccessRoutes() },
+            identityAuthorises: { await delivery.confirmsIdentity(of: $0) },
+            releaseHeld: { pauses in
+                for pause in pauses.sorted(by: { $0.rawValue < $1.rawValue }) {
+                    _ = try? await delivery.releaseHeld(pause)
+                }
+                _ = await delivery.deliverPending()
+            }
+        )
     }
 
     private func makeIntent(payload: Data, binding: CaptureDeliveryBinding) throws -> CaptureIntentV3 {
@@ -657,5 +1072,53 @@ private final class PresentTargetTransport: @unchecked Sendable, CaptureDelivery
             sentKeys.append(operationKey)
         }
         return outcome
+    }
+}
+
+/// A target whose answer a test can change between passes.
+private final class SwitchableTransport: @unchecked Sendable, CaptureDeliveryTransport {
+    let descriptorDigest = "sha256:" + String(repeating: "b", count: 64)
+    let deliveryBinding: CaptureDeliveryBinding
+    private let lock = NSLock()
+    private var current: CaptureDeliveryOutcome
+    private var sent = 0
+
+    init(_ outcome: CaptureDeliveryOutcome, binding: CaptureDeliveryBinding) {
+        current = outcome
+        deliveryBinding = binding
+    }
+
+    var outcome: CaptureDeliveryOutcome {
+        get { lock.withLock { current } }
+        set { lock.withLock { current = newValue } }
+    }
+
+    var sentCount: Int { lock.withLock { sent } }
+
+    func deliver(input: Data, payloadURL: URL, operationKey: String) async -> CaptureDeliveryOutcome {
+        lock.withLock { sent += 1 }
+        return outcome
+    }
+}
+
+/// Loses the first answer and then delegates, so the first attempt of an intent
+/// is a genuine unknown outcome whose replay the real transport must answer.
+private final class FirstAnswerLostTransport: @unchecked Sendable, CaptureDeliveryTransport {
+    private let real: CLICaptureDelivery
+    private let lock = NSLock()
+    private var lostFirst = false
+
+    init(_ real: CLICaptureDelivery) { self.real = real }
+
+    var descriptorDigest: String { real.descriptorDigest }
+    var deliveryBinding: CaptureDeliveryBinding { real.deliveryBinding }
+
+    func deliver(input: Data, payloadURL: URL, operationKey: String) async -> CaptureDeliveryOutcome {
+        let first = lock.withLock { () -> Bool in
+            defer { lostFirst = true }
+            return !lostFirst
+        }
+        if first { return .unknown }
+        return await real.deliver(input: input, payloadURL: payloadURL, operationKey: operationKey)
     }
 }

@@ -33,6 +33,16 @@ public final class FolderManagementWindowController: NSWindowController,
     /// Re-choosing the original through the existing native access flow. The window owns
     /// no picker and no bookmark: this is the one owner's own entry point, invoked.
     private let locateOriginal: (() -> Void)?
+    /// Answers whether the identity this Mac is authenticated for is the one a
+    /// watch froze, after pausing every watch that is not. Resuming or checking
+    /// a watch reads its source, so neither runs on a "no": a watch paused for a
+    /// changed account or target is not resumed from here. `nil` means no
+    /// authority exists to ask, which is also a "no".
+    private let identityAuthorises: ((CaptureDeliveryBinding) async -> Bool)?
+    /// Releases the intents held for `pauses` back to pending and runs a delivery
+    /// pass, which checks the identity and the target again. `nil` offers no
+    /// Try again.
+    private let releaseHeld: ((Set<CaptureQueuePause>) async -> Void)?
     private let segments = NSSegmentedControl(
         labels: FilesAndFoldersSegment.allCases.map(\.title),
         trackingMode: .selectOne,
@@ -54,6 +64,7 @@ public final class FolderManagementWindowController: NSWindowController,
         title: "Reprocess captured copy…", target: nil, action: nil
     )
     private let locateButton = NSButton(title: "Locate…", target: nil, action: nil)
+    private let tryAgainButton = NSButton(title: "Try again", target: nil, action: nil)
     private var segment = FilesAndFoldersSegment.files
     private var statusFilter = FilesAndFoldersStatusFilter.all
     /// Readable by tests so the projection they assert is the one this window built.
@@ -81,7 +92,9 @@ public final class FolderManagementWindowController: NSWindowController,
         rootGroups: @escaping () -> [NativeRootAccessDescriptor],
         documentRoutes: @escaping () -> [NativeAccessDescriptor],
         historyTransport: CoreDocumentHistoryTransport? = nil,
-        locateOriginal: (() -> Void)? = nil
+        locateOriginal: (() -> Void)? = nil,
+        identityAuthorises: ((CaptureDeliveryBinding) async -> Bool)? = nil,
+        releaseHeld: ((Set<CaptureQueuePause>) async -> Void)? = nil
     ) {
         self.workspaceName = workspaceName
         self.folderStore = folderStore
@@ -96,6 +109,8 @@ public final class FolderManagementWindowController: NSWindowController,
         self.documentRoutes = documentRoutes
         self.historyTransport = historyTransport
         self.locateOriginal = locateOriginal
+        self.identityAuthorises = identityAuthorises
+        self.releaseHeld = releaseHeld
         model = FilesAndFoldersModel(workspaceName: workspaceName)
         super.init(window: nil)
     }
@@ -205,6 +220,9 @@ public final class FolderManagementWindowController: NSWindowController,
         locateButton.target = self
         locateButton.action = #selector(locateOriginalFile)
         locateButton.setAccessibilityLabel("Locate the original file")
+        tryAgainButton.target = self
+        tryAgainButton.action = #selector(tryAgain)
+        tryAgainButton.setAccessibilityLabel("Try again once access or the update is resolved")
 
         let searchSpacer = NSView()
         searchSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -215,7 +233,7 @@ public final class FolderManagementWindowController: NSWindowController,
         actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let actions = NSStackView(
             views: [
-                statusLabel, actionSpacer, clearButton, revealButton, locateButton,
+                statusLabel, actionSpacer, clearButton, revealButton, tryAgainButton, locateButton,
                 reprocessButton, checkButton, pauseResumeButton, stopButton,
             ]
         )
@@ -316,6 +334,8 @@ public final class FolderManagementWindowController: NSWindowController,
         checkButton.isEnabled = actions.checkEnabled
         revealButton.isHidden = segment != .recentAdditions
         revealButton.isEnabled = actions.revealEnabled
+        tryAgainButton.isHidden = segment != .recentAdditions
+        tryAgainButton.isEnabled = actions.tryAgainEnabled && releaseHeld != nil
         clearButton.isHidden = segment != .recentAdditions
         clearButton.isEnabled = model.canMutateActivity && model.clearableActivityCount > 0
         // Both canonical controls belong to one file, so neither appears on a surface
@@ -356,44 +376,66 @@ public final class FolderManagementWindowController: NSWindowController,
 
     @objc private func pauseResume() {
         guard let selected else { return }
-        Task {
-            switch selected {
-            case let .folder(value):
-                let resume = value.state == .paused || value.state == .needsAccess
-                    || value.state == .reviewRequired
-                if resume {
-                    _ = try? await folderMonitoring.resume(subscriptionID: value.subscriptionID)
-                } else {
-                    _ = try? await folderMonitoring.pause(subscriptionID: value.subscriptionID)
-                }
-            case let .file(value):
-                let resume = value.state == .paused || value.state == .needsAccess
-                if resume {
-                    _ = try? await fileMonitoring.resume(subscriptionID: value.subscriptionID)
-                } else {
-                    _ = try? await fileMonitoring.pause(subscriptionID: value.subscriptionID)
-                }
-            case let .activity(value):
-                // Only a frozen folder run has an authority that can retry or
-                // pause. An ordinary submission has none, and its buttons are
-                // disabled rather than silently doing something else.
-                guard let run = value.run else { break }
-                if run.state == .paused {
-                    _ = try? await bulkCoordinator.resume(runID: run.runID)
-                    _ = await bulkCoordinator.advance(runID: run.runID)
-                } else if run.attentionCount > 0 {
-                    // Acts on the same frozen membership; discovers nothing.
-                    _ = try? await bulkCoordinator.retryUnavailable(runID: run.runID)
-                    _ = await bulkCoordinator.advance(runID: run.runID)
-                } else {
-                    _ = try? await bulkCoordinator.pause(runID: run.runID)
-                }
-            case .retainedRoot:
-                // Nothing watches a retained root, so there is nothing to pause.
-                break
-            }
-            reload()
+        Task { await applyPauseResume(selected) }
+    }
+
+    /// Whether a watch may read its source now. Resuming and checking both do,
+    /// so both ask first: the answer comes after every watch frozen against
+    /// another account or target has been paused, and a "no" leaves the watch
+    /// exactly as it was.
+    private func mayReadSource(of item: FilesAndFoldersItem) async -> Bool {
+        let frozen: CaptureDeliveryBinding
+        switch item {
+        case let .file(value): frozen = CaptureDeliveryBinding(value)
+        case let .folder(value): frozen = CaptureDeliveryBinding(value)
+        default: return true
         }
+        if await identityAuthorises?(frozen) == true { return true }
+        statusLabel.stringValue = "Paused: this was added under a different account or Core "
+            + "target than the one signed in now. Nothing was read."
+        reload()
+        return false
+    }
+
+    func applyPauseResume(_ selected: FilesAndFoldersItem) async {
+        switch selected {
+        case let .folder(value):
+            let resume = value.state == .paused || value.state == .needsAccess
+                || value.state == .reviewRequired
+            if resume {
+                guard await mayReadSource(of: selected) else { return }
+                _ = try? await folderMonitoring.resume(subscriptionID: value.subscriptionID)
+            } else {
+                _ = try? await folderMonitoring.pause(subscriptionID: value.subscriptionID)
+            }
+        case let .file(value):
+            let resume = value.state == .paused || value.state == .needsAccess
+            if resume {
+                guard await mayReadSource(of: selected) else { return }
+                _ = try? await fileMonitoring.resume(subscriptionID: value.subscriptionID)
+            } else {
+                _ = try? await fileMonitoring.pause(subscriptionID: value.subscriptionID)
+            }
+        case let .activity(value):
+            // Only a frozen folder run has an authority that can retry or
+            // pause. An ordinary submission has none, and its buttons are
+            // disabled rather than silently doing something else.
+            guard let run = value.run else { break }
+            if run.state == .paused {
+                _ = try? await bulkCoordinator.resume(runID: run.runID)
+                _ = await bulkCoordinator.advance(runID: run.runID)
+            } else if run.attentionCount > 0 {
+                // Acts on the same frozen membership; discovers nothing.
+                _ = try? await bulkCoordinator.retryUnavailable(runID: run.runID)
+                _ = await bulkCoordinator.advance(runID: run.runID)
+            } else {
+                _ = try? await bulkCoordinator.pause(runID: run.runID)
+            }
+        case .retainedRoot:
+            // Nothing watches a retained root, so there is nothing to pause.
+            break
+        }
+        reload()
     }
 
     @objc private func stopUpdating() {
@@ -435,20 +477,45 @@ public final class FolderManagementWindowController: NSWindowController,
     @objc private func checkNow() {
         guard let selected else { return }
         statusLabel.stringValue = "Checking \(selected.displayName)…"
-        Task {
-            switch selected {
-            case let .folder(value):
-                _ = await folderMonitoring.reconcile(subscriptionIDs: [value.subscriptionID])
-            case let .file(value):
-                _ = await fileMonitoring.reconcile(subscriptionIDs: [value.subscriptionID])
-            case let .activity(value):
-                guard let run = value.run else { break }
-                _ = await bulkCoordinator.advance(runID: run.runID)
-            case .retainedRoot:
-                break
-            }
-            reload()
+        Task { await applyCheck(selected) }
+    }
+
+    func applyCheck(_ selected: FilesAndFoldersItem) async {
+        switch selected {
+        case let .folder(value):
+            guard await mayReadSource(of: selected) else { return }
+            _ = await folderMonitoring.reconcile(subscriptionIDs: [value.subscriptionID])
+        case let .file(value):
+            guard await mayReadSource(of: selected) else { return }
+            _ = await fileMonitoring.reconcile(subscriptionIDs: [value.subscriptionID])
+        case let .activity(value):
+            guard let run = value.run else { break }
+            _ = await bulkCoordinator.advance(runID: run.runID)
+        case .retainedRoot:
+            break
         }
+        reload()
+    }
+
+    /// The person's own statement that access or the update is resolved. It
+    /// releases the reasons the selected addition is held for (a reason belongs
+    /// to the target, so it covers every item held for it), then lets the next
+    /// delivery pass decide: that pass checks the identity and the target again,
+    /// so a refusal that still stands holds the item again and sends nothing.
+    @objc private func tryAgain() {
+        guard let selected else { return }
+        Task { await applyTryAgain(selected) }
+    }
+
+    @discardableResult
+    func applyTryAgain(_ selected: FilesAndFoldersItem) async -> Bool {
+        guard let releaseHeld, case let .activity(group) = selected, group.heldCount > 0,
+              model.canMutateActivity
+        else { return false }
+        statusLabel.stringValue = "Trying \(selected.displayName) again…"
+        await releaseHeld(group.heldPauses)
+        reload()
+        return true
     }
 
     /// Reveals what an unknown outcome is recovered by. It reads the durable

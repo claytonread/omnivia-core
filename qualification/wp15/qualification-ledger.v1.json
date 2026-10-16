@@ -569,15 +569,38 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIntentQueueTests.swift",
           "symbol": "testAHoldThatIsNotWhatTheQueueCouldHaveWrittenIsRefusedWithoutRewriting",
           "covers": "A tampered hold is refused without rewriting, a held manifest carries its own schema so an older build refuses it, and releasing writes the ordinary schema."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testARevokedPrincipalIsRefusedByTheRealServiceAndHoldsTheOriginalIntent",
+          "covers": "The real CLI and a real running Core: an intent frozen for a principal the service no longer authenticates is refused by the service (authorization_denied), held as Needs access with bytes, frozen intent and key, and no later pass or restart resends it; a released item is tried once and held again, never sent under the authenticated principal. The control, the authenticated principal, is admitted over the same path."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testARealVersionDisagreementHoldsTheItemUntilTheWindowsTryAgain",
+          "covers": "A real Core whose published descriptor now speaks only a newer API: the real service status reports incompatible, the real capture command exits 4 with the fixed sentence, and the item is held as Update required with no capture launched. Restoring the descriptor sends nothing; the window's Try again releases the hold and the next pass admits it under the next attempt's key."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testTryAgainReleasesOnlyHeldWorkAndAStandingRefusalHoldsItAgain",
+          "covers": "Try again is offered only for held work, is a no-op for anything else, and a refusal that still stands holds the item again; the detail says Access to this workspace is required."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CLICaptureDeliveryTests.swift",
+          "symbol": "testTheCaptureCommandAttachesOnlyAndNeverStartsCore",
+          "covers": "The production capture command claims the frozen principal, which is what lets the service refuse a different authenticated one."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Absent is observed through the real CLI, and revoked and incompatible now hold the original pending intent as Needs access or Update required, durably, with bytes, frozen intent, attempt history and key kept and nothing resent, retargeted or failed. Two named conditions are still not exercised through the production path: no test has a real revoked credential or a real version disagreement produce the refusal through the companion (the tests hand the CLI's fixed stderr sentence, exit status and service error codes to CLICaptureDelivery.outcome and pin the sentences against the CLI source), and CaptureDeliveryCoordinator.releaseHeld has no production caller, because no companion access or update flow exists yet to release a hold, so explicit release is exercised only by tests. The design's Access to this workspace is required wording for a revoked authorisation is also not shown; the panel says Needs access.",
-      "limitations": "The no-silent-fallback property is strong and includes an absent target through the real CLI. A held item is queue-resolvable, so unlike the old failed arm its bytes are recoverable through the queue, and release starts the next generation under a new key, which is correct only because the refused attempt is settled as known-no-effect. Two tests that drive the real CLI skip without OMNIVIA_CORE_TEST_PYTHON. Delivery elsewhere in the older coordinator tests still uses a fake client.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing against a real installation on 2026-10-16. Absent is the real CLI against no installation. Revoked is the real service refusing the principal the intent froze: the capture command now claims it (--principal), the service answers authorization_denied, and without the claim the former account's intent is admitted under the current one (mutation-checked). Incompatible is a real descriptor at a newer API, seen through the real service status and the real capture command (exit 4). A local unix-socket Core has no bearer credential, so the CLI's credential-refused exit (3) and the other service codes are still classified from fixed output pinned against the CLI source. Release is the person's Try again in the Files and folders window, exercised through its action methods, not a synthesised click; it releases only the held reasons and the next pass checks the target again. Access to this workspace is required shows in the detail; the row stays Needs access. Real-installation tests skip, naming OMNIVIA_CORE_TEST_PYTHON or omnivia-core-service, when absent.",
       "source_bindings": [
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FilesAndFoldersModel.swift",
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FolderManagementWindowController.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureDeliveryCoordinator.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",
         "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/CLICaptureDelivery.swift",
+        "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/main.swift",
         "packages/omnivia-core-cli/src/omnivia_core_cli/main.py"
       ]
     },
@@ -602,15 +625,57 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/ShareInboxStoreTests.swift",
           "symbol": "testPublishedRequestIsCompleteAndReadable",
           "covers": "The cached Share request carries no principal, destination or workspace, so there is nothing for a new account to inherit."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIdentityPauseTests.swift",
+          "symbol": "testPrincipalChangeBeforeFirstSendPausesTheFrozenIntent",
+          "covers": "A changed principal before the first send pauses the frozen intent: not sent, staged, rewritten or deleted."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIdentityPauseTests.swift",
+          "symbol": "testTargetProfileChangeBeforeFirstSendPausesTheFrozenIntent",
+          "covers": "A different installed target pauses it the same way."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIdentityPauseTests.swift",
+          "symbol": "testACallerContextOrTargetBindingGenerationChangePausesTheFrozenIntent",
+          "covers": "A new caller-context generation or target-binding revision pauses it."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIdentityPauseTests.swift",
+          "symbol": "testIntentAwaitingRecoveryPausesInsteadOfReplayingUnderTheNewAccount",
+          "covers": "During recovery an unknown-outcome attempt is not replayed and the no-effect return to pending does not unpause it."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testARecoveryReplayUnderAChangedPrincipalIsRefusedAndStaysUnknown",
+          "covers": "Against the real service a recovery replay claims the frozen principal and is refused; the entry stays unknown with the same attempt and key. Without the claim the replay is admitted under the current account (mutation-checked)."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testARevokedPrincipalIsRefusedByTheRealServiceAndHoldsTheOriginalIntent",
+          "covers": "The real service refuses a first send frozen for a principal it does not authenticate, and the intent is held, not redirected."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/AbsentTargetDeliveryAcceptanceTests.swift",
+          "symbol": "testACachedShareAddedUnderOneAccountIsNeverSentUnderAnother",
+          "covers": "A Share published while no companion ran is adopted, added, queued under the account it was added under, and neither this process nor a restart under another account sends it."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIdentityPauseTests.swift",
+          "symbol": "testCachedShareIntentPausesAndCarriesNothingForANewAccountToInherit",
+          "covers": "The cached Share request carries no principal, destination or workspace."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test changes the signed-in principal or the target profile and then asserts the frozen intent enters a paused state. The refusals prove no redirection, but a refusal is not the pause the gate requires, and the recovery variant is not covered at all.",
-      "limitations": "Caller and workspace identity are compared as opaque values supplied by the test. No real authentication boundary participates.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing on 2026-10-16. Pause is derived, not a stored queue state: a frozen intent whose binding differs from the identity the companion is authenticated for is skipped by every send and recovery path, and it resumes only when that identity is restored, so there is no flag to go stale. The authenticated identity is the transport's configured binding checked on the Mac, and the service independently refuses a principal claim it did not authenticate (real-service tests). Production authenticates only the local owner principal, so a second real account is represented by a frozen principal the service does not authenticate, not by a second signed-in user. A Share is a draft with no principal until the person adds it (design 7.2); the gate covers the queued Share intent, and an Add made after the change freezes the identity then current by the person's explicit act. The real-installation tests skip, naming OMNIVIA_CORE_TEST_PYTHON or the missing omnivia-core-service, when the toolchain is absent.",
       "source_bindings": [
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CapturePreparationCoordinator.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureDeliveryCoordinator.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareInboxStore.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CapturePreparationCoordinator.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareInboxStore.swift",
+        "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/CLICaptureDelivery.swift",
+        "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/ShareInboxAdopter.swift"
       ]
     },
     {
@@ -4388,15 +4453,55 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/FolderReconciliationSchedulerTests.swift",
           "symbol": "testEveryNonActiveStateIsLeftUnscheduled",
           "covers": "A subscription in any non-active state is left unscheduled, which is the mechanism a pause would use."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIdentityPauseTests.swift",
+          "symbol": "testPrincipalChangePausesAutomaticWatchesAndArmsNoFurtherRead",
+          "covers": "A principal change moves the file and folder watches to paused durably; the schedule owes nothing, an immediate trigger arms nothing and the file pass reads no original."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIdentityPauseTests.swift",
+          "symbol": "testADemandArmedBeforeTheIdentityChangedIsNotReadAfterIt",
+          "covers": "A reconciliation demand armed before the change is skipped by the executor as notActive and reads nothing."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIdentityPauseTests.swift",
+          "symbol": "testResumeAndCheckNowReadNothingUnderAChangedIdentity",
+          "covers": "The window's Resume and Check now, the one manual route to a watched read, refuse under a changed identity and read nothing; the authorised identity is allowed."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIdentityPauseTests.swift",
+          "symbol": "testWatchWaitingForCoreOrNeedingAccessPausesUnderChangedIdentity",
+          "covers": "A watch waiting for Core or needing access also pauses."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIdentityPauseTests.swift",
+          "symbol": "testPassLeavesMatchingStoppedAndReviewRequiredWatchesAlone",
+          "covers": "Matching, stopped and review-required watches are untouched."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIdentityPauseTests.swift",
+          "symbol": "testPauseThatCannotBePersistedThrowsAndLeavesTheWatchAsItWas",
+          "covers": "A pause that cannot be made durable throws, so the automatic entry points abandon the pass."
+        },
+        {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIdentityPauseTests.swift",
+          "symbol": "testACallerContextOrTargetBindingGenerationChangePausesTheFrozenIntent",
+          "covers": "A generation change pauses the watch as well as the intent."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No test changes the principal or the target profile and then asserts automatic reads pause. The refusals prove a pending intent is not redirected, but nothing moves a subscription into a paused state in response to an identity change, so the second half of the required result has no coverage.",
-      "limitations": "Caller and workspace identity are opaque values supplied by each test, with no authentication boundary involved. The pause mechanism exists and is covered, but never driven by an identity change.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Executed and passing on 2026-10-16 over the production DocumentIntakeEnvironment, queue, subscription stores, reconciliation schedule, executor and monitoring coordinators. The subscription pause is durable because every automatic read arms or runs from active; reviewRequired is left alone because it arms no read and moving it would discard the pending review signature. The three automatic entry points in main.swift (startup/tick/wake/remount reconciliation, watched-folder reconcile and the dirty-folder debounce) call the pass first and abandon the run when it throws; main.swift is the executable target, so that call order is exercised through the same coordinator calls in tests, not by launching the app. The window's Resume and Check now are guarded and tested. Production authenticates only the local owner principal, so a changed account is represented by a different authenticated binding, not a second signed-in user.",
       "source_bindings": [
+        "apps/core-status-menu-macos/Sources/CoreCaptureMacOS/FolderManagementWindowController.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureDeliveryCoordinator.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CapturePreparationCoordinator.swift",
-        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderReconciliationScheduler.swift"
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FileMonitoringCoordinator.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderMonitoringCoordinator.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderReconciliationExecutor.swift",
+        "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderReconciliationScheduler.swift",
+        "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/main.swift"
       ]
     },
     {

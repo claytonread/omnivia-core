@@ -156,6 +156,18 @@ public struct CaptureActivityGroup: Equatable, Sendable {
     /// unknown outcome and a folder member its run can still retry.
     public var pendingCount: Int { items.filter { !$0.isReceipt }.count }
     public var attentionCount: Int { items.filter { $0.fact.needsAttention }.count }
+    /// The refusals only the person can resolve that this addition's items are
+    /// held for, which is what Try again releases.
+    public var heldPauses: Set<CaptureQueuePause> {
+        Set(items.compactMap { record -> CaptureQueuePause? in
+            switch record.fact {
+            case .needsAccess: .needsAccess
+            case .updateRequired: .updateRequired
+            default: nil
+            }
+        })
+    }
+    public var heldCount: Int { count(.needsAccess) + count(.updateRequired) }
     public var receiptCount: Int { items.filter(\.isReceipt).count }
     /// The newest member, which is what orders the surface.
     public var latestSequence: UInt64 { items.map(\.sequence).max() ?? 0 }
@@ -278,6 +290,13 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
     /// Reveals the frozen recovery identity of an item whose outcome is
     /// unknown. It reads durable state and allocates nothing.
     public let revealEnabled: Bool
+    /// Releases what is held for the reasons the selected addition is held for
+    /// (access, an update), once the person says that is resolved. The reason is
+    /// about the target, not the addition, so every item held for it is
+    /// released. It sends nothing itself: the next delivery pass checks the
+    /// identity and the target again and holds an item again if the refusal
+    /// still stands.
+    public let tryAgainEnabled: Bool
     /// Reprocesses one retained capture Core reports as reprocessable. Enabled only when
     /// Core has reported that action available for a capture of the selected document --
     /// never from a stale read, and never as a guess about what Core would accept.
@@ -297,6 +316,7 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
         stopEnabled: Bool,
         checkEnabled: Bool,
         revealEnabled: Bool = false,
+        tryAgainEnabled: Bool = false,
         reprocessEnabled: Bool = false,
         originalActionsEnabled: Bool = false
     ) {
@@ -306,6 +326,7 @@ public struct FilesAndFoldersActions: Equatable, Sendable {
         self.stopEnabled = stopEnabled
         self.checkEnabled = checkEnabled
         self.revealEnabled = revealEnabled
+        self.tryAgainEnabled = tryAgainEnabled
         self.reprocessEnabled = reprocessEnabled
         self.originalActionsEnabled = originalActionsEnabled
     }
@@ -478,9 +499,9 @@ public enum FilesAndFoldersItem: Equatable, Sendable {
     static func holdExplanation(_ fact: CaptureActivityFact) -> String? {
         switch fact {
         case .needsAccess:
-            "Core did not accept this Mac's access. Nothing was sent, and this stays queued on this Mac until access is restored."
+            "Access to this workspace is required. Core did not accept the account this was added under. Nothing was sent, and this stays queued on this Mac until access is restored. Choose Try again once it is."
         case .updateRequired:
-            "This app and Core could not agree on a version. Nothing was sent, and this stays queued on this Mac until the update is installed."
+            "This app and Core could not agree on a version. Nothing was sent, and this stays queued on this Mac until the update is installed. Choose Try again once it is."
         default: nil
         }
     }
@@ -928,7 +949,8 @@ public struct FilesAndFoldersModel: Sendable {
                     stopTitle: "Stop adding remaining files",
                     stopEnabled: false,
                     checkEnabled: false,
-                    revealEnabled: value.count(.checking) > 0
+                    revealEnabled: value.count(.checking) > 0,
+                    tryAgainEnabled: value.heldCount > 0
                 )
             }
             // Resuming is not retrying: a member that already failed keeps its
@@ -944,7 +966,8 @@ public struct FilesAndFoldersModel: Sendable {
                 // child keeps its canonical outcome.
                 stopEnabled: run.plannedCount > 0,
                 checkEnabled: run.state == .adding,
-                revealEnabled: value.count(.checking) > 0
+                revealEnabled: value.count(.checking) > 0,
+                tryAgainEnabled: value.heldCount > 0
             )
         }
     }

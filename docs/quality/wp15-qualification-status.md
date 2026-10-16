@@ -14,7 +14,7 @@ This document is generated from
 `qualification/wp15/qualification-ledger.v1.json` and is verified against it
 by `scripts/check-wp15-qualification.py`. It records what this checkout can
 show and what it cannot. **It is not a claim that the release is qualified.**
-53 of 130 gates have direct production-path coverage
+56 of 130 gates have direct production-path coverage
 of every condition they name; the rest carry the exact condition still
 missing.
 
@@ -22,22 +22,22 @@ missing.
 
 | Status | Gates | Meaning |
 |---|---|---|
-| passed | 53 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
+| passed | 56 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
 | failed | 0 | Evidence exists and shows the required result is not met. |
 | blocked_external | 46 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
-| not_executed | 31 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
+| not_executed | 28 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
 | not_implemented | 0 | The production path the gate names does not exist in this checkout. |
 
 ## Counts by family and status
 
 | Family | Section | Gates | passed | failed | blocked_external | not_executed | not_implemented |
 |---|---|---|---|---|---|---|---|
-| AT | 20 | 50 | 16 | 0 | 19 | 15 | 0 |
+| AT | 20 | 50 | 18 | 0 | 19 | 13 | 0 |
 | NAT | 20.1 | 17 | 0 | 0 | 17 | 0 | 0 |
 | DOC | 20.2 | 19 | 10 | 0 | 0 | 9 | 0 |
-| MON | 20.3 | 38 | 23 | 0 | 10 | 5 | 0 |
+| MON | 20.3 | 38 | 24 | 0 | 10 | 4 | 0 |
 | END | 20.4 | 6 | 4 | 0 | 0 | 2 | 0 |
-| **total** | | **130** | 53 | 0 | 46 | 31 | 0 |
+| **total** | | **130** | 56 | 0 | 46 | 28 | 0 |
 
 ## Counts by required evidence class
 
@@ -68,6 +68,8 @@ each one's scope limits.
 | AT-09 | An exact UTF-8, BOM and line-ending fixture. |
 | AT-10 | A pasted path, an embedded URL and instruction text. |
 | AT-11 | A known eligible local target while offline. |
+| AT-12 | A missing, revoked or incompatible target. |
+| AT-13 | The principal or the target profile changes before the first send or during recovery, including a cached Share. |
 | AT-18 | A crash after the Core commit but before the local receipt. |
 | AT-19 | A timeout, an expired replay or an unknown admission. |
 | AT-20 | A native queue capacity race across the Share and manual routes. |
@@ -105,6 +107,7 @@ each one's scope limits.
 | MON-23 | Source Disconnect versus folder Disconnect. |
 | MON-24 | Pause, configuration change or disconnect at the final rename. |
 | MON-25 | Core sees a tombstone before the first capture. |
+| MON-26 | A principal or target change. |
 | MON-29 | A byte or copy quota is reached. |
 | MON-30 | A known failed, unsupported or zero-text digest. |
 | MON-33 | Reverse job completion and a stale base. |

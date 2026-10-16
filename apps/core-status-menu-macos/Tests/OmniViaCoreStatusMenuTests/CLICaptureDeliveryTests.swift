@@ -27,7 +27,8 @@ final class CLICaptureDeliveryTests: XCTestCase {
     }
 
     /// The capture itself must be incapable of starting Core: the CLI mode is
-    /// global, so it precedes the command, and the command is otherwise unchanged.
+    /// global, so it precedes the command, and the command is otherwise unchanged. It claims the frozen principal, so
+    /// the service can refuse a different authenticated one.
     func testTheCaptureCommandAttachesOnlyAndNeverStartsCore() {
         let delivery = CLICaptureDelivery(
             executable: URL(fileURLWithPath: "/omnivia"),
@@ -45,6 +46,7 @@ final class CLICaptureDeliveryTests: XCTestCase {
                 "--input-stdin",
                 "--payload-file", "/payload",
                 "--idempotency-key", "k-1",
+                "--principal", "local-user",
                 "--json",
             ]
         )
