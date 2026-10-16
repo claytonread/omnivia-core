@@ -46,18 +46,32 @@ malformed reply, a crash, a timeout, a resource-limit kill and a refused seal
 are each their own typed failure: none can become a successful extraction, and
 none is reported as an invalid source.
 
-**What is not enforced here.** The child's wall clock is the parent's, and on a
-timeout the child's whole session is killed, so the pinned Pandoc and Tesseract
-processes go with it. The resource ceilings applied inside the child are only
-those the host actually binds, and they are named individually in the reply:
-resident memory is *not* among them, so the 1 GiB ceiling of 17.1 is not
-enforced by this module, and neither is the supervisor accounting of 11.13.
+**The whole tree is accounted, not just the process that was spawned.** A
+parser reaches Pandoc and Tesseract through processes of its own, so a ceiling
+applied to the child alone bounds the cheap half of the work. 17.1 is explicit
+that resident memory is "1 GiB per job, *including children*", and 11.13 that
+the supervisor counts "cumulative unit time" and that "restarting a child does
+not reset the document budget". :class:`_ProcessTreeSupervisor` is that
+supervisor: the parent measures the child's whole session group -- orphans
+included -- against the aggregate resident ceiling and against one cumulative
+CPU budget per job, and a breach of either kills the session, reaps the child
+and raises its own typed reason. It is a second, independent ceiling: the hard
+wall deadline still bounds the attempt on its own.
+
+**What is still not enforced here.** The resource ceilings applied *inside* the
+child are only those the host actually binds, and they are named individually in
+the reply; resident memory is not among them, because macOS does not enforce
+``RLIMIT_AS``, and the aggregate ceiling above is what covers it instead. The
+supervisor is macOS-only and refuses closed everywhere else, so no host both
+extracts and goes unsupervised -- but the refusals are not interchangeable, and
+a host missing either precondition says which one it was.
 """
 
 from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import errno
 import hashlib
 import json
 import math
@@ -68,6 +82,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -129,6 +144,24 @@ MAX_SCRATCH_FILE_BYTES: Final = 2 * 1024 * 1024 * 1024
 #: unbounded walk over them is the one way cleanup could fail to terminate.
 MAX_SCRATCH_ENTRIES: Final = 200_000
 
+#: The resident-memory ceiling of 17.1: 1 GiB per job, *including children*. It
+#: is enforced as the sum over the job's whole session group, so a tree of
+#: processes each comfortably under it still breaches together.
+WORKER_MEMORY_BYTES: Final = 1024 * 1024 * 1024
+#: How often the live tree is measured.
+#:
+#: Resident memory is an instantaneous quantity and nothing but a sample can
+#: read it, so this interval is the resolution of that ceiling. Cumulative CPU
+#: is not sampled in the same sense: a process that lives and dies between two
+#: samples is still charged in full, by the kernel, through the ``ri_child_*``
+#: accounting below. For the budget to be escaped on this interval a tree would
+#: have to burn its entire CPU budget in a tenth of a second.
+SUPERVISION_SECONDS: Final = 0.1
+#: Processes one job's session group may hold before the supervisor refuses to
+#: account it at all. Nothing bounds how many processes a parser can start, and
+#: an unbounded enumeration is the one way a sample could fail to finish.
+MAX_TREE_PROCESSES: Final = 4096
+
 CONFINEMENT_SEATBELT: Final = "seatbelt"
 CONFINEMENT_NONE: Final = "unconfined"
 #: The confinement a reply must carry to be read as an extraction. There is one,
@@ -162,6 +195,14 @@ REASON_SPAWN: Final = "worker_spawn_failed"
 REASON_CRASHED: Final = "worker_crashed"
 REASON_TIMEOUT: Final = "worker_timeout"
 REASON_RESOURCE_LIMIT: Final = "worker_resource_limit"
+#: The two aggregate ceilings, each named separately from the per-process
+#: ceiling above and from each other. A caller records which resource the job
+#: ran out of, and neither is a verdict on the document.
+REASON_MEMORY_LIMIT: Final = "worker_memory_limit"
+REASON_CPU_LIMIT: Final = "worker_cpu_limit"
+#: The trusted monitor could not account the tree, so nothing was allowed to
+#: run unaccounted. Distinct from a breach: no ceiling was reached.
+REASON_SUPERVISION: Final = "worker_supervision_unavailable"
 REASON_PROTOCOL: Final = "worker_protocol_invalid"
 REASON_ISOLATION: Final = "worker_isolation_unavailable"
 REASON_SOURCE_OVERSIZE: Final = "worker_source_oversize"
@@ -333,6 +374,15 @@ class DocumentWorkerFailed(RuntimeError):
 
 class IsolationUnavailable(RuntimeError):
     """The platform's confinement adapter could not seal this process."""
+
+
+class _SupervisionUnavailable(RuntimeError):
+    """The trusted monitor could not establish safe accounting for the tree.
+
+    Raised rather than returning an unaccounted measurement, which is the one
+    answer a supervisor must never give: a tree that cannot be measured is a
+    tree with no ceiling, and the attempt is refused instead.
+    """
 
 
 class _ProtocolError(ValueError):
@@ -560,12 +610,16 @@ def _child_environment(work: Path) -> dict[str, str]:
 def _run_child(header: Mapping[str, Any], *, work: Path, wall: int) -> int:
     """Run one child to completion under one deadline and return its status.
 
-    ``wall`` bounds the whole attempt and is fixed before the child starts:
-    :meth:`subprocess.Popen.communicate` resolves it to one absolute deadline,
-    so neither the request write nor anything the child spawns extends it. On
+    ``wall`` bounds the whole attempt and is fixed before the child starts, so
+    neither the request write nor anything the child spawns extends it. On
     expiry the child's entire session is killed -- it was given its own, so a
     Pandoc or Tesseract process it started goes with it -- and then reaped under
     a bounded grace, so this never blocks on a tree that will not die.
+
+    The same session is what the supervisor accounts, and it is established
+    before the child is handed the request: a host where the tree cannot be
+    measured refuses the attempt before a single source byte has been read,
+    exactly as a host where the process cannot be sealed does.
 
     A child that exits on its own is already reaped by the time this returns,
     and its session is deliberately *not* signalled afterwards: the process
@@ -598,16 +652,106 @@ def _run_child(header: Mapping[str, Any], *, work: Path, wall: int) -> int:
     except (OSError, ValueError) as error:
         raise DocumentWorkerFailed(REASON_SPAWN, type(error).__name__) from error
     try:
-        process.communicate(request, timeout=wall)
-    except subprocess.TimeoutExpired as expiry:
+        supervisor = _ProcessTreeSupervisor(
+            process.pid, memory_bytes=WORKER_MEMORY_BYTES, cpu_seconds=wall
+        )
+    except _SupervisionUnavailable as refusal:
+        # The child exists but is still blocked on a request it has not been
+        # given, so it has opened nothing. A host that cannot be supervised
+        # does not extract.
         _end_session(process)
-        raise DocumentWorkerFailed(REASON_TIMEOUT, f"{wall}s") from expiry
+        raise DocumentWorkerFailed(
+            REASON_SUPERVISION, str(refusal)[:MAX_DETAIL_CHARS]
+        ) from refusal
+    try:
+        return _supervise(process, supervisor, request=request, wall=wall)
     except OSError as error:
         # The request could not be handed over at all. The child is killed the
         # same way, because it may already have spawned something.
         _end_session(process)
         raise DocumentWorkerFailed(REASON_SPAWN, type(error).__name__) from error
-    return process.returncode
+
+
+def _supervise(
+    process: subprocess.Popen[bytes],
+    supervisor: _ProcessTreeSupervisor,
+    *,
+    request: bytes,
+    wall: int,
+) -> int:
+    """Hand over the request, account the tree, and return the child's status.
+
+    One thread does all three, and that is what makes the accounting safe
+    rather than merely cheap. A sample asks the kernel about a process group
+    that exists only while its leader is unreaped, and the leader is reaped
+    here, by :meth:`subprocess.Popen.poll`. A monitor thread running beside
+    this loop could therefore sample -- and signal -- a group id in the window
+    after the reap, by which time the kernel may have given it to somebody
+    else. Measuring in the same thread that reaps closes that window by
+    construction: the status check comes first, and nothing is measured or
+    signalled once it has answered.
+
+    The deadline is absolute and taken before the first sample, so neither the
+    handover nor a slow sample extends it. It still bounds the attempt on its
+    own: the cumulative CPU budget is a second, independent ceiling, and a tree
+    that sleeps for two minutes breaches neither.
+    """
+    deadline = time.monotonic() + wall
+    if process.stdin is not None:
+        # The write end alone; the child's inherited read end is a different
+        # open file description and is unaffected.
+        os.set_blocking(process.stdin.fileno(), False)
+    pending: bytes | None = request
+    while True:
+        if pending is not None:
+            pending = _offer(process, pending)
+        status = process.poll()
+        if status is not None:
+            return status
+        try:
+            breach, detail = supervisor.sample()
+        except _SupervisionUnavailable as refusal:
+            _end_session(process)
+            raise DocumentWorkerFailed(
+                REASON_SUPERVISION, str(refusal)[:MAX_DETAIL_CHARS]
+            ) from refusal
+        if breach:
+            _end_session(process)
+            raise DocumentWorkerFailed(breach, detail)
+        if time.monotonic() >= deadline:
+            _end_session(process)
+            raise DocumentWorkerFailed(REASON_TIMEOUT, f"{wall}s")
+        time.sleep(SUPERVISION_SECONDS)
+
+
+def _offer(process: subprocess.Popen[bytes], pending: bytes) -> bytes | None:
+    """Hand over what the request pipe will take without blocking.
+
+    Returns what is left of the request, or ``None`` once all of it is across
+    and the pipe is closed. The write cannot be allowed to block: the header's
+    ceiling is larger than a pipe buffer, so a child that stopped reading would
+    hold this thread for as long as it liked -- past the deadline meant to bound
+    the attempt, with no sample taken and no kill issued. That is the same
+    hazard the reply's own non-blocking open refuses, one step earlier.
+    """
+    stdin = process.stdin
+    assert stdin is not None
+    if pending:
+        try:
+            pending = pending[os.write(stdin.fileno(), pending) :]
+        except BlockingIOError:
+            return pending
+        except BrokenPipeError:
+            # The child is already gone, which is its own answer: `poll` reports
+            # the status, and a child that read no request writes no reply.
+            pending = b""
+    if pending:
+        return pending
+    try:
+        stdin.close()
+    except OSError:
+        pass
+    return None
 
 
 def _end_session(process: subprocess.Popen[bytes]) -> None:
@@ -618,10 +762,14 @@ def _end_session(process: subprocess.Popen[bytes]) -> None:
     nature: a group that has already gone is the ordinary case, and a platform
     without process groups falls back to the child alone.
 
-    The killing comes before the request pipe is closed, and that order matters:
-    closing it would otherwise flush whatever of the header is still buffered,
-    and a child that stopped reading would block this thread in the one place it
-    is trying to stop waiting. Against a dead child the same flush fails at once.
+    The killing still comes before the request pipe is closed, and the close
+    still cannot block this thread in the one place it is trying to stop
+    waiting -- but the reason is now the pipe rather than the order. The
+    request is handed over through :func:`_offer`, which writes to the
+    descriptor directly and never leaves a byte in the stream's own buffer, and
+    writes to it only after it has been made non-blocking. There is therefore
+    nothing left for this close to flush, and nothing it could wait on if there
+    were.
     """
     if _OWN_SESSION:
         try:
@@ -652,6 +800,272 @@ def _exit_failure(returncode: int) -> tuple[str, str]:
     if returncode < 0:
         return REASON_CRASHED, f"signal {-returncode}"
     return REASON_CRASHED, f"exit {returncode}"
+
+
+# ---------------------------------------------------------------------------
+# The trusted supervisor: aggregate resident memory, cumulative tree CPU
+# ---------------------------------------------------------------------------
+
+#: ``RUSAGE_INFO_V3`` from ``<sys/resource.h>``. It is the earliest flavour
+#: carrying the ``ri_child_*`` fields, which are what makes the CPU accounting
+#: below exact rather than sampled.
+RUSAGE_INFO_V3: Final = 3
+
+#: ``struct rusage_info_v3``, in the order ``<sys/resource.h>`` declares it.
+#:
+#: Every field is declared although four are read, because ``proc_pid_rusage``
+#: copies out the whole flavour it was asked for: a structure holding only the
+#: interesting prefix would be written past its end. The layout is held against
+#: the installed SDK header by a test rather than trusted from documentation.
+_RUSAGE_V3_FIELDS: Final = (
+    "ri_user_time",
+    "ri_system_time",
+    "ri_pkg_idle_wkups",
+    "ri_interrupt_wkups",
+    "ri_pageins",
+    "ri_wired_size",
+    "ri_resident_size",
+    "ri_phys_footprint",
+    "ri_proc_start_abstime",
+    "ri_proc_exit_abstime",
+    "ri_child_user_time",
+    "ri_child_system_time",
+    "ri_child_pkg_idle_wkups",
+    "ri_child_interrupt_wkups",
+    "ri_child_pageins",
+    "ri_child_elapsed_abstime",
+    "ri_diskio_bytesread",
+    "ri_diskio_byteswritten",
+    "ri_cpu_time_qos_default",
+    "ri_cpu_time_qos_maintenance",
+    "ri_cpu_time_qos_background",
+    "ri_cpu_time_qos_utility",
+    "ri_cpu_time_qos_legacy",
+    "ri_cpu_time_qos_user_initiated",
+    "ri_cpu_time_qos_user_interactive",
+    "ri_billed_system_time",
+    "ri_serviced_system_time",
+)
+
+
+class _RusageInfoV3(ctypes.Structure):
+    _fields_ = [
+        ("ri_uuid", ctypes.c_uint8 * 16),
+        *((name, ctypes.c_uint64) for name in _RUSAGE_V3_FIELDS),
+    ]
+
+
+class _MachTimebase(ctypes.Structure):
+    _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+
+
+def _load_libproc() -> ctypes.CDLL:
+    """The Darwin process-accounting interface, or a refusal to supervise.
+
+    ``libproc`` is what an unprivileged process is given on macOS to read
+    another process's resident size and consumed CPU, and it is the whole basis
+    of the accounting here. There is no portable fallback: reading these numbers
+    out of ``/proc`` would be a different implementation of a different
+    platform's interface, and a sampler that silently measured less would be
+    worse than none at all. So this refuses, the attempt refuses with it, and
+    the complete product target stays what it says it is.
+    """
+    if sys.platform != "darwin":
+        raise _SupervisionUnavailable(
+            f"no process-tree monitor for {sys.platform} in this build"
+        )
+    name = ctypes.util.find_library("System") or "libSystem.dylib"
+    try:
+        library = ctypes.CDLL(name, use_errno=True)
+        # Resolved here, by name, so a host missing any of the three refuses
+        # now rather than at the first sample.
+        library.proc_listpgrppids.argtypes = [
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        library.proc_listpgrppids.restype = ctypes.c_int
+        library.proc_pid_rusage.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_void_p,
+        ]
+        library.proc_pid_rusage.restype = ctypes.c_int
+        library.mach_timebase_info.argtypes = [ctypes.POINTER(_MachTimebase)]
+        library.mach_timebase_info.restype = ctypes.c_int
+    except (OSError, AttributeError) as error:
+        raise _SupervisionUnavailable(
+            "this host offers no process accounting interface"
+        ) from error
+    return library
+
+
+def _seconds_per_tick(library: ctypes.CDLL) -> float:
+    """Seconds in one unit of the times ``proc_pid_rusage`` reports.
+
+    ``<sys/resource.h>`` documents ``ri_user_time`` and its neighbours as
+    nanoseconds, and on Intel they are -- the Mach timebase is 1/1 there, so the
+    two readings coincide and the documentation is never contradicted. On Apple
+    silicon the timebase is 125/3: the fields are Mach absolute units, and read
+    as nanoseconds they under-report consumed CPU by a factor of twenty-four,
+    which would put the 1,800 second ceiling of 17.1 out of reach. The scale is
+    therefore asked for rather than assumed, and it was measured against
+    :func:`resource.getrusage` over a known burn before it was relied on.
+    """
+    timebase = _MachTimebase()
+    if library.mach_timebase_info(ctypes.byref(timebase)) != 0 or not timebase.denom:
+        raise _SupervisionUnavailable("the host clock scale is unavailable")
+    return int(timebase.numer) / int(timebase.denom) / 1e9
+
+
+class _ProcessTreeSupervisor:
+    """Accounts one job's whole process tree against the ceilings of 17.1.
+
+    **The unit is the session group, not the parent links.** The child is
+    spawned into a session of its own, so every process the job starts carries
+    its process group id. Enumerating that group rather than walking children
+    from the root is both more complete and more sound, and both halves were
+    measured on this host. Complete: a descendant whose own parent dies is
+    reparented to ``launchd`` but *keeps its process group*, so a walk of the
+    parent links loses it while this still finds it. Sound: joining a process
+    group requires being in the same session, so nothing outside this job can
+    appear, and the supervisor keeps no per-pid state for a reused pid to be
+    mistaken for -- the group membership is the identity.
+
+    **Memory is the sum across the group.** 17.1 says 1 GiB per job *including
+    children*, so a per-process ceiling would not be it: four processes at
+    300 MiB each breach a ceiling none of them reaches. Shared pages are
+    counted once per process that maps them, which over-states the total by a
+    few megabytes of interpreter and library text and so errs towards refusing;
+    against a 1 GiB ceiling that is noise.
+
+    **CPU is cumulative, and short-lived descendants do not escape it.** A
+    sample sums, over every member, that member's own consumed time *and* the
+    time of every descendant it has already reaped -- the kernel's own
+    ``ri_child_*`` accounting. So a Tesseract pass that runs and exits entirely
+    between two samples is still charged in full, because the process that
+    reaped it carries its time, and the charge therefore does not depend on
+    having observed the process alive. The time has to be collected from every
+    member rather than from the root alone: a grandchild reaped by a *live*
+    intermediate process is parked in that process's ``ri_child_*`` and does not
+    reach the root's until the intermediate one is itself reaped. Measured.
+
+    Nothing is counted twice. A member is either live, and contributes its own
+    time, or reaped, and contributes through exactly one ancestor's
+    ``ri_child_*``; a zombie is still readable and so is still counted as
+    itself. The charge is additionally held to a high-water mark, because a job
+    does not earn CPU back by letting the process that spent it disappear.
+
+    **The one residual.** A descendant orphaned to ``launchd`` and reaped there
+    takes its unsampled tail with it: no member of the group carries it. That
+    needs an intermediate process to die while its own child runs, which the
+    pinned readers do not do -- they wait on what they start -- and which a
+    hostile document cannot arrange, since it supplies data and not process
+    topology. The high-water mark means whatever was already charged stays
+    charged. Recorded in the DOC-16 ledger entry rather than papered over.
+    """
+
+    def __init__(
+        self, root_pid: int, *, memory_bytes: int, cpu_seconds: float
+    ) -> None:
+        self._root = root_pid
+        self._memory_bytes = memory_bytes
+        self._cpu_seconds = cpu_seconds
+        self._libproc = _load_libproc()
+        self._tick = _seconds_per_tick(self._libproc)
+        #: The job's charge so far, in seconds. Never allowed to fall.
+        self.consumed_seconds = 0.0
+
+    def sample(self) -> tuple[str, str]:
+        """Account the live tree once: a breach reason and detail, or two blanks.
+
+        Raises :class:`_SupervisionUnavailable` rather than returning a
+        measurement it cannot stand behind.
+        """
+        members = self._members()
+        resident = 0
+        consumed = 0.0
+        for pid in members:
+            usage = self._usage(pid)
+            if usage is None:
+                continue
+            resident += usage.ri_resident_size
+            consumed += self._tick * (
+                usage.ri_user_time
+                + usage.ri_system_time
+                + usage.ri_child_user_time
+                + usage.ri_child_system_time
+            )
+        self.consumed_seconds = max(self.consumed_seconds, consumed)
+        if resident > self._memory_bytes:
+            return (
+                REASON_MEMORY_LIMIT,
+                f"{resident} bytes resident across {len(members)} processes",
+            )
+        if self.consumed_seconds > self._cpu_seconds:
+            return (
+                REASON_CPU_LIMIT,
+                f"{self.consumed_seconds:.1f}s of {self._cpu_seconds}s",
+            )
+        return "", ""
+
+    def _members(self) -> tuple[int, ...]:
+        """Every process in the job's session group, the leader included.
+
+        ``proc_listpgrppids`` returns a *count* of pids -- not a byte length,
+        whatever the buffer-sized argument suggests -- and fills exactly what it
+        was given room for, reporting no error when there were more. A buffer
+        that came back full is therefore read as a possible truncation and the
+        call repeated with a larger one, because an incomplete member list
+        accounted as if it were the tree is the quiet failure this whole class
+        exists to avoid.
+        """
+        capacity = 64
+        while capacity <= MAX_TREE_PROCESSES:
+            buffer = (ctypes.c_int32 * capacity)()
+            ctypes.set_errno(0)
+            count = self._libproc.proc_listpgrppids(
+                self._root, ctypes.byref(buffer), ctypes.sizeof(buffer)
+            )
+            failure = ctypes.get_errno()
+            if count < 0 or (count == 0 and failure):
+                # The wrapper answers a failure with zero and an errno, which is
+                # otherwise exactly what an emptied group looks like.
+                raise _SupervisionUnavailable(
+                    f"the job's process group could not be read: errno {failure}"
+                )
+            if count < capacity:
+                return tuple(buffer[index] for index in range(count))
+            capacity *= 2
+        raise _SupervisionUnavailable(
+            f"the job holds over {MAX_TREE_PROCESSES} processes"
+        )
+
+    def _usage(self, pid: int) -> _RusageInfoV3 | None:
+        """One member's accounting, or ``None`` when it has already been reaped.
+
+        A member that exits between the enumeration and this read is the
+        ordinary case and not a monitor failure: whatever it consumed is already
+        in the ``ri_child_*`` of whichever process reaped it, and a zombie is
+        still readable, so nothing is lost at the moment of exit either. Any
+        other refusal is a monitor failure -- a member of this job's own session
+        that cannot be measured leaves the tree with no ceiling.
+        """
+        usage = _RusageInfoV3()
+        ctypes.set_errno(0)
+        if (
+            self._libproc.proc_pid_rusage(
+                pid, RUSAGE_INFO_V3, ctypes.byref(usage)
+            )
+            != 0
+        ):
+            failure = ctypes.get_errno()
+            if failure in (errno.ESRCH, errno.ENOENT):
+                return None
+            raise _SupervisionUnavailable(
+                f"a member of the job could not be accounted: errno {failure}"
+            )
+        return usage
 
 
 def _read_reply(reply_path: Path) -> Mapping[str, Any]:
@@ -1215,14 +1629,15 @@ def _apply_resource_limits(wall_seconds: int) -> tuple[str, ...]:
 
     ``RLIMIT_AS`` is absent on purpose: macOS does not enforce it, and naming an
     unenforced control would make the record say more than the host does. So the
-    1 GiB resident-memory ceiling of 17.1 is **not** enforced here by anything,
-    and the parent's wall clock is the binding control.
+    1 GiB resident-memory ceiling of 17.1 is not enforced *here*; it is enforced
+    across the whole tree by :class:`_ProcessTreeSupervisor` in the parent.
 
     ``RLIMIT_CPU`` is consumed CPU time and not wall clock, and each process in
     the tree counts its own: a child inherits the ceiling but starts from zero.
-    It therefore bounds a spinning parser and does not bound the tree, which is
-    again the parent's wall clock. Windows binds none of these at all, and says
-    so by naming none.
+    It therefore bounds a spinning parser and does not bound the tree -- the
+    supervisor's cumulative budget is what bounds that, and this remains the
+    cheaper control that stops one runaway process first. Windows binds none of
+    these at all, and says so by naming none.
     """
     try:
         import resource
@@ -1472,16 +1887,20 @@ __all__ = [
     "MAX_SOURCE_BYTES",
     "OCR_EXTRACTION_SECONDS",
     "PROTOCOL_VERSION",
+    "REASON_CPU_LIMIT",
     "REASON_CRASHED",
     "REASON_INTERNAL",
     "REASON_ISOLATION",
+    "REASON_MEMORY_LIMIT",
     "REASON_PROTOCOL",
     "REASON_RESOURCE_LIMIT",
     "REASON_SCRATCH_RESIDUE",
     "REASON_SOURCE_OVERSIZE",
     "REASON_SPAWN",
+    "REASON_SUPERVISION",
     "REASON_TIMEOUT",
     "REQUIRED_CONFINEMENT",
+    "WORKER_MEMORY_BYTES",
     "DocumentWorkerFailed",
     "IsolationUnavailable",
     "confine_process",

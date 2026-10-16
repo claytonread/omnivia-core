@@ -160,17 +160,20 @@ print(json.dumps({
 }))
 '''
 
-#: The isolated route only extracts where a confinement adapter exists, so
-#: everything that drives a real child end to end is scoped to that platform.
-#: The complement -- that a platform without one refuses rather than extracting
-#: unconfined -- is asserted in its own test below.
+#: The isolated route runs only where this build has both of its adapters: the
+#: confinement of :func:`confine_process` and the process accounting the parent
+#: supervises the tree with. Everything that drives a real child end to end is
+#: therefore scoped to that platform -- including the tests of the parent's own
+#: typed failures, which need the parent loop to get as far as running a child
+#: at all. The complement, that a platform with neither refuses rather than
+#: extracting unconfined and unaccounted, is asserted in its own test below.
 needs_confinement = pytest.mark.skipif(
     sys.platform != "darwin",
-    reason="only macOS ships a confinement adapter in this build",
+    reason="only macOS ships the confinement and accounting this build requires",
 )
 needs_no_confinement = pytest.mark.skipif(
     sys.platform == "darwin",
-    reason="this host has a confinement adapter, so nothing here fails closed",
+    reason="this host has both adapters, so nothing here fails closed",
 )
 
 
@@ -489,15 +492,24 @@ def test_an_unconfined_child_that_extracted_anyway_is_not_believed() -> None:
 
 
 @needs_no_confinement
-def test_the_production_route_refuses_outright_where_nothing_can_be_sealed() -> None:
-    # On a host with no adapter the route produces no outcome at all. The
+def test_the_production_route_refuses_outright_where_nothing_can_be_supervised(
+) -> None:
+    # On a host with neither adapter the route produces no outcome at all. The
     # refusal is the worker's own typed reason, never one of the two refusals
     # that mean something about the document.
+    #
+    # Of the two preconditions this host fails, the one named here is the
+    # supervisor's: the tree's accounting is established before the child is
+    # handed its request, so it is reached first, and the seal is never
+    # attempted. That the seal refuses here too is asserted directly by
+    # `test_a_platform_with_no_adapter_refuses_instead_of_running_unconfined`,
+    # and the child's own half of it by
+    # `test_a_refused_seal_refuses_the_extraction_before_a_byte_is_read`.
     with pytest.raises(DocumentWorkerFailed) as failure:
         extract_document_isolated(
             b"the admitted bytes", media_type="text/plain", capture_id=CAPTURE
         )
-    assert failure.value.reason == REASON_ISOLATION
+    assert failure.value.reason == document_worker.REASON_SUPERVISION
 
 
 def test_a_worker_failure_is_neither_of_the_two_document_verdicts() -> None:
@@ -732,6 +744,7 @@ def test_a_refused_seal_refuses_the_extraction_before_a_byte_is_read(
     assert refusal.value.reason == REASON_ISOLATION
 
 
+@needs_confinement
 def test_a_worker_that_exits_non_zero_is_a_crash_and_not_an_outcome(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -748,6 +761,7 @@ def test_a_worker_that_exits_non_zero_is_a_crash_and_not_an_outcome(
     assert failure.value.detail == "exit 3"
 
 
+@needs_confinement
 def test_a_worker_killed_by_a_signal_is_a_crash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -768,6 +782,7 @@ def test_a_worker_killed_by_a_signal_is_a_crash(
     assert failure.value.detail == f"signal {int(signal.SIGSEGV)}"
 
 
+@needs_confinement
 def test_a_worker_stopped_by_a_resource_ceiling_says_so(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -789,6 +804,7 @@ def test_a_worker_stopped_by_a_resource_ceiling_says_so(
     assert failure.value.reason == REASON_RESOURCE_LIMIT
 
 
+@needs_confinement
 def test_a_worker_that_outruns_its_budget_is_a_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -805,7 +821,7 @@ def test_a_worker_that_outruns_its_budget_is_a_timeout(
     assert failure.value.reason == REASON_TIMEOUT
 
 
-@pytest.mark.skipif(os.name != "posix", reason="sessions and killpg are POSIX")
+@needs_confinement
 def test_a_timeout_takes_the_processes_the_child_started_with_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -849,6 +865,7 @@ def test_a_timeout_takes_the_processes_the_child_started_with_it(
     raise AssertionError(f"process {pid} outlived the worker's budget")
 
 
+@needs_confinement
 def test_a_worker_that_writes_nothing_is_not_an_empty_extraction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -863,6 +880,7 @@ def test_a_worker_that_writes_nothing_is_not_an_empty_extraction(
     assert failure.value.detail == "the worker wrote no reply"
 
 
+@needs_confinement
 def test_a_reply_that_is_not_this_protocol_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1025,6 +1043,7 @@ def test_cleanup_follows_no_link_standing_where_the_scratch_root_is(
     assert oct((outside / "inner").stat().st_mode)[-3:] == "755"
 
 
+@needs_confinement
 def test_a_cleanup_that_leaves_the_admitted_bytes_behind_is_not_a_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1044,6 +1063,7 @@ def test_a_cleanup_that_leaves_the_admitted_bytes_behind_is_not_a_success(
     shutil.rmtree(left[0], ignore_errors=True)
 
 
+@needs_confinement
 def test_a_cleanup_failure_never_replaces_the_cause_the_worker_already_had(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
