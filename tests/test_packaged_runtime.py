@@ -657,18 +657,16 @@ def test_the_default_selection_is_served_from_the_packaged_bytes(
         assert len(resources.model_hashes) == 2
 
 
-def test_a_replaced_payload_is_an_unverified_model_and_not_a_pause(
+def test_a_replaced_or_absent_packaged_payload_pauses_the_frozen_capture(
     tmp_path: Path,
 ) -> None:
-    """A capture admitted against bundled bytes that have moved settles.
+    """A capture admitted against bundled bytes waits for those exact bytes.
 
-    No pin was ever taken for packaged bytes, so asking the managed cache to
-    re-assert one would raise `CaptureNotExecutable` and pause the obligation
-    for ever. What is actually true is a resource condition -- these are not the
-    bytes this capture was admitted against -- which is recorded against the
-    extraction and recovered by reinstalling.
+    Packaged bytes are outside the managed cache, so no cache pin can recreate
+    or substitute them. Replacing or removing the verified payload therefore
+    pauses the obligation with its immutable admitted identities intact; a
+    compatible repair can restore those exact bytes and resume the same work.
     """
-    from omnivia_core_runtime.service.ocr_resources import REASON_UNVERIFIED
     from omnivia_core_runtime.service.processing_settings import (
         DEFAULT_SETTINGS,
         CaptureNotExecutable,
@@ -704,28 +702,25 @@ def test_a_replaced_payload_is_an_unverified_model_and_not_a_pause(
     replaced = installation_catalogue(installation)
     assert replaced is not None
 
-    with replaced.frozen_resources(
-        operation_id="capture-pin",
-        admitted=admitted,
-        requested=DEFAULT_SETTINGS.languages,
-    ) as resources:
-        assert not resources.available
-        assert resources.reason == REASON_UNVERIFIED
-        assert resources.unavailable_models == ("eng",)
-    # And with no payload at all the answer is the same condition, not a pause.
+    with pytest.raises(CaptureNotExecutable, match="paused rather than settled"):
+        with replaced.frozen_resources(
+            operation_id="capture-pin",
+            admitted=admitted,
+            requested=DEFAULT_SETTINGS.languages,
+        ):
+            pass
+    # An absent verified payload is the same compatibility pause, not a
+    # terminal model condition under bytes the capture never admitted.
     (candidate / payload.MANIFEST_NAME).unlink()
     gone = installation_catalogue(installation)
     assert gone is not None
-    try:
+    with pytest.raises(CaptureNotExecutable, match="paused rather than settled"):
         with gone.frozen_resources(
             operation_id="capture-pin",
             admitted=admitted,
             requested=DEFAULT_SETTINGS.languages,
-        ) as resources:
-            assert not resources.available
-            assert resources.reason == REASON_UNVERIFIED
-    except CaptureNotExecutable as pause:  # pragma: no cover - the defect this guards
-        raise AssertionError("an absent payload paused instead of settling") from pause
+        ):
+            pass
 
 
 def test_a_packaged_admission_resolves_to_the_profile_it_executes_under(
