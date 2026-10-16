@@ -31,6 +31,11 @@ exactly the accounting this slice was asked not to pretend to have:
   burst of CPU and frees the group id -- so the sample that sees the exit also
   charges that burst, and a descendant still behind it is killed while the
   group is still identified rather than left to outlive the job.
+* **Deadlined.** The wall budget is checked after the sample and before the
+  handover, so a first sample that spends the whole of it hands over nothing;
+  and because the exit is read rather than waited for, the deadline is applied
+  to the kernel's timestamp for that exit and not to the moment a sampling pass
+  got round to reading it -- past it either way, inside it either way.
 * **Terminal.** A breach kills the whole session, reaps the root child, removes
   the attempt directory and arrives as a resource failure -- never as a
   timeout, a crash, a verdict on the document or a success.
@@ -190,8 +195,11 @@ time.sleep(120)
 #: can be told to spend CPU and to leave processes behind in the job's group
 #: before it does -- which is what a real parser's Pandoc or Tesseract pass
 #: does, except that this one records what it did. Its arguments are the CPU
-#: seconds to burn, the number of processes to leave running, and a path
-#: outside the scratch to record its own pid and theirs at.
+#: seconds to burn, the number of processes to leave running, a path outside
+#: the scratch to record its own pid and theirs at, and wall seconds to linger
+#: for after the burn and before the reply, which is how a test places the
+#: moment of its exit either side of the job's deadline without spending CPU to
+#: get there.
 #:
 #: It claims a seal it never applied, because the parent will not read an
 #: extraction from a child that names no confinement. That is the point: on a
@@ -202,6 +210,7 @@ import json, os, subprocess, sys, time
 
 header = json.loads(sys.stdin.buffer.read())
 burn, survivors, marker = float(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+linger = float(sys.argv[4])
 left = [
     subprocess.Popen(
         [sys.executable, "-P", "-s", "-B", "-c", HOLDING, "1024"],
@@ -216,6 +225,7 @@ with open(marker, "w") as handle:
 deadline = time.process_time() + burn
 while time.process_time() < deadline:
     pass
+time.sleep(linger)
 with open(header["replyPath"], "w") as handle:
     json.dump(
         {
@@ -351,6 +361,33 @@ def _kill_leftovers(marker: Path) -> None:
     for pid in marker.read_text().split()[1:]:
         with contextlib.suppress(OSError):
             os.kill(int(pid), signal.SIGKILL)
+
+
+def _stand_in(
+    monkeypatch: pytest.MonkeyPatch,
+    marker: Path,
+    *,
+    burn: float = 0,
+    survivors: int = 0,
+    linger: float = 0,
+) -> None:
+    """Run :data:`_REPLYING_WORKER` as the job's worker, told what to do first."""
+    monkeypatch.setattr(
+        document_worker,
+        "_worker_argv",
+        lambda: [
+            sys.executable,
+            "-P",
+            "-s",
+            "-B",
+            "-c",
+            _REPLYING_WORKER,
+            str(burn),
+            str(survivors),
+            str(marker),
+            str(linger),
+        ],
+    )
 
 
 def _watch_supervisor(
@@ -810,6 +847,156 @@ def test_no_source_byte_is_offered_before_one_real_sample_has_succeeded(
     assert events[0] == ("sample", offered[0]), events[:3]
 
 
+# -- the absolute deadline is absolute, and is the exit's and not the read's --
+
+
+@needs_accounting
+def test_a_first_sample_that_spends_the_whole_budget_offers_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The deadline is checked between the sample and the handover.
+
+    The first sample of a job is the expensive one -- a process group has to be
+    enumerated and every member of it read -- and on a loaded host that is not
+    instant. If it consumes the whole wall budget then the attempt is already
+    over, and handing the request across at that point would start a hostile
+    document through the parsers under a deadline that had expired before they
+    were given it, which is the opposite of what a hard deadline is for. The
+    sample here is a real one, simply slow once; nothing else about the job is
+    changed, and the budget it spends is the job's own.
+    """
+    marker = tmp_path / "pids"
+    wall = 1
+    monkeypatch.setattr(document_worker, "EXTRACTION_SECONDS", wall)
+    offered: list[int] = []
+    real_offer = document_worker._offer
+    real_sample = document_worker._ProcessTreeSupervisor.sample
+    slow = [True]
+
+    def sample(self: document_worker._ProcessTreeSupervisor) -> tuple[str, str]:
+        answer = real_sample(self)
+        if slow[0]:
+            slow[0] = False
+            time.sleep(wall + 0.3)
+        return answer
+
+    def offer(process: subprocess.Popen[bytes], pending: bytes) -> bytes | None:
+        offered.append(process.pid)
+        return real_offer(process, pending)
+
+    # Before `_watch_supervisor`, which replaces the module's name for the
+    # class with a function; this one patches the class itself.
+    monkeypatch.setattr(document_worker._ProcessTreeSupervisor, "sample", sample)
+    monkeypatch.setattr(document_worker, "_offer", offer)
+    _stand_in(monkeypatch, marker)
+    roots = _watch_supervisor(monkeypatch, budget=60)
+    before = _attempt_directories()
+
+    with pytest.raises(DocumentWorkerFailed) as failure:
+        extract_document_isolated(
+            b"the admitted bytes", media_type="text/plain", capture_id=CAPTURE
+        )
+
+    assert failure.value.reason == document_worker.REASON_TIMEOUT
+    assert failure.value.detail == f"{wall}s"
+    # Not one byte of the request crossed, and the stand-in -- which records its
+    # pid as soon as it has read the header -- therefore never began.
+    assert offered == [], offered
+    assert not marker.exists()
+    # The child that was handed nothing is still killed and reaped.
+    assert len(roots) == 1, roots
+    _wait_for_exit(roots[0])
+    assert _attempt_directories() <= before
+
+
+@needs_accounting
+def test_a_root_whose_kernel_exit_is_past_the_deadline_is_a_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A late sample decides on when the root ended, not on when it was read.
+
+    The exit is observed by a sample, and a sample is a loop over the whole
+    group, so the reading that says the root has finished can arrive well after
+    the budget the root finished outside. This stand-in lingers past the wall
+    deadline *without spending CPU*, so neither ceiling the supervisor holds is
+    the one under test, then writes a reply that would be read as a perfectly
+    good extraction and exits; the supervision interval is long enough that the
+    sample which sees it is taken later still. The kernel timestamped the exit,
+    the timestamp is past the deadline, and that is a timeout -- decided before
+    the root is reaped and before the reply is so much as opened.
+    """
+    marker = tmp_path / "pids"
+    wall = 1
+    monkeypatch.setattr(document_worker, "EXTRACTION_SECONDS", wall)
+    monkeypatch.setattr(document_worker, "SUPERVISION_SECONDS", wall + 3.0)
+    reads: list[Path] = []
+    real_read = document_worker._read_reply
+
+    def read_reply(reply_path: Path) -> Any:
+        reads.append(reply_path)
+        return real_read(reply_path)
+
+    monkeypatch.setattr(document_worker, "_read_reply", read_reply)
+    _stand_in(monkeypatch, marker, linger=wall + 1.0)
+    roots = _watch_supervisor(monkeypatch, budget=60)
+    before = _attempt_directories()
+
+    with pytest.raises(DocumentWorkerFailed) as failure:
+        extract_document_isolated(
+            b"the admitted bytes", media_type="text/plain", capture_id=CAPTURE
+        )
+
+    assert failure.value.reason == document_worker.REASON_TIMEOUT
+    assert failure.value.detail == f"{wall}s"
+    # It had the request, it ran, and it exited on its own -- so this is the
+    # timestamp being refused and not a child that failed to start.
+    root = int(marker.read_text().split()[0])
+    assert roots == [root], (roots, root)
+    # And nothing it wrote was accepted: the reply was never opened.
+    assert reads == [], reads
+    _wait_for_exit(root)
+    assert _attempt_directories() <= before
+
+
+@needs_accounting
+def test_a_root_that_exited_inside_the_budget_is_accepted_when_read_late(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The converse, and why the deadline is applied to the timestamp.
+
+    A deadline enforced on the moment the loop *noticed* would turn a finished
+    extraction into a timeout whenever a pass is slow, a host is loaded or an
+    interval is long: the job would be refused for the supervisor's own
+    lateness. This stand-in replies and exits almost at once, and the sample
+    that sees it is deliberately taken after the whole wall budget has passed.
+    The kernel says it ended inside the budget, so it goes through the ordinary
+    terminal handling -- empty group, then reap, then the reply.
+    """
+    marker = tmp_path / "pids"
+    wall = 2
+    monkeypatch.setattr(document_worker, "EXTRACTION_SECONDS", wall)
+    monkeypatch.setattr(document_worker, "SUPERVISION_SECONDS", wall + 2.0)
+    _stand_in(monkeypatch, marker)
+    roots = _watch_supervisor(monkeypatch, budget=60)
+    before = _attempt_directories()
+    started = time.monotonic()
+
+    outcome = extract_document_isolated(
+        b"the admitted bytes", media_type="text/plain", capture_id=CAPTURE
+    )
+    elapsed = time.monotonic() - started
+
+    assert outcome.state == "complete"
+    assert outcome.worker_build == "stand-in"
+    # The exit was not merely read late but read after the deadline the attempt
+    # was given, which is the only arrangement under which this says anything.
+    assert elapsed > wall, elapsed
+    root = int(marker.read_text().split()[0])
+    assert roots == [root], (roots, root)
+    _wait_for_exit(root)
+    assert _attempt_directories() <= before
+
+
 # -- the root is accounted before it is reaped -------------------------------
 
 
@@ -836,21 +1023,7 @@ def test_a_root_that_burns_and_exits_between_ticks_is_over_budget(
     # Long enough that the burn, the reply and the exit all fall between two
     # samples: the root is never once observed alive and over budget.
     monkeypatch.setattr(document_worker, "SUPERVISION_SECONDS", 3.0)
-    monkeypatch.setattr(
-        document_worker,
-        "_worker_argv",
-        lambda: [
-            sys.executable,
-            "-P",
-            "-s",
-            "-B",
-            "-c",
-            _REPLYING_WORKER,
-            "0.6",
-            "0",
-            str(marker),
-        ],
-    )
+    _stand_in(monkeypatch, marker, burn=0.6)
     before = _attempt_directories()
     with pytest.raises(DocumentWorkerFailed) as failure:
         extract_document_isolated(
@@ -889,21 +1062,7 @@ def test_a_descendant_that_outlives_the_root_is_killed_and_is_not_a_success(
     """
     marker = tmp_path / "pids"
     _watch_supervisor(monkeypatch)
-    monkeypatch.setattr(
-        document_worker,
-        "_worker_argv",
-        lambda: [
-            sys.executable,
-            "-P",
-            "-s",
-            "-B",
-            "-c",
-            _REPLYING_WORKER,
-            "0",
-            "1",
-            str(marker),
-        ],
-    )
+    _stand_in(monkeypatch, marker, survivors=1)
     before = _attempt_directories()
     try:
         with pytest.raises(DocumentWorkerFailed) as failure:

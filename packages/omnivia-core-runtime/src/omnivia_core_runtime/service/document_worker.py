@@ -734,10 +734,20 @@ def _supervise(
     live descendants. :func:`_account` reads the exit out of the root's own
     accounting instead.
 
-    The deadline is absolute and taken before the first sample, so neither the
-    handover nor a slow sample extends it. It still bounds the attempt on its
-    own: the cumulative CPU budget is a second, independent ceiling, and a tree
-    that sleeps for two minutes breaches neither.
+    **The deadline is absolute, and nothing is done after it has passed.** It is
+    taken before the first sample, so neither the handover nor a slow sample
+    extends it -- and it is checked *between* the sample and the handover, not
+    after it. The first sample of a job is the most expensive one and it happens
+    while the child still holds no source: if reading the group has itself
+    consumed the whole budget, the attempt is over, and handing the request
+    across at that point would start work on the document under a deadline that
+    has already expired. :func:`_account` holds the other end of the same rule,
+    where a root whose kernel exit timestamp is past the deadline is a timeout
+    rather than something to reap and accept.
+
+    The deadline still bounds the attempt on its own: the cumulative CPU budget
+    is a second, independent ceiling, and a tree that sleeps for two minutes
+    breaches neither.
     """
     deadline = time.monotonic() + wall
     if process.stdin is not None:
@@ -746,19 +756,23 @@ def _supervise(
         os.set_blocking(process.stdin.fileno(), False)
     pending: bytes | None = request
     while True:
-        status = _account(process, supervisor)
+        status = _account(process, supervisor, deadline=deadline, wall=wall)
         if status is not None:
             return status
-        if pending is not None:
-            pending = _offer(process, pending)
         if time.monotonic() >= deadline:
             _end_session(process)
             raise DocumentWorkerFailed(REASON_TIMEOUT, f"{wall}s")
+        if pending is not None:
+            pending = _offer(process, pending)
         time.sleep(SUPERVISION_SECONDS)
 
 
 def _account(
-    process: subprocess.Popen[bytes], supervisor: _ProcessTreeSupervisor
+    process: subprocess.Popen[bytes],
+    supervisor: _ProcessTreeSupervisor,
+    *,
+    deadline: float,
+    wall: int,
 ) -> int | None:
     """Account the tree once; return the root's status only once the job is over.
 
@@ -770,6 +784,17 @@ def _account(
       that observes the exit is also the first sample to charge the root's
       terminal usage -- a job that spent its last CPU on the way out is over
       budget, and a reply it managed to write is not a success;
+    * a root whose exit the kernel timestamped *after* the absolute deadline is
+      a timeout, decided before anything is reaped or accepted. The caller's
+      own deadline check cannot stand in for this one: the exit is observed by
+      a sample, and a sample is a loop over the whole group, so the reading that
+      says the root has finished can arrive after the budget it finished
+      outside. ``ri_proc_exit_abstime`` records when it actually ended, so that
+      is what the deadline is applied to rather than when this loop noticed.
+      The converse holds too and matters as much: a root that exited inside the
+      budget stays eligible for ordinary terminal handling however late the
+      sampling loop gets to it, so a slow pass cannot turn a finished
+      extraction into a timeout;
     * a root that has exited is accepted as complete only when nothing else is
       left in the job's process group;
     * a group that still holds descendants is killed *before* the leader is
@@ -787,8 +812,16 @@ def _account(
     if breach:
         _end_session(process)
         raise DocumentWorkerFailed(breach, detail)
-    if not supervisor.root_exited:
+    exited_at = supervisor.root_exit_seconds
+    if exited_at is None:
         return None
+    if exited_at > deadline:
+        # It ran past the wall budget and the sample is only now saying so. The
+        # session is still killed: the leader is unreaped, so the group id is
+        # still this job's, and a descendant of a timed-out root is no more
+        # acceptable than one of a completed root.
+        _end_session(process)
+        raise DocumentWorkerFailed(REASON_TIMEOUT, f"{wall}s")
     # The group as the accepted sample read it, which is the enumeration that
     # also found the root exited: the leader is a zombie, so it cannot fork, and
     # a group whose only member is the leader has nothing left that could.
@@ -1070,6 +1103,14 @@ class _ProcessTreeSupervisor:
     zombie -- and its terminal usage, and the group id it still holds open --
     stays there until this code chooses to collect it.
 
+    The timestamp is kept and not merely tested for zero. It is a Mach absolute
+    instant, which the tick scale above converts onto exactly the timeline
+    :func:`time.monotonic` reports, so the *when* of the exit is comparable with
+    the attempt's absolute deadline -- measured on this host, where the timebase
+    is not 1/1 and the two would otherwise be a factor of twenty-four apart.
+    That is what lets :func:`_account` decide a late-observed exit on when the
+    root ended rather than on when a sampling pass got round to reading it.
+
     **The one residual.** A descendant orphaned to ``launchd`` and reaped there
     takes its unsampled tail with it: no member of the group carries it. That
     needs an intermediate process to die while its own child runs, which the
@@ -1089,12 +1130,13 @@ class _ProcessTreeSupervisor:
         self._tick = _seconds_per_tick(self._libproc)
         #: The job's charge so far, in seconds. Never allowed to fall.
         self.consumed_seconds = 0.0
-        #: The group as the last accepted sample read it, and whether that
-        #: sample found the root exited and not yet reaped. These are what the
-        #: caller decides completion on, and neither carries a value until a
+        #: The group as the last accepted sample read it, and -- when that
+        #: sample found the root exited and not yet reaped -- *when* the kernel
+        #: says it ended, on :func:`time.monotonic`'s timeline. These are what
+        #: the caller decides completion on, and neither carries a value until a
         #: sample has actually succeeded.
         self.members: tuple[int, ...] = ()
-        self.root_exited = False
+        self.root_exit_seconds: float | None = None
 
     def sample(self) -> tuple[str, str]:
         """Account the live tree once: a breach reason and detail, or two blanks.
@@ -1111,9 +1153,9 @@ class _ProcessTreeSupervisor:
             raise _SupervisionUnavailable(
                 "the job's process group could not be read coherently"
             )
-        members, resident, consumed, exited = reading
+        members, resident, consumed, exited_at = reading
         self.members = members
-        self.root_exited = exited
+        self.root_exit_seconds = exited_at
         self.consumed_seconds = max(self.consumed_seconds, consumed)
         if resident > self._memory_bytes:
             return (
@@ -1127,7 +1169,9 @@ class _ProcessTreeSupervisor:
             )
         return "", ""
 
-    def _read_tree(self) -> tuple[tuple[int, ...], int, float, bool] | None:
+    def _read_tree(
+        self,
+    ) -> tuple[tuple[int, ...], int, float, float | None] | None:
         """One whole pass over the group, or ``None`` when it was not coherent.
 
         A pass is coherent when the root was among the members it enumerated
@@ -1156,7 +1200,7 @@ class _ProcessTreeSupervisor:
             return None
         resident = 0
         consumed = 0.0
-        exited = False
+        exited_at: float | None = None
         for pid in members:
             usage = self._usage(pid)
             if usage is None:
@@ -1171,9 +1215,12 @@ class _ProcessTreeSupervisor:
             if pid == self._root and usage.ri_proc_exit_abstime:
                 # Exited and still a zombie: this reading is its terminal
                 # usage, and the group id is still held open by its pid. Both
-                # are true only until this job's loop reaps it.
-                exited = True
-        return members, resident, consumed, exited
+                # are true only until this job's loop reaps it. The instant is
+                # converted rather than discarded, so the caller can hold the
+                # exit itself to the deadline instead of holding the moment it
+                # was noticed to it.
+                exited_at = self._tick * usage.ri_proc_exit_abstime
+        return members, resident, consumed, exited_at
 
     def _members(self) -> tuple[int, ...]:
         """Every process in the job's session group, the leader included.
