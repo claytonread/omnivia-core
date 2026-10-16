@@ -18,6 +18,7 @@ public actor FileMonitoringCoordinator {
     private let reader: any CoordinatedOriginalReading
     private let scheduling: AutomaticSchedulingStateMachine
     private let routeElection: AutomaticSourceRouteElection
+    private let suppressions: AutomaticCaptureSuppressionStore
     private let processingProfile: ProcessingProfileBinding
     /// The same gate the queue, the subscription stores and the scheduling machine were built with,
     /// so this owner can hold one critical section across all three. See `PublicationGate`.
@@ -41,6 +42,7 @@ public actor FileMonitoringCoordinator {
         reader: any CoordinatedOriginalReading,
         scheduling: AutomaticSchedulingStateMachine,
         routeElection: AutomaticSourceRouteElection,
+        suppressions: AutomaticCaptureSuppressionStore,
         processingProfile: ProcessingProfileBinding,
         publicationGate: PublicationGate,
         currentCapture: (any CurrentCaptureVerifying)? = nil,
@@ -53,6 +55,7 @@ public actor FileMonitoringCoordinator {
         self.reader = reader
         self.scheduling = scheduling
         self.routeElection = routeElection
+        self.suppressions = suppressions
         self.processingProfile = processingProfile
         self.publicationGate = publicationGate
         self.currentCapture = currentCapture
@@ -447,11 +450,84 @@ public actor FileMonitoringCoordinator {
             }
             let digest = Self.digest(bytes)
             let checkedAt = ISO8601DateFormatter().string(from: Date())
+            if let suppression = suppressions.suppression(
+                workspaceRef: value.workspaceRef,
+                requestedSourceIdentity: value.requestedSourceIdentity,
+                observedDigest: digest
+            ) {
+                let verdict = await currentCaptureVerdict(for: value, observedDigest: digest)
+                switch verdict {
+                case .current:
+                    do {
+                        try suppressions.clear(
+                            workspaceRef: value.workspaceRef,
+                            requestedSourceIdentity: value.requestedSourceIdentity,
+                            observedDigest: digest
+                        )
+                    } catch {
+                        return unchanged(
+                            value,
+                            claim: claim,
+                            checkedAt: checkedAt,
+                            verdict: .unconfirmed(.unreadable)
+                        )
+                    }
+                    return unchanged(
+                        value,
+                        claim: claim,
+                        checkedAt: checkedAt,
+                        verdict: .current
+                    )
+                case .unconfirmed:
+                    return unchanged(
+                        value,
+                        claim: claim,
+                        checkedAt: checkedAt,
+                        verdict: verdict
+                    )
+                case .notCurrent:
+                    return suppressed(
+                        value,
+                        claim: claim,
+                        digest: digest,
+                        byteLength: UInt64(bytes.count),
+                        checkedAt: checkedAt,
+                        suppression: suppression
+                    )
+                }
+            }
             guard digest != value.lastObservedDigest else {
                 // Same bytes are not yet "nothing to do": that needs Core's own statement that
                 // the capture behind them still stands. The call is a process round trip, so it
                 // runs off this actor and before the gate is taken.
                 let verdict = await currentCaptureVerdict(for: value, observedDigest: digest)
+                if case let .notCurrent(reason) = verdict,
+                   reason == .sourceRemoved || reason == .captureNotRetained
+                {
+                    guard (try? suppressions.record(
+                        workspaceRef: value.workspaceRef,
+                        requestedSourceIdentity: value.requestedSourceIdentity,
+                        observedDigest: digest,
+                        reason: reason,
+                        recordedAt: checkedAt
+                    )) != nil else {
+                        if scheduling.state(of: claim.key)?.published != true {
+                            _ = try? scheduling.cancel(
+                                claim.key,
+                                generation: claim.generation,
+                                at: clock()
+                            )
+                        }
+                        let dirty = try? subscriptions.update(id: value.subscriptionID) {
+                            $0.needsReconciliation = true
+                        }
+                        return FileMonitoringReport(
+                            subscriptionID: value.subscriptionID,
+                            state: dirty?.state ?? value.state,
+                            queued: false
+                        )
+                    }
+                }
                 return unchanged(value, claim: claim, checkedAt: checkedAt, verdict: verdict)
             }
             let observedDirtyEpoch = value.dirtyEpoch
@@ -742,6 +818,67 @@ public actor FileMonitoringCoordinator {
         "workspace_not_granted", "authorization_denied", "authentication_required",
         "capability_not_granted",
     ]
+
+    /// Completes a check without publication when another route or an earlier
+    /// process already learned that Core removed these exact source bytes.
+    private func suppressed(
+        _ value: FileSubscription,
+        claim: AutomaticSchedulingClaim,
+        digest: String,
+        byteLength: UInt64,
+        checkedAt: String,
+        suppression: AutomaticCaptureSuppression
+    ) -> FileMonitoringReport {
+        let settled = try? accessStore.withValidatedGenerations([
+            NativeAccessExpectation(accessRef: value.accessRef, generation: value.bindingGeneration),
+        ]) { () -> FileSubscription in
+            guard routeElection.isElected(
+                .direct(subscriptionID: value.subscriptionID),
+                workspaceRef: value.workspaceRef,
+                sourceIdentity: value.requestedSourceIdentity
+            ) else { throw CapturePreparationError.automaticRouteChanged }
+            guard let current = subscriptions.all().first(where: {
+                $0.subscriptionID == value.subscriptionID
+            }),
+                current.state == .active,
+                current.consentGeneration == value.consentGeneration,
+                current.configGeneration == value.configGeneration,
+                current.dirtyEpoch == value.dirtyEpoch
+            else { throw CapturePreparationError.consentChanged }
+            try scheduling.markCompletedWithoutPublication(
+                claim.key,
+                generation: claim.generation,
+                at: clock()
+            )
+            return try subscriptions.update(id: value.subscriptionID) {
+                $0.lastObservedDigest = digest
+                $0.lastObservedByteLength = byteLength
+                $0.lastObservedAt = checkedAt
+                $0.attention = FileAttention(
+                    kind: .copyNotCurrent,
+                    code: suppression.reason.rawValue,
+                    recordedAt: checkedAt,
+                    priorCaptureID: $0.currentSuccessfulCaptureID
+                )
+                $0.needsReconciliation = false
+            }
+        }
+        guard let settled else {
+            if scheduling.state(of: claim.key)?.published != true {
+                _ = try? scheduling.cancel(claim.key, generation: claim.generation, at: clock())
+            }
+            return FileMonitoringReport(
+                subscriptionID: value.subscriptionID,
+                state: value.state,
+                queued: false
+            )
+        }
+        return FileMonitoringReport(
+            subscriptionID: settled.subscriptionID,
+            state: settled.state,
+            queued: false
+        )
+    }
 
     /// Records what this scope's published intent observed. Every field is set to an absolute value
     /// derived from that intent, so applying it twice is applying it once.

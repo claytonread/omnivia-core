@@ -38,6 +38,9 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
     /// discovery, a direct submission — takes its identities from here, so
     /// overlapping routes over one original share one source.
     public let canonicalSources: CanonicalSourceRegistry
+    /// Durable source/digest tombstones learned from Core retention and removal
+    /// decisions. Shared by every automatic route in this environment.
+    public let automaticSuppressions: AutomaticCaptureSuppressionStore
     /// Approved immutable profile frozen into every capture this environment
     /// creates. It affects future captures only.
     public let processingProfile: ProcessingProfileBinding
@@ -123,6 +126,10 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             gate: gate,
             identity: nativeIdentity ?? { NativeFileIdentity.key(for: $0) }
         )
+        automaticSuppressions = try AutomaticCaptureSuppressionStore(
+            stateDirectory: stateRoot.appendingPathComponent("automatic-suppressions", isDirectory: true),
+            gate: gate
+        )
         automaticRouteElection = AutomaticSourceRouteElection(
             accessStore: accessStore,
             folders: folderSubscriptions,
@@ -149,7 +156,9 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             reader: reader,
             canonicalSources: canonicalSources,
             routeElection: automaticRouteElection,
+            suppressions: automaticSuppressions,
             processingProfile: processingProfile,
+            currentCapture: currentCapture,
             controlledStores: controlledStores,
             clock: reconciliationClock ?? { Date() }
         )
@@ -183,6 +192,7 @@ public final class DocumentIntakeEnvironment: @unchecked Sendable {
             reader: reader,
             scheduling: automaticScheduling,
             routeElection: automaticRouteElection,
+            suppressions: automaticSuppressions,
             processingProfile: processingProfile,
             publicationGate: gate,
             currentCapture: currentCapture,

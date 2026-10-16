@@ -42,7 +42,11 @@ public actor FolderMonitoringCoordinator {
     /// Shared with the individual-file monitor: exactly one active route reads
     /// each canonical source automatically.
     private let routeElection: AutomaticSourceRouteElection
+    private let suppressions: AutomaticCaptureSuppressionStore
     private let processingProfile: ProcessingProfileBinding
+    /// Core's governed current-source statement. Folder members use the same
+    /// verifier as direct watches so deletion suppression is route-independent.
+    private let currentCapture: (any CurrentCaptureVerifying)?
     /// Core/native-owned stores every scan excludes; see `DocumentIntakeEnvironment`.
     private let controlledStores: [URL]
     /// Wall clock for the observation timestamp and the add/change burst window.
@@ -64,7 +68,9 @@ public actor FolderMonitoringCoordinator {
         reader: any CoordinatedOriginalReading,
         canonicalSources: CanonicalSourceRegistry,
         routeElection: AutomaticSourceRouteElection,
+        suppressions: AutomaticCaptureSuppressionStore,
         processingProfile: ProcessingProfileBinding,
+        currentCapture: (any CurrentCaptureVerifying)? = nil,
         controlledStores: [URL] = [],
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
@@ -76,7 +82,9 @@ public actor FolderMonitoringCoordinator {
         self.reader = reader
         self.canonicalSources = canonicalSources
         self.routeElection = routeElection
+        self.suppressions = suppressions
         self.processingProfile = processingProfile
+        self.currentCapture = currentCapture
         self.controlledStores = controlledStores
     }
 
@@ -481,7 +489,47 @@ public actor FolderMonitoringCoordinator {
                 let digest = Self.digest(bytes)
                 member.lastObservedAt = observedAt
                 member.lastObservedByteLength = UInt64(bytes.count)
+                if suppressions.suppression(
+                    workspaceRef: subscription.workspaceRef,
+                    requestedSourceIdentity: member.requestedSourceIdentity,
+                    observedDigest: digest
+                ) != nil {
+                    // This route may never have observed the deletion itself:
+                    // a direct watch or overlapping root can have recorded it.
+                    // Keep only the digest/size observation and do not recreate
+                    // the removed capture.
+                    let verdict = await currentCaptureVerdict(
+                        for: member,
+                        observedDigest: digest
+                    )
+                    if verdict == .current {
+                        try suppressions.clear(
+                            workspaceRef: subscription.workspaceRef,
+                            requestedSourceIdentity: member.requestedSourceIdentity,
+                            observedDigest: digest
+                        )
+                    }
+                    member.lastObservedDigest = digest
+                    unchanged += 1
+                    Self.replace(member, in: &updated.members)
+                    continue
+                }
                 if digest == member.lastObservedDigest {
+                    let verdict = await currentCaptureVerdict(
+                        for: member,
+                        observedDigest: digest
+                    )
+                    if case let .notCurrent(reason) = verdict,
+                       reason == .sourceRemoved || reason == .captureNotRetained
+                    {
+                        _ = try suppressions.record(
+                            workspaceRef: subscription.workspaceRef,
+                            requestedSourceIdentity: member.requestedSourceIdentity,
+                            observedDigest: digest,
+                            reason: reason,
+                            recordedAt: observedAt
+                        )
+                    }
                     unchanged += 1
                     Self.replace(member, in: &updated.members)
                     continue
@@ -611,6 +659,40 @@ public actor FolderMonitoringCoordinator {
                     member.lastQueuedItemID = nil
                     updated.members.append(member)
                     continue
+                }
+                if suppressions.hasSuppression(
+                    workspaceRef: subscription.workspaceRef,
+                    requestedSourceIdentity: sourceIdentity
+                ) {
+                    // A renamed file can arrive as a newly discovered path while
+                    // retaining its canonical source identity. Read only to
+                    // compare with the minimal digest tombstone; never publish
+                    // matching removed bytes.
+                    let bytes = try accessStore.withReadAccess(
+                        accessRef: accessRef,
+                        expectedGeneration: descriptor.generation,
+                        expectedRootBindingGeneration: expectedGeneration
+                    ) { url in
+                        try reader.readStableBytes(
+                            from: url,
+                            maximumBytes: CaptureIntentV3.maximumPayloadBytes
+                        )
+                    }
+                    let digest = Self.digest(bytes)
+                    if suppressions.suppression(
+                        workspaceRef: subscription.workspaceRef,
+                        requestedSourceIdentity: sourceIdentity,
+                        observedDigest: digest
+                    ) != nil {
+                        member.baselineItemID = nil
+                        member.lastQueuedItemID = nil
+                        member.lastObservedDigest = digest
+                        member.lastObservedByteLength = UInt64(bytes.count)
+                        member.lastObservedAt = observedAt
+                        updated.members.append(member)
+                        unchanged += 1
+                        continue
+                    }
                 }
                 let seed = Self.seed(
                     subscription: subscription,
@@ -784,6 +866,22 @@ public actor FolderMonitoringCoordinator {
             expectedGeneration: subscription.rootBindingGeneration,
             purpose: .memberDiscovery
         ) { $0.pathComponents.count }) ?? -1
+    }
+
+    private func currentCaptureVerdict(
+        for member: FolderSubscriptionMember,
+        observedDigest: String
+    ) async -> CurrentCaptureVerdict {
+        guard let currentCapture else { return .unconfirmed(.unavailable) }
+        let documentID = member.linkedDocumentID
+        let captureID = member.currentSuccessfulCaptureID
+        return await Task.detached {
+            currentCapture.verify(
+                documentID: documentID,
+                captureID: captureID,
+                observedDigest: observedDigest
+            )
+        }.value
     }
 
     /// A one-item preparation is served by exactly one newly published or
