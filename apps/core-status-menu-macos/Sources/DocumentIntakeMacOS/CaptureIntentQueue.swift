@@ -461,6 +461,14 @@ public final class CaptureIntentQueue: @unchecked Sendable {
         gate.withLock { entries.values.sorted { $0.intent.itemId < $1.intent.itemId } }
     }
 
+    /// True once the immutable batch containing this item crossed the queue's
+    /// filesystem commit point, even if saving the derived index subsequently
+    /// failed. Automatic producers use this after an ambiguous publish error so
+    /// they retain the authority that the recoverable durable work names.
+    func hasDurablePublication(itemID: String) -> Bool {
+        gate.withLock { batchDigestByItem[itemID] != nil }
+    }
+
     /// Resolves the private bytes of an unresolved item, whether they were
     /// published as a batch directory or were left in the legacy payload
     /// directory by a v1/v2 queue.

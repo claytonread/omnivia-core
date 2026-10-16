@@ -362,6 +362,125 @@ final class MovedChildContinuationAcceptanceTests: XCTestCase {
         XCTAssertEqual(environment.accessStore.rootDescriptors().map(\.memberRefs), enrolledBefore)
     }
 
+    /// Capacity refusal happens after discovery has adopted the child but before
+    /// the queue owns it. The adoption is therefore provisional and must be
+    /// removed just like a child that leaves the root during its first capture.
+    func testCapacityRefusalAfterDiscoveryLeavesNoProvisionalRouteBehind() async throws {
+        let root = try temporaryDirectory()
+        let watched = root.appendingPathComponent("watched", isDirectory: true)
+        try FileManager.default.createDirectory(at: watched, withIntermediateDirectories: true)
+        let settled = watched.appendingPathComponent("settled.txt")
+        try Data("settled".utf8).write(to: settled)
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: RelocatingBookmarkCodec()
+        )
+        let folder = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        _ = try await folder.submit(
+            try folder.plan(
+                root: watched,
+                policy: FolderCapturePolicy(mode: .keepUpdated, recursive: true, includeHidden: false)
+            )
+        )
+        for entry in environment.queue.allEntries() {
+            try admit(entry, captureID: "dcap-" + String(repeating: "a", count: 64), queue: environment.queue)
+        }
+        _ = await environment.folderMonitoring.reconcileAll()
+
+        let routesBefore = environment.accessStore.descriptors().map(\.accessRef).sorted()
+        let enrolledBefore = environment.accessStore.rootDescriptors().map(\.memberRefs)
+        let membersBefore = environment.folderSubscriptions.all().first?.members.map(\.memberID)
+        let queuedBefore = Set(environment.queue.allEntries().map(\.intent.itemId))
+
+        let late = watched.appendingPathComponent("late.txt")
+        try Data("late".utf8).write(to: late)
+        environment.queue.ownedBytesLimit = 0
+        let reports = await environment.folderMonitoring.reconcileAll()
+
+        XCTAssertEqual(reports.map(\.queued), [0])
+        XCTAssertEqual(environment.folderSubscriptions.all().map(\.state), [.active])
+        XCTAssertEqual(environment.folderSubscriptions.all().first?.members.map(\.memberID), membersBefore)
+        XCTAssertTrue(try XCTUnwrap(environment.folderSubscriptions.all().first).needsFullReconciliation)
+        XCTAssertEqual(environment.accessStore.descriptors().map(\.accessRef).sorted(), routesBefore)
+        XCTAssertEqual(environment.accessStore.rootDescriptors().map(\.memberRefs), enrolledBefore)
+        XCTAssertEqual(Set(environment.queue.allEntries().map(\.intent.itemId)), queuedBefore)
+
+        let reopened = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: RelocatingBookmarkCodec()
+        )
+        XCTAssertEqual(reopened.accessStore.descriptors().map(\.accessRef).sorted(), routesBefore)
+        XCTAssertEqual(reopened.accessStore.rootDescriptors().map(\.memberRefs), enrolledBefore)
+        XCTAssertEqual(reopened.folderSubscriptions.all().first?.members.map(\.memberID), membersBefore)
+        XCTAssertEqual(Set(reopened.queue.allEntries().map(\.intent.itemId)), queuedBefore)
+    }
+
+    /// The queue's directory rename is its commit point. If acknowledgement of
+    /// that rename is lost, restart recovers the entry from the closed batch;
+    /// the route named by that durable entry must survive with it.
+    func testLostPublicationAcknowledgementRetainsTheRouteOwnedByTheDurableBatch() async throws {
+        let root = try temporaryDirectory()
+        let watched = root.appendingPathComponent("watched", isDirectory: true)
+        try FileManager.default.createDirectory(at: watched, withIntermediateDirectories: true)
+        let settled = watched.appendingPathComponent("settled.txt")
+        try Data("settled".utf8).write(to: settled)
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        let environment = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: RelocatingBookmarkCodec()
+        )
+        let folder = FolderCaptureSubmission(environment: environment, workspaceRef: "workspace-1")
+        _ = try await folder.submit(
+            try folder.plan(
+                root: watched,
+                policy: FolderCapturePolicy(mode: .keepUpdated, recursive: true, includeHidden: false)
+            )
+        )
+        for entry in environment.queue.allEntries() {
+            try admit(entry, captureID: "dcap-" + String(repeating: "a", count: 64), queue: environment.queue)
+        }
+        _ = await environment.folderMonitoring.reconcileAll()
+
+        let routesBefore = environment.accessStore.descriptors().count
+        let enrolledBefore = try XCTUnwrap(environment.accessStore.rootDescriptors().first).memberRefs.count
+        let membersBefore = try XCTUnwrap(environment.folderSubscriptions.all().first).members.count
+        let late = watched.appendingPathComponent("late.txt")
+        try Data("late".utf8).write(to: late)
+        environment.queue.afterPublishRename = { throw CaptureQueueError.stateUnavailable }
+        _ = await environment.folderMonitoring.reconcileAll()
+        environment.queue.afterPublishRename = nil
+
+        XCTAssertEqual(environment.queue.allEntries().filter { $0.state == .pending }.count, 0)
+        XCTAssertEqual(environment.accessStore.descriptors().count, routesBefore + 1)
+        XCTAssertEqual(
+            try XCTUnwrap(environment.accessStore.rootDescriptors().first).memberRefs.count,
+            enrolledBefore + 1
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(environment.folderSubscriptions.all().first).members.count,
+            membersBefore,
+            "the subscription write did not complete, but durable queued work owns the route"
+        )
+
+        let reopened = try DocumentIntakeEnvironment(
+            stateRoot: state,
+            bookmarkCodec: RelocatingBookmarkCodec()
+        )
+        XCTAssertEqual(reopened.queue.allEntries().filter { $0.state == .pending }.count, 1)
+        XCTAssertEqual(reopened.accessStore.descriptors().count, routesBefore + 1)
+        XCTAssertEqual(
+            try XCTUnwrap(reopened.accessStore.rootDescriptors().first).memberRefs.count,
+            enrolledBefore + 1
+        )
+    }
+
+    func testOneItemPreparationCannotSilentlyProduceNoServingEntry() {
+        XCTAssertThrowsError(try FolderMonitoringCoordinator.exactlyOneServingEntry([])) {
+            XCTAssertEqual($0 as? FolderMonitoringError, .servingCaptureInvariant)
+        }
+    }
+
     // MARK: - Helpers
 
     /// The window the companion opens, over this environment's own stores and

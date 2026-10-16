@@ -15,6 +15,7 @@ public enum FolderMonitoringError: Error, Equatable {
     case scopeUnavailable
     case scopeLimitExceeded
     case scopeCoverageIncomplete
+    case servingCaptureInvariant
 }
 
 struct MonitoredCandidate: Sendable {
@@ -509,7 +510,7 @@ public actor FolderMonitoringCoordinator {
                 // source, published by another of its routes. This membership
                 // binds to it and queues nothing — and is then up to date, not
                 // waiting on work of its own.
-                guard let entry = (entries + coalesced.entries()).first else { continue }
+                let entry = try Self.exactlyOneServingEntry(entries + coalesced.entries())
                 member.lastObservedDigest = entry.intent.localIntegrityDigest
                 member.lastObservedByteLength = entry.intent.byteLength
                 member.lastQueuedItemID = entry.intent.itemId
@@ -596,20 +597,6 @@ public actor FolderMonitoringCoordinator {
                         onCoalesced: coalesced.record
                     )
                 } catch CaptureQueueError.capacityExceeded {
-                    capacityDeferred = true
-                    break
-                } catch NativeAccessError.memberOutsideRoot {
-                    // The same rule as above for a file this pass had only just
-                    // found: it left before its first capture committed, so it is
-                    // not enrolled at all rather than enrolled as a member this
-                    // root can no longer read. The adoption above is the one
-                    // durable trace of it, and nothing owns that grant — no
-                    // membership is appended below and no entry was published —
-                    // so it goes with the candidate rather than being left as a
-                    // route of this root to a file the root cannot read. A
-                    // failure to make that removal durable is the scope's
-                    // problem and is raised as one: the route is never reported
-                    // as gone while it is still recorded.
                     try accessStore.abandonUnownedRootMember(
                         accessRef: accessRef,
                         rootRef: subscription.rootRef,
@@ -618,12 +605,61 @@ public actor FolderMonitoringCoordinator {
                         expectedGeneration: descriptor.generation,
                         expectedRootGeneration: expectedGeneration
                     )
-                    continue
+                    capacityDeferred = true
+                    break
+                } catch let incomplete as CapturePublicationIncomplete {
+                    // Publication (or coalescence onto an existing capture) is
+                    // already durable. Its queue entry owns the route even
+                    // though this pass could not finish its caller obligation;
+                    // replay repairs that obligation, so abandoning here would
+                    // destroy the authority the durable work names.
+                    throw incomplete
+                } catch {
+                    // The same rule as the moved-child refusal applies to every
+                    // failure before publication. A queue rename whose index
+                    // acknowledgement was lost is the exception: the closed
+                    // batch is already durable and recovered on restart, so it
+                    // owns the route even though `prepareAndPublish` could not
+                    // return its entry in this process.
+                    if !queue.hasDurablePublication(itemID: itemID) {
+                        try accessStore.abandonUnownedRootMember(
+                            accessRef: accessRef,
+                            rootRef: subscription.rootRef,
+                            memberRef: memberID,
+                            relativeComponents: candidate.relativeComponents,
+                            expectedGeneration: descriptor.generation,
+                            expectedRootGeneration: expectedGeneration
+                        )
+                    }
+                    if error as? NativeAccessError == .memberOutsideRoot {
+                        continue
+                    }
+                    throw error
                 }
                 // The same rule as above: a source another route already
                 // captured at exactly these bytes gains a membership here, not
                 // a second capture.
-                guard let entry = (entries + coalesced.entries()).first else { continue }
+                let servingEntries = entries + coalesced.entries()
+                let entry: CaptureQueueEntry
+                do {
+                    entry = try Self.exactlyOneServingEntry(servingEntries)
+                } catch {
+                    // Zero entries means the preparation contract produced no
+                    // durable owner. Multiple entries necessarily include a
+                    // durable owner, so retain the route and fail closed for
+                    // replay/recovery rather than deleting authority it names.
+                    if servingEntries.isEmpty {
+                        try accessStore.abandonUnownedRootMember(
+                            accessRef: accessRef,
+                            rootRef: subscription.rootRef,
+                            memberRef: memberID,
+                            relativeComponents: candidate.relativeComponents,
+                            expectedGeneration: descriptor.generation,
+                            expectedRootGeneration: expectedGeneration
+                        )
+                    }
+                    throw error
+                }
                 member.baselineItemID = entry.intent.itemId
                 member.lastQueuedItemID = entry.intent.itemId
                 member.lastObservedDigest = entry.intent.localIntegrityDigest
@@ -676,6 +712,19 @@ public actor FolderMonitoringCoordinator {
             unchanged: unchanged,
             absent: absent
         )
+    }
+
+    /// A one-item preparation is served by exactly one newly published or
+    /// coalesced entry. Keeping this contract explicit prevents an unowned
+    /// adoption from disappearing behind a silent `continue` if preparation is
+    /// ever changed.
+    static func exactlyOneServingEntry(
+        _ entries: [CaptureQueueEntry]
+    ) throws -> CaptureQueueEntry {
+        guard entries.count == 1, let entry = entries.first else {
+            throw FolderMonitoringError.servingCaptureInvariant
+        }
+        return entry
     }
 
     private static func seed(
