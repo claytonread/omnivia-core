@@ -3702,6 +3702,11 @@
           "covers": "The 1 GiB resident ceiling of 17.1 and the cumulative budget of 11.13 are enforced over the job's whole session group rather than per process: four processes, each inside a ceiling derived from measuring them individually, breach it together. test_cumulative_cpu_outlives_every_descendant_that_exits_and_restarts charges descendants that were started, spent their CPU and were reaped between two samples, so a restart cannot reset the budget, and test_a_resource_breach_kills_the_tree_reaps_the_child_and_says_which drives one breach end to end through the production route."
         },
         {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_supervision.py",
+          "symbol": "test_a_descendant_that_outlives_the_root_is_killed_and_is_not_a_success",
+          "covers": "A job is finished only once its tree is. The root's exit is read from its own accounting while it is still a zombie, never by reaping it: test_a_root_that_burns_and_exits_between_ticks_is_over_budget charges a root that spent its budget and exited between samples, and this test kills a group still holding a descendant before the leader is reaped rather than returning the reply it outlived. test_no_source_byte_is_offered_before_one_real_sample_has_succeeded holds the other end, and test_an_exit_race_mid_pass_cannot_produce_an_accepted_undercounted_sample discards a pass a member vanished from."
+        },
+        {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
           "symbol": "test_transported_segments_that_are_not_the_reported_output_are_refused",
           "covers": "A reply whose transported segments do not re-hash to the output digest it reports is refused, so the boundary cannot change what was extracted."
@@ -3719,12 +3724,7 @@
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
           "symbol": "test_the_engine_invocation_is_built_only_from_trusted_resources",
-          "covers": "The engine invocation is built only from trusted resources, so a document field cannot reach the command line."
-        },
-        {
-          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
-          "symbol": "test_a_verified_model_manifest_is_the_only_language_source",
-          "covers": "Only a verified manifest supplies models, so packaged resources are the sole model source."
+          "covers": "The engine invocation is built only from trusted resources, so a document field cannot reach the command line, and test_a_verified_model_manifest_is_the_only_language_source adds that only a verified manifest supplies models, so packaged resources are the sole model source."
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_extractors.py",
@@ -3739,7 +3739,7 @@
       ],
       "status": "not_executed",
       "missing_condition": "The boundary exists and is enforced on macOS only. Production extraction no longer runs in the service process: both call sites run it in a child whose whole environment is seven fixed variables, a constant search path among them, under a bounded versioned JSON protocol, and the parent accounts that child's whole session group against the 1 GiB resident ceiling of 17.1 and one cumulative CPU budget per job. On macOS the child also seals itself with a deny-by-default seatbelt profile before reading a source byte, and a real child-process test proves the seal denies the network and every read, write and stat outside the admitted source, the packaged code, the models and the private scratch. Linux and Windows have neither adapter and fail closed under worker_supervision_unavailable, so there the claim is neither met nor violated and nothing is processed there -- a product gap, not evidence -- while the applicability above is every OS the runtime supports. One scope is absent everywhere: a packaged Pandoc or Tesseract, so the external engines are whichever binaries stand in the fixed search path.",
-      "limitations": "Containment is proven by a probe inside the sealed process making the reads, stats and connections itself, unsealed and then sealed, so refusals are anchored against this host's unconfined behaviour. That is the worker's own authority, which a hostile parser also holds, but that path is not itself driven to one. The profile keeps mach-lookup open, because dyld needs it and no bounded service list is qualified; the network denial closes what a looked-up service could offer. file-read-metadata is granted on the ancestors of paths already in scope, which macOS needs to resolve the /var symlink every scratch sits behind; their contents stay unreadable. OCR is not exercised under the seal: no verified model manifest is installed. Resident size is sampled every tenth of a second, so a shorter spike is unseen; shared pages count once per mapping process, erring towards refusal. Cumulative CPU is not sampled in that sense -- a descendant reaped anywhere in the group is charged in full by the kernel -- but one orphaned to launchd takes its unsampled tail with it, and a child that exits on its own is reaped before its session could be signalled, so a detached descendant is not collected.",
+      "limitations": "Containment is proven by a probe inside the sealed process making the reads, stats and connections itself, unsealed then sealed, so refusals are anchored against this host's unconfined behaviour. That is the worker's own authority, which a hostile parser holds too, but that path is not driven to one. mach-lookup stays open: dyld needs it and no bounded service list is qualified; the network denial closes what a looked-up service could offer. file-read-metadata is granted on the ancestors of in-scope paths, which macOS needs to resolve the /var symlink every scratch sits behind; their contents stay unreadable. OCR is not exercised under the seal: no verified model manifest is installed. Resident size is sampled every tenth of a second, which is the resolution of that ceiling and not a kernel-hard instantaneous cap: a spike inside one interval is never seen, and shared pages count once per mapping process, erring towards refusal. Cumulative CPU is not sampled so -- a descendant reaped anywhere in the group is charged in full by the kernel, the root's terminal burst included, since its exit is read while it is unreaped -- but one orphaned to launchd takes its unsampled tail with it.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_worker.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_processing.py",

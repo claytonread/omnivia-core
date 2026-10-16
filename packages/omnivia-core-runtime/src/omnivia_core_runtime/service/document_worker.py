@@ -58,6 +58,15 @@ CPU budget per job, and a breach of either kills the session, reaps the child
 and raises its own typed reason. It is a second, independent ceiling: the hard
 wall deadline still bounds the attempt on its own.
 
+The group is measured before the child is handed a source-bearing byte, and the
+root's exit is read out of the root's own accounting rather than by reaping it.
+Reaping is what frees the group id and what makes the root unreadable, so a
+parent that reaps to learn the child has finished loses the last burst of CPU
+the root spent and answers "finished" while the group may still hold live
+descendants. Here the exit is observed while the root is still a zombie, which
+is the one window in which its terminal usage is still chargeable and the group
+id is still provably this job's.
+
 **What is still not enforced here.** The resource ceilings applied *inside* the
 child are only those the host actually binds, and they are named individually in
 the reply; resident memory is not among them, because macOS does not enforce
@@ -151,16 +160,30 @@ WORKER_MEMORY_BYTES: Final = 1024 * 1024 * 1024
 #: How often the live tree is measured.
 #:
 #: Resident memory is an instantaneous quantity and nothing but a sample can
-#: read it, so this interval is the resolution of that ceiling. Cumulative CPU
-#: is not sampled in the same sense: a process that lives and dies between two
+#: read it, so this interval is the *resolution* of that ceiling and not a
+#: kernel-hard instantaneous cap: a spike that rises and falls inside one
+#: interval is never seen, and a tree that sits under the ceiling at every
+#: sample is never refused however high it went in between. Cumulative CPU is
+#: not sampled in that sense -- a process that lives and dies between two
 #: samples is still charged in full, by the kernel, through the ``ri_child_*``
-#: accounting below. For the budget to be escaped on this interval a tree would
-#: have to burn its entire CPU budget in a tenth of a second.
+#: accounting below, and the root's own terminal burst is charged because its
+#: exit is read from its accounting rather than by reaping it.
 SUPERVISION_SECONDS: Final = 0.1
 #: Processes one job's session group may hold before the supervisor refuses to
 #: account it at all. Nothing bounds how many processes a parser can start, and
 #: an unbounded enumeration is the one way a sample could fail to finish.
 MAX_TREE_PROCESSES: Final = 4096
+#: Passes one sample will make over the group before it refuses to account it.
+#:
+#: A member reaped between the enumeration and its own read leaves the pass
+#: short by that member's whole charge whenever the process that reaped it was
+#: read earlier in the same pass -- and the readings themselves do not say
+#: which order it happened in. Such a pass is discarded and the group read
+#: again: the reaped member is gone from the next enumeration and its time is
+#: in its reaper's accounting, so one further pass is normally enough. A tree
+#: that cannot be read coherently within this many is refused rather than
+#: accounted short.
+MAX_SAMPLE_ATTEMPTS: Final = 4
 
 CONFINEMENT_SEATBELT: Final = "seatbelt"
 CONFINEMENT_NONE: Final = "unconfined"
@@ -210,6 +233,12 @@ REASON_INTERNAL: Final = "worker_internal_error"
 #: The extraction itself succeeded but the copy of the admitted bytes could not
 #: be removed from the host. That is not an outcome this route returns.
 REASON_SCRATCH_RESIDUE: Final = "worker_scratch_not_removed"
+#: The root exited while the job's process group still held other processes. The
+#: group is killed before the leader is reaped and the attempt fails under this
+#: rather than returning the reply the residue outlived -- a reply written by a
+#: job that was still running when it claimed to be finished is not an outcome
+#: this route returns either.
+REASON_TREE_RESIDUE: Final = "worker_tree_not_terminated"
 
 _PRIVATE_DIR_MODE: Final = 0o700
 _PRIVATE_FILE_MODE: Final = 0o600
@@ -621,13 +650,13 @@ def _run_child(header: Mapping[str, Any], *, work: Path, wall: int) -> int:
     measured refuses the attempt before a single source byte has been read,
     exactly as a host where the process cannot be sealed does.
 
-    A child that exits on its own is already reaped by the time this returns,
-    and its session is deliberately *not* signalled afterwards: the process
-    group number is free once the leader is reaped, and signalling a freed group
-    could reach something unrelated. The pinned readers are waited on inside the
-    child, so a descendant outliving a clean exit would have to have detached
-    itself on purpose; that residue is recorded in the DOC-16 ledger entry
-    rather than closed here.
+    A child that exits on its own is accounted and checked for residue *before*
+    it is reaped, and its session is deliberately never signalled afterwards:
+    the process group number is free once the leader is reaped, and signalling a
+    freed group could reach something unrelated. A descendant still in the group
+    when the root exits is therefore killed in the one window where that is
+    still safe, and the attempt fails under :data:`REASON_TREE_RESIDUE` rather
+    than returning a reply the job's own residue outlived.
     """
     request = json.dumps(header, allow_nan=False).encode()
     if len(request) > MAX_HEADER_BYTES:
@@ -683,13 +712,27 @@ def _supervise(
 
     One thread does all three, and that is what makes the accounting safe
     rather than merely cheap. A sample asks the kernel about a process group
-    that exists only while its leader is unreaped, and the leader is reaped
-    here, by :meth:`subprocess.Popen.poll`. A monitor thread running beside
-    this loop could therefore sample -- and signal -- a group id in the window
-    after the reap, by which time the kernel may have given it to somebody
-    else. Measuring in the same thread that reaps closes that window by
-    construction: the status check comes first, and nothing is measured or
-    signalled once it has answered.
+    that exists only while its leader is unreaped, and this loop is the only
+    thing that ever reaps the leader. A monitor thread running beside it could
+    therefore sample -- and signal -- a group id in the window after the reap,
+    by which time the kernel may have given it to somebody else.
+
+    **The tree is measured before the request is handed over.** The loop
+    accounts first and offers second, so the job's initial process group has
+    been enumerated and read in full before a single source-bearing byte
+    reaches the child. Resolving the monitor's symbols in the supervisor's
+    constructor establishes only that a monitor exists on this host; it does
+    not establish that *this group* can be measured, and that is the
+    precondition the route claims.
+
+    **The root is not reaped until it has been accounted.**
+    :meth:`subprocess.Popen.poll` is deliberately absent from this loop: it
+    reaps, a reaped root is unreadable, and its charge then lives in this
+    process's own ``ri_child_*`` where no member of the group carries it. So
+    polling for the exit would discard exactly the CPU the root spent since the
+    last sample, and would answer "finished" while the group may still hold
+    live descendants. :func:`_account` reads the exit out of the root's own
+    accounting instead.
 
     The deadline is absolute and taken before the first sample, so neither the
     handover nor a slow sample extends it. It still bounds the attempt on its
@@ -703,25 +746,68 @@ def _supervise(
         os.set_blocking(process.stdin.fileno(), False)
     pending: bytes | None = request
     while True:
-        if pending is not None:
-            pending = _offer(process, pending)
-        status = process.poll()
+        status = _account(process, supervisor)
         if status is not None:
             return status
-        try:
-            breach, detail = supervisor.sample()
-        except _SupervisionUnavailable as refusal:
-            _end_session(process)
-            raise DocumentWorkerFailed(
-                REASON_SUPERVISION, str(refusal)[:MAX_DETAIL_CHARS]
-            ) from refusal
-        if breach:
-            _end_session(process)
-            raise DocumentWorkerFailed(breach, detail)
+        if pending is not None:
+            pending = _offer(process, pending)
         if time.monotonic() >= deadline:
             _end_session(process)
             raise DocumentWorkerFailed(REASON_TIMEOUT, f"{wall}s")
         time.sleep(SUPERVISION_SECONDS)
+
+
+def _account(
+    process: subprocess.Popen[bytes], supervisor: _ProcessTreeSupervisor
+) -> int | None:
+    """Account the tree once; return the root's status only once the job is over.
+
+    ``None`` means the job is still running. Everything terminal is raised from
+    here, and the order it is decided in is the correctness of the whole
+    control:
+
+    * a breached ceiling is enforced first, exited or not, because the sample
+      that observes the exit is also the first sample to charge the root's
+      terminal usage -- a job that spent its last CPU on the way out is over
+      budget, and a reply it managed to write is not a success;
+    * a root that has exited is accepted as complete only when nothing else is
+      left in the job's process group;
+    * a group that still holds descendants is killed *before* the leader is
+      reaped, which is the only moment at which the group id is still provably
+      this job's, and the attempt then fails under its own typed reason;
+    * and only then is the root reaped and its status returned.
+    """
+    try:
+        breach, detail = supervisor.sample()
+    except _SupervisionUnavailable as refusal:
+        _end_session(process)
+        raise DocumentWorkerFailed(
+            REASON_SUPERVISION, str(refusal)[:MAX_DETAIL_CHARS]
+        ) from refusal
+    if breach:
+        _end_session(process)
+        raise DocumentWorkerFailed(breach, detail)
+    if not supervisor.root_exited:
+        return None
+    # The group as the accepted sample read it, which is the enumeration that
+    # also found the root exited: the leader is a zombie, so it cannot fork, and
+    # a group whose only member is the leader has nothing left that could.
+    survivors = tuple(pid for pid in supervisor.members if pid != process.pid)
+    if survivors:
+        _end_session(process)
+        raise DocumentWorkerFailed(
+            REASON_TREE_RESIDUE,
+            f"{len(survivors)} processes in the job's group outlived the worker",
+        )
+    try:
+        # This is the reap, and it cannot wait: the kernel has already reported
+        # the root exited, and this process is its only possible reaper.
+        return process.wait(timeout=_REAP_GRACE_SECONDS)
+    except subprocess.TimeoutExpired as error:  # pragma: no cover - see above
+        _end_session(process)
+        raise DocumentWorkerFailed(
+            REASON_INTERNAL, "the exited worker could not be reaped"
+        ) from error
 
 
 def _offer(process: subprocess.Popen[bytes], pending: bytes) -> bytes | None:
@@ -758,9 +844,12 @@ def _end_session(process: subprocess.Popen[bytes]) -> None:
     """Kill an unreaped child's whole session and reap the child itself.
 
     Only ever called while ``process`` is unreaped, so its process group still
-    exists and cannot have been reused. Everything here is best-effort by
-    nature: a group that has already gone is the ordinary case, and a platform
-    without process groups falls back to the child alone.
+    exists and cannot have been reused -- and that is now checked rather than
+    only documented, because a ``killpg`` of a leader that has already been
+    reaped is a signal aimed at whatever the kernel has since given that number
+    to. Everything else here is best-effort by nature: a group that has already
+    gone is the ordinary case, and a platform without process groups falls back
+    to the child alone.
 
     The killing still comes before the request pipe is closed, and the close
     still cannot block this thread in the one place it is trying to stop
@@ -771,6 +860,11 @@ def _end_session(process: subprocess.Popen[bytes]) -> None:
     nothing left for this close to flush, and nothing it could wait on if there
     were.
     """
+    if process.returncode is not None:
+        # Already reaped, so the leader's pid -- and with it the group id -- is
+        # free for the kernel to hand to anyone. There is nothing left of this
+        # job to signal, and signalling anyway could reach a stranger.
+        return
     if _OWN_SESSION:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -956,6 +1050,26 @@ class _ProcessTreeSupervisor:
     itself. The charge is additionally held to a high-water mark, because a job
     does not earn CPU back by letting the process that spent it disappear.
 
+    **Nothing is counted zero either, which is the harder half.** A member
+    reaped in the middle of a pass -- after the enumeration, before its own
+    read -- has just moved its whole charge into the ``ri_child_*`` of its
+    reaper, and if that reaper was read earlier in the same pass the reading it
+    gave does not carry it. Taking the gone member for zero would then erase
+    its entire consumed time from the sample, and no reading in the pass says
+    that happened. So a pass that saw a member vanish is discarded and the
+    group read again, up to :data:`MAX_SAMPLE_ATTEMPTS` times; see
+    :meth:`_read_tree`.
+
+    **The root's exit is read, not reaped for.** The root is the one member
+    whose reaper is the supervising process rather than a member of the group,
+    so reaping it moves its charge somewhere the group can never be asked
+    about. Its exit is therefore taken from ``ri_proc_exit_abstime``, which is
+    zero while it lives and non-zero once it has exited and not yet been
+    reaped. That reading is stable rather than racy precisely because the
+    supervising process is the root's parent: nothing else can reap it, so the
+    zombie -- and its terminal usage, and the group id it still holds open --
+    stays there until this code chooses to collect it.
+
     **The one residual.** A descendant orphaned to ``launchd`` and reaped there
     takes its unsampled tail with it: no member of the group carries it. That
     needs an intermediate process to die while its own child runs, which the
@@ -975,27 +1089,31 @@ class _ProcessTreeSupervisor:
         self._tick = _seconds_per_tick(self._libproc)
         #: The job's charge so far, in seconds. Never allowed to fall.
         self.consumed_seconds = 0.0
+        #: The group as the last accepted sample read it, and whether that
+        #: sample found the root exited and not yet reaped. These are what the
+        #: caller decides completion on, and neither carries a value until a
+        #: sample has actually succeeded.
+        self.members: tuple[int, ...] = ()
+        self.root_exited = False
 
     def sample(self) -> tuple[str, str]:
         """Account the live tree once: a breach reason and detail, or two blanks.
 
         Raises :class:`_SupervisionUnavailable` rather than returning a
-        measurement it cannot stand behind.
+        measurement it cannot stand behind -- which includes a pass that could
+        have been short, and not only one that failed outright.
         """
-        members = self._members()
-        resident = 0
-        consumed = 0.0
-        for pid in members:
-            usage = self._usage(pid)
-            if usage is None:
-                continue
-            resident += usage.ri_resident_size
-            consumed += self._tick * (
-                usage.ri_user_time
-                + usage.ri_system_time
-                + usage.ri_child_user_time
-                + usage.ri_child_system_time
+        for _ in range(MAX_SAMPLE_ATTEMPTS):
+            reading = self._read_tree()
+            if reading is not None:
+                break
+        else:
+            raise _SupervisionUnavailable(
+                "the job's process group could not be read coherently"
             )
+        members, resident, consumed, exited = reading
+        self.members = members
+        self.root_exited = exited
         self.consumed_seconds = max(self.consumed_seconds, consumed)
         if resident > self._memory_bytes:
             return (
@@ -1008,6 +1126,54 @@ class _ProcessTreeSupervisor:
                 f"{self.consumed_seconds:.1f}s of {self._cpu_seconds}s",
             )
         return "", ""
+
+    def _read_tree(self) -> tuple[tuple[int, ...], int, float, bool] | None:
+        """One whole pass over the group, or ``None`` when it was not coherent.
+
+        A pass is coherent when the root was among the members it enumerated
+        and every one of those members was still readable when it came to be
+        read. Both conditions guard the same hazard, which the readings
+        themselves cannot tell apart from an honest measurement: a charge that
+        has moved out of this pass's reach between two of its reads.
+
+        A member reaped between the enumeration and its own read answers
+        ``ESRCH``, and at that moment its whole charge has moved into the
+        ``ri_child_*`` of whichever process reaped it. Read after that reaper,
+        it is counted twice -- which over-states the total and errs towards
+        refusing, so it is accepted. Read before it, it is counted not at all,
+        and taking it for zero would erase every second it consumed. The
+        readings do not record which order it was, so the pass is discarded.
+
+        The root's absence is that erasure at its worst, because the root's
+        reaper is this process and no member of the group would ever carry its
+        time. It is readable for as long as this loop has not reaped it, so a
+        pass that cannot find it is not measuring this job: either the group
+        does not exist yet, or the leader has been reaped and the group id is
+        no longer the job's. Neither may be accounted as a tree.
+        """
+        members = self._members()
+        if self._root not in members:
+            return None
+        resident = 0
+        consumed = 0.0
+        exited = False
+        for pid in members:
+            usage = self._usage(pid)
+            if usage is None:
+                return None
+            resident += usage.ri_resident_size
+            consumed += self._tick * (
+                usage.ri_user_time
+                + usage.ri_system_time
+                + usage.ri_child_user_time
+                + usage.ri_child_system_time
+            )
+            if pid == self._root and usage.ri_proc_exit_abstime:
+                # Exited and still a zombie: this reading is its terminal
+                # usage, and the group id is still held open by its pid. Both
+                # are true only until this job's loop reaps it.
+                exited = True
+        return members, resident, consumed, exited
 
     def _members(self) -> tuple[int, ...]:
         """Every process in the job's session group, the leader included.
@@ -1044,12 +1210,14 @@ class _ProcessTreeSupervisor:
     def _usage(self, pid: int) -> _RusageInfoV3 | None:
         """One member's accounting, or ``None`` when it has already been reaped.
 
-        A member that exits between the enumeration and this read is the
-        ordinary case and not a monitor failure: whatever it consumed is already
-        in the ``ri_child_*`` of whichever process reaped it, and a zombie is
-        still readable, so nothing is lost at the moment of exit either. Any
-        other refusal is a monitor failure -- a member of this job's own session
-        that cannot be measured leaves the tree with no ceiling.
+        A zombie is still readable, so this answers for a member right up to
+        the moment its reaper collects it, and ``ESRCH``/``ENOENT`` is that
+        moment having passed. That is the ordinary shape of a process ending
+        and not a monitor failure -- but it is not a zero either, and
+        :meth:`_read_tree` discards the pass rather than accounting the member
+        as having consumed nothing. Any other refusal *is* a monitor failure: a
+        member of this job's own session that cannot be measured leaves the
+        tree with no ceiling.
         """
         usage = _RusageInfoV3()
         ctypes.set_errno(0)
@@ -1899,6 +2067,7 @@ __all__ = [
     "REASON_SPAWN",
     "REASON_SUPERVISION",
     "REASON_TIMEOUT",
+    "REASON_TREE_RESIDUE",
     "REQUIRED_CONFINEMENT",
     "WORKER_MEMORY_BYTES",
     "DocumentWorkerFailed",

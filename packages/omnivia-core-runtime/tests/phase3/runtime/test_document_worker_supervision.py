@@ -9,7 +9,7 @@ that matters throughout is between a per-process ceiling and a per-job one.
 child cannot say any of that: each process in the tree counts its own, and a
 child inherits the ceiling but starts from zero.
 
-Four claims, every one driven against real process trees rather than against a
+Five claims, every one driven against real process trees rather than against a
 patched measurement, because a sampler asserted only against its own stubs is
 exactly the accounting this slice was asked not to pretend to have:
 
@@ -20,8 +20,17 @@ exactly the accounting this slice was asked not to pretend to have:
   never once observed alive -- is still charged in full, and the charge climbs
   across every restart until one document budget is exhausted.
 * **Closed.** A tree that cannot be measured is refused, with its own typed
-  reason; a member that merely vanished mid-sample is not, because that is the
-  ordinary shape of a process exiting.
+  reason, and so is one that could only be measured short: a member reaped
+  between the enumeration and its own read has moved its whole charge into a
+  process this pass may already have read, so the pass is discarded rather than
+  counting it as zero.
+* **Ordered.** Nothing of the source reaches the child until the group has been
+  measured once, and nothing is accepted as finished until it has been measured
+  for the last time. The root's exit is read out of its own accounting while it
+  is still a zombie -- never by reaping it, which is what loses its terminal
+  burst of CPU and frees the group id -- so the sample that sees the exit also
+  charges that burst, and a descendant still behind it is killed while the
+  group is still identified rather than left to outlive the job.
 * **Terminal.** A breach kills the whole session, reaps the root child, removes
   the attempt directory and arrives as a resource failure -- never as a
   timeout, a crash, a verdict on the document or a success.
@@ -163,6 +172,70 @@ sys.stdout.flush()
 time.sleep(120)
 """
 
+#: A session leader that keeps one CPU-burning descendant alive, so the job has
+#: a member whose consumed time is worth erasing from a sample.
+_BURNED_TREE: Final = f"""
+import subprocess, sys, time
+
+burner = subprocess.Popen(
+    [sys.executable, "-P", "-s", "-B", "-c", {_BURNING_THEN_WAITING!r}, sys.argv[1]],
+    stdout=subprocess.PIPE,
+)
+burner.stdout.readline()
+print(burner.pid, flush=True)
+time.sleep(120)
+"""
+
+#: A stand-in worker that answers the protocol with a readable extraction, and
+#: can be told to spend CPU and to leave processes behind in the job's group
+#: before it does -- which is what a real parser's Pandoc or Tesseract pass
+#: does, except that this one records what it did. Its arguments are the CPU
+#: seconds to burn, the number of processes to leave running, and a path
+#: outside the scratch to record its own pid and theirs at.
+#:
+#: It claims a seal it never applied, because the parent will not read an
+#: extraction from a child that names no confinement. That is the point: on a
+#: parent that accepts a child's exit status as completion, each of these
+#: replies comes back as a successful extraction.
+_REPLYING_WORKER: Final = """
+import json, os, subprocess, sys, time
+
+header = json.loads(sys.stdin.buffer.read())
+burn, survivors, marker = float(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+left = [
+    subprocess.Popen(
+        [sys.executable, "-P", "-s", "-B", "-c", HOLDING, "1024"],
+        stdout=subprocess.PIPE,
+    )
+    for _ in range(survivors)
+]
+for descendant in left:
+    descendant.stdout.readline()
+with open(marker, "w") as handle:
+    handle.write(" ".join(str(pid) for pid in [os.getpid()] + [d.pid for d in left]))
+deadline = time.process_time() + burn
+while time.process_time() < deadline:
+    pass
+with open(header["replyPath"], "w") as handle:
+    json.dump(
+        {
+            "protocol": 1,
+            "confinement": "seatbelt",
+            "limits": [],
+            "status": "extracted",
+            "outcome": {
+                "state": "complete",
+                "outputDigest": None,
+                "coverage": {},
+                "limitations": {},
+                "workerBuild": "stand-in",
+                "segments": [],
+            },
+        },
+        handle,
+    )
+""".replace("HOLDING", repr(_HOLDING))
+
 #: A stand-in worker that allocates in itself *and* in a descendant, records
 #: both pids outside its own scratch, and then waits. Neither process is near
 #: the ceiling the test sets; together they are past it.
@@ -263,6 +336,50 @@ def _attempt_directories() -> set[str]:
         path.name
         for path in Path(tempfile.gettempdir()).glob("omnivia-doc-worker-*")
     }
+
+
+def _kill_leftovers(marker: Path) -> None:
+    """Kill the descendants a stand-in recorded, whatever the test then did.
+
+    A test whose claim is that nothing outlives the job must not leak the
+    processes it was asserting about when the claim fails. The descendants
+    only: the root's pid has been reaped by the route itself, and this file's
+    whole subject is that a reaped pid is not a safe thing to signal.
+    """
+    if not marker.exists():
+        return
+    for pid in marker.read_text().split()[1:]:
+        with contextlib.suppress(OSError):
+            os.kill(int(pid), signal.SIGKILL)
+
+
+def _watch_supervisor(
+    monkeypatch: pytest.MonkeyPatch, *, budget: float | None = None
+) -> list[int]:
+    """Name the roots the production route supervises, optionally on a budget.
+
+    The pids come back so a test can assert on a child it never otherwise sees.
+    ``budget`` replaces the job's CPU budget, which is otherwise its wall
+    budget: a single process cannot spend more CPU than wall clock, so a root
+    alone could never reach that one first. What is constructed is the
+    production supervisor either way, so the measurement under test stays the
+    real one.
+    """
+    roots: list[int] = []
+    real = document_worker._ProcessTreeSupervisor
+
+    def watched(
+        pid: int, *, memory_bytes: int, cpu_seconds: float
+    ) -> document_worker._ProcessTreeSupervisor:
+        roots.append(pid)
+        return real(
+            pid,
+            memory_bytes=memory_bytes,
+            cpu_seconds=cpu_seconds if budget is None else budget,
+        )
+
+    monkeypatch.setattr(document_worker, "_ProcessTreeSupervisor", watched)
+    return roots
 
 
 # -- the Darwin accounting interface -----------------------------------------
@@ -554,11 +671,280 @@ def test_a_member_that_cannot_be_read_refuses_the_job_rather_than_estimating(
         with pytest.raises(document_worker._SupervisionUnavailable):
             denied.sample()
 
-        # Whereas a member that has simply been reaped since the enumeration is
-        # not a failure at all, and leaves a sample that reports no breach.
-        vanished = _supervisor(leader.pid, memory_bytes=1, cpu_seconds=0.0)
-        vanished._libproc = _Denying(real, errno.ESRCH)  # type: ignore[assignment]
-        assert vanished.sample() == ("", "")
+        # A member that answers "gone" is the ordinary shape of a process
+        # ending -- and is still not a zero. Its charge has just moved into
+        # whichever process reaped it, which this very pass may already have
+        # read, so a group that answers that way for everything cannot be
+        # accounted at all rather than being accounted as having spent nothing.
+        erased = _supervisor(leader.pid, memory_bytes=1, cpu_seconds=0.0)
+        erased.consumed_seconds = 7.5
+        erased._libproc = _Denying(real, errno.ESRCH)  # type: ignore[assignment]
+        with pytest.raises(document_worker._SupervisionUnavailable):
+            erased.sample()
+        # And the refusal did not quietly hand the job back the CPU it had
+        # already been charged for.
+        assert erased.consumed_seconds == 7.5
+
+        # A group the root is not in is not this job's tree, and is the worst
+        # case of the same erasure: the root's reaper is the supervising
+        # process rather than a member, so nothing the group could be asked
+        # about would ever carry its time. Before the child's own session
+        # exists, and after its leader is reaped, this enumeration answers for
+        # something else; neither may be accounted as a tree.
+        rootless = _supervisor(leader.pid)
+        enumerate_group = rootless._members
+        rootless._members = lambda: tuple(  # type: ignore[method-assign]
+            pid for pid in enumerate_group() if pid != leader.pid
+        )
+        with pytest.raises(document_worker._SupervisionUnavailable):
+            rootless.sample()
+
+
+@needs_accounting
+def test_an_exit_race_mid_pass_cannot_produce_an_accepted_undercounted_sample(
+) -> None:
+    """The erasure a sample must not be allowed to make without evidence.
+
+    A member reaped between the enumeration and its own read answers ``ESRCH``,
+    and at that moment its whole consumed time has moved into the
+    ``ri_child_*`` of whichever process reaped it. If this pass read that
+    reaper earlier, the reading it gave does not carry it -- so treating the
+    gone member as zero deletes every second it spent, and nothing in the
+    readings says that is what happened. The pass is therefore discarded and
+    the group read again, which is a claim about what an *accepted* sample can
+    say and so is asserted on the accepted number: the burner's CPU is in it.
+    """
+    burn = 0.4
+    with _tree(_BURNED_TREE, str(burn)) as leader:
+        burner = int(_line(leader))
+
+        # What a coherent pass reads, with the burner's own time in it.
+        coherent = _supervisor(leader.pid)
+        assert burner in coherent._members()
+        assert coherent.sample() == ("", "")
+        assert coherent.consumed_seconds > burn * 0.7, coherent.consumed_seconds
+
+        class _VanishingOnce:
+            """A ``libproc`` stand-in in which one member is reaped mid-pass."""
+
+            def __init__(self, real: Any, pid: int) -> None:
+                self._real = real
+                self._pid = pid
+                self.passes = 0
+                self.denied = 0
+
+            def proc_listpgrppids(self, pgid: int, buffer: Any, size: int) -> int:
+                self.passes += 1
+                return int(self._real.proc_listpgrppids(pgid, buffer, size))
+
+            def proc_pid_rusage(self, pid: int, flavour: int, buffer: Any) -> int:
+                if pid == self._pid and not self.denied:
+                    self.denied += 1
+                    ctypes.set_errno(errno.ESRCH)
+                    return -1
+                return int(self._real.proc_pid_rusage(pid, flavour, buffer))
+
+        # A fresh supervisor, so no high-water mark from an earlier sample can
+        # stand in for the reading this one has to make for itself.
+        racing = _supervisor(leader.pid)
+        vanishing = _VanishingOnce(racing._libproc, burner)
+        racing._libproc = vanishing  # type: ignore[assignment]
+        assert racing.sample() == ("", "")
+
+        # The race really happened, and the sample that was nevertheless
+        # accepted is the whole tree -- the burner's seconds are in it.
+        assert vanishing.denied == 1
+        assert racing.consumed_seconds > burn * 0.7, racing.consumed_seconds
+        # Which it is because the pass that saw the member vanish was thrown
+        # away and the group read again, rather than being accepted short.
+        assert vanishing.passes >= 2, vanishing.passes
+
+
+# -- the request is not handed over before the tree has been measured --------
+
+
+@needs_accounting
+def test_no_source_byte_is_offered_before_one_real_sample_has_succeeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The precondition the route claims, asserted as an order of events.
+
+    Resolving ``libproc``'s symbols in the supervisor's constructor establishes
+    that a monitor exists on this host. It does not establish that *this job's*
+    process group can be enumerated and read, which is what being supervised
+    means -- and a loop that hands the request over first has already let the
+    child begin on the source before it finds out. So the first thing that
+    happens to a spawned child is a whole sample, and the first thing recorded
+    here is that sample, taken of the very tree the request then goes to.
+
+    It is a *real* sample and not a recorded intention: what is wrapped below
+    delegates to the production one, which refuses rather than returning a
+    measurement it cannot stand behind -- a group it cannot enumerate, or one
+    its root is not in, raises instead of being recorded here.
+    """
+    events: list[tuple[str, int]] = []
+    real_sample = document_worker._ProcessTreeSupervisor.sample
+    real_offer = document_worker._offer
+
+    def sample(self: document_worker._ProcessTreeSupervisor) -> tuple[str, str]:
+        answer = real_sample(self)
+        events.append(("sample", self._root))
+        return answer
+
+    def offer(process: subprocess.Popen[bytes], pending: bytes) -> bytes | None:
+        events.append(("offer", process.pid))
+        return real_offer(process, pending)
+
+    monkeypatch.setattr(document_worker._ProcessTreeSupervisor, "sample", sample)
+    monkeypatch.setattr(document_worker, "_offer", offer)
+
+    outcome = extract_document_isolated(
+        b"the admitted bytes", media_type="text/plain", capture_id=CAPTURE
+    )
+    assert outcome.segments
+
+    offered = [pid for name, pid in events if name == "offer"]
+    assert offered, events
+    # The first thing that happened was a sample, and it was a sample of the
+    # job the request then went to rather than of some other tree.
+    assert events[0] == ("sample", offered[0]), events[:3]
+
+
+# -- the root is accounted before it is reaped -------------------------------
+
+
+@needs_accounting
+def test_a_root_that_burns_and_exits_between_ticks_is_over_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The CPU a reaped root takes with it, and why a status cannot be the test.
+
+    This stand-in spends well past the job's CPU budget, writes a reply that
+    would be read as a perfectly good extraction, and exits -- all inside one
+    supervision interval, so no sample ever sees it alive and over budget. A
+    loop that learns of the exit by reaping gets the status and nothing else:
+    the reaped root is unreadable, its charge has moved into the supervising
+    process's own child accounting where no member of the group carries it, and
+    the attempt is accepted. The exit is read from the root's own accounting
+    instead, while it is still a zombie, so the sample that observes it is also
+    the first to charge its terminal burst -- and the breach is enforced before
+    the reply is so much as opened.
+    """
+    marker = tmp_path / "pids"
+    budget = 0.2
+    _watch_supervisor(monkeypatch, budget=budget)
+    # Long enough that the burn, the reply and the exit all fall between two
+    # samples: the root is never once observed alive and over budget.
+    monkeypatch.setattr(document_worker, "SUPERVISION_SECONDS", 3.0)
+    monkeypatch.setattr(
+        document_worker,
+        "_worker_argv",
+        lambda: [
+            sys.executable,
+            "-P",
+            "-s",
+            "-B",
+            "-c",
+            _REPLYING_WORKER,
+            "0.6",
+            "0",
+            str(marker),
+        ],
+    )
+    before = _attempt_directories()
+    with pytest.raises(DocumentWorkerFailed) as failure:
+        extract_document_isolated(
+            b"the admitted bytes", media_type="text/plain", capture_id=CAPTURE
+        )
+
+    assert failure.value.reason == REASON_CPU_LIMIT
+    assert f"of {budget}s" in failure.value.detail, failure.value.detail
+    # The whole burn was charged, not merely some of it: a breach raised on
+    # the startup cost of a child that had not run yet would say far less, and
+    # only a sample taken after the burn had finished can say this much.
+    assert float(failure.value.detail.split("s of")[0]) >= 0.5, failure.value.detail
+    # The root is reaped even so -- the breach kills the session first -- and
+    # the copy of the admitted bytes is off the host.
+    _wait_for_exit(int(marker.read_text().split()[0]))
+    assert _attempt_directories() <= before
+
+
+@needs_accounting
+def test_a_descendant_that_outlives_the_root_is_killed_and_is_not_a_success(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A job is not finished because the process that was spawned has stopped.
+
+    This stand-in leaves one process running in the job's group, writes a
+    readable extraction and exits. Its exit status says nothing about the
+    process still holding the job's scratch open, so a loop that accepts the
+    status returns that extraction and leaves the descendant behind as
+    somebody else's orphan -- outside every ceiling, since the supervisor stops
+    with the attempt.
+
+    Completion therefore takes an empty group as well as an exited root, and
+    the group is killed in the one window where that is safe: the leader is
+    still unreaped, so the group id is still provably this job's and signalling
+    it cannot reach a stranger. Only then is the leader reaped.
+    """
+    marker = tmp_path / "pids"
+    _watch_supervisor(monkeypatch)
+    monkeypatch.setattr(
+        document_worker,
+        "_worker_argv",
+        lambda: [
+            sys.executable,
+            "-P",
+            "-s",
+            "-B",
+            "-c",
+            _REPLYING_WORKER,
+            "0",
+            "1",
+            str(marker),
+        ],
+    )
+    before = _attempt_directories()
+    try:
+        with pytest.raises(DocumentWorkerFailed) as failure:
+            extract_document_isolated(
+                b"the admitted bytes", media_type="text/plain", capture_id=CAPTURE
+            )
+    finally:
+        _kill_leftovers(marker)
+
+    assert failure.value.reason == document_worker.REASON_TREE_RESIDUE
+    assert "1 processes" in failure.value.detail, failure.value.detail
+    root, descendant = (int(word) for word in marker.read_text().split())
+    # Both are gone *and* reaped: `kill(pid, 0)` would still answer for a
+    # zombie, so leaving the process table is the claim.
+    _wait_for_exit(root)
+    _wait_for_exit(descendant)
+    assert _attempt_directories() <= before
+
+
+@needs_accounting
+def test_a_successful_extraction_still_ends_with_a_reaped_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ordinary path, which is now the one with the most ways to go wrong.
+
+    Accepting completion takes more than a status: a coherent final sample, a
+    root observed exited while still a zombie, and an empty group behind it.
+    Each is a new way for a clean extraction to be refused, or for the loop to
+    wait for something that has already happened. So this drives the real
+    production route over a real source and asserts the child left the process
+    table rather than merely stopped.
+    """
+    roots = _watch_supervisor(monkeypatch)
+    outcome = extract_document_isolated(
+        b"# A heading\n\nand a paragraph.\n",
+        media_type="text/markdown",
+        capture_id=CAPTURE,
+    )
+    assert outcome.segments
+    assert len(roots) == 1, roots
+    _wait_for_exit(roots[0])
 
 
 @needs_accounting
