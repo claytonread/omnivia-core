@@ -94,11 +94,20 @@ from omnivia_core_runtime.service.document_extractors import (
     MAX_HTML_SOURCE_BYTES,
     DocumentExtractionInvalid,
     DocumentExtractionUnsupported,
-    extract_document,
 )
 from omnivia_core_runtime.service.document_knowledge import (
     DocumentKnowledgeRefused,
     derive_document_knowledge,
+)
+from omnivia_core_runtime.service.document_worker import (
+    DocumentWorkerFailed,
+)
+from omnivia_core_runtime.service.document_worker import (
+    # The production extraction route is the confined child process (DOC-16),
+    # not the in-process adapters. It is bound to the adapters' own name because
+    # it is the same seam: same signature, same outcome, same two refusals --
+    # only the process it runs in is different.
+    extract_document_isolated as extract_document,
 )
 from omnivia_core_runtime.service.ocr_resource_lifecycle import (
     OcrResourceLifecycleRefused,
@@ -1078,6 +1087,13 @@ def _execute_obligation(
             )
         except (DocumentExtractionInvalid, document_intake.DocumentIntakeRefused):
             outcome = _terminal_without_segments("failed", "source_invalid")
+        except DocumentWorkerFailed as failure:
+            # The worker produced no outcome: it crashed, outran its budget, was
+            # stopped by a resource ceiling, could not be confined, or answered
+            # off-protocol. None of that is a verdict on the source, so the
+            # obligation settles as a failure under the worker's own typed
+            # reason and the retained source stays retriable.
+            outcome = _terminal_without_segments("failed", failure.reason)
     with runner.sqlite_gate:
         result = document_intake.complete_extraction(
             runner,

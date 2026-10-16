@@ -3617,6 +3617,106 @@
       "evidence_type": "automated_repository_test",
       "evidence": [
         {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_cleanup_never_follows_a_link_the_child_aimed_outside_the_scratch",
+          "covers": "Removing the attempt directory touches nothing outside it. A child that left work/escape pointing at a directory of the host's had that directory remoded from 0755 to 0700 by the cleanup, because os.walk lists a symlinked directory among its directory names and chmod by name follows it. Modes are now restored only through descriptors opened with O_NOFOLLOW, and this asserts the link targets' mode and content are unchanged while the scratch is gone. test_cleanup_follows_no_link_standing_where_the_scratch_root_is asserts the same for a link standing where the attempt directory itself should be."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_a_cleanup_that_leaves_the_admitted_bytes_behind_is_not_a_success",
+          "covers": "Cleanup is bounded and truthful. A removal that fails leaves a copy of the admitted source on the host, and that is reported as worker_scratch_not_removed rather than returned as a successful extraction. test_a_cleanup_failure_never_replaces_the_cause_the_worker_already_had shows a worker that already failed keeps its own typed cause, and test_the_cleanup_walk_is_bounded_and_says_so_rather_than_running_on shows the walk stops at an entry ceiling and reports a residue rather than running on over whatever a parser created."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_a_reply_that_is_a_fifo_returns_bounded_instead_of_waiting",
+          "covers": "The reply is read only from a regular file. A FIFO left at the reply's name would hold the parent open indefinitely, after the wall-clock budget that bounded the attempt had already been settled; the open refuses to block and to follow a link, and the descriptor is fstat-ed before a byte is read. This asserts a bounded typed refusal rather than a wait; test_a_reply_that_is_a_directory_is_not_read_as_one and the device case cover the other objects a parser can leave at that name."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_a_reply_that_is_not_its_own_status_shape_is_refused",
+          "covers": "The reply protocol is exact. Every status carries exactly the fields it is answered with -- an outcome where there is one, a detail where there is a reason, nothing else -- so a reply that is merely near enough for its status is refused instead of partially read. test_no_statement_about_the_document_is_read_from_an_unsealed_child adds that each of the three replies which say something about the source is refused unless the child names the seal."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_settings_carrying_a_field_this_protocol_never_sends_are_refused",
+          "covers": "The frozen settings crossing into the child are an exact key set, so a header carrying an extra or a missing field is refused rather than read for the parts of it that look familiar. test_pinned_ocr_resources_carrying_an_unknown_field_are_refused holds the pinned OCR resources, the verified model directory among them, to the same exactness."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_the_child_search_path_is_a_constant_and_not_the_services_own",
+          "covers": "The child's executable search path is a module constant and not the service's PATH, so whoever can set one variable on the service cannot choose which binary the RTF reader or the OCR engine actually is. The directories named are already readable under the profile, so nothing is widened to reach them, and no binary in them is a packaged artefact this build verifies -- recorded as a gap above rather than claimed as a pin."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_a_sealed_process_reaches_no_network_and_nothing_outside_its_scope",
+          "covers": "A real child process sealed by the macOS adapter is refused a stream and a datagram socket and refused every read, write and stat outside the admitted source, the packaged code, the pinned models and its private scratch, while reads and writes inside that scope still succeed. The same process attempts the same things before sealing itself and is allowed them, so the refusals are read as the seal and not as the host. The stat attempts replaced an unrestricted file-read-metadata grant; test_the_metadata_grant_is_the_ancestors_in_scope_and_not_the_filesystem pins what is left."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_a_platform_with_no_adapter_refuses_instead_of_running_unconfined",
+          "covers": "Asked to seal a process on a platform this build has no adapter for, the adapter raises rather than returning an unconfined process, so there is no code path on which a caller reads a hostile document unsealed."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_an_unconfined_child_that_extracted_anyway_is_not_believed",
+          "covers": "The parent's half of failing closed: a reply that reports a real outcome while naming no confinement is refused at the protocol boundary, so a worker built or patched to skip the seal cannot deliver an extraction."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
+          "symbol": "test_a_worker_that_produced_no_outcome_settles_under_its_own_reason",
+          "covers": "In the production capture-outbox pass, a worker that could not be sealed, outran its budget, crashed or was stopped by a resource ceiling settles the obligation as failed under that typed reason, never as source_invalid, with nothing projected and the retained immutable source intact for a later retry."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_capture_vertical.py",
+          "symbol": "test_document_reprocess_records_a_worker_failure_as_its_own_reason",
+          "covers": "The same mapping through the reprocess handler and the governed dispatcher: the stored result carries the worker's typed reason, nothing is published, and the retained bytes are unchanged."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_a_reply_read_through_a_planted_symlink_is_refused",
+          "covers": "The reply is created exclusively and opened without following a link at both ends, so a parser that held write access to the scratch while the document was being read cannot aim either the write or the read at anything else on the host."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_a_confined_child_returns_the_outcome_the_adapters_produce",
+          "covers": "The admitted bytes still extract: a confined child returns the same outcome, segments and output digest the in-process adapters produce, for plain text, Markdown, delimited text and markup."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_the_production_extraction_route_is_the_isolated_worker",
+          "covers": "Both production call sites, the capture outbox and the reprocess handler, resolve their extraction seam to the confined child rather than the in-process adapters."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_a_refused_seal_refuses_the_extraction_before_a_byte_is_read",
+          "covers": "A seal that cannot be established returns a typed isolation refusal with no outcome at all, so the worker never falls back to an unconfined or in-process run."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_a_worker_stopped_by_a_resource_ceiling_says_so",
+          "covers": "A child stopped by the CPU ceiling's own signal is reported as a resource-limit outcome rather than as a crash or as a verdict on the source."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_a_worker_that_outruns_its_budget_is_a_timeout",
+          "covers": "A child that outruns its wall-clock budget has its session killed and is reported as a timeout."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_transported_segments_that_are_not_the_reported_output_are_refused",
+          "covers": "A reply whose transported segments do not re-hash to the output digest it reports is refused, so the boundary cannot change what was extracted."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_the_child_environment_carries_nothing_the_service_holds",
+          "covers": "The child's whole environment is built by the parent from a fixed set of seven variables, so no credential, workspace path or other inherited configuration travels with it."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
+          "symbol": "test_the_applied_resource_limits_are_named_and_not_overstated",
+          "covers": "The worker names only the resource limits the host actually binds, so RLIMIT_AS is absent on macOS rather than claimed and unenforced."
+        },
+        {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
           "symbol": "test_the_engine_invocation_is_built_only_from_trusted_resources",
           "covers": "The engine invocation is built only from trusted resources, so a document field cannot reach the command line."
@@ -3638,9 +3738,12 @@
         }
       ],
       "status": "not_executed",
-      "missing_condition": "No process-level isolation is exercised. The extractors run in the service process, so the absence of file and network access is asserted as the absence of outbound calls in-process rather than enforced by a sandbox, and no test exercises a supervisor budget or a sandbox profile for document extraction.",
-      "limitations": "The no-path-from-document and trusted-resources-only invariants are covered directly and matter. They are a different and weaker claim than the containment the gate describes, which is about what the worker could reach if it tried.",
+      "missing_condition": "The boundary exists and is enforced on macOS only. Production extraction no longer runs in the service process: both call sites run it in a child whose whole environment is seven fixed variables, a constant search path among them, under a bounded versioned JSON protocol and the ceilings the host binds. On macOS that child seals itself with a deny-by-default seatbelt profile before reading a source byte, and a real child-process test proves the seal denies the network and every read, write and stat outside the admitted source, the packaged code, the models and the private scratch. Linux and Windows have no adapter and fail closed under worker_isolation_unavailable, so there the claim is neither met nor violated and nothing is processed there -- a product gap, not evidence -- while the applicability above is every OS the runtime supports. Three scopes are absent everywhere: the supervisor accounting of 11.13, which must count child processes and cumulative unit time across restarts; the 1 GiB resident-memory ceiling of 17.1, which macOS does not bind through RLIMIT_AS; and a packaged Pandoc or Tesseract, so the external engines are whichever binaries stand in the fixed search path.",
+      "limitations": "Containment is proven by a probe inside the sealed process that makes the reads, stats and connections itself, unsealed and then sealed, so the refusals are anchored against the same host's unconfined behaviour. That is the worker's own authority, which a hostile parser also holds, but the hostile-parser path is not itself driven to one. The profile keeps mach-lookup open, because dyld and the notification daemon need it and no bounded service list for the external readers is qualified; the network denial closes what a looked-up service could offer. file-read-metadata is granted on the named ancestors of the paths already in scope, which macOS needs to resolve the /var symlink every scratch sits behind; their contents stay unreadable. OCR is not exercised under the seal, because no verified model manifest is installed here, so only the model directory's presence in scope is shown. The one control over the whole tree is the parent's wall clock, fixed before the child starts and killing its session on expiry; the ceilings inside the child are per-process. A child that exits on its own is reaped before its session could be signalled, so a descendant that detached is not collected.",
       "source_bindings": [
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_worker.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_processing.py",
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/handlers/document_capture.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/raster_extractors.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/rtf_extractor.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ocr_resources.py"

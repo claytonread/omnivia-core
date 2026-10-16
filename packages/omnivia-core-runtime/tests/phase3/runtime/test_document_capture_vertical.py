@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -18,6 +19,10 @@ from omnivia_core_runtime.service.document_processing import (
 from omnivia_core_runtime.service.document_transfer import (
     DocumentTransferRefused,
     stage_document_bytes,
+)
+from omnivia_core_runtime.service.document_worker import (
+    REASON_ISOLATION,
+    DocumentWorkerFailed,
 )
 from omnivia_core_runtime.service.handlers import document_capture as document_handlers
 from omnivia_core_runtime.service.handlers.document_capture import (
@@ -315,6 +320,56 @@ def test_document_reprocess_publishes_retained_bytes_and_exact_replay(
     assert replay.metadata.audit_reference == first.metadata.audit_reference
     assert count(owned, "omnivia_extraction_revisions") == 1
     assert count(owned, "omnivia_extraction_results") == 1
+
+
+def test_document_reprocess_records_a_worker_failure_as_its_own_reason(
+    owned: Served, monkeypatch: Any
+) -> None:
+    """DOC-16. Reprocess extracts in the same confined child the outbox uses, and
+    a child that produced no outcome is not a verdict on the document.
+
+    So the reprocess settles `failed` under the worker's own typed reason rather
+    than under `source_invalid`, and the retained immutable bytes it was asked to
+    reprocess are untouched -- the same reprocess can be asked for again once the
+    condition is gone.
+    """
+    dispatcher = build_dispatcher(owned, tag="document-reprocess-worker")
+    source = captured(dispatcher)
+
+    def refuse(*_args: Any, **_kwargs: Any) -> Any:
+        raise DocumentWorkerFailed(REASON_ISOLATION, "no adapter on this host")
+
+    monkeypatch.setattr(document_handlers, "extract_document", refuse)
+    response = dispatcher.dispatch(
+        reprocess_request(capture_id=source.capture_id, request_id="req-reprocess-worker")
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    result = DocumentReprocessResult.from_wire(response.result)
+    assert result.result_state == "failed"
+    assert result.publication_disposition == "not_published"
+    stored = store.read_result(
+        owned.connection,
+        workspace_id="ws-capture-0001",
+        extraction_revision_id=result.extraction_revision_id,
+    )
+    assert stored is not None
+    # The worker's own reason, and never `source_invalid`.
+    assert json.loads(stored.limitations_json)["code"] == REASON_ISOLATION
+    # The source survived: nothing about the document was decided here, so the
+    # same reprocess can be asked for again.
+    assert count(owned, "omnivia_document_captures") == 1
+    retained = read_retained_source(
+        SimpleNamespace(
+            connection=owned.connection,
+            identity=owned.identity,
+            generation=owned.generation,
+            workspace_id="ws-capture-0001",
+            layout=owned.layout,
+        ),
+        capture_id=source.capture_id,
+    )
+    assert retained == b"native document body"
 
 
 def test_document_reprocess_changed_request_is_idempotency_conflict_without_extraction(

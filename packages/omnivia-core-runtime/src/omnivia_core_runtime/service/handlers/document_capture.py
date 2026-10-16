@@ -75,7 +75,6 @@ from omnivia_core_runtime.service.authorization import (
 from omnivia_core_runtime.service.document_extractors import (
     DocumentExtractionInvalid,
     DocumentExtractionUnsupported,
-    extract_document,
 )
 from omnivia_core_runtime.service.document_intake import (
     BindingClaim,
@@ -99,6 +98,16 @@ from omnivia_core_runtime.service.document_processing import (
 from omnivia_core_runtime.service.document_transfer import (
     DocumentTransferRefused,
     read_staged_document,
+)
+from omnivia_core_runtime.service.document_worker import (
+    DocumentWorkerFailed,
+)
+from omnivia_core_runtime.service.document_worker import (
+    # The production extraction route is the confined child process (DOC-16),
+    # not the in-process adapters. It is bound to the adapters' own name because
+    # it is the same seam: same signature, same outcome, same two refusals --
+    # only the process it runs in is different.
+    extract_document_isolated as extract_document,
 )
 from omnivia_core_runtime.service.mutation import (
     MutationSettlementContext,
@@ -1305,6 +1314,12 @@ class DocumentCaptureHandlers:
                     extraction_outcome = _terminal_outcome("unsupported", "format_not_qualified")
                 except (DocumentExtractionInvalid, DocumentIntakeRefused):
                     extraction_outcome = _terminal_outcome("failed", "source_invalid")
+                except DocumentWorkerFailed as failure:
+                    # The worker produced no outcome at all, so the reprocess
+                    # records its typed reason rather than calling the source
+                    # invalid. The immutable source is untouched and the same
+                    # reprocess can be asked for again.
+                    extraction_outcome = _terminal_outcome("failed", failure.reason)
 
             def mutate(_fenced: Any, _settlement: MutationSettlementContext) -> Mapping[str, Any]:
                 try:

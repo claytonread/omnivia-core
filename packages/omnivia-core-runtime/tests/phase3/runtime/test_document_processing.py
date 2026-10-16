@@ -11,7 +11,11 @@ from typing import Any, Final
 
 import pytest
 from _trusted_ocr import catalogue_over, host_models, stand_in_models
-from omnivia_core_runtime.service import document_intake, processing_settings
+from omnivia_core_runtime.service import (
+    document_intake,
+    document_worker,
+    processing_settings,
+)
 from omnivia_core_runtime.service import document_processing as processing
 from omnivia_core_runtime.service.document_extractors import (
     DOCX_MEDIA_TYPE,
@@ -23,6 +27,7 @@ from omnivia_core_runtime.service.document_intake import (
     capture_document_bytes,
     owned_workspace,
     read_extraction_projection,
+    read_retained_source,
 )
 from omnivia_core_runtime.service.document_processing import (
     NEEDS_OCR_LANGUAGE,
@@ -323,6 +328,65 @@ def test_corrupt_pdf_is_preserved_and_settled_without_projection(
         capture_id=capture.capture.capture_id,
     )
     assert outbox is not None and outbox.outbox_state == store.OUTBOX_SETTLED
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        document_worker.REASON_ISOLATION,
+        document_worker.REASON_TIMEOUT,
+        document_worker.REASON_CRASHED,
+        document_worker.REASON_RESOURCE_LIMIT,
+    ],
+)
+def test_a_worker_that_produced_no_outcome_settles_under_its_own_reason(
+    runner: ServiceRunner, monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    """DOC-16. Extraction runs in a confined child, and a child that produced no
+    outcome -- it could not be sealed, outran its budget, crashed, or was stopped
+    by a resource ceiling -- is not a verdict on the document.
+
+    So the obligation settles `failed` under the worker's own typed reason, never
+    under `source_invalid`, and the retained bytes are untouched: the same capture
+    can be reprocessed once the condition is gone.
+    """
+    capture = capture_document_bytes(
+        runner,
+        content=b"bytes the worker never got to.",
+        document_id="doc-worker-failed",
+        expected_base_capture_id=None,
+        operation_key="capture-worker-failed",
+        media_type="text/plain",
+        intent_kind=store.INTENT_NEW_CAPTURE,
+    )
+
+    def refuse(*_: Any, **__: Any) -> Any:
+        raise document_worker.DocumentWorkerFailed(reason, "detail")
+
+    monkeypatch.setattr(processing, "extract_document", refuse)
+
+    results = process_capture_outbox(runner)
+
+    assert [result.result_state for result in results] == ["failed"]
+    assert json.loads(results[0].limitations_json)["code"] == reason
+    assert read_extraction_projection(runner, document_id="doc-worker-failed") == []
+    # Settled, not stranded, and the immutable source is still there to retry.
+    assert runner.connection is not None and runner.workspace_id is not None
+    outbox = store.read_outbox(
+        runner.connection,
+        workspace_id=runner.workspace_id,
+        capture_id=capture.capture.capture_id,
+    )
+    assert outbox is not None and outbox.outbox_state == store.OUTBOX_SETTLED
+    assert read_retained_source(runner, capture_id=capture.capture.capture_id) == (
+        b"bytes the worker never got to."
+    )
+
+
+def test_the_production_extraction_seam_is_the_confined_worker() -> None:
+    # DOC-16. The in-process adapters are not a production route: the name this
+    # module's extraction goes through is the isolated worker's entry point.
+    assert processing.extract_document is document_worker.extract_document_isolated
 
 
 def test_service_executor_processes_a_bounded_capture_pass(
