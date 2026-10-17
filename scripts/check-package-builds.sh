@@ -366,6 +366,57 @@ install_and_import "venv-runtime" "omnivia-core-runtime" "omnivia_core_runtime" 
   "omnivia_core_runtime.service.main" \
   "omnivia_core_runtime.service.runner" \
   "omnivia_core_runtime.service.transport"
+
+# --- the TypeScript code-analysis producer runs on what the wheel carries -------
+#
+# The runtime wheel ships the compiled analyser and the pinned TypeScript compiler
+# beside it (`packages/omnivia-core-runtime/hatch_build.py`). Listing the members
+# would pass while the adapter refused them, so the installed adapter is asked to
+# verify its own packaged compiler against its pins and to run one analysis on it,
+# from a temporary cwd with PYTHONPATH unset -- this repository's `node_modules`
+# is not reachable from there, and nothing names it.
+echo "--- venv-runtime: the packaged TypeScript analyser runs on its packaged compiler ---"
+NODE_EXECUTABLE="$(command -v node || true)"
+if [[ -z "${NODE_EXECUTABLE}" ]]; then
+  echo "node is required to qualify the packaged TypeScript analyser" >&2
+  exit 1
+fi
+(cd "${WORKDIR}" && env -u PYTHONPATH "${WORKDIR}/venv-runtime/bin/python" - "${NODE_EXECUTABLE}" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+from omnivia_core_runtime.storage import code_analysis_typescript as subject
+
+profile = subject.DEFAULT_TYPESCRIPT_PROFILE
+packaged = subject.PACKAGED_TYPESCRIPT_ROOT
+assert "site-packages" in packaged.parts, packaged
+assert subject.ANALYSER_PATH.parent == packaged.parent, subject.ANALYSER_PATH
+node, compiler = subject.TypeScriptRuntime(node_executable=Path(sys.argv[1])).resolved(profile)
+assert compiler == packaged.resolve(), compiler
+request = {
+    "format": subject.REQUEST_FORMAT,
+    "request_digest": "sha256:" + "0" * 64,
+    "typescript_version": profile.typescript_version,
+    "limits": {
+        "max_programs": 1,
+        "max_extends_depth": 1,
+        "max_references": 1,
+        "max_ast_nodes_per_file": 1000,
+        "max_candidates": 100,
+        "max_reports": 10,
+    },
+    "sources": [{"path": "a.ts", "text": "export function f(): number { return 1; }\nf();\n"}],
+    "aux": [],
+}
+answer = subject._run_analyser(node, compiler, json.dumps(request).encode("ascii"), profile)
+assert answer.get("refused") is None, answer
+assert "a.ts:f" in {item["key"] for item in answer["nodes"]}, answer
+assert answer["lib_files"], answer
+print(f"packaged analyser OK on TypeScript {answer['typescript_version']}: {len(answer['nodes'])} node(s)")
+PYEOF
+)
+echo
 # The MCP distribution is no longer a skeleton: owner resolution 004 Packet C
 # gave it a curated exposure manifest and a stdio server. Both are named because
 # each exercises a different declared edge, and the

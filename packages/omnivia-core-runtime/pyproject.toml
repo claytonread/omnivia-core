@@ -55,3 +55,10 @@ omnivia-core-service = "omnivia_core_runtime.service.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/omnivia_core_runtime"]
+
+# The TypeScript code-analysis producer runs its analyser on the pinned compiler it
+# ships with, never on a repository's `node_modules`. `hatch_build.py` copies that
+# compiler from the repository's `npm ci` install into
+# `omnivia_core_runtime/storage/typescript_compiler/` and refuses to build around any
+# other one. A wheel build therefore needs `npm ci` first; an editable install does not.
+[tool.hatch.build.targets.wheel.hooks.custom]

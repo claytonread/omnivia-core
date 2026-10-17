@@ -51,6 +51,20 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Set up Node
+        # The runtime wheel ships the pinned TypeScript compiler its code-analysis
+        # producer runs on, copied from the `npm ci` install when the wheel is
+        # built (`packages/omnivia-core-runtime/hatch_build.py`), and the wheel
+        # build refuses without it. Both wheel-building steps below need it.
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Node dependencies
+        run: npm ci
+
       - name: Install Python tooling and local packages
         # Order is the whole content of this step. `omnivia-core` is unpublished,
         # so the only thing that can satisfy the `omnivia-core>=0.1.0,<0.2.0`

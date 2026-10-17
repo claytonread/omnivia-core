@@ -490,7 +490,7 @@
     "W11": {
       "status": "NOT_RUN",
       "property_refs": [],
-      "note": "No TypeScript/JavaScript producer was implemented or run."
+      "note": "Superseded by P7-TYPESCRIPT-PRODUCER-2026-10-18.md, which records a delivered, non-executing TypeScript/JavaScript analyser (storage/code_analysis_typescript.py with its packaged compiler-backed analyser) over one sealed captured snapshot. This ledger's verdict is left at NOT_RUN for Codex to reconcile, as for W10: its status vocabulary scopes it to the P1 slice, and P7's exit gate also needs the governed import binding."
     },
     "W12": {
       "status": "PARTIAL",

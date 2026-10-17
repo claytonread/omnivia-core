@@ -46,7 +46,10 @@ MAX_LOCATOR_VALUE: Final = 1_000_000_000
 #: admits no whitespace, no control character, no quote and no separator beyond the `/` the
 #: punctuation class already carried, so every value the narrower pattern accepted is still
 #: accepted and nothing newly accepted can escape a path, a log line or a JSON string.
-_ID = re.compile(r"\w[\w._:/@+-]{0,255}")
+#: `$` and `#` are admitted anywhere for the same reason and no other: they are ECMAScript
+#: identifier characters (`$store`, a private `#count`), so a TypeScript producer keys a
+#: declaration by its own spelling. Neither quotes, separates nor escapes anything.
+_ID = re.compile(r"[\w$#][\w._:/@+$#-]{0,255}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
@@ -76,6 +79,14 @@ class CodeLocator:
     start_column: int
     end_line: int
     end_column: int
+    #: The span as a half-open `[start_byte, end_byte)` range of zero-based offsets into
+    #: the exact captured bytes. Optional, and both or neither: line/column alone cannot
+    #: be resolved without knowing which line terminators the producer counted, whereas a
+    #: byte range slices the content digest's own bytes with no convention at all. Like
+    #: `profile_digest`, an absent span is an absent key in :meth:`as_document`, so every
+    #: locator built without one documents -- and digests -- exactly as before.
+    start_byte: int | None = None
+    end_byte: int | None = None
 
     def __post_init__(self) -> None:
         values = (self.start_line, self.start_column, self.end_line, self.end_column)
@@ -85,14 +96,30 @@ class CodeLocator:
             raise CodeAnalysisCandidateError("locator coordinates are out of bounds")
         if (self.end_line, self.end_column) < (self.start_line, self.start_column):
             raise CodeAnalysisCandidateError("locator end precedes its start")
+        if self.start_byte is None and self.end_byte is None:
+            return
+        start, end = self.start_byte, self.end_byte
+        if (
+            isinstance(start, bool)
+            or not isinstance(start, int)
+            or isinstance(end, bool)
+            or not isinstance(end, int)
+        ):
+            raise CodeAnalysisCandidateError("locator byte span must be two integers")
+        if not 0 <= start <= end <= MAX_LOCATOR_VALUE:
+            raise CodeAnalysisCandidateError("locator byte span is out of bounds")
 
     def as_document(self) -> dict[str, int]:
-        return {
+        document = {
             "start_line": self.start_line,
             "start_column": self.start_column,
             "end_line": self.end_line,
             "end_column": self.end_column,
         }
+        if self.start_byte is not None and self.end_byte is not None:
+            document["start_byte"] = self.start_byte
+            document["end_byte"] = self.end_byte
+        return document
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,6 +453,8 @@ def to_memory_create_inputs(
 __all__ = [
     "EVIDENCE_STRENGTHS",
     "FORMAT_VERSION",
+    "MAX_CANDIDATES",
+    "MAX_LOCATOR_VALUE",
     "RESOLUTION_STATUSES",
     "CodeAnalysisBatch",
     "CodeAnalysisBindingError",

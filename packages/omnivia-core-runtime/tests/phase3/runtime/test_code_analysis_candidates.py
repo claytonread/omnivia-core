@@ -270,3 +270,39 @@ def test_module_has_no_graph_or_governance_writer_imports() -> None:
         if isinstance(node, ast.ImportFrom) and node.module is not None
     }
     assert not any("graph" in module or "governance" in module for module in modules)
+
+
+def test_ecmascript_identifier_characters_are_admitted_without_widening_separators() -> None:
+    for key in ("src/a.ts:$store", "src/a.ts:Counter.#count", "#private", "$", "src/a.ts:f@group"):
+        CodeNodeCandidate(semantic_key=key, kind="method", display_name=key, source=_binding())
+    for key in ("a b", "a\x00b", 'a"b', "a\\b", "-leading", "é́"):
+        with pytest.raises(CodeAnalysisCandidateError):
+            CodeNodeCandidate(semantic_key=key, kind="method", display_name=key, source=_binding())
+
+
+def test_an_exact_byte_span_is_optional_paired_and_absent_from_legacy_documents() -> None:
+    plain = CodeLocator(start_line=1, start_column=1, end_line=3, end_column=8)
+    assert "start_byte" not in plain.as_document()
+    spanned = CodeLocator(start_line=1, start_column=1, end_line=3, end_column=8, start_byte=0, end_byte=12)
+    assert spanned.as_document()["end_byte"] == 12
+    assert _batch().digest != CodeAnalysisBatch(
+        **{
+            **{field: getattr(_batch(), field) for field in ("repository_id", "snapshot_id", "snapshot_kind", "producer_id", "producer_version", "edges")},
+            "nodes": tuple(
+                CodeNodeCandidate(
+                    semantic_key=node.semantic_key,
+                    kind=node.kind,
+                    display_name=node.display_name,
+                    source=SourceBinding(
+                        relative_path=node.source.relative_path,
+                        content_digest=node.source.content_digest,
+                        locator=spanned,
+                    ),
+                )
+                for node in _batch().nodes
+            ),
+        }
+    ).digest
+    for start, end in ((0, None), (None, 4), (5, 4), (-1, 4), (True, 4), (0, 10**10)):
+        with pytest.raises(CodeAnalysisCandidateError):
+            CodeLocator(start_line=1, start_column=1, end_line=1, end_column=2, start_byte=start, end_byte=end)  # type: ignore[arg-type]

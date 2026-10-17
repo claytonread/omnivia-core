@@ -1,0 +1,4 @@
+# The TypeScript code-analysis analyser is pinned by digest (`ANALYSER_DIGEST` in
+# `code_analysis_typescript.py`). A checkout that rewrote its line endings -- Git's
+# default on a Windows runner -- would hold, and package, a build the adapter refuses.
+packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/code_analysis_typescript.cjs -text
