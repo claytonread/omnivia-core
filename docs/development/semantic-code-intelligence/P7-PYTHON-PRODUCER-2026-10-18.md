@@ -1,6 +1,6 @@
 # TECH-CORE-RETRIEVAL-CODE-001: P7 Python code-analysis producer
 
-Recorded 2026-10-18. Revised the same day after Codex review; the review repairs and the
+Recorded 2026-10-18. Revised the same day after two Codex reviews; the repairs and the
 evidence they corrected are in *Review repairs* below.
 
 ## Scope: this is the Python producer slice only
@@ -37,7 +37,7 @@ slice supplies one producer and no binding.
 | File | Change |
 | --- | --- |
 | `storage/code_analysis_python.py` | New. The analyser: profile, blob reader, parse pass, cross-file resolver, batch assembly. |
-| `tests/phase3/runtime/test_code_analysis_python.py` | New. **35 test functions, 35 collected pytest cases** (no parametrisation in this file), over a real migrated workspace, a really sealed capture and really published blobs. |
+| `tests/phase3/runtime/test_code_analysis_python.py` | New. **36 test functions, 36 collected pytest cases** (no parametrisation in this file), over a real migrated workspace, a really sealed capture and really published blobs. |
 | `storage/code_analysis_candidates.py` | Two narrow extensions, below. |
 | `tests/phase3/runtime/test_code_analysis_candidates.py` | **+2 test functions** (7 functions, 7 cases). The five pre-existing tests are unchanged and pass; `WORK-STATUS.json` pins all five by name, and all five are still there. |
 
@@ -83,20 +83,90 @@ unchanged.
 
 ## Review repairs
 
-Five repairs after Codex review, all inside the two modules and their tests.
+Six repairs after two Codex reviews, all inside the two modules and their tests. Repairs 1–5
+landed in `61c5227a`; repair 6 answers the second review.
 
 | # | Defect | Repair | Proof |
 | --- | --- | --- | --- |
-| 1 | A file reported `identity_unsupported` still contributed every node and edge gathered *before* the name that broke, and other files resolved imports to those leaked nodes. | The analyser for such a file is dropped whole, and every logical path it claimed joins the `unnameable` set, so another file's reference to one states `unsupported-identity`. | Pre-repair, the fixture emitted `pkg.wide` and `pkg.wide.fine` plus 2 edges sourced from the dropped file, and `pkg.caller` resolved to `pkg.wide.fine`. After: 0 nodes, 0 edges, `unsupported-identity:pkg.wide.fine`. |
+| 1 | A file reported `identity_unsupported` still contributed every node and edge gathered *before* the name that broke, and other files resolved imports to those leaked nodes. | The analyser for such a file is dropped whole, and every logical path it claimed joins the `unnameable` set, so another file's reference to one states `unsupported-identity`. (Repair 6 moved that set out of the symbol tables and behind the accepted definitions.) | Pre-repair, the fixture emitted `pkg.wide` and `pkg.wide.fine` plus 2 edges sourced from the dropped file, and `pkg.caller` resolved to `pkg.wide.fine`. After: 0 nodes, 0 edges, `unsupported-identity:pkg.wide.fine`. |
 | 2 | Only definitions and imports bound a name. Every other binder — parameters, assignments, annotations, augmented assignments, walrus, loop targets, `with`/`except` aliases, pattern captures, `global`/`nonlocal`, lambda parameters, comprehension targets — was ignored, so a call through such a name resolved to whatever outer definition shared its spelling. | A per-scope `dynamic` table, consulted before the static one at every level of the LEGB walk. Lambdas and comprehensions get a transient lookup scope parented to the enclosing one; the edges written inside them are attributed to the named scope that owns the text. Calls through a dynamic name are `unresolved` / `inferred_dynamic` with a bounded `dynamic-binding:<name>` descriptor. | The binder fixture produced **16 resolved call edges pre-repair, of which 13 were false**; after the repair it produces **3**, and all three are correct (the receiver case and the two scopes that genuinely do reach the outer definition). |
 | 3 | `grammar_version` reached `ast.parse`'s own `assert major == 3` for `2.7`/`99.99`, and a minor newer than the running interpreter was accepted in silence while the parser went on parsing the grammar it actually has. | Both refused during profile construction with `CodeAnalysisCandidateError`. | Regressions for `2.7`, `99.99`, `4.0` and `3.<running+1>`; the running minor and `3.9` are admitted, and `PythonAnalyserProfile(grammar_version="3.11").digest == DEFAULT_PYTHON_PROFILE.digest`. |
 | 4 | `profile_digest=None` entered the canonical digest document, silently changing `code_analysis.v1` identity for legacy batches. | Present-only, in both the batch digest and the adapted candidate content. | The two digests above, plus a regression that three profile states (none / A / B) give three distinct identities. |
 | 5 | Evidence overstated test counts, the descriptor vocabulary, the per-file contract and the broad-suite result. | This document, rewritten against re-measured output. | Every number below was produced by a command run after the repair. |
+| 6 | Repair 1 discarded a dropped file's analyser but not what it had already written into the one snapshot-wide `_Scopes`: claims and ordinals, `definitions`, bindings, value binders, star imports, scope parents and kinds, namespace entries. A dropped `pkg.py`, which sorts before `pkg/__init__.py`, took the bare `pkg` and `pkg.run`, so the valid package was keyed `pkg+2` and `pkg.run+2`; and because the unnameable set was read before `definitions`, every reference to `pkg` or `pkg.run` — the package's own `run()` included — was `unsupported-identity` while a valid node for it sat in the batch. | Each file is analysed into a staged `_Scopes` of its own, whose `ordinals` read through to the snapshot's (`ChainMap.new_child()`), and `publish` folds it in only once the file is accepted; a dropped file's staged tables are discarded. What it claimed is kept outside the symbol tables, in a `dropped` set the resolver reads only after the accepted definitions, so it labels a reference only the dropped file could satisfy and never takes a path from a file that supplies it. No third pass: every file is still parsed and walked once. | The collision regression, which fails on `61c5227a` with `pkg+2` / `pkg.run+2`. After: bare keys, every import and call resolved, and the snapshot's published tables — every field, ordinals and namespace included — identical with and without the dropped files. Details below. |
 
 The receiver case survives repair 2 deliberately: the first parameter of a function
 written in a class body is lexically that class, which is a binding and not an inference.
 It stops being one the moment the body rebinds it — `self = other` puts `self` in the
 dynamic table and the call becomes `dynamic-binding:self`.
+
+### Repair 6: the collision a dropped file used to win
+
+The regression's fixture is one logical module written twice. `pkg.py` star-imports
+`os`, aliases `os.path` as `helper`, assigns `run = None`, defines `run` and `only_here`,
+and is then dropped for an identity past the 256-character budget. `pkg/__init__.py`
+defines `helper`, `run` (calling `helper`) and `main` (calling `run`). `app.py` imports
+`pkg`, `pkg.run` and `pkg.only_here`, and calls `run()` and `pkg.run()`. A second dropped
+file, `solo.py`, holds nothing but an overlong identity: a twin's namespace entry is the
+package's anyway, so `solo.py` is the one whose namespace entry no accepted file supplies.
+The twin, measured on both trees with the same probe:
+
+| | `61c5227a` | Repaired |
+| --- | --- | --- |
+| Package nodes | `pkg+2`, `pkg.run+2`, `pkg.helper`, `pkg.main` | `pkg`, `pkg.run`, `pkg.helper`, `pkg.main` |
+| `app` imports | `unsupported-identity` for `pkg`, `pkg.run` and `pkg.only_here` | `pkg`, `pkg.run`, `unsupported-identity:pkg.only_here` |
+| `app.main` calls (two sites) | `unsupported-identity:pkg.run` | `pkg.run`, both resolved |
+| `pkg.main` calls | `unsupported-identity:pkg.run` | `pkg.run` |
+| `pkg.run` calls | `pkg.helper` | `pkg.helper` |
+| `pkg.helper` calls | `unbound-name:len` | `unbound-name:len` |
+
+`pkg.only_here` is the one path only the dropped file supplies, and it is the only thing
+the dropped file still changes: without `pkg.py` the same reference is
+`unresolved-in-snapshot:pkg.only_here`, and every other node and edge is identical. In the
+regression, the snapshot's published tables — every `_Scopes` field — are also compared
+with those of the same snapshot without either dropped file, and are equal.
+
+One label moves the other way, by design. A dropped file no longer contributes a namespace
+entry either, so a reference to something under a dropped module that the module does not
+itself define is labelled as it always has been for a file that does not parse. Measured
+with `app.py` holding `import solo` and `solo.anything()` beside the dropped `solo.py`: the
+import is `unsupported-identity:solo` on both trees, and the call is
+`unresolved-in-snapshot:solo.anything` on `61c5227a` — through the leaked namespace entry —
+and `external-reference:solo.anything` now. See architecture concern 3 for why `external`
+is not exact there, and what would be.
+
+One resolution moves too, in the fixture's mirror image: a dropped `pkg/__init__.py`
+beside a valid `pkg.py`, with `app.py` holding `from pkg import run` and `run()`.
+`61c5227a` labelled both `unsupported-identity:pkg.run` — through the same leaked claim
+that broke the fixture — and the repaired analyser resolves both to `pkg.py`'s `run`,
+exactly as both trees always have when that `pkg/__init__.py` is unparseable instead.
+That is the rule this repair implements: a dropped identity never overrides an accepted
+definition. But CPython loads the package, not the module, so in this one arrangement the
+edge names a module CPython would not import. See architecture concern 3.
+
+On `61c5227a` the dropped file's alias, assignment and star import could not reach the
+package's lookups only *because* the package had been pushed onto `+2` scopes. Fixing the
+ordinals alone would have handed the package the bare `pkg` scope with all three still in
+it. The regression pins each of them, and six partial repairs were each confirmed to fail
+it, against the module edited in place and restored byte-identical afterwards (same
+SHA-256):
+
+| Partial repair | First failing assertion |
+| --- | --- |
+| Stage the claims (`ordinals`, `definitions`) only; every other write goes straight into the snapshot's tables | `pkg.run` calls `ambiguous-name:helper` — the dropped `helper` alias |
+| Stage everything, but publish the dropped file's tables except its claims | `pkg.main` calls `dynamic-binding:run` — the dropped `run = None` |
+| Stage everything but the star-import table | `pkg.helper` calls `wildcard-shadowed-name:len` — the dropped `from os import *` |
+| Stage everything but the namespace | the published `namespace` differs from the snapshot without the dropped files — `solo` |
+| Publish the dropped file's staged tables (no transaction at all) | the batch itself is refused: `resolved edge target is not a node in this batch`, because `pkg.only_here` resolves to the dropped node |
+| Read `dropped` before `definitions` | `app` imports `unsupported-identity:pkg.run` |
+
+And the repair moves nothing where no dropped file shares a path with an accepted one.
+The `61c5227a` module was loaded beside the repaired one and both were run over identical
+sealed snapshots: the multi-file fixture (batch `sha256:838c615a…`, as recorded below), the
+binder fixture, both earlier dropped-file fixtures, and 30 real `storage/` modules (966
+nodes, 6 783 edges) all produce **identical `analysis_manifest` documents** under the two;
+the twin fixture is the only one that differs, and all 54 `storage/` modules are refused at
+the candidate ceiling by both.
 
 ## The profile
 
@@ -157,7 +227,7 @@ refuses the batch.
 | Blob missing, unreadable, truncated, or no longer hashing to its recorded digest | `CodeAnalysisBindingError` |
 | A `grammar_version` the running parser cannot provide, or any other malformed profile field | `CodeAnalysisCandidateError`, at profile construction — before a snapshot is touched |
 | Snapshot-level budget exceeded (files, total bytes, candidates, file reports) | `PythonAnalysisRefused` — analysing a prefix would produce a batch that reads like a description of the whole snapshot |
-| Per-file trouble: oversize, undecodable, syntactically invalid, over the AST budget, or an identity outside the contract's bounds | one bounded, source-located `PythonFileReport`. **All-or-nothing for that file** — it contributes no node and no edge, not even what was gathered before the trouble, and the rest of the snapshot stops resolving to its identities. **Every valid fact from every other file survives.** |
+| Per-file trouble: oversize, undecodable, syntactically invalid, over the AST budget, or an identity outside the contract's bounds | one bounded, source-located `PythonFileReport`. **All-or-nothing for that file** — it contributes no node, no edge and no symbol-table entry, not even what was gathered before the trouble. Nothing resolves to it: a reference only an `identity_unsupported` file could satisfy is `unsupported-identity`, and a path exactly one accepted file defines resolves to that file's node, under its bare key, however many dropped files also claim it. **Every valid fact from every other file survives.** |
 | No admitted Python source, or no nameable node in any of it | `verified is None`, which is an answer rather than a failure |
 
 ## Resolution is stated, never guessed
@@ -173,7 +243,7 @@ vocabulary is eleven classes, and every one of them is exercised by a test:**
 | `ambiguous-definition`, `ambiguous-name`, `dynamic-call`, `external-reference`, `relative-import-beyond-root`, `unbound-name`, `wildcard-import`, `wildcard-shadowed-name` | the multi-file fixture (nine classes in all, with `dynamic-binding`) |
 | `dynamic-binding` | the multi-file fixture *and* the binder fixture |
 | `unresolved-in-snapshot` | the binder fixture (`self.absent()` on a class that does not define it) |
-| `unsupported-identity` | the overlong-identity fixture |
+| `unsupported-identity` | the overlong-identity fixtures, and the `pkg.py` / `pkg/__init__.py` collision fixture, where it labels only the path the dropped file alone supplies |
 
 Covered behaviours, each pinned by a test:
 
@@ -242,6 +312,9 @@ Thirteen indexed files, two excluded by the profile, eleven admitted:
 | File outcomes | 9 analysed, 1 `syntax_invalid`, 1 `decode_failed` |
 | Determinism | two runs produce an identical `analysis_manifest` document |
 
+Unchanged by repair 6: no file in this snapshot is dropped for its identity, and the
+`61c5227a` and repaired analysers produce identical manifests for it.
+
 The batch digest moved from the pre-repair record
 (`sha256:12820b4745…`) by exactly one edge: `record.to_dict()` in
 `pkg.service.Service.run` was `unbound-name:record` / `syntactic` and is now
@@ -304,8 +377,35 @@ thirteen, and pre-repair all thirteen resolved to the wrong node.
 
 ## Verification
 
-Every command below was run from `worktree-omnivia-core-tech-settings` on the repaired
-tree, with the `PYTHONPATH` and overlay described under *Baseline*.
+Every command below was run from `worktree-omnivia-core-tech-settings`, with the
+`PYTHONPATH` and overlay described under *Baseline*.
+
+### Repair 6: focused
+
+Run on the repair-6 tree. Nothing outside the two modules and their tests can move under
+this repair, so this is the focused set, and the broad runs in the `61c5227a` table below
+were **not** repeated for it.
+
+| Command | Outcome |
+| --- | --- |
+| `pytest …/test_code_analysis_python.py::test_a_dropped_file_cannot_move_or_shadow_a_valid_definition_of_the_same_path`, against the unrepaired `61c5227a` module | **1 failed**: `pkg+2` and `pkg.run+2` in place of `pkg` and `pkg.run` |
+| `pytest …/test_code_analysis_python.py …/test_code_analysis_candidates.py -q` | **43 passed** (36 + 7) |
+| the same two plus `…/test_engineering_captured_source_coverage.py …/test_engineering_source_coverage.py` | **143 passed** |
+| the collision regression against each of the six partial repairs above | **1 failed** each; module restored byte-identical |
+| `61c5227a`'s analyser beside the repaired one, over six sealed snapshots | identical manifests on the five without a colliding dropped file; only the twin differs |
+| the same two analysers over `solo.anything()` beside a dropped `solo.py`, and over the mirror-image twin with its package dropped and then unparseable | `solo.anything`: `unresolved-in-snapshot` → `external-reference`; dropped-package twin: `unsupported-identity:pkg.run` → resolved `pkg.run`; unparseable-package twin: resolved `pkg.run` on both |
+| `ruff check` on the two changed Python files, and over CI's full scope | All checks passed |
+| `mypy --strict packages/omnivia-core-runtime/src/omnivia_core_runtime` (CI's strict target for this package) | Success: no issues found in **194** source files |
+| `scripts/check-package-boundaries.py` and `scripts/check-raise-discipline.py` | both passed |
+| `git diff --check` | clean |
+
+**Not re-run for repair 6:** `pytest tests`, the 36-minute runtime package suite, the
+whole-repository suite and `./scripts/preflight`. The runtime package suite's latest
+result is therefore still the `61c5227a` run below — 1 failed (the baseline AT09 case),
+16 188 passed — and repair 6 changes nothing outside the two modules, which nothing else
+imports.
+
+### `61c5227a`: repairs 1–5
 
 | Command | Outcome |
 | --- | --- |
@@ -322,11 +422,12 @@ tree, with the `PYTHONPATH` and overlay described under *Baseline*.
 | `scripts/check-application-contracts.py` | Application contract conformance check passed |
 | `git diff --check` and `git diff --check HEAD` | clean |
 
-Test counts, stated unambiguously, because the earlier record conflated the two:
+Test counts after repair 6, stated unambiguously, because the earlier record conflated the
+two:
 
 | File | Test functions | Collected pytest cases |
 | --- | --- | --- |
-| `test_code_analysis_python.py` | 35 | 35 |
+| `test_code_analysis_python.py` | 36 | 36 |
 | `test_code_analysis_candidates.py` | 7 | 7 |
 | `test_engineering_captured_source_coverage.py` | 21 | 21 |
 | `test_engineering_source_coverage.py` | 34 | **79** (parametrised) |
@@ -429,14 +530,33 @@ failures live, each already reproduced on the baseline.
    segment containing a dot or a dash still yields a stable, unique dotted key, and
    relative imports resolve with the same function — but `lib.d/mod.py` and `lib/d/mod.py`
    collide on one logical path. The collision is handled (ordinal key, ambiguous
-   definition) rather than hidden. One corner of repair 1 meets this: if a file that is
-   later dropped had already claimed a logical path that a *surviving* file also claims,
-   the surviving file keeps its ordinal key and the bare path stays unresolvable. The
-   outcome is conservative in both directions — nothing resolves to the dropped file, and
-   nothing resolves to a node by a name the source gave to two files — but it is less
-   precise than it would be if the drop also unwound the ordinal. Not fixed, because
-   unwinding a claim means a third pass for a collision that needs two files to spell one
-   logical path.
+   definition) rather than hidden when both files are accepted. When one of them is
+   dropped, the accepted one keeps the bare key and answers for the path (repair 6) —
+   exactly as it always did beside a file that does not parse. Two limits of the
+   convention itself remain:
+   - It does not model CPython's import precedence, under which a regular package shadows
+     a same-named module. If the claimant that is dropped or unparseable is
+     `pkg/__init__.py` and the accepted one is `pkg.py`, references into `pkg` resolve to
+     the module CPython would not load. For an unparseable package that is long-standing;
+     a dropped one reaches it since repair 6, where `61c5227a` said
+     `unsupported-identity` only through the leak repair 6 removes. Two *accepted*
+     claimants stay ambiguous, which is conservative. Modelling the precedence belongs to
+     the convention for every outcome — and to a `.pyi` stub beside its `.py`, a stub
+     CPython never imports — not to one dropped-file branch.
+   - A file name that itself spells an ordinal collides with one: `a.py`, `a/__init__.py`
+     and `a+2.py` key as `a`, `a+2` and `a+2` respectively, and the batch's uniqueness
+     check refuses the whole analysis with `CodeAnalysisCandidateError: candidate
+     identities must be unique`. Reproduced identically on `61c5227a`.
+
+   And one limit of the namespace, which repair 6 now applies to a dropped file exactly as
+   it has always applied to the other four per-file outcomes: `namespace` is built from
+   the *analysed* files only. So a reference into a module that is in the snapshot but
+   contributed nothing — any reference into an unparseable, undecodable, oversize or
+   over-budget file, and one into an `identity_unsupported` file that names nothing the
+   file claimed — is `external-reference` when no accepted file supplies a prefix of it.
+   That is not exact: the module is in the snapshot. Building `namespace` from the admitted
+   paths instead would make it exact for all five outcomes; it would also move their
+   labels, so it is recorded here rather than folded into repair 6.
 4. **No value flow, no inheritance, no type inference.** A call through a local variable is
    `dynamic-binding`, a call to a name nothing in the snapshot binds is `unbound-name`, and
    a `self.m()` whose `m` lives on a base class is `unresolved-in-snapshot`. All three are

@@ -11,6 +11,7 @@ checkout" an observable property of the suite rather than a claim in a docstring
 from __future__ import annotations
 
 import ast
+import dataclasses
 import hashlib
 import os
 import sys
@@ -278,6 +279,64 @@ BINDER_SHADOWS: dict[str, str] = {
     "pkg.binders.walrus_shadow": "a walrus target",
     "pkg.binders.global_shadow": "a global declaration",
 }
+
+#: One logical module written twice. `pkg.py` sorts before `pkg/__init__.py`, and it
+#: claims `pkg` and `pkg.run`, aliases `helper`, assigns `run` and star-imports before an
+#: identity past the identifier budget drops it. The package claims the same module and
+#: the same `run`, and resolves its own names inside itself.
+_TWIN_MODULE = f'''"""Beside the package of the same name, and dropped."""
+
+from os import *
+from os import path as helper
+
+run = None
+
+
+def run() -> None:
+    return None
+
+
+def only_here() -> None:
+    return None
+
+
+def {"n" * 300}() -> None:
+    return None
+'''
+
+_TWIN_PACKAGE = '''"""The package, which is the logical module `pkg` too."""
+
+
+def helper() -> int:
+    return len("x")
+
+
+def run() -> int:
+    return helper()
+
+
+def main() -> int:
+    return run()
+'''
+
+_TWIN_CALLER = '''"""A caller outside the package."""
+
+import pkg
+from pkg import only_here, run
+
+
+def main() -> int:
+    return run() + pkg.run()
+'''
+
+#: Dropped too, and alone: a twin's namespace entry is the package's anyway, so this is
+#: the file whose namespace entry no accepted file would supply.
+_DROPPED_ALONE = f'''"""Alone, and dropped."""
+
+
+def {"n" * 300}() -> None:
+    return None
+'''
 
 _DEEP = '''"""A relative import past the root, and a wildcard."""
 
@@ -888,6 +947,97 @@ def test_a_file_the_contract_cannot_key_contributes_nothing_at_all(
     assert _targets(result, relationship="calls", source_key="pkg.caller.call") == {
         "unresolved/unsupported-identity:pkg.wide.fine"
     }
+
+
+def test_a_dropped_file_cannot_move_or_shadow_a_valid_definition_of_the_same_path(
+    workspace: Any, blobs_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dropped file leaves nothing in the tables every other file resolves against.
+
+    `pkg.py` is dropped, but it is analysed first. Had its claims survived it, the valid
+    package would be keyed `pkg+2` and `pkg.run+2` and every reference to either would
+    miss; had its alias, assignment and star import survived, the package's own names
+    would read as ambiguous, dynamic and wildcard-shadowed. The batch has to be the batch
+    of the snapshot without the dropped files, except where a reference only one of them
+    could satisfy says so.
+    """
+    published: list[Any] = []
+    resolve = subject._Scopes.resolve
+
+    def recording(scopes: Any, *arguments: Any) -> Any:
+        published.append(scopes)
+        return resolve(scopes, *arguments)
+
+    monkeypatch.setattr(subject._Scopes, "resolve", recording)
+
+    def analysed(files: dict[str, bytes], **overrides: Any) -> tuple[PythonAnalysisResult, Any]:
+        published.clear()
+        result = Snapshot(workspace, blobs_root, files=files, **overrides).analyse()
+        assert len({id(scopes) for scopes in published}) == 1
+        return result, published[0]
+
+    valid = {"app.py": _TWIN_CALLER.encode(), "pkg/__init__.py": _TWIN_PACKAGE.encode()}
+    files = {**valid, "pkg.py": _TWIN_MODULE.encode(), "solo.py": _DROPPED_ALONE.encode()}
+    assert sorted(files) == ["app.py", "pkg.py", "pkg/__init__.py", "solo.py"]
+    result, tables = analysed(files)
+    assert _outcomes(result) == {
+        "app.py": "analysed",
+        "pkg.py": "identity_unsupported",
+        "pkg/__init__.py": "analysed",
+        "solo.py": "identity_unsupported",
+    }
+
+    # The package keeps the bare keys, and every one of them is the package's.
+    nodes = _nodes(result)
+    assert set(nodes) == {"app", "app.main", "pkg", "pkg.helper", "pkg.run", "pkg.main"}
+    assert {nodes[key].source.relative_path for key in nodes if key.startswith("pkg")} == {
+        "pkg/__init__.py"
+    }
+    assert not [
+        edge for edge in _edges(result) if edge.source.relative_path in {"pkg.py", "solo.py"}
+    ]
+
+    # Another module reaches it by import and by call, by name and through the module.
+    assert _targets(result, relationship="imports", source_key="app") == {
+        "pkg",
+        "pkg.run",
+        "unresolved/unsupported-identity:pkg.only_here",
+    }
+    calls = [
+        edge
+        for edge in _edges(result)
+        if edge.relationship_type == "calls" and edge.source_key == "app.main"
+    ]
+    assert len(calls) == 2
+    assert {(edge.target_key, edge.resolution_status) for edge in calls} == {("pkg.run", "resolved")}
+
+    # The package's own names are its own: not the dropped `helper` alias, not the dropped
+    # `run = None`, not the dropped star import.
+    assert _targets(result, relationship="calls", source_key="pkg.run") == {"pkg.helper"}
+    assert _targets(result, relationship="calls", source_key="pkg.main") == {"pkg.run"}
+    assert _targets(result, relationship="calls", source_key="pkg.helper") == {
+        "unresolved/unbound-name:len"
+    }
+
+    # The same snapshot without the dropped files publishes exactly the same symbol tables
+    # -- every one of them, ordinals and namespace included -- and the same batch, but for
+    # the one reference only a dropped file could have satisfied.
+    baseline, baseline_tables = analysed(
+        valid, snapshot_id="snap-without-twin", base_us=1_700_000_500_000_000
+    )
+    for table in dataclasses.fields(tables):
+        assert getattr(tables, table.name) == getattr(baseline_tables, table.name), table.name
+    assert {key: node.as_document() for key, node in nodes.items()} == {
+        key: node.as_document() for key, node in _nodes(baseline).items()
+    }
+    keys, baseline_keys = (
+        {edge.edge_key for edge in _edges(item)} for item in (result, baseline)
+    )
+    assert {
+        edge.unresolved_target.descriptor  # type: ignore[union-attr]
+        for edge in (*_edges(result), *_edges(baseline))
+        if edge.edge_key in keys ^ baseline_keys
+    } == {"unsupported-identity:pkg.only_here", "unresolved-in-snapshot:pkg.only_here"}
 
 
 def test_resolved_edges_only_ever_name_a_node_in_their_own_batch(snapshot: Snapshot) -> None:

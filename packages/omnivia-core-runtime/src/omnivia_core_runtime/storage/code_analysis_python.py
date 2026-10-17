@@ -43,8 +43,9 @@ opposite: an undecodable file, a syntactically invalid file, a file larger than 
 admits, a file whose tree is bigger than the node budget and a file holding an identity the
 contract cannot carry each get one bounded, source-located report, and every valid fact
 from every other file survives. That outcome is all-or-nothing for the file it names: a
-file that reports anything but `analysed` contributes no node and no edge at all, not even
-the ones gathered before the trouble, and the rest of the snapshot stops resolving to it.
+file that reports anything but `analysed` contributes no node, no edge and no symbol-table
+entry at all, not even the ones gathered before the trouble. Nothing resolves to it, and
+nothing it parsed can move or shadow another file's valid definition of the same path.
 """
 
 from __future__ import annotations
@@ -55,6 +56,7 @@ import os
 import sqlite3
 import sys
 import tokenize
+from collections import ChainMap
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -136,7 +138,8 @@ _MAX_DESCRIPTOR_CHARS: Final = 1024
 _EDGE_KEY_HEX: Final = 48
 #: The ordinal separator for a logical path that more than one definition claims (two
 #: `def f` in one scope, a `pkg.py` beside a `pkg/__init__.py`). The first keeps the bare
-#: path; the n-th gets `+n`, which the identifier pattern admits.
+#: path; the n-th gets `+n`, which the identifier pattern admits. Only definitions in
+#: accepted files are counted -- see :class:`_Scopes`.
 _ORDINAL: Final = "+"
 #: Separates a transient lookup scope -- a lambda's or a comprehension's -- from the named
 #: scope that owns it. A NUL is deliberate: the contract's identifier pattern cannot admit
@@ -412,20 +415,22 @@ class _Reference:
 
 @dataclass(slots=True)
 class _Scopes:
-    """The snapshot-wide symbol tables pass one fills and pass two reads.
+    """The symbol tables pass one fills and pass two reads.
 
     `definitions` maps a logical dotted path to the candidate key that owns it, or to None
     when more than one definition claims it. `namespace` is every module path plus every
     package prefix of one, which is what separates "inside this snapshot but not found"
     from "outside this snapshot".
+
+    The snapshot's own instance holds what accepted files said and nothing else. Each file
+    is analysed into a :meth:`staged` instance of its own, which :meth:`publish` folds in
+    only once the file is accepted, so a file dropped part-way leaves no entry in any
+    table: no claim to push another file's valid definition of the same path onto a
+    suffixed key, and no binding, binder, star import or namespace entry to shadow what
+    that file's names resolve to.
     """
 
     definitions: dict[str, str | None] = field(default_factory=dict)
-    #: Logical paths a definition really occupies but no candidate can key, because the
-    #: name is outside the contract's identifier bounds. Separate from an ambiguous entry:
-    #: the source says exactly what it means and this batch cannot say it, which is an
-    #: unresolved endpoint rather than an ambiguous one.
-    unnameable: set[str] = field(default_factory=set)
     namespace: set[str] = field(default_factory=set)
     bindings: dict[tuple[str, str], _Binding] = field(default_factory=dict)
     #: `(scope, name)` pairs some binder that is not a definition or an import owns:
@@ -438,13 +443,42 @@ class _Scopes:
     parents: dict[str, str] = field(default_factory=dict)
     kinds: dict[str, str] = field(default_factory=dict)
     wildcards: set[str] = field(default_factory=set)
-    ordinals: dict[str, int] = field(default_factory=dict)
+    #: How many definitions have claimed each logical path: the one table a file has to
+    #: read across files while it is analysed, since `pkg.py` and `pkg/__init__.py` claim
+    #: one path. A staged instance reads through to the snapshot's counts and writes only
+    #: to its own layer.
+    ordinals: ChainMap[str, int] = field(default_factory=ChainMap)
+
+    def staged(self) -> _Scopes:
+        """Empty tables for one file, whose claims are counted on top of these."""
+        return _Scopes(ordinals=self.ordinals.new_child())
+
+    def publish(self, staged: _Scopes) -> None:
+        """Fold one accepted file's staged tables into these.
+
+        Files are staged and published one at a time, so a staged claim was counted
+        against exactly these tables and its `definitions` entry is what claiming here
+        directly would have written. The namespace is a set every file adds to. Every other
+        table is keyed by scopes the file claimed for itself, and two files can share such
+        a key only by sharing a candidate key -- which the batch's own uniqueness check
+        refuses, so an update that overwrites never reaches a returned batch.
+        """
+        self.definitions.update(staged.definitions)
+        self.ordinals.update(staged.ordinals.maps[0])
+        self.namespace |= staged.namespace
+        self.bindings.update(staged.bindings)
+        self.dynamic |= staged.dynamic
+        self.parents.update(staged.parents)
+        self.kinds.update(staged.kinds)
+        self.wildcards |= staged.wildcards
 
     def claim(self, logical: str) -> str:
         """The candidate key for one logical path, suffixed when it is already claimed.
 
         Called in a fixed order -- files by sorted path, definitions in source order -- so
         which redefinition gets the bare path is a property of the source, not of the run.
+        Only an accepted file's claims are ever published, so a dropped file never takes
+        the bare path from one.
         """
         seen = self.ordinals.get(logical, 0) + 1
         self.ordinals[logical] = seen
@@ -499,25 +533,32 @@ class _Scopes:
             key = self.parents.get(key)
         return False
 
-    def resolve_dotted(self, dotted: str) -> tuple[str | None, str, str, str]:
-        """One dotted logical path as `(target_key, descriptor, status, strength)`."""
-        if dotted in self.unnameable:
-            return None, f"unsupported-identity:{dotted}", "unresolved", "syntactic"
+    def resolve_dotted(self, dotted: str, dropped: set[str]) -> tuple[str | None, str, str, str]:
+        """One dotted logical path as `(target_key, descriptor, status, strength)`.
+
+        `dropped` is every logical path a file reported `identity_unsupported` had claimed.
+        It is read only once no accepted file defines the path, so it names a reference
+        only a dropped file could satisfy and never takes a path from a file that really
+        supplies it. Such a reference is unresolved rather than ambiguous: the source says
+        exactly what it means, and this batch cannot say it.
+        """
         if dotted in self.definitions:
             key = self.definitions[dotted]
             if key is None:
                 return None, f"ambiguous-definition:{dotted}", "ambiguous", "syntactic"
             return key, "", "resolved", "resolved_static"
+        if dotted in dropped:
+            return None, f"unsupported-identity:{dotted}", "unresolved", "syntactic"
         parts = dotted.split(".")
         if any(".".join(parts[:index]) in self.namespace for index in range(1, len(parts) + 1)):
             return None, f"unresolved-in-snapshot:{dotted}", "unresolved", "syntactic"
         return None, f"external-reference:{dotted}", "external", "syntactic"
 
-    def resolve(self, reference: _Reference) -> tuple[str | None, str, str, str]:
+    def resolve(self, reference: _Reference, dropped: set[str]) -> tuple[str | None, str, str, str]:
         if reference.mode == "refused":
             return None, reference.descriptor, reference.status, reference.strength
         if reference.mode == "dotted":
-            return self.resolve_dotted(".".join(reference.parts))
+            return self.resolve_dotted(".".join(reference.parts), dropped)
         name = reference.parts[0]
         binding = self.lookup(reference.scope_key, name)
         if binding is None:
@@ -528,7 +569,7 @@ class _Scopes:
             return None, f"dynamic-binding:{name}", "unresolved", "inferred_dynamic"
         if binding.ambiguous:
             return None, f"ambiguous-name:{name}", "ambiguous", "syntactic"
-        return self.resolve_dotted(".".join((binding.target, *reference.parts[1:])))
+        return self.resolve_dotted(".".join((binding.target, *reference.parts[1:])), dropped)
 
 
 def _detail(text: str, limit: int = _MAX_DETAIL_CHARS) -> str:
@@ -740,7 +781,11 @@ def _receiver_name(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
 
 
 class _FileAnalyser:
-    """One file's definitions, bindings and deferred references. Parses, never evaluates."""
+    """One file's definitions, bindings and deferred references. Parses, never evaluates.
+
+    It writes only to the staged tables it is handed, which reach the snapshot's only if
+    the file is accepted.
+    """
 
     def __init__(
         self,
@@ -761,8 +806,8 @@ class _FileAnalyser:
         self.containment: list[tuple[str, str, SourceBinding]] = []
         self.unsupported: list[tuple[str, CodeLocator]] = []
         #: Every logical path this file claimed, nameable or not. A file the contract
-        #: cannot key is dropped whole, and these are what the rest of the snapshot must
-        #: then stop resolving to.
+        #: cannot key is dropped whole, and these are kept so that a reference only this
+        #: file could satisfy says so.
         self.claimed: list[str] = []
 
     def _binding(self, locator: CodeLocator) -> SourceBinding:
@@ -794,7 +839,6 @@ class _FileAnalyser:
             )
         except CodeAnalysisCandidateError:
             self.unsupported.append((logical, locator))
-            self._scopes.unnameable.add(logical)
             return None
         self.nodes.append(candidate)
         self._scopes.kinds[key] = kind
@@ -1239,6 +1283,9 @@ def analyse_python_snapshot(
         raise PythonAnalysisRefused("snapshot holds more analysable files than the profile admits")
 
     scopes = _Scopes()
+    # Every logical path a dropped file had claimed. Kept apart from `scopes`, which holds
+    # only what accepted files said, and read only where no accepted file answers.
+    dropped: set[str] = set()
     reports: list[PythonFileReport] = []
     analysed: list[_FileAnalyser] = []
     analysed_bytes = 0
@@ -1298,8 +1345,9 @@ def analyse_python_snapshot(
             )
             continue
         module_path, package_path = _module_path(relative_path)
+        staged = scopes.staged()
         analyser = _FileAnalyser(
-            scopes,
+            staged,
             relative_path=relative_path,
             content_digest_value=digest,
             module_path=module_path,
@@ -1307,14 +1355,15 @@ def analyse_python_snapshot(
         )
         analyser.analyse(tree, text=text)
         if analyser.unsupported:
-            # All or nothing, per file. The analyser is not kept, so no node, no
-            # containment edge and no reference from this file reaches the batch --
-            # including the ones parsed before the name that broke, which would otherwise
-            # describe a file the report says contributed nothing. Every logical path it
-            # claimed joins `unnameable` instead, so another file's import of one of them
-            # states `unsupported-identity` rather than resolving to a node that is not
-            # there.
-            scopes.unnameable.update(analyser.claimed)
+            # All or nothing, per file. Neither the analyser nor its staged tables are
+            # kept, so no node, no edge, no reference and no symbol-table entry from this
+            # file reaches the batch: not the facts parsed before the name that broke,
+            # which would describe a file the report says contributed nothing, and not
+            # the claims and bindings that would move or shadow another file's valid
+            # definition of the same path. What it claimed is kept apart, so a reference
+            # only this file could satisfy states `unsupported-identity` rather than
+            # resolving to a node that is not there.
+            dropped.update(analyser.claimed)
             logical, locator = analyser.unsupported[0]
             reports.append(
                 PythonFileReport(
@@ -1329,6 +1378,7 @@ def analyse_python_snapshot(
                 )
             )
             continue
+        scopes.publish(staged)
         analysed.append(analyser)
         reports.append(
             PythonFileReport(
@@ -1364,7 +1414,7 @@ def analyse_python_snapshot(
             )
             edges.setdefault(candidate.edge_key, candidate)
         for reference in analyser.references:
-            target_key, descriptor, status, strength = scopes.resolve(reference)
+            target_key, descriptor, status, strength = scopes.resolve(reference, dropped)
             candidate = _edge(
                 relationship=reference.relationship,
                 source_key=_owner(reference.scope_key),
