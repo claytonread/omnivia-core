@@ -1242,17 +1242,84 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     // MARK: Sources (design `core-sources.js` → `overview`)
 
+    /// Which list the Sources pane is showing. View state only.
+    private enum SourceTab: String, CaseIterable {
+        case files, repositories
+
+        var label: String {
+            self == .files ? "Files and folders" : "Repositories"
+        }
+
+        /// The design's empty state for a workspace that has none.
+        var empty: (String, String) {
+            switch self {
+            case .files:
+                return (
+                    "No folders yet",
+                    "Desktop, Documents, Downloads and Projects are never added for you."
+                )
+            case .repositories:
+                return (
+                    "No repositories",
+                    "Add a repository to search its code. Analysis is turned on separately."
+                )
+            }
+        }
+    }
+
+    private var sourceTab: SourceTab = .files
+
     private func renderSources(_ content: NSStackView) {
-        // The list itself needs a shared source manager: bookmarks, watchers,
-        // scope review and inventory (B-SRC-01). Core advertises none of it,
-        // so no sources are listed, counted or invented here.
-        let list = card(content, header: "Files and folders")
+        // `cs-srcbar`: the two lists, then a filter over whichever is showing.
+        let bar = NSStackView()
+        bar.orientation = .horizontal
+        bar.alignment = .centerY
+        bar.spacing = 10
+        let tabs = NSSegmentedControl(
+            labels: SourceTab.allCases.map(\.label),
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(changeSourceTab(_:))
+        )
+        tabs.selectedSegment = SourceTab.allCases.firstIndex(of: sourceTab) ?? 0
+        tabs.setAccessibilityLabel("Source list")
+        bar.addArrangedSubview(tabs)
+        let spring = NSView()
+        spring.setContentHuggingPriority(.init(1), for: .horizontal)
+        bar.addArrangedSubview(spring)
+        content.addArrangedSubview(bar)
+        bar.widthAnchor.constraint(
+            equalTo: content.widthAnchor,
+            constant: -(content.edgeInsets.left + content.edgeInsets.right)
+        ).isActive = true
+        content.addArrangedSubview(ovSpacer(10))
+
+        // The list. Every source fact — capture mode, exclusions, coverage,
+        // device presence — comes from a shared source manager (B-SRC-01).
+        // Core advertises none, so the list is empty and says why: fixtures
+        // rendered as sources would be the one unrecoverable lie in this pane.
+        let list = card(content, header: nil)
+        let (title, detail) = sourceTab.empty
         notBuiltRow(
             into: list,
-            title: "No source manager in this build",
-            detail: "A source's capture mode, exclusions and coverage come from a shared source "
-                + "manager. Core does not advertise one, so none are listed."
+            title: title,
+            detail: detail + " Core does not advertise a source manager in this build, "
+                + "so nothing can be added or listed here yet.",
+            status: "Not in this build"
         )
+        let adds = NSStackView()
+        adds.orientation = .horizontal
+        adds.alignment = .centerY
+        adds.spacing = 8
+        adds.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 13, right: 16)
+        for title in sourceTab == .files ? ["Add folder…", "Add files…"] : ["Add repository…"] {
+            let add = button(title, style: .plain, action: #selector(unavailableSource), icon: .plus)
+            add.isEnabled = false
+            adds.addArrangedSubview(add)
+        }
+        list.addArrangedSubview(hairline())
+        list.addArrangedSubview(adds)
+        content.addArrangedSubview(ovSpacer(18))
 
         let defaults = card(content, header: "Defaults for new sources")
         destRow(
@@ -1263,6 +1330,17 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             purpose: "What\u{2019}s preselected when you review something new."
         )
     }
+
+    @objc private func changeSourceTab(_ sender: NSSegmentedControl) {
+        let tabs = SourceTab.allCases
+        guard tabs.indices.contains(sender.selectedSegment) else { return }
+        sourceTab = tabs[sender.selectedSegment]
+        render()
+    }
+
+    /// Never reached while the add controls are disabled; present so the
+    /// buttons are real controls rather than labels pretending to be some.
+    @objc private func unavailableSource() {}
 
     // MARK: Processing (design `core-rx-proc.js` → `overview`)
 
