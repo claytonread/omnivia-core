@@ -35,6 +35,7 @@ from omnivia_core_runtime.service.raster_extractors import (
     GEOMETRY_SPACE,
     ExtractionBudget,
 )
+from omnivia_core_runtime.storage.document_intake import SEGMENT_REVISIONS
 from PIL import Image, ImageDraw
 
 CAPTURE = "dcap-" + "a" * 64
@@ -948,6 +949,28 @@ def test_separator_entries_are_excluded_inventory_never_note_prose() -> None:
     ]
     assert "continued" not in {i.text for i in result.segments}
     assert result.expected == 5  # body, endnote, footnote and two comments
+
+
+def test_note_and_comment_furniture_stands_in_an_admitted_revision_state() -> None:
+    """A separator entry and a comment's metadata carry an accepted state.
+
+    Neither is prose an author inserted or deleted, so neither stands in a
+    revision; ``current`` is how this walker already spells that, and it is one
+    of the four states ``SEGMENT_REVISIONS`` closes publication over. A record
+    standing in anything else is refused there, which would lose every record
+    of both kinds and, with them, the document that carries one.
+    """
+    result = extract_docx(noted(p("Body")), capture_id=CAPTURE)
+
+    furniture = [
+        i
+        for i in result.segments
+        if i.structured_value
+        and i.structured_value["kind"] in {"noteSeparator", "commentMetadata"}
+    ]
+    assert len(furniture) == 5  # four separator entries and one comment's author
+    assert {i.revision_state for i in furniture} == {"current"}
+    assert {i.revision_state for i in result.segments} <= SEGMENT_REVISIONS
 
 
 def test_comment_ranges_references_and_metadata() -> None:

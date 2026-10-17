@@ -732,6 +732,8 @@ class _InertHTMLParser(HTMLParser):
             or bool(style_claims)
         )
         grid: _OpenTable | None = None
+        # Declared: a placement carries ordinals and, below, hidden-style claims.
+        placement: dict[str, object]
         if tag == "table":
             self.tables += 1
             grid = _OpenTable(self.tables)

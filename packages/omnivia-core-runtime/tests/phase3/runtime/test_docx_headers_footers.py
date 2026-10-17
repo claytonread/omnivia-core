@@ -18,6 +18,7 @@ from omnivia_core_runtime.service.ooxml_extractors import (
     OOXMLInvalid,
     extract_docx,
 )
+from omnivia_core_runtime.storage.document_intake import SEGMENT_REVISIONS
 
 CAPTURE = "dcap-" + "a" * 64
 MAIN = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -186,6 +187,25 @@ def test_one_section_reaches_its_own_default_header_and_footer() -> None:
     ]
     assert result.limitations["documentSections"] == 1
     assert result.expected == 3
+
+
+def test_an_applicability_record_stands_in_an_admitted_revision_state() -> None:
+    """Where a part appears is not prose an author inserted or deleted.
+
+    The record therefore stands unrevised, in one of the four states
+    ``SEGMENT_REVISIONS`` closes publication over. A record standing in
+    anything else is refused there, and every header and footer of the document
+    goes with it.
+    """
+    result = extract_docx(furnished(), capture_id=CAPTURE)
+
+    (applicability,) = [
+        i for i in result.segments if i.semantic_role == "object_inventory"
+    ]
+    assert applicability.structured_value is not None
+    assert applicability.structured_value["kind"] == "headerFooter"
+    assert applicability.revision_state == "current"
+    assert {i.revision_state for i in result.segments} <= SEGMENT_REVISIONS
 
 
 def test_a_section_places_each_of_the_three_kinds_it_declares() -> None:

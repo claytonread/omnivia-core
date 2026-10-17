@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import datetime
 import io
 import math
@@ -2634,7 +2635,9 @@ class _Package:
             raise OOXMLInvalid("OOXML XML member exceeds the accepted bound")
         return data
 
-    def _checked_xml(self, name: str) -> bytes:
+    # ``bytes`` names this class's own reader from here on, so the return type
+    # is the builtin said outright.
+    def _checked_xml(self, name: str) -> builtins.bytes:
         data = self.bytes(name)
         upper = data.upper()
         if any(marker in upper for marker in _FORBIDDEN_XML):
@@ -2646,27 +2649,6 @@ class _Package:
             return ElementTree.fromstring(self._checked_xml(name))
         except ElementTree.ParseError as error:
             raise OOXMLInvalid("OOXML XML is malformed") from error
-
-    def xml_with_prefixes(
-        self, name: str
-    ) -> tuple[ElementTree.Element, dict[str, str]]:
-        """Parse a part and report its namespace prefixes.
-
-        ElementTree drops prefixes, but markup-compatibility attributes name
-        namespaces by prefix. A prefix bound to two namespaces in one part is
-        ambiguous, so the part is refused rather than guessed at.
-        """
-        parser = ElementTree.XMLPullParser(events=("start-ns",))
-        try:
-            parser.feed(self._checked_xml(name))
-            root = parser.close()
-        except ElementTree.ParseError as error:
-            raise OOXMLInvalid("OOXML XML is malformed") from error
-        prefixes: dict[str, str] = {}
-        for _event, (prefix, uri) in parser.read_events():
-            if prefixes.setdefault(prefix, uri) != uri:
-                raise OOXMLInvalid("OOXML XML rebinds a namespace prefix")
-        return root, prefixes
 
 
 def extract_docx(
@@ -11347,7 +11329,7 @@ class _DocxWalker:
                     "excluded": True,
                 },
                 "annotation",
-                False,
+                "current",
             )
             return True
         metadata = {
@@ -11368,7 +11350,7 @@ class _DocxWalker:
                     **extension,
                 },
                 "annotation",
-                False,
+                "current",
             )
         return False
 
@@ -11386,7 +11368,7 @@ class _DocxWalker:
             "inventory",
             {"kind": "headerFooter", "story": self._story, "sections": applies},
             "visible",
-            False,
+            "current",
         )
 
     def _inventory(

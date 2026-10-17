@@ -702,25 +702,29 @@ def test_a_replaced_or_absent_packaged_payload_pauses_the_frozen_capture(
     replaced = installation_catalogue(installation)
     assert replaced is not None
 
-    with pytest.raises(CaptureNotExecutable, match="paused rather than settled"):
-        with replaced.frozen_resources(
+    with (
+        pytest.raises(CaptureNotExecutable, match="paused rather than settled"),
+        replaced.frozen_resources(
             operation_id="capture-pin",
             admitted=admitted,
             requested=DEFAULT_SETTINGS.languages,
-        ):
-            pass
+        ),
+    ):
+        pass
     # An absent verified payload is the same compatibility pause, not a
     # terminal model condition under bytes the capture never admitted.
     (candidate / payload.MANIFEST_NAME).unlink()
     gone = installation_catalogue(installation)
     assert gone is not None
-    with pytest.raises(CaptureNotExecutable, match="paused rather than settled"):
-        with gone.frozen_resources(
+    with (
+        pytest.raises(CaptureNotExecutable, match="paused rather than settled"),
+        gone.frozen_resources(
             operation_id="capture-pin",
             admitted=admitted,
             requested=DEFAULT_SETTINGS.languages,
-        ):
-            pass
+        ),
+    ):
+        pass
 
 
 def test_a_packaged_admission_resolves_to_the_profile_it_executes_under(
