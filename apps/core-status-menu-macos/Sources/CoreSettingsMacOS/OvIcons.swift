@@ -57,6 +57,10 @@ enum OvIcon: String {
     case folderOpen = "folder-open"
     case cpu
     case chevronLeft = "chevron-left"
+    case search
+    case code
+    case sparkles
+    case calendarClock = "calendar-clock"
 
     /// The inner markup of the 24×24 viewBox, verbatim from the design.
     private var path: String {
@@ -131,6 +135,14 @@ enum OvIcon: String {
             return #"<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>"#
         case .chevronLeft:
             return #"<path d="m15 18-6-6 6-6"/>"#
+        case .search:
+            return #"<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>"#
+        case .code:
+            return #"<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>"#
+        case .sparkles:
+            return #"<path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9Z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9Z"/>"#
+        case .calendarClock:
+            return #"<path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h5"/><path d="M17.5 17.5 16 16.3V14"/><circle cx="16" cy="16" r="6"/>"#
         }
     }
 
