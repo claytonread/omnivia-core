@@ -309,7 +309,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # as 0069 against an older head; 0069-0072 were already allocated here, so it
     # is renumbered to the next free number and pinned to the commit that carries
     # its SQL on this branch.
-    73: "523b4dddf1281ebd94ed3e4aea05fecb7f5e579d",
+    73: "bfe7166520e00c7cf4c3463e7b1430c0fd35f3d5",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
