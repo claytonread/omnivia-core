@@ -24,7 +24,8 @@
     "https://contracts.omnivia.dev/application/v1/runtime.schema.json",
     "https://contracts.omnivia.dev/application/v1/chat.schema.json",
     "https://contracts.omnivia.dev/application/v1/decision.schema.json",
-    "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+    "https://contracts.omnivia.dev/application/v1/engineering.schema.json",
+    "https://contracts.omnivia.dev/application/v1/settings.schema.json"
   ],
   "$defs": {
     "ContractVersion": {
@@ -1459,6 +1460,24 @@
     },
     "ProjectContextSwitchResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextSwitchResult"
+    },
+    "SettingValueJson": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingValueJson"
+    },
+    "SettingRecord": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingRecord"
+    },
+    "SettingsListInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsListInput"
+    },
+    "SettingsListResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsListResult"
+    },
+    "SettingsSetInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsSetInput"
+    },
+    "SettingsSetResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsSetResult"
     }
   }
 }

@@ -21,6 +21,7 @@
 //   contracts/application/v1/schemas/chat.schema.json
 //   contracts/application/v1/schemas/decision.schema.json
 //   contracts/application/v1/schemas/engineering.schema.json
+//   contracts/application/v1/schemas/settings.schema.json
 // Generator:
 //   scripts/generate-application-contracts.py
 //
@@ -3658,6 +3659,13 @@ export function isCoreSafeAction(value: unknown): value is CoreSafeAction {
     (CORE_SAFE_ACTION_VALUES as readonly string[]).includes(value)
   );
 }
+
+/**
+ * The setting's value, JSON-encoded. A string rather than an open JSON value because a setting
+ * may hold a boolean, a number, a string or an object, and the wire type says which only by
+ * carrying the encoding. The bound is the stored column's own.
+ */
+export type SettingValueJson = string;
 
 /**
  * Open, dot-namespaced code naming a workspace's lifecycle status, such as `active` or
@@ -8492,6 +8500,62 @@ export function areCoreTargetV1AuthoritiesValid(value: readonly CoreTargetV1[]):
 }
 
 /**
+ * One stored setting as it currently stands. `record_version` is opaque and round-tripped: a
+ * caller that intends to replace this value passes it back as the envelope's
+ * `MutationPrecondition.record_version`.
+ */
+export interface SettingRecord {
+  /**
+   * The setting's key.
+   */
+  readonly key: OpenCode;
+  /**
+   * The stored value, JSON-encoded.
+   */
+  readonly value_json: SettingValueJson;
+  /**
+   * Opaque version of this setting as read. Returned for observability: a caller that re-reads
+   * and finds a different version knows another writer has been here.
+   */
+  readonly record_version: OpaqueToken;
+  /**
+   * When the service last stored this value.
+   */
+  readonly updated_at: Timestamp;
+  /**
+   * The component that last stored it, as the service recorded it.
+   */
+  readonly updated_by: Identifier;
+}
+
+/**
+ * Input for `settings.list`: every stored setting for the envelope-selected workspace, in key
+ * order. `prefix` narrows to one namespace and is matched literally, never as a pattern.
+ */
+export interface SettingsListInput {
+  /**
+   * Return only keys beginning with this literal prefix. Omit for every key.
+   */
+  readonly prefix?: OpenCode;
+}
+
+/**
+ * Input for `settings.set`: store `value_json` under `key` for the envelope-selected workspace.
+ * Identifies its target by key only; it carries no mutation precondition and replaces whatever
+ * is stored.
+ */
+export interface SettingsSetInput {
+  /**
+   * The setting to store.
+   */
+  readonly key: OpenCode;
+  /**
+   * The value to store, JSON-encoded.
+   */
+  readonly value_json: SettingValueJson;
+}
+
+/**
  * Exactly one governed analysis target: an exact metric revision or an exact Data View revision.
  * The union is discriminated by the required `kind` member unique to each branch.
  */
@@ -11387,6 +11451,29 @@ export function isCoreSafeStatusV1SemanticallyValid(value: CoreSafeStatusV1): bo
   } catch {
     return false;
   }
+}
+
+/**
+ * Result of `settings.list`: the matching settings in key order. An empty list means the
+ * workspace has stored none, which is not an error — a setting that has never been written has
+ * no row, and the caller applies its own default.
+ */
+export interface SettingsListResult {
+  /**
+   * The matching settings, in key order.
+   */
+  readonly settings: readonly SettingRecord[];
+}
+
+/**
+ * Result of `settings.set`: the setting as it now stands, including the version a subsequent
+ * replacement must carry.
+ */
+export interface SettingsSetResult {
+  /**
+   * The stored setting.
+   */
+  readonly setting: SettingRecord;
 }
 
 /**
@@ -16981,6 +17068,70 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "internal_recoverable",
       "invalid_purpose",
       "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "settings.list",
+    scope: { required_scopes: ["workspace:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsListInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsListResult",
+    required_capability: { id: "workspace.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "settings.set",
+    scope: { required_scopes: ["workspace:write"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsSetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsSetResult",
+    required_capability: { id: "workspace.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
       "rate_limited",
       "upgrade_required",
       "workspace_busy",
