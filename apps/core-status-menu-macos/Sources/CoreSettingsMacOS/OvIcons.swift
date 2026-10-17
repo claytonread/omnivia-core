@@ -53,6 +53,11 @@ enum OvIcon: String {
     case x
     case check
 
+    // Core Settings v2 (six-pane redesign)
+    case folderOpen = "folder-open"
+    case cpu
+    case chevronLeft = "chevron-left"
+
     /// The inner markup of the 24×24 viewBox, verbatim from the design.
     private var path: String {
         switch self {
@@ -120,6 +125,12 @@ enum OvIcon: String {
             return #"<path d="M18 6 6 18"/><path d="M6 6l12 12"/>"#
         case .check:
             return #"<path d="M20 6 9 17l-5-5"/>"#
+        case .folderOpen:
+            return #"<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>"#
+        case .cpu:
+            return #"<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>"#
+        case .chevronLeft:
+            return #"<path d="m15 18-6-6 6-6"/>"#
         }
     }
 
