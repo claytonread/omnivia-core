@@ -50,6 +50,7 @@ from omnivia_core_runtime.service.application import (
     build_job_application_dispatcher,
     build_knowledge_sharing_application_dispatcher,
     build_memory_application_dispatcher,
+    build_settings_application_dispatcher,
     build_skill_application_dispatcher,
     build_skill_resolution_application_dispatcher,
     build_task_context_application_dispatcher,
@@ -553,6 +554,16 @@ def _build_production_application_surface(
         admission=admission_authority,
         clock=started.clock,
     )
+    # Stored application settings (Core Settings v2): the two `settings.*` operations are published
+    # and refused until a handler that serves them exists, so the family is composed and the surface
+    # is complete without any grant being widened to cover them.
+    settings = build_settings_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=task_context,
+    )
     return compose_production_application_surface(
         installation=installation,
         reads=reads,
@@ -568,6 +579,7 @@ def _build_production_application_surface(
         engineering=engineering,
         knowledge_sharing=knowledge_sharing,
         task_context=task_context,
+        settings=settings,
         probe=probe,
     )
 

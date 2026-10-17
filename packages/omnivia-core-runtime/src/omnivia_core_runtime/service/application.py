@@ -148,6 +148,13 @@ from omnivia_core_runtime.service.handlers.memory import (
     HmacContinuationTokenCodec,
     MemoryHandlers,
 )
+from omnivia_core_runtime.service.handlers.settings import (
+    SETTINGS_FAMILY_OPERATIONS,
+    SETTINGS_LIST_OPERATION,
+    SETTINGS_SET_OPERATION,
+    settings_list,
+    settings_set,
+)
 from omnivia_core_runtime.service.handlers.skills import (
     SKILL_DRAFT_CREATE_OPERATION,
     SKILL_DRAFT_UPDATE_OPERATION,
@@ -1807,6 +1814,75 @@ def build_task_context_application_dispatcher(
     )
 
 
+#: Stored application settings (Core Settings v2): the two `settings.*` operations, one session and
+#: one binding. The read is served under the purpose its CLI command declares and the change under
+#: the mutation table's `workspace_administration` purpose. This build recognises and refuses both
+#: (`handlers/settings.py`), so holding them says only that a session may ask. Like the sharing and
+#: task-context tables, this one is deliberately not part of `OPERATION_PURPOSES`: that map feeds
+#: the read-only local-owner session, which must never be able to name a mutation.
+SETTINGS_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        SETTINGS_LIST_OPERATION: WORKSPACE_INSPECTION_PURPOSE,
+        SETTINGS_SET_OPERATION: MUTATION_PURPOSES[SETTINGS_SET_OPERATION],
+    }
+)
+
+
+def settings_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The contributor ceiling for one workspace's stored-settings surface.
+
+    A setting belongs to the one workspace the session names, so the role is the workspace
+    contributor and never the installation administrator. The workspace and the principal are
+    the authenticated caller's; neither is a request field.
+    """
+    return _contributor_family_session(
+        operations=SETTINGS_FAMILY_OPERATIONS,
+        purposes=SETTINGS_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+
+
+def build_settings_registry() -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(SETTINGS_LIST_OPERATION, settings_list)
+    registry.register(SETTINGS_SET_OPERATION, settings_set)
+    return registry
+
+
+def build_settings_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the two stored-settings operations around the existing router."""
+    session = settings_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    registry = build_settings_registry()
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 def build_knowledge_sharing_registry(
     handlers: KnowledgeSharingHandlers,
 ) -> ApplicationOperationRegistry:
@@ -2027,7 +2103,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 77/77 complete.
+    is anything other than complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -2046,9 +2122,9 @@ class ProductionApplicationSurface:
         distinct_routes = tuple(
             {id(route): route for route in routes.values()}.values()
         )
-        if len(distinct_routes) != 14:
+        if len(distinct_routes) != 15:
             raise ValueError(
-                "the production surface requires exactly fourteen authority families"
+                "the production surface requires exactly fifteen authority families"
             )
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError(
@@ -2119,6 +2195,7 @@ def compose_production_application_surface(
     engineering: ApplicationDispatcher,
     knowledge_sharing: ApplicationDispatcher,
     task_context: ApplicationDispatcher,
+    settings: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
 ) -> ProductionApplicationSurface:
@@ -2138,6 +2215,7 @@ def compose_production_application_surface(
         engineering,
         knowledge_sharing,
         task_context,
+        settings,
     )
     registry = ApplicationOperationRegistry()
     routes: dict[str, ApplicationDispatcher] = {}
@@ -2870,6 +2948,7 @@ __all__ = [
     "MEMORY_SEARCH_OPERATION",
     "OPERATION_PURPOSES",
     "PRINCIPAL_SOURCE",
+    "SETTINGS_FAMILY_PURPOSES",
     "SKILL_FAMILY_ROLES",
     "SKILL_RESOLUTION_PURPOSE",
     "TRIGGER_FAMILY_PURPOSES",
@@ -2893,6 +2972,7 @@ __all__ = [
     "build_job_registry",
     "build_memory_application_dispatcher",
     "build_memory_registry",
+    "build_settings_application_dispatcher",
     "build_skill_application_dispatcher",
     "build_skill_resolution_application_dispatcher",
     "build_task_context_application_dispatcher",
@@ -2906,6 +2986,7 @@ __all__ = [
     "job_family_session",
     "local_owner_session",
     "memory_family_session",
+    "settings_family_session",
     "task_context_family_session",
     "trigger_family_session",
     "workflow_family_session",

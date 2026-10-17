@@ -50,7 +50,7 @@ ARCHITECTURE_TRACEABILITY = (
     REPO_ROOT
     / "tests/fixtures/service_conformance/architecture-gate-traceability-v1.json"
 )
-CORPUS_SHA256 = "deb1aa1281614fd3759c5668bf4fa960c20dda53bf59fa2717caa139547dc8b0"
+CORPUS_SHA256 = "da0eb619a9aafdc6a982e95b21dc1aeff75ae90ce797b0eeaaaddc795eeb5560"
 ADAPTERS = ("in_process", "ipc", "http")
 
 
@@ -103,7 +103,7 @@ def test_v06_5_s5_registry_exactly_matches_catalogue(
     surface: ProductionApplicationSurface,
 ) -> None:
     catalogue = tuple(entry.name for entry in OPERATION_CATALOGUE)
-    assert len(catalogue) == len(set(catalogue)) == 86
+    assert len(catalogue) == len(set(catalogue)) == 88
     assert surface.registry.operations == APPLICATION_OPERATIONS == frozenset(catalogue)
     assert surface.adapters == frozenset(ADAPTERS)
     surface.registry.assert_complete()
@@ -133,6 +133,7 @@ def test_v06_5_s5_duplicate_family_registration_refuses(
             skill_resolution=reads,
             engineering=reads,
             knowledge_sharing=reads,
+            settings=reads,
             task_context=build_task_context_application_dispatcher(
                 service=SimpleNamespace(workspace_id=m1.WORKSPACE_ID, clock=SystemClock()),
                 principal_id="local-user",
@@ -158,7 +159,7 @@ def test_v06_5_s5_every_handler_is_production_callable(
         ) or handler.__module__.startswith(
             "omnivia_core_runtime.service.application"
         ) or handler.__module__ == __name__, operation
-    assert len(identities) == 86
+    assert len(identities) == 88
     assert not any(
         token in identity.lower()
         for identity in identities.values()

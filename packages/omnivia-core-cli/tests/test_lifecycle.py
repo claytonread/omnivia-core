@@ -239,3 +239,61 @@ def test_the_service_not_the_cli_owns_the_writable_workspace_lease(home: Path) -
     assert after_descriptor["service_instance_id"] == before_descriptor["service_instance_id"]
     assert after_descriptor["fencing_generation"] == before_descriptor["fencing_generation"]
     assert _lease_payload(home) == before_lease
+
+
+def _application(home: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omnivia_core_cli.main",
+            "--installation-state",
+            str(home / "installation-state"),
+            "--workspace-id",
+            WORKSPACE_ID,
+            "--timeout-ms",
+            "60000",
+            *arguments,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+        env=_pinned_child_env(),
+    )
+
+
+def test_the_settings_commands_reach_the_service_and_are_refused_as_unavailable(
+    home: Path,
+) -> None:
+    """`settings list` and `settings set` are published, and this build does not serve them.
+
+    Each command declares a purpose, and the service refuses a request whose purpose is not one its
+    session holds. The answers below are therefore the service's own typed refusal and not a purpose
+    or authorization failure: both declared purposes are held by the settings family. Which purpose
+    belongs to which operation is held by the runtime test that reads the CLI table. A malformed
+    input is invalid rather than unavailable.
+    """
+    assert _cli(home, "start").returncode == 0
+
+    def answer(*arguments: str) -> dict[str, object]:
+        run = _application(home, *arguments, "--json")
+        assert run.returncode != 0 and run.stderr == "", run.stderr
+        return dict(dict(json.loads(run.stdout))["error"])
+
+    assert answer("settings", "list")["code"] == "dependency_unavailable"
+    assert answer("settings", "list", "--input-json", '{"prefix": "document"}')["code"] == (
+        "dependency_unavailable"
+    )
+    assert answer("settings", "list", "--input-json", '{"prefix": "Bad-Key"}')["code"] == (
+        "invalid_request"
+    )
+    change = '{"key": "document.processing", "value_json": "{}"}'
+    assert answer("settings", "set", "--input-json", change, "--idempotency-key", "idem-1")[
+        "code"
+    ] == "dependency_unavailable"
+    assert answer(
+        "settings", "set", "--input-json", '{"key": "Bad-Key", "value_json": "1"}',
+        "--idempotency-key", "idem-2",
+    )["code"] == "invalid_request"
+    assert _service_pid(home) is not None
