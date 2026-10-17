@@ -424,7 +424,9 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             case .general: return "Choose how Core behaves on this Mac."
             case .sources: return "What Core is allowed to work with."
             case .processing: return "What Core does with your sources."
-            case .storage: return "See where your workspace is stored and keep it backed up."
+            case .storage:
+                return "What Core keeps for this workspace, how much space it uses, "
+                    + "and how it\u{2019}s backed up."
             case .access: return "Choose which applications can use this workspace."
             case .maintenance: return "Check Core health and resolve problems."
             }
@@ -1157,6 +1159,29 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         content.addArrangedSubview(ovSpacer(8))
     }
 
+    /// `SG("Appearance", "This Mac")`: the first group in v2's General.
+    private func renderAppearanceRow(into behaviour: NSStackView) {
+        // ---- Appearance ----
+        // System / Light / Dark, per the design. Only the dark token layer
+        // exists in this build, so the control is shown in its finished shape
+        // and marked rather than offering a switch that cannot take effect.
+        let appearance = NSSegmentedControl(
+            labels: Self.AppearancePreference.allCases.map(\.label),
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(changeAppearance(_:))
+        )
+        appearance.selectedSegment = Self.AppearancePreference.allCases
+            .firstIndex(of: Self.appearancePreference) ?? 0
+        appearance.setAccessibilityLabel("Appearance")
+        row(
+            into: behaviour,
+            title: "Appearance",
+            detail: "Applies to this window and the menu bar item.",
+            trailing: appearance
+        )
+    }
+
     // MARK: Routing (design `dhead` / `dest`)
 
     /// `dhead`'s first line: Back to the pane this detail belongs to, then a
@@ -1384,12 +1409,36 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     // MARK: Card/group helpers (prototype .sw-group / .sw-rows)
 
+    /// `sgroup(label, scope, …)`: a group header, and at its right a quiet
+    /// label saying what the group's settings belong to — This Mac, Workspace,
+    /// Processing host. v2 adds it because the same pane now mixes scopes, and
+    /// which Mac a setting applies to is not guessable from the setting.
     private func card(
-        _ stack: NSStackView, header: String?, followedByDisclosure: Bool = false
+        _ stack: NSStackView,
+        header: String?,
+        scope: String? = nil,
+        followedByDisclosure: Bool = false
     ) -> NSStackView {
-        if let header {
-            let label = OvFont.groupHeader(header)
-            stack.addArrangedSubview(label)
+        if header != nil || scope != nil {
+            let line = NSStackView()
+            line.orientation = .horizontal
+            line.alignment = .firstBaseline
+            line.spacing = 8
+            line.addArrangedSubview(OvFont.groupHeader(header ?? ""))
+            if let scope {
+                let spring = NSView()
+                spring.setContentHuggingPriority(.init(1), for: .horizontal)
+                line.addArrangedSubview(spring)
+                let label = NSTextField(labelWithString: scope)
+                label.font = OvFont.sans(11)
+                label.textColor = Ov.textTertiary
+                line.addArrangedSubview(label)
+            }
+            stack.addArrangedSubview(line)
+            line.widthAnchor.constraint(
+                equalTo: stack.widthAnchor,
+                constant: -(stack.edgeInsets.left + stack.edgeInsets.right)
+            ).isActive = true
             stack.addArrangedSubview(ovSpacer(8))
         }
         let card = NSStackView()
@@ -1820,7 +1869,14 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// read as a permissions checklist, which §A1 rules out.
     private func renderGeneral(_ content: NSStackView) {
         let preferences = currentPreferences()
-        let behaviour = card(content, header: nil)
+
+        // v2 regroups General by what each setting belongs to, and leads with
+        // Appearance. Every group here is This Mac: none of it is workspace
+        // state, and the scope label is what says so.
+        let appearanceCard = card(content, header: "Appearance", scope: "This Mac")
+        renderAppearanceRow(into: appearanceCard)
+
+        let behaviour = card(content, header: "Starting Core", scope: "This Mac")
 
         // ---- Open menu bar at login ----
         // A preference and an OS registration are separate facts (§A3). This
@@ -1836,27 +1892,37 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         menuBody.addArrangedSubview(chip("No login item in this build", tone: .notBuilt))
 
         renderStartupRow(into: behaviour)
-        renderNotificationsRow(into: behaviour)
 
-        // ---- Appearance ----
-        // System / Light / Dark, per the design. Only the dark token layer
-        // exists in this build, so the control is shown in its finished shape
-        // and marked rather than offering a switch that cannot take effect.
-        let appearance = NSSegmentedControl(
-            labels: Self.AppearancePreference.allCases.map(\.label),
-            trackingMode: .selectOne,
-            target: self,
-            action: #selector(changeAppearance(_:))
+        // `SG("Keyboard shortcuts", "This Mac")`. A companion-native shortcut
+        // owner (B-KEY-01) registers it and reports conflicts; there is none.
+        let shortcuts = card(content, header: "Keyboard shortcuts", scope: "This Mac")
+        notBuiltRow(
+            into: shortcuts,
+            title: "Find in Core",
+            detail: "A global shortcut needs an owner that registers it with macOS and "
+                + "reports conflicts. This build has none."
         )
-        appearance.selectedSegment = Self.AppearancePreference.allCases
-            .firstIndex(of: Self.appearancePreference) ?? 0
-        appearance.setAccessibilityLabel("Appearance")
-        row(
-            into: behaviour,
-            title: "Appearance",
-            detail: "Applies to this window and the menu bar item.",
-            trailing: appearance
+
+        // `CoreUpdates.group(s)` (B-UPD-01).
+        let updates = card(content, header: "Updates", scope: "This Mac")
+        notBuiltRow(
+            into: updates,
+            title: "Check for updates",
+            detail: "Update checks and installation belong to an updater that names the "
+                + "component it is updating. This build has none."
         )
+
+        // `SG("Opening code", "This Mac")` (B-EDT-01).
+        let editor = card(content, header: "Opening code", scope: "This Mac")
+        notBuiltRow(
+            into: editor,
+            title: "Open code in",
+            detail: "Choosing an editor needs installed-editor discovery and a line-open "
+                + "scheme for each. This build discovers none."
+        )
+
+        let notifications = card(content, header: "Notifications", scope: "This Mac")
+        renderNotificationsRow(into: notifications)
 
         // ---- macOS access summary (one per window; §7.5 aggregation) ----
         let summary = ReadinessReducer.summarize(
@@ -2037,7 +2103,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         )
 
         // ---- Storage ----
-        let storageCard = card(content, header: "Storage", followedByDisclosure: true)
+        let storageCard = card(content, header: "Storage", scope: "Workspace", followedByDisclosure: true)
         row(
             into: storageCard,
             title: "Location",
@@ -2081,7 +2147,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         content.addArrangedSubview(ovSpacer(18))
 
         // ---- Backups ----
-        let backupCard = card(content, header: "Backups", followedByDisclosure: true)
+        let backupCard = card(content, header: "Backups", scope: "Workspace", followedByDisclosure: true)
         notBuiltRow(
             into: backupCard,
             title: "Last successful backup",
@@ -2351,7 +2417,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// would be a disabled button floating beside the title, so it is stated
     /// as a row instead.
     private func renderAccess(_ content: NSStackView) {
-        let apps = card(content, header: "Connected applications")
+        let apps = card(content, header: "Connected applications", scope: "Workspace")
 
         guard let status = mcpStatus else {
             notBuiltRow(
@@ -2668,7 +2734,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// start/stop controls (MR-005: the settings window invokes no lifecycle
     /// command).
     private func renderMaintenance(_ content: NSStackView) {
-        let core = card(content, header: "Core")
+        let core = card(content, header: "Core", scope: "Processing host \u{B7} This Mac")
         notBuiltRow(
             into: core,
             title: "Service",
@@ -2724,8 +2790,13 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         optionsBody.spacing = 0
         notBuiltRow(
             into: optionsBody,
-            title: "Search indexes",
-            detail: "Rebuilds the search and embedding indexes from workspace records. Records themselves are not changed or deleted.",
+            // v2 relabels this: it rebuilds the *keyword* index only, and no
+            // longer claims embeddings — those are rebuilt from Processing ›
+            // Search and embeddings, which is a different owner.
+            title: "Keyword index",
+            detail: "Rebuilds the keyword index from workspace records. Records themselves "
+                + "are not changed or deleted. Semantic indexes are rebuilt from Search "
+                + "and embeddings.",
             status: "Not in this build",
             compact: true
         )
