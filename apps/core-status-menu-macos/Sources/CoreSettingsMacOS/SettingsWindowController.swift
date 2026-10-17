@@ -396,46 +396,86 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var mcpBusy: String?        // the host a write is in flight for
     private var mcpLoaded = false
 
-    // Pane selection
-    /// Order and labels follow `NAV` in the design's `core-settings.js`. That
-    /// list is seven items: the readiness and Local Decisions amendments both
-    /// say "exactly five", and the design has since added Capture and Document
-    /// processing. The design file is the later of the two, so it wins.
+    // MARK: - Routes (design `core-routes.js`)
+
+    /// The six panes of Core Settings v2, in `CoreRoutes.PANES` order.
+    ///
+    /// v1 had seven flat panes. Capture and Document processing are no longer
+    /// panes: they became details inside Sources and Processing. `data` became
+    /// `storage`, relabelled "Data & storage", and Sources is new.
     private enum Pane: String, CaseIterable {
-        case general = "General"
-        case data = "Data"
-        case capture = "Capture"
-        case documentProcessing = "Document processing"
-        case processing = "Processing"
-        case access = "Access"
-        case maintenance = "Maintenance"
+        case general, sources, processing, storage, access, maintenance
+
+        var label: String {
+            switch self {
+            case .general: return "General"
+            case .sources: return "Sources"
+            case .processing: return "Processing"
+            case .storage: return "Data & storage"
+            case .access: return "Access"
+            case .maintenance: return "Maintenance"
+            }
+        }
 
         /// The sentence under the pane title (design `U.head`'s second
         /// argument), verbatim.
         var lede: String {
             switch self {
             case .general: return "Choose how Core behaves on this Mac."
-            case .data: return "See where your workspace is stored and keep it backed up."
-            case .capture: return "How files and folders are added to Core from this Mac."
-            case .documentProcessing:
-                return "How Core reads text from captured documents and images on this Mac."
-            case .processing: return "Control how Core processes the information you have added."
+            case .sources: return "What Core is allowed to work with."
+            case .processing: return "What Core does with your sources."
+            case .storage: return "See where your workspace is stored and keep it backed up."
             case .access: return "Choose which applications can use this workspace."
             case .maintenance: return "Check Core health and resolve problems."
             }
         }
 
-        /// The design's own glyph, by Lucide name.
         var icon: OvIcon {
             switch self {
             case .general: return .slidersHorizontal
-            case .data: return .hardDrive
-            case .capture: return .layers
-            case .documentProcessing: return .searchCheck
-            case .processing: return .refreshCw
+            case .sources: return .folderOpen
+            case .processing: return .cpu
+            case .storage: return .hardDrive
             case .access: return .shield
             case .maintenance: return .wrench
             }
+        }
+    }
+
+    /// `pane[/detail[/ref]]`. Details live inside a pane: overview → detail →
+    /// sheet. `ref` names the entity a detail is about; nothing in this build
+    /// needs one yet, but a source or repository route will.
+    private struct Route: Equatable {
+        var pane: Pane
+        var detail: String?
+        var ref: String?
+
+        /// `CoreRoutes.DETAILS`, plus `models`, which v2.5 added to Processing.
+        static let details: [Pane: [(id: String, title: String)]] = [
+            .sources: [
+                ("capture-defaults", "Capture defaults"),
+                ("file", "Source"),
+                ("repo", "Repository"),
+            ],
+            .processing: [
+                ("docproc", "Document processing"),
+                ("models", "Models"),
+                ("search", "Search and embeddings"),
+                ("code", "Code analysis"),
+                ("decisions", "Local Decisions"),
+                ("background", "Background processing"),
+                ("activity", "Processing activity"),
+            ],
+        ]
+
+        static func title(_ pane: Pane, _ detail: String) -> String? {
+            details[pane]?.first { $0.id == detail }?.title
+        }
+
+        /// A detail's own title, or the pane's label at an overview.
+        var label: String {
+            guard let detail, let title = Route.title(pane, detail) else { return pane.label }
+            return title
         }
     }
 
@@ -444,13 +484,14 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// way the prototype's in-memory `open` map is.
     private var openDisclosures: Set<String> = []
 
-    private var selectedPane: Pane = .general {
+    private var route = Route(pane: .general) {
         didSet {
-            guard oldValue != selectedPane else { return }
+            guard oldValue != route else { return }
             render()
             renderSidebar()
-            // A new pane starts at its own top. Carrying the previous pane's
-            // offset over opens the next one already scrolled past its title.
+            // A new pane — or a detail inside it — starts at its own top.
+            // Carrying the previous offset over opens the next one already
+            // scrolled past its title.
             scrollToTop()
         }
     }
@@ -944,9 +985,11 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         let panes = Pane.allCases
         for (index, pane) in panes.enumerated() {
-            let row = SidebarRowView(title: pane.rawValue, glyph: pane.icon)
-            row.isSelected = pane == selectedPane
-            row.onSelect = { [weak self] in self?.selectedPane = pane }
+            let row = SidebarRowView(title: pane.label, glyph: pane.icon)
+            row.isSelected = pane == route.pane
+            // The sidebar always lands on a pane overview; it never restores
+            // a detail you were last inside.
+            row.onSelect = { [weak self] in self?.route = Route(pane: pane) }
             row.moveSelection = { [weak self] delta in
                 guard let self else { return }
                 let target: Int
@@ -956,7 +999,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
                 default: target = min(max(index + delta, 0), panes.count - 1)
                 }
                 guard target != index else { return }
-                self.selectedPane = panes[target]
+                self.route = Route(pane: panes[target])
                 self.focusSidebarRow(at: target)
             }
             stack.addArrangedSubview(row)
@@ -1067,11 +1110,15 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         heading.orientation = .vertical
         heading.alignment = .leading
         heading.spacing = 5
-        heading.addArrangedSubview(OvFont.paneTitle(selectedPane.rawValue))
-        let lede = NSTextField(wrappingLabelWithString: selectedPane.lede)
-        lede.font = OvFont.sans(12.5)
-        lede.textColor = Ov.textSecondary
-        heading.addArrangedSubview(lede)
+        heading.addArrangedSubview(OvFont.paneTitle(route.label))
+        if route.detail == nil {
+            let lede = NSTextField(wrappingLabelWithString: route.pane.lede)
+            lede.font = OvFont.sans(12.5)
+            lede.textColor = Ov.textSecondary
+            heading.addArrangedSubview(lede)
+        }
+
+        if route.detail != nil { content.addArrangedSubview(detailBackRow()) }
 
         if let action = paneHeaderAction() {
             let head = NSStackView()
@@ -1095,16 +1142,166 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
         content.addArrangedSubview(ovSpacer(18))
 
-        switch selectedPane {
-        case .general: renderGeneral(content)
-        case .data: renderData(content)
-        case .capture: renderCapture(content)
-        case .documentProcessing: renderDocumentProcessing(content)
-        case .processing: renderProcessing(content)
-        case .access: renderAccess(content)
-        case .maintenance: renderMaintenance(content)
+        if let detail = route.detail {
+            renderDetail(detail, into: content)
+        } else {
+            switch route.pane {
+            case .general: renderGeneral(content)
+            case .sources: renderSources(content)
+            case .processing: renderProcessingOverview(content)
+            case .storage: renderData(content)
+            case .access: renderAccess(content)
+            case .maintenance: renderMaintenance(content)
+            }
         }
         content.addArrangedSubview(ovSpacer(8))
+    }
+
+    // MARK: Routing (design `dhead` / `dest`)
+
+    /// `dhead`'s first line: Back to the pane this detail belongs to, then a
+    /// short breadcrumb. No history stack — a detail is always one level
+    /// inside its pane, so Back has exactly one destination.
+    private func detailBackRow() -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+
+        stack.addArrangedSubview(
+            button(
+                "Back to \(route.pane.label)",
+                style: .plain,
+                action: #selector(routeBack),
+                subject: nil,
+                icon: .chevronLeft
+            )
+        )
+        let crumb = NSTextField(labelWithString: "\(route.pane.label) \u{203A} \(route.label)")
+        crumb.font = OvFont.sans(11.5)
+        crumb.textColor = Ov.textTertiary
+        stack.addArrangedSubview(crumb)
+        stack.addArrangedSubview(ovSpacer(6))
+        return stack
+    }
+
+    @objc private func routeBack() { route = Route(pane: route.pane) }
+
+    @objc private func openDetail(_ sender: NSButton) {
+        guard let detail = sender.identifier?.rawValue else { return }
+        route = Route(pane: route.pane, detail: detail)
+    }
+
+    private func renderDetail(_ detail: String, into content: NSStackView) {
+        switch (route.pane, detail) {
+        case (.sources, "capture-defaults"): renderCapture(content)
+        case (.processing, "docproc"): renderDocumentProcessing(content)
+        default:
+            // A detail the v2 design specifies and this build has not brought
+            // over yet. Saying so beats a pane that renders empty.
+            let box = card(content, header: nil)
+            notBuiltRow(
+                into: box,
+                title: Route.title(route.pane, detail) ?? detail,
+                detail: "This detail is in the Core Settings v2 design. It is not in this build yet."
+            )
+        }
+    }
+
+    /// `dest`: a glyph, a purpose, a short summary of current state, and a
+    /// chevron. The whole row opens the detail.
+    @discardableResult
+    private func destRow(
+        into card: NSStackView,
+        detail: String,
+        icon: OvIcon,
+        title: String,
+        purpose: String,
+        summary: String = ""
+    ) -> NSStackView {
+        let open = button("", style: .plain, action: #selector(openDetail(_:)), subject: title)
+        open.identifier = NSUserInterfaceItemIdentifier(detail)
+        open.image = OvIcon.chevronRight.image(size: 14)
+        open.imagePosition = .imageOnly
+        open.setAccessibilityLabel(title)
+
+        let trailing = NSStackView()
+        trailing.orientation = .horizontal
+        trailing.alignment = .centerY
+        trailing.spacing = 8
+        if !summary.isEmpty {
+            let label = NSTextField(labelWithString: summary)
+            label.font = OvFont.sans(12)
+            label.textColor = Ov.textSecondary
+            label.lineBreakMode = .byTruncatingTail
+            trailing.addArrangedSubview(label)
+        }
+        trailing.addArrangedSubview(open)
+        return row(into: card, title: title, detail: purpose, trailing: trailing, leading: icon)
+    }
+
+    // MARK: Sources (design `core-sources.js` → `overview`)
+
+    private func renderSources(_ content: NSStackView) {
+        // The list itself needs a shared source manager: bookmarks, watchers,
+        // scope review and inventory (B-SRC-01). Core advertises none of it,
+        // so no sources are listed, counted or invented here.
+        let list = card(content, header: "Files and folders")
+        notBuiltRow(
+            into: list,
+            title: "No source manager in this build",
+            detail: "A source's capture mode, exclusions and coverage come from a shared source "
+                + "manager. Core does not advertise one, so none are listed."
+        )
+
+        let defaults = card(content, header: "Defaults for new sources")
+        destRow(
+            into: defaults,
+            detail: "capture-defaults",
+            icon: .layers,
+            title: "Capture defaults",
+            purpose: "What\u{2019}s preselected when you review something new."
+        )
+    }
+
+    // MARK: Processing (design `core-rx-proc.js` → `overview`)
+
+    private func renderProcessingOverview(_ content: NSStackView) {
+        let box = card(content, header: nil)
+        let destinations: [(String, OvIcon, String, String)] = [
+            ("docproc", .searchCheck, "Document processing",
+             "Extract text from documents and recognised images."),
+            ("models", .layers, "Models",
+             "Choose, download and manage supported models."),
+            ("search", .search, "Search and embeddings",
+             "Find passages even when the question uses different words."),
+            ("code", .code, "Code analysis",
+             "Identify supported definitions and relationships at a repository snapshot."),
+            ("decisions", .sparkles, "Local Decisions",
+             "Suggest categories and follow-ups with the local decision model."),
+            ("background", .calendarClock, "Background processing",
+             "Control indexing hours, first-pass power use and paused work."),
+        ]
+        for (index, entry) in destinations.enumerated() {
+            // Each summary reports live state this build cannot read; an
+            // invented one would be the worst kind of placeholder.
+            destRow(into: box, detail: entry.0, icon: entry.1, title: entry.2, purpose: entry.3)
+            if index < destinations.count - 1 { box.addArrangedSubview(hairline()) }
+        }
+
+        let activity = button(
+            "View processing activity\u{2026}",
+            style: .plain,
+            action: #selector(openDetail(_:)),
+            subject: "processing activity"
+        )
+        activity.identifier = NSUserInterfaceItemIdentifier("activity")
+        let actions = NSStackView()
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.edgeInsets = NSEdgeInsets(top: 14, left: 0, bottom: 0, right: 0)
+        actions.addArrangedSubview(activity)
+        content.addArrangedSubview(actions)
     }
 
     // MARK: Card/group helpers (prototype .sw-group / .sw-rows)
@@ -1251,12 +1448,24 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         title: String,
         detail: String?,
         trailing: NSView? = nil,
-        compact: Bool = false
+        compact: Bool = false,
+        leading: OvIcon? = nil
     ) -> NSStackView {
         let line = NSStackView()
         line.orientation = .horizontal
         line.alignment = .centerY
         line.spacing = 8
+        // `cs-dest-i`: a destination row leads with a glyph that says what
+        // kind of thing it opens, before its label is read.
+        if let leading {
+            let glyph = NSImageView()
+            glyph.image = leading.image(size: 16)
+            glyph.contentTintColor = Ov.textTertiary
+            glyph.translatesAutoresizingMaskIntoConstraints = false
+            glyph.widthAnchor.constraint(equalToConstant: 16).isActive = true
+            glyph.heightAnchor.constraint(equalToConstant: 16).isActive = true
+            line.addArrangedSubview(glyph)
+        }
         // A disclosure body's rows are tighter and lighter than a pane's.
         let t = OvFont.label(
             title, size: 13, cssWeight: compact ? 500 : 600, color: Ov.textPrimary
@@ -2107,7 +2316,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// and only while Core is reachable — configuring provisions a credential
     /// through the service, and §A2 forbids this window starting one.
     private func paneHeaderAction() -> NSView? {
-        guard selectedPane == .access, mcp != nil else { return nil }
+        guard route.pane == .access, route.detail == nil, mcp != nil else { return nil }
         let add = button(
             "Add application…",
             style: .bordered,
