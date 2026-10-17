@@ -265,6 +265,10 @@ class OvSheet: NSObject {
         let button = OvButton(title: title, style: style, size: .md)
         button.target = self
         button.action = action
+        // Escape dismisses the sheet, which is the innermost thing it can
+        // reach (the design's Escape order, step 2). Native key equivalent
+        // rather than a monitor, so it only fires while the sheet is up.
+        if action == #selector(cancel) { button.keyEquivalent = "\u{1b}" }
         return button
     }
 

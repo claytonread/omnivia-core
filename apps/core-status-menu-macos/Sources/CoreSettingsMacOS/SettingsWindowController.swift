@@ -562,6 +562,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     private var sidebarStack: NSStackView?
+    private var escapeMonitor: Any?
     private var contentStack: NSStackView?
 
     /// Core preferences mirrored from the companion's own preference owner.
@@ -631,6 +632,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.delegate = self
         window.center()
         observeSystemAppearance()
+        installEscapeHandling(for: window)
         positionWindowControls()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -721,9 +723,39 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     public func windowWillClose(_ notification: Notification) {
         // Cancel UI-owned passive work; Core is untouched (MT-001, §8.3).
+        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+        escapeMonitor = nil
         window = nil
         contentStack = nil
         sidebarStack = nil
+    }
+
+    /// The design's Escape order, innermost first. A sheet handles its own
+    /// (its Cancel carries the key equivalent), so by the time Escape reaches
+    /// here the choice is: leave a detail, or close the window.
+    ///
+    /// A monitor rather than `cancelOperation`, because the first responder is
+    /// usually a control inside the pane and the default implementation
+    /// swallows the key before the window sees it.
+    private func installEscapeHandling(for window: NSWindow) {
+        guard escapeMonitor == nil else { return }
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+            [weak self, weak window] event in
+            guard let self, let window, event.keyCode == 53,
+                  NSApp.keyWindow === window
+            else { return event }
+            // A sheet is up: it owns Escape.
+            if window.attachedSheet != nil { return event }
+            if self.route.detail != nil {
+                self.routeBack()
+                return nil
+            }
+            // At an overview Escape closes the window — except in a text
+            // field, where it belongs to the field.
+            if window.firstResponder is NSText { return event }
+            window.performClose(nil)
+            return nil
+        }
     }
 
     // MARK: - Construction
