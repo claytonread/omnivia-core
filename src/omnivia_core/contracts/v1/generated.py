@@ -18,7 +18,6 @@
 #   contracts/application/v1/schemas/compatibility-matrix.schema.json
 #   contracts/application/v1/schemas/runtime.schema.json
 #   contracts/application/v1/schemas/chat.schema.json
-#   contracts/application/v1/schemas/settings.schema.json
 # Generator:
 #   scripts/generate-application-contracts.py
 #
@@ -370,12 +369,6 @@ __all__ = [
     "ServiceProbeRequest",
     "ServiceProbeResult",
     "ServiceProcessEvidence",
-    "SettingRecord",
-    "SettingValueJson",
-    "SettingsListInput",
-    "SettingsListResult",
-    "SettingsSetInput",
-    "SettingsSetResult",
     "SourceKind",
     "SourceReference",
     "SourceSpan",
@@ -2626,12 +2619,6 @@ CoreSafeAction: TypeAlias = str
 what a safe status may say pre-authentication. `start`/`stop`/`restart` are process-lifecycle
 actions and must only be offered for a `locally_managed` `local` target (see
 `CoreSafeStatusV1.permitted_actions`); `reconnect` and `open` are safe to offer for any target.
-"""
-
-SettingValueJson: TypeAlias = str
-"""The setting's value, JSON-encoded. A string rather than an open JSON value because a setting may
-hold a boolean, a number, a string or an object, and the wire type says which only by carrying
-the encoding. The bound is the stored column's own.
 """
 
 WorkspaceStatus: TypeAlias = str
@@ -7501,148 +7488,6 @@ class CoreTargetV1:
 
 
 @dataclass(frozen=True, slots=True)
-class SettingRecord:
-    """One stored setting as it currently stands. `record_version` is opaque and round-tripped:
-    a caller that intends to replace this value passes it back as the envelope's
-    `MutationPrecondition.record_version`.
-    """
-
-    key: OpenCode
-    value_json: SettingValueJson
-    record_version: OpaqueToken
-    updated_at: Timestamp
-    updated_by: Identifier
-
-    def to_wire(self) -> dict[str, Any]:
-        """Render this value as a JSON-compatible mapping.
-
-        Absent optional fields are omitted rather than emitted as null, so a decode/encode
-        round trip reproduces the original document exactly.
-        """
-        wire: dict[str, Any] = {}
-        wire["key"] = self.key
-        wire["value_json"] = self.value_json
-        wire["record_version"] = self.record_version
-        wire["updated_at"] = self.updated_at
-        wire["updated_by"] = self.updated_by
-        return wire
-
-    @classmethod
-    def from_wire(cls, payload: object, path: str = "SettingRecord") -> SettingRecord:
-        """Decode a wire payload into a SettingRecord.
-
-        Unknown fields are ignored so a newer peer's additive minor release still decodes
-        here. Missing required fields and wrongly typed values raise ContractDecodeError.
-        """
-        mapping = _require_mapping(payload, path)
-        field_key = _decode_str(_require_field(mapping, "key", path), f"{path}.key")
-        field_value_json = _decode_str(
-            _require_field(mapping, "value_json", path),
-            f"{path}.value_json",
-        )
-        field_record_version = _decode_str(
-            _require_field(mapping, "record_version", path),
-            f"{path}.record_version",
-        )
-        field_updated_at = _decode_str(
-            _require_field(mapping, "updated_at", path),
-            f"{path}.updated_at",
-        )
-        field_updated_by = _decode_str(
-            _require_field(mapping, "updated_by", path),
-            f"{path}.updated_by",
-        )
-        return cls(
-            key=field_key,
-            value_json=field_value_json,
-            record_version=field_record_version,
-            updated_at=field_updated_at,
-            updated_by=field_updated_by,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class SettingsListInput:
-    """Input for `settings.list`: every stored setting for the envelope-selected workspace, in
-    key order. `prefix` narrows to one namespace and is matched literally, never as a
-    pattern.
-    """
-
-    prefix: OpenCode | None = None
-
-    def to_wire(self) -> dict[str, Any]:
-        """Render this value as a JSON-compatible mapping.
-
-        Absent optional fields are omitted rather than emitted as null, so a decode/encode
-        round trip reproduces the original document exactly.
-        """
-        wire: dict[str, Any] = {}
-        if self.prefix is not None:
-            wire["prefix"] = self.prefix
-        return wire
-
-    @classmethod
-    def from_wire(cls, payload: object, path: str = "SettingsListInput") -> SettingsListInput:
-        """Decode a wire payload into a SettingsListInput.
-
-        Unknown fields are ignored so a newer peer's additive minor release still decodes
-        here. Missing required fields and wrongly typed values raise ContractDecodeError.
-        """
-        mapping = _require_mapping(payload, path)
-        field_prefix: OpenCode | None = None
-        if "prefix" in mapping:
-            raw_prefix = mapping["prefix"]
-            if raw_prefix is None:
-                raise ContractDecodeError(
-                    f"{path}.prefix: null is not a valid value"
-                )
-            field_prefix = _decode_str(raw_prefix, f"{path}.prefix")
-        return cls(
-            prefix=field_prefix,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class SettingsSetInput:
-    """Input for `settings.set`: store `value_json` under `key` for the envelope-selected
-    workspace. Identifies its target by key only; it carries no mutation precondition and
-    replaces whatever is stored.
-    """
-
-    key: OpenCode
-    value_json: SettingValueJson
-
-    def to_wire(self) -> dict[str, Any]:
-        """Render this value as a JSON-compatible mapping.
-
-        Absent optional fields are omitted rather than emitted as null, so a decode/encode
-        round trip reproduces the original document exactly.
-        """
-        wire: dict[str, Any] = {}
-        wire["key"] = self.key
-        wire["value_json"] = self.value_json
-        return wire
-
-    @classmethod
-    def from_wire(cls, payload: object, path: str = "SettingsSetInput") -> SettingsSetInput:
-        """Decode a wire payload into a SettingsSetInput.
-
-        Unknown fields are ignored so a newer peer's additive minor release still decodes
-        here. Missing required fields and wrongly typed values raise ContractDecodeError.
-        """
-        mapping = _require_mapping(payload, path)
-        field_key = _decode_str(_require_field(mapping, "key", path), f"{path}.key")
-        field_value_json = _decode_str(
-            _require_field(mapping, "value_json", path),
-            f"{path}.value_json",
-        )
-        return cls(
-            key=field_key,
-            value_json=field_value_json,
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class ChatCommandInput:
     """Input for `chat.command`: one Chat Contract v1 command, settled through the workspace's
     single mutation seam. `command_name` names a member of the Chat Contract's own closed
@@ -10547,81 +10392,6 @@ class CoreSafeStatusV1:
             protocol_version=field_protocol_version,
             warning_codes=field_warning_codes,
             permitted_actions=field_permitted_actions,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class SettingsListResult:
-    """Result of `settings.list`: the matching settings in key order. An empty list means the
-    workspace has stored none, which is not an error — a setting that has never been written
-    has no row, and the caller applies its own default.
-    """
-
-    settings: tuple[SettingRecord, ...]
-
-    def to_wire(self) -> dict[str, Any]:
-        """Render this value as a JSON-compatible mapping.
-
-        Absent optional fields are omitted rather than emitted as null, so a decode/encode
-        round trip reproduces the original document exactly.
-        """
-        wire: dict[str, Any] = {}
-        wire["settings"] = [item.to_wire() for item in self.settings]
-        return wire
-
-    @classmethod
-    def from_wire(cls, payload: object, path: str = "SettingsListResult") -> SettingsListResult:
-        """Decode a wire payload into a SettingsListResult.
-
-        Unknown fields are ignored so a newer peer's additive minor release still decodes
-        here. Missing required fields and wrongly typed values raise ContractDecodeError.
-        """
-        mapping = _require_mapping(payload, path)
-        field_settings_items = _decode_sequence(
-            _require_field(mapping, "settings", path),
-            f"{path}.settings",
-        )
-        field_settings = tuple(
-            SettingRecord.from_wire(item, f"{path}.settings[{index}]")
-            for index, item in enumerate(field_settings_items)
-        )
-        return cls(
-            settings=field_settings,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class SettingsSetResult:
-    """Result of `settings.set`: the setting as it now stands, including the version a
-    subsequent replacement must carry.
-    """
-
-    setting: SettingRecord
-
-    def to_wire(self) -> dict[str, Any]:
-        """Render this value as a JSON-compatible mapping.
-
-        Absent optional fields are omitted rather than emitted as null, so a decode/encode
-        round trip reproduces the original document exactly.
-        """
-        wire: dict[str, Any] = {}
-        wire["setting"] = self.setting.to_wire()
-        return wire
-
-    @classmethod
-    def from_wire(cls, payload: object, path: str = "SettingsSetResult") -> SettingsSetResult:
-        """Decode a wire payload into a SettingsSetResult.
-
-        Unknown fields are ignored so a newer peer's additive minor release still decodes
-        here. Missing required fields and wrongly typed values raise ContractDecodeError.
-        """
-        mapping = _require_mapping(payload, path)
-        field_setting = SettingRecord.from_wire(
-            _require_field(mapping, "setting", path),
-            f"{path}.setting",
-        )
-        return cls(
-            setting=field_setting,
         )
 
 
@@ -15641,112 +15411,6 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
         precondition=OperationPreconditionMetadata(
             supports_mutation_precondition=True,
             required=True,
-        ),
-        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
-        allowed_errors=(
-            "authentication_required",
-            "authorization_denied",
-            "cancelled",
-            "capability_not_granted",
-            "conflict",
-            "deadline_exceeded",
-            "dependency_unavailable",
-            "idempotency_conflict",
-            "incompatible_version",
-            "internal_non_recoverable",
-            "internal_recoverable",
-            "invalid_purpose",
-            "invalid_request",
-            "mutation_precondition_failed",
-            "not_found",
-            "rate_limited",
-            "upgrade_required",
-            "workspace_busy",
-            "workspace_lease_unavailable",
-            "workspace_migration_required",
-            "workspace_not_granted",
-        ),
-    ),
-    OperationMetadata(
-        name="settings.list",
-        scope=OperationScope(
-            required_scopes=("workspace:read",),
-            side_effect="none",
-            scope_kind="workspace",
-        ),
-        input_schema_ref=(
-            "https://contracts.omnivia.dev/application/v1/settings.schema.json"
-            "#/$defs/SettingsListInput"
-        ),
-        result_schema_ref=(
-            "https://contracts.omnivia.dev/application/v1/settings.schema.json"
-            "#/$defs/SettingsListResult"
-        ),
-        required_capability=CapabilityRequirement(
-            id="workspace.read",
-            minimum_version="1.0",
-            required=True,
-        ),
-        job=OperationJobMetadata(completion_mode="synchronous"),
-        pagination=OperationPaginationMetadata(paginated=False),
-        idempotency=OperationIdempotencyMetadata(
-            supports_idempotency_key=False,
-            required=False,
-            safe_to_retry=True,
-        ),
-        precondition=OperationPreconditionMetadata(
-            supports_mutation_precondition=False,
-            required=False,
-        ),
-        audit=OperationAuditMetadata(audited=True, audit_category="read"),
-        allowed_errors=(
-            "authentication_required",
-            "authorization_denied",
-            "cancelled",
-            "capability_not_granted",
-            "deadline_exceeded",
-            "dependency_unavailable",
-            "incompatible_version",
-            "internal_non_recoverable",
-            "internal_recoverable",
-            "invalid_purpose",
-            "invalid_request",
-            "rate_limited",
-            "upgrade_required",
-            "workspace_migration_required",
-            "workspace_not_granted",
-        ),
-    ),
-    OperationMetadata(
-        name="settings.set",
-        scope=OperationScope(
-            required_scopes=("workspace:write",),
-            side_effect="update",
-            scope_kind="workspace",
-        ),
-        input_schema_ref=(
-            "https://contracts.omnivia.dev/application/v1/settings.schema.json"
-            "#/$defs/SettingsSetInput"
-        ),
-        result_schema_ref=(
-            "https://contracts.omnivia.dev/application/v1/settings.schema.json"
-            "#/$defs/SettingsSetResult"
-        ),
-        required_capability=CapabilityRequirement(
-            id="workspace.write",
-            minimum_version="1.0",
-            required=True,
-        ),
-        job=OperationJobMetadata(completion_mode="synchronous"),
-        pagination=OperationPaginationMetadata(paginated=False),
-        idempotency=OperationIdempotencyMetadata(
-            supports_idempotency_key=True,
-            required=True,
-            safe_to_retry=False,
-        ),
-        precondition=OperationPreconditionMetadata(
-            supports_mutation_precondition=False,
-            required=False,
         ),
         audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
         allowed_errors=(

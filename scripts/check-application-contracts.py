@@ -103,7 +103,6 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "compatibility-matrix",
     "runtime",
     "chat",
-    "settings",
 )
 REGISTRY_SCHEMA = "application-v1"
 ALL_SCHEMAS: tuple[str, ...] = (*SOURCE_SCHEMAS, REGISTRY_SCHEMA)
@@ -1280,7 +1279,7 @@ class FrozenOperation(NamedTuple):
     terminal_result: str | None = None
 
 
-#: The exact 30 application operations, in the frozen code-point order. Runtime
+#: The exact 28 application operations, in the frozen code-point order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1369,14 +1368,6 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "workspace", ("memory:write",), "update", "knowledge.govern",
         "knowledge", "RecordSupersede", "GOV_MUT", False,
     ),
-    "settings.list": FrozenOperation(
-        "workspace", ("workspace:read",), "none", "workspace.read",
-        "settings", "SettingsList", "WORKSPACE_READ", False,
-    ),
-    "settings.set": FrozenOperation(
-        "workspace", ("workspace:write",), "update", "workspace.write",
-        "settings", "SettingsSet", "GOV_MUT", False,
-    ),
     "workflow.control": FrozenOperation(
         "workspace", ("workflow:control",), "update", "workflow.control",
         "runtime", "WorkflowControl", "WORKFLOW_CONTROL", False,
@@ -1411,12 +1402,7 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
 #: The four governance transitions that support and require a mutation
 #: precondition. Every other operation sets both precondition booleans false.
 FROZEN_PRECONDITION_OPERATIONS: frozenset[str] = frozenset(
-    {
-        "candidate.approve",
-        "candidate.reject",
-        "knowledge.propose",
-        "record.supersede",
-    }
+    {"candidate.approve", "candidate.reject", "knowledge.propose", "record.supersede"}
 )
 
 

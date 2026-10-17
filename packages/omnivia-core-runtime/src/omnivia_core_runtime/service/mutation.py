@@ -127,10 +127,6 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "candidate.approve": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "candidate.reject": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "record.supersede": KNOWLEDGE_GOVERNANCE_PURPOSE,
-        # Storing one workspace setting. Served under the administration purpose
-        # the CLI command declares, because the grant's purpose is checked against
-        # the declared one and the two must agree.
-        "settings.set": WORKSPACE_ADMINISTRATION_PURPOSE,
     }
 )
 
@@ -169,10 +165,6 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "candidate.approve": KNOWLEDGE_REVIEWER_ROLE,
         "candidate.reject": KNOWLEDGE_REVIEWER_ROLE,
         "record.supersede": KNOWLEDGE_REVIEWER_ROLE,
-        # Contributor, not installation administrator: this lane refuses the
-        # installation role at issuance, and a setting belongs to the one
-        # workspace the grant already names.
-        "settings.set": WORKSPACE_CONTRIBUTOR_ROLE,
     }
 )
 
