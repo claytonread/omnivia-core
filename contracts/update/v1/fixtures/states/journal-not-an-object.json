@@ -1,0 +1,10 @@
+{
+  "case_id": "journal-not-an-object",
+  "case_kind": "state",
+  "case_version": "1.0",
+  "description": "Valid JSON that is not a record.",
+  "expected": {
+    "outcome": "record_corrupt"
+  },
+  "record_text": "[]\n"
+}

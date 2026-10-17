@@ -13,5 +13,24 @@ dependencies = [
     "omnivia-core>=0.1.0,<0.2.0",
 ]
 
+# An extra, deliberately not a dependency. This distribution's boundary is its
+# dependency edge -- exactly the public Core contract -- and importing it still
+# pulls in nothing else.
+#
+# `cryptography` is here for exactly one thing: Ed25519 verification of the
+# signed update channel envelope, in `update_trust.py` and nowhere else. The
+# standard library has no Ed25519, and verifying a release signature is not
+# somewhere to hand-roll a curve. The import is lazy and its absence is a
+# refusal, never a pass, so a client installed without this extra reports that
+# it could not verify rather than reporting that it did.
+#
+# Every real Core installation already has it: `omnivia-core-runtime` requires
+# the same pin, and the update path refuses to run at all unless all five
+# first-party distributions are installed.
+[project.optional-dependencies]
+update-trust = [
+    "cryptography>=50.0.0,<51",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/omnivia_core_client"]

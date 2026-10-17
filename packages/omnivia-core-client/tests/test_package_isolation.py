@@ -33,8 +33,15 @@ MODULES = sorted(SOURCE_ROOT.glob("*.py"))
 ALLOWED_IMPORTS = frozenset(
     {
         "__future__",
+        # The channel signature's public key and signature travel as canonical
+        # unpadded base64url. Decoding them is `base64` plus a re-encode
+        # comparison, which is one standard-library call and not somewhere to
+        # hand-write an alphabet.
+        "base64",
         "collections",
         "contextlib",
+        # Ed25519, and only Ed25519. See `CRYPTOGRAPHY_MODULE` below.
+        "cryptography",
         "ctypes",
         "dataclasses",
         "fcntl",
@@ -106,6 +113,29 @@ HTTP_MODULE = "http_transport.py"
 
 #: What :data:`HTTP_MODULE` alone may import.
 HTTP_ONLY_IMPORTS = ("http", "ipaddress", "ssl", "urllib")
+
+#: The one module allowed to import ``base64`` and ``cryptography``, and the only
+#: reason either is on the allowlist above.
+#:
+#: ``cryptography`` is the one third-party name this package's source may mention
+#: and it is **not** a dependency of the distribution: it is an optional extra,
+#: imported lazily inside one function, and its absence is a refusal rather than
+#: a pass. The dependency edge asserted below is still exactly ``omnivia-core``.
+#:
+#: It is here because the standard library has no Ed25519 and verifying a release
+#: signature is not somewhere to hand-roll a curve -- the same sentence the Core
+#: Runtime distribution's manifest gives for the same pin. Every real Core
+#: installation already has the library, because ``omnivia-core-runtime``
+#: requires it and the update path refuses to run at all unless all five
+#: first-party distributions are installed.
+#:
+#: Pinned by name for the same reason ``socket`` and the four HTTP names are:
+#: admitting a cryptography import for the whole package would let a second,
+#: unreviewed verifier appear in any module.
+CRYPTOGRAPHY_MODULE = "update_trust.py"
+
+#: What :data:`CRYPTOGRAPHY_MODULE` alone may import.
+TRUST_ONLY_IMPORTS = ("base64", "cryptography")
 
 #: Named explicitly so a failure says *what* leaked rather than only that the
 #: allowlist was exceeded. Every one of these is forbidden for a stated reason:
@@ -187,6 +217,11 @@ def test_the_package_has_the_modules_this_packet_defines() -> None:
         # which is what the tests below pin.
         "updates.py",
         "updates_apply.py",
+        # Whether a fetched channel document may be believed at all: the signed
+        # envelope v2, its trust anchors and its windows. Separate from
+        # `updates.py` so the one module that verifies a signature is one module,
+        # and the only one that may name a cryptography library.
+        "update_trust.py",
     }
 
 
@@ -245,6 +280,69 @@ def test_only_the_http_module_reaches_for_http(module_name: str) -> None:
         path.name for path in MODULES if module_name in _imported_roots(path)
     )
     assert importers == [HTTP_MODULE]
+
+
+@pytest.mark.parametrize("module_name", TRUST_ONLY_IMPORTS)
+def test_only_the_trust_module_reaches_for_a_cryptography_library(
+    module_name: str,
+) -> None:
+    """One module verifies signatures, and it is the only one that may.
+
+    The same shape as the ``socket`` and HTTP pins and for the same reason: the
+    danger is not that this package verifies a signature, it is a *second*
+    verifier appearing somewhere nobody reviewed. Parameterized so a failure
+    names which of the two leaked and into what.
+    """
+    importers = sorted(
+        path.name for path in MODULES if module_name in _imported_roots(path)
+    )
+    assert importers == [CRYPTOGRAPHY_MODULE]
+
+
+def test_the_cryptography_extra_is_declared_and_is_not_a_dependency() -> None:
+    """The one third-party name in this source is an extra, not an edge.
+
+    Declared, so an installer can ask for it by name and a reader can see it
+    exists; outside ``project.dependencies``, so importing this package still
+    pulls in nothing but the public Core contract. The pair is the whole claim,
+    which is why both halves are asserted here rather than only the first.
+    """
+    extras = MANIFEST["project"]["optional-dependencies"]
+    assert extras == {"update-trust": ["cryptography>=50.0.0,<51"]}
+    assert "cryptography" not in str(MANIFEST["project"]["dependencies"])
+
+
+def test_the_trust_module_refuses_rather_than_passes_without_the_extra() -> None:
+    """A verifier that cannot verify has not verified.
+
+    The import is lazy, so the interesting failure is not an ``ImportError`` at
+    module load -- it is what the verify path answers when the extra is absent.
+    It must be a refusal. This asserts the shape that makes that true: the
+    handler raises, and the function has no branch that returns ``True`` without
+    reaching the library.
+    """
+    source = (SOURCE_ROOT / CRYPTOGRAPHY_MODULE).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=CRYPTOGRAPHY_MODULE)
+    verify = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_verify_ed25519"
+    )
+    handlers = [
+        handler
+        for node in ast.walk(verify)
+        if isinstance(node, ast.Try)
+        for handler in node.handlers
+        if isinstance(handler.type, ast.Name) and handler.type.id == "ImportError"
+    ]
+    assert len(handlers) == 1
+    assert any(isinstance(node, ast.Raise) for node in ast.walk(handlers[0]))
+    returned_constants = {
+        node.value.value
+        for node in ast.walk(verify)
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Constant)
+    }
+    assert True not in returned_constants
 
 
 def test_the_credential_module_needs_no_privileged_import() -> None:

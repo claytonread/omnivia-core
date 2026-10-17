@@ -1,0 +1,87 @@
+{
+  "approved": {
+    "bundle_sha256": "sha256:5cc9496b8ce7890fc01101ec3c469921bbe120fe118eed61854964559e870858",
+    "packages": {
+      "omnivia-core": "0.7.0",
+      "omnivia-core-cli": "0.7.0",
+      "omnivia-core-client": "0.7.0",
+      "omnivia-core-mcp": "0.7.0",
+      "omnivia-core-runtime": "0.7.0"
+    },
+    "release_url": "https://github.com/claytonread/omnivia-core/releases/tag/core-v0.7.0",
+    "version": "0.7.0"
+  },
+  "bounds": {
+    "max_expanded_bytes": 402653184,
+    "max_members": 1024
+  },
+  "case_id": "archive-wheel-version-mismatch",
+  "case_kind": "archive",
+  "case_version": "1.0",
+  "description": "An authentic, intact bundle for a release the channel did not recommend.",
+  "expected": {
+    "outcome": "refused",
+    "owner_only_staging": true,
+    "refusal": "wheel_version_mismatch"
+  },
+  "members": [
+    {
+      "kind": "directory",
+      "name": "wheels/",
+      "unix_mode": "0755"
+    },
+    {
+      "kind": "directory",
+      "name": "metadata/",
+      "unix_mode": "0755"
+    },
+    {
+      "content_base64": "dGVzdC1vbmx5IGxpY2VuY2UgdGV4dAo=",
+      "kind": "file",
+      "name": "licenses/omnivia-core-suite/LICENSE",
+      "unix_mode": "0644"
+    },
+    {
+      "content_base64": "eyJmb3JtYXQiOiJvbW5pdmlhLnN0YW5kYXJkLXJlbGVhc2UtbWFuaWZlc3QudjEifQo=",
+      "kind": "file",
+      "name": "metadata/release-manifest.json",
+      "unix_mode": "0644"
+    },
+    {
+      "content_base64": "dGVzdC1vbmx5IHdoZWVsIG9tbml2aWEtY29yZSAwLjYuMAo=",
+      "kind": "file",
+      "name": "wheels/omnivia_core-0.6.0-py3-none-any.whl",
+      "unix_mode": "0644"
+    },
+    {
+      "content_base64": "dGVzdC1vbmx5IHdoZWVsIG9tbml2aWEtY29yZS1jbGkgMC42LjAK",
+      "kind": "file",
+      "name": "wheels/omnivia_core_cli-0.6.0-py3-none-any.whl",
+      "unix_mode": "0644"
+    },
+    {
+      "content_base64": "dGVzdC1vbmx5IHdoZWVsIG9tbml2aWEtY29yZS1jbGllbnQgMC42LjAK",
+      "kind": "file",
+      "name": "wheels/omnivia_core_client-0.6.0-py3-none-any.whl",
+      "unix_mode": "0644"
+    },
+    {
+      "content_base64": "dGVzdC1vbmx5IHdoZWVsIG9tbml2aWEtY29yZS1tY3AgMC42LjAK",
+      "kind": "file",
+      "name": "wheels/omnivia_core_mcp-0.6.0-py3-none-any.whl",
+      "unix_mode": "0644"
+    },
+    {
+      "content_base64": "dGVzdC1vbmx5IHdoZWVsIG9tbml2aWEtY29yZS1ydW50aW1lIDAuNi4wCg==",
+      "kind": "file",
+      "name": "wheels/omnivia_core_runtime-0.6.0-py3-none-any.whl",
+      "unix_mode": "0644"
+    },
+    {
+      "content_base64": "N2E5N2YyYjhhOTg3YTE1MjE5MmIwM2NmMDJjOTk5Y2Y4MDI4N2FjYzNmMTc5OWQyNGYyNmRhZjUxNjBkY2RkMSAgbGljZW5zZXMvb21uaXZpYS1jb3JlLXN1aXRlL0xJQ0VOU0UKYTRmOTkxZTRlY2E0YzFjYjlmYTkyMjVjZmVmNTcwOWRmZmM1ZTViNzQ5YTRkMjc0NzI2OTc3YmJmZjFjMTJkZCAgbWV0YWRhdGEvcmVsZWFzZS1tYW5pZmVzdC5qc29uCmFiYzlmZjUyYzZjYmUzMzk0ZmQ1M2I4Nzg3MDZkZjhlN2M2MzI2YjY4OTM1M2ZjZjAxZDcwODRhZWNmN2ZiYWMgIHdoZWVscy9vbW5pdmlhX2NvcmUtMC42LjAtcHkzLW5vbmUtYW55LndobAoxNGI0OGQxODc1OTVkNDAxYTBjMWRlOTc5NTJjZTFlYzE3YTdiODM5NGZiMzVhMjJjODQ1N2U4NjhlYWFiZmRlICB3aGVlbHMvb21uaXZpYV9jb3JlX2NsaS0wLjYuMC1weTMtbm9uZS1hbnkud2hsCjM0YzU2ZWI2M2VlODZjNjI4ZThiODQ4YjVmZjJjZTczN2UyODFiNWM5ZDA5YTQ2NTMyMmY3YjkzMjcwMmVlYmIgIHdoZWVscy9vbW5pdmlhX2NvcmVfY2xpZW50LTAuNi4wLXB5My1ub25lLWFueS53aGwKN2ZhNGU4NmFjMmE2YzBjYjJhNDFiYzM2MWEwMWFiNjdlMzE1Y2Y1NjdjYmQ1Y2VlMWE1NGQ5M2QzMzk1ZmY2YyAgd2hlZWxzL29tbml2aWFfY29yZV9tY3AtMC42LjAtcHkzLW5vbmUtYW55LndobApjZjdkZjEwZGMxZWVjNjg3NjFlOTcwMGQxZTU5ZDUyNjk5OTFhODM1NTRlNzk5YmVlYTk4YzFmNDkyMDg3MWQwICB3aGVlbHMvb21uaXZpYV9jb3JlX3J1bnRpbWUtMC42LjAtcHkzLW5vbmUtYW55LndobAo=",
+      "kind": "file",
+      "name": "checksums-sha256.txt",
+      "unix_mode": "0644"
+    }
+  ]
+}

@@ -1037,6 +1037,42 @@ def test_the_trusted_runtime_fixture_gate_runs_locally_and_on_the_gate() -> None
     )
 
 
+UPDATE_FIXTURE_GATE_STEP = "Check generated update contract fixtures"
+UPDATE_FIXTURE_GENERATOR = "scripts/generate-update-contract.py"
+UPDATE_FIXTURE_CORPUS = "contracts/update/v1/fixtures"
+
+
+def test_the_update_contract_fixture_gate_runs_locally_and_on_the_gate() -> None:
+    """The update corpus has the same drift check, for the same reason.
+
+    Every canonical document, SHA-256 and Ed25519 signature under
+    `contracts/update/v1/fixtures` is derived from the envelopes and candidate
+    bundles the generator builds. A fixture edited by hand -- one byte of a
+    signed body, one character of a base64url signature -- still parses and
+    still looks like the case it is named for, and it no longer tests it: a
+    `wrong-domain-product` case whose signature was regenerated under the right
+    domain passes while proving nothing.
+
+    Pinned here rather than in `GATE_STEPS` for the same reason the
+    trusted-runtime check is: the workflow keeps all three `--check` steps
+    together and that tuple names none of them.
+    """
+    assert (REPO_ROOT / UPDATE_FIXTURE_GENERATOR).is_file()
+    assert (REPO_ROOT / UPDATE_FIXTURE_CORPUS).is_dir()
+
+    step = _step(_steps(), UPDATE_FIXTURE_GATE_STEP)
+    assert f"python {UPDATE_FIXTURE_GENERATOR} --check" in _commands(step)
+
+    preflight = "\n".join(
+        line
+        for line in PREFLIGHT.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
+    assert f"{UPDATE_FIXTURE_GENERATOR} --check" in preflight, (
+        "preflight must run the same drift check the gate does"
+    )
+
+
 def _preflight_full_suite_command() -> str:
     """The `step "Run full repository test suite" ...` invocation, joined.
 

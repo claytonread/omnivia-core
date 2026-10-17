@@ -1,0 +1,28 @@
+{
+  "case_id": "duplicate-member-name",
+  "case_kind": "envelope",
+  "case_version": "1.0",
+  "description": "One name given twice. A document with two values for one member has no single value to verify a signature over, and this is the only point at which the duplicate is still visible: a JSON parser keeps the last and drops the rest.",
+  "document_text": "{\"channel\":\"stable\",\"channel\":\"beta\"}",
+  "expected": {
+    "outcome": "refused",
+    "refusal": "channel_duplicate_member",
+    "release": null
+  },
+  "policy": {
+    "accept_unsigned_v1": false,
+    "expected_channel": "stable",
+    "expected_product_id": "omnivia-core",
+    "trusted_keys": [
+      {
+        "algorithm": "ed25519",
+        "key_id": "test-only-channel-2026a",
+        "not_after": "2027-01-01T00:00:00Z",
+        "not_before": "2026-01-01T00:00:00Z",
+        "public_key": "dSvKYg7jAospeOjJqx-8p8-USA70yDlPy0Q68m-yeQA",
+        "retired_at": null
+      }
+    ],
+    "verified_at": "2026-10-16T12:00:00Z"
+  }
+}

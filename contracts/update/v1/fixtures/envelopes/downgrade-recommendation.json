@@ -1,0 +1,35 @@
+{
+  "case_id": "downgrade-recommendation",
+  "case_kind": "envelope",
+  "case_version": "1.0",
+  "description": "A correctly signed envelope recommending a release below the consumer's floor. A signature is not a reason to move backwards.",
+  "document_text": "{\"channel\":\"stable\",\"issued_at\":\"2026-10-16T09:00:00Z\",\"not_after\":\"2026-11-16T09:00:00Z\",\"not_before\":\"2026-10-16T09:00:00Z\",\"product_id\":\"omnivia-core\",\"release\":{\"bundle_sha256\":\"sha256:5cc9496b8ce7890fc01101ec3c469921bbe120fe118eed61854964559e870858\",\"packages\":{\"omnivia-core\":\"0.6.0\",\"omnivia-core-cli\":\"0.6.0\",\"omnivia-core-client\":\"0.6.0\",\"omnivia-core-mcp\":\"0.6.0\",\"omnivia-core-runtime\":\"0.6.0\"},\"release_url\":\"https://github.com/claytonread/omnivia-core/releases/tag/core-v0.7.0\",\"version\":\"0.6.0\"},\"schema_version\":\"omnivia-core-update.v2\",\"sequence\":7,\"signature\":\"uYO9OFv98-CpvT14EpDiDa3VDsuMotlgZ0soJgp_84xoMe4LVPJOrT8lFYLVaTMU3cFIzoHmooSarT2wH6rxBw\",\"signing\":{\"algorithm\":\"ed25519\",\"key_id\":\"test-only-channel-2026a\"}}",
+  "expected": {
+    "outcome": "refused",
+    "refusal": "channel_downgrade",
+    "release": null
+  },
+  "policy": {
+    "accept_unsigned_v1": false,
+    "expected_channel": "stable",
+    "expected_product_id": "omnivia-core",
+    "installed": {
+      "omnivia-core": "0.6.5",
+      "omnivia-core-cli": "0.6.5",
+      "omnivia-core-client": "0.6.5",
+      "omnivia-core-mcp": "0.6.5",
+      "omnivia-core-runtime": "0.6.5"
+    },
+    "trusted_keys": [
+      {
+        "algorithm": "ed25519",
+        "key_id": "test-only-channel-2026a",
+        "not_after": "2027-01-01T00:00:00Z",
+        "not_before": "2026-01-01T00:00:00Z",
+        "public_key": "dSvKYg7jAospeOjJqx-8p8-USA70yDlPy0Q68m-yeQA",
+        "retired_at": null
+      }
+    ],
+    "verified_at": "2026-10-16T12:00:00Z"
+  }
+}

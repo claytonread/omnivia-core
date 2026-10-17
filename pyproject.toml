@@ -29,6 +29,13 @@ packages = ["src/omnivia_core"]
 # (valid, invalid) and the canonicalisation/signature vectors, published so a
 # consumer can verify a Core runtime payload independently -- in another
 # language -- without importing any implementation of the verifier.
+#
+# `contracts/update/v1/{schemas,fixtures}` is that arrangement again for the
+# update seam: one schema plus three corpora by subject (envelopes, states,
+# archives) and the canonicalisation/base64url/signature vectors, published so a
+# consumer can decide independently whether a Core update channel may be
+# believed, and whether a candidate bundle may be unpacked, without importing
+# any implementation of either check.
 [tool.hatch.build.targets.wheel.force-include]
 "contracts/application/v1/schemas" = "omnivia_core/contracts/v1/resources/schemas"
 "contracts/application/v1/fixtures" = "omnivia_core/contracts/v1/resources/fixtures"
@@ -38,6 +45,8 @@ packages = ["src/omnivia_core"]
 "contracts/chat/v1/fixtures" = "omnivia_core/chat_contract/v1/resources/fixtures"
 "contracts/runtime/v1/schemas" = "omnivia_core/runtime_contract/v1/resources/schemas"
 "contracts/runtime/v1/fixtures" = "omnivia_core/runtime_contract/v1/resources/fixtures"
+"contracts/update/v1/schemas" = "omnivia_core/update_contract/v1/resources/schemas"
+"contracts/update/v1/fixtures" = "omnivia_core/update_contract/v1/resources/fixtures"
 
 # Canonical collection scope. Every tree in this checkout that holds tests is
 # named here, so a bare `pytest -q` from the repository root is the whole suite

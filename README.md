@@ -136,7 +136,10 @@ Rules enforced by `scripts/check-package-boundaries.py`:
   `omnivia-core` range — and nothing else, third-party libraries included, and
   imports no runtime, MCP, CLI, or legacy package. It is the shared protocol
   foundation the others may build on, so that edge only ever points the other
-  way.
+  way. It declares one *extra*, `update-trust`, which adds `cryptography` for
+  Ed25519 verification of the signed update channel envelope: an extra is not an
+  edge, so installing the client still pulls in nothing but `omnivia-core`, and
+  the import is lazy and refused rather than skipped when the library is absent.
 
 `omnivia-core-client` carries the OVC1 protocol **foundation** only:
 `framing`, `deadline`, `compatibility`, `errors`, and the `transport` protocol

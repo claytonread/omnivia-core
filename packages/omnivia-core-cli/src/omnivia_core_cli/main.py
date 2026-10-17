@@ -705,24 +705,22 @@ def _run_update(
     """
     from omnivia_core_client.managed_local import spawn_detached_worker
     from omnivia_core_client.updates import (
+        default_fetch_bundle,
         default_fetch_channel,
         installed_packages,
     )
     from omnivia_core_client.updates_apply import coordinate_update
 
-    def fetch_bytes(address: str) -> bytes:
-        import urllib.request
-
-        with urllib.request.urlopen(address, timeout=600) as response:
-            data: bytes = response.read()
-        return data
-
+    # Both fetches go through the client's one approved reader: https only, TLS
+    # verified, no redirect followed, size-capped. This used to be a local
+    # `urllib.request.urlopen(address, timeout=600).read()` with none of those
+    # four properties.
     cli_executable = Path(sys.executable).parent / "omnivia"
     outcome = coordinate_update(
         installation_state=Path(arguments.installation_state),
         installed=installed_packages(),
         fetch_channel=default_fetch_channel,
-        fetch_bytes=fetch_bytes,
+        fetch_bytes=default_fetch_bundle,
         probe_running=lambda workspace_id: _probe_service_running(
             arguments, deadline
         ),

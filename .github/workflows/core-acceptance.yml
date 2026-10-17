@@ -166,6 +166,14 @@ jobs:
       - name: Check generated trusted-runtime fixtures
         run: python scripts/generate-runtime-contract.py --check
 
+      # Same arrangement for the update seam. Every canonical document, SHA-256
+      # and Ed25519 signature under `contracts/update/v1/fixtures` is derived
+      # from the envelopes and bundles the generator builds, so a hand-edited
+      # fixture whose signature no longer matches its document does not fail --
+      # it quietly stops testing the refusal it is named for.
+      - name: Check generated update contract fixtures
+        run: python scripts/generate-update-contract.py --check
+
       # The MCP exposure manifest advertises self-contained JSON Schemas
       # generated from the canonical Application Contract v1 documents. They are
       # checked in because the canonical schemas ship in the `omnivia-core`
