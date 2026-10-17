@@ -9,7 +9,77 @@
     "commit": "fa660a5970f75929faf914af3415ac636504b56c",
     "initial_state": "clean"
   },
-  "slice_state": "reviewed and committed on codex/core-semantic-code-intelligence; the implementation commit is the Git commit containing this file",
+  "integration": {
+    "recorded_on": "2026-10-18",
+    "branch": "codex/core-tech-p1-p10-integration",
+    "integrated_onto": "32c2015d2c602f82d97efa509e10a6c31763c1f6",
+    "source_commits": [
+      "523b4dddf1281ebd94ed3e4aea05fecb7f5e579d",
+      "10155ee771d1ba0bcfbfc6c32917f0e256aac930",
+      "fa660a5970f75929faf914af3415ac636504b56c",
+      "c8265c724381ccd7107c5dfd669f0945405e31af"
+    ],
+    "method": "cherry-picked in order; conflicts limited to the migration allocation authority and the literal migration-head pins",
+    "migration_renumbered": {
+      "from": "0069_semantic_vector_projection.sql",
+      "to": "0073_semantic_vector_projection.sql",
+      "reason": "the Waves 1-4 baseline already allocated 0069 to document intake, 0070 to app settings and 0071/0072 to capture processing; 0073 was the next free number",
+      "sql_text_changed": false,
+      "pinned_sha256_unchanged": "a21aea920167818128015e7592c8df354959da9aefc0504774897a9df0a6ab52",
+      "followed_constants": [
+        "projections/semantic.SCHEMA_VERSION",
+        "projections/semantic._LEDGER_DECLARED_AT"
+      ]
+    },
+    "contract_drift": "none imported: the source commits touch no generated contract, application catalogue or MCP document, and the newer Waves baseline versions are preserved unchanged",
+    "status_changes": "none; no property, work item or acceptance verdict in this ledger moved, and nothing in QUALIFICATION-PLAN.json ran",
+    "commands": [
+      {
+        "command": "git diff --check",
+        "outcome": "clean"
+      },
+      {
+        "command": "python scripts/check-migration-allocations.py",
+        "outcome": "Migration allocation check passed."
+      },
+      {
+        "command": "python scripts/check-application-contracts.py",
+        "outcome": "Application contract conformance check passed."
+      },
+      {
+        "command": "python scripts/check-package-boundaries.py",
+        "outcome": "OmniVia Core package boundary check passed."
+      },
+      {
+        "command": "python scripts/check-raise-discipline.py",
+        "outcome": "OmniVia Core raise discipline check passed."
+      },
+      {
+        "command": "python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_projection_lifecycle.py packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py -q",
+        "outcome": "32 passed"
+      },
+      {
+        "command": "python -m pytest tests/test_migration_allocations.py 'packages/omnivia-core-runtime/tests/phase3/runtime/test_working_tree_snapshot.py::test_0059_upgrade_seeds_a_preexisting_0058_capture' -q",
+        "outcome": "74 passed"
+      },
+      {
+        "command": "python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_document_intake_migration.py packages/omnivia-core-runtime/tests/phase3/runtime/test_app_settings_migration.py packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing_settings.py packages/omnivia-core-runtime/tests/phase2/test_bootstrap_storage.py packages/omnivia-core-runtime/tests/phase2/test_migration_backup_restore.py packages/omnivia-core-runtime/tests/phase3/runtime/test_document_intake.py -q",
+        "outcome": "312 passed",
+        "note": "first run failed test_0069_is_the_unique_successor_to_0068 and test_0069_applies_all_document_intake_tables_and_guards, both of which pin the catalogue head literally at 72; moved to 73 as the new migration requires. No other Waves 1-4 assertion moved."
+      },
+      {
+        "command": "python -m ruff check <the eleven changed Python files>",
+        "outcome": "All checks passed!",
+        "note": "ruff format is not a gate in core-acceptance.yml, which runs ruff check only; the repository's 100-column style is not ruff format's default."
+      },
+      {
+        "command": "python -m mypy --strict packages/omnivia-core-runtime/src/omnivia_core_runtime/service/semantic_search.py packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/semantic_vectors.py packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/projections/semantic.py packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/code_analysis_candidates.py",
+        "outcome": "Success: no issues found in 4 source files"
+      }
+    ],
+    "environment": "no .venv in this worktree; /Users/claytonread/Projects/omnivia-core/.venv/bin/python (3.11, Ruff 0.16.1, mypy 2.3.0) with PYTHONPATH over this worktree's source trees, plus a throwaway pip --target overlay for pytesseract, pillow, pypdfium2 and pillow-heif, which the shared venv lacks and the Waves 1-4 capture tests import at collection"
+  },
+  "slice_state": "reviewed and committed on codex/core-semantic-code-intelligence; the implementation commit is the Git commit containing this file. Integrated onto the Waves 1-4 baseline on codex/core-tech-p1-p10-integration on 2026-10-18 with the migration renumbered to 0073; see the integration block above",
   "status_vocabulary": [
     "PASS",
     "PARTIAL",

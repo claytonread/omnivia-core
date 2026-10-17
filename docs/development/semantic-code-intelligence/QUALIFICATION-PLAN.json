@@ -4,6 +4,12 @@
   "spec_version": "1.0",
   "recorded_on": "2026-10-16",
   "baseline_commit": "fa660a5970f75929faf914af3415ac636504b56c",
+  "integration": {
+    "recorded_on": "2026-10-18",
+    "branch": "codex/core-tech-p1-p10-integration",
+    "integrated_onto": "32c2015d2c602f82d97efa509e10a6c31763c1f6",
+    "effect_on_this_plan": "none. Nothing in this plan ran, no verdict moved and no threshold changed. The only repository fact it restates that the integration touched is the migration number: the semantic projection is 0073 here, not 0069."
+  },
   "status": "PREDECLARED",
   "rule": "Nothing in this plan has run. Every artifact hash, result and verdict is null until a run records it. Pass criteria come from TECH-CORE-RETRIEVAL-CODE-001 v1.0; this plan does not restate or invent thresholds.",
   "fixed_repository_facts": {
