@@ -1317,16 +1317,56 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         case (.sources, "capture-defaults"): renderCapture(content)
         case (.processing, "docproc"): renderDocumentProcessing(content)
         default:
-            // A detail the v2 design specifies and this build has not brought
-            // over yet. Saying so beats a pane that renders empty.
+            // A detail the v2 design specifies and Core has no owner for. It
+            // is reachable, titled and breadcrumbed, and it names the thing
+            // that is missing rather than saying "not available" and leaving
+            // the reader to guess whether that is a bug.
             let box = card(content, header: nil)
+            let absent = Self.missingOwner[detail]
             notBuiltRow(
                 into: box,
                 title: Route.title(route.pane, detail) ?? detail,
-                detail: "This detail is in the Core Settings v2 design. It is not in this build yet."
+                detail: absent ?? "This detail is in the Core Settings v2 design. "
+                    + "It is not in this build yet."
             )
         }
     }
+
+
+    /// What each unbuilt detail is waiting for. One sentence of purpose from
+    /// the design, then the owner Core does not advertise — the design's own
+    /// binding register (§7) names each of these.
+    private static let missingOwner: [String: String] = [
+        "models":
+            "Choose, download and manage supported models. Acquiring a model needs "
+            + "verification, quarantine, load and health reporting, and a resource "
+            + "manifest for its size. Core advertises none of that.",
+        "search":
+            "Find passages even when the question uses different words. This needs "
+            + "workspace enablement, a backfill request and per-stage coverage counters, "
+            + "and a rebuild operation that can be cancelled and reconciled.",
+        "code":
+            "Identify supported definitions and relationships at a repository snapshot. "
+            + "This needs repository capture and an analyser that advertises the "
+            + "languages it supports.",
+        "decisions":
+            "Suggest categories and follow-ups with the local decision model. The "
+            + "decision model, its profiles and its trial and history records have no "
+            + "owner in this build.",
+        "background":
+            "Control indexing hours, first-pass power use and paused work. This needs "
+            + "the bulk policy — which job classes it covers, the battery and host "
+            + "limits, and a schedule whose next start the service computes.",
+        "activity":
+            "Per-stage processing activity. Core does not report activity to this "
+            + "window, so there is nothing to show.",
+        "file":
+            "A source's scope, exclusions, currentness and coverage. All of it comes "
+            + "from a shared source manager, which Core does not advertise.",
+        "repo":
+            "A repository's snapshot, capabilities, ignored paths and languages. This "
+            + "needs repository capture and the same absent source manager.",
+    ]
 
     /// `dest`: a glyph, a purpose, a short summary of current state, and a
     /// chevron. The whole row opens the detail.
