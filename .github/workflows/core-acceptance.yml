@@ -84,6 +84,12 @@ jobs:
 
       - name: Install Python tooling and test-only dependencies
         run: |
+          # Document adapter tests execute the real fixed-argument local readers.
+          # Production obtains these from its verified packaged runtime; this
+          # Linux test host installs distro-owned stand-ins explicitly instead of
+          # silently skipping the same adapter coverage that macOS exercises.
+          sudo apt-get update
+          sudo apt-get install --yes pandoc tesseract-ocr tesseract-ocr-eng tesseract-ocr-osd
           # `scripts/check-package-builds.sh` builds each distribution with
           # `python -m build --wheel --no-isolation`, so the `hatchling` backend
           # that every `pyproject.toml` declares must already be installed here.

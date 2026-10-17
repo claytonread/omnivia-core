@@ -424,6 +424,7 @@ def test_a_worker_that_produced_no_outcome_settles_under_its_own_reason(
     )
 
 
+@pytest.mark.production_document_worker
 def test_the_production_extraction_seam_is_the_confined_worker() -> None:
     # DOC-16. The in-process adapters are not a production route: the name this
     # module's extraction goes through is the isolated worker's entry point.

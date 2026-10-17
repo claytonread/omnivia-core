@@ -247,6 +247,7 @@ def _header(attempt: dict[str, Any], **overrides: Any) -> dict[str, Any]:
 # -- the production route ----------------------------------------------------
 
 
+@pytest.mark.production_document_worker
 def test_the_production_extraction_route_is_the_isolated_worker() -> None:
     # Both production call sites -- the capture outbox and the reprocess
     # handler -- resolve their extraction seam to the confined child, so the
