@@ -34,9 +34,9 @@ from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.storage.connection import StorageError, authorised
 
 __all__ = [
+    "SCHEMA_VERSION",
     "AppSetting",
     "AppSettingsError",
-    "SCHEMA_VERSION",
     "delete_setting",
     "list_settings",
     "read_setting",
@@ -197,44 +197,49 @@ def write_setting(
     if not isinstance(updated_at_us, int) or updated_at_us <= 0:
         raise AppSettingsError("updated_at_us must be a positive integer")
 
-    with fenced_transaction(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    with (
+        fenced_transaction(
+            connection,
+            identity,
+            workspace_id=workspace_id,
+            fencing_generation=fencing_generation,
+        ),
+        authorised(connection, mutations=True),
     ):
-        with authorised(connection, mutations=True):
-            current = connection.execute(
-                "SELECT version, updated_at_us FROM omnivia_app_settings "
+        current = connection.execute(
+            "SELECT version, updated_at_us FROM omnivia_app_settings "
+            "WHERE workspace_id = ? AND setting_key = ?",
+            (workspace_id, checked),
+        ).fetchone()
+        found = None if current is None else int(current[0])
+
+        if expected_version is not None and expected_version != (found or 0):
+            raise AppSettingsError(
+                f"setting {checked!r} changed since it was read "
+                f"(expected version {expected_version}, found {found or 0})"
+            )
+
+        if current is None:
+            connection.execute(
+                "INSERT INTO omnivia_app_settings "
+                "(workspace_id, setting_key, value_json, schema_version, "
+                " version, updated_at_us, updated_by) VALUES (?, ?, ?, ?, 1, ?, ?)",
+                (workspace_id, checked, encoded, SCHEMA_VERSION, updated_at_us, writer),
+            )
+            version = 1
+            stamped = updated_at_us
+        else:
+            # The trigger refuses a regressing timestamp, which a clock that
+            # stepped backwards would otherwise turn into a failed write for
+            # a user who only clicked a toggle. Hold the previous instant.
+            stamped = max(updated_at_us, int(current[1]))
+            version = found + 1  # type: ignore[operator]
+            connection.execute(
+                "UPDATE omnivia_app_settings SET value_json = ?, version = ?, "
+                "updated_at_us = ?, updated_by = ? "
                 "WHERE workspace_id = ? AND setting_key = ?",
-                (workspace_id, checked),
-            ).fetchone()
-            found = None if current is None else int(current[0])
-
-            if expected_version is not None and expected_version != (found or 0):
-                raise AppSettingsError(
-                    f"setting {checked!r} changed since it was read "
-                    f"(expected version {expected_version}, found {found or 0})"
-                )
-
-            if current is None:
-                connection.execute(
-                    "INSERT INTO omnivia_app_settings "
-                    "(workspace_id, setting_key, value_json, schema_version, "
-                    " version, updated_at_us, updated_by) VALUES (?, ?, ?, ?, 1, ?, ?)",
-                    (workspace_id, checked, encoded, SCHEMA_VERSION, updated_at_us, writer),
-                )
-                version = 1
-                stamped = updated_at_us
-            else:
-                # The trigger refuses a regressing timestamp, which a clock that
-                # stepped backwards would otherwise turn into a failed write for
-                # a user who only clicked a toggle. Hold the previous instant.
-                stamped = max(updated_at_us, int(current[1]))
-                version = found + 1  # type: ignore[operator]
-                connection.execute(
-                    "UPDATE omnivia_app_settings SET value_json = ?, version = ?, "
-                    "updated_at_us = ?, updated_by = ? "
-                    "WHERE workspace_id = ? AND setting_key = ?",
-                    (encoded, version, stamped, writer, workspace_id, checked),
-                )
+                (encoded, version, stamped, writer, workspace_id, checked),
+            )
 
     return AppSetting(
         key=checked,
@@ -260,16 +265,21 @@ def delete_setting(
     that is already true.
     """
     checked = _checked_key(key)
-    with fenced_transaction(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    with (
+        fenced_transaction(
+            connection,
+            identity,
+            workspace_id=workspace_id,
+            fencing_generation=fencing_generation,
+        ),
+        authorised(connection, mutations=True),
     ):
-        with authorised(connection, mutations=True):
-            cursor = connection.execute(
-                "DELETE FROM omnivia_app_settings "
-                "WHERE workspace_id = ? AND setting_key = ?",
-                (workspace_id, checked),
-            )
-            return cursor.rowcount > 0
+        cursor = connection.execute(
+            "DELETE FROM omnivia_app_settings "
+            "WHERE workspace_id = ? AND setting_key = ?",
+            (workspace_id, checked),
+        )
+        return cursor.rowcount > 0
 
 
 def as_mapping(settings: Iterator[AppSetting]) -> Mapping[str, Any]:
