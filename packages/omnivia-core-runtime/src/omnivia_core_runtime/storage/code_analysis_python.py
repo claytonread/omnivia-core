@@ -20,11 +20,15 @@ PEP 263 cookie. Those two are the whole analysis surface.
 **Resolution is stated, never guessed.** An edge is `resolved` only when the analyser can
 name the exact candidate in this same batch that the source refers to. Everything else
 carries an explicit descriptor and one of `unresolved`, `ambiguous` or `external`: a name
-no scope in the snapshot binds, a name two definitions in one scope bind, a callee that
-is not a name or an attribute chain, a module outside the snapshot, a relative import
-that climbs past the snapshot root, a wildcard import. There is no heuristic that
-promotes one of those to `resolved`, because a graph that silently invents an edge is
-worse than one that says it does not know.
+no scope in the snapshot binds, a name some scope binds to a *value* -- a parameter, an
+assignment, a loop or `with` or `except` or pattern binder, a lambda or comprehension
+target -- a name two definitions in one scope bind, a callee that is not a name or an
+attribute chain, a module outside the snapshot, a relative import that climbs past the
+snapshot root, a wildcard import. There is no heuristic that promotes one of those to
+`resolved`, because a graph that silently invents an edge is worse than one that says it
+does not know. The single exception, and it is lexical rather than inferred, is a
+method's receiver: the first parameter of a function written in a class body is that
+class, until the body rebinds it.
 
 **What fails closed, and what does not.** A snapshot that is absent, uncovered, not
 `captured_v1` or not `complete`, a profile digest the caller did not expect, a stored path
@@ -33,10 +37,14 @@ longer hashes to the digest the snapshot recorded all refuse the whole batch: ea
 the batch would describe bytes nobody can point at. A limit the profile declares -- too
 many files, too many bytes, too many candidates, too many file-level problems -- also
 refuses the whole batch, because analysing a prefix of a repository produces a batch that
-reads like a description of the snapshot while silently omitting the rest of it. Per-file
-trouble is the opposite: an undecodable file, a syntactically invalid file, a file larger
-than the profile admits and a file whose tree is bigger than the node budget each get one
-bounded, source-located report, and every valid fact from every other file survives.
+reads like a description of the snapshot while silently omitting the rest of it. So does a
+`grammar_version` the running parser cannot actually be held to. Per-file trouble is the
+opposite: an undecodable file, a syntactically invalid file, a file larger than the profile
+admits, a file whose tree is bigger than the node budget and a file holding an identity the
+contract cannot carry each get one bounded, source-located report, and every valid fact
+from every other file survives. That outcome is all-or-nothing for the file it names: a
+file that reports anything but `analysed` contributes no node and no edge at all, not even
+the ones gathered before the trouble, and the rest of the snapshot stops resolving to it.
 """
 
 from __future__ import annotations
@@ -45,8 +53,9 @@ import ast
 import hashlib
 import os
 import sqlite3
+import sys
 import tokenize
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -109,6 +118,12 @@ NODE_KINDS: Final = frozenset(
 #: that introduces it.
 RELATIONSHIP_TYPES: Final = frozenset({"defines", "imports", "calls"})
 
+#: The newest grammar this interpreter's `ast.parse` can actually be held to. A profile
+#: may declare an older one -- that is what `feature_version` is for -- but not a newer
+#: one: `feature_version=(3, 12)` on a 3.11 parser is accepted silently and parses 3.11,
+#: so a batch produced under it would claim a grammar nothing enforced.
+_PARSER_GRAMMAR: Final = sys.version_info[:2]
+
 _CHUNK: Final = 1024 * 1024
 _MAX_DETAIL_CHARS: Final = 200
 #: `UnresolvedEndpoint`'s own ceiling. A descriptor is composed from a logical path, and a
@@ -123,6 +138,12 @@ _EDGE_KEY_HEX: Final = 48
 #: `def f` in one scope, a `pkg.py` beside a `pkg/__init__.py`). The first keeps the bare
 #: path; the n-th gets `+n`, which the identifier pattern admits.
 _ORDINAL: Final = "+"
+#: Separates a transient lookup scope -- a lambda's or a comprehension's -- from the named
+#: scope that owns it. A NUL is deliberate: the contract's identifier pattern cannot admit
+#: one, so a transient key can never be mistaken for, or collide with, a candidate key.
+_TRANSIENT: Final = "\x00"
+#: The expression scopes Python really has but never names, and so never keys.
+_TRANSIENT_SCOPES: Final = (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
 
 class PythonAnalysisRefused(RuntimeError):
@@ -146,7 +167,9 @@ class PythonAnalyserProfile:
     #: The Python grammar `ast.parse` is held to, as `major.minor`. Passed through as
     #: `feature_version`, so a newer interpreter still refuses syntax this grammar has
     #: not got and the admitted language is a property of the profile rather than of
-    #: whichever interpreter the service happens to be running.
+    #: whichever interpreter the service happens to be running. Bounded above by
+    #: :data:`_PARSER_GRAMMAR`: a profile may ask for less than the running parser, never
+    #: for more than it can give.
     grammar_version: str = "3.11"
     locator_basis: str = LOCATOR_BASIS
     include_suffixes: tuple[str, ...] = (".py", ".pyi")
@@ -194,8 +217,17 @@ class PythonAnalyserProfile:
             value = getattr(self, name)
             if not isinstance(value, str) or not 1 <= len(value) <= 128:
                 raise CodeAnalysisCandidateError(f"profile {name} is not a bounded label")
-        if self.feature_version is None:
+        feature = self.feature_version
+        if feature is None:
             raise CodeAnalysisCandidateError("profile grammar_version is not `major.minor`")
+        if feature[0] != 3 or feature > _PARSER_GRAMMAR:
+            # `ast.parse` asserts its own `major == 3`, so a `2.7` profile reaches an
+            # `AssertionError` rather than a refusal; and a minor past the running one is
+            # accepted silently while parsing the grammar the interpreter actually has.
+            # Neither is a configuration this producer can honour, so neither is admitted.
+            raise CodeAnalysisCandidateError(
+                "profile grammar_version is not a grammar this parser can provide"
+            )
         if not self.include_suffixes or any(
             not suffix.startswith(".") or len(suffix) > 16 for suffix in self.include_suffixes
         ):
@@ -308,11 +340,51 @@ class _Binding:
 
     `ambiguous` is a binding in its own right: a scope that binds one name twice knows
     the name and cannot say which definition it means, which is a different and more
-    useful fact than not knowing the name at all.
+    useful fact than not knowing the name at all. So is `dynamic`: the scope binds the
+    name to a value, and a producer with no value flow cannot say which.
     """
 
     target: str
     ambiguous: bool = False
+    dynamic: bool = False
+
+
+#: The answer for a name some scope binds by anything other than a definition or an
+#: import. One shared value: it carries no target and there is nothing to distinguish.
+_DYNAMIC: Final = _Binding(target="", dynamic=True)
+
+
+def _owner(scope_key: str) -> str:
+    """The named scope an edge written in `scope_key` belongs to.
+
+    A lambda and a comprehension are scopes for *lookup* and nothing else: they define
+    nothing, so they are no candidate's key, and a call inside one is still written by the
+    function or module that owns it. This is the only place the two meanings part.
+    """
+    return scope_key.partition(_TRANSIENT)[0]
+
+
+def _bound_names(target: ast.expr) -> Iterator[str]:
+    """Every bare name one assignment-like target binds.
+
+    An attribute or a subscript target binds nothing -- `obj.x = 1` mutates an object and
+    introduces no name -- so neither appears here, and a starred or nested target is
+    unpacked rather than skipped.
+    """
+    if isinstance(target, ast.Name):
+        yield target.id
+    elif isinstance(target, ast.Starred):
+        yield from _bound_names(target.value)
+    elif isinstance(target, ast.Tuple | ast.List):
+        for element in target.elts:
+            yield from _bound_names(element)
+
+
+def _parameter_names(args: ast.arguments) -> tuple[str, ...]:
+    """Every name one signature binds, positional-only through `**kwargs`."""
+    named = (*args.posonlyargs, *args.args, *args.kwonlyargs)
+    variadic = [argument for argument in (args.vararg, args.kwarg) if argument is not None]
+    return tuple(argument.arg for argument in (*named, *variadic))
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +394,10 @@ class _Reference:
     Deliberately not an AST node: trees are discarded as each file is parsed, so a
     snapshot's peak memory is its largest file rather than all of it at once. `parts`
     holds the dotted reference in source order; `mode` says how to start resolving it.
+
+    `scope_key` is the scope the name is *looked up* in, which for a reference written
+    inside a lambda or a comprehension is a transient scope and not a candidate key. The
+    edge is attributed to :func:`_owner` of it: the named scope that owns the text.
     """
 
     scope_key: str
@@ -352,6 +428,13 @@ class _Scopes:
     unnameable: set[str] = field(default_factory=set)
     namespace: set[str] = field(default_factory=set)
     bindings: dict[tuple[str, str], _Binding] = field(default_factory=dict)
+    #: `(scope, name)` pairs some binder that is not a definition or an import owns:
+    #: a parameter, an assignment, an annotation, a loop or `with` or `except` alias, a
+    #: walrus, a pattern capture, a `del`, a `global`. Python makes such a name local to
+    #: the whole of its scope at compile time, so it shadows an outer definition of the
+    #: same spelling wherever it appears -- and this producer, which follows no value,
+    #: cannot say what it names.
+    dynamic: set[tuple[str, str]] = field(default_factory=set)
     parents: dict[str, str] = field(default_factory=dict)
     kinds: dict[str, str] = field(default_factory=dict)
     wildcards: set[str] = field(default_factory=set)
@@ -371,6 +454,10 @@ class _Scopes:
         self.definitions[logical] = None
         return f"{logical}{_ORDINAL}{seen}"
 
+    def shadow(self, scope_key: str, name: str) -> None:
+        """Record that `scope_key` binds `name` to a value this producer cannot follow."""
+        self.dynamic.add((scope_key, name))
+
     def bind(self, scope_key: str, name: str, target: str) -> None:
         existing = self.bindings.get((scope_key, name))
         if existing is None:
@@ -384,11 +471,19 @@ class _Scopes:
         A class body's names are visible inside that body and nowhere nested beneath it,
         which is Python's actual rule and not an approximation of it: a method does not
         see its class's attributes as bare names.
+
+        :attr:`dynamic` is consulted first at every level, so a scope that binds a name to
+        a value stops the walk instead of letting an outer definition answer for a local
+        this producer cannot follow -- including when the same scope also defines that
+        name, because a scope that both defines and rebinds a name statically names
+        nothing.
         """
         key: str | None = scope_key
         innermost = True
         while key is not None:
             if innermost or self.kinds.get(key) != "class":
+                if (key, name) in self.dynamic:
+                    return _DYNAMIC
                 binding = self.bindings.get((key, name))
                 if binding is not None:
                     return binding
@@ -429,6 +524,8 @@ class _Scopes:
             if self.shadowed_by_wildcard(reference.scope_key):
                 return None, f"wildcard-shadowed-name:{name}", "ambiguous", "syntactic"
             return None, f"unbound-name:{name}", "unresolved", "syntactic"
+        if binding.dynamic:
+            return None, f"dynamic-binding:{name}", "unresolved", "inferred_dynamic"
         if binding.ambiguous:
             return None, f"ambiguous-name:{name}", "ambiguous", "syntactic"
         return self.resolve_dotted(".".join((binding.target, *reference.parts[1:])))
@@ -663,6 +760,10 @@ class _FileAnalyser:
         self.references: list[_Reference] = []
         self.containment: list[tuple[str, str, SourceBinding]] = []
         self.unsupported: list[tuple[str, CodeLocator]] = []
+        #: Every logical path this file claimed, nameable or not. A file the contract
+        #: cannot key is dropped whole, and these are what the rest of the snapshot must
+        #: then stop resolving to.
+        self.claimed: list[str] = []
 
     def _binding(self, locator: CodeLocator) -> SourceBinding:
         return SourceBinding(
@@ -686,6 +787,7 @@ class _FileAnalyser:
         -- is reported rather than mangled into a key that no longer names the source.
         """
         key = self._scopes.claim(logical)
+        self.claimed.append(logical)
         try:
             candidate = CodeNodeCandidate(
                 semantic_key=key, kind=kind, display_name=display_name, source=self._binding(locator)
@@ -732,10 +834,15 @@ class _FileAnalyser:
         if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             self._descend_definition(node, scope_key=scope_key, logical=logical, kind=kind)
             return
+        if isinstance(node, _TRANSIENT_SCOPES):
+            self._descend_transient(node, scope_key=scope_key, logical=logical, kind=kind)
+            return
         if isinstance(node, ast.Import | ast.ImportFrom):
             self._record_import(node, scope_key=scope_key)
         elif isinstance(node, ast.Call):
             self._record_call(node, scope_key=scope_key)
+        else:
+            self._record_binders(node, scope_key=scope_key)
         self._descend(node, scope_key=scope_key, logical=logical, kind=kind)
 
     def _descend_definition(
@@ -775,12 +882,105 @@ class _FileAnalyser:
         self._scopes.bind(scope_key, child.name, child_logical)
         if child_key is None:
             return
-        if kind == "class" and not isinstance(child, ast.ClassDef):
-            receiver = _receiver_name(child)
+        if not isinstance(child, ast.ClassDef):
+            # The receiver of a method written in a class body is the one parameter whose
+            # value this producer can name lexically, so it keeps a static binding. Every
+            # other parameter is a value, and a call through one is dynamic. If the body
+            # then rebinds the receiver, `_record_binders` marks it dynamic too and the
+            # dynamic table wins -- `self` after `self = other` is not this class.
+            receiver = _receiver_name(child) if kind == "class" else None
             if receiver is not None:
                 self._scopes.bind(child_key, receiver, logical)
+            for name in _parameter_names(child.args):
+                if name != receiver:
+                    self._scopes.shadow(child_key, name)
         for statement in child.body:
             self._dispatch(statement, scope_key=child_key, logical=child_logical, kind=child_kind)
+
+    def _descend_transient(
+        self,
+        node: ast.Lambda | ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+        *,
+        scope_key: str,
+        logical: str,
+        kind: str,
+    ) -> None:
+        """A lambda or a comprehension: a real Python scope that is never a named one.
+
+        It binds names -- parameters, comprehension targets -- and those bind for the
+        whole of it, so walking its body in the enclosing scope would resolve
+        `[g() for g in generators]` to whichever outer `def g` happened to share the
+        spelling. It defines nothing, so it is no candidate's key: it gets a transient
+        lookup scope parented to this one, and the edges written inside it are attributed
+        through :func:`_owner` to the named scope that owns them.
+        """
+        transient = f"{scope_key}{_TRANSIENT}{node.lineno}:{node.col_offset}"
+        self._scopes.parents[transient] = scope_key
+        self._scopes.kinds[transient] = "transient"
+        inner = {"scope_key": transient, "logical": logical, "kind": kind}
+        if isinstance(node, ast.Lambda):
+            # Defaults are written inside the lambda and evaluate outside it, exactly as a
+            # `def`'s do, so they stay in the enclosing scope.
+            for default in (*node.args.defaults, *node.args.kw_defaults):
+                if default is not None:
+                    self._dispatch(default, scope_key=scope_key, logical=logical, kind=kind)
+            for name in _parameter_names(node.args):
+                self._scopes.shadow(transient, name)
+            self._dispatch(node.body, **inner)
+            return
+        for generator in node.generators:
+            for name in _bound_names(generator.target):
+                self._scopes.shadow(transient, name)
+        for child in ast.iter_child_nodes(node):
+            self._dispatch(child, **inner)
+
+    def _record_binders(self, node: ast.AST, *, scope_key: str) -> None:
+        """Every name this node binds by something that is not a definition or an import.
+
+        Python decides at compile time that a name assigned anywhere in a scope is local
+        to the whole of that scope, so a call through such a name is never the outer
+        definition it shares a spelling with -- whatever order the two appear in, which is
+        why this records into a table the second pass reads rather than deciding in place.
+        What the name holds would need value flow this producer deliberately has not got,
+        so it is recorded as bound-and-unknown and every call through it says exactly that.
+        """
+        shadow = self._scopes.shadow
+        if isinstance(node, ast.Assign | ast.Delete):
+            targets: tuple[ast.expr, ...] = tuple(node.targets)
+        elif isinstance(node, ast.AnnAssign | ast.AugAssign | ast.For | ast.AsyncFor):
+            targets = (node.target,)
+        elif isinstance(node, ast.With | ast.AsyncWith):
+            targets = tuple(item.optional_vars for item in node.items if item.optional_vars)
+        elif isinstance(node, ast.NamedExpr):
+            # A walrus inside a comprehension binds in the scope that *contains* the
+            # comprehension, so the owner is marked. For a walrus anywhere else the owner
+            # is the scope itself, and marking the enclosing named scope is in every case
+            # at least as conservative as marking the transient one.
+            shadow(_owner(scope_key), node.target.id)
+            return
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name is not None:
+                shadow(scope_key, node.name)
+            return
+        elif isinstance(node, ast.Global | ast.Nonlocal):
+            # Not followed to the scope they name: a declared name is a name this scope
+            # assigns somewhere, and an unresolved call is the honest answer.
+            for declared in node.names:
+                shadow(scope_key, declared)
+            return
+        elif isinstance(node, ast.match_case):
+            # `case Point(x=a) | [b, *rest]`: a capture, a star and a mapping rest are all
+            # plain names the pattern binds, wherever they sit in it.
+            for element in ast.walk(node.pattern):
+                captured = getattr(element, "rest", None) or getattr(element, "name", None)
+                if isinstance(captured, str):
+                    shadow(scope_key, captured)
+            return
+        else:
+            return
+        for target in targets:
+            for name in _bound_names(target):
+                shadow(scope_key, name)
 
     def _refused(
         self,
@@ -1106,8 +1306,15 @@ def analyse_python_snapshot(
             package_path=package_path,
         )
         analyser.analyse(tree, text=text)
-        analysed.append(analyser)
         if analyser.unsupported:
+            # All or nothing, per file. The analyser is not kept, so no node, no
+            # containment edge and no reference from this file reaches the batch --
+            # including the ones parsed before the name that broke, which would otherwise
+            # describe a file the report says contributed nothing. Every logical path it
+            # claimed joins `unnameable` instead, so another file's import of one of them
+            # states `unsupported-identity` rather than resolving to a node that is not
+            # there.
+            scopes.unnameable.update(analyser.claimed)
             logical, locator = analyser.unsupported[0]
             reports.append(
                 PythonFileReport(
@@ -1122,6 +1329,7 @@ def analyse_python_snapshot(
                 )
             )
             continue
+        analysed.append(analyser)
         reports.append(
             PythonFileReport(
                 relative_path=relative_path, content_digest=digest, outcome="analysed"
@@ -1159,7 +1367,7 @@ def analyse_python_snapshot(
             target_key, descriptor, status, strength = scopes.resolve(reference)
             candidate = _edge(
                 relationship=reference.relationship,
-                source_key=reference.scope_key,
+                source_key=_owner(reference.scope_key),
                 target_key=target_key,
                 descriptor=descriptor,
                 status=status,

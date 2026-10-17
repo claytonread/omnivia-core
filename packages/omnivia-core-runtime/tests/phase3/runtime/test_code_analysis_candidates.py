@@ -20,6 +20,7 @@ from omnivia_core_runtime.storage.code_analysis_candidates import (
     to_memory_create_inputs,
     verify_batch_binding,
 )
+from omnivia_core_runtime.storage.decisions import canonical_document, content_digest
 from omnivia_core_runtime.storage.engineering_source import CoveredSnapshot
 
 DIGEST_A = "sha256:" + "a" * 64
@@ -34,7 +35,12 @@ def _binding(path: str = "src/example.py", digest: str = DIGEST_A) -> SourceBind
     )
 
 
-def _batch(*, digest: str = DIGEST_A, snapshot_kind: str = "git_commit") -> CodeAnalysisBatch:
+def _batch(
+    *,
+    digest: str = DIGEST_A,
+    snapshot_kind: str = "git_commit",
+    profile_digest: str | None = None,
+) -> CodeAnalysisBatch:
     first = CodeNodeCandidate(
         semantic_key="module.Example",
         kind="class",
@@ -75,6 +81,28 @@ def _batch(*, digest: str = DIGEST_A, snapshot_kind: str = "git_commit") -> Code
         producer_version="1.0.0",
         nodes=(first, second),
         edges=(resolved, unresolved),
+        profile_digest=profile_digest,
+    )
+
+
+def _verified(batch: CodeAnalysisBatch) -> VerifiedCodeAnalysisBatch:
+    return VerifiedCodeAnalysisBatch(
+        batch=batch,
+        stream_id="stream-1",
+        sequence=4,
+        manifest_digest="sha256:" + "c" * 64,
+        manifest_evidence_id="evidence-manifest-1",
+    )
+
+
+def _adapted(batch: CodeAnalysisBatch) -> tuple[dict[str, object], ...]:
+    return tuple(
+        item.content
+        for item in to_memory_create_inputs(
+            _verified(batch),
+            actor_id="service-code-analysis",
+            asserted_at="2026-10-18T00:00:00.000Z",
+        )
     )
 
 
@@ -139,6 +167,44 @@ def test_verified_batch_maps_only_to_proposed_memory_inputs() -> None:
     assert all(item.extraction.reconciliation_state == "unreviewed" for item in inputs)
     assert inputs[-1].content["resolution_status"] == "ambiguous"
     assert inputs[-1].content["unresolved_target"] == "runtime-dispatch:plugin"
+
+
+def test_a_profile_less_batch_keeps_the_identity_code_analysis_v1_always_gave_it() -> None:
+    """`profile_digest` is an addition, so absent has to keep meaning absent.
+
+    `preimage` below is the canonical digest document exactly as `code_analysis.v1`
+    defined it before the field existed. A batch that carries no profile still has to
+    digest to it: a key spelled `null` is still a key, and writing one unconditionally
+    would have moved the identity of every batch that predates the field while the format
+    version went on claiming nothing had changed. The same rule covers the adapted
+    candidate content, which is what a consumer actually stores.
+    """
+    batch = _batch()
+    assert batch.profile_digest is None
+    preimage = {
+        "format": "code_analysis.v1",
+        "repository_id": batch.repository_id,
+        "snapshot_id": batch.snapshot_id,
+        "snapshot_kind": batch.snapshot_kind,
+        "producer_id": batch.producer_id,
+        "producer_version": batch.producer_version,
+        "nodes": sorted((node.as_document() for node in batch.nodes), key=canonical_document),
+        "edges": sorted((edge.as_document() for edge in batch.edges), key=canonical_document),
+    }
+    assert batch.digest == content_digest(canonical_document(preimage))
+    assert all("profile_digest" not in content for content in _adapted(batch))
+
+
+def test_a_present_profile_digest_is_a_distinct_identity_on_every_candidate() -> None:
+    profile = "sha256:" + "e" * 64
+    other = "sha256:" + "f" * 64
+    profiled = _batch(profile_digest=profile)
+
+    # Same candidates, three identities: none, this profile, that profile.
+    assert len({_batch().digest, profiled.digest, _batch(profile_digest=other).digest}) == 3
+    assert all(content["profile_digest"] == profile for content in _adapted(profiled))
+    with pytest.raises(CodeAnalysisCandidateError, match="profile_digest"):
+        _batch(profile_digest="not-a-digest")
 
 
 def test_binding_requires_one_complete_sealed_snapshot_and_exact_file_digests(

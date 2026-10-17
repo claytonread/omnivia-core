@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import os
+import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ import test_engineering_source_coverage as esc
 from omnivia_core_runtime.storage import code_analysis_python as subject
 from omnivia_core_runtime.storage.code_analysis_candidates import (
     CodeAnalysisBindingError,
+    CodeAnalysisCandidateError,
     CodeEdgeCandidate,
     CodeNodeCandidate,
     revision_instance_id,
@@ -161,6 +163,121 @@ def ambiguous_user() -> str:
 def json_user() -> str:
     return json()
 '''
+
+#: Every Python binder that is *not* a definition or an import, each one shadowing a
+#: module-level `def target` of the same name. Nothing here may resolve to that `def`.
+_BINDERS = '''"""Binders that are not definitions, each shadowing an outer definition."""
+
+
+def target() -> object:
+    return "the outer definition"
+
+
+class Holder:
+    """Its methods reach their own class through the receiver -- until one rebinds it."""
+
+    def kept(self) -> object:
+        return self.target()
+
+    def rebound(self, other: object) -> object:
+        self = other
+        return self.target()
+
+    def target(self) -> object:
+        return "a member"
+
+    def missing(self) -> object:
+        return self.absent()
+
+
+def parameter_shadow(target: object) -> object:
+    return target()
+
+
+def assignment_shadow() -> object:
+    target = object()
+    return target()
+
+
+def annotated_shadow() -> object:
+    target: object = object()
+    return target()
+
+
+def augmented_shadow(seed: object) -> object:
+    target = seed
+    target += 1
+    return target()
+
+
+def loop_shadow(items: list[object]) -> list[object]:
+    collected = []
+    for target in items:
+        collected.append(target())
+    return collected
+
+
+def comprehension_shadow(items: list[object]) -> list[object]:
+    return [target() for target in items]
+
+
+def lambda_shadow() -> object:
+    return lambda target: target()
+
+
+def with_shadow(opened: object) -> object:
+    with opened as target:
+        return target()
+
+
+def except_shadow() -> object:
+    try:
+        return None
+    except ValueError as target:
+        return target()
+
+
+def match_shadow(given: object) -> object:
+    match given:
+        case [target]:
+            return target()
+    return None
+
+
+def walrus_shadow(seed: object) -> object:
+    if (target := seed):
+        return target()
+    return None
+
+
+def global_shadow() -> object:
+    global target
+    return target()
+
+
+def comprehension_keeps_the_outer_name(items: list[object]) -> list[object]:
+    return [target() for _ in items]
+
+
+def lambda_keeps_the_outer_name() -> object:
+    return lambda _: target()
+'''
+
+#: Every scope above whose `target()` must be dynamic, and the binder that makes it so.
+BINDER_SHADOWS: dict[str, str] = {
+    "pkg.binders.parameter_shadow": "a parameter",
+    "pkg.binders.assignment_shadow": "an assignment",
+    "pkg.binders.annotated_shadow": "an annotated assignment",
+    "pkg.binders.augmented_shadow": "an augmented assignment",
+    "pkg.binders.loop_shadow": "a loop target",
+    "pkg.binders.comprehension_shadow": "a comprehension target",
+    "pkg.binders.lambda_shadow": "a lambda parameter",
+    "pkg.binders.with_shadow": "a with alias",
+    "pkg.binders.except_shadow": "an except alias",
+    "pkg.binders.match_shadow": "a pattern capture",
+    "pkg.binders.walrus_shadow": "a walrus target",
+    "pkg.binders.global_shadow": "a global declaration",
+}
 
 _DEEP = '''"""A relative import past the root, and a wildcard."""
 
@@ -589,7 +706,9 @@ def test_calls_resolve_only_where_the_source_statically_supports_it(snapshot: Sn
     # Everything the source does not statically determine is labelled, never guessed.
     run_targets = _targets(result, relationship="calls", source_key="pkg.service.Service.run")
     assert "external/external-reference:json.dumps" in run_targets
-    assert "unresolved/unbound-name:record" in run_targets
+    # `record` is a local, and a local is not the outer definition it shares a spelling
+    # with. The producer follows no value, so it says the name is bound and unknown.
+    assert "unresolved/dynamic-binding:record" in run_targets
     assert "unresolved/dynamic-call:Subscript" in _targets(
         result, relationship="calls", source_key="pkg.service.dispatch"
     )
@@ -636,6 +755,141 @@ def test_shadowing_and_overload_like_redefinition_are_stated_not_guessed(
     }
 
 
+def test_a_name_bound_by_anything_but_a_definition_never_resolves_to_an_outer_one(
+    workspace: Any, blobs_root: Path
+) -> None:
+    """Python makes an assigned name local to the whole of its scope, at compile time.
+
+    So a call through one is never the outer definition it happens to share a spelling
+    with, whatever order the two appear in. What the name *does* hold needs value flow
+    this producer has not got, so every such call is `inferred_dynamic` and unresolved
+    rather than resolved to the definition that was easiest to reach.
+    """
+    result = Snapshot(workspace, blobs_root, files={"pkg/binders.py": _BINDERS.encode()}).analyse()
+    assert _outcomes(result)["pkg/binders.py"] == "analysed"
+    assert "pkg.binders.target" in _nodes(result)
+
+    for scope, binder in BINDER_SHADOWS.items():
+        assert "unresolved/dynamic-binding:target" in _targets(
+            result, relationship="calls", source_key=scope
+        ), binder
+        assert "pkg.binders.target" not in _targets(
+            result, relationship="calls", source_key=scope
+        ), binder
+
+    # Every one of them carries the strength that says why, and names no target.
+    dynamic = [
+        edge
+        for edge in _edges(result)
+        if edge.unresolved_target is not None
+        and edge.unresolved_target.descriptor.startswith("dynamic-binding:")
+    ]
+    assert len(dynamic) >= len(BINDER_SHADOWS)
+    assert {edge.evidence_strength for edge in dynamic} == {"inferred_dynamic"}
+    assert {edge.resolution_status for edge in dynamic} == {"unresolved"}
+    assert all(edge.target_key is None for edge in dynamic)
+    assert all(len(edge.unresolved_target.descriptor) <= 1024 for edge in dynamic)  # type: ignore[union-attr]
+
+    # A name a builtin provides is still `unbound-name`: it genuinely is not in the
+    # snapshot, which is a different fact from a local this analyser cannot follow.
+    assert "unresolved/unbound-name:object" in _targets(
+        result, relationship="calls", source_key="pkg.binders.assignment_shadow"
+    )
+
+
+def test_a_transient_scope_shadows_only_what_it_binds(
+    workspace: Any, blobs_root: Path
+) -> None:
+    # The other half of the rule: a lambda and a comprehension are scopes, so they must
+    # not leak *out* either. A name neither of them binds still reaches the module.
+    result = Snapshot(workspace, blobs_root, files={"pkg/binders.py": _BINDERS.encode()}).analyse()
+    for scope in (
+        "pkg.binders.comprehension_keeps_the_outer_name",
+        "pkg.binders.lambda_keeps_the_outer_name",
+    ):
+        assert "pkg.binders.target" in _targets(result, relationship="calls", source_key=scope)
+
+    # And neither is a node or an edge endpoint of its own: they define nothing, so the
+    # edges written inside them belong to the named scope that owns the text.
+    assert not [key for key in _nodes(result) if "\x00" in key]
+    assert {edge.source_key for edge in _edges(result)} <= set(_nodes(result))
+    assert "pkg.binders.lambda_shadow" in {
+        edge.source_key
+        for edge in _edges(result)
+        if edge.unresolved_target is not None
+        and edge.unresolved_target.descriptor == "dynamic-binding:target"
+    }
+
+
+def test_the_method_receiver_resolves_until_the_body_rebinds_it(
+    workspace: Any, blobs_root: Path
+) -> None:
+    # The receiver is the one parameter whose value is lexically knowable: it is the
+    # instance of the class the method is written in. That is a binding, not a guess --
+    # and it is the binding only while the body leaves it alone.
+    result = Snapshot(workspace, blobs_root, files={"pkg/binders.py": _BINDERS.encode()}).analyse()
+    assert _targets(result, relationship="calls", source_key="pkg.binders.Holder.kept") == {
+        "pkg.binders.Holder.target"
+    }
+    assert _targets(result, relationship="calls", source_key="pkg.binders.Holder.rebound") == {
+        "unresolved/dynamic-binding:self"
+    }
+    # Base classes are not walked -- that needs an MRO -- so a member the lexically
+    # enclosing class does not define is inside the snapshot and not found, which is a
+    # different and more useful fact than a name nothing binds.
+    assert _targets(result, relationship="calls", source_key="pkg.binders.Holder.missing") == {
+        "unresolved/unresolved-in-snapshot:pkg.binders.Holder.absent"
+    }
+
+
+def test_a_file_the_contract_cannot_key_contributes_nothing_at_all(
+    workspace: Any, blobs_root: Path
+) -> None:
+    """The per-file outcome is all-or-nothing, including what parsed before the break.
+
+    `pkg/wide.py` holds a perfectly ordinary definition and then one whose logical path
+    is past the identifier budget. Reporting the file as `identity_unsupported` while
+    keeping the facts gathered before that point would describe a file the report says
+    contributed none -- and would leave another file resolving an import to a node that
+    is not in the batch.
+    """
+    long_name = "n" * 300
+    files = {
+        "pkg/__init__.py": b'"""Package."""\n',
+        "pkg/wide.py": (
+            '"""Wide."""\n\n\nimport json\n\n\ndef fine() -> None:\n    return None\n\n\n'
+            f'def {long_name}() -> None:\n    fine()\n'
+        ).encode(),
+        "pkg/caller.py": (
+            b'"""Caller."""\n\nfrom .wide import fine\n\n\ndef call() -> None:\n    fine()\n'
+        ),
+    }
+    result = Snapshot(workspace, blobs_root, files=files).analyse()
+    assert _outcomes(result)["pkg/wide.py"] == "identity_unsupported"
+
+    # Not one node, and not one edge of any relationship, is sourced from that file.
+    nodes = _nodes(result)
+    assert "pkg.wide" not in nodes and "pkg.wide.fine" not in nodes
+    assert not [key for key in nodes if key.startswith("pkg.wide")]
+    assert not [edge for edge in _edges(result) if edge.source.relative_path == "pkg/wide.py"]
+    assert not [edge for edge in _edges(result) if edge.source_key.startswith("pkg.wide")]
+    # Which includes the containment and import facts it had already gathered.
+    assert not [
+        edge for edge in _edges(result) if edge.relationship_type in {"defines", "imports"}
+        and edge.source.relative_path == "pkg/wide.py"
+    ]
+
+    # Every other file survives it, and its references into the dropped file say exactly
+    # what happened rather than resolving to something that is no longer there.
+    assert set(nodes) == {"pkg", "pkg.caller", "pkg.caller.call"}
+    assert _targets(result, relationship="imports", source_key="pkg.caller") == {
+        "unresolved/unsupported-identity:pkg.wide.fine"
+    }
+    assert _targets(result, relationship="calls", source_key="pkg.caller.call") == {
+        "unresolved/unsupported-identity:pkg.wide.fine"
+    }
+
+
 def test_resolved_edges_only_ever_name_a_node_in_their_own_batch(snapshot: Snapshot) -> None:
     result = snapshot.analyse()
     keys = set(_nodes(result))
@@ -647,6 +901,7 @@ def test_resolved_edges_only_ever_name_a_node_in_their_own_batch(snapshot: Snaps
             assert edge.target_key is None
             assert edge.unresolved_target is not None
             assert edge.unresolved_target.descriptor
+            assert len(edge.unresolved_target.descriptor) <= 1024
 
 
 # --- unanalysable files -------------------------------------------------------------
@@ -895,10 +1150,6 @@ def test_the_profiles_grammar_version_gates_the_admitted_language(
 
 
 def test_the_profile_refuses_its_own_malformed_configuration() -> None:
-    from omnivia_core_runtime.storage.code_analysis_candidates import (
-        CodeAnalysisCandidateError,
-    )
-
     for overrides in (
         {"grammar_version": "3"},
         {"grammar_version": "three.eleven"},
@@ -913,10 +1164,33 @@ def test_the_profile_refuses_its_own_malformed_configuration() -> None:
             PythonAnalyserProfile(**overrides)
 
 
+def test_the_profile_refuses_a_grammar_this_parser_cannot_provide() -> None:
+    """A declared grammar has to be one `ast.parse` on this interpreter can be held to.
+
+    `feature_version` only admits major 3 -- anything else trips CPython's own assertion
+    rather than a refusal -- and a *newer* minor than the running interpreter is accepted
+    in silence while the parser goes on parsing the grammar it actually has, so a batch
+    produced under it would name a grammar nothing enforced.
+    """
+    running = sys.version_info[:2]
+    for version in ("2.7", "99.99", "4.0", f"{running[0]}.{running[1] + 1}"):
+        with pytest.raises(CodeAnalysisCandidateError, match="this parser can provide"):
+            PythonAnalyserProfile(grammar_version=version)
+
+    # The running grammar and every older one are admitted, and the default is unmoved.
+    assert PythonAnalyserProfile(grammar_version=f"{running[0]}.{running[1]}") is not None
+    assert PythonAnalyserProfile(grammar_version="3.9") is not None
+    assert DEFAULT_PYTHON_PROFILE.grammar_version == "3.11"
+    assert DEFAULT_PYTHON_PROFILE.feature_version == (3, 11)
+    assert PythonAnalyserProfile(grammar_version="3.11").digest == DEFAULT_PYTHON_PROFILE.digest
+
+
 def test_the_profile_digest_covers_the_whole_configuration() -> None:
     baseline = DEFAULT_PYTHON_PROFILE.digest
     for overrides in (
-        {"grammar_version": "3.12"},
+        # An *older* grammar: a newer one than the running parser is refused outright,
+        # which is its own test below.
+        {"grammar_version": "3.10"},
         {"include_suffixes": (".py",)},
         {"exclude_path_segments": ()},
         {"exclude_path_prefixes": ("vendor/",)},

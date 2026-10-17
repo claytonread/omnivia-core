@@ -212,10 +212,12 @@ class CodeAnalysisBatch:
     edges: tuple[CodeEdgeCandidate, ...]
     #: The digest of the immutable producer profile that produced these candidates: the
     #: grammar, the inclusion rules and the limits, not just the producer's name and
-    #: version. It is part of the batch digest below, so a batch cannot be replayed as the
-    #: output of a differently configured run of the same producer version. Optional and
-    #: defaulted because the profile concept arrived with the first real producer; a
-    #: profile-less batch is still a valid batch and still digests stably.
+    #: version. When it is present it is part of the batch digest below, so a batch cannot
+    #: be replayed as the output of a differently configured run of the same producer
+    #: version. Optional and defaulted because the profile concept arrived with the first
+    #: real producer; a profile-less batch is still a valid batch, and -- see
+    #: :attr:`digest` -- still digests to exactly what it digested to before this field
+    #: existed.
     profile_digest: str | None = None
 
     def __post_init__(self) -> None:
@@ -238,17 +240,28 @@ class CodeAnalysisBatch:
 
     @property
     def digest(self) -> str:
-        document = {
+        """This batch's identity under `code_analysis.v1`.
+
+        `profile_digest` is in the preimage *only when it is present*. A key carrying
+        `null` is still a key: adding one unconditionally would have changed the digest of
+        every batch that predates the profile concept while leaving the format version
+        claiming they were the same. An absent profile is therefore spelled as an absent
+        key, so a profile-less batch digests to exactly what `code_analysis.v1` always
+        said it digests to, and a batch that does carry a profile has a distinct identity
+        from the same candidates produced under a different configuration.
+        """
+        document: dict[str, object] = {
             "format": FORMAT_VERSION,
             "repository_id": self.repository_id,
             "snapshot_id": self.snapshot_id,
             "snapshot_kind": self.snapshot_kind,
             "producer_id": self.producer_id,
             "producer_version": self.producer_version,
-            "profile_digest": self.profile_digest,
             "nodes": sorted((node.as_document() for node in self.nodes), key=canonical_document),
             "edges": sorted((edge.as_document() for edge in self.edges), key=canonical_document),
         }
+        if self.profile_digest is not None:
+            document["profile_digest"] = self.profile_digest
         return content_digest(canonical_document(document))
 
 
@@ -340,9 +353,12 @@ def _candidate_content(
         "batch_digest": batch.digest,
         "producer_id": batch.producer_id,
         "producer_version": batch.producer_version,
-        "profile_digest": batch.profile_digest,
         "source": candidate.source.as_document(),
     }
+    if batch.profile_digest is not None:
+        # Absent means absent here too, for the same reason it does in the batch digest:
+        # a `null` key would change the content a profile-less batch has always adapted to.
+        base["profile_digest"] = batch.profile_digest
     if isinstance(candidate, CodeNodeCandidate):
         base.update(
             semantic_key=candidate.semantic_key,

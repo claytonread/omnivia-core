@@ -485,7 +485,7 @@
     "W10": {
       "status": "NOT_RUN",
       "property_refs": [],
-      "note": "No Python producer was implemented or run."
+      "note": "Superseded for the Python half by P7-PYTHON-PRODUCER-2026-10-18.md, which records a delivered, non-executing Python analyser (storage/code_analysis_python.py) over one sealed captured snapshot. This ledger's verdict is left at NOT_RUN for Codex to reconcile: its status vocabulary scopes it to the P1 slice, and P7's exit gate also needs W11 and the governed import binding."
     },
     "W11": {
       "status": "NOT_RUN",
