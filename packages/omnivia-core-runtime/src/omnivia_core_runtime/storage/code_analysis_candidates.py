@@ -40,7 +40,13 @@ EVIDENCE_STRENGTHS: Final = frozenset({"syntactic", "resolved_static", "inferred
 MAX_CANDIDATES: Final = 10_000
 MAX_LOCATOR_VALUE: Final = 1_000_000_000
 
-_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}")
+#: Candidate identity tokens. Widened from `[A-Za-z0-9]` to `\w` so a producer can key a
+#: `café` or `日本語` definition -- and a `_private` module -- by the name its own source
+#: uses rather than by a mangling of it. `\w` on a `str` pattern is Unicode-aware and still
+#: admits no whitespace, no control character, no quote and no separator beyond the `/` the
+#: punctuation class already carried, so every value the narrower pattern accepted is still
+#: accepted and nothing newly accepted can escape a path, a log line or a JSON string.
+_ID = re.compile(r"\w[\w._:/@+-]{0,255}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
@@ -204,10 +210,19 @@ class CodeAnalysisBatch:
     producer_version: str
     nodes: tuple[CodeNodeCandidate, ...]
     edges: tuple[CodeEdgeCandidate, ...]
+    #: The digest of the immutable producer profile that produced these candidates: the
+    #: grammar, the inclusion rules and the limits, not just the producer's name and
+    #: version. It is part of the batch digest below, so a batch cannot be replayed as the
+    #: output of a differently configured run of the same producer version. Optional and
+    #: defaulted because the profile concept arrived with the first real producer; a
+    #: profile-less batch is still a valid batch and still digests stably.
+    profile_digest: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("repository_id", "snapshot_id", "snapshot_kind", "producer_id", "producer_version"):
             _identifier(getattr(self, name), name)
+        if self.profile_digest is not None:
+            _digest(self.profile_digest, "profile_digest")
         if not self.nodes or len(self.nodes) + len(self.edges) > MAX_CANDIDATES:
             raise CodeAnalysisCandidateError("batch size is outside the admitted bounds")
         node_keys = [node.semantic_key for node in self.nodes]
@@ -230,6 +245,7 @@ class CodeAnalysisBatch:
             "snapshot_kind": self.snapshot_kind,
             "producer_id": self.producer_id,
             "producer_version": self.producer_version,
+            "profile_digest": self.profile_digest,
             "nodes": sorted((node.as_document() for node in self.nodes), key=canonical_document),
             "edges": sorted((edge.as_document() for edge in self.edges), key=canonical_document),
         }
@@ -324,6 +340,7 @@ def _candidate_content(
         "batch_digest": batch.digest,
         "producer_id": batch.producer_id,
         "producer_version": batch.producer_version,
+        "profile_digest": batch.profile_digest,
         "source": candidate.source.as_document(),
     }
     if isinstance(candidate, CodeNodeCandidate):
