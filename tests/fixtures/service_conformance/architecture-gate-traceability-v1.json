@@ -245,7 +245,9 @@
         "document.settings.get",
         "document.settings.update",
         "document.original.disconnect",
-        "document.original.relink"
+        "document.original.relink",
+        "settings.list",
+        "settings.set"
       ]
     },
     {
@@ -394,7 +396,8 @@
         "document.reprocess",
         "document.settings.update",
         "document.original.disconnect",
-        "document.original.relink"
+        "document.original.relink",
+        "settings.set"
       ]
     },
     {
@@ -452,7 +455,8 @@
         "document.reprocess",
         "document.settings.update",
         "document.original.disconnect",
-        "document.original.relink"
+        "document.original.relink",
+        "settings.set"
       ]
     },
     {
@@ -574,7 +578,9 @@
         "document.settings.get",
         "document.settings.update",
         "document.original.disconnect",
-        "document.original.relink"
+        "document.original.relink",
+        "settings.list",
+        "settings.set"
       ]
     },
     {
@@ -669,7 +675,9 @@
         "document.settings.get",
         "document.settings.update",
         "document.original.disconnect",
-        "document.original.relink"
+        "document.original.relink",
+        "settings.list",
+        "settings.set"
       ]
     },
     {
