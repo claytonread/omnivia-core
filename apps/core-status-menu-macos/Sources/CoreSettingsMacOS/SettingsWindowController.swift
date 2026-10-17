@@ -414,7 +414,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// v1 had seven flat panes. Capture and Document processing are no longer
     /// panes: they became details inside Sources and Processing. `data` became
     /// `storage`, relabelled "Data & storage", and Sources is new.
-    private enum Pane: String, CaseIterable {
+    enum Pane: String, CaseIterable {
         case general, sources, processing, storage, access, maintenance
 
         var label: String {
@@ -458,7 +458,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// `pane[/detail[/ref]]`. Details live inside a pane: overview → detail →
     /// sheet. `ref` names the entity a detail is about; nothing in this build
     /// needs one yet, but a source or repository route will.
-    private struct Route: Equatable {
+    struct Route: Equatable {
         var pane: Pane
         var detail: String?
         var ref: String?
@@ -490,14 +490,76 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             guard let detail, let title = Route.title(pane, detail) else { return pane.label }
             return title
         }
+
+        /// `pane[/detail[/ref]]`, as persisted.
+        var persistable: String {
+            [pane.rawValue, detail, ref].compactMap { $0 }.joined(separator: "/")
+        }
+
+        /// The design's `ALIAS` table: a stored v1 value, or a route that has
+        /// moved, resolves to where it lives now.
+        static let alias = [
+            "data": "storage",
+            "data-storage": "storage",
+            "capture": "sources/capture-defaults",
+            "docproc": "processing/docproc",
+            "document-processing": "processing/docproc",
+            "manage-sources": "sources",
+            "processing/sources": "sources",
+            "files-folders": "sources",
+            "local-decisions": "processing/decisions",
+        ]
+
+        /// Parse a stored or supplied route. Anything unrecognised falls back
+        /// to the nearest valid parent — the pane if the detail is unknown,
+        /// General if the pane is — rather than to an empty window.
+        static func parse(_ raw: String?) -> Route {
+            var text = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            text = text.trimmingCharacters(in: CharacterSet(charactersIn: "#/"))
+            guard !text.isEmpty else { return Route(pane: .general) }
+            if let aliased = alias[text] { text = aliased }
+            let parts = text.split(separator: "/").map(String.init)
+            guard let first = parts.first, let pane = Pane(rawValue: first) else {
+                return Route(pane: .general)
+            }
+            guard parts.count > 1 else { return Route(pane: pane) }
+            guard title(pane, parts[1]) != nil else { return Route(pane: pane) }
+            return Route(
+                pane: pane,
+                detail: parts[1],
+                ref: parts.count > 2 ? parts[2...].joined(separator: "/") : nil
+            )
+        }
     }
+
+    /// Where the route is kept, and the version that says it has been
+    /// migrated. Only the navigation keys are touched; every other
+    /// `ov-core-settings:*` preference is left alone.
+    static let routeKey = "ov-core-settings:pane"
+    static let routeVersionKey = "ov-core-settings:nav-v"
+
+    /// Read the stored route, resolving v1 values through the alias table,
+    /// and write back what it resolved to. Idempotent: a route already in v2
+    /// form rewrites to itself.
+    @discardableResult
+    static func migrateStoredRoute(
+        _ store: UserDefaults = .standard
+    ) -> Route {
+        let stored = store.string(forKey: routeKey)
+        let route = parseStored(stored)
+        store.set(route.persistable, forKey: routeKey)
+        store.set(2, forKey: routeVersionKey)
+        return route
+    }
+
+    private static func parseStored(_ raw: String?) -> Route { Route.parse(raw) }
 
     /// Which disclosures the user has opened. View state, never service state,
     /// and deliberately not persisted: it is scoped to one window session the
     /// way the prototype's in-memory `open` map is.
     private var openDisclosures: Set<String> = []
 
-    private var route = Route(pane: .general) {
+    private var route = SettingsWindowController.migrateStoredRoute() {
         didSet {
             guard oldValue != route else { return }
             render()
@@ -506,6 +568,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
             // Carrying the previous offset over opens the next one already
             // scrolled past its title.
             scrollToTop()
+            UserDefaults.standard.set(route.persistable, forKey: Self.routeKey)
         }
     }
 
