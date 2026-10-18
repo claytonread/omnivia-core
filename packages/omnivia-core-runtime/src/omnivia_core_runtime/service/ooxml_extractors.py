@@ -14,7 +14,7 @@ import zipfile
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_EVEN, Decimal
-from typing import Final, Self
+from typing import Final, Self, cast
 from xml.etree import ElementTree
 
 from omnivia_core_runtime.service.document_intake import ExtractedSegment
@@ -2623,7 +2623,7 @@ class _Package:
         extension = posixpath.splitext(name)[1].lstrip(".").casefold()
         return self.default_types.get(extension, "") if extension else ""
 
-    def bytes(self, name: str, *, limit: int = MAX_XML_BYTES) -> bytes:
+    def bytes(self, name: str, *, limit: int = MAX_XML_BYTES) -> builtins.bytes:
         if name not in self.names:
             raise OOXMLInvalid("OOXML relationship names a missing package part")
         info = self.archive.getinfo(name)
@@ -2649,6 +2649,31 @@ class _Package:
             return ElementTree.fromstring(self._checked_xml(name))
         except ElementTree.ParseError as error:
             raise OOXMLInvalid("OOXML XML is malformed") from error
+
+    def xml_with_prefixes(
+        self, name: str
+    ) -> tuple[ElementTree.Element, dict[str, str]]:
+        """Parse a part and report its namespace prefixes.
+
+        ElementTree drops prefixes, but markup-compatibility attributes name
+        namespaces by prefix. A prefix bound to two namespaces in one part is
+        ambiguous, so the part is refused rather than guessed at.
+        """
+        data = self._checked_xml(name)
+        try:
+            root = ElementTree.fromstring(data)
+            events = ElementTree.iterparse(io.BytesIO(data), events=("start-ns",))
+        except ElementTree.ParseError as error:
+            raise OOXMLInvalid("OOXML XML is malformed") from error
+        prefixes: dict[str, str] = {}
+        try:
+            for _event, binding in events:
+                prefix, uri = cast(tuple[str, str], binding)
+                if prefixes.setdefault(prefix, uri) != uri:
+                    raise OOXMLInvalid("OOXML XML rebinds a namespace prefix")
+        except ElementTree.ParseError as error:
+            raise OOXMLInvalid("OOXML XML is malformed") from error
+        return root, prefixes
 
 
 def extract_docx(

@@ -139,6 +139,11 @@
       "evidence_type": "automated_repository_test",
       "evidence": [
         {
+          "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/NativeAccessStoreTests.swift",
+          "symbol": "testAT45SystemBookmarkAllowsSelectedMemberAndRefusesInjectedEscape",
+          "covers": "The production Foundation security-scoped bookmark codec resolves and reads the selected member, while the same real grant refuses a symlink-based attempt to inject an arbitrary path outside the approved root."
+        },
+        {
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIntakePolicyTests.swift",
           "symbol": "testDroppedTextAndLinksAreReviewedAsCapturedCopies",
           "covers": "Dropped text becomes a reviewed captured copy, which is how a note is represented once it is submitted."
@@ -763,11 +768,19 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/ShareInboxStoreTests.swift",
           "symbol": "testReconcileClearsOnlyAbandonedStagingDirectories",
           "covers": "Startup reconciliation clears only staging no live writer can still own."
+        },
+        {
+          "path": "scripts/run-macos-durability-qualification.py",
+          "covers": "Spawns separate Share writer processes, waits for the before- or after-publication checkpoint, delivers SIGKILL, and reopens the production store."
+        },
+        {
+          "path": "docs/development/qualification/at16-at17-process-interruption-macos-2026-10-18.json",
+          "covers": "Records the killed helper binary identity and the recovered before/after Share states: no visible request before publication and one complete request after it."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Termination is modelled by abandoning a staging directory in-process. No test kills a real extension process, so the crash-safety of the atomic rename is argued from the code path rather than observed under a real signal.",
-      "limitations": "Both halves are covered behaviourally against a temporary directory standing in for the App Group container. No App Group is registered and no second process participates.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The process-interruption run uses the production ShareInboxStore in a dedicated helper process over a temporary same-volume root. It qualifies SIGKILL ordering on the recorded arm64 macOS host; it is not an App Group registration or sudden-power-loss test.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareInboxStore.swift",
         "apps/core-status-menu-macos/Sources/OmniViaCoreStatusMenu/ShareInboxAdopter.swift"
@@ -799,11 +812,19 @@
           "path": "apps/core-status-menu-macos/Tests/OmniViaCoreStatusMenuTests/CaptureIntentQueueTests.swift",
           "symbol": "testLostIndexAcknowledgementRecoversBothItemsOfTheBatchOnRestart",
           "covers": "A lost index acknowledgement recovers the whole batch rather than part of it."
+        },
+        {
+          "path": "scripts/run-macos-durability-qualification.py",
+          "covers": "Spawns separate queue publisher processes, SIGKILLs before and after publication, then reopens the production queue and verifies candidate cleanup or complete payload recovery."
+        },
+        {
+          "path": "docs/development/qualification/at16-at17-process-interruption-macos-2026-10-18.json",
+          "covers": "Records no queue entry after the pre-publication kill and one readable pending entry after the acknowledged publication kill."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Termination is simulated by injected write failures and by reopening the store, never by terminating the process. The design's durability barriers, specifically the parent-directory fsync before an acknowledged rename, are not verified against a real interruption.",
-      "limitations": "The recovery state machine is covered thoroughly. What is not covered is that the on-disk ordering survives a real kill or power loss, which is the part the gate is actually about.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The process-interruption run qualifies SIGKILL before and after acknowledged publication on the recorded arm64 macOS filesystem. It does not claim sudden-power-loss qualification, which requires a controlled power-fault host rather than a process signal.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CaptureIntentQueue.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/CapturePreparationCoordinator.swift"
@@ -1656,13 +1677,22 @@
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
-          "symbol": "test_pending_text_capture_becomes_a_searchable_projection",
-          "covers": "A pending capture becomes a searchable projection, which is retrieval before the canonical Added state."
+          "symbol": "test_at34_pending_text_pdf_is_retrievable_before_added",
+          "covers": "The recorded PDF bytes are retained and its page-located text is searchable while the capture obligation is still in Core's processing lifecycle."
+        },
+        {
+          "path": "docs/development/qualification/at34-at36-pdf-qualification-macos-2026-10-18.json",
+          "covers": "Records the exact PDF fixture digest, extraction profile, decoder, engine, model resources and result identities used by the qualification run."
+        },
+        {
+          "path": "tests/test_at34_36_pdf_qualification.py",
+          "symbol": "test_at34_at36_record_binds_the_exact_fixtures_profile_and_result",
+          "covers": "Keeps the committed qualification record bound to the fixture bytes and canonical profile digest."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The PDF fixture is synthesised in-test with no recorded fixture digest, and section 11.15 requires the exact engine, profile, resource and fixture hashes be recorded with the result. No such record exists for any DOC or AT document gate.",
-      "limitations": "All three required properties have a direct test against the production extractor. What is absent is the qualification record, not the behaviour, and the retrievable-before-Added case is proven for a text capture rather than specifically for the PDF.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The qualification run is the recorded arm64 macOS host and its exact PDFium/Tesseract/model tuple. Other supported tuples require their own record; the portable extractor assertions continue to run in repository CI.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/raster_extractors.py"
@@ -1673,7 +1703,7 @@
       "design_section": "20",
       "normative_summary": "A mixed ten-page PDF fixture. Full Text and local OCR expose all qualified text exactly once, and a two-page OCR failure or an explicit Text-only profile shows exact missing coverage.",
       "applicability": "Every qualified PDF on hosts where the pinned OCR engine and its language models are installed.",
-      "evidence_type": "external_fixture_corpus",
+      "evidence_type": "automated_repository_test",
       "evidence": [
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
@@ -1692,13 +1722,31 @@
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
-          "symbol": "test_local_tesseract_deduplicates_the_sample_pdf_once",
-          "covers": "The one real-engine integration case, which deduplicates the sample PDF exactly once."
+          "symbol": "test_at35_text_only_names_all_five_image_only_pages",
+          "covers": "The fixed ten-page fixture's Text-only profile retrieves five native pages and names image-only pages 2, 4, 6, 8 and 10 as excluded."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
+          "symbol": "test_at35_two_page_ocr_failure_keeps_exact_ten_page_coverage",
+          "covers": "A two-page OCR failure on the fixed ten-page fixture reports pages 9 and 10 as failed and retains exact ten-page coverage."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
+          "symbol": "test_at35_real_tesseract_reads_all_ten_mixed_pages_exactly_once",
+          "covers": "The real pinned engine reads all five native and five image-only pages, with every qualified page label exposed exactly once."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/fixtures/at35-mixed-ten-page.pdf",
+          "covers": "The committed external corpus fixture: ten pages, five native-text and five image-only."
+        },
+        {
+          "path": "docs/development/qualification/at34-at36-pdf-qualification-macos-2026-10-18.json",
+          "covers": "Binds the ten-page fixture, profile, real engine, English and orientation models, and successful ten-page result by digest."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "There is no ten-page mixed fixture. The real-engine case is a single small sample PDF and is skipped unless the host has tesseract and English models, which neither CI workflow nor scripts/preflight installs, so on CI it does not run at all. No fixture hash is recorded for any PDF.",
-      "limitations": "The merge, dedup, partial-outcome and missing-coverage contracts are covered deterministically with an injected engine. The gate's specific fixture, its page count and its exactly-once property at that scale are not.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The recorded real-engine result qualifies the exact arm64 macOS engine/model tuple in the evidence. CI installs and runs an explicit Linux test engine too, while the deterministic injected-engine cases keep exact failure and coverage assertions stable.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/raster_extractors.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ocr_resources.py"
@@ -1730,11 +1778,20 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing.py",
           "symbol": "test_corrupt_pdf_is_preserved_and_settled_without_projection",
           "covers": "A corrupt PDF is preserved and settled with no searchable projection, so creating the job was not success."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
+          "symbol": "test_at35_real_tesseract_reads_all_ten_mixed_pages_exactly_once",
+          "covers": "Five image-only pages enter real qualified recognition and become useful units with no failed page."
+        },
+        {
+          "path": "docs/development/qualification/at34-at36-pdf-qualification-macos-2026-10-18.json",
+          "covers": "Records image-only pages 2, 4, 6, 8 and 10 as recognised under the exact engine, model and profile identities."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The image-only-enters-qualified-OCR half needs the pinned engine and an installed language model. That path is covered only with an injected engine, and the real-engine case is skipped on CI because tesseract is not installed, so no run demonstrates an image-only PDF actually entering qualified recognition.",
-      "limitations": "Three of the four named situations are covered directly against the production extractor. The fourth is covered structurally but never with a real recognition pass.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The image-only recognition evidence qualifies the recorded arm64 macOS engine/model tuple. Encrypted, corrupt and limit cases remain deterministic repository tests because their required outcome is refusal rather than host-engine output.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/raster_extractors.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_processing.py"
@@ -1985,9 +2042,9 @@
           "covers": "A member moved outside its root cannot be read through the root authority."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Every test substitutes a stub bookmark codec encoding the path as Data(url.path.utf8), so no test shows a real security-scoped resolution refusing an injected path. Containment is proven over path components, which is one of the two mechanisms the gate relies on; the grant itself is not.",
-      "limitations": "Component-bounded containment and fail-closed route parsing are strong and directly tested. They are enforced in-process with no sandbox, and the grant that is meant to make them unforgeable is simulated.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The production Foundation bookmark codec and component-bounded containment are exercised together on macOS. The XCTest host is not the signed, sandboxed release application, so release entitlement and signing behavior remain covered by the signed-build qualification gates rather than this path-injection gate.",
       "source_bindings": [
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeAccessStore.swift",
         "apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/FolderEventBridge.swift",

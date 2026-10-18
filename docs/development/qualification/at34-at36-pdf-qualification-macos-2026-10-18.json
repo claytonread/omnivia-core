@@ -1,0 +1,135 @@
+{
+  "engine": {
+    "path": "/opt/homebrew/Cellar/tesseract/5.5.3/bin/tesseract",
+    "revision": "5.5.3",
+    "sha256": "9fd3da5637e8d490182708c3689f15921cddb9beb469c1f128bc210033714ef9"
+  },
+  "fixtures": {
+    "at34TextPdf": {
+      "path": "services/omnivia-memory/tests/fixtures/sample.pdf",
+      "sha256": "8e622bc260adea8bcabe4cc47fb7cec1bcc7e6b5f48a3caa09a41ef2fb9a915f"
+    },
+    "at35MixedTenPagePdf": {
+      "imageOnlyPages": [
+        2,
+        4,
+        6,
+        8,
+        10
+      ],
+      "nativeTextPages": [
+        1,
+        3,
+        5,
+        7,
+        9
+      ],
+      "pages": 10,
+      "path": "packages/omnivia-core-runtime/tests/phase3/runtime/fixtures/at35-mixed-ten-page.pdf",
+      "sha256": "78b75dba3a6ac3de573c19cdfcb6760d4da014d55a82ca26c62952539c288f5e"
+    }
+  },
+  "host": {
+    "machine": "arm64",
+    "python": "3.11.15",
+    "release": "27.0.0",
+    "system": "Darwin"
+  },
+  "profile": {
+    "sha256": "sha256:cb6b6d4d7bf1416ac5535dc361caa7d5a5724afc4408c19edbb5057b088eafa9",
+    "value": {
+      "adapter": "pdfium-text-and-raster",
+      "adapterVersion": "2",
+      "completenessPolicy": "explicit_unit_coverage",
+      "decoderBuild": "default:1:pypdfium2-5.14.0+pdfium-156.0.8076.0",
+      "deduplicationVersion": "geometry-overlap-70-text-similarity-90-1",
+      "delimited": {
+        "delimiter": "media_default",
+        "encoding": "bom_or_utf-8",
+        "quote": "\""
+      },
+      "embeddedImageOcr": false,
+      "formulaPolicy": "expression_and_saved_cache_without_calculation",
+      "html": {
+        "encoding": "utf-8"
+      },
+      "limits": {
+        "containerEntries": 10000,
+        "decodedPixels": 32000000,
+        "expandedBytes": 536870912,
+        "memoryBytes": 1073741824,
+        "outputStructuredBytes": 134217728,
+        "outputTextBytes": 33554432,
+        "sourceBytes": 52428800,
+        "temporaryBytes": 2147483648,
+        "timeMs": 1800000
+      },
+      "ocr": {
+        "engine": "tesseract",
+        "engineRevision": "5.5.3",
+        "languages": [
+          "eng"
+        ],
+        "modelHashes": [
+          "sha256:7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+          "sha256:9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff"
+        ]
+      },
+      "parserFeatures": [
+        "direct_text",
+        "inert_references",
+        "local_ocr",
+        "located_segments",
+        "page_geometry",
+        "pdf_raster",
+        "raw_confidence_observations",
+        "spatial_deduplication"
+      ],
+      "processingMode": "text_and_local_ocr",
+      "readingOrderVersion": "display-top-left-1",
+      "revisionView": "current_text_with_separate_annotations",
+      "schema": "omnivia.extraction-profile.v1",
+      "secondaryContentPolicy": "preserve_role_and_visibility",
+      "unknownFeaturePolicy": "partial"
+    }
+  },
+  "recordedAt": "2026-10-17T23:51:54.721024+00:00",
+  "resources": {
+    "eng": {
+      "path": "/opt/homebrew/share/tessdata/eng.traineddata",
+      "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
+    },
+    "osd": {
+      "path": "/opt/homebrew/share/tessdata/osd.traineddata",
+      "sha256": "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff"
+    }
+  },
+  "results": {
+    "at34": {
+      "expected": 1,
+      "segmentsSha256": "sha256:e2045e42f17babe561f498748b6cffc44a979644456d934a4d29133edd033340",
+      "state": "succeeded",
+      "visited": 1
+    },
+    "at35": {
+      "expected": 10,
+      "failedUnits": 0,
+      "limitationsSha256": "af7df43f928592cc75dec7d8071d3230eff96f30392b64cb6c9e42fee577c05b",
+      "segmentsSha256": "sha256:b3823c3b1b7d8658d5f852f0e8685c1bcf90cdc034d42f183fc9c698a82269a8",
+      "state": "succeeded",
+      "usefulUnits": 10,
+      "visited": 10
+    },
+    "at36": {
+      "imageOnlyPagesRecognised": [
+        2,
+        4,
+        6,
+        8,
+        10
+      ],
+      "qualifiedRecognition": true
+    }
+  },
+  "schema": "omnivia.at34-at36.pdf-qualification.v1"
+}

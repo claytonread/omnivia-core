@@ -25,6 +25,13 @@ final class FolderEventBridgeTests: XCTestCase {
         var count: Int { lock.withLock { value } }
     }
 
+    private final class Gate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var open = false
+        func enable() { lock.withLock { open = true } }
+        var enabled: Bool { lock.withLock { open } }
+    }
+
     /// Roots under `…/dev2/` live on device 2; everything else on device 1.
     private final class Fake: @unchecked Sendable {
         struct Start {
@@ -330,7 +337,7 @@ final class FolderEventBridgeTests: XCTestCase {
             let signalsBefore = lane.signals.all.count
             let second = try bridge(lane)
             let since = lane.fake.starts[1].since
-            XCTAssertEqual(since, lane.fake.current, name)
+            XCTAssertEqual(since, UInt64(kFSEventStreamEventIdSinceNow), name)
             XCTAssertEqual(lane.ledger.stream(deviceID: 1)?.observationEpoch, epoch + 1, name)
             XCTAssertNotNil(lane.ledger.obligation(subscriptionID: "sub-a")?.fullRevision, name)
             XCTAssertNotNil(lane.ledger.obligation(subscriptionID: "sub-b")?.fullRevision, name)
@@ -563,7 +570,7 @@ final class FolderEventBridgeTests: XCTestCase {
             )
         }
         let lane = try lane()
-        let root = FileManager.default.temporaryDirectory
+        let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("omnivia-bridge-live-\(UUID().uuidString)", isDirectory: true)
         let nested = root.appendingPathComponent("nested", isDirectory: true)
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
@@ -571,6 +578,8 @@ final class FolderEventBridgeTests: XCTestCase {
         let received = expectation(description: "persisted obligation covering the leaf signalled")
         received.assertForOverFulfill = false
         let ledger = lane.ledger
+        let gate = Gate()
+        let attention = AttentionLog()
         // The real stream reports the watched root and `nested` as directory events too, so the
         // leaf write can arrive already coalesced into a full reconciliation or a covering
         // subtree. Anything that safely covers the leaf counts; a full obligation only counts
@@ -580,17 +589,22 @@ final class FolderEventBridgeTests: XCTestCase {
         let bridge = try XCTUnwrap(
             FolderEventBridge(
                 roots: [FolderObservationRoot(subscriptionID: "sub-a", url: root)],
-                ledger: ledger, subscriptions: lane.store
+                ledger: ledger, subscriptions: lane.store, onAttention: attention.record
             ) { _ in
                 // Read through the ledger: a signal raised before the write landed finds nothing.
+                // Ignore the fresh epoch's synchronous startup signal; after it is acknowledged,
+                // any new durable full or scoped obligation was raised by the live event. A host
+                // and device cursor mismatch is intentionally widened to a safe full obligation.
+                guard gate.enabled else { return }
                 guard let obligation = ledger.obligation(subscriptionID: "sub-a") else { return }
                 let covered = obligation.fullRevision != nil
-                    ? obligation.reasons.contains(where: \.reportedByEvents)
-                    : obligation.scopes.contains { $0.scope.covers(leaf) }
+                    || obligation.scopes.contains { $0.scope.covers(leaf) }
                 if covered { received.fulfill() }
             }
         )
+        XCTAssertEqual(attention.values, [])
         try settle(lane, ["sub-a"])
+        gate.enable()
         withExtendedLifetime(bridge) {
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
                 try? Data("changed".utf8).write(to: nested.appendingPathComponent("note.txt"))

@@ -856,6 +856,7 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
         try """
         #!/bin/sh
         export PYTHONPATH='\(path)'
+        export PATH='\(URL(fileURLWithPath: python).deletingLastPathComponent().path)':"$PATH"
         exec '\(python)' -B -m omnivia_core_cli.main "$@"
         """.write(to: launcher, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
@@ -894,9 +895,15 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
     }
 
     private func installStoppedCore(_ cli: URL) throws -> InstalledCore {
-        let path = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":")
+        let repository = repositoryRoot()
+        let python = ProcessInfo.processInfo.environment["OMNIVIA_CORE_TEST_PYTHON"]
+            ?? repository.appendingPathComponent(".venv/bin/python").path
+        let adjacent = URL(fileURLWithPath: python).deletingLastPathComponent()
+            .appendingPathComponent("omnivia-core-service")
+        let path = ([adjacent] + (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":")
             .map { URL(fileURLWithPath: String($0)).appendingPathComponent("omnivia-core-service") }
-            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+        ).first { FileManager.default.isExecutableFile(atPath: $0.path) }
         guard let service = path else { throw XCTSkip("omnivia-core-service must be on PATH") }
         // Unix socket paths are short; the ambient TMPDIR is too deep for one.
         let home = URL(fileURLWithPath: "/tmp/at11-\(UUID().uuidString.prefix(8))", isDirectory: true)

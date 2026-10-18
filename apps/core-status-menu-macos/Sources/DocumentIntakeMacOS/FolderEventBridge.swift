@@ -381,7 +381,13 @@ public final class FolderEventBridge: @unchecked Sendable {
         let group = Group(deviceID: device, uuid: uuid, bindings: bindings, status: status)
         lock.withLock { groups[device] = group }
         let paths = Array(Set(bindings.map(\.path))).sorted()
-        let stream = platform.startStream(paths, status.lastCoveredEventID) { [weak self] events in
+        // A fresh epoch already owes a durable full reconciliation. Start native delivery at
+        // "now" instead of treating a host-wide current ID as a device-stream cursor; those ID
+        // domains can differ and a future numeric cursor can suppress delivery indefinitely.
+        let nativeStart = resumable
+            ? status.lastCoveredEventID
+            : UInt64(kFSEventStreamEventIdSinceNow)
+        let stream = platform.startStream(paths, nativeStart) { [weak self] events in
             self?.receive(device, events)
         }
         group.lock.withLock {

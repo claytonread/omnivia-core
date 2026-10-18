@@ -14,7 +14,7 @@ This document is generated from
 `qualification/wp15/qualification-ledger.v1.json` and is verified against it
 by `scripts/check-wp15-qualification.py`. It records what this checkout can
 show and what it cannot. **It is not a claim that the release is qualified.**
-68 of 130 gates have direct production-path coverage
+74 of 130 gates have direct production-path coverage
 of every condition they name; the rest carry the exact condition still
 missing.
 
@@ -22,22 +22,22 @@ missing.
 
 | Status | Gates | Meaning |
 |---|---|---|
-| passed | 68 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
+| passed | 74 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
 | failed | 0 | Evidence exists and shows the required result is not met. |
 | blocked_external | 47 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
-| not_executed | 15 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
+| not_executed | 9 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
 | not_implemented | 0 | The production path the gate names does not exist in this checkout. |
 
 ## Counts by family and status
 
 | Family | Section | Gates | passed | failed | blocked_external | not_executed | not_implemented |
 |---|---|---|---|---|---|---|---|
-| AT | 20 | 50 | 25 | 0 | 19 | 6 | 0 |
+| AT | 20 | 50 | 31 | 0 | 19 | 0 | 0 |
 | NAT | 20.1 | 17 | 0 | 0 | 17 | 0 | 0 |
 | DOC | 20.2 | 19 | 11 | 0 | 1 | 7 | 0 |
 | MON | 20.3 | 38 | 28 | 0 | 10 | 0 | 0 |
 | END | 20.4 | 6 | 4 | 0 | 0 | 2 | 0 |
-| **total** | | **130** | 68 | 0 | 47 | 15 | 0 |
+| **total** | | **130** | 74 | 0 | 47 | 9 | 0 |
 
 ## Counts by required evidence class
 
@@ -48,12 +48,12 @@ refuses that combination.
 
 | Evidence class | Gates | Producible here |
 |---|---|---|
-| automated_repository_test | 79 | yes |
+| automated_repository_test | 80 | yes |
 | repository_checker | 1 | yes |
 | installed_signed_build | 39 | no |
 | real_host_measurement | 2 | no |
 | accessibility_review | 6 | no |
-| external_fixture_corpus | 3 | no |
+| external_fixture_corpus | 2 | no |
 
 ## Gates with direct coverage
 
@@ -70,6 +70,8 @@ each one's scope limits.
 | AT-11 | A known eligible local target while offline. |
 | AT-12 | A missing, revoked or incompatible target. |
 | AT-13 | The principal or the target profile changes before the first send or during recovery, including a cached Share. |
+| AT-16 | Extension termination before or after publication. |
+| AT-17 | Companion termination during publication. |
 | AT-18 | A crash after the Core commit but before the local receipt. |
 | AT-19 | A timeout, an expired replay or an unknown admission. |
 | AT-20 | A native queue capacity race across the Share and manual routes. |
@@ -82,7 +84,11 @@ each one's scope limits.
 | AT-31 | Two refreshes finish in reverse order. |
 | AT-32 | A refresh fails after a previous success. |
 | AT-33 | The same bytes, but the evidence has expired or been revoked. |
+| AT-34 | A text-bearing PDF. |
+| AT-35 | A mixed ten-page PDF fixture. |
+| AT-36 | Image-only, encrypted, corrupt and limit-exceeding PDFs. |
 | AT-37 | One item fails before local publication, and separately a partial Core processing case. |
+| AT-45 | A native-to-Core arbitrary path injection attempt. |
 | AT-46 | Source and derived claims retrieval. |
 | AT-47 | An earlier snapshot is admitted after a newer capture succeeds. |
 | AT-48 | A descriptor expires with a known-no-effect outcome, versus an ambiguous admission. |
