@@ -125,6 +125,7 @@ PRODUCTION_OPERATIONS = frozenset(
         CONTEXT_PACK_BUILD_OPERATION,
         ANALYSIS_START_OPERATION,
         CODE_QUERY_OPERATION,
+        "code.status",
     }
 )
 
@@ -741,6 +742,7 @@ def test_5c_no_mutating_operation_is_registered_at_all() -> None:
             CONTEXT_PACK_BUILD_OPERATION,
             ANALYSIS_START_OPERATION,
             CODE_QUERY_OPERATION,
+            "code.status",
         }
     )
     for name in registered:

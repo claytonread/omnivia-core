@@ -224,7 +224,8 @@ def records(result: dict[str, Any]) -> set[tuple[str, str]]:
 
 def test_code_query_is_a_shipped_read_beside_graph_traverse() -> None:
     entry = get_operation_metadata(CODE_QUERY_OPERATION)
-    assert OPERATION_CATALOGUE[-1].name == CODE_QUERY_OPERATION
+    # W13-C appended code.policy.register, code.import and code.status after it.
+    assert OPERATION_CATALOGUE[-4].name == CODE_QUERY_OPERATION
     assert entry.scope.side_effect == "none" and entry.scope.required_scopes == ("graph:read",)
     assert entry.required_capability.id == "graph.read"
     assert CODE_QUERY_OPERATION in build_application_registry().operations

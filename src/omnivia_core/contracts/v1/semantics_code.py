@@ -27,9 +27,13 @@ from typing import Final
 from omnivia_core.contracts.v1.compatibility import ContractSemanticError
 from omnivia_core.contracts.v1.generated import (
     CodeContextSeed,
+    CodeImportInput,
+    CodePolicyRegisterInput,
     CodeQueryInput,
+    CodeStatusInput,
     is_content_checksum,
     is_identifier,
+    is_open_code,
 )
 from omnivia_core.contracts.v1.semantics_knowledge import (
     validate_context_pack_build_input,
@@ -41,6 +45,10 @@ __all__ = [
     "CODE_CONTEXT_SEED_ORIGINS",
     "CODE_CONTEXT_SEED_ORIGIN_LEXICAL",
     "CODE_CONTEXT_SEED_ORIGIN_SEMANTIC",
+    "CODE_POLICY_MAX_CANDIDATES",
+    "CODE_POLICY_MAX_NODE_KINDS",
+    "CODE_POLICY_MAX_PRODUCERS",
+    "CODE_POLICY_MAX_RELATIONSHIPS",
     "CODE_QUERY_DEFAULT_DEPTH",
     "CODE_QUERY_DEFAULT_LIMIT",
     "CODE_QUERY_INTENTS",
@@ -53,7 +61,10 @@ __all__ = [
     "CODE_QUERY_MAX_DEPTH",
     "CODE_QUERY_MAX_LIMIT",
     "is_code_semantic_key",
+    "validate_code_import_input",
+    "validate_code_policy_register_input",
     "validate_code_query_input",
+    "validate_code_status_input",
 ]
 
 CODE_QUERY_INTENT_DEFINITION: Final = "definition"
@@ -94,6 +105,12 @@ CODE_CONTEXT_MAX_SEEDS: Final = 64
 #: own `maxLength`. A span longer than this is returned truncated and says so, never cut
 #: silently and never returned whole.
 CODE_CONTEXT_MAX_SPAN_BYTES: Final = 4096
+
+#: The bounds `CodePolicyRegisterInput` publishes, restated where they are enforced.
+CODE_POLICY_MAX_PRODUCERS: Final = 8
+CODE_POLICY_MAX_NODE_KINDS: Final = 64
+CODE_POLICY_MAX_RELATIONSHIPS: Final = 128
+CODE_POLICY_MAX_CANDIDATES: Final = 10_000
 
 CODE_QUERY_DEFAULT_DEPTH: Final = 1
 CODE_QUERY_MAX_DEPTH: Final = 8
@@ -184,3 +201,59 @@ def _validate_seed(seed: CodeContextSeed) -> None:
         raise ContractSemanticError("a seed names 1-64 semantic keys")
     if not all(is_code_semantic_key(key) for key in seed.semantic_keys):
         raise ContractSemanticError("a seed semantic key is not a code semantic key")
+
+
+def validate_code_policy_register_input(value: CodePolicyRegisterInput) -> None:
+    """Raise `ContractSemanticError` unless `value` is a policy this contract can carry.
+
+    The shape only: identities, digests, codes and bounds. Which node kinds and
+    relationships a producer really emits, and which profiles a service declares, is the
+    service's own vocabulary and is checked there, against the producers it runs.
+    """
+    for name in ("policy_id", "policy_version"):
+        if not is_identifier(getattr(value, name)):
+            raise ContractSemanticError(f"{name} is not an Identifier")
+    if not 1 <= len(value.producers) <= CODE_POLICY_MAX_PRODUCERS:
+        raise ContractSemanticError("a policy locks 1-8 producers")
+    for lock in value.producers:
+        if not (is_identifier(lock.producer_id) and is_identifier(lock.producer_version)):
+            raise ContractSemanticError("a producer lock names an Identifier producer and version")
+        if not is_content_checksum(lock.profile_digest):
+            raise ContractSemanticError("a producer lock profile_digest is not a ContentChecksum")
+    if not 1 <= len(value.accepted_node_kinds) <= CODE_POLICY_MAX_NODE_KINDS:
+        raise ContractSemanticError("a policy accepts 1-64 node kinds")
+    for kind in value.accepted_node_kinds:
+        if not (is_identifier(kind.producer_id) and is_open_code(kind.node_kind)):
+            raise ContractSemanticError("an accepted node kind is not an Identifier and an OpenCode")
+    if len(value.accepted_relationships) > CODE_POLICY_MAX_RELATIONSHIPS:
+        raise ContractSemanticError("a policy accepts at most 128 relationships")
+    for relationship in value.accepted_relationships:
+        if not (
+            is_identifier(relationship.producer_id)
+            and is_open_code(relationship.relationship)
+            and is_open_code(relationship.evidence_strength)
+        ):
+            raise ContractSemanticError("an accepted relationship is not an Identifier and two OpenCodes")
+    if not isinstance(value.allow_reduced_coverage, bool):
+        raise ContractSemanticError("allow_reduced_coverage is not a boolean")
+    if value.max_candidates is not None and not _bounded_int(
+        value.max_candidates, 1, CODE_POLICY_MAX_CANDIDATES
+    ):
+        raise ContractSemanticError("max_candidates is outside 1-10000")
+
+
+def validate_code_import_input(value: CodeImportInput) -> None:
+    """Raise `ContractSemanticError` unless `value` names one import by identity alone."""
+    for name in ("repository_id", "snapshot_id", "producer_id", "policy_id", "policy_version"):
+        if not is_identifier(getattr(value, name)):
+            raise ContractSemanticError(f"{name} is not an Identifier")
+    if not is_content_checksum(value.profile_digest):
+        raise ContractSemanticError("profile_digest is not a ContentChecksum")
+
+
+def validate_code_status_input(value: CodeStatusInput) -> None:
+    """Raise `ContractSemanticError` unless `value` names a repository and maybe a snapshot."""
+    if not is_identifier(value.repository_id):
+        raise ContractSemanticError("repository_id is not an Identifier")
+    if value.snapshot_id is not None and not is_identifier(value.snapshot_id):
+        raise ContractSemanticError("snapshot_id is not an Identifier")

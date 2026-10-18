@@ -50,7 +50,7 @@ ARCHITECTURE_TRACEABILITY = (
     REPO_ROOT
     / "tests/fixtures/service_conformance/architecture-gate-traceability-v1.json"
 )
-CORPUS_SHA256 = "91a91f36b956f74a51f1d7551e7c1b450901822973beb22709468a2a3229f3f0"
+CORPUS_SHA256 = "ea9b07fcdb8c298c27ffd1bd05b1e40f6f53f2075122eb737fcb58b04d36626a"
 ADAPTERS = ("in_process", "ipc", "http")
 
 
@@ -103,7 +103,7 @@ def test_v06_5_s5_registry_exactly_matches_catalogue(
     surface: ProductionApplicationSurface,
 ) -> None:
     catalogue = tuple(entry.name for entry in OPERATION_CATALOGUE)
-    assert len(catalogue) == len(set(catalogue)) == 89
+    assert len(catalogue) == len(set(catalogue)) == 92
     assert surface.registry.operations == APPLICATION_OPERATIONS == frozenset(catalogue)
     assert surface.adapters == frozenset(ADAPTERS)
     surface.registry.assert_complete()
@@ -159,7 +159,7 @@ def test_v06_5_s5_every_handler_is_production_callable(
         ) or handler.__module__.startswith(
             "omnivia_core_runtime.service.application"
         ) or handler.__module__ == __name__, operation
-    assert len(identities) == 89
+    assert len(identities) == 92
     assert not any(
         token in identity.lower()
         for identity in identities.values()
@@ -224,7 +224,7 @@ def test_v06_5_s5_operation_traceability_complete() -> None:
     corpus = _document(CORPUS)
     case_names = {case["operation"] for case in corpus["cases"]}
     assert case_names == APPLICATION_OPERATIONS
-    assert len(corpus["cases"]) == 233
+    assert len(corpus["cases"]) == 240
 
 
 def test_v06_5_s5_architecture_gate_traceability_complete() -> None:
@@ -246,7 +246,7 @@ def test_v06_5_s5_candidate_head_tree_and_corpus_digest() -> None:
     assert hashlib.sha256(CORPUS.read_bytes()).hexdigest() == CORPUS_SHA256
     operation = _document(OPERATION_TRACEABILITY)
     architecture = _document(ARCHITECTURE_TRACEABILITY)
-    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 699
+    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 720
     assert architecture["operation_traceability"]["file"] == (
         "tests/fixtures/service_conformance/operation-traceability-v1.json"
     )

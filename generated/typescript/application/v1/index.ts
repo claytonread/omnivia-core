@@ -125,6 +125,22 @@ export interface AnalysisStartResult {
 export type CodeSemanticKey = string;
 
 /**
+ * Files of the assessed snapshot that no declared producer reads, grouped by file suffix. They
+ * stay eligible for evidence and document retrieval; they are never structurally analysed, and
+ * their absence from the code graph says nothing about what they contain.
+ */
+export interface CodeUnsupportedFiles {
+  /**
+   * The file suffix including its dot, such as `.rs`; empty for files with none.
+   */
+  readonly suffix: string;
+  /**
+   * Files with that suffix.
+   */
+  readonly file_count: number;
+}
+
+/**
  * A `major.minor` contract version. Major changes are breaking; minor changes are additive and
  * forward compatible.
  */
@@ -4070,6 +4086,178 @@ export interface CodeContextSeed {
    * The definitions the search selected, in the caller's own order.
    */
   readonly semantic_keys: readonly CodeSemanticKey[];
+}
+
+/**
+ * One producer build and analyser profile an acceptance policy admits batches from. A batch from
+ * any other build or profile is refused whole, never partly accepted.
+ */
+export interface CodeProducerLock {
+  /**
+   * Static analyser.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * That analyser's version.
+   */
+  readonly producer_version: Identifier;
+  /**
+   * Digest of a profile this service declares for that analyser.
+   */
+  readonly profile_digest: ContentChecksum;
+}
+
+/**
+ * One producer's node kind an acceptance policy accepts as a governed definition.
+ */
+export interface CodePolicyNodeKind {
+  /**
+   * Static analyser whose kind this is.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * The producer's own node kind, such as `function`.
+   */
+  readonly node_kind: OpenCode;
+}
+
+/**
+ * One producer relationship, at one evidence strength, an acceptance policy accepts as a
+ * governed relation. Only `syntactic` and `resolved_static` can be accepted; unresolved,
+ * ambiguous, external and dynamically inferred candidates stay diagnostics under every policy.
+ */
+export interface CodePolicyRelationship {
+  /**
+   * Static analyser whose relationship this is.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * The producer's own relationship string, such as `calls`.
+   */
+  readonly relationship: OpenCode;
+  /**
+   * `syntactic` or `resolved_static`.
+   */
+  readonly evidence_strength: OpenCode;
+}
+
+/**
+ * One registered acceptance policy, by id, version and the digest of its exact rules.
+ */
+export interface CodePolicyReference {
+  /**
+   * Policy identity.
+   */
+  readonly policy_id: Identifier;
+  /**
+   * Policy version.
+   */
+  readonly policy_version: Identifier;
+  /**
+   * Digest of that version's exact rules.
+   */
+  readonly policy_digest: ContentChecksum;
+}
+
+/**
+ * How one captured snapshot stands against the newest admitted capture of the same stream -- the
+ * same checkout of the same repository on the same installation. `stale` means a newer capture
+ * the caller may see was admitted after it. Core compares captures only: `working_tree` is
+ * always `not_observed`, because the live checkout between captures is never read, so an edit
+ * made after the newest capture is not reflected here either.
+ */
+export interface CodeSnapshotFreshness {
+  /**
+   * `current` or `stale`.
+   */
+  readonly state: OpenCode;
+  /**
+   * The snapshot assessed.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * The newest admitted capture of its stream the caller may see; the assessed snapshot itself
+   * when `current`.
+   */
+  readonly newest_snapshot_id: Identifier;
+  /**
+   * Always `not_observed`.
+   */
+  readonly working_tree: OpenCode;
+}
+
+/**
+ * Input for `code.import`: analyse one sealed, complete captured snapshot of one repository with
+ * one producer under one profile this service declares, and make the facts one registered
+ * acceptance policy accepts the applicable analysis for that repository, producer and profile.
+ * Identity only: the request names no path, no executable code, no profile body, no principal
+ * and no workspace. The scope's expected activation is the envelope's `mutation_precondition`:
+ * the decimal activation sequence `code.status` reported for the scope (`0` when none), so an
+ * import planned against an analysis another import has since replaced is refused and writes
+ * nothing.
+ */
+export interface CodeImportInput {
+  /**
+   * Repository to analyse.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * Sealed captured snapshot of that repository.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Declared static analyser to run.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * Digest of the declared profile to run it under.
+   */
+  readonly profile_digest: ContentChecksum;
+  /**
+   * Registered acceptance policy to import under.
+   */
+  readonly policy_id: Identifier;
+  /**
+   * That policy's version.
+   */
+  readonly policy_version: Identifier;
+}
+
+/**
+ * Input for `code.status`: one repository, and optionally one of its sealed captured snapshots
+ * to assess readiness against. Workspace and principal come from the envelope.
+ */
+export interface CodeStatusInput {
+  /**
+   * Repository to report on.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * Sealed captured snapshot to assess. Absent reports each analysis against the snapshot it
+   * analysed.
+   */
+  readonly snapshot_id?: Identifier;
+}
+
+/**
+ * How much of the analysed snapshot's source the applicable analysis covers, counted over files
+ * the caller may see. `partial` means at least one such file the producer's profile admits
+ * contributed no fact -- it was oversize, undecodable, syntactically invalid or over budget --
+ * so its absence from every answer is not evidence that it has no definitions.
+ */
+export interface CodeAnalysisCoverage {
+  /**
+   * `complete` or `partial`.
+   */
+  readonly state: OpenCode;
+  /**
+   * Visible files of the snapshot the profile admits as source.
+   */
+  readonly admitted_file_count: number;
+  /**
+   * Of those, the files the import's facts were read from.
+   */
+  readonly analysed_file_count: number;
 }
 
 /**
@@ -9078,6 +9266,209 @@ export interface CodeQueryInput {
 }
 
 /**
+ * Input for `code.policy.register`: one versioned, deterministic acceptance policy for code-
+ * analysis imports, authorised by the authenticated caller. The document is the rules only; who
+ * authorised it is the caller the envelope authenticated, never a field. A version identifies
+ * one set of rules forever: registering the same id and version again with the same rules is
+ * idempotent, and with different rules is a conflict. There is no default policy, and enabling
+ * analysis registers none.
+ */
+export interface CodePolicyRegisterInput {
+  /**
+   * Policy identity.
+   */
+  readonly policy_id: Identifier;
+  /**
+   * Policy version.
+   */
+  readonly policy_version: Identifier;
+  /**
+   * The producer builds and declared profiles whose batches this policy may accept.
+   */
+  readonly producers: readonly CodeProducerLock[];
+  /**
+   * Node kinds accepted as definitions.
+   */
+  readonly accepted_node_kinds: readonly CodePolicyNodeKind[];
+  /**
+   * Relationships accepted as relations; empty accepts definitions only.
+   */
+  readonly accepted_relationships: readonly CodePolicyRelationship[];
+  /**
+   * Whether a cutover may drop coverage of a file the new snapshot still holds. False refuses
+   * such a cutover.
+   */
+  readonly allow_reduced_coverage: boolean;
+  /**
+   * Largest batch, in candidates, this policy accepts. Absent means 10000.
+   */
+  readonly max_candidates?: number;
+}
+
+/**
+ * Result of `code.policy.register`: the policy as recorded, and whether this request recorded it
+ * or found it already recorded with the same rules.
+ */
+export interface CodePolicyRegisterResult {
+  /**
+   * The recorded policy.
+   */
+  readonly policy: CodePolicyReference;
+  /**
+   * `registered` or `already_registered`.
+   */
+  readonly disposition: OpenCode;
+  /**
+   * When that version was first recorded.
+   */
+  readonly registered_at: Timestamp;
+}
+
+/**
+ * Result of `code.import`: the activation receipt. The binding is the import now applicable for
+ * its scope; the counts are the import's own -- accepted definitions and relations, refused
+ * candidates and covered files -- and `coverage_decision` says whether the cutover was the
+ * scope's first, kept every still-present file, or dropped coverage the policy allowed it to
+ * drop. A replay of the same request returns this receipt unchanged.
+ */
+export interface CodeImportResult {
+  /**
+   * The import this request made applicable.
+   */
+  readonly binding: CodeAnalysisBinding;
+  /**
+   * The scope's activation sequence after this import; the next import's precondition.
+   */
+  readonly activation_sequence: number;
+  /**
+   * The import this one retired. Absent for the scope's first activation.
+   */
+  readonly previous_import_id?: Identifier;
+  /**
+   * `initial`, `complete` or `reduced_authorised`.
+   */
+  readonly coverage_decision: OpenCode;
+  /**
+   * Files the retired import covered that the new snapshot still holds and this import does
+   * not.
+   */
+  readonly reduced_file_count: number;
+  /**
+   * Accepted definitions.
+   */
+  readonly entity_count: number;
+  /**
+   * Accepted relations.
+   */
+  readonly relation_count: number;
+  /**
+   * Candidates the policy did not accept.
+   */
+  readonly diagnostic_count: number;
+  /**
+   * Captured files the import's candidates were read from.
+   */
+  readonly file_count: number;
+  /**
+   * How the analysed snapshot stood against its stream when the import settled.
+   */
+  readonly freshness: CodeSnapshotFreshness;
+}
+
+/**
+ * One declared producer profile's analysis of the repository. `availability` says whether this
+ * service can run the producer at all; `readiness` whether an applicable analysis answers
+ * `code.query` for the assessed snapshot, with the reason when not: `no_active_import`,
+ * `snapshot_not_active` (the applicable analysis is of another snapshot) or `no_admitted_source`
+ * (the assessed snapshot holds no file this producer analyses). `activation_sequence` is the
+ * scope's current activation, the precondition of the next `code.import`. An analysis the caller
+ * may not see is reported exactly as one that does not exist.
+ */
+export interface CodeAnalysisStatus {
+  /**
+   * Declared static analyser.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * Its version.
+   */
+  readonly producer_version: Identifier;
+  /**
+   * Digest of the declared profile.
+   */
+  readonly profile_digest: ContentChecksum;
+  /**
+   * Languages the producer analyses structurally, such as `python`.
+   */
+  readonly languages: readonly OpenCode[];
+  /**
+   * `available` or `unavailable`.
+   */
+  readonly availability: OpenCode;
+  /**
+   * Why the producer cannot run here, such as `runtime_not_configured`. Present only when
+   * `unavailable`.
+   */
+  readonly availability_reason?: OpenCode;
+  /**
+   * `ready` or `not_ready`.
+   */
+  readonly readiness: OpenCode;
+  /**
+   * Why not ready. Present only when `not_ready`.
+   */
+  readonly readiness_reason?: OpenCode;
+  /**
+   * The scope's current activation sequence, 0 when it has none.
+   */
+  readonly activation_sequence: number;
+  /**
+   * The most recently registered policy that admits this producer build and profile. Absent
+   * when none does, in which case no import can run.
+   */
+  readonly policy?: CodePolicyReference;
+  /**
+   * The applicable import. Absent when there is none the caller may see.
+   */
+  readonly binding?: CodeAnalysisBinding;
+  /**
+   * How the analysed snapshot stands against its stream. Present with `binding`.
+   */
+  readonly freshness?: CodeSnapshotFreshness;
+  /**
+   * How much of the analysed snapshot the import covers. Present with `binding`.
+   */
+  readonly coverage?: CodeAnalysisCoverage;
+}
+
+/**
+ * The assessed snapshot: whether its capture was complete, how it stands against its stream, and
+ * which of its files no declared producer analyses.
+ */
+export interface CodeSnapshotStatus {
+  /**
+   * The assessed snapshot.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * `complete` or `incomplete`; only a complete capture can be analysed.
+   */
+  readonly capture_status: OpenCode;
+  /**
+   * How it stands against its stream.
+   */
+  readonly freshness: CodeSnapshotFreshness;
+  /**
+   * File groups no declared producer analyses, by suffix.
+   */
+  readonly unsupported: readonly CodeUnsupportedFiles[];
+  /**
+   * True when more suffix groups exist than `unsupported` lists.
+   */
+  readonly unsupported_truncated: boolean;
+}
+
+/**
  * Server-produced, validated authority actually applied to a request. This is the only authority
  * statement a client may trust.
  */
@@ -11984,6 +12375,32 @@ export interface AnalysisStartInput {
    * authorisation or policy checks.
    */
   readonly purpose_reference: Identifier;
+}
+
+/**
+ * Result of `code.status`: one entry per producer profile this service declares, in a fixed
+ * order, so a caller discovers what is applicable, ready, partial, stale or unavailable without
+ * already holding a receipt. No runtime path, database row, lock, lease or analyser location is
+ * ever part of it, and nothing a caller may not see -- a hidden file, a hidden analysis, a
+ * hidden newer capture -- moves any field.
+ */
+export interface CodeStatusResult {
+  /**
+   * The repository reported on.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * The assessed snapshot. Present only when the request named one.
+   */
+  readonly snapshot?: CodeSnapshotStatus;
+  /**
+   * Every declared producer profile, in a fixed order.
+   */
+  readonly analyses: readonly CodeAnalysisStatus[];
+  /**
+   * The read instant.
+   */
+  readonly as_of: Timestamp;
 }
 
 /**
@@ -17683,6 +18100,113 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "rate_limited",
       "size_limit_exceeded",
       "stale_projection",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "code.policy.register",
+    scope: {
+      required_scopes: ["engineering:curate"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyRegisterInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyRegisterResult",
+    required_capability: { id: "engineering.curate", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "code.import",
+    scope: {
+      required_scopes: ["engineering:source"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeImportInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeImportResult",
+    required_capability: { id: "engineering.source", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: true, required: true },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "code.status",
+    scope: { required_scopes: ["graph:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeStatusInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeStatusResult",
+    required_capability: { id: "graph.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
       "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",

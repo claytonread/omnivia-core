@@ -1903,6 +1903,7 @@ SHIPPED_OPERATIONS = frozenset(
         CONTEXT_PACK_BUILD_OPERATION,
         ANALYSIS_START_OPERATION,
         CODE_QUERY_OPERATION,
+        "code.status",
     }
 )
 

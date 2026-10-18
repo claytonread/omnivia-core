@@ -801,10 +801,12 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
         "outcome.request.create",
         "project.context.switch",
         "settings.set",
+        "code.policy.register",
+        "code.import",
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 50
+    assert len(MUTATION_PURPOSES) == 52
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -840,7 +842,7 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
     # preferences is `document_configuration`, deliberately not the ingestion purpose
     # capture and reprocess share, so a grant to submit a document never changes how
     # every future document is read.
-    assert len(set(MUTATION_PURPOSES.values())) == 26
+    assert len(set(MUTATION_PURPOSES.values())) == 28
 
     # Every operation is exercised: the declared purpose is what the grant carries, and
     # any other purpose the session may act for is refused.
@@ -1602,6 +1604,7 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
             "context_pack.build",
             "analysis.start",
             "code.query",
+            "code.status",
         }
     )
     # The decision family's own registry carries the fifteen decision handlers;
@@ -1849,6 +1852,8 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "outcome.request.create": "workspace_contributor",
         "project.context.switch": "workspace_contributor",
         "settings.set": "workspace_contributor",
+        "code.policy.register": "knowledge_reviewer",
+        "code.import": "workspace_contributor",
     }
     assert set(MUTATION_ROLES) == MUTATING_OPERATIONS
 

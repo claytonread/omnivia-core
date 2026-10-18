@@ -15059,6 +15059,543 @@
           }
         }
       }
+    },
+    {
+      "id": "code.policy.register/primary-success",
+      "operation": "code.policy.register",
+      "description": "code.policy.register records one owner-authorised, versioned code-analysis acceptance policy on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.policy.register-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.curate",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:curate"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-code.policy.register"
+        },
+        "operation": "code.policy.register",
+        "input": {
+          "policy_id": "owner.code-import",
+          "policy_version": "1",
+          "producers": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "producer_version": "1.0.0",
+              "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ],
+          "accepted_node_kinds": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "node_kind": "function"
+            },
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "node_kind": "module"
+            }
+          ],
+          "accepted_relationships": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "relationship": "calls",
+              "evidence_strength": "resolved_static"
+            },
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "relationship": "defines",
+              "evidence_strength": "syntactic"
+            }
+          ],
+          "allow_reduced_coverage": false
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.policy.register-success",
+          "audit_reference": "audit-code.policy.register"
+        },
+        "result": {
+          "policy": {
+            "policy_id": "owner.code-import",
+            "policy_version": "1",
+            "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "disposition": "registered",
+          "registered_at": "2024-01-01T00:00:00Z"
+        }
+      }
+    },
+    {
+      "id": "code.policy.register/honest-replay",
+      "operation": "code.policy.register",
+      "description": "code.policy.register repeated with the same idempotency key and the same policy: the recorded registration is returned without recording again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "code.policy.register/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.policy.register-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.curate",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:curate"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-code.policy.register"
+        },
+        "operation": "code.policy.register",
+        "input": {
+          "policy_id": "owner.code-import",
+          "policy_version": "1",
+          "producers": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "producer_version": "1.0.0",
+              "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ],
+          "accepted_node_kinds": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "node_kind": "function"
+            },
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "node_kind": "module"
+            }
+          ],
+          "accepted_relationships": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "relationship": "calls",
+              "evidence_strength": "resolved_static"
+            },
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "relationship": "defines",
+              "evidence_strength": "syntactic"
+            }
+          ],
+          "allow_reduced_coverage": false
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.policy.register-replay",
+          "audit_reference": "audit-code.policy.register"
+        },
+        "result": {
+          "policy": {
+            "policy_id": "owner.code-import",
+            "policy_version": "1",
+            "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "disposition": "registered",
+          "registered_at": "2024-01-01T00:00:00Z"
+        }
+      }
+    },
+    {
+      "id": "code.policy.register/idempotency-conflict",
+      "operation": "code.policy.register",
+      "description": "code.policy.register reusing one idempotency key for different rules: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "code.policy.register/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.policy.register-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.curate",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:curate"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-code.policy.register"
+        },
+        "operation": "code.policy.register",
+        "input": {
+          "policy_id": "owner.code-import",
+          "policy_version": "1",
+          "producers": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "producer_version": "1.0.0",
+              "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ],
+          "accepted_node_kinds": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "node_kind": "function"
+            },
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "node_kind": "module"
+            }
+          ],
+          "accepted_relationships": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "relationship": "calls",
+              "evidence_strength": "resolved_static"
+            },
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "relationship": "defines",
+              "evidence_strength": "syntactic"
+            }
+          ],
+          "allow_reduced_coverage": true
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.policy.register-conflict",
+          "audit_reference": "audit-code.policy.register"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "code.import/primary-success",
+      "operation": "code.import",
+      "description": "code.import analyses one sealed captured snapshot with a declared producer and activates the facts the named policy accepts, returning the activation receipt, on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.import-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-code.import",
+          "mutation_precondition": {
+            "record_version": "0"
+          }
+        },
+        "operation": "code.import",
+        "input": {
+          "repository_id": "repo-code",
+          "snapshot_id": "snap-1",
+          "producer_id": "analyzer.python.stdlib",
+          "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "policy_id": "owner.code-import",
+          "policy_version": "1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.import-success",
+          "audit_reference": "audit-code.import"
+        },
+        "result": {
+          "binding": {
+            "repository_id": "repo-code",
+            "snapshot_id": "snap-1",
+            "producer_id": "analyzer.python.stdlib",
+            "producer_version": "1.0.0",
+            "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "import_id": "cai-1",
+            "batch_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "policy_id": "owner.code-import",
+            "policy_version": "1",
+            "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "manifest_evidence_id": "ev-manifest-1",
+            "activated_at": "2024-01-01T00:00:00Z"
+          },
+          "activation_sequence": 1,
+          "coverage_decision": "initial",
+          "reduced_file_count": 0,
+          "entity_count": 12,
+          "relation_count": 9,
+          "diagnostic_count": 3,
+          "file_count": 4,
+          "freshness": {
+            "state": "current",
+            "snapshot_id": "snap-1",
+            "newest_snapshot_id": "snap-1",
+            "working_tree": "not_observed"
+          }
+        }
+      }
+    },
+    {
+      "id": "code.import/honest-replay",
+      "operation": "code.import",
+      "description": "code.import repeated with the same idempotency key and the same request: the recorded activation receipt is returned without analysing or activating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "code.import/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.import-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-code.import",
+          "mutation_precondition": {
+            "record_version": "0"
+          }
+        },
+        "operation": "code.import",
+        "input": {
+          "repository_id": "repo-code",
+          "snapshot_id": "snap-1",
+          "producer_id": "analyzer.python.stdlib",
+          "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "policy_id": "owner.code-import",
+          "policy_version": "1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.import-replay",
+          "audit_reference": "audit-code.import"
+        },
+        "result": {
+          "binding": {
+            "repository_id": "repo-code",
+            "snapshot_id": "snap-1",
+            "producer_id": "analyzer.python.stdlib",
+            "producer_version": "1.0.0",
+            "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "import_id": "cai-1",
+            "batch_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "policy_id": "owner.code-import",
+            "policy_version": "1",
+            "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "manifest_evidence_id": "ev-manifest-1",
+            "activated_at": "2024-01-01T00:00:00Z"
+          },
+          "activation_sequence": 1,
+          "coverage_decision": "initial",
+          "reduced_file_count": 0,
+          "entity_count": 12,
+          "relation_count": 9,
+          "diagnostic_count": 3,
+          "file_count": 4,
+          "freshness": {
+            "state": "current",
+            "snapshot_id": "snap-1",
+            "newest_snapshot_id": "snap-1",
+            "working_tree": "not_observed"
+          }
+        }
+      }
+    },
+    {
+      "id": "code.import/idempotency-conflict",
+      "operation": "code.import",
+      "description": "code.import reusing one idempotency key for another snapshot: refused rather than resolved, and nothing is analysed.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "code.import/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.import-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-code.import",
+          "mutation_precondition": {
+            "record_version": "0"
+          }
+        },
+        "operation": "code.import",
+        "input": {
+          "repository_id": "repo-code",
+          "snapshot_id": "snap-2",
+          "producer_id": "analyzer.python.stdlib",
+          "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "policy_id": "owner.code-import",
+          "policy_version": "1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.import-conflict",
+          "audit_reference": "audit-code.import"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "code.status/primary-success",
+      "operation": "code.status",
+      "description": "code.status reports every declared producer profile's availability, readiness, binding, freshness and coverage for one repository and snapshot on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.status-success",
+          "required_capabilities": [
+            {
+              "id": "graph.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "graph:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "code.status",
+        "input": {
+          "repository_id": "repo-code",
+          "snapshot_id": "snap-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.status-success"
+        },
+        "result": {
+          "repository_id": "repo-code",
+          "snapshot": {
+            "snapshot_id": "snap-1",
+            "capture_status": "complete",
+            "freshness": {
+              "state": "current",
+              "snapshot_id": "snap-1",
+              "newest_snapshot_id": "snap-1",
+              "working_tree": "not_observed"
+            },
+            "unsupported": [
+              {
+                "suffix": ".rs",
+                "file_count": 2
+              }
+            ],
+            "unsupported_truncated": false
+          },
+          "analyses": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "producer_version": "1.0.0",
+              "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "languages": [
+                "python"
+              ],
+              "availability": "available",
+              "readiness": "ready",
+              "activation_sequence": 1,
+              "policy": {
+                "policy_id": "owner.code-import",
+                "policy_version": "1",
+                "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+              },
+              "binding": {
+                "repository_id": "repo-code",
+                "snapshot_id": "snap-1",
+                "producer_id": "analyzer.python.stdlib",
+                "producer_version": "1.0.0",
+                "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "import_id": "cai-1",
+                "batch_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "policy_id": "owner.code-import",
+                "policy_version": "1",
+                "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "manifest_evidence_id": "ev-manifest-1",
+                "activated_at": "2024-01-01T00:00:00Z"
+              },
+              "freshness": {
+                "state": "current",
+                "snapshot_id": "snap-1",
+                "newest_snapshot_id": "snap-1",
+                "working_tree": "not_observed"
+              },
+              "coverage": {
+                "state": "complete",
+                "admitted_file_count": 4,
+                "analysed_file_count": 4
+              }
+            },
+            {
+              "producer_id": "analyzer.typescript.checker",
+              "producer_version": "1.0.0",
+              "profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "languages": [
+                "javascript",
+                "typescript"
+              ],
+              "availability": "unavailable",
+              "availability_reason": "runtime_not_configured",
+              "readiness": "not_ready",
+              "readiness_reason": "no_active_import",
+              "activation_sequence": 0
+            }
+          ],
+          "as_of": "2024-01-01T00:00:01Z"
+        }
+      }
     }
   ],
   "contract_version": "1.0",

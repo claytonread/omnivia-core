@@ -1518,6 +1518,51 @@
     },
     "CodeQueryResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryResult"
+    },
+    "CodeProducerLock": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeProducerLock"
+    },
+    "CodePolicyNodeKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyNodeKind"
+    },
+    "CodePolicyRelationship": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyRelationship"
+    },
+    "CodePolicyReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyReference"
+    },
+    "CodePolicyRegisterInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyRegisterInput"
+    },
+    "CodePolicyRegisterResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyRegisterResult"
+    },
+    "CodeSnapshotFreshness": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSnapshotFreshness"
+    },
+    "CodeImportInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeImportInput"
+    },
+    "CodeImportResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeImportResult"
+    },
+    "CodeStatusInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeStatusInput"
+    },
+    "CodeAnalysisCoverage": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeAnalysisCoverage"
+    },
+    "CodeAnalysisStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeAnalysisStatus"
+    },
+    "CodeUnsupportedFiles": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeUnsupportedFiles"
+    },
+    "CodeSnapshotStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSnapshotStatus"
+    },
+    "CodeStatusResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeStatusResult"
     }
   }
 }

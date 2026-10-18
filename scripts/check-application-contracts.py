@@ -1358,6 +1358,26 @@ _SHARE_READ: tuple[str, ...] = tuple(sorted((*_POINT_READ, "conflict")))
 #: its byte bound, is `size_limit_exceeded`. A stale or ineligible export is a `conflict`, and an export the
 #: workspace does not hold is `not_found`. `context_budget_insufficient` stays with engineering context.
 _TASK_CONTEXT_MUT: tuple[str, ...] = tuple(sorted((*_SHARE_MUT, "size_limit_exceeded")))
+#: Code-analysis acceptance policy (W13-C). A version identifies one set of rules
+#: forever, so the same id and version under different rules is a `conflict`; there is
+#: no record to fail to find and no precondition, because a policy version is never
+#: replaced, only followed by another version.
+_CODE_POLICY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
+#: Code-analysis import (W13-C). It names a sealed snapshot and a registered policy that
+#: may not exist (`not_found`), states the activation it expects to retire as a mutation
+#: precondition, refuses a snapshot or policy whose state cannot carry the import
+#: (`conflict`), and bounds the analysis by the declared profile (`size_limit_exceeded`).
+_CODE_IMPORT_MUT: tuple[str, ...] = tuple(
+    sorted(
+        (
+            *_CREATE_MUT,
+            "conflict",
+            "mutation_precondition_failed",
+            "not_found",
+            "size_limit_exceeded",
+        )
+    )
+)
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ANALYSIS_START": _ANALYSIS_START,
     "BASE_INSTALL": _BASE_INSTALL,
@@ -1410,6 +1430,8 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "SHARE_MUT": _SHARE_MUT,
     "SHARE_READ": _SHARE_READ,
     "TASK_CONTEXT_MUT": _TASK_CONTEXT_MUT,
+    "CODE_POLICY_MUT": _CODE_POLICY_MUT,
+    "CODE_IMPORT_MUT": _CODE_IMPORT_MUT,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1444,7 +1466,7 @@ class FrozenOperation(NamedTuple):
     max_page_size: int = FROZEN_PAGE_SIZE
 
 
-#: The exact 89 application operations, in the frozen insertion order. Runtime
+#: The exact 92 application operations, in the frozen insertion order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1831,16 +1853,30 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "workspace", ("graph:read",), "none", "graph.read",
         "code", "CodeQuery", "GRAPH_READ", False,
     ),
+    "code.policy.register": FrozenOperation(
+        "workspace", ("engineering:curate",), "create", "engineering.curate",
+        "code", "CodePolicyRegister", "CODE_POLICY_MUT", False,
+    ),
+    "code.import": FrozenOperation(
+        "workspace", ("engineering:source",), "create", "engineering.source",
+        "code", "CodeImport", "CODE_IMPORT_MUT", False,
+    ),
+    "code.status": FrozenOperation(
+        "workspace", ("graph:read",), "none", "graph.read",
+        "code", "CodeStatus", "POINT_READ", False,
+    ),
 }
 
 #: The four governance transitions that support and require a mutation
 #: precondition, plus `decision.settings.update`, whose compare-and-swap
 #: revision is a mutation precondition: a mismatch is a state the caller
-#: re-reads and re-decides against.
+#: re-reads and re-decides against. `code.import` states the activation it
+#: expects to retire the same way, so an import planned against an analysis
+#: another import has since replaced is refused rather than activated.
 FROZEN_PRECONDITION_OPERATIONS: frozenset[str] = frozenset(
     {"candidate.approve", "candidate.reject", "knowledge.propose", "record.supersede",
      "decision.settings.update", "continuity.session.close", "continuity.checkpoint.append",
-     "engineering.review.record"}
+     "engineering.review.record", "code.import"}
 )
 
 

@@ -7,8 +7,8 @@ maps to. It dispatches nothing and calls nothing.
 
 Three properties are held here rather than left to a reader:
 
-*Bijection with the catalogue.* The eighty-nine application commands map onto the
-eighty-nine operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
+*Bijection with the catalogue.* The ninety-two application commands map onto the
+ninety-two operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
 command reaching an operation the contract does not publish -- or an operation
 published with no command reaching it -- is an import-time refusal, not a
 runtime surprise. That also closes the door on the legacy `core.*` operation names,
@@ -167,6 +167,14 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
         ("context-pack", "build"), "context_pack.build", "knowledge_retrieval"
     ),
     ApplicationCommand(("code", "query"), "code.query", "knowledge_retrieval"),
+    # Code analysis (W13-C): discovering applicable analyses is a read like the query;
+    # authorising an acceptance policy and running an import are two separate acts
+    # under two separate purposes, so a grant for one never carries the other.
+    ApplicationCommand(("code", "status"), "code.status", "knowledge_retrieval"),
+    ApplicationCommand(
+        ("code", "policy"), "code.policy.register", "code_analysis_policy"
+    ),
+    ApplicationCommand(("code", "import"), "code.import", "code_analysis_import"),
     ApplicationCommand(("chat", "command"), "chat.command", "chat_authoring"),
     ApplicationCommand(("chat", "events"), "chat.events", "chat_observation"),
     ApplicationCommand(("chat", "snapshot"), "chat.snapshot", "chat_observation"),

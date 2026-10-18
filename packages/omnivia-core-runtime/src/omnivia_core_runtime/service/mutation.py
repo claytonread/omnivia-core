@@ -129,6 +129,12 @@ ENGINEERING_SOURCE_PURPOSE: Final = "engineering_source"
 #: identity. Its own purpose, like its own scope and capability, so neither a
 #: contributed observation nor a trusted source stream carries this authority.
 ENGINEERING_REPOSITORY_PURPOSE: Final = "engineering_repository"
+#: Code analysis (W13-C). Authorising a deterministic acceptance policy is an owner's
+#: governance act; running a declared producer and activating what that policy accepts is
+#: applying one. Two purposes, so a grant to import never carries the authority to decide
+#: what an import may accept, and a grant to author policy never runs an analysis.
+CODE_ANALYSIS_POLICY_PURPOSE: Final = "code_analysis_policy"
+CODE_ANALYSIS_IMPORT_PURPOSE: Final = "code_analysis_import"
 #: Declaring a trigger and moving its subscription are one configuration act, as the decision
 #: definition and model acts share one purpose: a grant to configure a trigger is the same
 #: authority whichever of the two it performs.
@@ -213,6 +219,8 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         # the CLI command declares, because the grant's purpose is checked against
         # the declared one and the two must agree.
         "settings.set": WORKSPACE_ADMINISTRATION_PURPOSE,
+        "code.policy.register": CODE_ANALYSIS_POLICY_PURPOSE,
+        "code.import": CODE_ANALYSIS_IMPORT_PURPOSE,
     }
 )
 
@@ -318,6 +326,12 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # installation role at issuance, and a setting belongs to the one
         # workspace the grant already names.
         "settings.set": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Authorising which code facts an import may accept in bulk is the existing
+        # governance owner's act, the same reviewer role a candidate approval takes.
+        # Running an import under an authorised policy accepts nothing the policy did not
+        # already, so it is contributor work like any source processing.
+        "code.policy.register": KNOWLEDGE_REVIEWER_ROLE,
+        "code.import": WORKSPACE_CONTRIBUTOR_ROLE,
     }
 )
 

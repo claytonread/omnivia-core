@@ -92,6 +92,11 @@ from omnivia_core_runtime.service.handlers.chat import (
     ChatHandlers,
 )
 from omnivia_core_runtime.service.handlers.code import code_query
+from omnivia_core_runtime.service.handlers.code_analysis import (
+    CODE_STATUS_OPERATION,
+    CodeAnalysisHandlers,
+    code_status,
+)
 from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
 from omnivia_core_runtime.service.handlers.continuity import ContinuityHandlers
 from omnivia_core_runtime.service.handlers.decisions import (
@@ -331,6 +336,7 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         GRAPH_TRAVERSE_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         CONTEXT_PACK_BUILD_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         CODE_QUERY_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+        CODE_STATUS_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         "decision.status": DECISION_STATUS_PURPOSE,
         "decision.record.get": DECISION_RECORD_PURPOSE,
         "decision.record.list": DECISION_RECORD_PURPOSE,
@@ -1265,10 +1271,15 @@ def build_decision_application_dispatcher(
 #: and one binding. Purposes are the local-owner policy table's own, exactly as the
 #: decision family's are. The local owner is its own source producer here; the
 #: source record's distinct scope and capability reach no other family's session.
+#: The two code-analysis writes (W13-C) join it: authorising an acceptance policy is a
+#: curation act under `engineering:curate`, and importing an analysis of a captured
+#: snapshot is source processing under `engineering:source`. `code.query` and
+#: `code.status` are graph reads and stay in the read family.
 ENGINEERING_FAMILY_OPERATIONS: Final[frozenset[str]] = frozenset(
     name
     for name in (*OPERATION_PURPOSES, *MUTATION_PURPOSES)
     if name.startswith(("engineering.", "continuity.", "context.priority."))
+    or name in {"code.policy.register", "code.import"}
 )
 
 ENGINEERING_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
@@ -1327,13 +1338,14 @@ def engineering_family_session(
 def build_engineering_registry(
     refusals: EngineeringHandlers,
     continuity: ContinuityHandlers,
+    code: CodeAnalysisHandlers,
 ) -> ApplicationOperationRegistry:
-    """The twelve engineering-memory operations, one registry, catalogue-complete.
+    """The fourteen engineering-family operations, one registry, catalogue-complete.
 
     The continuity vertical (session register/append/close, handoff read) is the
     plan's PR-B producer; retrieval, the pack builder, priorities, reviews, the
     trusted source record and repository/checkout registration are served by
-    `EngineeringHandlers`.
+    `EngineeringHandlers`; code-analysis policy and import by `CodeAnalysisHandlers`.
     """
     registry = ApplicationOperationRegistry()
     registry.register(
@@ -1381,6 +1393,10 @@ def build_engineering_registry(
         "engineering.repository.register",
         cast(OperationHandler, refusals.engineering_repository_register),
     )
+    registry.register(
+        "code.policy.register", cast(OperationHandler, code.code_policy_register)
+    )
+    registry.register("code.import", cast(OperationHandler, code.code_import))
     return registry
 
 
@@ -1396,7 +1412,7 @@ def build_engineering_application_dispatcher(
     record: ApplicationCallSink | None = None,
     local_continuity_association: TrustedContinuityAssociation | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the twelve-operation S-engineering family around the existing router."""
+    """Compose the fourteen-operation S-engineering family around the existing router."""
     session = engineering_family_session(
         principal_id=principal_id,
         installation_id=installation_id,
@@ -1415,6 +1431,9 @@ def build_engineering_application_dispatcher(
             session=session,
             binding=binding,
             clock=server_clock,
+        ),
+        CodeAnalysisHandlers(
+            service=service, session=session, binding=binding, clock=server_clock
         ),
     )
     return ApplicationDispatcher(
@@ -1985,6 +2004,7 @@ def build_application_registry(
     registry.register(GRAPH_TRAVERSE_OPERATION, graph_traverse)
     registry.register(CONTEXT_PACK_BUILD_OPERATION, context_pack_build)
     registry.register(CODE_QUERY_OPERATION, code_query)
+    registry.register(CODE_STATUS_OPERATION, code_status)
     registry.register(ANALYSIS_START_OPERATION, cast(OperationHandler, analysis_start))
     for operation, handler in (additional or {}).items():
         registry.register(operation, handler)
