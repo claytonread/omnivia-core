@@ -12,7 +12,9 @@ after the closeout commit, against the exact immutable final tip.
 
 ## 1. Headline
 
-- Nothing in this branch is release-qualified. No capability has L5 (packaged) or L6 (release) evidence.
+- Nothing in this branch is release-qualified and no capability has L6 (release) evidence. One scoped L5 (packaged)
+  result exists: the Standard Python distribution on one macOS arm64 host, `qualification_only`, unsigned,
+  `production_release_eligible: false` (section 18). It does not cover the native companion or extensions.
 - The strongest delivered vertical is Python code intelligence: producer, governed import and graph
   through the shipped transports at L4, accepted by Codex at plan gate G8. TypeScript has no production
   route.
@@ -23,12 +25,13 @@ after the closeout commit, against the exact immutable final tip.
   Background processing and Activity details are explicit "not built" text. W17 (C-01) and W18 (indexing
   controls) are not implemented.
 - No clean plain preflight exists. The AT09 harness defect that forced the overlay's deselect was repaired
-  on 2026-10-18 (section 17); no complete preflight has run since, so none is claimed.
+  on 2026-10-18 (section 17); no complete preflight has run since, including after commit `3e56688d`, so none is
+  claimed.
 
 Ledger counts (from the JSON): work items 19 (14 PARTIAL, 5 NOT_RUN, none PASS); properties 38 (27 PASS,
 5 PARTIAL, 4 NOT_RUN, 1 BLOCKED, 1 FAIL); acceptance entries 256 = 138 technical cases + 116 UI scenarios
-+ 2 unnumbered groups (8 PASS, 37 PARTIAL, 209 NOT_RUN, 2 BLOCKED, 0 FAIL); qualification runs 11
-(3 PASS, 5 NOT_RUN, 3 BLOCKED); release decisions 7.
++ 2 unnumbered groups (8 PASS, 37 PARTIAL, 209 NOT_RUN, 2 BLOCKED, 0 FAIL); qualification runs 12
+(4 PASS, 5 NOT_RUN, 3 BLOCKED); release decisions 7.
 
 ## 2. Accepted branches and commits
 
@@ -37,6 +40,7 @@ Ledger counts (from the JSON): work items 19 (14 PARTIAL, 5 NOT_RUN, none PASS);
 | Core | `codex/core-tech-settings-integration` | `4d453fe614225c0aff4cdd55dcd6fd1695686728` (tree `b672ddf4...`) | Product-code tip `a6924504`; accepted at plan gate G8 (Python route, L4) |
 | Dev | `codex/core-code-intelligence-integration` | `50a12d285d212eb138930ea1c8b7df08862b37e1` | Commits `32faf17`, `015da63`, `50a12d2` on `e33cd5b21d51`; 8 files, +3342 -606; evidence supplied by Codex |
 | Platform | `voice-parakeet-parakeet-v2` | `0242519315d144c178078eaead7c18bfc2baf5fd` | A 2026-09-28 docs commit; no Platform product change for this programme |
+| Core (release readiness) | `codex/core-release-readiness-integration` | `3e56688d9e7beed15b1617164dea08c567ad1903` | Section 17 slice, committed; source of the Standard Python candidate (section 18) |
 | PM plan | `codex/chat-c5-c11-closeout-decisions` | `dff76a050cdeb0c5cd43f5a1a0d238c65bca4c8e` | Adds one file; plan sha256 `0d2383a9...c433` |
 
 ### Branch-topology integration risk
@@ -126,6 +130,7 @@ models, application updates. The Settings window's placeholders are static text,
 | **Platform adapter** | **L2 simulated, not L4**: a real adapter driven through an injected stub transport returning a canned result (temp test sha256 `fd31e5bc...b69f2`, not retained in any repo) | No real-Core run; no code-query UI |
 | Hybrid search over any transport | none | no contract decision |
 | MCP real host | none current | records from 2026-10-04 predate the manifest and `settings.*`/`code.*` |
+| **Standard Python distribution, installed wheels** | **Scoped L5**, one macOS arm64 host (section 18) | Unsigned, `qualification_only`; four MCP client configurations pass in the installed journey, which is not a real-host record; no L6 |
 
 ## 8. Migrations, catalogue, changed files
 
@@ -143,15 +148,17 @@ models, application updates. The Settings window's placeholders are static text,
 ## 9. Compatibility, recovery, rollback, upgrade
 
 - Fresh install, upgrade 0073 to 0074 with graph kept, tampered-trigger refusal with rollback, and backup/
-  restore carrying the applicable graph: L3 tests (P31). Not run: packaged upgrade, any downgrade, process-kill
-  crash tests of `code.import`, packaged restore.
+  restore carrying the applicable graph: L3 tests (P31). Packaged backup/restore and incompatible-format refusal
+  have scoped L5 evidence in the Standard candidate (lifecycle verdict pass, section 18). Not run or not claimed:
+  any downgrade, process-kill crash tests of `code.import`; packaged upgrade is not claimed beyond that lifecycle
+  verdict.
 - Code rollback is re-activation of an earlier import (a guarded activation), not a schema downgrade. There is
   no disable operation for code analysis or semantic retrieval; opting out is not registering a policy.
 - Update rollback, signed activation and restart-after-update: not built or run.
 
 ## 10. Evidence dimensions not run or incomplete
 
-Platform/architecture: one host class only (macOS arm64); Intel, older macOS, Linux/Windows rows not run
+Platform/architecture: one host class only (macOS arm64; the section 18 candidate is that one host); Intel, older macOS, Linux/Windows rows not run
 locally. Offline/network-denied: producers assert no network modules; Node permissions do not gate the
 network; no OS-level denial test. Permission revocation and hidden-corpus: code-graph differential and
 revocation tests exist (P29, P30); the BM25 add/remove rare-term statistics matrix (B06) and two-workspace cache
@@ -170,8 +177,8 @@ review), **no area is SHIP**. The seventh area is the lexical path, added to the
 
 | # | Area | Decision | Evidence level | Rationale | Entry conditions |
 |---|---|---|---|---|---|
-| 1 | Native intake | BLOCKED | repository tests (L3); no L5 | 68/130 gates passed, 47 blocked_external, 15 not_executed; unsigned, `production_release_eligible: false`; AT09 harness repaired 2026-10-18 and passing locally only; Swift host failures as recorded; extension sources typechecked, not run | signing identity and notarised build; installed-signed evidence; a hosted run of the AT09 end-to-end half; extension tests; accessibility review |
-| 2 | Lexical retrieval, evidence, Context Pack | BLOCKED | L3-L4 where exercised; clauses mapped (3 covered, 4 pending) | pre-existing path, shared authority refactored; erase-then-search, backup/restore-then-search, BM25 add/remove statistics and two-workspace cache isolation have no test; green exact-tip validation absent | green PR checks; evidence for LEX-01, LEX-03, LEX-05 and LEX-06; review |
+| 1 | Native intake | BLOCKED | repository tests (L3); no native L5 (the section 18 candidate does not qualify the companion or extensions) | 68/130 gates passed, 47 blocked_external, 15 not_executed; unsigned, `production_release_eligible: false`; AT09 harness repaired 2026-10-18 and passing locally only; Swift host failures as recorded; extension sources typechecked, not run | signing identity and notarised build; installed-signed evidence; a hosted run of the AT09 end-to-end half; extension tests; accessibility review |
+| 2 | Lexical retrieval, evidence, Context Pack | BLOCKED | L3-L4 where exercised; scoped L5 in the Standard Python package on one macOS arm64 host (section 18); clauses mapped (3 covered, 4 pending) | pre-existing path, shared authority refactored; erase-then-search, backup/restore-then-search, BM25 add/remove statistics and two-workspace cache isolation have no test; green exact-tip validation absent | green PR checks; evidence for LEX-01, LEX-03, LEX-05 and LEX-06; review |
 | 3 | Semantic validation | DO_NOT_SHIP | L0 | no claim gate, warrants, SHACL or Context Pack preservation exists | P4 sub-slices implemented and qualified |
 | 4 | Semantic retrieval | DISABLED | L1/L3 foundations | no embedder, backend, build job, operation or transport; QP-01 blocked | QP-01 to QP-03, QP-05, contract decision |
 | 5 | Code intelligence | DISABLED (Python, opt-in); TypeScript DO_NOT_SHIP | L4 Python fixtures; L3 TS | real repositories refused beyond about 35-40 modules; QP-04 not run; unaccepted migrations; MCP off | multi-batch or ceiling decision; real-repo run; Node provisioning for TS; migration acceptance |
@@ -193,8 +200,8 @@ G0-G10 collide.
 | Plan gate | Status | Why |
 |---|---|---|
 | G1 shared contracts/migrations | not met | code and settings contracts pass generation/conformance; status, pause, C-01, model, update-state and validation contracts do not exist; no shared Swift/TS state fixture |
-| G2 native intake | partial | repository gates only; no L4 companion-to-Core claim, no L5 |
-| G3 lexical retrieval | partial | capability pre-existing; clauses mapped in the lexical traceability fixture, LEX-01, LEX-03, LEX-05 and LEX-06 pending; no hosted or packaged run |
+| G2 native intake | partial | repository gates only; no L4 companion-to-Core claim, no native L5 (the Standard Python candidate does not qualify the companion) |
+| G3 lexical retrieval | partial | capability pre-existing; clauses mapped in the lexical traceability fixture, LEX-01, LEX-03, LEX-05 and LEX-06 pending; scoped Standard-package L5 on one macOS arm64 host (section 18); no hosted run, no L6 or full matrix |
 | G4 semantic validation | not met | not implemented; not a release claim |
 | G5 semantic retrieval | not met | disabled; not a release claim |
 | G6 Settings/updates/models | not met | none of the clauses |
@@ -206,40 +213,42 @@ G0-G10 collide.
 Spec gates (section 21.1): G0 binding partial; G1 resource/encoder not run; G2 retrieval correctness/privacy
 partial (fixture level); G3 lifecycle/durability not run; G4 relevance/resources not run; G5 producer
 semantics met at L3; G6 governed import/graph met at L4 for Python; G7 transports/clients partial; G8
-packaging not run; G9 Settings/native input not met; G10 indexing controls not met.
+packaging: scoped L5 for Standard Python on one macOS arm64 host (section 18), signing, notarisation and other hosts not run; G9 Settings/native input not met; G10 indexing controls not met.
 
 ## 14. Unrun residuals
 
 Real model and backend; scale and latency; content-bearing input; real repositories and multi-batch import;
-TypeScript production route and pinned Node; hybrid public mode; MCP real host; packaged, signed and
-notarised builds; update activation; accessibility; Intel/older macOS; BM25 add/remove rare-term matrix;
+TypeScript production route and pinned Node; hybrid public mode; MCP real host; signed and
+notarised builds, and packaged builds beyond the one scoped Standard Python candidate; update activation; accessibility; Intel/older macOS; BM25 add/remove rare-term matrix;
 two-workspace cache isolation; C-01; indexing controls; shortcut; semantic validation.
 
 ## 15. Reproduction and retained evidence
 
 - Ledger parse: `jq empty` on `WORK-STATUS.json` and `QUALIFICATION-PLAN.json`.
 - Historical overlay (runs RUN-01 to RUN-11; the deselect is no longer needed after section 17): `PATH="$PWD/.venv/bin:$PATH" PYTEST_ADDOPTS="-o tmp_path_retention_policy=failed --deselect packages/omnivia-core-runtime/tests/phase3/runtime/test_at09_selected_source_end_to_end.py::test_selected_source_reaches_core_exact_and_is_left_unchanged" ./scripts/preflight`.
+- Standard candidate (section 18): identified by candidate key and checksum-index SHA-256; the temporary artifact path
+  and raw logs are not retained.
 - Retained in the repo: the P1, P7 (Python, TypeScript) and P8 (W12, W13-A/B/C) packets here; the Settings v2,
   update-trust and static-gate records; `docs/quality/wp15-qualification-status.md`. No raw log is retained.
 
 ## 16. Stale or contradictory claims
 
-Replaced by this file: "P1 only", "no production caller" for code, "code producers NOT_RUN", "nothing ran".
+Replaced by this file: "P1 only", "no production caller" for code, "code producers NOT_RUN", "nothing ran", "no
+capability has L5" (now one scoped L5, section 18).
 Still stale and **not edited** (outside this packet): `BASELINE-AND-BINDINGS.md` describes only the P1 slice
 (e.g. "Producers, import and graph activation are later work"); WP-15's "no companion-to-Core test" statement;
 the spec's own stale supersedes/ui_companion metadata. In the ledger, P15 is scoped to the P1 slice.
 
-## 17. Release-readiness slice (2026-10-18, uncommitted, for Codex review)
+## 17. Release-readiness slice (2026-10-18, committed as `3e56688d`)
 
-Baseline `f4734816` on `codex/core-release-readiness-integration`. Working-tree edits only: not committed,
-pushed, merged or released. The decisions in section 11 are unchanged: semantic validation DO_NOT_SHIP,
+Baseline `f4734816` on `codex/core-release-readiness-integration`; committed as `3e56688d`. Not merged or released. The decisions in section 11 are unchanged: semantic validation DO_NOT_SHIP,
 semantic retrieval DISABLED, code intelligence DISABLED by default (Python opt-in, TypeScript DO_NOT_SHIP),
 Settings/update/model UX not release-enabled, Spotlight deferred and DISABLED. No product behaviour changed.
 
 | Change | What it shows | What it does not |
 |---|---|---|
 | AT09 harness starts the managed service (`test_managed_start._run`) before the Swift half | The exact test passes with no deselect on a local Darwin host with Swift. The defect was the harness: the companion delivers attach-only (`--require-running`), so the item stayed `pending` | No hosted CI row runs the end-to-end half; one text fixture; no OS or Xcode version recorded |
-| `.gitattributes` `-text -whitespace` on the AT-09 fixture; blank line removed from `test_refresh_outcome_gates.py` | `git diff --check origin/main` (committed and uncommitted changes) is clean, with the fixture's bytes (pinned by SHA-256) untouched | The committed HEAD alone still carries the blank line until this slice is committed |
+| `.gitattributes` `-text -whitespace` on the AT-09 fixture; blank line removed from `test_refresh_outcome_gates.py` | `git diff --check origin/main` (committed and uncommitted changes) is clean, with the fixture's bytes (pinned by SHA-256) untouched | Fixed in the `3e56688d` commit |
 | Native extension `swiftc -typecheck -application-extension` in `scripts/preflight` and the macOS step of `phase2-platform.yml` | Both extension source sets typecheck locally | Typechecked, never run; no job, check name or matrix changed; hosted result not observed |
 | Lexical traceability fixture and test | 7 clauses: LEX-02, 04, 07 covered by named, unskipped tests; LEX-01, 03, 05, 06 pending | LEX-01: the catalogue has no erase or purge operation. LEX-03: no test restores a backup of a workspace with a built projection and searches it. LEX-05: no BM25 add/remove statistics or rare-term matrix test (the adjacent long-text and supersede tests are partial evidence only). LEX-06: no two-live-workspace or cache-isolation test (the foreign-frontier refusal and no-cache check are partial evidence only). None is claimed |
 | `test_lb_l13b` migrated-only-to-0012 build and search | A workspace stopped at 0012 reports `user_version` 12 and ranks as the head schema does | No upgrade-from-populated-0011 data |
@@ -247,6 +256,44 @@ Settings/update/model UX not release-enabled, Spotlight deferred and DISABLED. N
 | WP-15 ledger text | The AT-09 limitation records the repair and the extension typecheck; the generated status report is unchanged and matches | No gate status changed: still 68 passed, 47 blocked_external, 15 not_executed |
 
 Verification run for this slice is listed under "Verification" in the hand-back; no complete `./scripts/preflight`
-was run. Not produced: native L5/L6, signing, notarisation, accessibility, Intel or older macOS, a real
+was run, and none has run since `3e56688d`. Not produced: native L5/L6, signing, notarisation, accessibility, Intel or older macOS, a real
 security-scoped bookmark, removable or iCloud volumes, a real process kill, any performance measurement, or a
-hosted matrix result.
+hosted matrix result. The scoped Standard Python L5 candidate built from `3e56688d` is section 18.
+
+## 18. Standard Python candidate (scoped L5, 2026-10-18)
+
+Codex produced and independently inspected one clean Standard-profile Python candidate from source commit
+`3e56688d9e7beed15b1617164dea08c567ad1903` (branch `codex/core-release-readiness-integration`). The build ran `scripts/build-standard-candidate.py`;
+the temporary artifact directory is not recorded and no raw log is retained here. This section records the
+identifiers and summarised facts Codex supplied.
+
+| Fact | Value |
+|---|---|
+| Builder verdict | pass |
+| Candidate key | `809f09328100621f7d8f4a84665db0a43f6ff14ecce0cda9359f4cd743f09e40` |
+| Source revision / dirty | `3e56688d9e7beed15b1617164dea08c567ad1903` / false |
+| Host | macOS 27.0 arm64, CPython 3.11.15 (one host) |
+| Profile | omnivia-core, omnivia-core-runtime, omnivia-core-client, omnivia-core-cli, omnivia-core-mcp |
+| Wheels / install | 48 wheels; offline install true; skips 0; xfails 0 |
+| Standalone journey | verdict pass; seeded record ranked first true; Context Pack cites the seeded record true; four MCP client configurations pass; service crash recovery pass |
+| MCP authoring | verdict pass |
+| Lifecycle | verdict pass, including verified backup/restore and incompatible-format refusal |
+| Candidate state | `qualification_only`; `production_release_eligible: false`; signing status `unsigned` |
+| Checksum-index SHA-256 | `19abbe33da8171e477f1cb8427bf468c5dc726437fcc27678eaf706ae17c7e8a` |
+
+Classification: **scoped L5 (packaged/installed qualification) for the Standard Python distribution on this one
+macOS arm64 host.** It is not L6, not a production release, not signed or notarised, and does not qualify the
+native macOS companion or the extensions.
+
+- Native intake: unchanged. Repository/integration evidence only; it still needs installed signed and notarised UI
+  evidence and the external matrix (section 11, row 1).
+- Lexical retrieval, evidence and Context Pack: now carries this scoped Standard-package L5 evidence (the installed
+  journey's seeded-record ranking and Context Pack citation, section 17). Four clauses (LEX-01, 03, 05, 06) remain
+  pending and no L6 or full matrix is claimed. The seeded journey is one candidate, so it shows position and
+  citation, not discrimination.
+- Release decisions in section 11 are unchanged; the candidate is qualification-only and no area is SHIP.
+- Migrations 0066-0074 remain `candidate` with `accepted_commit` null.
+- Plain full `./scripts/preflight` has not been run after commit `3e56688d`; Codex will run it after this
+  documentation update. **No preflight result is claimed here.**
+- Not produced: signing, notarisation, native L5/L6, accessibility, Intel or older macOS, any other host, a hosted CI
+  matrix result, a performance measurement.

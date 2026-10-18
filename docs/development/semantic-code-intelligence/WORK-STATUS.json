@@ -8,7 +8,7 @@
   "release_readiness_slice": {
     "recorded_on": "2026-10-18",
     "baseline": "f473481689b703629bb84a3ebea88046e9c74300 (codex/core-release-readiness-integration)",
-    "state": "uncommitted working-tree edits for Codex review; not merged, not pushed, not released",
+    "state": "committed as 3e56688d9e7beed15b1617164dea08c567ad1903 on codex/core-release-readiness-integration; not merged, not released",
     "changed": [
       "AT09: test_selected_source_reaches_core_exact_and_is_left_unchanged now starts the managed service with test_managed_start._run before the Swift half, because the companion's CLI delivery is attach-only (--require-running) and previously saw the item stay pending; the home fixture kills the service.",
       ".gitattributes marks the AT-09 fixture -text -whitespace; the genuine trailing blank line in test_refresh_outcome_gates.py is removed, so git diff --check origin/main is clean.",
@@ -25,8 +25,36 @@
       "settings_update_model_ux": "not release-enabled (DO_NOT_SHIP)",
       "spotlight": "deferred, DISABLED"
     },
-    "not_claimed": "Native L5/L6, signing, notarisation, accessibility, Intel or older macOS, a real security-scoped bookmark, removable or iCloud volumes, a real process-kill, any performance measurement, a hosted CI matrix result, or a complete plain ./scripts/preflight. No acceptance row or property status changed.",
-    "verification": "see IMPLEMENTATION-CLOSEOUT.md section 17"
+    "not_claimed": "Native L5/L6, signing, notarisation, accessibility, Intel or older macOS, a real security-scoped bookmark, removable or iCloud volumes, a real process-kill, any performance measurement, a hosted CI matrix result, or a complete plain ./scripts/preflight (none has run since 3e56688d). No acceptance row or property status changed. The scoped Standard Python L5 candidate built from 3e56688d is recorded in standard_candidate and RUN-12.",
+    "verification": "see IMPLEMENTATION-CLOSEOUT.md sections 17 and 18",
+    "standard_candidate": {
+      "recorded_on": "2026-10-18",
+      "classification": "scoped L5 (packaged/installed qualification), Standard Python distribution, one macOS arm64 host; not L6, not a production release, not signed or notarised; does not qualify the native macOS companion or extensions",
+      "source_revision": "3e56688d9e7beed15b1617164dea08c567ad1903",
+      "source_dirty": false,
+      "candidate_key": "809f09328100621f7d8f4a84665db0a43f6ff14ecce0cda9359f4cd743f09e40",
+      "checksum_index_sha256": "19abbe33da8171e477f1cb8427bf468c5dc726437fcc27678eaf706ae17c7e8a",
+      "builder": "scripts/build-standard-candidate.py, verdict pass",
+      "host": "macOS 27.0 arm64, CPython 3.11.15",
+      "profile": ["omnivia-core", "omnivia-core-runtime", "omnivia-core-client", "omnivia-core-cli", "omnivia-core-mcp"],
+      "wheels": 48,
+      "offline_install": true,
+      "skips": 0,
+      "xfails": 0,
+      "standalone_journey": {"verdict": "pass", "seeded_record_ranked_first": true, "context_pack_cites_seeded_record": true, "mcp_client_configurations_passing": 4, "service_crash_recovery": "pass"},
+      "mcp_authoring_verdict": "pass",
+      "lifecycle_verdict": "pass, including verified backup/restore and incompatible-format refusal",
+      "candidate_status": "qualification_only",
+      "production_release_eligible": false,
+      "signing_status": "unsigned",
+      "produced_and_inspected_by": "Codex (independent of this documentation packet)",
+      "artifact_path": "not recorded (temporary)",
+      "preflight": "A plain full ./scripts/preflight has not been run after 3e56688d; Codex will run it after this documentation update. No result is claimed.",
+      "native_intake": "remains repository/integration evidence only; needs installed signed/notarised UI and external matrix evidence",
+      "lexical_retrieval": "scoped Standard-package L5 on this one host; LEX-01, LEX-03, LEX-05 and LEX-06 remain pending; no L6 or full matrix",
+      "migrations_0066_0074": "all candidate, not accepted",
+      "status_changes": "No acceptance row, property or work-item status changed."
+    }
   },
   "p10_reconciliation": {
     "recorded_on": "2026-10-18",
@@ -124,7 +152,7 @@
     },
     "history_pointer": "The P1 integration's own verification commands and outcomes are in git history at 4d453fe6 for this file and are summarised in commands below."
   },
-  "slice_state": "P1 hybrid-lane slice integrated 2026-10-18; P6 update trust and Settings v2, P7 producers and P8 governed import, code.query, code_context and the production vertical integrated on codex/core-tech-settings-integration; this file reconciled at 4d453fe6 by the P10 closeout packet. Not merged, not pushed, not released. Release-readiness slice (see release_readiness_slice) applied afterwards, uncommitted.",
+  "slice_state": "P1 hybrid-lane slice integrated 2026-10-18; P6 update trust and Settings v2, P7 producers and P8 governed import, code.query, code_context and the production vertical integrated on codex/core-tech-settings-integration; this file reconciled at 4d453fe6 by the P10 closeout packet. Not merged, not pushed, not released. Release-readiness slice (see release_readiness_slice) applied afterwards and committed as 3e56688d; a scoped Standard Python L5 candidate was built from it (standard_candidate, RUN-12).",
   "status_vocabulary": ["PASS", "FAIL", "BLOCKED", "NOT_RUN", "NOT_APPLICABLE", "PARTIAL"],
   "status_rules": {
     "PASS": "The complete named scenario was met at (or above) its required evidence level, with exact test identifiers or a recorded command, and nothing in the row is left open.",
@@ -144,7 +172,7 @@
     "l2_simulated": "a fake transport, model or store standing in for the property under test (plan L2)",
     "supplied_l4": "L4 evidence in another repository supplied by Codex with exact results; not re-run by this packet",
     "record_stated": "described by an accepted retained record or packet; not re-run by this packet",
-    "plan_scale": "L0 inspected; L1 contract; L2 simulated; L3 component; L4 integrated; L5 packaged (signed or supported installation); L6 release (full declared matrix, recovery, compatibility, independent acceptance). A higher level is never inferred from a lower one. No row or run in this ledger reaches L5 or L6."
+    "plan_scale": "L0 inspected; L1 contract; L2 simulated; L3 component; L4 integrated; L5 packaged (signed or supported installation); L6 release (full declared matrix, recovery, compatibility, independent acceptance). A higher level is never inferred from a lower one. No row reaches L5 or L6; RUN-12 is the one scoped L5 run (Standard Python distribution, one macOS arm64 host, unsigned, qualification-only) and nothing reaches L6."
   },
   "binding_rule": "Work and acceptance ids are bound to spec v1.7 section 3.1 and to acceptance matrix v1.3 (technical) and UI scenarios v2.3 (CS-R). PASS is used only where the complete named scenario is met at its required evidence level. Rows keep the existing shape: acceptance and work-item rows carry status, property_refs and note; properties carry id, statement, status, evidence_level, tests and note. Exact test identifiers live in the properties a row references. implementation_commit is the accepted tip for every row unless a row says otherwise; host, exit_code and observed_result live in runs; no raw log is retained in this repository, so log_path is null throughout (see runs).",
   "environment": {
@@ -208,7 +236,7 @@
       "tip": "4d453fe6 product code",
       "command": "benchmark tests; ruff; strict mypy; Swift companion build and test",
       "result": "benchmark tests 23 passed; Ruff passed; strict mypy no issues in 429 source files; the Swift companion suite is a bounded baseline-reproduced exception, not green (AbsentTarget acceptance tests fail with start_failed then an Index out of range crash; the full baseline Swift suite later timed out in OcrResourceAdministrationTests).",
-      "exit_code": null,
+      "exit_code": 0,
       "log_path": null,
       "source": "P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md and Codex",
       "independent": true
@@ -315,6 +343,18 @@
       "source": "this packet",
       "independent": false,
       "note": "Its result is reported in the hand-back, not in this file. A document cannot cite the run of its own commit."
+    },
+    {
+      "id": "RUN-12",
+      "what": "Standard-profile Python candidate build and installed qualification (Codex-supplied, scoped L5)",
+      "tip": "3e56688d9e7beed15b1617164dea08c567ad1903, source dirty false",
+      "command": "scripts/build-standard-candidate.py",
+      "result": "builder verdict pass; candidate key 809f09328100621f7d8f4a84665db0a43f6ff14ecce0cda9359f4cd743f09e40; macOS 27.0 arm64, CPython 3.11.15; profile omnivia-core, omnivia-core-runtime, omnivia-core-client, omnivia-core-cli, omnivia-core-mcp; 48 wheels, offline install true, skips 0, xfails 0. Standalone journey pass (seeded record ranked first true, Context Pack cites seeded record true, four MCP client configurations pass, service crash recovery pass); MCP authoring pass; lifecycle pass including verified backup/restore and incompatible-format refusal. Candidate status qualification_only, production_release_eligible false, signing unsigned; checksum-index SHA-256 19abbe33da8171e477f1cb8427bf468c5dc726437fcc27678eaf706ae17c7e8a.",
+      "exit_code": null,
+      "log_path": null,
+      "source": "Codex",
+      "independent": true,
+      "note": "Scoped L5 for the Standard Python distribution on one host only. Not L6, not signed or notarised, no native companion or extension evidence, no hosted CI row, and not a plain ./scripts/preflight (none has run since 3e56688d). The temporary artifact path is not recorded and no raw log is retained."
     }
   ],
   "properties": [
@@ -559,7 +599,7 @@
       "status": "FAIL",
       "evidence_level": "none",
       "tests": [],
-      "note": "No clean plain ./scripts/preflight exists for this branch. Authoritative accepted-tip record (RUN-01): exit 1, 4 failed, 38,388 passed, 59 skipped; three failures were throwaway-venv environment and passed under the main venv, and AT09 test_selected_source_reaches_core_exact_and_is_left_unchanged fails identically at baseline f6f68dbb. With the accepted overlay (which deselects exactly that test) the Settings v2 lane recorded exit 0 at cf248b71 (RUN-04). The Swift companion suite is a bounded baseline-reproduced exception at the P8 tip. The P1-era stop at the isolated MCP source/wheel comparison no longer reproduces. This packet's own run (RUN-11) was stopped before completion and has no result; Codex will run and report one complete preflight after the closeout commit, against the exact immutable final tip. Release-readiness slice, 2026-10-18: the AT09 harness is repaired and the exact test passes without a deselect when run on its own (see release_readiness_slice); a complete plain ./scripts/preflight has still not been run, so this status stays FAIL."
+      "note": "No clean plain ./scripts/preflight exists for this branch. Authoritative accepted-tip record (RUN-01): exit 1, 4 failed, 38,388 passed, 59 skipped; three failures were throwaway-venv environment and passed under the main venv, and AT09 test_selected_source_reaches_core_exact_and_is_left_unchanged fails identically at baseline f6f68dbb. With the accepted overlay (which deselects exactly that test) the Settings v2 lane recorded exit 0 at cf248b71 (RUN-04). The Swift companion suite is a bounded baseline-reproduced exception at the P8 tip. The P1-era stop at the isolated MCP source/wheel comparison no longer reproduces. This packet's own run (RUN-11) was stopped before completion and has no result; Codex will run and report one complete preflight after the closeout commit, against the exact immutable final tip. Release-readiness slice, 2026-10-18: the AT09 harness is repaired and the exact test passes without a deselect when run on its own (see release_readiness_slice); a complete plain ./scripts/preflight has still not been run, including after commit 3e56688d (Codex will run it after the candidate documentation update), so this status stays FAIL."
     },
     {
       "id": "P24",
@@ -880,7 +920,7 @@
     "W16": {
       "status": "NOT_RUN",
       "property_refs": ["P17", "P20", "P21", "P22", "P23"],
-      "note": "[Per shipped stream; verbatim logs, measured results and explicit release decision] No real-model quality, resource, scale, accessibility, packaging, signing or release qualification ran. What exists: L4 transport traces for the code operations (P28-P30), the local preflight records in runs (not green: P23), and no raw log retained in this repository. Per-area release decisions are the closeout's job and are not recorded in this file."
+      "note": "[Per shipped stream; verbatim logs, measured results and explicit release decision] No real-model quality, resource, scale, accessibility, signing or release qualification ran, and packaging qualification ran only as the scoped Standard Python L5 candidate on one macOS arm64 host (RUN-12, QP-06A). What exists: L4 transport traces for the code operations (P28-P30), the local preflight records in runs (not green: P23), and no raw log retained in this repository. Per-area release decisions are the closeout's job and are not recorded in this file."
     },
     "W17": {
       "status": "NOT_RUN",

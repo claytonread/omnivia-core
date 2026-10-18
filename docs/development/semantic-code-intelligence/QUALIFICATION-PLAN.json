@@ -203,6 +203,26 @@
       "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
     },
     {
+      "id": "QP-06A",
+      "name": "Standard-profile Python candidate, installed qualification on one host",
+      "status": "PASS",
+      "preconditions": [
+        "A clean source commit and scripts/build-standard-candidate.py"
+      ],
+      "evidence_to_collect": [
+        "builder verdict, candidate key and source revision with dirty state",
+        "offline install of the five-distribution Standard profile with no skips or xfails",
+        "standalone journey, MCP authoring and lifecycle verdicts"
+      ],
+      "artifact_hashes": {
+        "candidate_key": "809f09328100621f7d8f4a84665db0a43f6ff14ecce0cda9359f4cd743f09e40",
+        "source_revision": "3e56688d9e7beed15b1617164dea08c567ad1903",
+        "checksum_index_sha256": "19abbe33da8171e477f1cb8427bf468c5dc726437fcc27678eaf706ae17c7e8a"
+      },
+      "result": "PASS at scoped L5 (packaged/installed qualification), Standard Python distribution, one host: macOS 27.0 arm64, CPython 3.11.15. Source commit 3e56688d9e7beed15b1617164dea08c567ad1903, dirty false. Builder verdict pass; profile omnivia-core, omnivia-core-runtime, omnivia-core-client, omnivia-core-cli, omnivia-core-mcp; 48 wheels, offline install true, skips 0, xfails 0. Standalone journey pass (seeded record ranked first, Context Pack cites the seeded record, four MCP client configurations pass, service crash recovery pass); MCP authoring pass; lifecycle pass including verified backup/restore and incompatible-format refusal. Candidate status qualification_only, production_release_eligible false, signing unsigned. Produced and independently inspected by Codex; the temporary artifact path is not recorded. Not covered by this PASS: L6 or a full matrix, signing or notarisation, the native macOS companion and extensions (native intake stays repository/integration evidence only), other hosts or architectures, a hosted CI row, semantic retrieval, TypeScript. The four lexical clauses LEX-01, 03, 05 and 06 remain pending. Migrations 0066-0074 remain candidate, not accepted. Plain full ./scripts/preflight has not been run after commit 3e56688d and no result is claimed. QP-06 stays BLOCKED.",
+      "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
+    },
+    {
       "id": "QP-06",
       "name": "Packaging, required CI rows and release",
       "status": "BLOCKED",
@@ -214,7 +234,7 @@
         "Core acceptance and the three Phase 2 platform rows green on the pull request"
       ],
       "artifact_hashes": null,
-      "result": "Blocked. Preconditions QP-01 to QP-04 are unmet; no pull request exists so the required checks have not reported; no clean plain preflight exists (WORK-STATUS P23 FAIL: the P8 full run recorded 4 failed, 38,388 passed, 59 skipped, one of them AT09 test_selected_source_reaches_core_exact_and_is_left_unchanged at baseline f6f68dbb; that harness defect was repaired on 2026-10-18 and the test passes on its own, but no complete preflight has run since); no signed or notarised package, signing authority (PACKAGED_TRUSTED_KEYS is empty) or candidate bundle exists. Every migration 0066-0074 is candidate, not accepted.",
+      "result": "Blocked. Preconditions QP-01 to QP-04 are unmet; no pull request exists so the required checks have not reported; no clean plain preflight exists, including after commit 3e56688d (WORK-STATUS P23 FAIL: the P8 full run recorded 4 failed, 38,388 passed, 59 skipped, one of them AT09 test_selected_source_reaches_core_exact_and_is_left_unchanged at baseline f6f68dbb; that harness defect was repaired on 2026-10-18 and the test passes on its own, but no complete preflight has run since); no signed or notarised package or signing authority (PACKAGED_TRUSTED_KEYS is empty) exists. The only candidate is the unsigned, qualification-only Standard Python candidate at scoped L5 on one macOS arm64 host (QP-06A), which is not a release. Every migration 0066-0074 is candidate, not accepted.",
       "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
     }
   ]
