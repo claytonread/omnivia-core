@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/code.schema.json",
+  "title": "OmniVia Core Application Contract v1 - static code queries",
+  "description": "Provider-neutral wire shapes for the `code.query` operation payloads. `code.query` is a read over the governed code-analysis graph a code-analysis import made applicable: one repository, one analysed snapshot, one producer and one profile, bound by the request and checked against the import that is active for that scope at the query instant. Every fact it returns is a static-analysis fact from that one import -- never runtime behaviour, never test coverage, never similarity and never architecture prose -- and the result says so. Workspace-scoped through the request envelope; no payload carries a second, independent workspace identifier or a principal. This document declares no root type; it is a definition container only.",
+  "$defs": {
+    "CodeSemanticKey": {
+      "title": "CodeSemanticKey",
+      "description": "A producer's own key for one definition or one relationship candidate, such as `pkg.models.make` or `src/lib.ts:Base.run`. Bounded by length here; its grammar (a word character, `$` or `#`, then word characters and `._:/@+$#-`) is enforced by semantic validation, because ECMAScript and Python disagree on what a word character is.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "CodeSourceSpan": {
+      "title": "CodeSourceSpan",
+      "description": "Where one fact was read, exactly as the import retained it: a repository-relative path, the content digest of the captured bytes and the producer's locator. With the result's repository and snapshot this opens the captured revision; it never names an absolute path. `start_byte`/`end_byte` are a half-open range over the captured bytes, present together or not at all.",
+      "type": "object",
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 1024, "description": "Canonical repository-relative path of the captured file."},
+        "content_digest": {"$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum", "description": "Digest of the captured file's exact bytes."},
+        "start_line": {"type": "integer", "minimum": 1, "maximum": 1000000000, "description": "One-based first line."},
+        "start_column": {"type": "integer", "minimum": 1, "maximum": 1000000000, "description": "One-based first column, in the producer's stated column basis."},
+        "end_line": {"type": "integer", "minimum": 1, "maximum": 1000000000, "description": "One-based last line."},
+        "end_column": {"type": "integer", "minimum": 1, "maximum": 1000000000, "description": "One-based end column, in the producer's stated column basis."},
+        "start_byte": {"type": "integer", "minimum": 0, "maximum": 1000000000, "description": "Zero-based inclusive byte offset, when the producer recorded one."},
+        "end_byte": {"type": "integer", "minimum": 0, "maximum": 1000000000, "description": "Zero-based exclusive byte offset, when the producer recorded one."}
+      },
+      "required": ["relative_path", "content_digest", "start_line", "start_column", "end_line", "end_column"],
+      "unevaluatedProperties": false
+    },
+    "CodeAnalysisBinding": {
+      "title": "CodeAnalysisBinding",
+      "description": "The one code-analysis import a `code.query` answer was read from: the scope the request bound, the producer build, the batch, the acceptance policy and the activation that made it applicable. Every fact in the result comes from this import and from no other.",
+      "type": "object",
+      "properties": {
+        "repository_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Repository analysed."},
+        "snapshot_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Sealed captured snapshot analysed."},
+        "producer_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Static analyser that produced the facts."},
+        "producer_version": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "That analyser's version."},
+        "profile_digest": {"$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum", "description": "Digest of the analyser profile the batch was produced under."},
+        "import_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "The applicable import."},
+        "batch_digest": {"$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum", "description": "Digest of the verified batch the import accepted from."},
+        "policy_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Acceptance policy that decided which candidates became facts."},
+        "policy_version": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "That policy's version."},
+        "policy_digest": {"$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum", "description": "Digest of that policy's exact rules."},
+        "manifest_evidence_id": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceId", "description": "Evidence artifact of the snapshot's sealed manifest, which every accepted fact cites."},
+        "activated_at": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp", "description": "When this import became the applicable code graph for its scope."}
+      },
+      "required": ["repository_id", "snapshot_id", "producer_id", "producer_version", "profile_digest", "import_id", "batch_digest", "policy_id", "policy_version", "policy_digest", "manifest_evidence_id", "activated_at"],
+      "unevaluatedProperties": false
+    },
+    "CodeSymbol": {
+      "title": "CodeSymbol",
+      "description": "One accepted definition: its producer key, kind, display name, where it is written and the governed record version that holds it.",
+      "type": "object",
+      "properties": {
+        "semantic_key": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSemanticKey", "description": "The producer's key for this definition, unique within the import."},
+        "node_kind": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "The producer's kind for it, such as `function` or `class`."},
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 512, "description": "The name as the producer displays it. Not unique: two definitions may share one."},
+        "source": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSourceSpan", "description": "Where the definition is written."},
+        "record": {"$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordVersionReference", "description": "The governed record version holding this fact."},
+        "depth": {"type": "integer", "minimum": 1, "maximum": 8, "description": "Shortest relation distance from the query's subject, on symbols a traversal reached. Absent on the subject itself and on ambiguous choices."}
+      },
+      "required": ["semantic_key", "node_kind", "display_name", "source", "record"],
+      "unevaluatedProperties": false
+    },
+    "CodeRelation": {
+      "title": "CodeRelation",
+      "description": "One accepted, resolved static relationship between two definitions of the same import, with the source span of the occurrence that asserts it.",
+      "type": "object",
+      "properties": {
+        "edge_key": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSemanticKey", "description": "The producer's key for this relationship candidate."},
+        "relation_type": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Governed relation type, one of the `code.*` namespace."},
+        "producer_relationship": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "The producer's own relationship string, such as `type_imports`."},
+        "type_only": {"type": "boolean", "description": "True when the relationship exists only in the type system and has no runtime effect."},
+        "evidence_strength": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "`syntactic` or `resolved_static`; nothing inferred is ever a relation."},
+        "source_key": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSemanticKey", "description": "Key of the definition the relationship starts from."},
+        "target_key": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSemanticKey", "description": "Key of the definition it points at."},
+        "depth": {"type": "integer", "minimum": 1, "maximum": 8, "description": "The traversal step at which this relationship was followed."},
+        "source": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSourceSpan", "description": "The occurrence that asserts the relationship."},
+        "record": {"$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordVersionReference", "description": "The governed relation record version holding this fact."}
+      },
+      "required": ["edge_key", "relation_type", "producer_relationship", "type_only", "evidence_strength", "source_key", "target_key", "depth", "source", "record"],
+      "unevaluatedProperties": false
+    },
+    "CodeDiagnostic": {
+      "title": "CodeDiagnostic",
+      "description": "One relationship candidate the import did not accept -- unresolved, ambiguous, external, inferred from dynamic dispatch, outside the policy, or a self-relation -- that bears on the query's subject. Coverage information only: a diagnostic is never a relation and is never traversed.",
+      "type": "object",
+      "properties": {
+        "edge_key": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSemanticKey", "description": "The producer's key for the candidate."},
+        "reason": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Why the import did not accept it."},
+        "producer_relationship": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "The producer's own relationship string."},
+        "evidence_strength": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "The producer's evidence strength for the candidate."},
+        "resolution_status": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "The producer's resolution status for the candidate."},
+        "source_key": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSemanticKey", "description": "Key of the definition the candidate starts from."},
+        "target_key": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSemanticKey", "description": "Key of the definition it names, when the producer named one."},
+        "target_descriptor": {"type": "string", "minLength": 1, "maxLength": 1024, "description": "The producer's description of an endpoint it could not resolve to a local definition."},
+        "source": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSourceSpan", "description": "The occurrence the candidate was read from."}
+      },
+      "required": ["edge_key", "reason", "producer_relationship", "evidence_strength", "resolution_status", "source_key", "source"],
+      "unevaluatedProperties": false
+    },
+    "CodeQueryCoverage": {
+      "title": "CodeQueryCoverage",
+      "description": "What the answer does and does not cover. `analysis` is always `static`: these are facts a static analyser read from source, not runtime behaviour and not test coverage. `complete` is false when anything bounded the answer: a limit, the depth, or diagnostics that bear on the subject. `unattributed_inbound` is true for inbound intents, because an unresolved or dynamic occurrence elsewhere cannot be attributed to this subject by static analysis.",
+      "type": "object",
+      "properties": {
+        "analysis": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Always `static`."},
+        "complete": {"type": "boolean", "description": "True only when no limit, depth or diagnostic bounded the answer."},
+        "truncated": {"type": "boolean", "description": "True when a list was cut at `applied_limit`."},
+        "depth_bounded": {"type": "boolean", "description": "True when the traversal reached relations past `applied_depth` that it did not follow."},
+        "unattributed_inbound": {"type": "boolean", "description": "True when callers or references may exist that static analysis could not attribute to the subject."},
+        "applied_depth": {"type": "integer", "minimum": 0, "maximum": 8, "description": "The traversal depth applied; 0 for `definition`."},
+        "applied_limit": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageLimit", "description": "The per-list limit applied."}
+      },
+      "required": ["analysis", "complete", "truncated", "depth_bounded", "unattributed_inbound", "applied_depth", "applied_limit"],
+      "unevaluatedProperties": false
+    },
+    "CodeQueryInput": {
+      "title": "CodeQueryInput",
+      "description": "Input for `code.query`. Names one closed intent -- `definition`, `references`, `callers`, `callees` or `dependencies` -- and binds it to exactly one repository, analysed snapshot, producer and profile. The subject is an exact `semantic_key`, a `name` matched exactly against display names, or both (which must then name the same definition). Workspace, principal and authority come from the envelope's authorized context only.",
+      "type": "object",
+      "properties": {
+        "intent": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "One of `definition`, `references`, `callers`, `callees`, `dependencies`. Wire-open by shape; semantic validation fails closed on any other value."},
+        "repository_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Repository to query."},
+        "snapshot_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Analysed snapshot the caller expects to be applicable."},
+        "producer_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Static analyser whose facts to read."},
+        "profile_digest": {"$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum", "description": "Analyser profile whose facts to read."},
+        "semantic_key": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSemanticKey", "description": "Exact producer key of the subject."},
+        "name": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Display name of the subject, matched exactly. Several definitions sharing it are returned as choices, never resolved arbitrarily."},
+        "depth": {"$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphDepthLimit", "description": "Traversal depth for `callers`, `callees` and `dependencies`, 1 (direct) to 8. Absent means 1. Not accepted for `definition` or `references`."},
+        "runtime_only": {"type": "boolean", "description": "For `dependencies` only: when true, type-only imports and references are neither returned nor followed. Absent means false."},
+        "limit": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageLimit", "description": "Maximum entries in each returned list. Absent means 100."}
+      },
+      "required": ["intent", "repository_id", "snapshot_id", "producer_id", "profile_digest"],
+      "unevaluatedProperties": false
+    },
+    "CodeQueryResult": {
+      "title": "CodeQueryResult",
+      "description": "Result of `code.query`. `resolution` says how the subject was found: `semantic_key`, `unique_name`, or `ambiguous` -- in which case `definitions` lists every qualified choice in key order and nothing was traversed. Otherwise `definitions` holds the one subject, `symbols` the definitions the intent reached (by depth, then key), `relations` the accepted static relationships followed (by depth, source, type, target, edge key) and `diagnostics` the unaccepted candidates that bear on the answer (by edge key). An analysis that is missing or not the applicable one is refused, never answered empty.",
+      "type": "object",
+      "properties": {
+        "intent": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "The intent answered."},
+        "binding": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeAnalysisBinding", "description": "The one import the answer was read from."},
+        "resolution": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "`semantic_key`, `unique_name` or `ambiguous`."},
+        "definitions": {"type": "array", "items": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSymbol"}, "maxItems": 1000, "description": "The subject, or every ambiguous choice."},
+        "symbols": {"type": "array", "items": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSymbol"}, "maxItems": 1000, "description": "Definitions the intent reached."},
+        "relations": {"type": "array", "items": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeRelation"}, "maxItems": 1000, "description": "Accepted static relationships followed."},
+        "diagnostics": {"type": "array", "items": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeDiagnostic"}, "maxItems": 1000, "description": "Unaccepted candidates bearing on the answer; coverage only."},
+        "coverage": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryCoverage", "description": "What the answer covers."},
+        "freshness": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionFreshness", "description": "The read point: the query instant and the watermark of the facts read."}
+      },
+      "required": ["intent", "binding", "resolution", "definitions", "symbols", "relations", "diagnostics", "coverage", "freshness"],
+      "unevaluatedProperties": false
+    }
+  }
+}

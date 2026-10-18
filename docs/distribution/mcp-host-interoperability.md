@@ -216,7 +216,7 @@ model's report:
   surface and no decision record.
 - **Excluded names:** the harness dispatches every name a profile does not expose
   through the proxy itself, so no model choice is involved. The restricted profile
-  has 92 such names and the authoring profile 71. Those sets comprise the 53
+  has 93 such names and the authoring profile 72. Those sets comprise the 54
   catalogue operations outside the authoring manifest, eighteen deterministic
   qualification sentinels spanning all nine section-7 administrative capability
   categories, and (for restricted only) the twenty-one authoring additions. Sentinels

@@ -1601,6 +1601,7 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
             "graph.traverse",
             "context_pack.build",
             "analysis.start",
+            "code.query",
         }
     )
     # The decision family's own registry carries the fifteen decision handlers;

@@ -91,6 +91,7 @@ from omnivia_core_runtime.service.handlers.chat import (
     ChatGenerationExecution,
     ChatHandlers,
 )
+from omnivia_core_runtime.service.handlers.code import code_query
 from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
 from omnivia_core_runtime.service.handlers.continuity import ContinuityHandlers
 from omnivia_core_runtime.service.handlers.decisions import (
@@ -271,6 +272,9 @@ KNOWLEDGE_SEARCH_OPERATION: Final = "knowledge.search"
 MEMORY_SEARCH_OPERATION: Final = "memory.search"
 GRAPH_TRAVERSE_OPERATION: Final = "graph.traverse"
 CONTEXT_PACK_BUILD_OPERATION: Final = "context_pack.build"
+#: W13-A: static code facts from the applicable code-analysis import, read beside
+#: `graph.traverse` under the same purpose, scope and capability.
+CODE_QUERY_OPERATION: Final = "code.query"
 ANALYSIS_START_OPERATION: Final = "analysis.start"
 
 #: The purpose each granted operation is served under. There is no purpose registry in
@@ -326,6 +330,7 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         MEMORY_SEARCH_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         GRAPH_TRAVERSE_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         CONTEXT_PACK_BUILD_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+        CODE_QUERY_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         "decision.status": DECISION_STATUS_PURPOSE,
         "decision.record.get": DECISION_RECORD_PURPOSE,
         "decision.record.list": DECISION_RECORD_PURPOSE,
@@ -1948,7 +1953,7 @@ def build_application_registry(
 ) -> ApplicationOperationRegistry:
     """The application handlers this build ships.
 
-    Six entries -- the six original reads. The fifteen decision operations are
+    The six original reads, `analysis.start` and `code.query`. The fifteen decision operations are
     the decision family's own registry (`build_decision_registry`), which is a
     separate session and binding rather than a stub family living here. `ApplicationOperationRegistry` is bounded by the frozen catalogue and
     fails closed on anything else, so this cannot register a name A2 did not freeze,
@@ -1979,6 +1984,7 @@ def build_application_registry(
     registry.register(MEMORY_SEARCH_OPERATION, memory_search)
     registry.register(GRAPH_TRAVERSE_OPERATION, graph_traverse)
     registry.register(CONTEXT_PACK_BUILD_OPERATION, context_pack_build)
+    registry.register(CODE_QUERY_OPERATION, code_query)
     registry.register(ANALYSIS_START_OPERATION, cast(OperationHandler, analysis_start))
     for operation, handler in (additional or {}).items():
         registry.register(operation, handler)
@@ -2924,6 +2930,7 @@ def build_workflow_application_dispatcher(
 
 __all__ = [
     "CHANNEL_TRUST",
+    "CODE_QUERY_OPERATION",
     "CONTEXT_PACK_BUILD_OPERATION",
     "CONTINUITY_HANDOFF_PURPOSE",
     "DOCUMENT_OBSERVATION_PURPOSE",

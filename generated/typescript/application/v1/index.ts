@@ -22,6 +22,7 @@
 //   contracts/application/v1/schemas/decision.schema.json
 //   contracts/application/v1/schemas/engineering.schema.json
 //   contracts/application/v1/schemas/settings.schema.json
+//   contracts/application/v1/schemas/code.schema.json
 // Generator:
 //   scripts/generate-application-contracts.py
 //
@@ -114,6 +115,14 @@ export interface AnalysisOutputBounds {
  */
 export interface AnalysisStartResult {
 }
+
+/**
+ * A producer's own key for one definition or one relationship candidate, such as
+ * `pkg.models.make` or `src/lib.ts:Base.run`. Bounded by length here; its grammar (a word
+ * character, `$` or `#`, then word characters and `._:/@+$#-`) is enforced by semantic
+ * validation, because ECMAScript and Python disagree on what a word character is.
+ */
+export type CodeSemanticKey = string;
 
 /**
  * A `major.minor` contract version. Major changes are breaking; minor changes are additive and
@@ -3875,6 +3884,197 @@ export interface ChatSnapshotResult {
    * The Chat Contract v1 `ConversationSnapshotResult` document, carried verbatim.
    */
   readonly snapshot: JsonObject;
+}
+
+/**
+ * Where one fact was read, exactly as the import retained it: a repository-relative path, the
+ * content digest of the captured bytes and the producer's locator. With the result's repository
+ * and snapshot this opens the captured revision; it never names an absolute path.
+ * `start_byte`/`end_byte` are a half-open range over the captured bytes, present together or not
+ * at all.
+ */
+export interface CodeSourceSpan {
+  /**
+   * Canonical repository-relative path of the captured file.
+   */
+  readonly relative_path: string;
+  /**
+   * Digest of the captured file's exact bytes.
+   */
+  readonly content_digest: ContentChecksum;
+  /**
+   * One-based first line.
+   */
+  readonly start_line: number;
+  /**
+   * One-based first column, in the producer's stated column basis.
+   */
+  readonly start_column: number;
+  /**
+   * One-based last line.
+   */
+  readonly end_line: number;
+  /**
+   * One-based end column, in the producer's stated column basis.
+   */
+  readonly end_column: number;
+  /**
+   * Zero-based inclusive byte offset, when the producer recorded one.
+   */
+  readonly start_byte?: number;
+  /**
+   * Zero-based exclusive byte offset, when the producer recorded one.
+   */
+  readonly end_byte?: number;
+}
+
+/**
+ * The one code-analysis import a `code.query` answer was read from: the scope the request bound,
+ * the producer build, the batch, the acceptance policy and the activation that made it
+ * applicable. Every fact in the result comes from this import and from no other.
+ */
+export interface CodeAnalysisBinding {
+  /**
+   * Repository analysed.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * Sealed captured snapshot analysed.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Static analyser that produced the facts.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * That analyser's version.
+   */
+  readonly producer_version: Identifier;
+  /**
+   * Digest of the analyser profile the batch was produced under.
+   */
+  readonly profile_digest: ContentChecksum;
+  /**
+   * The applicable import.
+   */
+  readonly import_id: Identifier;
+  /**
+   * Digest of the verified batch the import accepted from.
+   */
+  readonly batch_digest: ContentChecksum;
+  /**
+   * Acceptance policy that decided which candidates became facts.
+   */
+  readonly policy_id: Identifier;
+  /**
+   * That policy's version.
+   */
+  readonly policy_version: Identifier;
+  /**
+   * Digest of that policy's exact rules.
+   */
+  readonly policy_digest: ContentChecksum;
+  /**
+   * Evidence artifact of the snapshot's sealed manifest, which every accepted fact cites.
+   */
+  readonly manifest_evidence_id: EvidenceId;
+  /**
+   * When this import became the applicable code graph for its scope.
+   */
+  readonly activated_at: Timestamp;
+}
+
+/**
+ * What the answer does and does not cover. `analysis` is always `static`: these are facts a
+ * static analyser read from source, not runtime behaviour and not test coverage. `complete` is
+ * false when anything bounded the answer: a limit, the depth, or diagnostics that bear on the
+ * subject. `unattributed_inbound` is true for inbound intents, because an unresolved or dynamic
+ * occurrence elsewhere cannot be attributed to this subject by static analysis.
+ */
+export interface CodeQueryCoverage {
+  /**
+   * Always `static`.
+   */
+  readonly analysis: OpenCode;
+  /**
+   * True only when no limit, depth or diagnostic bounded the answer.
+   */
+  readonly complete: boolean;
+  /**
+   * True when a list was cut at `applied_limit`.
+   */
+  readonly truncated: boolean;
+  /**
+   * True when the traversal reached relations past `applied_depth` that it did not follow.
+   */
+  readonly depth_bounded: boolean;
+  /**
+   * True when callers or references may exist that static analysis could not attribute to the
+   * subject.
+   */
+  readonly unattributed_inbound: boolean;
+  /**
+   * The traversal depth applied; 0 for `definition`.
+   */
+  readonly applied_depth: number;
+  /**
+   * The per-list limit applied.
+   */
+  readonly applied_limit: PageLimit;
+}
+
+/**
+ * Input for `code.query`. Names one closed intent -- `definition`, `references`, `callers`,
+ * `callees` or `dependencies` -- and binds it to exactly one repository, analysed snapshot,
+ * producer and profile. The subject is an exact `semantic_key`, a `name` matched exactly against
+ * display names, or both (which must then name the same definition). Workspace, principal and
+ * authority come from the envelope's authorized context only.
+ */
+export interface CodeQueryInput {
+  /**
+   * One of `definition`, `references`, `callers`, `callees`, `dependencies`. Wire-open by
+   * shape; semantic validation fails closed on any other value.
+   */
+  readonly intent: OpenCode;
+  /**
+   * Repository to query.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * Analysed snapshot the caller expects to be applicable.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Static analyser whose facts to read.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * Analyser profile whose facts to read.
+   */
+  readonly profile_digest: ContentChecksum;
+  /**
+   * Exact producer key of the subject.
+   */
+  readonly semantic_key?: CodeSemanticKey;
+  /**
+   * Display name of the subject, matched exactly. Several definitions sharing it are returned
+   * as choices, never resolved arbitrarily.
+   */
+  readonly name?: string;
+  /**
+   * Traversal depth for `callers`, `callees` and `dependencies`, 1 (direct) to 8. Absent means
+   * 1. Not accepted for `definition` or `references`.
+   */
+  readonly depth?: GraphDepthLimit;
+  /**
+   * For `dependencies` only: when true, type-only imports and references are neither returned
+   * nor followed. Absent means false.
+   */
+  readonly runtime_only?: boolean;
+  /**
+   * Maximum entries in each returned list. Absent means 100.
+   */
+  readonly limit?: PageLimit;
 }
 
 /**
@@ -8664,6 +8864,130 @@ export interface ChatEventsResult {
 }
 
 /**
+ * One accepted definition: its producer key, kind, display name, where it is written and the
+ * governed record version that holds it.
+ */
+export interface CodeSymbol {
+  /**
+   * The producer's key for this definition, unique within the import.
+   */
+  readonly semantic_key: CodeSemanticKey;
+  /**
+   * The producer's kind for it, such as `function` or `class`.
+   */
+  readonly node_kind: OpenCode;
+  /**
+   * The name as the producer displays it. Not unique: two definitions may share one.
+   */
+  readonly display_name: string;
+  /**
+   * Where the definition is written.
+   */
+  readonly source: CodeSourceSpan;
+  /**
+   * The governed record version holding this fact.
+   */
+  readonly record: RecordVersionReference;
+  /**
+   * Shortest relation distance from the query's subject, on symbols a traversal reached.
+   * Absent on the subject itself and on ambiguous choices.
+   */
+  readonly depth?: number;
+}
+
+/**
+ * One accepted, resolved static relationship between two definitions of the same import, with
+ * the source span of the occurrence that asserts it.
+ */
+export interface CodeRelation {
+  /**
+   * The producer's key for this relationship candidate.
+   */
+  readonly edge_key: CodeSemanticKey;
+  /**
+   * Governed relation type, one of the `code.*` namespace.
+   */
+  readonly relation_type: OpenCode;
+  /**
+   * The producer's own relationship string, such as `type_imports`.
+   */
+  readonly producer_relationship: OpenCode;
+  /**
+   * True when the relationship exists only in the type system and has no runtime effect.
+   */
+  readonly type_only: boolean;
+  /**
+   * `syntactic` or `resolved_static`; nothing inferred is ever a relation.
+   */
+  readonly evidence_strength: OpenCode;
+  /**
+   * Key of the definition the relationship starts from.
+   */
+  readonly source_key: CodeSemanticKey;
+  /**
+   * Key of the definition it points at.
+   */
+  readonly target_key: CodeSemanticKey;
+  /**
+   * The traversal step at which this relationship was followed.
+   */
+  readonly depth: number;
+  /**
+   * The occurrence that asserts the relationship.
+   */
+  readonly source: CodeSourceSpan;
+  /**
+   * The governed relation record version holding this fact.
+   */
+  readonly record: RecordVersionReference;
+}
+
+/**
+ * One relationship candidate the import did not accept -- unresolved, ambiguous, external,
+ * inferred from dynamic dispatch, outside the policy, or a self-relation -- that bears on the
+ * query's subject. Coverage information only: a diagnostic is never a relation and is never
+ * traversed.
+ */
+export interface CodeDiagnostic {
+  /**
+   * The producer's key for the candidate.
+   */
+  readonly edge_key: CodeSemanticKey;
+  /**
+   * Why the import did not accept it.
+   */
+  readonly reason: OpenCode;
+  /**
+   * The producer's own relationship string.
+   */
+  readonly producer_relationship: OpenCode;
+  /**
+   * The producer's evidence strength for the candidate.
+   */
+  readonly evidence_strength: OpenCode;
+  /**
+   * The producer's resolution status for the candidate.
+   */
+  readonly resolution_status: OpenCode;
+  /**
+   * Key of the definition the candidate starts from.
+   */
+  readonly source_key: CodeSemanticKey;
+  /**
+   * Key of the definition it names, when the producer named one.
+   */
+  readonly target_key?: CodeSemanticKey;
+  /**
+   * The producer's description of an endpoint it could not resolve to a local definition.
+   */
+  readonly target_descriptor?: string;
+  /**
+   * The occurrence the candidate was read from.
+   */
+  readonly source: CodeSourceSpan;
+}
+
+/**
  * Server-produced, validated authority actually applied to a request. This is the only authority
  * statement a client may trust.
  */
@@ -11570,6 +11894,54 @@ export interface AnalysisStartInput {
    * authorisation or policy checks.
    */
   readonly purpose_reference: Identifier;
+}
+
+/**
+ * Result of `code.query`. `resolution` says how the subject was found: `semantic_key`,
+ * `unique_name`, or `ambiguous` -- in which case `definitions` lists every qualified choice in
+ * key order and nothing was traversed. Otherwise `definitions` holds the one subject, `symbols`
+ * the definitions the intent reached (by depth, then key), `relations` the accepted static
+ * relationships followed (by depth, source, type, target, edge key) and `diagnostics` the
+ * unaccepted candidates that bear on the answer (by edge key). An analysis that is missing or
+ * not the applicable one is refused, never answered empty.
+ */
+export interface CodeQueryResult {
+  /**
+   * The intent answered.
+   */
+  readonly intent: OpenCode;
+  /**
+   * The one import the answer was read from.
+   */
+  readonly binding: CodeAnalysisBinding;
+  /**
+   * `semantic_key`, `unique_name` or `ambiguous`.
+   */
+  readonly resolution: OpenCode;
+  /**
+   * The subject, or every ambiguous choice.
+   */
+  readonly definitions: readonly CodeSymbol[];
+  /**
+   * Definitions the intent reached.
+   */
+  readonly symbols: readonly CodeSymbol[];
+  /**
+   * Accepted static relationships followed.
+   */
+  readonly relations: readonly CodeRelation[];
+  /**
+   * Unaccepted candidates bearing on the answer; coverage only.
+   */
+  readonly diagnostics: readonly CodeDiagnostic[];
+  /**
+   * What the answer covers.
+   */
+  readonly coverage: CodeQueryCoverage;
+  /**
+   * The read point: the query instant and the watermark of the facts read.
+   */
+  readonly freshness: ProjectionFreshness;
 }
 
 /**
@@ -17136,6 +17508,39 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "upgrade_required",
       "workspace_busy",
       "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "code.query",
+    scope: { required_scopes: ["graph:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryResult",
+    required_capability: { id: "graph.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "projection_unavailable",
+      "rate_limited",
+      "size_limit_exceeded",
+      "stale_projection",
+      "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",
     ],

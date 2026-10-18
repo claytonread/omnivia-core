@@ -501,9 +501,9 @@
       "note": "Governed import, policy acceptance and atomic repository applicability are delivered as one storage seam (storage/code_analysis_import.py, migration 0074) with repository-local real-SQLite evidence over both real producers; see P8-W12-GOVERNED-IMPORT-2026-10-18.md. Still PARTIAL: no production caller (catalogue operation, handler or scheduler) invokes the seam, owner policy authorisation has no public intent (the seam takes the executor's MutationSettlementContext and authenticated principal, and 0074 binds the authoriser to that settlement's audit), and only resolver-routed reads apply code applicability. QP-04 and G8 are not claimed; W13 intents and QP-05 transport remain."
     },
     "W13": {
-      "status": "NOT_RUN",
+      "status": "PARTIAL",
       "property_refs": [],
-      "note": "No snapshot-bound code query or graph-context vertical slice was run."
+      "note": "W13-A delivered: one read-only application operation, code.query (catalogue entry 89, graph:read, knowledge_retrieval purpose, local-owner read family), with closed intents definition/references/callers/callees/dependencies bound to one repository, snapshot, producer and profile and checked against the 0074 active import at the query instant; missing or no-longer-applicable analysis is refused as projection_unavailable with details.readiness=not_ready. Repository-local real-SQLite evidence over both real producers, the W12 import seam and the production dispatcher, with in-process/local-IPC/HTTP parity; see P8-W13A-CODE-QUERY-2026-10-18.md. Still PARTIAL: W13-B code-context assembly and D16/D17 multi-principal confidentiality are not implemented or claimed, no operation lists applicable bindings, and W12 imports still have no production caller."
     },
     "W14": {
       "status": "NOT_RUN",

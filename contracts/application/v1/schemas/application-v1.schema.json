@@ -25,7 +25,8 @@
     "https://contracts.omnivia.dev/application/v1/chat.schema.json",
     "https://contracts.omnivia.dev/application/v1/decision.schema.json",
     "https://contracts.omnivia.dev/application/v1/engineering.schema.json",
-    "https://contracts.omnivia.dev/application/v1/settings.schema.json"
+    "https://contracts.omnivia.dev/application/v1/settings.schema.json",
+    "https://contracts.omnivia.dev/application/v1/code.schema.json"
   ],
   "$defs": {
     "ContractVersion": {
@@ -1478,6 +1479,33 @@
     },
     "SettingsSetResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsSetResult"
+    },
+    "CodeSemanticKey": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSemanticKey"
+    },
+    "CodeSourceSpan": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSourceSpan"
+    },
+    "CodeAnalysisBinding": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeAnalysisBinding"
+    },
+    "CodeSymbol": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSymbol"
+    },
+    "CodeRelation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeRelation"
+    },
+    "CodeDiagnostic": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeDiagnostic"
+    },
+    "CodeQueryCoverage": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryCoverage"
+    },
+    "CodeQueryInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryInput"
+    },
+    "CodeQueryResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryResult"
     }
   }
 }

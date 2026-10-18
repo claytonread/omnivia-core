@@ -2,12 +2,12 @@
   "format": "omnivia.operation-traceability.v1.1",
   "source_catalogue": {
     "format": "omnivia.operation-catalogue.v1",
-    "operation_count": 88
+    "operation_count": 89
   },
   "adapter_evidence_corpus": {
     "file": "contracts/application/v1/fixtures/application-wire-adapter-conformance-v1.json",
     "format": "omnivia.adapter-conformance.v1",
-    "case_count": 231
+    "case_count": 232
   },
   "adapter_classes": [
     "in_process",
@@ -376,6 +376,10 @@
         {
           "operation": "settings.set",
           "reason": "mutation"
+        },
+        {
+          "operation": "code.query",
+          "reason": "read_not_allow_listed"
         }
       ],
       "evidence_state": "not_evaluated"
@@ -5987,6 +5991,70 @@
           "upgrade_required",
           "workspace_busy",
           "workspace_lease_unavailable",
+          "workspace_migration_required",
+          "workspace_not_granted"
+        ]
+      },
+      "adapters": {
+        "in_process": "pending_candidate",
+        "ipc": "pending_candidate",
+        "http": "pending_candidate"
+      }
+    },
+    {
+      "contract": {
+        "name": "code.query",
+        "scope": {
+          "required_scopes": [
+            "graph:read"
+          ],
+          "side_effect": "none",
+          "scope_kind": "workspace"
+        },
+        "input_schema_ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryInput",
+        "result_schema_ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryResult",
+        "required_capability": {
+          "id": "graph.read",
+          "minimum_version": "1.0",
+          "required": true
+        },
+        "job": {
+          "completion_mode": "synchronous"
+        },
+        "pagination": {
+          "paginated": false
+        },
+        "idempotency": {
+          "supports_idempotency_key": false,
+          "required": false,
+          "safe_to_retry": true
+        },
+        "precondition": {
+          "supports_mutation_precondition": false,
+          "required": false
+        },
+        "audit": {
+          "audited": true,
+          "audit_category": "read"
+        },
+        "allowed_errors": [
+          "authentication_required",
+          "authorization_denied",
+          "cancelled",
+          "capability_not_granted",
+          "deadline_exceeded",
+          "dependency_unavailable",
+          "incompatible_version",
+          "internal_non_recoverable",
+          "internal_recoverable",
+          "invalid_purpose",
+          "invalid_request",
+          "not_found",
+          "projection_unavailable",
+          "rate_limited",
+          "size_limit_exceeded",
+          "stale_projection",
+          "upgrade_required",
           "workspace_migration_required",
           "workspace_not_granted"
         ]

@@ -247,7 +247,8 @@
         "document.original.disconnect",
         "document.original.relink",
         "settings.list",
-        "settings.set"
+        "settings.set",
+        "code.query"
       ]
     },
     {
@@ -580,7 +581,8 @@
         "document.original.disconnect",
         "document.original.relink",
         "settings.list",
-        "settings.set"
+        "settings.set",
+        "code.query"
       ]
     },
     {
@@ -677,7 +679,8 @@
         "document.original.disconnect",
         "document.original.relink",
         "settings.list",
-        "settings.set"
+        "settings.set",
+        "code.query"
       ]
     },
     {
