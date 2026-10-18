@@ -972,6 +972,84 @@ def test_v06_5_s2_acl_applies_before_read_materialization(
     assert [value.record.content["fact"] for value in allowed.values] == ["evidenced"]
 
 
+def test_v06_5_s2_frontier_digest_admits_only_the_unlabelled_evidence_link(
+    owned: m3.m2.Owned,
+) -> None:
+    """Two records, two evidence links, one grant: one link carries a permission
+    label the grant lacks and one carries none. The frontier admits only the record
+    built on the unlabelled link, and the digest is pinned to its pre-optimization
+    value so a later rewrite of the membership scans this test guards cannot
+    silently change either which assembly is admitted or what the digest says
+    about it."""
+    m3.m2.seed_chain(owned)
+    m3.m2.write(owned, m3.m2.EVIDENCE, **m3.m2.UNIQUE_IDS[m3.m2.EVIDENCE])
+    retrieved = datetime.fromtimestamp(m3.m2.BASE_US / 1_000_000, tz=UTC).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    labelled_source = {
+        "kind": "filesystem.archive",
+        "source_id": "doc-1",
+        "locator": "archive://doc.md",
+        "retrieved_at": retrieved,
+    }
+    unlabelled_source = {
+        "kind": "filesystem.archive",
+        "source_id": "doc-2",
+        "locator": "archive://doc.md",
+        "retrieved_at": retrieved,
+    }
+    settled_at_us = 1_900_000_000_000_000
+    owner_grant = EvidenceLabelGrant(
+        principal_id=CONFIGURED_LOCAL_OWNER,
+        workspace_id=m3.WORKSPACE_ID,
+        all_labels=True,
+        labels=frozenset(),
+    )
+    with fenced_transaction(
+        owned.connection,
+        owned.identity,
+        workspace_id=m3.WORKSPACE_ID,
+        fencing_generation=owned.generation,
+    ):
+        for suffix, source in (("denied", labelled_source), ("allowed", unlabelled_source)):
+            audit = m3.audit_row(f"audit-{suffix}")
+            audit.update(operation="memory.create", recorded_at_us=settled_at_us)
+            m1.insert(owned.connection, "omnivia_application_audit_events", audit)
+            create_memory_record(
+                owned.connection,
+                MutationSettlementContext(
+                    audit_ref=f"audit-{suffix}",
+                    claim_id=f"claim-{suffix}",
+                    outcome_id=f"outcome-{suffix}",
+                    settled_at_us=settled_at_us,
+                ),
+                workspace_id=m3.WORKSPACE_ID,
+                claim=MemoryCreateInput.from_wire(
+                    _available_memory_input(suffix, source)
+                ),
+                label_grant=owner_grant,
+                allocate_identifier=_named_allocator(suffix),
+            )
+
+    frontier = memory_storage_module.read_authorized_memory_frontier(
+        owned.connection,
+        workspace_id=m3.WORKSPACE_ID,
+        resolution_instant_us=settled_at_us + 1,
+        view="candidates",
+        label_grant=EvidenceLabelGrant(
+            principal_id="another-principal",
+            workspace_id=m3.WORKSPACE_ID,
+            all_labels=False,
+            labels=frozenset(),
+        ),
+        body_free=False,
+    )
+    assert [version.assembly_id for version in frontier.versions] == ["asm-allowed"]
+    assert frontier.digest == (
+        "sha256:a6f89e80447bc6b4210a03b6094fea67bbd21d2311541cd7a2fa8324d188d8cf"
+    )
+
+
 def test_v06_5_s2_replay_preserves_record_audit_and_lineage_identity(
     owned: m3.m2.Owned,
 ) -> None:

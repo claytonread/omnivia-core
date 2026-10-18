@@ -184,10 +184,11 @@ QUERY = "alpha"
 SENTINEL_TEXT = "zz-caller-sentinel-9f3c1d"
 SENTINEL_CODE = "zzcallersentinel.deadbeef"
 
-#: The production grant as `service.main.serve` wires it after this lane's additive edit:
-#: the five operations Lane E left it holding, plus `context_pack.build`. Stated as the
-#: literal `serve` states rather than derived from the registry --
-#: `test_workspace_inspect_refusals.py` is what pins it against `main.py`'s own syntax.
+#: The production grant as `service.main.serve` wires it: the six reads, with
+#: the decision operations on the decision family's own session. Stated as the
+#: filtered read `serve` produces rather than copied from the registry --
+#: `test_workspace_inspect_refusals.py` is what pins it against `main.py`'s own
+#: syntax.
 PRODUCTION_OPERATIONS = frozenset(
     {
         WORKSPACE_INSPECT_OPERATION,
@@ -836,6 +837,44 @@ def test_v1_a_deterministic_view_build_over_a_real_authoritative_snapshot(
     assert result.fresh_authorization_required is True
     assert result.pack_id == artifact_digest(result)
     assert result.pack_id == result.reproducibility.artifact_checksum
+
+
+def test_ac003_legacy_build_rejects_engineering_controls_and_persists_no_pack(
+    standard: m2.Owned,
+) -> None:
+    """A valid legacy build stays a synchronous read; hybrid target requests fail."""
+    dispatcher = production_path(standard)
+    before = standard.connection.execute(
+        "SELECT id, workspace_id, content FROM context_packs ORDER BY id"
+    ).fetchall()
+
+    baseline = pack(dispatcher.dispatch(request_for(build_input())))
+
+    assert baseline.mode == "deterministic_view"
+    assert baseline.fresh_authorization_required is True
+    assert standard.connection.execute(
+        "SELECT id, workspace_id, content FROM context_packs ORDER BY id"
+    ).fetchall() == before
+
+    unsupported = (
+        build_input(
+            targets=[{"repository_id": "erepo-1", "snapshot_id": "esnap-1"}]
+        ),
+        build_input(
+            repository_target={
+                "repository_id": "erepo-1",
+                "snapshot_id": "esnap-1",
+            }
+        ),
+        build_input(mode="immutable_snapshot"),
+    )
+    for payload in unsupported:
+        response = refused(dispatcher.dispatch(request_for(payload)))
+        assert response.error.code == ERROR_CODE_INVALID_REQUEST
+
+    assert standard.connection.execute(
+        "SELECT id, workspace_id, content FROM context_packs ORDER BY id"
+    ).fetchall() == before
 
 
 def test_v1b_the_judge_is_handed_the_freezes_own_manifest_and_the_snapshots_own_facts(
@@ -1779,16 +1818,13 @@ def test_the_production_operation_capability_scope_and_purpose_grant_is_exact() 
     registry = build_application_registry()
 
     assert session.operations == PRODUCTION_OPERATIONS
-    assert registry.operations == PRODUCTION_OPERATIONS
     assert OPERATION_PURPOSES[CONTEXT_PACK_BUILD_OPERATION] == (
         KNOWLEDGE_RETRIEVAL_PURPOSE
     )
     assert session.purposes == frozenset(
         {"workspace_inspection", "knowledge_retrieval"}
     )
-    assert session.scopes == frozenset(
-        {"workspace:read", "memory:read", "graph:read"}
-    )
+    assert session.scopes == frozenset({"workspace:read", "memory:read", "graph:read"})
     assert tuple(ENTRY.scope.required_scopes) == ("memory:read",)
     assert ENTRY.scope.side_effect == "none"
     assert session.capabilities == (
@@ -1799,7 +1835,9 @@ def test_the_production_operation_capability_scope_and_purpose_grant_is_exact() 
         CapabilityRef(id="memory.read", version="1.0"),
         CapabilityRef(id="workspace.read", version="1.0"),
     )
-    assert server_capability_snapshot(registry) == session.capabilities
+    # The snapshot covers every registered handler (the decision stubs among
+    # them), so it is a superset of the read session's capabilities.
+    assert set(session.capabilities) <= set(server_capability_snapshot(registry))
 
 
 def test_context_pack_build_is_absent_from_every_probe_seam(owned: m2.Owned) -> None:

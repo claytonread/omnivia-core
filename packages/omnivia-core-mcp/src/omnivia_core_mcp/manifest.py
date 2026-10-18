@@ -1,8 +1,8 @@
 """The curated MCP exposure manifest (R004-06), in two fixed profiles.
 
 **An allow-list, not a projection of the catalogue.** ``OPERATION_CATALOGUE``
-holds twenty-eight operations. This module names six of them in the
-``restricted`` profile and eleven in the ``authoring`` profile. A newly
+holds seventy-nine operations. This module names fourteen of them in the
+``restricted`` profile and thirty-five in the ``authoring`` profile. A newly
 registered Core operation is absent from MCP until somebody adds it here and
 tests it, which is the whole difference between an application capability
 catalogue and an agent-facing security decision: the catalogue says what Core
@@ -15,31 +15,42 @@ selection and enumeration; grant administration; governance decisions;
 unrestricted filesystem path selection; and administrative configuration. None
 of those is a tool a model calls.
 
-**The restricted six.** ``workspace.inspect`` is the attached workspace's own
-descriptor. The other five are V06-3's retrieval and context-pack reads --
-``evidence.search``, ``knowledge.search``, ``memory.search``, ``graph.traverse``
-and ``context_pack.build`` -- which classify themselves ``side_effect="none"``
-and ``audit_category="read"``, and are the operations an agent needs to answer a
-question from a governed workspace. Every identifier below is the catalogue's
-own; none is invented here.
+**The restricted fourteen** are the workspace and governed-memory reads, the
+Engineering Memory reads, the four decision tools, and the trigger health read.
+``decision.evaluate`` is the one side-effecting operation in this profile; it is
+admitted explicitly rather than inferred from catalogue metadata.
 
-**The authoring eleven** are those six plus exactly three mutations --
-``memory.create``, ``evidence.capture`` and ``import.start`` -- and the two job
-observations, ``job.get`` and ``job.events``, that make an asynchronous import
-followable. The three mutations are the *only* side-effecting operations this
-module can admit, and they are named as a literal set rather than inferred from
-any catalogue property: a fourth mutation cannot arrive by a contract gaining a
-field or an operation changing its audit category.
+**The authoring thirty-five** are those fourteen plus twenty-one additions. The
+mutations among them are ``memory.create``, ``evidence.capture``, ``import.start``,
+the three trigger mutations ``trigger.declare``, ``trigger.lifecycle`` and
+``trigger.ingest``, the three skill authoring mutations ``skills.draft.create``,
+``skills.draft.update`` and ``skills.proposal.submit``, the two knowledge sharing
+mutations ``knowledge.share.propose`` and ``knowledge.share.decide``, and the two
+task-context mutations ``task_context.export`` and ``outcome.request.create``, and
+the project-context mutation ``project.context.switch``. The
+reads among them are the two job observations, ``job.get`` and ``job.events``, that
+make an asynchronous import followable, the two sharing reads, ``knowledge.share.read``
+and ``knowledge.share.lineage``, and the two task-context reads,
+``task_context.export.read`` and ``outcome.request.read``, and the project-context read
+``project.context.read``. Which Projects a principal
+may act for is decided by the server's Project document, never by this profile, and
+the task-context reads are workspace-hidden by the server, not by this profile. The
+fifteen named mutations, which include ``decision.evaluate``, are the *only* side-effecting
+operations this module can admit, and they are named as a literal set: another
+mutation cannot arrive through a contract or audit-category change.
+Publishing, deprecating, installing and removing a skill are not here: they need
+the publisher and workspace operator roles, which this profile never holds.
 
 **Which profile a server advertises is decided once, at startup, by
 :mod:`omnivia_core_mcp.configuration`** -- never by a prompt or by a tool call's
 arguments. Every function here takes the profile as an argument and defaults it
 to ``restricted``, so a caller that has not been taught about profiles gets the
-read-only surface rather than the wider one.
+bounded non-authoring surface rather than the wider one. ``restricted`` is not
+read-only: it carries ``decision.evaluate``, which has durable effects.
 
 **Read-first is enforced, not asserted.** :func:`_admit` refuses at import time
 any entry that is neither a catalogue read (``side_effect="none"`` *and*
-``audit_category="read"``) nor one of the three named mutations. A future editor
+``audit_category="read"``) nor one of the fifteen named mutations. A future editor
 who adds ``record.supersede`` here does not ship a destructive tool with a wrong
 comment; the package fails to import.
 
@@ -97,8 +108,17 @@ __all__ = [
 #: that actually changed when it is not. ``1.0`` advertised ``workspace.inspect``
 #: alone with no output schema; ``1.1`` was the six-operation read surface;
 #: ``2.0`` is the major bump that adds a second, wider profile and the mutation
-#: wrapper -- a host that cached an ``1.1`` listing has cached the whole surface.
-MANIFEST_VERSION: Final = "2.0"
+#: wrapper; ``2.2`` withdraws checkpoint append; ``2.3`` also withdraws handoff
+#: until an ordinary MCP connection can select a previously shared session
+#: without accepting caller-owned binding identity; ``2.4`` adds the trigger
+#: operations -- ``trigger_health`` to the restricted profile, and the three
+#: trigger mutations to the authoring profile; ``2.5`` adds the three skill
+#: authoring mutations to the authoring profile; ``2.6`` adds the four knowledge
+#: sharing operations to the authoring profile, two as mutations and two as reads;
+#: `2.7` adds the four task-context operations to the authoring profile, two as
+#: mutations and two as reads; `2.8` adds the two project-context operations to the
+#: authoring profile, one as a mutation and one as a read.
+MANIFEST_VERSION: Final = "2.8"
 
 #: The two profiles, named exactly as the configuration document names them. A
 #: profile selects a whole fixed inventory; it never filters one.
@@ -116,10 +136,26 @@ _ADMITTED_AUDIT_CATEGORY: Final = "read"
 #: A set of names rather than a rule over catalogue metadata, because a rule
 #: would admit the next operation that happened to satisfy it. Widening the
 #: mutation surface therefore means editing this line, which is the point: there
-#: are twelve other mutations in the catalogue and none of them is reachable by
-#: an agent through any profile this module defines.
+#: are dozens of other mutations in the catalogue and none of them is reachable
+#: by an agent through any profile this module defines.
 ADMITTED_MUTATIONS: Final[frozenset[str]] = frozenset(
-    {"memory.create", "evidence.capture", "import.start"}
+    {
+        "memory.create",
+        "evidence.capture",
+        "import.start",
+        "decision.evaluate",
+        "trigger.declare",
+        "trigger.lifecycle",
+        "trigger.ingest",
+        "skills.draft.create",
+        "skills.draft.update",
+        "skills.proposal.submit",
+        "knowledge.share.propose",
+        "knowledge.share.decide",
+        "task_context.export",
+        "outcome.request.create",
+        "project.context.switch",
+    }
 )
 
 #: The canonical constraint an MCP mutation wrapper's ``idempotency_key`` carries.
@@ -165,9 +201,10 @@ class ExposedOperation:
     description: str
 
 
-#: The read-only allow-list, and the surface every profile starts from. Adding a
-#: line here is the whole act of exposing an operation, and it is the only one:
-#: nothing enumerates the catalogue.
+#: The restricted allow-list, and the surface every profile starts from: thirteen
+#: reads and ``decision.evaluate``, which is the one durable-effect mutation it
+#: carries. Adding a line here is the whole act of exposing an operation, and it
+#: is the only one: nothing enumerates the catalogue.
 RESTRICTED_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
     ExposedOperation(
         tool_name="workspace_inspect",
@@ -243,15 +280,120 @@ RESTRICTED_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
             "nothing. Persists nothing. Read-only."
         ),
     ),
+    ExposedOperation(
+        tool_name="engineering_search",
+        operation="engineering.search",
+        purpose="engineering_search",
+        title="Search engineering observations",
+        description=(
+            "Search the workspace's engineering observations -- findings, "
+            "decisions, failed approaches and hypotheses recorded against the "
+            "codebase -- with bounded previews and their target-specific "
+            "applicability. The authorised frontier is frozen before scoring, "
+            "so no restricted record can influence it. Read-only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="engineering_expand",
+        operation="engineering.expand",
+        purpose="engineering_expand",
+        title="Expand one engineering record",
+        description=(
+            "Expand one exact engineering record version into its bounded "
+            "neighbourhood: the sealed supersession edges that reach it, with "
+            "their endpoints, under explicit depth, node and edge budgets. "
+            "Read-only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="engineering_context_build",
+        operation="engineering.context.build",
+        purpose="engineering_context",
+        title="Build an engineering context pack",
+        description=(
+            "Build a non-persisted engineering context pack for a query against "
+            "explicit repository snapshot targets, within exact token and byte "
+            "budgets: accepted knowledge under its partition, mandatory "
+            "uncertainty notices, and per-target applicability stated honestly. "
+            "Every claim carries a citation to the exact record version. "
+            "Persists nothing. Read-only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="decision_evaluate",
+        operation="decision.evaluate",
+        purpose="decision_evaluation",
+        title="Submit a bounded decision evaluation",
+        description=(
+            "Submit one bounded advisory assessment over authorised workspace "
+            "sources and return a durable evaluation record with its typed "
+            "prediction, quality and disposition. This operation has durable "
+            "side effects: it consumes resources and creates evaluation, job "
+            "and audit records, though it never mutates business records or "
+            "executes actions. Processing is advisory; a prediction never "
+            "authorises an action."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="decision_record_get",
+        operation="decision.record.get",
+        purpose="decision_record",
+        title="Inspect one decision evaluation record",
+        description=(
+            "Return the durable record of one decision evaluation: its typed "
+            "prediction, quality, disposition and execution facts. Read-only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="decision_record_list",
+        operation="decision.record.list",
+        purpose="decision_record",
+        title="List decision evaluation records",
+        description=(
+            "List the authorised decision evaluation records for the selected "
+            "workspace, newest first. Read-only and paginated."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="decision_status",
+        operation="decision.status",
+        purpose="decision_status",
+        title="Report Decision Runtime status",
+        description=(
+            "Report whether the local decision engine is available on the "
+            "selected Core host, whether processing is enabled, and the "
+            "installed profile count. Passive: this never downloads, warms, "
+            "starts Core or processes records. Read-only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="trigger_health",
+        operation="trigger.health",
+        purpose="trigger_observation",
+        title="Report trigger health",
+        description=(
+            "Read a bounded health view for one Project and one Workflow: one page "
+            "of its triggers in identifier order, or one named trigger. Each reports "
+            "its subscription state, delivery counts and recent observations, newest "
+            "first. Read-only and paginated."
+        ),
+    ),
 )
 
-#: What the `authoring` profile adds, and all it adds: three mutations and the
-#: two observations that make an asynchronous one followable.
+#: What the `authoring` profile adds, and all it adds: the mutations and the
+#: observations that make the asynchronous ones followable.
 #:
 #: The purposes are the service's own -- `memory_authoring` for memory,
-#: `content_ingestion` for both ways content enters a workspace, and
-#: `job_observation` for watching what that produced. A purpose invented here
-#: would be refused at the first call rather than caught by review.
+#: `content_ingestion` for both ways content enters a workspace,
+#: `trigger_configuration` for declaring and changing triggers, `trigger_ingestion`
+#: for admitting a stimulus, `skill_authoring` for drafting and submitting a skill,
+#: and `job_observation` for watching what that produced.
+#: `knowledge_sharing` proposes and accepts a share, and `knowledge_share_observation`
+#: reads one. `task_context_export` and `outcome_request` write an export and an outcome
+#: request, and `task_context_observation` reads either back. `project_context`
+#: switches the active Project context.
+#: A purpose invented here would be refused at the first call rather than caught
+#: by review.
 _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
     ExposedOperation(
         tool_name="memory_create",
@@ -292,6 +434,44 @@ _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
         ),
     ),
     ExposedOperation(
+        tool_name="trigger_declare",
+        operation="trigger.declare",
+        purpose="trigger_configuration",
+        title="Declare a trigger",
+        description=(
+            "Declare one trigger, bound to one Project and one released Workflow "
+            "version, with the subscription state it starts in. Declaring starts "
+            "nothing, and the trigger admits a stimulus only through `trigger_ingest`. "
+            "Writes. Takes an outer object with the operation input under `input` and "
+            "a caller-chosen `idempotency_key`."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="trigger_lifecycle",
+        operation="trigger.lifecycle",
+        purpose="trigger_configuration",
+        title="Change a trigger's subscription state",
+        description=(
+            "Move one declared trigger's subscription to a new state, through the "
+            "transitions the trigger store enforces. `disabled` moves nowhere, and an "
+            "invalid move is refused. Writes. Takes an outer object with the operation "
+            "input under `input` and a caller-chosen `idempotency_key`."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="trigger_ingest",
+        operation="trigger.ingest",
+        purpose="trigger_ingestion",
+        title="Admit one trigger stimulus",
+        description=(
+            "Admit one stimulus to a declared trigger, synchronously and once. Core "
+            "records one observation of it with its delivery decision and a digest of "
+            "its envelope; the envelope and its payload are never stored. Admission "
+            "starts no job or run. Writes. Takes an outer object with the operation "
+            "input under `input` and a caller-chosen `idempotency_key`."
+        ),
+    ),
+    ExposedOperation(
         tool_name="job_get",
         operation="job.get",
         purpose="job_observation",
@@ -314,9 +494,156 @@ _AUTHORING_ADDITIONS: Final[tuple[ExposedOperation, ...]] = (
             "Read-only, and not a transport stream."
         ),
     ),
+    ExposedOperation(
+        tool_name="skills_draft_create",
+        operation="skills.draft.create",
+        purpose="skill_authoring",
+        title="Open a skill draft",
+        description=(
+            "Open one draft of a skill at revision 1 from one manifest. The manifest is "
+            "inert data: a member that would state a permission, tool or path is refused. "
+            "The draft publishes nothing and installs nothing."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="skills_draft_update",
+        operation="skills.draft.update",
+        purpose="skill_authoring",
+        title="Revise a skill draft",
+        description=(
+            "Append one revision to a draft, made against the revision last read. A stale "
+            "revision is a conflict, and a submitted draft is closed to revision."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="skills_proposal_submit",
+        operation="skills.proposal.submit",
+        purpose="skill_authoring",
+        title="Submit a skill draft for publication",
+        description=(
+            "Send a draft's latest revision to the publisher queue, once, with the evidence "
+            "cited. Submitting grants no publication."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="knowledge_share_propose",
+        operation="knowledge.share.propose",
+        purpose="knowledge_sharing",
+        title="Propose sharing a governed record with another Project",
+        description=(
+            "Propose sharing one sealed, canonical governed record from a Project this "
+            "principal owns to a recipient Project. Writes. An owner of the source Project "
+            "other than the proposer must accept it before a member of the recipient Project "
+            "can read it. The call takes an outer object with the operation input under "
+            "`input` and a caller-chosen `idempotency_key`."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="knowledge_share_decide",
+        operation="knowledge.share.decide",
+        purpose="knowledge_sharing",
+        title="Accept or revoke a knowledge share",
+        description=(
+            "Accept a proposed share, or revoke an accepted one, as an owner of its source "
+            "Project. Writes. A proposer cannot accept its own share, and a revoked share "
+            "cannot be accepted again. The call takes an outer object with the operation "
+            "input under `input` and a caller-chosen `idempotency_key`."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="knowledge_share_read",
+        operation="knowledge.share.read",
+        purpose="knowledge_share_observation",
+        title="Read a share to a Project this principal belongs to",
+        description=(
+            "Return the shared governed version to a member of the recipient Project, only "
+            "while the share is accepted, unrevoked and still names the sealed version it was "
+            "proposed under. Reads only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="knowledge_share_lineage",
+        operation="knowledge.share.lineage",
+        purpose="knowledge_share_observation",
+        title="Read the lineage of a share from a Project this principal owns",
+        description=(
+            "Return one share, its state and every decision recorded against it, revoked "
+            "ones included, to an owner of its source Project. Reads only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="task_context_export",
+        operation="task_context.export",
+        purpose="task_context_export",
+        title="Export a task-context handoff under an explicit budget",
+        description=(
+            "Record one immutable, redacted export of an assembled task-context handoff, "
+            "fitted to an explicit token and byte budget. Writes. An export is never "
+            "truncated: a handoff that does not fit is refused. The call takes an outer "
+            "object with the operation input under `input` and a caller-chosen "
+            "`idempotency_key`; replaying the same key with the same input answers from "
+            "the settled outcome instead of writing twice."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="task_context_export_read",
+        operation="task_context.export.read",
+        purpose="task_context_observation",
+        title="Read one task-context export by identifier",
+        description=(
+            "Return one task-context export of this workspace, by its identifier, as it was "
+            "recorded. Its identity is re-derived before it is served. Reads only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="outcome_request_create",
+        operation="outcome.request.create",
+        purpose="outcome_request",
+        title="Request an outcome against one task-context export",
+        description=(
+            "Record one outcome request against a stored task-context export of this "
+            "workspace, carrying the objective verbatim. Writes. The export must be recorded "
+            "under the current fencing generation. The call takes an outer object with the "
+            "operation input under `input` and a caller-chosen `idempotency_key`; replaying "
+            "the same key with the same input answers from the settled outcome."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="outcome_request_read",
+        operation="outcome.request.read",
+        purpose="task_context_observation",
+        title="Read one outcome request by identifier",
+        description=(
+            "Return one outcome request of this workspace, by its identifier, as it was "
+            "recorded. Its identity is re-derived before it is served. Reads only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="project_context_read",
+        operation="project.context.read",
+        purpose="task_context_observation",
+        title="Read the active Project context",
+        description=(
+            "Return the active Project context of this workspace as it stands, without "
+            "changing it. Reads only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="project_context_switch",
+        operation="project.context.switch",
+        purpose="project_context",
+        title="Switch the active Project context",
+        description=(
+            "Make one Project of this workspace the active context. Writes. The call takes "
+            "an outer object with the operation input under `input` and a caller-chosen "
+            "`idempotency_key`; replaying the same key with the same input answers from "
+            "the settled outcome instead of switching twice."
+        ),
+    ),
 )
 
-#: The `authoring` profile: the restricted surface, in its order, then the five.
+#: The `authoring` profile: the restricted surface, in its order, then twenty-one
+#: additions (35 tools total).
 #: Concatenated rather than restated so the two profiles cannot drift in the
 #: operations they share.
 AUTHORING_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
@@ -327,8 +654,8 @@ AUTHORING_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
 #:
 #: Kept under its original name because it is what `omnivia_core_mcp.server` and
 #: the operation-traceability ledger already reach for: a caller written before
-#: profiles existed advertises the read-only six, which is the failure mode this
-#: name should have.
+#: profiles existed advertises the restricted fourteen, which is the failure
+#: mode this name should have.
 EXPOSURE_MANIFEST: Final[tuple[ExposedOperation, ...]] = RESTRICTED_MANIFEST
 
 _MANIFESTS: Final[dict[str, tuple[ExposedOperation, ...]]] = {
@@ -343,8 +670,8 @@ def _admit(exposed: ExposedOperation) -> OperationMetadata:
     An operation is admissible on exactly two grounds: the catalogue calls it a
     read -- ``side_effect="none"`` *and* ``audit_category="read"``, both, so an
     operation that mutates under a read's audit category or audits as a mutation
-    while claiming no side effect is refused either way -- or it is one of the
-    three mutations :data:`ADMITTED_MUTATIONS` names.
+    while claiming no side effect is refused either way -- or it is
+    one of the mutations :data:`ADMITTED_MUTATIONS` names.
 
     Each refusal is a mistake this module exists to make impossible rather than
     to document: an operation that is not in the landed catalogue at all, and a
@@ -468,10 +795,11 @@ def _tool(exposed: ExposedOperation) -> types.Tool:
             # exactly when its operation declares no side effect, which is the
             # same fact `_admit` checked rather than a second opinion about it.
             read_only_hint=entry.scope.side_effect == _ADMITTED_SIDE_EFFECT,
-            # None of the eleven deletes or overwrites: the three mutations
-            # create, and supersession and cancellation are not exposed at all.
+            # None of the authoring tools deletes anything: the mutations create or
+            # move a subscription's state, and supersession and cancellation are
+            # not exposed at all.
             destructive_hint=False,
-            # Only where the catalogue proves it. The three mutations declare
+            # Only where the catalogue proves it. The mutations declare
             # `safe_to_retry=False` -- a repeat is settled by the idempotency
             # key, which is not the same claim as an idempotent call -- so this
             # is false for them and true for the reads, without a line here
@@ -539,7 +867,7 @@ def exposure_manifest(
 def tools(profile: str = RESTRICTED_PROFILE) -> tuple[types.Tool, ...]:
     """Every tool one profile advertises, in manifest order, identical on every
     call. Defaults to ``restricted``: a caller that names no profile gets the
-    read-only surface."""
+    bounded non-authoring surface, which is not read-only."""
     return _TOOLS[_profiled(profile)]
 
 

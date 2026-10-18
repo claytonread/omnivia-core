@@ -32,6 +32,7 @@ import re
 import socket
 import threading
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -46,6 +47,7 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core_runtime.ownership.locks import IS_WINDOWS, LockRole, create_lock
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.lifecycle import ResourceReleaseBlocked
 from omnivia_core_runtime.service.local_control import (
     AuthenticatedDispatch,
     LocalControlError,
@@ -485,6 +487,15 @@ class _SocketChannel:
         self.connection.sendall(payload)
 
     def close(self) -> None:
+        # Closing a descriptor from another thread does not reliably interrupt a
+        # blocking recv on every supported kernel (macOS can leave it asleep until
+        # its original timeout).  Shut the stream down first so both directions
+        # wake, then always release the descriptor.  Shutdown is best-effort: an
+        # already-closed or peer-reset connection is still successfully closed.
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         self.connection.close()
 
 
@@ -578,6 +589,7 @@ class _Listener(Protocol):
 class _SocketListener:
     server: socket.socket
     timeout: float
+    address: str
 
     def accept(self) -> _Channel | None:
         try:
@@ -588,7 +600,24 @@ class _SocketListener:
         return _SocketChannel(connection)
 
     def wake(self) -> None:
-        """Nothing to do: the accept times out every 0.2s and re-reads the flag."""
+        """Wake a blocked ``accept`` with a bounded loopback connection.
+
+        The listener timeout remains a backstop, but it is also the entire stop
+        budget if this method is a no-op.  Under host load that made shutdown race
+        the 200 ms accept timeout and intermittently retain the serving thread.
+        """
+        wake = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        wake.settimeout(0.05)
+        try:
+            wake.connect(self.address)
+        except OSError:
+            # A concurrent accepted client, endpoint teardown, or peer reset can
+            # make the wake unnecessary or impossible.  The listener timeout is
+            # still the bounded fallback and stop() verifies the thread actually
+            # exited before releasing any owned resource.
+            pass
+        finally:
+            wake.close()
 
     def close(self) -> None:
         self.server.close()
@@ -647,6 +676,12 @@ class LocalSocketServer:
     router: DocumentRouter | None = None
     authenticated: AuthenticatedDispatch | None = None
     mcp_administration: McpAdministration | None = None
+    #: The same gate the runner holds around its own use of the connection, or
+    #: `None` for an embedder or test that owns no shared connection to protect.
+    #: Held around dispatch and around service work so this thread and the lease
+    #: renewal thread never have SQLite's connection-global mutex held by one
+    #: while the other waits on the GIL inside it.
+    gate: threading.RLock | None = None
     #: Bounded service work to run on this thread, before a request is served and
     #: again after its response is written.
     #:
@@ -803,7 +838,7 @@ class LocalSocketServer:
         server.settimeout(0.2)
         identity = path.stat()
         self._owned_socket_identity = (identity.st_dev, identity.st_ino)
-        return _SocketListener(server, self.timeout)
+        return _SocketListener(server, self.timeout, endpoint.address)
 
     def _bind_pipe(self, endpoint: LocalEndpoint) -> _Listener:
         # Probed first for the reason the socket side probes: a name that answers
@@ -867,6 +902,15 @@ class LocalSocketServer:
                 break
             self._active_channel = channel
             self._run_service_work()
+            if self._stop.is_set():
+                # A stop was requested while the service-work pass ran. Closing
+                # here rather than falling through to `_handle` is what keeps a
+                # stop signalled after accept but before dispatch from admitting
+                # one more application dispatch on a connection the resource
+                # stack is about to close underneath.
+                channel.close()
+                self._active_channel = None
+                break
             try:
                 self._handle(channel)
             except Exception:  # noqa: BLE001, S110 - see below
@@ -917,33 +961,41 @@ class LocalSocketServer:
         """
         if self.service_work is None:
             return
-        try:
-            self.service_work()
-        except Exception:  # noqa: BLE001 - see above
-            return
+        with self.gate if self.gate is not None else nullcontext():
+            if self._stop is not None and self._stop.is_set():
+                return
+            try:
+                self.service_work()
+            except Exception:  # noqa: BLE001 - see above
+                return
 
     def _handle(self, channel: _Channel) -> None:
         raw = channel.read_frame()
         if raw is None:
             return
         document = decode_frame(raw)
-        if is_local_control(document):
-            # Answered here and nothing below runs. A control is not a request and
-            # not a probe: it names its own kind, so it is never handed to a
-            # decoder that would have to guess which of the two it meant to be.
-            payload: Mapping[str, Any] = self._control(document)
-        elif self.router is not None:
-            result = self.router.route(document)
-            payload = result.to_wire()
-        else:
-            assert self.dispatcher is not None
-            request = codec.decode_request(document)
-            response = self.dispatcher.dispatch(request)
-            payload = codec.encode_response(response)
+        with self.gate if self.gate is not None else nullcontext():
+            # A stop may be requested while the frame read or gate wait is in
+            # progress. Never begin a fresh dispatch after that signal.
+            if self._stop is not None and self._stop.is_set():
+                return
+            if is_local_control(document):
+                # Answered here and nothing below runs. A control is not a request and
+                # not a probe: it names its own kind, so it is never handed to a
+                # decoder that would have to guess which of the two it meant to be.
+                payload: Mapping[str, Any] = self._control(document)
+            elif self.router is not None:
+                result = self.router.route(document)
+                payload = result.to_wire()
+            else:
+                assert self.dispatcher is not None
+                request = codec.decode_request(document)
+                response = self.dispatcher.dispatch(request)
+                payload = codec.encode_response(response)
         # Reading the frame checked the initial unary boundary, but dispatch may run
         # longer than that quiet window.  Recheck after all router/dispatcher work and
         # immediately before the response write so traffic pipelined during dispatch
-        # cannot receive a valid response.
+        # cannot receive a valid response. Both happen after the gate is released.
         channel.ensure_unary_boundary()
         channel.send_frame(encode_frame(payload))
 
@@ -1012,26 +1064,62 @@ class LocalSocketServer:
             raise LocalControlRefusal(LocalControlError.UNSUPPORTED)
         return self.mcp_administration.administer(control)
 
-    def stop(self) -> None:
-        served = self._listener is not None
+    def request_stop(self) -> None:
+        """Signal the serving thread to stop, without waiting for it.
+
+        Idempotent and nonblocking: safe to call before `start()` (nothing to
+        signal yet), safe to call more than once, and safe to call from a
+        thread other than the one that will eventually call `stop()`. This is
+        the seam `main.serve` pushes onto the resource stack ahead of both
+        transports' own `stop()`, so a stop request reaches the serving thread
+        immediately rather than waiting behind whatever `stop()` unwinds first.
+        """
         if self._stop is not None:
             self._stop.set()
         if self._active_channel is not None:
             self._active_channel.close()
         if self._listener is not None:
+            self._listener.wake()
+
+    def stop(self) -> None:
+        try:
+            self.request_stop()
+        except Exception as error:
+            if self._thread is not None and self._thread.is_alive():
+                raise ResourceReleaseBlocked(
+                    "local service transport serving thread did not stop"
+                ) from error
+        served = self._listener is not None
+        if self._thread is not None:
             # Woken in bounded attempts rather than joined once for a long time.  A
-            # client can be accepted between the first active-channel check above and
-            # the wake, so each attempt rechecks and closes the channel after giving
+            # client can be accepted between `request_stop`'s own wake and this
+            # loop, so each attempt rechecks and closes the channel after giving
             # the serving thread a short opportunity to publish it.
-            for _ in range(20):
-                if self._thread is None or not self._thread.is_alive():
-                    break
-                self._listener.wake()
-                self._thread.join(timeout=0.005)
-                if self._active_channel is not None:
-                    self._active_channel.close()
-                self._thread.join(timeout=0.005)
-        self._thread = None
+            try:
+                for _ in range(20):
+                    if not self._thread.is_alive():
+                        break
+                    if self._listener is not None:
+                        self._listener.wake()
+                    self._thread.join(timeout=0.005)
+                    if self._active_channel is not None:
+                        self._active_channel.close()
+                    self._thread.join(timeout=0.005)
+            except Exception as error:
+                if self._thread.is_alive():
+                    raise ResourceReleaseBlocked(
+                        "local service transport serving thread did not stop"
+                    ) from error
+            if self._thread.is_alive():
+                # Still genuinely running, and possibly still holding the shared
+                # sqlite gate. Unlinking the endpoint or closing the listener
+                # underneath it here is exactly the fail-open shutdown this
+                # sentinel exists to refuse: thread, listener and channel are
+                # all retained so a retry picks up from here.
+                raise ResourceReleaseBlocked(
+                    "local service transport serving thread did not stop"
+                )
+            self._thread = None
         cleanup_failed = False
         if served:
             # Unlink the Unix name while the listener that owns it is still open.

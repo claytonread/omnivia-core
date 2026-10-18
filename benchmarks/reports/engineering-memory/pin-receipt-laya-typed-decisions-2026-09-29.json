@@ -1,0 +1,123 @@
+{
+  "receipt": "model-distribution-pin.v1",
+  "recorded_at": "2026-09-29T13:48:29Z",
+  "manifest_identity": "sha256:79036a2f3a902fd942cc1df554ad7c54878af8bad978d8a9dd3a955b6283a95a",
+  "identifier": "core.laya-typed-decisions",
+  "version": "1.0.0",
+  "publisher_repository": "aac6fef/laya-typed-decisions-coreml",
+  "publisher_revision": "28d24fa8d67a3264556b23391ec6c3fd98573056",
+  "artifacts": [
+    {
+      "name": ".gitattributes",
+      "declared_sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
+      "observed_sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
+      "declared_size": 1519,
+      "observed_size": 1519,
+      "matched": true
+    },
+    {
+      "name": "LICENSE",
+      "declared_sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+      "observed_sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+      "declared_size": 10173,
+      "observed_size": 10173,
+      "matched": true
+    },
+    {
+      "name": "NOTICE",
+      "declared_sha256": "60928ba6b42ad90c048a88791c34c60826e565d279909095ade614c08c5b8ca8",
+      "observed_sha256": "60928ba6b42ad90c048a88791c34c60826e565d279909095ade614c08c5b8ca8",
+      "declared_size": 1209,
+      "observed_size": 1209,
+      "matched": true
+    },
+    {
+      "name": "README.md",
+      "declared_sha256": "4cef3b33306139b944952f019f02ac1ef1ac889897a19fb41ae0a704478584e3",
+      "observed_sha256": "4cef3b33306139b944952f019f02ac1ef1ac889897a19fb41ae0a704478584e3",
+      "declared_size": 3944,
+      "observed_size": 3944,
+      "matched": true
+    },
+    {
+      "name": "coreml_config.json",
+      "declared_sha256": "640c131a13a0f28b6ffe19a2f50300e1da9c5ad5f0089f7d223fecd384dbc029",
+      "observed_sha256": "640c131a13a0f28b6ffe19a2f50300e1da9c5ad5f0089f7d223fecd384dbc029",
+      "declared_size": 2126,
+      "observed_size": 2126,
+      "matched": true
+    },
+    {
+      "name": "encoder/config.json",
+      "declared_sha256": "5268d24ad3b77c8151de5dcb0762ba4391619aad9ab0bda33e36fb083cfeae6d",
+      "observed_sha256": "5268d24ad3b77c8151de5dcb0762ba4391619aad9ab0bda33e36fb083cfeae6d",
+      "declared_size": 2084,
+      "observed_size": 2084,
+      "matched": true
+    },
+    {
+      "name": "model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "declared_sha256": "b9accf64df1bf6176911b731fede8023cac4b5901b1a0738b5def56aa80f01ea",
+      "observed_sha256": "b9accf64df1bf6176911b731fede8023cac4b5901b1a0738b5def56aa80f01ea",
+      "declared_size": 1659058,
+      "observed_size": 1659058,
+      "matched": true
+    },
+    {
+      "name": "model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "declared_sha256": "4c1dbcd09c84813a4101e5db1eda2003be05bfa60c13788ed2864f5f75a2e071",
+      "observed_sha256": "4c1dbcd09c84813a4101e5db1eda2003be05bfa60c13788ed2864f5f75a2e071",
+      "declared_size": 842881984,
+      "observed_size": 842881984,
+      "matched": true
+    },
+    {
+      "name": "model.mlpackage/Manifest.json",
+      "declared_sha256": "393b3f65b7a76a9a72073efdbc90c06a72619efedd8dbe03fbaedeaafa54c24c",
+      "observed_sha256": "393b3f65b7a76a9a72073efdbc90c06a72619efedd8dbe03fbaedeaafa54c24c",
+      "declared_size": 617,
+      "observed_size": 617,
+      "matched": true
+    },
+    {
+      "name": "rl_agent_config.json",
+      "declared_sha256": "ebf0cd524d92342a6be5e48e9fca3d7c2babfb5a56ccd79d2171ef5d8c7f7be8",
+      "observed_sha256": "ebf0cd524d92342a6be5e48e9fca3d7c2babfb5a56ccd79d2171ef5d8c7f7be8",
+      "declared_size": 847,
+      "observed_size": 847,
+      "matched": true
+    },
+    {
+      "name": "tokenizer/tokenizer.json",
+      "declared_sha256": "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
+      "observed_sha256": "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
+      "declared_size": 3583228,
+      "observed_size": 3583228,
+      "matched": true
+    },
+    {
+      "name": "tokenizer/tokenizer_config.json",
+      "declared_sha256": "08d4cf3ac4dca381759441b85b91a6d40e688471dcd33d15d6649eb0a9a854d1",
+      "observed_sha256": "08d4cf3ac4dca381759441b85b91a6d40e688471dcd33d15d6649eb0a9a854d1",
+      "declared_size": 337,
+      "observed_size": 337,
+      "matched": true
+    },
+    {
+      "name": "validation.json",
+      "declared_sha256": "be592a018998e9a3e561a79cd092b505db927b1c678a2f2cff86f4f9d1cf4ad2",
+      "observed_sha256": "be592a018998e9a3e561a79cd092b505db927b1c678a2f2cff86f4f9d1cf4ad2",
+      "declared_size": 4768,
+      "observed_size": 4768,
+      "matched": true
+    }
+  ],
+  "tree_root": "model.mlpackage",
+  "expected_tree_digest": "517a8071290a29c2f1e19b38356fdc5c59dfdc801711a92606de6bba67596c85",
+  "computed_tree_digest": "517a8071290a29c2f1e19b38356fdc5c59dfdc801711a92606de6bba67596c85",
+  "tree_digest_matched": true,
+  "all_artifacts_matched": true,
+  "failures": [],
+  "elapsed_seconds": 57.2,
+  "signing": "absent (digest-only pin; signature activates under D-1 without changing artifact digests)"
+}

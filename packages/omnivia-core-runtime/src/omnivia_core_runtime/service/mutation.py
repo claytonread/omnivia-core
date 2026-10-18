@@ -43,7 +43,9 @@ lease and fencing generation validated on entry and again immediately before com
 domain mutation and 0007's durable audit, claim and outcome and 0013's execution record
 written in one SQLite transaction; a stored answer on honest replay, proved against its
 own digest and re-canonicalized before it is served, without re-running the mutation; a
-typed conflict when one idempotency scope is reused for a different canonical request;
+domain-supplied authority check before a replay when revocation must also govern stored
+answers; a typed conflict when one idempotency scope is reused for a different canonical
+request;
 and one rollback covering all of it on any error.
 
 What this module deliberately does not do: it registers no operation, wires no
@@ -87,9 +89,9 @@ from omnivia_core_runtime.service.authorization import (
 from omnivia_core_runtime.service.operations import OperationError
 
 #: The purpose each mutating catalogue operation is served under, and the only purposes
-#: a mutation grant may ever carry. Six values over ten operations: a purpose names a
-#: coherent operation family rather than restating an operation name, which is the same
-#: shape `application.OPERATION_PURPOSES` uses for the read operations.
+#: a mutation grant may ever carry. Twenty-two values over forty-one operations: a
+#: purpose names a coherent operation family rather than restating an operation name,
+#: which is the same shape `application.OPERATION_PURPOSES` uses for the read operations.
 #:
 #: Every mutating operation is listed explicitly. There is no prefix rule, no fallback
 #: and no default: an operation absent from this map cannot be granted at all, and a
@@ -107,6 +109,46 @@ WORKFLOW_EXECUTION_PURPOSE: Final = "workflow_execution"
 #: canonical Runtime stream, not a scheduler row -- and one purpose covering both would
 #: let a grant issued for either be presented for the other.
 WORKFLOW_CONTROL_PURPOSE: Final = "workflow_control"
+DECISION_EVALUATION_PURPOSE: Final = "decision_evaluation"
+DECISION_CONFIGURATION_PURPOSE: Final = "decision_configuration"
+#: Engineering memory (SPEC-CORE-ENGMEM-001). Continuity bindings and their final
+#: close are one session-level act; checkpoint appends are their own purpose because
+#: they write durable L0 evidence, not session bookkeeping.
+CONTINUITY_SESSION_PURPOSE: Final = "continuity_session"
+CONTINUITY_CHECKPOINT_PURPOSE: Final = "continuity_checkpoint"
+CONTEXT_PRIORITY_PURPOSE: Final = "context_priority"
+ENGINEERING_REVIEW_PURPOSE: Final = "engineering_review"
+#: A trusted source producer recording source state. Its own purpose, like its own
+#: scope and capability, so a grant to contribute observations never covers it.
+ENGINEERING_SOURCE_PURPOSE: Final = "engineering_source"
+#: An explicitly authorized local operator binding a checkout to a repository
+#: identity. Its own purpose, like its own scope and capability, so neither a
+#: contributed observation nor a trusted source stream carries this authority.
+ENGINEERING_REPOSITORY_PURPOSE: Final = "engineering_repository"
+#: Declaring a trigger and moving its subscription are one configuration act, as the decision
+#: definition and model acts share one purpose: a grant to configure a trigger is the same
+#: authority whichever of the two it performs.
+TRIGGER_CONFIGURATION_PURPOSE: Final = "trigger_configuration"
+#: Delivering one stimulus to a declared trigger. Its own purpose, so a grant to configure
+#: triggers never carries the authority to deliver a stimulus to one.
+TRIGGER_INGESTION_PURPOSE: Final = "trigger_ingestion"
+#: Managed Skills (C17). Authoring and submitting a draft are one contributor act; publishing and
+#: deprecating a version are the publisher's; installing and removing are the workspace operator's.
+#: Three purposes, so a grant for one never carries the others.
+SKILL_AUTHORING_PURPOSE: Final = "skill_authoring"
+SKILL_PUBLICATION_PURPOSE: Final = "skill_publication"
+SKILL_INSTALLATION_PURPOSE: Final = "skill_installation"
+#: Cross-Project knowledge sharing (DEV-REQ-081). Proposing a share and deciding one are a Project
+#: owner's two acts on one share, so one purpose. Which Project the caller owns is a server binding
+#: and is not decided by this purpose or by the role below.
+KNOWLEDGE_SHARING_PURPOSE: Final = "knowledge_sharing"
+#: Task-context exports (DEV-REQ-159) and outcome requests (DEV-REQ-008) are separate acts: a grant to
+#: export a handoff never carries the authority to request an outcome against the export.
+TASK_CONTEXT_EXPORT_PURPOSE: Final = "task_context_export"
+OUTCOME_REQUEST_PURPOSE: Final = "outcome_request"
+#: Making a bound Project the Workspace's active context (C08). A grant to switch context is not a grant to
+#: request an outcome, and an outcome request never moves the active Project.
+PROJECT_CONTEXT_PURPOSE: Final = "project_context"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -127,6 +169,37 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "candidate.approve": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "candidate.reject": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "record.supersede": KNOWLEDGE_GOVERNANCE_PURPOSE,
+        "decision.evaluate": DECISION_EVALUATION_PURPOSE,
+        "decision.definition.publish": DECISION_CONFIGURATION_PURPOSE,
+        "decision.definition.disable": DECISION_CONFIGURATION_PURPOSE,
+        "decision.outcome.submit": DECISION_EVALUATION_PURPOSE,
+        "decision.model.install": DECISION_CONFIGURATION_PURPOSE,
+        "decision.model.activate": DECISION_CONFIGURATION_PURPOSE,
+        "decision.model.remove": DECISION_CONFIGURATION_PURPOSE,
+        "decision.settings.update": DECISION_CONFIGURATION_PURPOSE,
+        "continuity.session.register": CONTINUITY_SESSION_PURPOSE,
+        "continuity.checkpoint.append": CONTINUITY_CHECKPOINT_PURPOSE,
+        "continuity.session.close": CONTINUITY_SESSION_PURPOSE,
+        "context.priority.set": CONTEXT_PRIORITY_PURPOSE,
+        "engineering.review.record": ENGINEERING_REVIEW_PURPOSE,
+        "engineering.source.capture.commit": ENGINEERING_SOURCE_PURPOSE,
+        "engineering.source.record": ENGINEERING_SOURCE_PURPOSE,
+        "engineering.repository.register": ENGINEERING_REPOSITORY_PURPOSE,
+        "trigger.declare": TRIGGER_CONFIGURATION_PURPOSE,
+        "trigger.lifecycle": TRIGGER_CONFIGURATION_PURPOSE,
+        "trigger.ingest": TRIGGER_INGESTION_PURPOSE,
+        "skills.draft.create": SKILL_AUTHORING_PURPOSE,
+        "skills.draft.update": SKILL_AUTHORING_PURPOSE,
+        "skills.proposal.submit": SKILL_AUTHORING_PURPOSE,
+        "skills.version.publish": SKILL_PUBLICATION_PURPOSE,
+        "skills.version.deprecate": SKILL_PUBLICATION_PURPOSE,
+        "skills.install": SKILL_INSTALLATION_PURPOSE,
+        "skills.remove": SKILL_INSTALLATION_PURPOSE,
+        "knowledge.share.propose": KNOWLEDGE_SHARING_PURPOSE,
+        "knowledge.share.decide": KNOWLEDGE_SHARING_PURPOSE,
+        "task_context.export": TASK_CONTEXT_EXPORT_PURPOSE,
+        "outcome.request.create": OUTCOME_REQUEST_PURPOSE,
+        "project.context.switch": PROJECT_CONTEXT_PURPOSE,
         # Storing one workspace setting. Served under the administration purpose
         # the CLI command declares, because the grant's purpose is checked against
         # the declared one and the two must agree.
@@ -145,6 +218,10 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 INSTALLATION_ADMINISTRATOR_ROLE: Final = "installation_administrator"
 WORKSPACE_CONTRIBUTOR_ROLE: Final = "workspace_contributor"
 KNOWLEDGE_REVIEWER_ROLE: Final = "knowledge_reviewer"
+#: Publishing and deprecating a skill version is a publisher's act, which authorship never implies.
+SKILL_PUBLISHER_ROLE: Final = "skill_publisher"
+#: Installing and removing a published skill version in one workspace is an operator's act.
+WORKSPACE_OPERATOR_ROLE: Final = "workspace_operator"
 
 MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -169,6 +246,58 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "candidate.approve": KNOWLEDGE_REVIEWER_ROLE,
         "candidate.reject": KNOWLEDGE_REVIEWER_ROLE,
         "record.supersede": KNOWLEDGE_REVIEWER_ROLE,
+        "decision.evaluate": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.definition.publish": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.definition.disable": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.outcome.submit": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.model.install": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.model.activate": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.model.remove": WORKSPACE_CONTRIBUTOR_ROLE,
+        "decision.settings.update": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Engineering memory (SPEC-CORE-ENGMEM-001): continuity and priority writes
+        # are contributor acts; recording a review attestation is a reviewer act and
+        # accepts no knowledge by itself.
+        "continuity.session.register": WORKSPACE_CONTRIBUTOR_ROLE,
+        "continuity.checkpoint.append": WORKSPACE_CONTRIBUTOR_ROLE,
+        "continuity.session.close": WORKSPACE_CONTRIBUTOR_ROLE,
+        "context.priority.set": WORKSPACE_CONTRIBUTOR_ROLE,
+        "engineering.review.record": KNOWLEDGE_REVIEWER_ROLE,
+        # The contributor role, plus the operation's own `engineering:source` scope and
+        # `engineering.source` capability, which only a source producer's grant holds.
+        "engineering.source.capture.commit": WORKSPACE_CONTRIBUTOR_ROLE,
+        "engineering.source.record": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Binding a local checkout to a repository identity is contributor work in the
+        # same sense authoring content is: it reviews nothing and administers nothing.
+        # Its own `engineering:repository` scope and `engineering.repository` capability
+        # are what only an explicitly authorized local operator's grant holds.
+        "engineering.repository.register": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Configuring a trigger and delivering a stimulus to one are contributor work in one
+        # workspace: neither reviews nor administers anything, and neither starts a run.
+        "trigger.declare": WORKSPACE_CONTRIBUTOR_ROLE,
+        "trigger.lifecycle": WORKSPACE_CONTRIBUTOR_ROLE,
+        "trigger.ingest": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Authoring and submitting a draft is contributor work: it publishes nothing and installs
+        # nothing. Publication and installation each need their own role, which a contributor
+        # never holds, so authorship never implies either.
+        "skills.draft.create": WORKSPACE_CONTRIBUTOR_ROLE,
+        "skills.draft.update": WORKSPACE_CONTRIBUTOR_ROLE,
+        "skills.proposal.submit": WORKSPACE_CONTRIBUTOR_ROLE,
+        "skills.version.publish": SKILL_PUBLISHER_ROLE,
+        "skills.version.deprecate": SKILL_PUBLISHER_ROLE,
+        "skills.install": WORKSPACE_OPERATOR_ROLE,
+        "skills.remove": WORKSPACE_OPERATOR_ROLE,
+        # Sharing writes a proposal or a decision about one record and publishes nothing by itself.
+        # Whether the caller may do it for that record is the server's Project binding, which no
+        # role here can state or widen.
+        "knowledge.share.propose": WORKSPACE_CONTRIBUTOR_ROLE,
+        "knowledge.share.decide": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Exporting a handoff and requesting an outcome against it write one workspace's records and
+        # reach nothing outside it, so both are contributor work.
+        "task_context.export": WORKSPACE_CONTRIBUTOR_ROLE,
+        "outcome.request.create": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Choosing the active Project is contributor work in one workspace: it writes no record and
+        # reaches nothing outside it. Membership of the chosen Project is checked by the handler.
+        "project.context.switch": WORKSPACE_CONTRIBUTOR_ROLE,
         # Contributor, not installation administrator: this lane refuses the
         # installation role at issuance, and a setting belongs to the one
         # workspace the grant already names.
@@ -637,6 +766,12 @@ class MutationSettlementContext:
 #: never interprets the token, so any total ordering-free opaque string works.
 PreconditionReader = Callable[[sqlite3.Connection], str | None]
 
+#: Revalidate non-record authority before serving an otherwise honest replay.
+#: Unlike a record-version precondition, this check applies to the stored answer:
+#: revocation must stop a replay even though idempotency deliberately bypasses the
+#: domain mutation and its ordinary record precondition.
+ReplayAuthorityCheck = Callable[[sqlite3.Connection], None]
+
 #: The domain mutation itself, run on the fenced connection inside the transaction that
 #: also writes the durable facts. Its returned mapping is the operation's result.
 DomainMutation = Callable[
@@ -676,6 +811,7 @@ def execute_mutation(
     equivalence: IdempotencyEquivalence,
     compatible_equivalences: tuple[IdempotencyEquivalence, ...] = (),
     precondition: PreconditionReader | None = None,
+    replay_authority: ReplayAuthorityCheck | None = None,
     mutate: DomainMutation,
     validate_result: ResultValidator,
     clock: Clock,
@@ -692,8 +828,9 @@ def execute_mutation(
        again immediately before COMMIT, so authority lost mid-transaction fails rather
        than commits;
     3. an existing claim in this idempotency scope is resolved first -- an equal digest
-       is answered from the stored outcome without running `mutate` at all, and a
-       different digest is a typed conflict;
+       first passes any supplied replay-authority check, then is answered from the
+       stored outcome without running `mutate` at all; a different digest is a typed
+       conflict;
     4. the precondition is read and compared *before* the domain mutation, for the
        operations whose catalogue metadata requires one; for the operations it does not,
        there is no precondition to bind and no reader is called;
@@ -805,6 +942,8 @@ def execute_mutation(
             claim_id, stored_digest, original_audit_ref = existing
             if stored_digest not in accepted_fingerprints:
                 raise MutationIdempotencyConflict(audit_reference=original_audit_ref)
+            if replay_authority is not None:
+                replay_authority(fenced)
             # An honest replay runs no domain code, but it does spend the fresh grant it
             # was presented with: the row below is what makes that durable, so the grant
             # cannot later authorize a mutation that would actually write something.
@@ -957,6 +1096,43 @@ def execute_mutation(
             claim_id=settlement.claim_id,
             audit_ref=settlement.audit_ref,
         )
+
+
+def record_refused_audit(
+    connection: sqlite3.Connection,
+    *,
+    grant: MutationGrant,
+    context: AuthorizedApplicationContext,
+    audit_ref: str,
+    error_code: str,
+    recorded_at_us: int,
+) -> None:
+    """Write the audit event of a refused mutation, inside a fenced transaction of its own.
+
+    A refused mutation rolls back everything it wrote, its audit event included, so a
+    refusal that something must reference afterwards needs an event of its own. `refused`
+    is the outcome class 0007 admits for that, and it carries the error code.
+    """
+    connection.execute(
+        "INSERT INTO omnivia_application_audit_events "
+        "(audit_ref, workspace_id, principal_id, operation, purpose, request_id, "
+        "correlation_id, trace_id, granted_authority_json, outcome_class, "
+        "error_code, recorded_at_us) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'refused', ?, ?)",
+        (
+            audit_ref,
+            grant.workspace_id,
+            grant.principal_id,
+            grant.operation,
+            grant.purpose,
+            context.request_id,
+            context.correlation_id,
+            context.trace_id,
+            to_canonical_json(context.authority.to_wire()),
+            error_code,
+            recorded_at_us,
+        ),
+    )
 
 
 def _require_current(grant: MutationGrant, clock: Clock) -> int:
@@ -1157,8 +1333,13 @@ __all__ = [
     "MUTATING_OPERATIONS",
     "MUTATION_PURPOSES",
     "MUTATION_ROLES",
+    "SKILL_AUTHORING_PURPOSE",
+    "SKILL_INSTALLATION_PURPOSE",
+    "SKILL_PUBLICATION_PURPOSE",
+    "SKILL_PUBLISHER_ROLE",
     "WORKSPACE_ADMINISTRATION_PURPOSE",
     "WORKSPACE_CONTRIBUTOR_ROLE",
+    "WORKSPACE_OPERATOR_ROLE",
     "DomainMutation",
     "MutationDenied",
     "MutationGrant",

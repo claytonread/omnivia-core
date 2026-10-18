@@ -9,7 +9,11 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from omnivia_core_runtime.service.authorization import AuthenticatedSession
+from omnivia_core_runtime.service import installed_mcp
+from omnivia_core_runtime.service.authorization import (
+    AuthenticatedSession,
+    ContinuityAssociationProvenance,
+)
 from omnivia_core_runtime.service.installed_mcp import (
     AUTHORING_POLICY,
     RESTRICTED_POLICY,
@@ -19,7 +23,10 @@ from omnivia_core_runtime.service.installed_mcp import (
     InstalledMcpSecret,
     profile_policy,
 )
-from omnivia_core_runtime.service.mutation import INSTALLATION_ADMINISTRATOR_ROLE
+from omnivia_core_runtime.service.mutation import (
+    INSTALLATION_ADMINISTRATOR_ROLE,
+    WORKSPACE_CONTRIBUTOR_ROLE,
+)
 from omnivia_core_runtime.storage.installation_store import (
     InstallationAuthority,
     InstallationAuthorityError,
@@ -132,15 +139,34 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         "memory.search",
         "graph.traverse",
         "context_pack.build",
+        "engineering.search",
+        "engineering.expand",
+        "engineering.context.build",
+        "decision.evaluate",
+        "decision.record.get",
+        "decision.record.list",
+        "decision.status",
+        "trigger.health",
     }
     assert kinds(RESTRICTED_POLICY, McpGrantKind.SCOPE) == {
         "workspace:read",
         "memory:read",
         "graph:read",
+        "engineering:read",
+        "decision:read",
+        "decision:invoke",
+        "trigger:read",
     }
     assert kinds(RESTRICTED_POLICY, McpGrantKind.PURPOSE) == {
         "workspace_inspection",
         "knowledge_retrieval",
+        "engineering_search",
+        "engineering_expand",
+        "engineering_context",
+        "decision_evaluation",
+        "decision_record",
+        "decision_status",
+        "trigger_observation",
     }
     assert {
         (grant.value, grant.version)
@@ -153,32 +179,77 @@ def test_restricted_policy_is_exactly_the_manifest_read_surface() -> None:
         ("memory.read", "1.0"),
         ("graph.read", "1.0"),
         ("context_pack.build", "1.0"),
+        ("engineering.read", "1.0"),
+        ("decision.read", "1.0"),
+        ("decision.invoke", "1.0"),
+        ("trigger.read", "1.0"),
     }
-    # No role at all. A restricted principal holds no operation a role admits, and
-    # the one this file's authoring profile grants is what lets a mutation through.
-    assert kinds(RESTRICTED_POLICY, McpGrantKind.ROLE) == set()
+    # The one role: `decision.evaluate` is a restricted-manifest mutation the
+    # coordinator serves under the workspace-contributor role, and nothing else.
+    assert kinds(RESTRICTED_POLICY, McpGrantKind.ROLE) == {"workspace_contributor"}
 
 
-def test_authoring_policy_is_the_read_surface_plus_exactly_the_five() -> None:
+def test_authoring_policy_is_the_read_surface_plus_exactly_twenty_one() -> None:
     added = set(AUTHORING_POLICY) - set(RESTRICTED_POLICY)
     assert set(RESTRICTED_POLICY) < set(AUTHORING_POLICY)
     # R004 section 9.1's "workspace contributor authority sufficient for
     # `memory:write`", and exactly that: never the reviewer role that admits
     # governed transitions, never the administrator role that administers this
-    # installation.
-    assert kinds(added, McpGrantKind.ROLE) == {"workspace_contributor"}
+    # installation. The role itself is the restricted policy's -- both profiles'
+    # mutations are served under it -- so the additions add operations, scopes
+    # and purposes, and no new role.
+    assert kinds(added, McpGrantKind.ROLE) == set()
     assert kinds(added, McpGrantKind.OPERATION) == {
         "memory.create",
         "evidence.capture",
         "import.start",
         "job.get",
         "job.events",
+        "trigger.declare",
+        "trigger.lifecycle",
+        "trigger.ingest",
+        "skills.draft.create",
+        "skills.draft.update",
+        "skills.proposal.submit",
+        "knowledge.share.propose",
+        "knowledge.share.decide",
+        "knowledge.share.read",
+        "knowledge.share.lineage",
+        "task_context.export",
+        "task_context.export.read",
+        "outcome.request.create",
+        "outcome.request.read",
+        "project.context.read",
+        "project.context.switch",
     }
-    assert kinds(added, McpGrantKind.SCOPE) == {"memory:write", "job:read"}
+    assert kinds(added, McpGrantKind.SCOPE) == {
+        "skill:author",
+        "memory:write",
+        "job:read",
+        "trigger:configure",
+        "trigger:invoke",
+        "knowledge:share",
+        "knowledge:share_read",
+        "task_context:export",
+        "task_context:export_read",
+        "outcome:request",
+        "outcome:request_read",
+        "project_context:read",
+        "project_context:switch",
+    }
     assert kinds(added, McpGrantKind.PURPOSE) == {
         "memory_authoring",
         "content_ingestion",
         "job_observation",
+        "trigger_configuration",
+        "trigger_ingestion",
+        "skill_authoring",
+        "knowledge_sharing",
+        "knowledge_share_observation",
+        "task_context_export",
+        "task_context_observation",
+        "outcome_request",
+        "project_context",
     }
     assert {
         (grant.value, grant.version)
@@ -189,6 +260,17 @@ def test_authoring_policy_is_the_read_surface_plus_exactly_the_five() -> None:
         ("evidence.write", "1.0"),
         ("ingestion.import", "1.0"),
         ("job.read", "1.0"),
+        ("trigger.configure", "1.0"),
+        ("trigger.invoke", "1.0"),
+        ("skill.author", "1.0"),
+        ("knowledge.share", "1.0"),
+        ("knowledge.share_read", "1.0"),
+        ("task_context.export", "1.0"),
+        ("task_context.export_read", "1.0"),
+        ("outcome.request", "1.0"),
+        ("outcome.request_read", "1.0"),
+        ("project_context.read", "1.0"),
+        ("project_context.switch", "1.0"),
     }
 
 
@@ -489,6 +571,57 @@ def test_authentication_yields_exactly_the_durable_policy(tmp_path: Path) -> Non
         assert session.roles == kinds(AUTHORING_POLICY, McpGrantKind.ROLE)
         assert session.roles == frozenset({"workspace_contributor"})
         assert session.installations == frozenset()
+        association = session.continuity_association
+        assert association is not None
+        assert association.association_id == (
+            f"{provisioning.setup.setup_id}.g{provisioning.setup.setup_generation}"
+        )
+        assert association.principal_id == session.principal_id
+        assert association.workspace_id == "ws-one"
+        assert (
+            association.provenance
+            is ContinuityAssociationProvenance.INSTALLED_MCP_CONNECTION
+        )
+
+
+def test_a_pre_withdrawal_setup_cannot_authenticate_with_retired_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_policy = installed_mcp._derive_policy(
+        (
+            *installed_mcp._RESTRICTED_OPERATIONS,
+            ("continuity.handoff.read", "continuity_handoff"),
+        )
+    )
+    with installation(tmp_path) as (store, authority):
+        with monkeypatch.context() as legacy:
+            legacy.setitem(
+                installed_mcp._POLICIES,
+                McpProfile.RESTRICTED,
+                legacy_policy,
+            )
+            provisioning = authority.configure(
+                administrator(),
+                host=McpHost.CLAUDE_CODE,
+                workspace_id="ws-one",
+                profile=McpProfile.RESTRICTED,
+                authoring_intent=False,
+            )
+        assert provisioning.secret is not None
+        assert "continuity.handoff.read" in kinds(
+            store.mcp_grants(
+                provisioning.setup.setup_id,
+                provisioning.setup.setup_generation,
+            ),
+            McpGrantKind.OPERATION,
+        )
+
+        with pytest.raises(InstalledMcpAuthenticationError) as refusal:
+            authority.authenticate(provisioning.secret.reveal())
+        assert str(refusal.value) == (
+            "the presented credential does not resolve to live installed MCP authority"
+        )
 
 
 @pytest.mark.parametrize("presented", ["", "not-the-secret", "x" * 43])
@@ -539,9 +672,9 @@ def test_a_restricted_principal_reads_but_is_not_admitted_to_authoring(
         principal = authority.authenticate(provisioning.secret.reveal())
         assert "memory.search" in principal.session.operations
         assert "memory.create" not in principal.session.operations
-        # And no role, so the mutation coordinator refuses it a second way: there
-        # is no stored row a contributor grant could be reconstructed from.
-        assert principal.session.roles == frozenset()
+        # The one role, for the decision mutation the restricted manifest admits;
+        # the coordinator refuses every other mutation for lack of a purpose grant.
+        assert principal.session.roles == frozenset({WORKSPACE_CONTRIBUTOR_ROLE})
         assert (
             authority.admits_authoring(provisioning.setup.principal_id, "ws-one")
             is False
@@ -580,7 +713,7 @@ def test_a_role_survives_exactly_as_long_as_the_grant_that_states_it(
         )
         assert narrowed.secret is not None
         assert authority.authenticate(narrowed.secret.reveal()).session.roles == (
-            frozenset()
+            frozenset({WORKSPACE_CONTRIBUTOR_ROLE})
         )
         # The credential the role was issued against no longer resolves at all.
         with pytest.raises(InstalledMcpAuthenticationError):

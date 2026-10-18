@@ -525,7 +525,8 @@ def test_v06_5_s0_implicit_local_owner_mutation_denied(owned: m1.Owned) -> None:
         issue(owned, context, session=roleless)
     assert denied.value.code == ERROR_CODE_AUTHORIZATION_DENIED
 
-    # And nothing is registered to serve it.
+    # And nothing is registered to serve it: the local-owner registry is the six
+    # reads, and the decision family's registry is separate from it.
     assert MUTATING_OPERATIONS.isdisjoint(build_application_registry().operations)
 
 
@@ -744,13 +745,12 @@ def _grant_facts(grant: MutationGrant) -> tuple[Any, ...]:
     )
 
 
-# --- S0-04: every mutating operation declares a purpose -----------------------
+# --- S0-04: all nine mutating operations declare a purpose --------------------
 
 
 def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
-    """Exactly the fourteen, explicitly, with a mismatch failing closed for each."""
+    """Exactly the forty-three, explicitly, with a mismatch failing closed for each."""
     assert set(MUTATION_PURPOSES) == {
-        "settings.set",
         "workflow.start",
         "workflow.control",
         "workspace.create",
@@ -764,10 +764,42 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
         "candidate.reject",
         "record.supersede",
         "chat.command",
+        "decision.evaluate",
+        "decision.outcome.submit",
+        "decision.definition.publish",
+        "decision.definition.disable",
+        "decision.model.install",
+        "decision.model.activate",
+        "decision.model.remove",
+        "decision.settings.update",
+        "continuity.session.register",
+        "continuity.checkpoint.append",
+        "continuity.session.close",
+        "context.priority.set",
+        "engineering.review.record",
+        "engineering.source.capture.commit",
+        "engineering.source.record",
+        "engineering.repository.register",
+        "trigger.declare",
+        "trigger.lifecycle",
+        "trigger.ingest",
+        "skills.draft.create",
+        "skills.draft.update",
+        "skills.proposal.submit",
+        "skills.version.publish",
+        "skills.version.deprecate",
+        "skills.install",
+        "skills.remove",
+        "knowledge.share.propose",
+        "knowledge.share.decide",
+        "task_context.export",
+        "outcome.request.create",
+        "project.context.switch",
+        "settings.set",
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 14
+    assert len(MUTATION_PURPOSES) == 45
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -791,8 +823,15 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
     assert len(governance) == 1
     # Two more with the Workflow family: starting a Run and controlling one are
     # separate authorities, so neither shares a purpose with the other or with the
-    # job family's own control.
-    assert len(set(MUTATION_PURPOSES.values())) == 8
+    # job family's own control. Engineering memory adds six of its own: the
+    # session act, the checkpoint append, the preference write, the review
+    # attestation, the trusted source record and the repository registration
+    # (SPEC-CORE-ENGMEM-001). Triggers add two more (C21): configuration, which
+    # declaring and moving a subscription share, and ingestion, which delivering
+    # a stimulus holds alone, so a configuration grant never delivers one.
+    # Knowledge sharing adds one more: proposing a share and deciding one are both
+    # held under `knowledge_sharing`, distinct from the governance family's purpose.
+    assert len(set(MUTATION_PURPOSES.values())) == 25
 
     # Every operation is exercised: the declared purpose is what the grant carries, and
     # any other purpose the session may act for is refused.
@@ -1530,7 +1569,8 @@ def test_v06_5_s0_execution_record_is_append_only_and_guarded(owned: m1.Owned) -
 
 def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
     """A test can add a handler; production cannot acquire one by accident."""
-    shipped = frozenset(
+    shipped = build_application_registry().operations
+    assert shipped == frozenset(
         {
             "workspace.inspect",
             "evidence.search",
@@ -1538,14 +1578,23 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
             "memory.search",
             "graph.traverse",
             "context_pack.build",
+            "analysis.start",
         }
     )
-    default = build_application_registry()
-    assert default.operations == shipped
-    assert len(shipped) == 6
-    # None of the operations this registry does not ship, mutating or not.
-    assert (APPLICATION_OPERATIONS - shipped) & default.operations == frozenset()
-    assert len(APPLICATION_OPERATIONS - shipped) == 24
+    # The decision family's own registry carries the fifteen decision handlers;
+    # the read registry carries none of them.
+    from omnivia_core_runtime.service.application import build_decision_registry
+
+    assert not (shipped & build_decision_registry(
+        type("H", (), {name: None for name in (
+            "decision_evaluate", "decision_record_get", "decision_record_list",
+            "decision_status", "decision_definition_list", "decision_definition_get",
+            "decision_definition_publish", "decision_definition_disable",
+            "decision_outcome_submit", "decision_model_list",
+            "decision_result_use_evaluate",
+            "decision_settings_get", "decision_settings_update",
+            "decision_model_not_implemented")})(),
+    ).operations)
 
     def stub(_context: object) -> Mapping[str, Any]:
         return {}
@@ -1557,7 +1606,7 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
     # The injection is per-call: no module state moved, so the default is unchanged
     # both before and after -- which is the property monkeypatching cannot offer.
     assert build_application_registry().operations == shipped
-    assert default.get(OPERATION) is None
+    assert build_application_registry().get(OPERATION) is None
 
     # Nothing is relaxed for an injected handler.
     with pytest.raises(ValueError, match="not part of the accepted"):
@@ -1740,9 +1789,41 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "candidate.reject": "knowledge_reviewer",
         "record.supersede": "knowledge_reviewer",
         "chat.command": "workspace_contributor",
+        "decision.evaluate": "workspace_contributor",
+        "decision.outcome.submit": "workspace_contributor",
+        "decision.definition.publish": "workspace_contributor",
+        "decision.definition.disable": "workspace_contributor",
+        "decision.model.install": "workspace_contributor",
+        "decision.model.activate": "workspace_contributor",
+        "decision.model.remove": "workspace_contributor",
+        "decision.settings.update": "workspace_contributor",
+        "continuity.session.register": "workspace_contributor",
+        "continuity.checkpoint.append": "workspace_contributor",
+        "continuity.session.close": "workspace_contributor",
+        "context.priority.set": "workspace_contributor",
+        "engineering.review.record": "knowledge_reviewer",
+        "engineering.source.capture.commit": "workspace_contributor",
+        "engineering.source.record": "workspace_contributor",
+        "engineering.repository.register": "workspace_contributor",
+        "trigger.declare": "workspace_contributor",
+        "trigger.lifecycle": "workspace_contributor",
+        "trigger.ingest": "workspace_contributor",
+        "skills.draft.create": "workspace_contributor",
+        "skills.draft.update": "workspace_contributor",
+        "skills.proposal.submit": "workspace_contributor",
+        "skills.version.publish": "skill_publisher",
+        "skills.version.deprecate": "skill_publisher",
+        "skills.install": "workspace_operator",
+        "skills.remove": "workspace_operator",
+        "knowledge.share.propose": "workspace_contributor",
+        "knowledge.share.decide": "workspace_contributor",
+        "task_context.export": "workspace_contributor",
+        "outcome.request.create": "workspace_contributor",
+        "project.context.switch": "workspace_contributor",
         # Administration purpose, contributor role: there is no
         # workspace-administrator role in this vocabulary, and the
         # installation role is refused at issuance on a workspace lane.
+        # `workspace_operator` is the live candidate to move to.
         "settings.set": "workspace_contributor",
     }
     assert set(MUTATION_ROLES) == MUTATING_OPERATIONS

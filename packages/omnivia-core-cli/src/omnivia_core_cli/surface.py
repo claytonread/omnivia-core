@@ -7,8 +7,8 @@ maps to. It dispatches nothing and calls nothing.
 
 Three properties are held here rather than left to a reader:
 
-*Bijection with the catalogue.* The thirty application commands map onto the
-thirty operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
+*Bijection with the catalogue.* The eighty-one application commands map onto the
+eighty-one operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
 command reaching an operation the contract does not publish -- or an operation
 published with no command reaching it -- is an import-time refusal, not a
 runtime surprise. That also closes the door on the legacy `core.*` operation names,
@@ -144,6 +144,184 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ApplicationCommand(
         ("workflow", "review"), "workflow.review", "workflow_observation"
     ),
+    # Every purpose is the service's own for the operation it names -- the same
+    # rule the MCP exposure manifest follows. A claimed purpose the grant does
+    # not hold is refused at the first call, so these are not free text.
+    ApplicationCommand(("decisions", "status"), "decision.status", "decision_status"),
+    ApplicationCommand(
+        ("decisions", "evaluate"), "decision.evaluate", "decision_evaluation"
+    ),
+    ApplicationCommand(
+        ("decisions", "record"), "decision.record.get", "decision_record"
+    ),
+    ApplicationCommand(
+        ("decisions", "records"), "decision.record.list", "decision_record"
+    ),
+    ApplicationCommand(
+        ("decisions", "definitions"), "decision.definition.list", "decision_read"
+    ),
+    ApplicationCommand(
+        ("decisions", "definition"), "decision.definition.get", "decision_read"
+    ),
+    ApplicationCommand(
+        ("decisions", "publish"),
+        "decision.definition.publish",
+        "decision_configuration",
+    ),
+    ApplicationCommand(
+        ("decisions", "disable"),
+        "decision.definition.disable",
+        "decision_configuration",
+    ),
+    ApplicationCommand(
+        ("decisions", "outcome"), "decision.outcome.submit", "decision_evaluation"
+    ),
+    ApplicationCommand(("decisions", "models"), "decision.model.list", "decision_read"),
+    ApplicationCommand(
+        ("decisions", "install"), "decision.model.install", "decision_configuration"
+    ),
+    ApplicationCommand(
+        ("decisions", "activate"), "decision.model.activate", "decision_configuration"
+    ),
+    ApplicationCommand(
+        ("decisions", "remove"), "decision.model.remove", "decision_configuration"
+    ),
+    ApplicationCommand(
+        ("decisions", "settings"), "decision.settings.get", "decision_settings"
+    ),
+    ApplicationCommand(
+        ("decisions", "configure"),
+        "decision.settings.update",
+        "decision_configuration",
+    ),
+    # Engineering memory (SPEC-CORE-ENGMEM-001). Same generic application-command
+    # shape as every other family; the engineering handlers refuse honestly until
+    # their producers land, and the surface must still state them because the
+    # catalogue, not this build's readiness, decides what the CLI can name.
+    ApplicationCommand(
+        ("continuity", "register"),
+        "continuity.session.register",
+        "continuity_session",
+    ),
+    ApplicationCommand(
+        ("continuity", "checkpoint"),
+        "continuity.checkpoint.append",
+        "continuity_checkpoint",
+    ),
+    ApplicationCommand(
+        ("continuity", "close"), "continuity.session.close", "continuity_session"
+    ),
+    ApplicationCommand(
+        ("continuity", "handoff"), "continuity.handoff.read", "continuity_handoff"
+    ),
+    ApplicationCommand(
+        ("engineering", "search"), "engineering.search", "engineering_search"
+    ),
+    ApplicationCommand(
+        ("engineering", "expand"), "engineering.expand", "engineering_expand"
+    ),
+    ApplicationCommand(
+        ("engineering", "context"),
+        "engineering.context.build",
+        "engineering_context",
+    ),
+    ApplicationCommand(
+        ("context", "priority"), "context.priority.set", "context_priority"
+    ),
+    ApplicationCommand(
+        ("engineering", "review"),
+        "engineering.review.record",
+        "engineering_review",
+    ),
+    ApplicationCommand(
+        ("engineering", "capture"),
+        "engineering.source.capture.commit",
+        "engineering_source",
+    ),
+    ApplicationCommand(
+        ("engineering", "source"),
+        "engineering.source.record",
+        "engineering_source",
+    ),
+    ApplicationCommand(
+        ("repository", "register"),
+        "engineering.repository.register",
+        "engineering_repository",
+    ),
+    ApplicationCommand(
+        ("analysis", "start"), "analysis.start", "insights_analysis_request"
+    ),
+    ApplicationCommand(
+        ("decisions", "result-use"), "decision.result_use.evaluate", "decision_result_use"
+    ),
+    ApplicationCommand(
+        ("trigger", "declare"), "trigger.declare", "trigger_configuration"
+    ),
+    ApplicationCommand(
+        ("trigger", "lifecycle"), "trigger.lifecycle", "trigger_configuration"
+    ),
+    ApplicationCommand(("trigger", "ingest"), "trigger.ingest", "trigger_ingestion"),
+    ApplicationCommand(("trigger", "health"), "trigger.health", "trigger_observation"),
+    # Managed Skills (C17). Each purpose is the service's own for the operation it names:
+    # authoring, publication, installation and resolution are four separate authorities.
+    ApplicationCommand(
+        ("skills", "draft-create"), "skills.draft.create", "skill_authoring"
+    ),
+    ApplicationCommand(
+        ("skills", "draft-update"), "skills.draft.update", "skill_authoring"
+    ),
+    ApplicationCommand(
+        ("skills", "propose"), "skills.proposal.submit", "skill_authoring"
+    ),
+    ApplicationCommand(
+        ("skills", "publish"), "skills.version.publish", "skill_publication"
+    ),
+    ApplicationCommand(
+        ("skills", "deprecate"), "skills.version.deprecate", "skill_publication"
+    ),
+    ApplicationCommand(("skills", "install"), "skills.install", "skill_installation"),
+    ApplicationCommand(("skills", "remove"), "skills.remove", "skill_installation"),
+    ApplicationCommand(("skills", "resolve"), "skills.resolve", "skill_resolution"),
+    # Cross-Project knowledge sharing (DEV-REQ-081). Proposing and deciding share one purpose; the
+    # recipient read and the owner's lineage read are observations, which no sharing grant carries.
+    ApplicationCommand(
+        ("knowledge", "share-propose"), "knowledge.share.propose", "knowledge_sharing"
+    ),
+    ApplicationCommand(
+        ("knowledge", "share-decide"), "knowledge.share.decide", "knowledge_sharing"
+    ),
+    ApplicationCommand(
+        ("knowledge", "share-read"), "knowledge.share.read", "knowledge_share_observation"
+    ),
+    ApplicationCommand(
+        ("knowledge", "share-lineage"),
+        "knowledge.share.lineage",
+        "knowledge_share_observation",
+    ),
+    # Task-context exports and outcome requests (DEV-REQ-159, DEV-REQ-008). Exporting and requesting an
+    # outcome are separate acts, and a read of either is an observation that no writing grant carries.
+    ApplicationCommand(
+        ("task-context", "export"), "task_context.export", "task_context_export"
+    ),
+    ApplicationCommand(
+        ("task-context", "export-read"),
+        "task_context.export.read",
+        "task_context_observation",
+    ),
+    ApplicationCommand(
+        ("outcome", "request-create"), "outcome.request.create", "outcome_request"
+    ),
+    ApplicationCommand(
+        ("outcome", "request-read"), "outcome.request.read", "task_context_observation"
+    ),
+    # The project context: a read of the active Project is an observation, and switching it is a
+    # mutation under its own purpose.
+    ApplicationCommand(
+        ("project-context", "read"), "project.context.read", "task_context_observation"
+    ),
+    ApplicationCommand(
+        ("project-context", "switch"), "project.context.switch", "project_context"
+    ),
 )
 
 PROBE_COMMANDS: Final[tuple[ProbeCommand, ...]] = (
@@ -156,6 +334,8 @@ LIFECYCLE_COMMANDS: Final[tuple[LifecycleCommand, ...]] = (
     LifecycleCommand(("service", "start"), "start"),
     LifecycleCommand(("service", "stop"), "stop"),
     LifecycleCommand(("service", "status"), "status"),
+    LifecycleCommand(("service", "update-check"), "update-check"),
+    LifecycleCommand(("service", "update"), "update"),
 )
 
 #: R004 section 9.2's required installed experience, in its order. Three paths,
@@ -183,7 +363,9 @@ EXIT_CODES: Final[Mapping[str, int]] = MappingProxyType(
         "invalid_purpose": 3,
         "workspace_migration_required": 4,
         "incompatible_version": 4,
+        "unsupported_minor_version": 4,
         "upgrade_required": 4,
+        "tokenizer_unavailable": 4,
         "conflict": 5,
         "mutation_precondition_failed": 5,
         "idempotency_conflict": 5,
@@ -199,6 +381,7 @@ EXIT_CODES: Final[Mapping[str, int]] = MappingProxyType(
         "internal_recoverable": 7,
         "not_found": 8,
         "size_limit_exceeded": 8,
+        "context_budget_insufficient": 8,
         "token_limit_exceeded": 8,
         "internal_non_recoverable": EXIT_UNKNOWN_ERROR,
     }

@@ -52,6 +52,7 @@ import test_application_audit_idempotency_migration as m1
 import test_t0688_workflow_runtime_hardening_repository as ip06
 import test_v06_5_s0_mutation_foundation as s0
 import test_workflow_runs_migration as m27
+from _completion_gate_fixture import gate
 from omnivia_core_runtime.execution.workflow import (
     EXECUTION_CLASS_DETERMINISTIC,
     ROUTE_DETERMINISTIC,
@@ -1202,6 +1203,7 @@ REACHABLE_REFUSERS: dict[str, tuple[str, ...]] = {
         "_decode",
         "_grant",
         "_release",
+        "_start_workflow_run",
         "workflow_start",
     ),
     WORKFLOW_INSPECT_OPERATION: (
@@ -1417,6 +1419,7 @@ def test_a_started_run_is_queued_work_the_scheduler_can_claim(
         workspace_id=WORKSPACE_ID,
         fencing_generation=owned.generation,
         clock=FakeClock(wall=WALL),
+        completion=gate(),
     )
 
     claim = scheduler.claim_next()
@@ -1709,6 +1712,7 @@ def _suspend(holder: m1.Owned, run_id: str) -> str:
         workspace_id=WORKSPACE_ID,
         fencing_generation=holder.generation,
         clock=FakeClock(wall=WALL),
+        completion=gate(),
     )
     claim = scheduler.claim_next()
     assert claim is not None and claim.run_id == run_id

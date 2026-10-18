@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -388,6 +389,13 @@ def test_nested_tar_rejects_directory_alias_before_name_normalization() -> None:
     assert findings[0].member == "member[0]!member[0]"
 
 
+def deterministic_padding(member: str, size: int = 20_000) -> bytes:
+    # Seeded, incompressible-looking bytes that never look like a nested archive.
+    padding = hashlib.shake_256(member.encode()).digest(size)
+    assert pub._archive_kind(member, padding) is None
+    return padding
+
+
 def compressed_tar_directory(
     mode: str,
     name: str,
@@ -446,8 +454,8 @@ def test_nested_compressed_tar_rejects_a_raw_directory_alias_after_padding(
         compressed_tar_directory(
             mode,
             "payload//",
-            before=os.urandom(20_000),
-            after=os.urandom(20_000),
+            before=deterministic_padding("before.bin"),
+            after=deterministic_padding("after.bin"),
         )
     )
 

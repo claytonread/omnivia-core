@@ -482,9 +482,25 @@ def test_a_first_configure_publishes_both_halves_and_prints_a_snippet(
     assert harness.stored() == {
         "allowed_purposes": [
             "content_ingestion",
+            "decision_evaluation",
+            "decision_record",
+            "decision_status",
+            "engineering_context",
+            "engineering_expand",
+            "engineering_search",
             "job_observation",
             "knowledge_retrieval",
+            "knowledge_share_observation",
+            "knowledge_sharing",
             "memory_authoring",
+            "outcome_request",
+            "project_context",
+            "skill_authoring",
+            "task_context_export",
+            "task_context_observation",
+            "trigger_configuration",
+            "trigger_ingestion",
+            "trigger_observation",
             "workspace_inspection",
         ],
         "allowed_workspace_ids": [WORKSPACE],
@@ -518,8 +534,15 @@ def test_a_restricted_configure_writes_the_restricted_ceiling_and_purposes(
     assert document is not None
     assert document["mutation_enabled"] is False
     assert document["allowed_purposes"] == [
+        "decision_evaluation",
+        "decision_status",
+        "decision_record",
         "knowledge_retrieval",
+        "engineering_search",
+        "engineering_expand",
+        "engineering_context",
         "workspace_inspection",
+        "trigger_observation",
     ]
     assert harness.service.setups["claude-code"]["authoring_intent"] is False
 

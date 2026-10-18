@@ -214,28 +214,23 @@ class InstallationAuthorityCoordinator:
     def close(self) -> None:
         """Stop the private endpoint before releasing catalogue authority.
 
-        The owned MCP seam is cleared here, in the same guarded block and before
-        the store is closed. `OwnedInstalledMcp` holds an `InstalledMcpAuthority`
-        built on this catalogue, so a seam left on this object after `close` is a
-        seam whose next call reaches a closed database -- the one internal
-        reference that would outlive the thing it reads.
+        If the serving thread is still active, retain the server, descriptor,
+        catalogue and its lock for a later retry. Calls through this coordinator
+        refuse as soon as `_closed` is set, even while those resources are held.
         """
         with self._mutex:
             self._closed = True
-            server = self._server
-            store = self._store
-            descriptor = self._descriptor
-            self._server = None
-            self._store = None
-            self._local = None
-            self._descriptor = None
-            self._mcp = None
-        if server is not None:
-            server.stop()
-        if descriptor is not None:
-            self._remove_descriptor(descriptor)
-        if store is not None:
-            store.close()
+            if self._server is not None:
+                self._server.stop()
+                self._server = None
+                self._local = None
+                self._mcp = None
+            if self._descriptor is not None:
+                self._remove_descriptor(self._descriptor)
+                self._descriptor = None
+            if self._store is not None:
+                self._store.close()
+                self._store = None
 
     def _try_become_owner(self) -> bool:
         if self._local is not None:

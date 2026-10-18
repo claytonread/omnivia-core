@@ -1,0 +1,51 @@
+{
+  "lane": "engineering-memory-qualification",
+  "recorded_at": "2026-09-30T21:41:29.111058+00:00",
+  "environment": {
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.11.15",
+    "cpu_count": 18
+  },
+  "corpus_observations": 2000,
+  "seed_seconds": 12.5,
+  "corpus": {
+    "seed_scheme": "engineering-memory-qualification:2000",
+    "digest": "d8ebba2eb4ab310ae72f50847126ab23c79186e6b4735fb9b4943343cc668b57"
+  },
+  "discovery_backlog": 2000,
+  "operations": {
+    "engineering.search": {
+      "n": 100,
+      "p50_ms": 31.398,
+      "p95_ms": 42.647,
+      "p99_ms": 44.271,
+      "mean_ms": 33.045
+    },
+    "engineering.search.current_safe": {
+      "n": 100,
+      "p50_ms": 31.501,
+      "p95_ms": 42.9,
+      "p99_ms": 47.505,
+      "mean_ms": 33.65
+    },
+    "engineering.context.build": {
+      "n": 30,
+      "p50_ms": 86.829,
+      "p95_ms": 98.509,
+      "p99_ms": 99.883,
+      "mean_ms": 87.85
+    },
+    "engineering.context.build.current_safe": {
+      "outcome": "success",
+      "elapsed_ms": 86.457
+    },
+    "continuity.checkpoint.append": {
+      "n": 100,
+      "p50_ms": 1.393,
+      "p95_ms": 2.219,
+      "p99_ms": 5.442,
+      "mean_ms": 1.648
+    }
+  }
+}

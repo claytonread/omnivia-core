@@ -338,13 +338,17 @@ def test_no_pytest_collected_test_performs_a_resolving_install() -> None:
     index either.
 
     Every ``pip install`` command literal in every collected test module must carry
-    ``--no-index``. Four offline artifact installs qualify today -- two in
+    ``--no-index``. Five offline artifact installs qualify today -- two in
     ``tests/compatibility/test_facade_wheel_install.py``, one in
     ``tests/host_contract/test_host_wheel_resources.py`` and one in
-    ``tests/chat_contract/test_wheel_resources.py``; the latter two install the
-    locally built Core wheel to prove the packaged Host and Chat Contract resources
-    import from a real isolated install. A resolving install added to a test module
-    later fails here rather than silently multiplying the network work.
+    ``tests/chat_contract/test_wheel_resources.py``, plus the local generated-wheel
+    hash-enforcement probe in
+    ``tests/package_qualification/test_mcp_real_host_qualification.py``. The Host
+    and Chat Contract installs prove that packaged resources import from a real
+    isolated Core install; the qualification probe proves that the generated
+    require-hashes file accepts the correct digest and rejects a wrong one. A
+    resolving install added to a test module later fails here rather than silently
+    multiplying the network work.
     """
     checked = 0
     offenders: list[str] = []
@@ -365,9 +369,10 @@ def test_no_pytest_collected_test_performs_a_resolving_install() -> None:
                 if "--no-index" not in literals:
                     offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
     assert offenders == [], f"resolving pip installs inside pytest collection: {offenders}"
-    assert checked == 4, (
+    assert checked == 5, (
         "expected the two offline installs in test_facade_wheel_install.py plus the one "
-        "in test_host_wheel_resources.py and the one in chat_contract/test_wheel_resources.py, "
+        "in test_host_wheel_resources.py, the one in chat_contract/test_wheel_resources.py "
+        "and the qualification hash-enforcement probe, "
         f"found {checked} pip install command literals"
     )
 

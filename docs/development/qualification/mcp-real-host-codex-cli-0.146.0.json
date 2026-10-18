@@ -1,0 +1,142 @@
+{
+  "bindings": {
+    "harness_sha256": "2529d9c27eaa17397de6820ec4f112c979856cbba2b83678742f6b4afd1d37b8",
+    "schema_sha256": "5ece526fe9655c2f7f8569929e0b6f9b80e3099846686e63783827676f5a4e26",
+    "wheel_closure_count": 35,
+    "wheel_closure_sha256": "0ad954b79e8152f705c4b9941b2231dbc09d2ce4bd3c10baf094d2698f752c93"
+  },
+  "finished_at": "2026-10-04T03:11:30Z",
+  "format": "omnivia.mcp-real-host-qualification.v1",
+  "gates": {
+    "i1": {
+      "candidate_installed": true,
+      "entrypoints_resolved": true
+    },
+    "i2": {
+      "authoring_configured": true,
+      "restricted_configured": true
+    },
+    "i3": {
+      "authoring_excluded_tool_undispatchable": true,
+      "authoring_excluded_tools_absent": true,
+      "authoring_tools_exact": true,
+      "decision_evaluate_refused": true,
+      "decision_owner_observed": true,
+      "initialize_verified": true,
+      "restricted_excluded_tool_undispatchable": true,
+      "restricted_excluded_tools_absent": true,
+      "restricted_tools_exact": true
+    },
+    "i4": {
+      "candidate_visible": true,
+      "capture_and_search": true,
+      "capture_changed_conflict": true,
+      "capture_replay_stable": true,
+      "default_invisible": true,
+      "memory_changed_conflict": true,
+      "memory_replay_stable": true,
+      "proposed_memory": true
+    },
+    "i5": {
+      "import_changed_conflict": true,
+      "import_replay_stable": true,
+      "imported_evidence_retrieved": true,
+      "job_events_match_owner": true,
+      "job_events_paged": true,
+      "job_observed": true,
+      "staged_import": true
+    },
+    "i6": {
+      "changed_input_conflict": true,
+      "commit_observed_before_response": true,
+      "core_restarted_before_replay": true,
+      "host_stopped_before_response": true,
+      "same_key_replayed": true,
+      "single_durable_effect": true
+    },
+    "i7": {
+      "core_restart_observed": true,
+      "host_restart_observed": true,
+      "stdout_protocol_only": true
+    },
+    "i8": {
+      "authoring_revoked": true,
+      "core_healthy": true,
+      "job_reads_fail_closed": true,
+      "mutation_fail_closed": true,
+      "owner_job_observed_after_revoke": true,
+      "replay_fail_closed": true
+    }
+  },
+  "host": {
+    "name": "codex-cli",
+    "version": "0.146.0"
+  },
+  "os": {
+    "architecture": "arm64",
+    "build": "26A428",
+    "product": "macOS",
+    "version": "27.0"
+  },
+  "profiles": {
+    "authoring": {
+      "tool_count": 18,
+      "tools": [
+        "workspace_inspect",
+        "evidence_search",
+        "knowledge_search",
+        "memory_search",
+        "graph_traverse",
+        "context_pack_build",
+        "engineering_search",
+        "engineering_expand",
+        "engineering_context_build",
+        "decision_evaluate",
+        "decision_record_get",
+        "decision_record_list",
+        "decision_status",
+        "memory_create",
+        "evidence_capture",
+        "import_start",
+        "job_get",
+        "job_events"
+      ]
+    },
+    "restricted": {
+      "tool_count": 13,
+      "tools": [
+        "workspace_inspect",
+        "evidence_search",
+        "knowledge_search",
+        "memory_search",
+        "graph_traverse",
+        "context_pack_build",
+        "engineering_search",
+        "engineering_expand",
+        "engineering_context_build",
+        "decision_evaluate",
+        "decision_record_get",
+        "decision_record_list",
+        "decision_status"
+      ]
+    }
+  },
+  "reason_code": "none",
+  "sdk_versions": {
+    "mcp": "2.0.0",
+    "mcp-types": "2.0.0"
+  },
+  "source": {
+    "clean": true,
+    "revision": "0d8cf362d15b43077a744542974b6160c283e1dc"
+  },
+  "started_at": "2026-10-04T03:01:16Z",
+  "verdict": "pass",
+  "wheels": {
+    "omnivia-core": "37797e6078405bf6ecfaf125e231542260c59d0d7977dea996b0b06130585c89",
+    "omnivia-core-cli": "1a161a78276a56ee06f54a3e7028d9ca9d7c327f75e22cf41bb0de70136159e4",
+    "omnivia-core-client": "f79f343808c82280583321145c4f66251f2464eef7eeb3c5469f29df776c2286",
+    "omnivia-core-mcp": "fb6ce8f2e08986cee51488f4cdf1d81ac5d83cad2ea55f062385342b627a1b50",
+    "omnivia-core-runtime": "465a63ec570864463f523e6fa5cc139672a7dfdaa33f8f4eee96a17c6ab77594"
+  }
+}

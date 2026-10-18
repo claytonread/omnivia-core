@@ -9,6 +9,7 @@
 //   contracts/application/v1/schemas/records.schema.json
 //   contracts/application/v1/schemas/jobs.schema.json
 //   contracts/application/v1/schemas/operations.schema.json
+//   contracts/application/v1/schemas/analysis.schema.json
 //   contracts/application/v1/schemas/workspace.schema.json
 //   contracts/application/v1/schemas/memory.schema.json
 //   contracts/application/v1/schemas/evidence.schema.json
@@ -18,6 +19,8 @@
 //   contracts/application/v1/schemas/compatibility-matrix.schema.json
 //   contracts/application/v1/schemas/runtime.schema.json
 //   contracts/application/v1/schemas/chat.schema.json
+//   contracts/application/v1/schemas/decision.schema.json
+//   contracts/application/v1/schemas/engineering.schema.json
 //   contracts/application/v1/schemas/settings.schema.json
 // Generator:
 //   scripts/generate-application-contracts.py
@@ -49,6 +52,68 @@ export const CONTRACT_VERSION = "1.3" as const;
  * Base URI every canonical v1 schema `$id` is rooted at.
  */
 export const SCHEMA_BASE_URI = "https://contracts.omnivia.dev/application/v1/" as const;
+
+/**
+ * The requested result-use class. `action_input` is deliberately absent from the v1 vocabulary:
+ * action consumption is denied until an accepted action-input policy exists (UDL-D06), and a
+ * request naming it is refused as `invalid_request` rather than decoded as an admitted use
+ * class.
+ */
+export type AnalysisUseClass = string;
+
+/**
+ * The closed `AnalysisUseClass` vocabulary, emitted from the schema's `enum`.
+ */
+export const ANALYSIS_USE_CLASS_VALUES = [
+  "exploration",
+  "historical_display",
+  "current_publication",
+] as const;
+
+/**
+ * Return whether a value is a declared `AnalysisUseClass`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAnalysisUseClass(value: unknown): value is AnalysisUseClass {
+  return (
+    typeof value === "string" &&
+    (ANALYSIS_USE_CLASS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * A calendar date in the business timezone, without a time or offset. Distinct from a UTC
+ * instant: the envelope records instants; this type records a business-date boundary.
+ */
+export type BusinessDate = string;
+
+/**
+ * An IANA timezone identifier interpreting the request's business dates, such as
+ * `Australia/Brisbane`. A fixed offset is not a timezone and is refused.
+ */
+export type BusinessTimezone = string;
+
+/**
+ * Explicit bounded output. Requested bounds narrow the host and runtime limits; they never
+ * override them and never grant execution.
+ */
+export interface AnalysisOutputBounds {
+  /**
+   * Maximum returned rows for a bounded Data View read result. Absent means the admitted
+   * server profile default.
+   */
+  readonly max_rows?: number;
+}
+
+/**
+ * Result of `analysis.start`. Reserved in milestone 1: the milestone-1 build never returns a
+ * success result, so this type declares no members. It exists so the catalogue's result
+ * reference resolves and so a later milestone extends this shape additively rather than
+ * inventing a second result type.
+ */
+export interface AnalysisStartResult {
+}
 
 /**
  * A `major.minor` contract version. Major changes are breaking; minor changes are additive and
@@ -575,6 +640,656 @@ export function isContextPackDigest(value: unknown): value is ContextPackDigest 
 }
 
 /**
+ * The payload schema version for every decision payload in this boundary. Independent of the
+ * application envelope and workspace format versions.
+ */
+export type DecisionSchemaVersion = string;
+
+/**
+ * How the caller intends to use the result. `advisory` is the only mode in this release: the
+ * assessment is evidence for a human or an authorised executor, never an executed action. Later
+ * modes are separately qualified catalogue changes.
+ */
+export type DecisionExecutionMode = string;
+
+/**
+ * The closed `DecisionExecutionMode` vocabulary, emitted from the schema's `enum`.
+ */
+export const DECISION_EXECUTION_MODE_VALUES = [
+  "advisory",
+] as const;
+
+/**
+ * Return whether a value is a declared `DecisionExecutionMode`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isDecisionExecutionMode(value: unknown): value is DecisionExecutionMode {
+  return (
+    typeof value === "string" &&
+    (DECISION_EXECUTION_MODE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The most permissive processing location the caller accepts. `local_only` binds every attempt
+ * to the selected Core host; the server may narrow but never widen this.
+ */
+export type DecisionPrivacyFloor = string;
+
+/**
+ * The closed `DecisionPrivacyFloor` vocabulary, emitted from the schema's `enum`.
+ */
+export const DECISION_PRIVACY_FLOOR_VALUES = [
+  "local_only",
+] as const;
+
+/**
+ * Return whether a value is a declared `DecisionPrivacyFloor`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isDecisionPrivacyFloor(value: unknown): value is DecisionPrivacyFloor {
+  return (
+    typeof value === "string" &&
+    (DECISION_PRIVACY_FLOOR_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * One typed prediction with its full provider distribution. `kind` selects which fields are
+ * meaningful; boolean, choice and ordinal semantics are distinct and must not share a generic
+ * acceptance threshold. `probability_semantics` names what the numbers are;
+ * `provider_decimal_precision` records the provider's own rounding so boundary-uncertainty
+ * abstention is possible.
+ */
+export interface DecisionPrediction {
+  /**
+   * Bounded enumerated value.
+   */
+  readonly kind: string;
+  /**
+   * For choice: the highest-probability declared option. For ordinal: the highest-probability
+   * rubric category.
+   */
+  readonly selected_option_id?: string;
+  /**
+   * Full returned distribution over the declared answer space, at provider precision.
+   */
+  readonly probabilities?: Readonly<Record<string, number>>;
+  /**
+   * For boolean: the provider's probability of true. False is its complement; a false result
+   * is not a failure.
+   */
+  readonly probability_true?: number;
+  /**
+   * For ordinal: the expected zero-based rubric index. A rubric position, never an event
+   * probability.
+   */
+  readonly expected_index?: number;
+  /**
+   * For ordinal: expected_index / (K - 1), labelled as a rubric position only.
+   */
+  readonly normalised_position?: number;
+  /**
+   * What the distribution numbers mean, such as `model_class_probability`.
+   */
+  readonly probability_semantics: string;
+  /**
+   * Decimal places the provider itself returns.
+   */
+  readonly provider_decimal_precision?: number;
+}
+
+/**
+ * Quality and qualification facts, kept strictly separate from the prediction and from
+ * authority. `empirical_correctness_probability` stays null until a held-out task-specific
+ * calibration exists; `calibration_status` is `unvalidated_for_task` for every first-release
+ * evaluation.
+ */
+export interface DecisionQuality {
+  /**
+   * Bounded enumerated value.
+   */
+  readonly calibration_status: string;
+  /**
+   * Held-out task-specific estimate, or null while unsupported.
+   */
+  readonly empirical_correctness_probability?: number;
+  /**
+   * Whether the loss-aware preflight admitted the context without any unapproved loss.
+   */
+  readonly input_complete: boolean;
+  /**
+   * Opaque reference to the applicable qualification profile, or null.
+   */
+  readonly qualification_ref?: string;
+}
+
+/**
+ * The deterministic policy result governing how this prediction may be used. `authorises_action`
+ * is false for every first-release evaluation; it can never be inferred from any probability,
+ * confidence or action-head field.
+ */
+export interface DecisionDisposition {
+  /**
+   * Bounded enumerated value.
+   */
+  readonly code: string;
+  /**
+   * Bounded reason codes from the canonical decision reason catalogue, such as
+   * `TASK_NOT_QUALIFIED_FOR_AUTOMATION` or `INPUT_CAPACITY_EXCEEDED`.
+   */
+  readonly reason_codes: readonly string[];
+  /**
+   * Constant false in this release. Action authority always lives outside the Decision
+   * Runtime.
+   */
+  readonly authorises_action: boolean;
+}
+
+/**
+ * Measured execution facts for the terminal attempt. `configured_compute_units` is reported
+ * separately by the provider; execution location and remote-processing flags are honest per-
+ * attempt facts, never marketing claims.
+ */
+export interface DecisionExecutionFacts {
+  /**
+   * Provider adapter identifier, such as `deterministic_rules` or `laya_coreml`.
+   */
+  readonly provider_id: string;
+  /**
+   * Model profile identifier, or null for the deterministic route.
+   */
+  readonly profile_id?: string;
+  /**
+   * Where the assessment actually executed. `remote` is unimplemented in this release.
+   */
+  readonly execution_location: string;
+  /**
+   * Constant false in this release; local-only constraints always win.
+   */
+  readonly remote_processing_used: boolean;
+  /**
+   * Model forward passes consumed. Multiple questions mean multiple passes; this is counted
+   * separately from user requests.
+   */
+  readonly provider_forward_passes: number;
+  /**
+   * Output tokens consumed, if the provider reports them.
+   */
+  readonly output_tokens: number;
+}
+
+/**
+ * Terminal and non-terminal lifecycle states of one evaluation record. Abstention and failure
+ * are normal product outcomes, not errors of the envelope.
+ */
+export type DecisionRecordStatus = string;
+
+/**
+ * The closed `DecisionRecordStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const DECISION_RECORD_STATUS_VALUES = [
+  "pending",
+  "running",
+  "succeeded",
+  "abstained",
+  "failed",
+  "cancelled",
+] as const;
+
+/**
+ * Return whether a value is a declared `DecisionRecordStatus`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isDecisionRecordStatus(value: unknown): value is DecisionRecordStatus {
+  return (
+    typeof value === "string" &&
+    (DECISION_RECORD_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * One declared option of a choice definition: a stable identifier, a human label and a bounded
+ * description. Options are an ordered list; the order is part of the definition's identity and
+ * digest. One-option decisions are ill-formed - a constant belongs in deterministic code.
+ */
+export interface DecisionOption {
+  /**
+   * Stable option identifier used in predictions.
+   */
+  readonly id: string;
+  /**
+   * Human-readable option label.
+   */
+  readonly label: string;
+  /**
+   * Bounded description given to the model alongside the label.
+   */
+  readonly description: string;
+}
+
+/**
+ * Input for `decision.definition.list`: permitted definition versions for the selected
+ * workspace.
+ */
+export interface DecisionDefinitionListInput {
+  /**
+   * Whether disabled versions appear in the list.
+   */
+  readonly include_disabled?: boolean;
+}
+
+/**
+ * Input for `decision.definition.publish`: one new immutable definition version. The document is
+ * structured data only - identifiers, bounded text, ordered options and recipe references.
+ * Executable content of any kind is not a valid field, and a semantic change to any meaning-
+ * bearing part requires a new version and qualification review.
+ */
+export interface DecisionDefinitionPublishInput {
+  /**
+   * The immutable definition document: stable id, semantic version, title, purpose, owning
+   * product, author provenance, decision kind, ordered options or rubric, instructions,
+   * required evidence fields, context recipe version, supported languages, minimum source
+   * freshness, risk floor, permitted output uses, privacy floor and approved candidate profile
+   * identifiers. Bounded to the definition schema; a digest is computed by the service.
+   */
+  readonly definition: JsonObject;
+}
+
+/**
+ * One approved model profile as `decision.model.list` reports it, with the five lifecycle
+ * dimensions kept separate (installation, activation, health, qualification, processing). A
+ * model being installed or ready says nothing about task qualification.
+ */
+export interface DecisionModelProfileSummary {
+  /**
+   * Approved profile identifier, such as `laya.multilingual.general.fp16`.
+   */
+  readonly profile_id: string;
+  /**
+   * Structured payload value.
+   */
+  readonly name: string;
+  /**
+   * The profile's total token capacity.
+   */
+  readonly capacity_total_tokens: number;
+  /**
+   * The profile's maximum option count.
+   */
+  readonly maximum_options: number;
+  /**
+   * Complete on-disk bundle size when installed.
+   */
+  readonly installed_size_bytes?: number;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly installation: string;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly activation: string;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly health: string;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly qualification: string;
+  /**
+   * Configured compute units, reported separately from observed execution evidence.
+   */
+  readonly compute_configuration: string;
+}
+
+/**
+ * Input for `decision.model.list`: approved profiles and their current state. Passive; never
+ * triggers downloads or loading.
+ */
+export interface DecisionModelListInput {
+  /**
+   * Whether profiles without task qualification appear in the list. Absent defaults to true:
+   * unvalidated profiles are shown as advisory.
+   */
+  readonly include_unqualified?: boolean;
+}
+
+/**
+ * Input for `decision.model.install`, `decision.model.activate` and `decision.model.remove`: one
+ * approved profile identifier. Profile identifiers must come from the signed catalogue; the page
+ * and the CLI cannot select arbitrary model files or repositories.
+ */
+export interface DecisionModelActionInput {
+  /**
+   * Structured payload value.
+   */
+  readonly profile_id: string;
+}
+
+/**
+ * Input for `decision.settings.get`. Passive.
+ */
+export interface DecisionSettingsGetInput {
+  /**
+   * Whether unset values are reported with the specification's conservative defaults. Absent
+   * defaults to false: unset values are omitted.
+   */
+  readonly include_defaults?: boolean;
+}
+
+/**
+ * Input for `decision.settings.update`: compare-and-swap configuration change. The revision must
+ * match the caller's last observed value; a mismatch is a conflict, and the update cannot enable
+ * processing the caller has no grant for.
+ */
+export interface DecisionSettingsUpdateInput {
+  /**
+   * The configuration revision the caller last observed.
+   */
+  readonly revision: number;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly processing?: string;
+  /**
+   * Structured payload value.
+   */
+  readonly subscription_enabled?: boolean;
+  /**
+   * New daily ceiling, bounded by installation policy.
+   */
+  readonly subscription_daily_budget?: number;
+}
+
+/**
+ * Input for `decision.status`. Passive; carries nothing.
+ */
+export interface DecisionStatusInput {
+  /**
+   * Whether the status projection includes per-profile installation state. Absent defaults to
+   * false; the projection stays passive either way.
+   */
+  readonly include_profiles?: boolean;
+}
+
+/**
+ * Input for `decision.model.activate`: one approved, installed profile identifier to select for
+ * inference.
+ */
+export interface DecisionModelActivateInput {
+  /**
+   * Structured payload value.
+   */
+  readonly profile_id: string;
+}
+
+/**
+ * Input for the model management action: one approved profile identifier.
+ */
+export interface DecisionModelInstallInput {
+  /**
+   * Structured payload value.
+   */
+  readonly profile_id: string;
+}
+
+/**
+ * Input for the model management action: one approved profile identifier.
+ */
+export interface DecisionModelRemoveInput {
+  /**
+   * Structured payload value.
+   */
+  readonly profile_id: string;
+}
+
+/**
+ * The payload schema version for every engineering-memory payload in this boundary. Independent
+ * of the application envelope and workspace format versions.
+ */
+export type EngineeringSchemaVersion = string;
+
+/**
+ * Open, bounded code naming target-specific applicability of a record version at one snapshot,
+ * such as `matched`, `potentially_stale`, `invalid`, `unknown` or `not_evaluated`. This
+ * dimension is independent of governance state: an accepted record can remain historically
+ * accepted while being unsafe to use at a new snapshot.
+ */
+export type EngineeringApplicabilityStatus = string;
+
+/**
+ * What the serving projections and the applicability barrier actually cover for this response.
+ * `projection` names serving-index coverage; `applicability` names whether target freshness work
+ * has caught up with the registered source head. Neither is a guarantee of global completeness.
+ */
+export interface EngineeringCoverage {
+  /**
+   * Open, bounded code naming projection coverage, such as `current`, `lagging`, `unavailable`
+   * or `incomplete`.
+   */
+  readonly projection: string;
+  /**
+   * Open, bounded code naming applicability-coverage state, such as `current`, `pending` or
+   * `unavailable`.
+   */
+  readonly applicability: string;
+}
+
+/**
+ * One bounded statement that content was omitted from a view and why. An omission must not
+ * identify an inaccessible record: `field` names the omitted position in this view, never a
+ * hidden object's identity or title.
+ */
+export interface EngineeringOmission {
+  /**
+   * The position in this view whose content was omitted, such as a section id or a named
+   * payload region.
+   */
+  readonly field: string;
+  /**
+   * Open, bounded code naming why content was omitted, such as `redacted`, `inaccessible`,
+   * `budget` or `not_applicable`.
+   */
+  readonly reason: string;
+}
+
+/**
+ * Open, bounded code naming the operational state of a continuity session binding, such as
+ * `active`, `closed`, `expired` or `revoked`. Operational bookkeeping only: closing a session
+ * does not mean its external run succeeded, and expiry does not mean the agent died.
+ */
+export type EngineeringSessionState = string;
+
+/**
+ * Open, bounded code naming what an engineering observation claims to be, such as `finding`,
+ * `decision`, `constraint`, `convention`, `bugfix`, `failed_approach`, `hypothesis`, `risk` or
+ * `validation_result`. A hypothesis is never eligible for accepted-facts selection.
+ */
+export type EngineeringObservationKind = string;
+
+/**
+ * One reported external operation and its reported status. `unknown` is preserved as unknown:
+ * reconciling the effect is the owning Runtime's job, and a handoff never retries an unknown
+ * effect automatically.
+ */
+export interface EngineeringExternalEffect {
+  /**
+   * External operation reference as reported by the host Runtime.
+   */
+  readonly effect_ref: string;
+  /**
+   * Open, bounded code naming the reported outcome, such as `confirmed`, `failed` or
+   * `unknown`.
+   */
+  readonly status: string;
+}
+
+/**
+ * Open, bounded code naming which knowledge partition a search reads, such as `accepted` (the
+ * default), `candidates`, `working_context` or `history`. Other views are explicit opt-ins
+ * behind their capabilities; a multi-view response partitions results rather than interleaving
+ * them without labels.
+ */
+export type EngineeringSearchView = string;
+
+/**
+ * Closed, versioned counting contract for an engineering context build. `byte_only.v1`
+ * negotiates exact UTF-8 byte accounting without a token estimate. `exact_tokens.v1` requires an
+ * exact named tokenizer; a service that has not installed it refuses the request rather than
+ * estimating.
+ */
+export type EngineeringCountingMode = string;
+
+/**
+ * The closed `EngineeringCountingMode` vocabulary, emitted from the schema's `enum`.
+ */
+export const ENGINEERING_COUNTING_MODE_VALUES = [
+  "byte_only.v1",
+  "exact_tokens.v1",
+] as const;
+
+/**
+ * Return whether a value is a declared `EngineeringCountingMode`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isEngineeringCountingMode(value: unknown): value is EngineeringCountingMode {
+  return (
+    typeof value === "string" &&
+    (ENGINEERING_COUNTING_MODE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Caller-requested bounded budgets for one engineering context build. Exact-token mode applies
+ * byte and token limits simultaneously, never converting one into the other; byte-only mode
+ * omits the token limit entirely. Effective budgets are the minimum of the request, the server-
+ * owned profile and server hard limits; zero, negative, non-finite, oversized or inconsistent
+ * values are rejected.
+ */
+export interface EngineeringBudget {
+  /**
+   * Maximum model-facing tokens for the complete rendering; the proposed default is 4000 and
+   * the hard ceiling 16000.
+   */
+  readonly model_tokens?: number;
+  /**
+   * Maximum model-facing UTF-8 bytes for the complete rendering; the proposed default is 16384
+   * and the hard ceiling 65536.
+   */
+  readonly model_bytes?: number;
+  /**
+   * Maximum full source hydrations for the build; the proposed default is 8 and the hard
+   * ceiling 32.
+   */
+  readonly hydrations?: number;
+  /**
+   * Maximum total evidence bytes read for the build; the proposed default is 262144 and the
+   * hard ceiling 1048576.
+   */
+  readonly evidence_bytes?: number;
+  /**
+   * Maximum authorized preview candidates examined for the build; the proposed default is 2000
+   * and the hard ceiling 10000.
+   */
+  readonly authorized_candidates?: number;
+}
+
+/**
+ * The explicit byte-only v2 view. The established type name remains the strict v1 consumer
+ * surface; this view removes v1-only fields and substitutes v2 views for nested versioned
+ * values.
+ */
+export type EngineeringBudgetV2 = Omit<EngineeringBudget, "model_tokens">;
+
+/**
+ * The complete model-facing rendering of a pack: one canonical UTF-8 string containing section
+ * labels, content, authority/applicability warnings and compact citations. Legacy v1 reports the
+ * pinned pattern-token count and exact UTF-8 byte count; byte-only v2 reports only the exact
+ * UTF-8 byte count. Headers, citation labels, warnings and separators are part of the measured
+ * string; transport metadata that is not sent lives elsewhere.
+ */
+export interface EngineeringRendering {
+  /**
+   * The exact model-facing UTF-8 text.
+   */
+  readonly text: string;
+  /**
+   * Version of the renderer that produced this text.
+   */
+  readonly renderer_version: string;
+  /**
+   * Exact token count of `text` under the pinned supported tokenizer.
+   */
+  readonly token_count: number;
+  /**
+   * Exact UTF-8 byte count of `text`.
+   */
+  readonly byte_count: number;
+}
+
+/**
+ * The explicit byte-only v2 view. The established type name remains the strict v1 consumer
+ * surface; this view removes v1-only fields and substitutes v2 views for nested versioned
+ * values.
+ */
+export type EngineeringRenderingV2 = Omit<EngineeringRendering, "token_count">;
+
+/**
+ * The closed applicability mode of an engineering read: `diagnostic` (the default, conservative
+ * and never a safety claim) or `current_safe` (only proven `matched` records at fully covered,
+ * explicitly requested targets). Any other value is refused; there is no automatic downgrade
+ * from `current_safe`.
+ */
+export type EngineeringApplicabilityMode = string;
+
+/**
+ * The closed `EngineeringApplicabilityMode` vocabulary, emitted from the schema's `enum`.
+ */
+export const ENGINEERING_APPLICABILITY_MODE_VALUES = [
+  "diagnostic",
+  "current_safe",
+] as const;
+
+/**
+ * Return whether a value is a declared `EngineeringApplicabilityMode`. The generated decoders do
+ * not call this -- decoding stays tolerant and preserves an unrecognized value -- and this is
+ * the primitive a caller enforcing the closed domain validates with.
+ */
+export function isEngineeringApplicabilityMode(value: unknown): value is EngineeringApplicabilityMode {
+  return (
+    typeof value === "string" &&
+    (ENGINEERING_APPLICABILITY_MODE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The coverage barrier of one source stream after a record: the newest announced sequence and
+ * the highest sequence up to which every event is present and chained to its predecessor. A gap
+ * keeps the barrier `pending`; `current_safe` reads refuse any target beyond `covered_sequence`.
+ */
+export interface EngineeringSourceStreamCoverage {
+  /**
+   * Open, bounded code: `current` when coverage reaches the newest announced event, `pending`
+   * while a gap remains.
+   */
+  readonly state: string;
+  /**
+   * Highest sequence of the contiguous validated chain; 0 when none.
+   */
+  readonly covered_sequence: number;
+  /**
+   * Newest sequence recorded for the stream, contiguous or not.
+   */
+  readonly announced_sequence: number;
+}
+
+/**
  * Dot-namespaced operation identifier such as `memory.get`. The name is all this shape states;
  * what each name binds to -- its input and result schemas, and its scope, capability,
  * completion, pagination, idempotency, mutation-precondition, audit and allowed-error posture --
@@ -1004,6 +1719,309 @@ export function isContentChecksum(value: unknown): value is ContentChecksum {
     new RegExp(CONTENT_CHECKSUM_PATTERN).test(value)
   );
 }
+
+/**
+ * The two owner decisions a knowledge share can carry: `accepted` makes the share eligible for
+ * its recipient Project, and `revoked` withdraws that eligibility for every later read. Closed:
+ * no third decision exists, and a revocation is only recorded against a share that was accepted.
+ */
+export type KnowledgeShareDecision = string;
+
+/**
+ * The closed `KnowledgeShareDecision` vocabulary, emitted from the schema's `enum`.
+ */
+export const KNOWLEDGE_SHARE_DECISION_VALUES = [
+  "accepted",
+  "revoked",
+] as const;
+
+/**
+ * Return whether a value is a declared `KnowledgeShareDecision`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isKnowledgeShareDecision(value: unknown): value is KnowledgeShareDecision {
+  return (
+    typeof value === "string" &&
+    (KNOWLEDGE_SHARE_DECISION_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Where one knowledge share stands, derived from its decisions on every read and never stored as
+ * a flag. `proposed` has no decision and grants its recipient nothing, `accepted` is eligible,
+ * and `revoked` was accepted and is no longer eligible.
+ */
+export type KnowledgeShareState = string;
+
+/**
+ * The closed `KnowledgeShareState` vocabulary, emitted from the schema's `enum`.
+ */
+export const KNOWLEDGE_SHARE_STATE_VALUES = [
+  "proposed",
+  "accepted",
+  "revoked",
+] as const;
+
+/**
+ * Return whether a value is a declared `KnowledgeShareState`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isKnowledgeShareState(value: unknown): value is KnowledgeShareState {
+  return (
+    typeof value === "string" &&
+    (KNOWLEDGE_SHARE_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The opaque token naming one Workspace's active Project context generation: the prefix
+ * `ctxgen-` and a positive integer. Callers compare it for equality and never derive meaning
+ * from it.
+ */
+export type ProjectContextToken = string;
+
+/**
+ * The closed state of a Workspace's active Project context: `none` when no Project is active,
+ * `active` when one is.
+ */
+export type ProjectContextStateKind = string;
+
+/**
+ * The closed `ProjectContextStateKind` vocabulary, emitted from the schema's `enum`.
+ */
+export const PROJECT_CONTEXT_STATE_KIND_VALUES = [
+  "none",
+  "active",
+] as const;
+
+/**
+ * Return whether a value is a declared `ProjectContextStateKind`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isProjectContextStateKind(value: unknown): value is ProjectContextStateKind {
+  return (
+    typeof value === "string" &&
+    (PROJECT_CONTEXT_STATE_KIND_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Input for `project.context.read`. The caller names nothing: the Workspace and the principal
+ * are the authenticated caller's, and the read observes the active Project context without
+ * changing it.
+ */
+export interface ProjectContextReadInput {
+}
+
+/**
+ * The revision of the reviewed admission summary. It is the positive integer that identity
+ * covers. Any integer below 1 is refused.
+ */
+export type AdmissionRevision = number;
+
+/**
+ * One requested scope of an admitted outcome, from the closed vocabulary Core defines.
+ */
+export type AdmissionScope = string;
+
+/**
+ * The closed `AdmissionScope` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_SCOPE_VALUES = [
+  "read",
+  "prepare",
+  "execute",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionScope`. The generated decoders do not call this
+ * -- decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isAdmissionScope(value: unknown): value is AdmissionScope {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_SCOPE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The adapter that produced the summary. Only `dev-task-admission` is accepted.
+ */
+export type AdmissionAdapter = string;
+
+/**
+ * The closed `AdmissionAdapter` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_ADAPTER_VALUES = [
+  "dev-task-admission",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionAdapter`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionAdapter(value: unknown): value is AdmissionAdapter {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_ADAPTER_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The disposition of a summary: it is a draft for review, never an accepted outcome.
+ */
+export type AdmissionDisposition = string;
+
+/**
+ * The closed `AdmissionDisposition` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_DISPOSITION_VALUES = [
+  "draft-for-review",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionDisposition`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionDisposition(value: unknown): value is AdmissionDisposition {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_DISPOSITION_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The execution state of a summary. A summary never authorizes execution.
+ */
+export type AdmissionExecutionState = string;
+
+/**
+ * The closed `AdmissionExecutionState` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_EXECUTION_STATE_VALUES = [
+  "not-authorized",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionExecutionState`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionExecutionState(value: unknown): value is AdmissionExecutionState {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_EXECUTION_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The status of the declared bindings. Dev declares them and does not verify them; Core checks
+ * them itself.
+ */
+export type AdmissionBindingStatus = string;
+
+/**
+ * The closed `AdmissionBindingStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_BINDING_STATUS_VALUES = [
+  "declared-not-verified",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionBindingStatus`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionBindingStatus(value: unknown): value is AdmissionBindingStatus {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_BINDING_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The status of the requested scopes. A summary requests scopes and grants none.
+ */
+export type AdmissionScopeStatus = string;
+
+/**
+ * The closed `AdmissionScopeStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_SCOPE_STATUS_VALUES = [
+  "requested-not-granted",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionScopeStatus`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionScopeStatus(value: unknown): value is AdmissionScopeStatus {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_SCOPE_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The status of the declared roles. They are claims and never authenticate the caller.
+ */
+export type AdmissionRoleStatus = string;
+
+/**
+ * The closed `AdmissionRoleStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_ROLE_STATUS_VALUES = [
+  "declared-not-authenticated",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionRoleStatus`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionRoleStatus(value: unknown): value is AdmissionRoleStatus {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_ROLE_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The token estimator the budgets are sized with: ceil(UTF-8 bytes / 4).
+ */
+export type AdmissionTokenEstimator = string;
+
+/**
+ * The closed `AdmissionTokenEstimator` vocabulary, emitted from the schema's `enum`.
+ */
+export const ADMISSION_TOKEN_ESTIMATOR_VALUES = [
+  "utf8-ceil4-v1",
+] as const;
+
+/**
+ * Return whether a value is a declared `AdmissionTokenEstimator`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isAdmissionTokenEstimator(value: unknown): value is AdmissionTokenEstimator {
+  return (
+    typeof value === "string" &&
+    (ADMISSION_TOKEN_ESTIMATOR_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The canonical identity of an admission summary: the lowercase hexadecimal SHA-256 of the
+ * summary's canonical JSON.
+ */
+export type AdmissionIdentity = string;
 
 /**
  * Open, dot-namespaced code naming what kind of governed record this is, such as `memory.fact`
@@ -2027,6 +3045,271 @@ export function isWorkflowResumeDiagnostic(value: unknown): value is WorkflowRes
 }
 
 /**
+ * The kind of stimulus a trigger declares. Closed: a value outside this vocabulary is refused.
+ * Declaring a kind starts nothing, and `schedule` names no scheduler; the one stimulus this
+ * build admits is `trigger.ingest`.
+ */
+export type TriggerKind = string;
+
+/**
+ * The closed `TriggerKind` vocabulary, emitted from the schema's `enum`.
+ */
+export const TRIGGER_KIND_VALUES = [
+  "manual",
+  "schedule",
+  "webhook",
+  "cloudevent",
+  "catalogue_event",
+] as const;
+
+/**
+ * Return whether a value is a declared `TriggerKind`. The generated decoders do not call this --
+ * decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isTriggerKind(value: unknown): value is TriggerKind {
+  return (
+    typeof value === "string" &&
+    (TRIGGER_KIND_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The state a trigger's subscription starts in. A subscription begins `active` or `paused`;
+ * nothing returns to the start.
+ */
+export type TriggerInitialSubscriptionState = string;
+
+/**
+ * The closed `TriggerInitialSubscriptionState` vocabulary, emitted from the schema's `enum`.
+ */
+export const TRIGGER_INITIAL_SUBSCRIPTION_STATE_VALUES = [
+  "active",
+  "paused",
+] as const;
+
+/**
+ * Return whether a value is a declared `TriggerInitialSubscriptionState`. The generated decoders
+ * do not call this -- decoding stays tolerant and preserves an unrecognized value -- and this is
+ * the primitive a caller enforcing the closed domain validates with.
+ */
+export function isTriggerInitialSubscriptionState(value: unknown): value is TriggerInitialSubscriptionState {
+  return (
+    typeof value === "string" &&
+    (TRIGGER_INITIAL_SUBSCRIPTION_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The state of one trigger's subscription. `disabled` is terminal. Only an `active` subscription
+ * admits a stimulus; any other state dead-letters it as `inactive_trigger`.
+ */
+export type TriggerSubscriptionState = string;
+
+/**
+ * The closed `TriggerSubscriptionState` vocabulary, emitted from the schema's `enum`.
+ */
+export const TRIGGER_SUBSCRIPTION_STATE_VALUES = [
+  "active",
+  "paused",
+  "unavailable",
+  "disabled",
+] as const;
+
+/**
+ * Return whether a value is a declared `TriggerSubscriptionState`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isTriggerSubscriptionState(value: unknown): value is TriggerSubscriptionState {
+  return (
+    typeof value === "string" &&
+    (TRIGGER_SUBSCRIPTION_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * What happened to one stimulus at the door. `accepted` is a stimulus the trigger admitted.
+ * `duplicate` repeats an accepted stimulus with identical content. `dead_lettered` was recorded
+ * and not admitted, and its reason says why. `uncertain` could not be confirmed. Delivery says
+ * nothing about whether work ran; that is `TriggerProcessingStatus`.
+ */
+export type TriggerDeliveryStatus = string;
+
+/**
+ * The closed `TriggerDeliveryStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const TRIGGER_DELIVERY_STATUS_VALUES = [
+  "accepted",
+  "duplicate",
+  "dead_lettered",
+  "uncertain",
+] as const;
+
+/**
+ * Return whether a value is a declared `TriggerDeliveryStatus`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isTriggerDeliveryStatus(value: unknown): value is TriggerDeliveryStatus {
+  return (
+    typeof value === "string" &&
+    (TRIGGER_DELIVERY_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * How far the work a stimulus started has got, read from the job and run ledgers through the
+ * observation's link. `not_applicable` is a stimulus that was not accepted. `unlinked` is an
+ * accepted stimulus with no job or run linked, which every stimulus `trigger.ingest` admits in
+ * this build, since it starts no work. Acceptance alone never reads as `succeeded`.
+ */
+export type TriggerProcessingStatus = string;
+
+/**
+ * The closed `TriggerProcessingStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const TRIGGER_PROCESSING_STATUS_VALUES = [
+  "not_applicable",
+  "unlinked",
+  "unknown",
+  "pending",
+  "in_progress",
+  "succeeded",
+  "partially_completed",
+  "failed",
+  "cancelled",
+  "uncertain",
+] as const;
+
+/**
+ * Return whether a value is a declared `TriggerProcessingStatus`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isTriggerProcessingStatus(value: unknown): value is TriggerProcessingStatus {
+  return (
+    typeof value === "string" &&
+    (TRIGGER_PROCESSING_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Where a trigger failure was read from: the delivery door, the job ledger or the run ledger.
+ */
+export type TriggerFailureSource = string;
+
+/**
+ * The closed `TriggerFailureSource` vocabulary, emitted from the schema's `enum`.
+ */
+export const TRIGGER_FAILURE_SOURCE_VALUES = [
+  "delivery",
+  "job",
+  "run",
+] as const;
+
+/**
+ * Return whether a value is a declared `TriggerFailureSource`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isTriggerFailureSource(value: unknown): value is TriggerFailureSource {
+  return (
+    typeof value === "string" &&
+    (TRIGGER_FAILURE_SOURCE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * How many of a trigger's returned observations carry each delivery status.
+ */
+export interface TriggerDeliveryCounts {
+  /**
+   * Observations accepted.
+   */
+  readonly accepted: number;
+  /**
+   * Observations that repeat an accepted one.
+   */
+  readonly duplicate: number;
+  /**
+   * Observations recorded and not admitted.
+   */
+  readonly dead_lettered: number;
+  /**
+   * Observations whose delivery could not be confirmed.
+   */
+  readonly uncertain: number;
+}
+
+/**
+ * The immutable identity of one published skill version: `skill-` followed by the SHA-256 of its
+ * canonical manifest, spelled with exactly 64 lowercase hexadecimal characters. Identical
+ * content has one identity; changed content has another.
+ */
+export type SkillManifestId = string;
+
+/**
+ * The version of one skill: three dot-separated integers with no leading zeros. Versions of one
+ * skill order as those integers, so two of them never tie.
+ */
+export type SkillVersion = string;
+
+/**
+ * How one manifest entered a resolved closure: named explicitly, chosen as the highest
+ * compatible installed version, or pulled in as a pinned dependency. Closed, so a value outside
+ * it is refused.
+ */
+export type SkillSelectionKind = string;
+
+/**
+ * The closed `SkillSelectionKind` vocabulary, emitted from the schema's `enum`.
+ */
+export const SKILL_SELECTION_KIND_VALUES = [
+  "explicit",
+  "highest_compatible",
+  "dependency",
+] as const;
+
+/**
+ * Return whether a value is a declared `SkillSelectionKind`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isSkillSelectionKind(value: unknown): value is SkillSelectionKind {
+  return (
+    typeof value === "string" &&
+    (SKILL_SELECTION_KIND_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Whether one published skill version is installed in this workspace. Removal is a recorded
+ * state and never a deletion of the version, its history or any Run that bound it.
+ */
+export type SkillInstallState = string;
+
+/**
+ * The closed `SkillInstallState` vocabulary, emitted from the schema's `enum`.
+ */
+export const SKILL_INSTALL_STATE_VALUES = [
+  "installed",
+  "removed",
+] as const;
+
+/**
+ * Return whether a value is a declared `SkillInstallState`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isSkillInstallState(value: unknown): value is SkillInstallState {
+  return (
+    typeof value === "string" &&
+    (SKILL_INSTALL_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming which runtime probe is being requested or answered. The
  * frozen, currently known probe kinds are exactly `service.health`, `service.readiness`, and
  * `service.discover`. Open by design so a compatible minor release can add probe kinds without
@@ -2415,6 +3698,57 @@ export interface WorkspaceCreateInput {
  * identifier.
  */
 export interface WorkspaceInspectInput {
+}
+
+/**
+ * A governed analysis target that is a metric, named by its exact immutable revision identifier.
+ * A mutable `latest` alias is not accepted: the revision must be stated.
+ */
+export interface GovernedMetricReference {
+  /**
+   * Discriminator for the governed-reference union; constant for this member.
+   */
+  readonly kind: string;
+  /**
+   * Exact immutable revision identifier of the approved metric definition. Required on the
+   * metric branch and absent on the Data View branch; its presence is what distinguishes the
+   * two union members.
+   */
+  readonly metric_revision_id: Identifier;
+}
+
+/**
+ * A governed analysis target that is a Data View, named by its exact immutable revision
+ * identifier. A mutable `latest` alias is not accepted: the revision must be stated.
+ */
+export interface GovernedDataViewReference {
+  /**
+   * Discriminator for the governed-reference union; constant for this member.
+   */
+  readonly kind: string;
+  /**
+   * Exact immutable revision identifier of the approved Data View definition. Required on the
+   * Data View branch and absent on the metric branch; its presence is what distinguishes the
+   * two union members.
+   */
+  readonly data_view_revision_id: Identifier;
+}
+
+/**
+ * One exact typed parameter: a bounded parameter name and its JSON data value. Values are data,
+ * never expressions: an executable fragment is not a representable parameter value, and the
+ * server interprets parameter meaning only through the governed definition the target names.
+ */
+export interface AnalysisParameter {
+  /**
+   * Parameter name as declared by the governed definition.
+   */
+  readonly name: Identifier;
+  /**
+   * The parameter's JSON data value. JSON data only: no expression channel exists in this
+   * contract.
+   */
+  readonly value: JsonObject;
 }
 
 /**
@@ -3045,6 +4379,870 @@ export interface ContextPackBuildInput {
 }
 
 /**
+ * One subject the evaluation is about: an opaque identifier minted by the owning feature, and
+ * the revision the caller last observed. The runtime resolves the reference through the owner;
+ * the string itself carries no path or storage meaning.
+ */
+export interface DecisionSubjectRef {
+  /**
+   * Opaque subject identifier, such as `document:847`.
+   */
+  readonly id: Identifier;
+  /**
+   * The subject revision the caller last observed, as an opaque token.
+   */
+  readonly revision?: string;
+}
+
+/**
+ * Caller constraints on one evaluation. Policy composes these with installation, workspace and
+ * definition limits using the most restrictive effective result; a caller cannot elevate an
+ * unqualified template or escape a local-only floor.
+ */
+export interface DecisionExecutionConstraints {
+  /**
+   * DecisionExecutionMode — How the caller intends to use the result. `advisory` is the only
+   * mode in this release: the assessment is evidence for a human or an authorised executor,
+   * never an executed action. Later modes are separately qualified catalogue changes.
+   */
+  readonly mode: DecisionExecutionMode;
+  /**
+   * DecisionPrivacyFloor — The most permissive processing location the caller accepts.
+   * `local_only` binds every attempt to the selected Core host; the server may narrow but
+   * never widen this.
+   */
+  readonly privacy: DecisionPrivacyFloor;
+  /**
+   * Requested wall-clock budget for the whole evaluation, including queue wait. Policy may
+   * permit longer job deadlines; it may never shorten past the minimum the definition
+   * requires.
+   */
+  readonly deadline_ms?: number;
+  /**
+   * Maximum provider attempts. One is the default and the release maximum; a single transient-
+   * failure retry is a separately enabled policy.
+   */
+  readonly maximum_provider_attempts?: number;
+}
+
+/**
+ * An immutable Decision Definition version. Definitions are immutable; a semantic change to
+ * question, rubric, options or recipe is a new version.
+ */
+export interface DecisionDefinitionRef {
+  /**
+   * Stable definition identifier, such as `core.document_category`.
+   */
+  readonly id: Identifier;
+  /**
+   * Semantic version of the definition, such as `1.0.0`.
+   */
+  readonly version: string;
+}
+
+/**
+ * Input for `decision.record.get`. Authorisation is re-checked against the caller's current
+ * grant; idempotent replay of a record is not a permission bypass.
+ */
+export interface DecisionRecordGetInput {
+  /**
+   * Identifier — Generic bounded, non-empty identifier used for clients, principals, roles,
+   * and deprecations.
+   */
+  readonly evaluation_id: Identifier;
+}
+
+/**
+ * One permitted definition version as `decision.definition.list` and `decision.definition.get`
+ * report it.
+ */
+export interface DecisionDefinitionSummary {
+  /**
+   * Identifier — Generic bounded, non-empty identifier used for clients, principals, roles,
+   * and deprecations.
+   */
+  readonly id: Identifier;
+  /**
+   * Structured payload value.
+   */
+  readonly version: string;
+  /**
+   * Structured payload value.
+   */
+  readonly title: string;
+  /**
+   * What this definition assesses and for whom.
+   */
+  readonly purpose: string;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly kind: string;
+  /**
+   * Structured payload value.
+   */
+  readonly option_count: number;
+  /**
+   * Whether this version currently admits evaluations.
+   */
+  readonly enabled: boolean;
+  /**
+   * Opaque definition digest binding question, rubric, options, recipe and model settings.
+   */
+  readonly digest: string;
+}
+
+/**
+ * Approved model profiles and their lifecycle state.
+ */
+export interface DecisionModelListResult {
+  /**
+   * DecisionModelProfileSummary — One approved model profile as `decision.model.list` reports
+   * it, with the five lifecycle dimensions kept separate (installation, activation, health,
+   * qualification, processing). A model being installed or ready says nothing about task
+   * qualification.
+   */
+  readonly profiles: readonly DecisionModelProfileSummary[];
+}
+
+/**
+ * Passive status projection for `decision.status`: engine availability on the selected host,
+ * processing state and the caller's applicable grants. Reading it never downloads, warms, starts
+ * Core or processes records.
+ */
+export interface DecisionStatusResult {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * Whether any local provider can run on the selected Core host. False on unsupported hosts,
+   * truthfully, regardless of client hardware.
+   */
+  readonly host_engine_available: boolean;
+  /**
+   * Bounded explanation when unavailable, such as an unsupported host class.
+   */
+  readonly host_support_reason?: string;
+  /**
+   * Whether Local Decisions processing is currently enabled.
+   */
+  readonly enabled: boolean;
+  /**
+   * Structured payload value.
+   */
+  readonly installed_profiles: number;
+  /**
+   * Structured payload value.
+   */
+  readonly active_subscriptions: number;
+}
+
+/**
+ * Applicable Local Decisions configuration as `decision.settings.get` reports it: processing
+ * state, subscription state and bounded budgets. Defaults are the specification's conservative
+ * set; disabling never deletes history.
+ */
+export interface DecisionSettings {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * Bounded enumerated value.
+   */
+  readonly processing: string;
+  /**
+   * Whether the bounded new-document classification subscription admits work.
+   */
+  readonly subscription_enabled: boolean;
+  /**
+   * Daily provider forward-pass ceiling for the subscription.
+   */
+  readonly subscription_daily_budget: number;
+  /**
+   * Configuration revision for compare-and-swap updates.
+   */
+  readonly revision: number;
+}
+
+/**
+ * Result for `decision.outcome.submit`: the appended outcome identity. The original prediction
+ * and its evidence remain preserved.
+ */
+export interface DecisionOutcomeSubmitResult {
+  /**
+   * Identifier — Generic bounded, non-empty identifier used for clients, principals, roles,
+   * and deprecations.
+   */
+  readonly outcome_id: Identifier;
+  /**
+   * Identifier — Generic bounded, non-empty identifier used for clients, principals, roles,
+   * and deprecations.
+   */
+  readonly evaluation_id: Identifier;
+}
+
+/**
+ * Result for `decision.model.remove`: the profile's refreshed lifecycle state after removal or
+ * drain refusal is reported separately by policy.
+ */
+export interface DecisionModelRemoveResult {
+  /**
+   * The profile's refreshed state.
+   */
+  readonly profile: DecisionModelProfileSummary;
+}
+
+/**
+ * Input for `decision.result_use.evaluate`: the deterministic result-use gate over one pinned
+ * analytical subject. Every input is a claim the evaluation checks; none grants anything.
+ * Completeness and continuity unknowns deny by default.
+ */
+export interface ResultUseEvaluateInput {
+  /**
+   * Payload schema version; milestone 1 supports 1.0.
+   */
+  readonly request_version: ContractVersion;
+  /**
+   * The use the result is requested for.
+   */
+  readonly use_class: string;
+  /**
+   * Exact digest of the analytical subject being gated.
+   */
+  readonly subject_digest: Identifier;
+  /**
+   * Coverage of the required authorised scope at the recorded cutoff.
+   */
+  readonly completeness: string;
+  /**
+   * Whether the applied history is contiguous for the declared scope.
+   */
+  readonly continuity: string;
+  /**
+   * Whether the strongest verification evidence satisfies the requested freshness.
+   */
+  readonly freshness_ok: boolean;
+  /**
+   * Whether the approved mappings still apply to the observed schema.
+   */
+  readonly schema_compatible: boolean;
+  /**
+   * Whether retained proof can be accessed and replayed under current policy.
+   */
+  readonly evidence_available: boolean;
+  /**
+   * Whether the controlling use policy permits the declared partial/stale class.
+   */
+  readonly policy_permits_partial_or_stale: boolean;
+  /**
+   * The authority epoch the evaluation is bound to.
+   */
+  readonly authority_epoch: Identifier;
+}
+
+/**
+ * The deterministic result-use decision: outcome, every applicable reason, the subject and
+ * policy digests it was bound to, and an upper-bound validity instant. A decision is an
+ * eligibility statement, never an effect grant.
+ */
+export interface ResultUseEvaluateResult {
+  /**
+   * allow, allow_with_warning or deny. Never an effect grant.
+   */
+  readonly outcome: string;
+  /**
+   * Machine-readable reason codes in evaluation order.
+   */
+  readonly reasons: readonly Identifier[];
+  /**
+   * Digest of the gated subject, echoed for binding.
+   */
+  readonly subject_digest: Identifier;
+  /**
+   * The authority epoch bound into the decision.
+   */
+  readonly authority_epoch: Identifier;
+  /**
+   * Upper bound of validity; earlier invalidation by revocation or new gap evidence.
+   */
+  readonly valid_until: Timestamp;
+}
+
+/**
+ * A reference to one immutable captured source state within a registered repository. A working-
+ * tree snapshot is never asserted to be its base commit, and a branch label is advisory
+ * provenance only: it is never a unique identity or an applicability proof.
+ */
+export interface EngineeringSnapshotRef {
+  /**
+   * Identity of the immutable snapshot capture.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Stable logical repository identity, when known to the caller; the server resolves and
+   * validates it against registered bindings.
+   */
+  readonly repository_id?: Identifier;
+  /**
+   * Open, bounded code naming how the snapshot was captured, such as `git_commit`,
+   * `working_tree` or `source_archive`.
+   */
+  readonly snapshot_kind?: string;
+  /**
+   * Advisory display/provenance label; never identity and never applicability authority.
+   */
+  readonly branch_label?: string;
+}
+
+/**
+ * An exact governed record version: record identity plus exact version. Every engineering
+ * relationship, review, priority and citation names endpoints at this granularity; selecting a
+ * latest timestamp is never canonical resolution.
+ */
+export interface EngineeringRecordVersionRef {
+  /**
+   * Governed record identity.
+   */
+  readonly record_id: Identifier;
+  /**
+   * Exact record version identity.
+   */
+  readonly version: Identifier;
+  /**
+   * Optional content checksum of the referenced version, when the caller already holds it.
+   */
+  readonly content_digest?: ContentChecksum;
+}
+
+/**
+ * One exact evidence anchor: the immutable evidence identity the claim rests on, an optional
+ * anchor identity, and an optional source span. A line range alone is not sufficient identity.
+ */
+export interface EngineeringSourceAnchor {
+  /**
+   * Identity of the immutable evidence artefact this anchor points at.
+   */
+  readonly evidence_id: Identifier;
+  /**
+   * Optional identity of the anchored span within the evidence.
+   */
+  readonly anchor_id?: Identifier;
+  /**
+   * Optional exact source span within the evidence.
+   */
+  readonly span?: SourceSpan;
+}
+
+/**
+ * A reference to the evolving question or decision an observation belongs to: either an existing
+ * topic entity identity or a proposed namespaced topic key scoped by workspace,
+ * project/repository domain and sensitivity boundary. Equal keys in different scopes do not
+ * merge.
+ */
+export interface EngineeringTopicRef {
+  /**
+   * An existing governed record or semantic entity serving as the topic.
+   */
+  readonly record_id?: Identifier;
+  /**
+   * A proposed namespaced topic key, such as `authentication.session-restoration`. A proposal,
+   * never an asserted merge.
+   */
+  readonly proposed_key?: string;
+}
+
+/**
+ * A reproducibility receipt for the context a checkpoint was produced under: the pack content
+ * checksum and its declared inputs. Not a persisted pack handle, and never a bearer token for
+ * regeneration.
+ */
+export interface EngineeringContextReceipt {
+  /**
+   * Content checksum of the engineering context pack this checkpoint references.
+   */
+  readonly pack_checksum: ContentChecksum;
+}
+
+/**
+ * One bounded working statement inside a checkpoint, with its evidence references and an
+ * explicit support classification. `claimed` means the agent reported it; only `verified`
+ * statements carry validation evidence, and neither classification is accepted knowledge.
+ */
+export interface EngineeringCheckpointObservation {
+  /**
+   * The bounded working statement.
+   */
+  readonly statement: string;
+  /**
+   * Immutable evidence identities supporting the statement, when support exists.
+   */
+  readonly evidence_refs?: readonly Identifier[];
+  /**
+   * Open, bounded code naming how the statement is supported, such as `verified` or `claimed`.
+   */
+  readonly support: string;
+}
+
+/**
+ * The durable receipt a successful checkpoint append returns. Only this receipt proves a
+ * checkpoint exists; host hooks and UI claims are not durability guarantees. Replaying the same
+ * idempotency key with the exact same request returns this same receipt.
+ */
+export interface CheckpointReceipt {
+  /**
+   * Service-issued immutable checkpoint identity.
+   */
+  readonly checkpoint_id: Identifier;
+  /**
+   * The bound continuity session.
+   */
+  readonly session_id: Identifier;
+  /**
+   * Monotonic checkpoint sequence within the session, assigned transactionally.
+   */
+  readonly sequence: number;
+  /**
+   * Content checksum of the stored checkpoint evidence.
+   */
+  readonly content_digest: ContentChecksum;
+  /**
+   * Server-owned immutable recorded time.
+   */
+  readonly recorded_at: Timestamp;
+  /**
+   * Audit reference for the committed append.
+   */
+  readonly audit_reference: string;
+}
+
+/**
+ * A bounded, authorised view of one checkpoint for a receiving agent. A redacted view is
+ * labelled as a derived view; its own digest identifies the view, never the original artefact.
+ * Omissions are recorded without exposing inaccessible evidence identities. Working context here
+ * is context, not instruction, and confers no authority.
+ */
+export interface HandoffView {
+  /**
+   * The handoff view representation format.
+   */
+  readonly format_version: string;
+  /**
+   * Identity of the checkpoint this view renders.
+   */
+  readonly checkpoint_id: Identifier;
+  /**
+   * Content checksum of this view's own bytes; the original checkpoint's digest remains the
+   * identity of the original artefact.
+   */
+  readonly content_digest: ContentChecksum;
+  /**
+   * Whether this view is a redacted derived view.
+   */
+  readonly redacted: boolean;
+  /**
+   * The checkpoint's bounded objective, as working context.
+   */
+  readonly objective: string;
+  /**
+   * Applicability of the checkpoint's evidence at the requested target snapshot, or
+   * `not_evaluated` when no target was requested.
+   */
+  readonly applicability: EngineeringApplicabilityStatus;
+  /**
+   * Unresolved questions preserved intact from the checkpoint.
+   */
+  readonly unresolved_work?: readonly string[];
+  /**
+   * Suggested next actions. Suggestions only; no permission to execute.
+   */
+  readonly next_actions?: readonly string[];
+  /**
+   * What this view omits and why, without exposing inaccessible identities.
+   */
+  readonly omissions?: readonly EngineeringOmission[];
+}
+
+/**
+ * One bounded preview in an engineering search result: exact record/evidence identity, a
+ * truncated bounded preview, and the server-owned authority/applicability facts a caller needs
+ * before expanding. Carries no full content, no raw local paths, and never identity-bearing
+ * fields for inaccessible objects.
+ */
+export interface EngineeringPreview {
+  /**
+   * Governed record identity of the previewed version.
+   */
+  readonly record_id: Identifier;
+  /**
+   * Exact record version identity.
+   */
+  readonly version: Identifier;
+  /**
+   * Content checksum of the exact record version, when exposed to this caller.
+   */
+  readonly content_digest?: ContentChecksum;
+  /**
+   * The record's bounded title.
+   */
+  readonly title: string;
+  /**
+   * Bounded preview text; never the full body.
+   */
+  readonly preview: string;
+  /**
+   * Whether the preview text was cut before the record's natural end.
+   */
+  readonly truncated: boolean;
+  /**
+   * The observation kind, when the record is an engineering observation.
+   */
+  readonly observation_kind?: EngineeringObservationKind;
+  /**
+   * Server-owned governance state of this exact version, such as `proposed`, `accepted`,
+   * `contested` or `superseded`.
+   */
+  readonly governance_state: string;
+  /**
+   * Open, bounded code naming what the claim rests on, such as `observed`, `derived`,
+   * `reported` or `hypothesis`.
+   */
+  readonly assertion_basis?: string;
+  /**
+   * The scoped topic key, when the record belongs to a topic.
+   */
+  readonly topic_key?: string;
+  /**
+   * Repository the record's applicability claims, when any.
+   */
+  readonly repository_id?: Identifier;
+  /**
+   * Snapshot the record's applicability claims, when any.
+   */
+  readonly snapshot_id?: Identifier;
+  /**
+   * Target-specific applicability of this version, or `not_evaluated` when no target was in
+   * scope.
+   */
+  readonly applicability: EngineeringApplicabilityStatus;
+  /**
+   * Whether the version's review schedule marks it due. A due flag is not proof of falsity.
+   */
+  readonly review_due?: boolean;
+  /**
+   * Whether the record's evidence is available to this caller under current authorisation.
+   */
+  readonly evidence_available: boolean;
+}
+
+/**
+ * Exact tokenizer identity and version requested for model-token counting. The pair is replay
+ * input, never a model-family guess or permission to download a tokenizer.
+ */
+export interface EngineeringTokenizerReference {
+  /**
+   * Exact tokenizer identity.
+   */
+  readonly tokenizer_id: Identifier;
+  /**
+   * Exact tokenizer version.
+   */
+  readonly tokenizer_version: Identifier;
+}
+
+/**
+ * One section of an engineering context pack, carrying its exact content, its citations, and one
+ * explicit knowledge partition. The partition is the integrity contract: candidate assertions
+ * never appear under `accepted_knowledge`, and working context is never an instruction or grant.
+ */
+export interface EngineeringPackSection {
+  /**
+   * Unique section identity within this pack.
+   */
+  readonly section_id: Identifier;
+  /**
+   * Open, bounded code naming the section's rendering kind, such as `decision_summary`,
+   * `evidence_excerpt` or `working_context`.
+   */
+  readonly kind: string;
+  /**
+   * Open, bounded code naming the knowledge partition, exactly one of `accepted_knowledge`,
+   * `source_evidence`, `candidate_findings`, `working_context` or `history`.
+   */
+  readonly partition: string;
+  /**
+   * The section's exact content as it enters the model-facing rendering.
+   */
+  readonly content: string;
+  /**
+   * Citations resolving this section's claims; a substantive section has at least one.
+   */
+  readonly citation_ids: readonly Identifier[];
+}
+
+/**
+ * The budget as requested, as effectively applied, and as actually consumed by this build.
+ * Actual source-read bytes and hydration counts are reported, so a pack cannot exceed its caps
+ * invisibly.
+ */
+export interface EngineeringBudgetOutcome {
+  /**
+   * What the caller requested, when the caller stated a budget.
+   */
+  readonly requested?: EngineeringBudget;
+  /**
+   * The minimum of request, granted profile and server hard limits actually applied.
+   */
+  readonly effective: EngineeringBudget;
+  /**
+   * Tokens actually rendered model-facing.
+   */
+  readonly rendered_tokens: number;
+  /**
+   * UTF-8 bytes actually rendered model-facing.
+   */
+  readonly rendered_bytes: number;
+  /**
+   * Total evidence bytes actually read during the build.
+   */
+  readonly source_bytes_read: number;
+  /**
+   * Full source hydrations actually performed.
+   */
+  readonly hydrations: number;
+}
+
+/**
+ * The explicit byte-only v2 view. The established type name remains the strict v1 consumer
+ * surface; this view removes v1-only fields and substitutes v2 views for nested versioned
+ * values.
+ */
+export type EngineeringBudgetOutcomeV2 = Omit<
+  EngineeringBudgetOutcome,
+  "requested" | "effective" | "rendered_tokens"
+> & {
+  /**
+   * What the caller requested, when the caller stated a budget.
+   */
+  readonly requested?: EngineeringBudgetV2;
+  /**
+   * The minimum of request, granted profile and server hard limits actually applied.
+   */
+  readonly effective: EngineeringBudgetV2;
+};
+
+/**
+ * One file of a source snapshot manifest: a repository-relative path and the SHA-256 digest of
+ * the file's bytes. The path is preserved exactly - Unicode and case are never normalized - and
+ * an absolute path, a drive prefix, a backslash, an empty, `.` or `..` segment, or a control
+ * character is refused. A path is a name, never something the server reads.
+ */
+export interface EngineeringSourceManifestEntry {
+  /**
+   * Repository-relative path with `/` separators.
+   */
+  readonly path: string;
+  /**
+   * SHA-256 of the file's bytes at this snapshot.
+   */
+  readonly digest: ContentChecksum;
+}
+
+/**
+ * The source event this one directly follows in the same stream: sequence `sequence - 1` and the
+ * snapshot it recorded. Coverage advances only along a contiguous chain of these links, never by
+ * capture time.
+ */
+export interface EngineeringSourcePredecessor {
+  /**
+   * The predecessor's sequence; exactly one less than this event's.
+   */
+  readonly sequence: number;
+  /**
+   * The snapshot the predecessor event recorded.
+   */
+  readonly snapshot_id: Identifier;
+}
+
+/**
+ * Result of `engineering.source.record`: the stored event's identity and manifest digest,
+ * whether this delivery recorded it or found it already recorded, and the stream's coverage
+ * barrier as committed with it.
+ */
+export interface EngineeringSourceRecordResult {
+  /**
+   * The repository the stream is bound to.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * The source stream.
+   */
+  readonly stream_id: Identifier;
+  /**
+   * The event's sequence within the stream.
+   */
+  readonly sequence: number;
+  /**
+   * The recorded snapshot.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * The server-computed digest of the canonical manifest.
+   */
+  readonly manifest_digest: ContentChecksum;
+  /**
+   * The recorded capture coverage.
+   */
+  readonly capture_status: string;
+  /**
+   * Open, bounded code: `recorded` for a new event, `already_recorded` when an identical event
+   * was already stored; a duplicate delivery never creates a second event.
+   */
+  readonly disposition: string;
+  /**
+   * The stream's coverage barrier, committed with this record.
+   */
+  readonly coverage: EngineeringSourceStreamCoverage;
+  /**
+   * Server-owned time the event was first recorded.
+   */
+  readonly recorded_at: Timestamp;
+  /**
+   * Audit reference for this delivery.
+   */
+  readonly audit_reference: string;
+}
+
+/**
+ * Result of `engineering.source.capture.commit`: the committed captured-index event's
+ * identities, counts, digests and coverage. It exposes no local path, checkout hint, file list
+ * or raw manifest.
+ */
+export interface EngineeringSourceCaptureCommitResult {
+  /**
+   * The repository the stream is bound to.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * The source stream.
+   */
+  readonly stream_id: Identifier;
+  /**
+   * The event's sequence within the stream.
+   */
+  readonly sequence: number;
+  /**
+   * The sealed capture this event commits.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * The sealed rich working-tree manifest digest.
+   */
+  readonly rich_manifest_digest: ContentChecksum;
+  /**
+   * The canonical coverage digest over the captured path-to-digest index.
+   */
+  readonly coverage_digest: ContentChecksum;
+  /**
+   * The sealed capture coverage: `complete` or `incomplete`.
+   */
+  readonly capture_status: string;
+  /**
+   * The number of indexed files at seal time.
+   */
+  readonly file_count: number;
+  /**
+   * Open, bounded code: `recorded` for a new event, `already_recorded` when an identical event
+   * was already stored; a duplicate delivery never creates a second event.
+   */
+  readonly disposition: string;
+  /**
+   * The stream's coverage barrier, committed with this record.
+   */
+  readonly coverage: EngineeringSourceStreamCoverage;
+  /**
+   * Server-owned time the event was first recorded.
+   */
+  readonly recorded_at: Timestamp;
+  /**
+   * Audit reference for this delivery.
+   */
+  readonly audit_reference: string;
+}
+
+/**
+ * Input for `engineering.repository.register`: an explicitly authorized local operator binds one
+ * exact, installation-local checkout directory to one logical repository identity. Not a model-
+ * facing tool: it is reachable only through the accepted local client/CLI, under the distinct
+ * `engineering:repository` scope and `engineering.repository` capability, and is refused over
+ * every other route. `repository_id` is the caller's own stable logical identity -- never
+ * inferred from `display_name`, from the checkout's own git remote or configuration, or from any
+ * other repository-supplied hint -- and two registrations may share a `display_name` by design
+ * (label-only lookup stays ambiguous). `checkout_root` is validated server-side as a real,
+ * installation-local directory with no traversal or symlink escape; it is stored only as this
+ * installation's own checkout mapping and never appears in a governed observation, a manifest or
+ * an error message. The workspace and installation are the authenticated caller's own and can
+ * never be supplied by the payload. Unknown keys are refused.
+ */
+export interface EngineeringRepositoryRegisterInput {
+  /**
+   * Stable logical repository identity, chosen by the operator and never derived from a path,
+   * a label or a repository-supplied hint.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * A human-readable label. Two unrelated repositories may share one; label-only resolution
+   * stays ambiguous by design.
+   */
+  readonly display_name: string;
+  /**
+   * Optional free-text note about the repository's hosting provider. Never used to establish
+   * identity or authority.
+   */
+  readonly provider_hint?: string;
+  /**
+   * The exact, absolute, installation-local filesystem path of the trusted checkout to bind.
+   * Validated server-side as a real directory with no traversal or symlink escape; never
+   * echoed back, stored in portable content, or quoted in an error.
+   */
+  readonly checkout_root: string;
+}
+
+/**
+ * Result of `engineering.repository.register`: the repository and checkout identities, and
+ * whether this delivery newly registered the repository, idempotently repeated an identical
+ * registration, or audited a moved checkout. The installation-local path is never echoed back.
+ */
+export interface EngineeringRepositoryRegisterResult {
+  /**
+   * The bound repository.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * This installation's opaque checkout-mapping identity.
+   */
+  readonly checkout_id: Identifier;
+  /**
+   * `registered` for a newly recorded repository identity, `already_registered` when this
+   * exact identity was already recorded.
+   */
+  readonly repository_disposition: string;
+  /**
+   * `bound` for a new checkout mapping, `already_bound` when this exact mapping already
+   * pointed here, `rebound` when this installation's mapping for this exact path moved to this
+   * repository, audited.
+   */
+  readonly checkout_disposition: string;
+  /**
+   * Audit reference for this delivery.
+   */
+  readonly audit_reference: string;
+}
+
+/**
  * A single typed failure. The code and retry class are the contract; the message is not.
  */
 export interface ApiError {
@@ -3326,6 +5524,496 @@ export interface GovernanceRationale {
    * Optional bounded human-readable elaboration. Not a stable interface.
    */
   readonly comment?: string;
+}
+
+/**
+ * One decision recorded against a share, kept after a later revocation so a source owner can
+ * still read how the share was authorised.
+ */
+export interface KnowledgeShareDecisionRecord {
+  /**
+   * The decision recorded.
+   */
+  readonly decision: KnowledgeShareDecision;
+  /**
+   * The principal that recorded the decision, as the server authenticated it.
+   */
+  readonly decided_by: Identifier;
+  /**
+   * When Core recorded the decision.
+   */
+  readonly decided_at: Timestamp;
+}
+
+/**
+ * Input for `knowledge.share.propose`. An owner of the Project that holds a governed record
+ * proposes sharing that record's current sealed, canonical version with one other Project. The
+ * source Project is never stated here: the server derives it from the record's own domain scope
+ * and the Project bindings it holds, and refuses a caller that is not a bound owner of that
+ * Project. Naming a recipient grants nothing; the share is eligible only after a different owner
+ * accepts it. Workspace-scoped through the request envelope's selected workspace.
+ */
+export interface KnowledgeShareProposeInput {
+  /**
+   * The caller-chosen identity of this share. Proposing the same share again under the same
+   * identity is an honest replay; a different proposal under it is a conflict.
+   */
+  readonly share_id: Identifier;
+  /**
+   * The governed record whose current canonical version is proposed for sharing.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The Project the share is addressed to. It must be a Project the server binds, and it must
+   * not be the source Project.
+   */
+  readonly recipient_project_id: Identifier;
+}
+
+/**
+ * Result of `knowledge.share.propose`: the share as recorded, still `proposed`. A replay under
+ * the same idempotency key returns this result without a second write.
+ */
+export interface KnowledgeShareProposeResult {
+  /**
+   * The share this result describes.
+   */
+  readonly share_id: Identifier;
+  /**
+   * The Project that owns the shared record, as the server's Project binding states it.
+   */
+  readonly source_project_id: Identifier;
+  /**
+   * The one Project the share is addressed to.
+   */
+  readonly recipient_project_id: Identifier;
+  /**
+   * The governed record shared.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The one sealed, canonical, accepted governed version the share is bound to.
+   */
+  readonly governed_record_version_id: Identifier;
+  /**
+   * The digest of that version's content, which a recipient read must still find unchanged.
+   */
+  readonly content_digest: ContentChecksum;
+  /**
+   * Always `proposed` on this result: proposing grants the recipient nothing.
+   */
+  readonly state: KnowledgeShareState;
+  /**
+   * When Core recorded the proposal.
+   */
+  readonly proposed_at: Timestamp;
+}
+
+/**
+ * Input for `knowledge.share.decide`. An owner of the share's source Project accepts it or
+ * revokes it. An acceptance must come from an owner other than the proposer and only while the
+ * shared version is still sealed, canonical, accepted and unsuperseded; a revocation is only
+ * recorded against an accepted share. The source Project is read from the share, never from this
+ * payload. Workspace-scoped through the request envelope's selected workspace.
+ */
+export interface KnowledgeShareDecideInput {
+  /**
+   * The share to decide.
+   */
+  readonly share_id: Identifier;
+  /**
+   * Whether to accept or revoke the share.
+   */
+  readonly decision: KnowledgeShareDecision;
+}
+
+/**
+ * Result of `knowledge.share.decide`: the decision as recorded and the state the share now
+ * holds. A replay under the same idempotency key returns this result without a second write.
+ */
+export interface KnowledgeShareDecideResult {
+  /**
+   * The share decided.
+   */
+  readonly share_id: Identifier;
+  /**
+   * The decision recorded.
+   */
+  readonly decision: KnowledgeShareDecision;
+  /**
+   * The state the share holds after the decision.
+   */
+  readonly state: KnowledgeShareState;
+  /**
+   * When Core recorded the decision.
+   */
+  readonly decided_at: Timestamp;
+}
+
+/**
+ * Input for `knowledge.share.read`. A member of the recipient Project reads the one governed
+ * version a share makes eligible. The recipient Project is never stated here: the server reads
+ * it from the share and requires the caller to be bound to it. Possessing a share identifier,
+ * holding a broad knowledge-read grant, belonging to the workspace, or having read the share
+ * before confers nothing: eligibility is re-derived from the accepted and revoked decisions and
+ * the shared version's currentness on every call. Workspace-scoped through the request
+ * envelope's selected workspace.
+ */
+export interface KnowledgeShareReadInput {
+  /**
+   * The share to read.
+   */
+  readonly share_id: Identifier;
+}
+
+/**
+ * Result of `knowledge.share.read`: the shared version's identity, its digest and its content,
+ * served only while the share is accepted, unrevoked and still points at the sealed version it
+ * was proposed under.
+ */
+export interface KnowledgeShareReadResult {
+  /**
+   * The share this result describes.
+   */
+  readonly share_id: Identifier;
+  /**
+   * The Project that owns the shared record, as the server's Project binding states it.
+   */
+  readonly source_project_id: Identifier;
+  /**
+   * The one Project the share is addressed to.
+   */
+  readonly recipient_project_id: Identifier;
+  /**
+   * The governed record shared.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The one sealed, canonical, accepted governed version the share is bound to.
+   */
+  readonly governed_record_version_id: Identifier;
+  /**
+   * The digest of that version's content, which a recipient read must still find unchanged.
+   */
+  readonly content_digest: ContentChecksum;
+  /**
+   * The domain scope the shared record was created in, which the source Project's binding must
+   * still own.
+   */
+  readonly domain_scope: RecordDomainScope;
+  /**
+   * The sealed version's content, exactly as the governed record holds it; `content_digest` is
+   * the digest of this content.
+   */
+  readonly content: JsonObject;
+}
+
+/**
+ * Input for `knowledge.share.lineage`. An owner of the share's source Project reads the share
+ * and every decision recorded against it, revoked ones included. Historical lineage stays
+ * readable after revocation. A recipient is not a source owner and cannot read it. Workspace-
+ * scoped through the request envelope's selected workspace.
+ */
+export interface KnowledgeShareLineageInput {
+  /**
+   * The share whose lineage is read.
+   */
+  readonly share_id: Identifier;
+}
+
+/**
+ * Input for `task_context.export`. The caller hands over one assembled task-context handoff and
+ * the explicit budgets the export must fit. The handoff is data: Core verifies its recorded
+ * identity against its content and projects one fixed set of content sections under Core's
+ * redaction patterns. The workspace, the exporting principal, the fencing generation and the
+ * policy are the server's own and are never stated here. An export is never truncated: a handoff
+ * that does not fit its budgets is refused.
+ */
+export interface TaskContextExportInput {
+  /**
+   * The assembled task-context handoff, carried verbatim as data. It must be in the closed
+   * handoff shape and recompute to its own recorded content identity.
+   */
+  readonly handoff: JsonObject;
+  /**
+   * The explicit token budget the export must fit, under the `utf8-ceil4-v1` estimator.
+   */
+  readonly token_budget: number;
+  /**
+   * The explicit byte budget the canonical export document must fit.
+   */
+  readonly byte_budget: number;
+}
+
+/**
+ * Result of `task_context.export`: one immutable export as recorded. `export_id` names exactly
+ * the canonical document carried in `document`, so the identity can be checked by any holder of
+ * the result. A replay under the same idempotency key returns this result without a second
+ * write.
+ */
+export interface TaskContextExportResult {
+  /**
+   * The export's identity: the prefix `tcx-` and the SHA-256 of its canonical document.
+   */
+  readonly export_id: Identifier;
+  /**
+   * The content identity of the handoff this export projects, as the handoff recorded and Core
+   * recomputed it.
+   */
+  readonly source_handoff_identity: Identifier;
+  /**
+   * The principal that made the export, as the authenticated caller.
+   */
+  readonly exported_by: Identifier;
+  /**
+   * The digest of the one export policy this build serves.
+   */
+  readonly policy_digest: Identifier;
+  /**
+   * The workspace fencing generation the export was recorded under.
+   */
+  readonly fencing_generation: number;
+  /**
+   * The token budget the export was checked against.
+   */
+  readonly token_budget: number;
+  /**
+   * The byte budget the export was checked against.
+   */
+  readonly byte_budget: number;
+  /**
+   * The token estimate of the canonical document, under `utf8-ceil4-v1`.
+   */
+  readonly token_estimate: number;
+  /**
+   * The byte length of the canonical document.
+   */
+  readonly byte_estimate: number;
+  /**
+   * When the export settled.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * The canonical export document: the allowlisted content sections after redaction, the
+   * withheld field names and the redaction counts.
+   */
+  readonly document: JsonObject;
+}
+
+/**
+ * Input for `task_context.export.read`. The caller names one export by its identifier and
+ * nothing else. The workspace is the request envelope's selected workspace, and an export
+ * recorded in another workspace reads as not found.
+ */
+export interface TaskContextExportReadInput {
+  /**
+   * The export to read.
+   */
+  readonly export_id: Identifier;
+}
+
+/**
+ * Input for `outcome.request.read`. The caller names one outcome request by its identifier and
+ * nothing else. A request recorded in another workspace reads as not found.
+ */
+export interface OutcomeRequestReadInput {
+  /**
+   * The outcome request to read.
+   */
+  readonly outcome_request_id: Identifier;
+}
+
+/**
+ * Result of `task_context.export.read`: one immutable export as recorded, read back by its
+ * identifier. Its identity is re-derived from the stored document before it is served.
+ */
+export interface TaskContextExportReadResult {
+  /**
+   * The export's identity: the prefix `tcx-` and the SHA-256 of its canonical document.
+   */
+  readonly export_id: Identifier;
+  /**
+   * The content identity of the handoff this export projects, as the handoff recorded and Core
+   * recomputed it.
+   */
+  readonly source_handoff_identity: Identifier;
+  /**
+   * The principal that made the export, as the authenticated caller.
+   */
+  readonly exported_by: Identifier;
+  /**
+   * The digest of the one export policy this build serves.
+   */
+  readonly policy_digest: Identifier;
+  /**
+   * The workspace fencing generation the export was recorded under.
+   */
+  readonly fencing_generation: number;
+  /**
+   * The token budget the export was checked against.
+   */
+  readonly token_budget: number;
+  /**
+   * The byte budget the export was checked against.
+   */
+  readonly byte_budget: number;
+  /**
+   * The token estimate of the canonical document, under `utf8-ceil4-v1`.
+   */
+  readonly token_estimate: number;
+  /**
+   * The byte length of the canonical document.
+   */
+  readonly byte_estimate: number;
+  /**
+   * When the export settled.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * The canonical export document: the allowlisted content sections after redaction, the
+   * withheld field names and the redaction counts.
+   */
+  readonly document: JsonObject;
+}
+
+/**
+ * Result of `project.context.read` and `project.context.switch`: the Workspace's active Core
+ * Project and its opaque context generation, or the typed empty state `none` when no Project is
+ * active. `project_id` and `context_generation` are present only with state `active`.
+ */
+export interface ProjectContextReadResult {
+  /**
+   * Whether a Project is active in this Workspace.
+   */
+  readonly state: ProjectContextStateKind;
+  /**
+   * The active Core Project. Present only when a Project is active.
+   */
+  readonly project_id?: Identifier;
+  /**
+   * The opaque generation of the active Project context. Present only when a Project is
+   * active.
+   */
+  readonly context_generation?: ProjectContextToken;
+}
+
+/**
+ * Result of `project.context.read` and `project.context.switch`: the Workspace's active Core
+ * Project and its opaque context generation, or the typed empty state `none` when no Project is
+ * active. `project_id` and `context_generation` are present only with state `active`.
+ */
+export interface ProjectContextSwitchResult {
+  /**
+   * Whether a Project is active in this Workspace.
+   */
+  readonly state: ProjectContextStateKind;
+  /**
+   * The active Core Project. Present only when a Project is active.
+   */
+  readonly project_id?: Identifier;
+  /**
+   * The opaque generation of the active Project context. Present only when a Project is
+   * active.
+   */
+  readonly context_generation?: ProjectContextToken;
+}
+
+/**
+ * Input for `project.context.switch`. The caller names the Core Project to make active in the
+ * authenticated Workspace and nothing else. The Project must be bound for this Workspace and the
+ * authenticated principal must be one of its owners or members.
+ */
+export interface ProjectContextSwitchInput {
+  /**
+   * The Core Project to make active.
+   */
+  readonly project_id: Identifier;
+}
+
+/**
+ * The typed initiating App context of an admission: which App asked for the outcome, and from
+ * which surface.
+ */
+export interface AdmissionAppContext {
+  /**
+   * The initiating App.
+   */
+  readonly appId: Identifier;
+  /**
+   * The App surface the outcome was requested from.
+   */
+  readonly surfaceId: Identifier;
+}
+
+/**
+ * The Project, Workspace, Work and source facts a summary declares. Declared, not verified: Core
+ * checks each one against its own bindings before it admits anything.
+ */
+export interface AdmissionDeclaredBindings {
+  /**
+   * The Core Project the outcome is made for.
+   */
+  readonly projectId: Identifier;
+  /**
+   * The Workspace the outcome belongs to. It must be the authenticated caller's Workspace.
+   */
+  readonly workspaceId: WorkspaceId;
+  /**
+   * The Work within the Project.
+   */
+  readonly workId: Identifier;
+  /**
+   * The source target the Work reads from. Opaque to Core, and bound by the Project's
+   * admission bindings.
+   */
+  readonly sourceTarget: string;
+  /**
+   * The immutable revision of the source target the Work reads.
+   */
+  readonly sourceRevision: Identifier;
+  /**
+   * The Project context generation the summary was reviewed against. It must equal the active
+   * generation.
+   */
+  readonly expectedContextGeneration: ProjectContextToken;
+}
+
+/**
+ * The three accountable principals a summary declares. Each is a claim that Core checks against
+ * the Project's bindings. None is an identity for the caller.
+ */
+export interface AdmissionRoles {
+  /**
+   * The accountable owner declared for the outcome.
+   */
+  readonly owner: Identifier;
+  /**
+   * The accountable executor declared for the outcome.
+   */
+  readonly executor: Identifier;
+  /**
+   * The accountable reviewer declared for the outcome.
+   */
+  readonly reviewer: Identifier;
+}
+
+/**
+ * The explicit budgets of an admission and the estimator they are sized with. The serialized
+ * summary must fit both.
+ */
+export interface AdmissionBudgets {
+  /**
+   * The token budget for the outcome.
+   */
+  readonly tokenBudget: number;
+  /**
+   * The byte budget for the outcome.
+   */
+  readonly byteBudget: number;
+  /**
+   * The estimator the budgets use.
+   */
+  readonly tokenEstimator: AdmissionTokenEstimator;
 }
 
 /**
@@ -4335,26 +7023,6 @@ export interface WorkflowJournalEntry {
 }
 
 /**
- * Input for `workflow.start`. Names one released Workflow version to run. Workspace-scoped
- * through the request envelope's selected workspace, so this payload never carries a second,
- * independent workspace identifier. There is no definition, plan, binding or logical-key member.
- * A caller that could state the material it runs against could state material nobody released,
- * so the plan is sealed and the binding is resolved server-side from the exact release this
- * names; and a Run's logical identity is the request's own `idempotency_key`, which migration
- * 0018 requires them to be equal to, so stating it twice could only introduce a disagreement.
- */
-export interface WorkflowStartInput {
-  /**
-   * The Workflow to run.
-   */
-  readonly workflow_id: Identifier;
-  /**
-   * The released version of it to run.
-   */
-  readonly workflow_version: ReleaseVersion;
-}
-
-/**
  * Input for `workflow.inspect`. Names one Workflow Run. Workspace-scoped through the request
  * envelope's selected workspace, so a Run of another workspace is invisible rather than merely
  * unlikely to be asked for.
@@ -4404,6 +7072,681 @@ export interface WorkflowReviewInput {
    * The Workflow Run to review.
    */
   readonly run_id: Identifier;
+}
+
+/**
+ * Input for `trigger.declare`. Declares one trigger, bound to one Project and one released
+ * Workflow version, with the subscription state it starts in, as one fenced write. Declaring
+ * starts nothing: no scheduler, driver or poll runs, and the trigger admits a stimulus only
+ * through `trigger.ingest`. A later declaration of the same trigger is a new numbered version.
+ * It may change the Workflow version, plan, event contract or configuration, but never the
+ * trigger's kind, Project or Workflow. Workspace-scoped through the request envelope's selected
+ * workspace.
+ */
+export interface TriggerDeclareInput {
+  /**
+   * The Project the trigger belongs to.
+   */
+  readonly project_id: Identifier;
+  /**
+   * The Workflow the trigger starts.
+   */
+  readonly workflow_id: Identifier;
+  /**
+   * The trigger, named by its caller and unique within the workspace.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The kind of stimulus the trigger declares.
+   */
+  readonly trigger_kind: TriggerKind;
+  /**
+   * The released Workflow version this declaration binds.
+   */
+  readonly workflow_version: ReleaseVersion;
+  /**
+   * Digest of the sealed plan of that Workflow version.
+   */
+  readonly plan_hash: ContentChecksum;
+  /**
+   * The one event type this trigger admits.
+   */
+  readonly event_type: Identifier;
+  /**
+   * Digest of the event contract a stimulus of this trigger must satisfy.
+   */
+  readonly event_contract_digest: ContentChecksum;
+  /**
+   * Digest of the trigger's configuration.
+   */
+  readonly configuration_digest: ContentChecksum;
+  /**
+   * The state the subscription starts in.
+   */
+  readonly subscription_state: TriggerInitialSubscriptionState;
+  /**
+   * Open code naming why the subscription starts in that state.
+   */
+  readonly subscription_reason: OpenCode;
+}
+
+/**
+ * Result of `trigger.declare`: the declaration as recorded, and the subscription it starts in. A
+ * replay under the same idempotency key returns this result without a second write.
+ */
+export interface TriggerDeclareResult {
+  /**
+   * The declared trigger.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The number this declaration took in the trigger's history.
+   */
+  readonly declaration_sequence: number;
+  /**
+   * The subscription state the trigger now holds.
+   */
+  readonly subscription_state: TriggerSubscriptionState;
+  /**
+   * The number the initial subscription event took.
+   */
+  readonly subscription_sequence: number;
+  /**
+   * When Core recorded the declaration.
+   */
+  readonly declared_at: Timestamp;
+}
+
+/**
+ * Input for `trigger.lifecycle`. Moves one declared trigger's subscription to a new state,
+ * through the transitions the trigger store enforces: `active` moves to `paused`, `unavailable`
+ * or `disabled`; `paused` moves to `active` or `disabled`; `unavailable` moves to `active`,
+ * `paused` or `disabled`; `disabled` moves nowhere. An invalid move is refused as `conflict`.
+ * The trigger must be bound to the Project and Workflow named, or it reads as not found.
+ * Workspace-scoped through the request envelope's selected workspace.
+ */
+export interface TriggerLifecycleInput {
+  /**
+   * The Project the trigger must belong to.
+   */
+  readonly project_id: Identifier;
+  /**
+   * The Workflow the trigger must start.
+   */
+  readonly workflow_id: Identifier;
+  /**
+   * The declared trigger whose subscription moves.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The state to move the subscription to.
+   */
+  readonly subscription_state: TriggerSubscriptionState;
+  /**
+   * Open code naming why the subscription moves.
+   */
+  readonly reason: OpenCode;
+}
+
+/**
+ * Result of `trigger.lifecycle`: the subscription state the trigger now holds. A replay under
+ * the same idempotency key returns this result without a second write.
+ */
+export interface TriggerLifecycleResult {
+  /**
+   * The trigger whose subscription moved.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The subscription state now held.
+   */
+  readonly subscription_state: TriggerSubscriptionState;
+  /**
+   * The number this subscription event took.
+   */
+  readonly subscription_sequence: number;
+  /**
+   * The reason recorded for the move.
+   */
+  readonly reason: OpenCode;
+  /**
+   * When Core recorded the move.
+   */
+  readonly observed_at: Timestamp;
+}
+
+/**
+ * Input for `trigger.ingest`: one synchronous, one-shot admission of one stimulus to a declared
+ * trigger. Core records exactly one observation of it, with its delivery decision and a digest
+ * of its envelope; the envelope and its payload are never stored. The decision is taken from the
+ * trigger's current declaration and subscription. An `active` subscription with a matching event
+ * type admits the stimulus. Any other state, or a mismatched type, is recorded as dead-lettered.
+ * A repeat of an accepted stimulus under the same event idempotency key is recorded as a
+ * duplicate when its digest matches, and refused as `idempotency_conflict` when it does not.
+ * Every admission in this build is record-only: it starts no job or run, so its processing reads
+ * `unlinked`. Workspace-scoped through the request envelope's selected workspace.
+ */
+export interface TriggerIngestInput {
+  /**
+   * The Project the trigger must belong to.
+   */
+  readonly project_id: Identifier;
+  /**
+   * The Workflow the trigger must start.
+   */
+  readonly workflow_id: Identifier;
+  /**
+   * The declared trigger the stimulus is delivered to.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The event's identifier as its source names it.
+   */
+  readonly event_id: Identifier;
+  /**
+   * The source's key for this event. An accepted key admits its event once; a repeat is a
+   * duplicate. This is not the request's idempotency key.
+   */
+  readonly event_idempotency_key: Identifier;
+  /**
+   * The event type the stimulus carries.
+   */
+  readonly event_type: Identifier;
+  /**
+   * Digest of the event envelope as the source sent it.
+   */
+  readonly envelope_digest: ContentChecksum;
+  /**
+   * When the source says the event occurred, when it says so. Absent leaves the source time
+   * unknown.
+   */
+  readonly occurred_at?: Timestamp;
+}
+
+/**
+ * Result of `trigger.ingest`: what the door decided and what that decision means for processing.
+ * Delivery and processing are separate fields. A dead-lettered or duplicate delivery reads
+ * `not_applicable`, and an accepted record-only delivery reads `unlinked`, never `succeeded`. A
+ * replay under the same idempotency key returns this result without a second write.
+ */
+export interface TriggerIngestResult {
+  /**
+   * The trigger the stimulus was delivered to.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The observation recorded for this stimulus.
+   */
+  readonly trigger_observation_id: Identifier;
+  /**
+   * The number this observation took in the trigger's history.
+   */
+  readonly observation_sequence: number;
+  /**
+   * What the door decided.
+   */
+  readonly delivery_status: TriggerDeliveryStatus;
+  /**
+   * Why the stimulus was dead-lettered. Present for a dead-lettered delivery:
+   * `inactive_trigger` or `event_type_mismatch` in this build.
+   */
+  readonly delivery_reason?: OpenCode;
+  /**
+   * The accepted observation a duplicate repeats. Present for a duplicate.
+   */
+  readonly duplicate_of_observation_id?: Identifier;
+  /**
+   * How far the work the stimulus started has got.
+   */
+  readonly processing: TriggerProcessingStatus;
+  /**
+   * Uncertainty derived for this observation, such as `processing_unlinked` or
+   * `source_time_unknown`.
+   */
+  readonly uncertainty: readonly OpenCode[];
+  /**
+   * When Core observed the stimulus.
+   */
+  readonly observed_at: Timestamp;
+}
+
+/**
+ * One trigger's current subscription. `state` is absent only when no subscription was ever
+ * recorded for it.
+ */
+export interface TriggerSubscriptionHealth {
+  /**
+   * The state the subscription is in now.
+   */
+  readonly state?: TriggerSubscriptionState;
+  /**
+   * Why it is in that state.
+   */
+  readonly reason?: OpenCode;
+  /**
+   * When Core recorded that state.
+   */
+  readonly observed_at?: Timestamp;
+  /**
+   * The number of the latest subscription event, or 0 when none was recorded.
+   */
+  readonly subscription_sequence: number;
+}
+
+/**
+ * One recorded observation of a trigger: what it was, what the door decided, and how far its
+ * processing has got. It carries digests and bounded metadata, never the event payload.
+ */
+export interface TriggerObservationHealth {
+  /**
+   * The observation.
+   */
+  readonly trigger_observation_id: Identifier;
+  /**
+   * The number it took in the trigger's history.
+   */
+  readonly observation_sequence: number;
+  /**
+   * The event's identifier as its source named it.
+   */
+  readonly event_id: Identifier;
+  /**
+   * The source's key for the event.
+   */
+  readonly event_idempotency_key: Identifier;
+  /**
+   * The event type the stimulus carried.
+   */
+  readonly event_type: Identifier;
+  /**
+   * Digest of the event envelope.
+   */
+  readonly envelope_digest: ContentChecksum;
+  /**
+   * When the source said the event occurred. Absent means that time is unknown.
+   */
+  readonly occurred_at?: Timestamp;
+  /**
+   * When Core observed the stimulus.
+   */
+  readonly observed_at: Timestamp;
+  /**
+   * What the door decided.
+   */
+  readonly delivery_status: TriggerDeliveryStatus;
+  /**
+   * Why the stimulus was dead-lettered or left uncertain. Present for those two statuses.
+   */
+  readonly delivery_reason?: OpenCode;
+  /**
+   * The accepted observation a duplicate repeats. Present for a duplicate.
+   */
+  readonly duplicate_of_observation_id?: Identifier;
+  /**
+   * The job this observation is linked to, when it is linked.
+   */
+  readonly job_id?: OpaqueToken;
+  /**
+   * The run this observation is linked to, when it is linked.
+   */
+  readonly run_id?: Identifier;
+  /**
+   * How far the work the stimulus started has got.
+   */
+  readonly processing: TriggerProcessingStatus;
+  /**
+   * The linked job's latest recorded state, when a job is linked and known.
+   */
+  readonly job_state?: JobState;
+  /**
+   * The linked run's latest recorded status, when a run is linked and known.
+   */
+  readonly run_status?: RunStatus;
+  /**
+   * Uncertainty derived for this observation.
+   */
+  readonly uncertainty: readonly OpenCode[];
+}
+
+/**
+ * One failure a trigger's telemetry can state, with where it was read from. `reason` is a code,
+ * never free text.
+ */
+export interface TriggerFailure {
+  /**
+   * The observation the failure belongs to.
+   */
+  readonly trigger_observation_id: Identifier;
+  /**
+   * Where the failure was read from.
+   */
+  readonly source: TriggerFailureSource;
+  /**
+   * Why it failed.
+   */
+  readonly reason: OpenCode;
+}
+
+/**
+ * A named content digest of material a skill refers to. The digest is recorded and never
+ * dereferenced.
+ */
+export interface SkillReference {
+  /**
+   * The name the skill uses for the referenced material.
+   */
+  readonly name: Identifier;
+  /**
+   * The SHA-256 digest the referenced material or evidence must carry.
+   */
+  readonly content_digest: ContentChecksum;
+}
+
+/**
+ * A dependency on one exact published manifest of another skill. Resolution walks dependencies
+ * over these pinned ids, so a published skill never follows a moving dependency.
+ */
+export interface SkillDependency {
+  /**
+   * The skill this one depends on.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The exact published manifest this one depends on.
+   */
+  readonly manifest_id: SkillManifestId;
+}
+
+/**
+ * A reference to reviewing evidence: its identifier and the content digest it must carry.
+ * Recorded for audit and never dereferenced here.
+ */
+export interface SkillEvidenceRef {
+  /**
+   * The identifier of the reviewing evidence.
+   */
+  readonly evidence_id: Identifier;
+  /**
+   * The SHA-256 digest the referenced material or evidence must carry.
+   */
+  readonly content_digest: ContentChecksum;
+}
+
+/**
+ * One skill a role asks for. Without a manifest id, the highest installed, non-deprecated
+ * version compatible with the role is chosen. With one, exactly that published manifest is
+ * chosen, and only if it is installed, not deprecated and compatible with the role: naming a
+ * manifest never widens what the role may use.
+ */
+export interface SkillSelection {
+  /**
+   * The skill selected.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The exact manifest to select, when the caller names one.
+   */
+  readonly manifest_id?: SkillManifestId;
+}
+
+/**
+ * One manifest in a resolved closure, with how it was selected.
+ */
+export interface SkillResolvedEntry {
+  /**
+   * The manifest in the closure.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * How this manifest entered the closure.
+   */
+  readonly selection: SkillSelectionKind;
+}
+
+/**
+ * Result of `skills.draft.create`: the draft as recorded at its first revision. A replay under
+ * the same idempotency key returns this result without a second write.
+ */
+export interface SkillDraftCreateResult {
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The revision a draft stands at, numbered from 1.
+   */
+  readonly draft_revision: number;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * When Core recorded the draft.
+   */
+  readonly created_at: Timestamp;
+}
+
+/**
+ * Result of `skills.draft.update`: the revision the draft now stands at. A replay under the same
+ * idempotency key returns this result without a second write.
+ */
+export interface SkillDraftUpdateResult {
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The revision a draft stands at, numbered from 1.
+   */
+  readonly draft_revision: number;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * When Core recorded the revision.
+   */
+  readonly updated_at: Timestamp;
+}
+
+/**
+ * Result of `skills.proposal.submit`: the proposal that now waits for a publisher. A replay
+ * under the same idempotency key returns this result without a second write.
+ */
+export interface SkillProposalSubmitResult {
+  /**
+   * The proposal this names.
+   */
+  readonly proposal_id: Identifier;
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The revision a draft stands at, numbered from 1.
+   */
+  readonly draft_revision: number;
+  /**
+   * When Core recorded the proposal.
+   */
+  readonly submitted_at: Timestamp;
+}
+
+/**
+ * Result of `skills.version.publish`: the immutable version as published. A replay under the
+ * same idempotency key returns this result without a second write.
+ */
+export interface SkillVersionPublishResult {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * The proposal this names.
+   */
+  readonly proposal_id: Identifier;
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The revision a draft stands at, numbered from 1.
+   */
+  readonly draft_revision: number;
+  /**
+   * When Core recorded the publication.
+   */
+  readonly published_at: Timestamp;
+}
+
+/**
+ * Input for `skills.version.deprecate`. Marks one published version deprecated, once.
+ * Deprecation is append-only: the version is never deleted, and a deprecated version is never
+ * newly selected or installed. It needs the publisher role.
+ */
+export interface SkillVersionDeprecateInput {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * An open code naming why the version is deprecated.
+   */
+  readonly reason: OpenCode;
+}
+
+/**
+ * Result of `skills.version.deprecate`: the deprecation as recorded. A replay under the same
+ * idempotency key returns this result without a second write.
+ */
+export interface SkillVersionDeprecateResult {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * An open code naming why the version is deprecated.
+   */
+  readonly reason: OpenCode;
+  /**
+   * When Core recorded the deprecation.
+   */
+  readonly deprecated_at: Timestamp;
+}
+
+/**
+ * Input for `skills.install`. Binds one published version into this workspace's usable set.
+ * Installing is idempotent per workspace and manifest, and never executes content. It needs the
+ * workspace operator role.
+ */
+export interface SkillInstallInput {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+}
+
+/**
+ * Result of `skills.install`: the installation state the version now holds. Installing an
+ * installed version returns its current state and records nothing new.
+ */
+export interface SkillInstallResult {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * Whether the version is installed in this workspace.
+   */
+  readonly install_state: SkillInstallState;
+  /**
+   * The number the recorded event took in the version's history.
+   */
+  readonly event_sequence: number;
+  /**
+   * When Core recorded this state.
+   */
+  readonly recorded_at: Timestamp;
+}
+
+/**
+ * Input for `skills.remove`. Unbinds one installed version from this workspace's usable set.
+ * Removal prevents new selection and touches nothing else: published versions, history and every
+ * Run already bound to the version stay exactly as they were. It needs the workspace operator
+ * role.
+ */
+export interface SkillRemoveInput {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+}
+
+/**
+ * Result of `skills.remove`: the installation state the version now holds. Removing a version
+ * that is not installed returns its current state and records nothing new.
+ */
+export interface SkillRemoveResult {
+  /**
+   * The immutable identity of one published skill version.
+   */
+  readonly manifest_id: SkillManifestId;
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * Whether the version is installed in this workspace.
+   */
+  readonly install_state: SkillInstallState;
+  /**
+   * The number the recorded event took in the version's history.
+   */
+  readonly event_sequence: number;
+  /**
+   * When Core recorded this state.
+   */
+  readonly recorded_at: Timestamp;
 }
 
 /**
@@ -4663,6 +8006,12 @@ export interface SettingsSetInput {
    */
   readonly value_json: SettingValueJson;
 }
+
+/**
+ * Exactly one governed analysis target: an exact metric revision or an exact Data View revision.
+ * The union is discriminated by the required `kind` member unique to each branch.
+ */
+export type AnalysisTarget = GovernedMetricReference | GovernedDataViewReference;
 
 /**
  * Input for `chat.command`: one Chat Contract v1 command, settled through the workspace's single
@@ -5002,6 +8351,884 @@ export interface ContextPackRecordCitation {
  * document instead of by a later agreement check.
  */
 export type ContextPackAuthorizedCandidate = ContextPackAuthorizedEvidenceCandidate | ContextPackAuthorizedRecordCandidate;
+
+/**
+ * The durable record of one evaluation. Every terminal record identifies the evaluation, the
+ * effective context it ran under, the exact definition/subject/source revisions, provider and
+ * preparation identities, the typed prediction, the deterministic disposition and the execution
+ * facts. Abstention, cancellation and failure are first-class terminal states with their own
+ * reason codes.
+ */
+export interface DecisionRecord {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * Identifier — Generic bounded, non-empty identifier used for clients, principals, roles,
+   * and deprecations.
+   */
+  readonly evaluation_id: Identifier;
+  /**
+   * DecisionRecordStatus — Terminal and non-terminal lifecycle states of one evaluation
+   * record. Abstention and failure are normal product outcomes, not errors of the envelope.
+   */
+  readonly status: DecisionRecordStatus;
+  /**
+   * DecisionExecutionMode — How the caller intends to use the result. `advisory` is the only
+   * mode in this release: the assessment is evidence for a human or an authorised executor,
+   * never an executed action. Later modes are separately qualified catalogue changes.
+   */
+  readonly mode: DecisionExecutionMode;
+  /**
+   * DecisionDefinitionRef — An immutable Decision Definition version. Definitions are
+   * immutable; a semantic change to question, rubric, options or recipe is a new version.
+   */
+  readonly definition_ref: DecisionDefinitionRef;
+  /**
+   * DecisionSubjectRef — One subject the evaluation is about: an opaque identifier minted by
+   * the owning feature, and the revision the caller last observed. The runtime resolves the
+   * reference through the owner; the string itself carries no path or storage meaning.
+   */
+  readonly subject_refs: readonly DecisionSubjectRef[];
+  /**
+   * DecisionPrediction — One typed prediction with its full provider distribution. `kind`
+   * selects which fields are meaningful; boolean, choice and ordinal semantics are distinct
+   * and must not share a generic acceptance threshold. `probability_semantics` names what the
+   * numbers are; `provider_decimal_precision` records the provider's own rounding so boundary-
+   * uncertainty abstention is possible.
+   */
+  readonly prediction?: DecisionPrediction;
+  /**
+   * DecisionQuality — Quality and qualification facts, kept strictly separate from the
+   * prediction and from authority. `empirical_correctness_probability` stays null until a
+   * held-out task-specific calibration exists; `calibration_status` is `unvalidated_for_task`
+   * for every first-release evaluation.
+   */
+  readonly quality: DecisionQuality;
+  /**
+   * DecisionDisposition — The deterministic policy result governing how this prediction may be
+   * used. `authorises_action` is false for every first-release evaluation; it can never be
+   * inferred from any probability, confidence or action-head field.
+   */
+  readonly disposition: DecisionDisposition;
+  /**
+   * DecisionExecutionFacts — Measured execution facts for the terminal attempt.
+   * `configured_compute_units` is reported separately by the provider; execution location and
+   * remote-processing flags are honest per-attempt facts, never marketing claims.
+   */
+  readonly execution: DecisionExecutionFacts;
+  /**
+   * Bounded abstention reason codes, present for abstained records.
+   */
+  readonly abstention_reasons?: readonly string[];
+  /**
+   * When the evaluation was admitted.
+   */
+  readonly created_at: string;
+  /**
+   * When the terminal record committed, if terminal.
+   */
+  readonly observed_at?: string;
+}
+
+/**
+ * Input for `decision.record.list`: the caller's authorised evaluation records for the selected
+ * workspace, newest first.
+ */
+export interface DecisionRecordListInput {
+  /**
+   * Optional filter by definition identifier.
+   */
+  readonly definition_id?: string;
+  /**
+   * Optional filter by record status.
+   */
+  readonly status?: string;
+  /**
+   * Bounded maximum number of records to return in this page.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Pagination position; an absent page asks for the first page.
+   */
+  readonly page?: PageMetadata;
+}
+
+/**
+ * Permitted definition versions.
+ */
+export interface DecisionDefinitionListResult {
+  /**
+   * DecisionDefinitionSummary — One permitted definition version as `decision.definition.list`
+   * and `decision.definition.get` report it.
+   */
+  readonly definitions: readonly DecisionDefinitionSummary[];
+}
+
+/**
+ * Input for `decision.definition.get`.
+ */
+export interface DecisionDefinitionGetInput {
+  /**
+   * DecisionDefinitionRef — An immutable Decision Definition version. Definitions are
+   * immutable; a semantic change to question, rubric, options or recipe is a new version.
+   */
+  readonly definition_ref: DecisionDefinitionRef;
+}
+
+/**
+ * Input for `decision.definition.disable`: stop one version admitting evaluations. Records and
+ * history are unaffected.
+ */
+export interface DecisionDefinitionDisableInput {
+  /**
+   * DecisionDefinitionRef — An immutable Decision Definition version. Definitions are
+   * immutable; a semantic change to question, rubric, options or recipe is a new version.
+   */
+  readonly definition_ref: DecisionDefinitionRef;
+}
+
+/**
+ * Input for `decision.outcome.submit`: append one evidenced outcome or correction to an
+ * evaluation. The original prediction is preserved, never overwritten. An actor preference is
+ * not automatically ground truth; outcome provenance records who submitted it and on what
+ * evidence.
+ */
+export interface DecisionOutcomeSubmitInput {
+  /**
+   * Identifier — Generic bounded, non-empty identifier used for clients, principals, roles,
+   * and deprecations.
+   */
+  readonly evaluation_id: Identifier;
+  /**
+   * The reviewer's or system's evidenced conclusion about the assessment.
+   */
+  readonly outcome: string;
+  /**
+   * For corrected choice/ordinal outcomes: the evidenced correct option.
+   */
+  readonly corrected_option_id?: string;
+  /**
+   * Bounded reviewer note.
+   */
+  readonly note?: string;
+  /**
+   * Opaque evidence references supporting the outcome.
+   */
+  readonly evidence_refs?: readonly DecisionSubjectRef[];
+}
+
+/**
+ * Result for `decision.definition.publish`: the immutable version now registered, with its
+ * computed digest. Publication binds contract metadata; it does not enable evaluations or grant
+ * any caller.
+ */
+export interface DecisionDefinitionPublishResult {
+  /**
+   * DecisionDefinitionRef — An immutable Decision Definition version. Definitions are
+   * immutable; a semantic change to question, rubric, options or recipe is a new version.
+   */
+  readonly definition_ref: DecisionDefinitionRef;
+  /**
+   * Opaque definition digest computed by the service.
+   */
+  readonly digest: string;
+  /**
+   * Whether the version admits evaluations immediately (publish and enable are separate
+   * concerns).
+   */
+  readonly enabled: boolean;
+}
+
+/**
+ * Result for `decision.definition.disable`.
+ */
+export interface DecisionDefinitionDisableResult {
+  /**
+   * DecisionDefinitionRef — An immutable Decision Definition version. Definitions are
+   * immutable; a semantic change to question, rubric, options or recipe is a new version.
+   */
+  readonly definition_ref: DecisionDefinitionRef;
+  /**
+   * Structured payload value.
+   */
+  readonly enabled: boolean;
+}
+
+/**
+ * Authorised evidence inputs for one evaluation. Source references are resolved and access-
+ * checked by the runtime after admission; inline state is caller-supplied evidence, never
+ * verified organisational truth, and is preserved as such in the record.
+ */
+export interface DecisionInputBundle {
+  /**
+   * Opaque authorised source references, resolved against the caller's effective grant.
+   */
+  readonly source_refs: readonly DecisionSubjectRef[];
+  /**
+   * Optional caller-supplied structured state, data-only and bounded. It is never executed and
+   * never treated as verified fact.
+   */
+  readonly inline_state?: JsonObject;
+}
+
+/**
+ * Wraps one DecisionDefinitionSummary document.
+ */
+export interface DecisionDefinitionGetResult {
+  /**
+   * DecisionDefinitionSummary — One permitted definition version as `decision.definition.list`
+   * and `decision.definition.get` report it.
+   */
+  readonly definition: DecisionDefinitionSummary;
+}
+
+/**
+ * Wraps one DecisionSettings document.
+ */
+export interface DecisionSettingsGetResult {
+  /**
+   * DecisionSettings — Applicable Local Decisions configuration as `decision.settings.get`
+   * reports it: processing state, subscription state and bounded budgets. Defaults are the
+   * specification's conservative set; disabling never deletes history.
+   */
+  readonly settings: DecisionSettings;
+}
+
+/**
+ * Wraps one DecisionSettings document.
+ */
+export interface DecisionSettingsUpdateResult {
+  /**
+   * DecisionSettings — Applicable Local Decisions configuration as `decision.settings.get`
+   * reports it: processing state, subscription state and bounded budgets. Defaults are the
+   * specification's conservative set; disabling never deletes history.
+   */
+  readonly settings: DecisionSettings;
+}
+
+/**
+ * Input for `continuity.session.register`: a trusted adapter or SDK binding one authenticated
+ * principal to a service-issued continuity session. Not a model-facing tool: the server derives
+ * the principal and effective grants from the authenticated channel, never from these fields. A
+ * host session reference is an opaque external correlation value, never an authentication token.
+ */
+export interface ContinuitySessionRegisterInput {
+  /**
+   * The engineering payload schema version of this request.
+   */
+  readonly schema_version: EngineeringSchemaVersion;
+  /**
+   * Optional registered source context the session is bound to.
+   */
+  readonly repository_target?: EngineeringSnapshotRef;
+  /**
+   * Optional installation-local checkout hint. An unregistered basename is a label suggestion,
+   * never permission to create or write a project.
+   */
+  readonly checkout_hint?: string;
+  /**
+   * Optional opaque host-native session correlation value; never an authentication token and
+   * never authority.
+   */
+  readonly host_session_ref?: string;
+}
+
+/**
+ * The service-issued continuity session binding: operational context, not canonical knowledge.
+ * Lease expiry and binding generation fence stale contributors; the binding generation is
+ * distinct from the authoritative workspace writer generation, and every write checks both.
+ */
+export interface ContinuitySessionBinding {
+  /**
+   * Service-issued continuity session identity.
+   */
+  readonly session_id: Identifier;
+  /**
+   * Authenticated principal the binding is issued to; derived by the server, never supplied by
+   * the caller.
+   */
+  readonly principal_id: Identifier;
+  /**
+   * Workspace the session is bound to.
+   */
+  readonly workspace_id: Identifier;
+  /**
+   * Monotonic generation fencing stale contributors against rebind, revocation and takeover.
+   */
+  readonly binding_generation: number;
+  /**
+   * When the session lease expires unless refreshed through the trusted adapter.
+   */
+  readonly lease_expires_at: Timestamp;
+  /**
+   * The binding's current operational state.
+   */
+  readonly state: EngineeringSessionState;
+  /**
+   * Registered source context bound at registration, when one was selected.
+   */
+  readonly repository_target?: EngineeringSnapshotRef;
+}
+
+/**
+ * Result of `continuity.session.close`. `checkpoint_recorded` is false when the close carried no
+ * final checkpoint; that is an explicit statement, never a fabricated summary.
+ */
+export interface ContinuitySessionCloseResult {
+  /**
+   * The closed session.
+   */
+  readonly session_id: Identifier;
+  /**
+   * The session's operational state after the close.
+   */
+  readonly state: EngineeringSessionState;
+  /**
+   * Whether a final checkpoint was committed atomically with this close.
+   */
+  readonly checkpoint_recorded: boolean;
+  /**
+   * Durable receipt for the final checkpoint, when one was committed.
+   */
+  readonly receipt?: CheckpointReceipt;
+}
+
+/**
+ * The structured, validated payload of one continuity checkpoint. Preserves working context with
+ * unresolved work and uncertainty intact: completed work distinguishes verified evidence from
+ * claims, failed approaches and unresolved questions are first-class, and suggested next actions
+ * are suggestions only - never permission to execute. The payload is L0 evidence once stored;
+ * Core does not become the owner of any plan or external effect it references.
+ */
+export interface EngineeringCheckpointPayload {
+  /**
+   * Bounded description of the current work, labelled working context.
+   */
+  readonly objective: string;
+  /**
+   * Open, bounded code naming why the checkpoint was taken, such as `periodic`,
+   * `before_compaction`, `after_compaction`, `handoff` or `session_close`.
+   */
+  readonly checkpoint_kind: string;
+  /**
+   * External Runtime/host run reference, when present. A reference, never execution authority.
+   */
+  readonly external_run_ref?: string;
+  /**
+   * Exact snapshots relevant to the work.
+   */
+  readonly repository_snapshots?: readonly EngineeringSnapshotRef[];
+  /**
+   * Accepted exact versions verified by Core at submission.
+   */
+  readonly accepted_record_refs?: readonly EngineeringRecordVersionRef[];
+  /**
+   * Proposed versions, visibly separate from accepted knowledge.
+   */
+  readonly candidate_record_refs?: readonly EngineeringRecordVersionRef[];
+  /**
+   * Bounded working statements with evidence references and support classification.
+   */
+  readonly observations?: readonly EngineeringCheckpointObservation[];
+  /**
+   * Reported accomplishments; validation links distinguish verified evidence from claims.
+   */
+  readonly completed_work?: readonly EngineeringCheckpointObservation[];
+  /**
+   * Prior attempts and their evidence, including uncertainty.
+   */
+  readonly failed_approaches?: readonly EngineeringCheckpointObservation[];
+  /**
+   * Questions, blockers and incomplete investigations, preserved intact.
+   */
+  readonly unresolved_work?: readonly string[];
+  /**
+   * Source/evidence references rather than absolute paths.
+   */
+  readonly relevant_sources?: readonly SourceReference[];
+  /**
+   * Reported external operation ids and their reported status, including `unknown`.
+   */
+  readonly external_effects?: readonly EngineeringExternalEffect[];
+  /**
+   * Suggested next actions. Suggestions only; no permission to execute.
+   */
+  readonly next_actions?: readonly string[];
+  /**
+   * Optional prior pack checksum and reproducibility inputs.
+   */
+  readonly context_receipt?: EngineeringContextReceipt;
+}
+
+/**
+ * Result of `continuity.checkpoint.append`.
+ */
+export interface ContinuityCheckpointAppendResult {
+  /**
+   * The durable receipt proving the checkpoint exists.
+   */
+  readonly receipt: CheckpointReceipt;
+}
+
+/**
+ * Input for `continuity.handoff.read`: reads a bounded, authorised handoff view of one
+ * checkpoint. Select the checkpoint exactly (by id, or by session plus sequence); the optional
+ * target snapshot lets the view state applicability for the snapshot the receiving agent
+ * actually targets. Handoff does not transfer the sender's grants, credentials, leases or
+ * approvals to act.
+ */
+export interface ContinuityHandoffReadInput {
+  /**
+   * Exact checkpoint identity.
+   */
+  readonly checkpoint_id?: Identifier;
+  /**
+   * Session identity, when selecting by session plus sequence.
+   */
+  readonly session_id?: Identifier;
+  /**
+   * Checkpoint sequence within the session, when selecting by session plus sequence.
+   */
+  readonly sequence?: number;
+  /**
+   * The snapshot the receiving agent targets, for applicability framing.
+   */
+  readonly target_snapshot?: EngineeringSnapshotRef;
+}
+
+/**
+ * Result of `continuity.handoff.read`.
+ */
+export interface ContinuityHandoffReadResult {
+  /**
+   * The bounded, authorised handoff view.
+   */
+  readonly handoff: HandoffView;
+}
+
+/**
+ * Input for `engineering.search`: bounded preview retrieval over the authorised engineering
+ * frontier. The view defaults to `accepted`; every other view is an explicit opt-in behind its
+ * capability. The repository target, when given, scopes retrieval to one registered snapshot.
+ * Authorisation, projection freshness and applicability eligibility are applied before scoring;
+ * a bounded response never presents a truncated pre-authorisation top-k as complete.
+ */
+export interface EngineeringSearchInput {
+  /**
+   * The bounded retrieval query.
+   */
+  readonly query: string;
+  /**
+   * Which knowledge partition to read; defaults to `accepted`.
+   */
+  readonly view?: EngineeringSearchView;
+  /**
+   * Optional registered snapshot the search is scoped to.
+   */
+  readonly repository_target?: EngineeringSnapshotRef;
+  /**
+   * Maximum previews to return; the service default is 20 and the hard maximum 100.
+   */
+  readonly limit?: number;
+  /**
+   * Opaque continuation position. A changed authority epoch, projection snapshot or bound
+   * scope invalidates the token with an explicit restart response.
+   */
+  readonly page?: PageMetadata;
+  /**
+   * How applicability qualifies this read. `diagnostic` (the default) is the pre-existing
+   * behaviour: previews carry conservative, never-certified applicability. `current_safe`
+   * requires `repository_target`: the target must be a recorded snapshot inside its source
+   * stream's contiguous validated coverage, checked before any ranking, or the read is refused
+   * with `dependency_unavailable` and the fixed message `applicability_pending` - never
+   * downgraded to `diagnostic`. Only records whose whole-file dependencies are proven
+   * `matched` at that target are returned.
+   */
+  readonly applicability_mode?: EngineeringApplicabilityMode;
+}
+
+/**
+ * Result of `engineering.search`: one page of bounded previews plus the coverage facts that
+ * qualify them.
+ */
+export interface EngineeringSearchResult {
+  /**
+   * The authorised previews on this page.
+   */
+  readonly previews: readonly EngineeringPreview[];
+  /**
+   * The pagination position this read reached; `{}` means the read is exhausted.
+   */
+  readonly page: PageMetadata;
+  /**
+   * Projection and applicability coverage qualifying this page.
+   */
+  readonly coverage: EngineeringCoverage;
+}
+
+/**
+ * One relationship candidate between two exact record versions. Relation vocabulary is open
+ * (`related`, `compatible`, `scoped_difference`, `conflicts_with`, `supersedes`,
+ * `not_conflict`); state is independent (`pending`, `assessed`, `accepted`, `rejected`,
+ * `obsolete`). A pending or rejected edge is visible as a candidate, never as governed truth,
+ * and a `not_conflict` verdict is not evidence that either endpoint is correct.
+ */
+export interface EngineeringRelationEdge {
+  /**
+   * The edge's source record version.
+   */
+  readonly from_record: EngineeringRecordVersionRef;
+  /**
+   * The edge's target record version.
+   */
+  readonly to_record: EngineeringRecordVersionRef;
+  /**
+   * The proposed relation vocabulary code.
+   */
+  readonly relation: string;
+  /**
+   * The relation's independent state code.
+   */
+  readonly status: string;
+}
+
+/**
+ * Input for `engineering.expand`: bounded expansion from one authorised anchor into surrounding
+ * history, relations and evidence references. Expansion obeys its own depth, node and edge
+ * budgets, and never traverses through a hidden node to reveal another relationship.
+ */
+export interface EngineeringExpandInput {
+  /**
+   * The exact authorised record version to expand from.
+   */
+  readonly anchor: EngineeringRecordVersionRef;
+  /**
+   * Expansion depth; the service default is 1 and the hard engineering cap 3.
+   */
+  readonly depth?: number;
+  /**
+   * Maximum nodes returned; the service default is 30 and the hard engineering cap 200.
+   */
+  readonly node_limit?: number;
+  /**
+   * Maximum edges returned; the service default is 60 and the hard engineering cap 400.
+   */
+  readonly edge_limit?: number;
+}
+
+/**
+ * One deterministic internal citation inside a pack: a resolvable reference to the exact record
+ * version and/or evidence the cited content came from. Citation ids are internal references, not
+ * self-referential pack URLs, and following one always requires fresh authorisation.
+ */
+export interface EngineeringCitation {
+  /**
+   * Deterministic citation identity within this pack.
+   */
+  readonly citation_id: Identifier;
+  /**
+   * The exact record version cited, when the citation names a record.
+   */
+  readonly record_ref?: EngineeringRecordVersionRef;
+  /**
+   * The immutable evidence identity cited, when the citation names evidence.
+   */
+  readonly evidence_id?: Identifier;
+}
+
+/**
+ * A notice that two or more eligible, visible assertions materially conflict. The group is
+ * atomic: the pack never silently chooses the most recent or most repeated claim as truth. When
+ * the conflicting conclusions cannot fit, the notice stands alone and the unsafe conclusion is
+ * omitted.
+ */
+export interface EngineeringConflictNotice {
+  /**
+   * The conflicting record versions, all visible to this caller.
+   */
+  readonly records: readonly EngineeringRecordVersionRef[];
+  /**
+   * Open, bounded code naming the conflict state, such as `unresolved`, `resolved` or
+   * `scoped_difference`.
+   */
+  readonly status: string;
+  /**
+   * Bounded explanatory note permitted for this caller.
+   */
+  readonly note?: string;
+}
+
+/**
+ * One target snapshot's applicability statement inside a pack, so a consumer can see which
+ * target each applicability claim belongs to.
+ */
+export interface EngineeringTargetApplicability {
+  /**
+   * The target snapshot this statement is about.
+   */
+  readonly snapshot: EngineeringSnapshotRef;
+  /**
+   * Applicability of the pack's records at this target, evaluated at the pinned BuildContext.
+   */
+  readonly status: EngineeringApplicabilityStatus;
+}
+
+/**
+ * Input for `engineering.context.build`: builds one non-persisted engineering context pack
+ * against explicit repository snapshot targets. Workspace, principal, purpose and grants remain
+ * in the envelope. The request carries no free-form system prompt, arbitrary model instruction,
+ * raw SQL, server filesystem path, new authority field or synchronous summarisation-provider
+ * setting; historical diagnosis is an explicit separate request type or capability, never an
+ * automatic fallback.
+ */
+export interface EngineeringContextBuildInput {
+  /**
+   * The bounded retrieval intent for this build.
+   */
+  readonly query: string;
+  /**
+   * Explicit repository snapshot targets for this pack.
+   */
+  readonly targets: readonly EngineeringSnapshotRef[];
+  /**
+   * Retrieval profile: one of `investigate`, `implement`, `review` or `resume`. A retrieval
+   * template, not a permission or work instruction.
+   */
+  readonly profile: string;
+  /**
+   * Optional topics to centre the pack on.
+   */
+  readonly topic_refs?: readonly EngineeringTopicRef[];
+  /**
+   * Optional authorised checkpoint identities whose working context may enter the pack.
+   */
+  readonly checkpoint_refs?: readonly Identifier[];
+  /**
+   * Optional caller-requested budgets; effective budgets are also bounded by the granted
+   * profile and server hard limits.
+   */
+  readonly budget?: EngineeringBudget;
+  /**
+   * How applicability qualifies this pack. `diagnostic` (the default) is the pre-existing
+   * behaviour: every target statement is `not_evaluated`. `current_safe` requires every target
+   * to be a recorded snapshot inside its source stream's contiguous validated coverage,
+   * checked before any selection, or the build is refused with `dependency_unavailable` and
+   * the fixed message `applicability_pending` - never downgraded to `diagnostic`. Only records
+   * proven `matched` at every target enter the pack.
+   */
+  readonly applicability_mode?: EngineeringApplicabilityMode;
+  /**
+   * Optional explicit counting negotiation. Omission preserves the legacy
+   * engineering_context.v1 behavior.
+   */
+  readonly counting_mode?: EngineeringCountingMode;
+  /**
+   * Exact tokenizer requested by exact_tokens.v1. Forbidden for byte_only.v1.
+   */
+  readonly tokenizer?: EngineeringTokenizerReference;
+}
+
+/**
+ * Input for `context.priority.set`: one principal's own selection preference for one exact
+ * visible record version. Priority is `normal` or `preferred`; it can influence selection only
+ * after authorisation and applicability checks, never changes governed record versions, approval
+ * state or evidence confidence, and a pin count never becomes an evidence-confidence input.
+ */
+export interface ContextPrioritySetInput {
+  /**
+   * The exact visible record version the preference applies to.
+   */
+  readonly target: EngineeringRecordVersionRef;
+  /**
+   * The preference: `normal` or `preferred`.
+   */
+  readonly priority: string;
+  /**
+   * Optional expiry of the preference.
+   */
+  readonly expires_at?: Timestamp;
+}
+
+/**
+ * Result of `context.priority.set`.
+ */
+export interface ContextPrioritySetResult {
+  /**
+   * The record version the preference now applies to.
+   */
+  readonly target: EngineeringRecordVersionRef;
+  /**
+   * The stored preference.
+   */
+  readonly priority: string;
+  /**
+   * Expiry of the preference, when one was set.
+   */
+  readonly expires_at?: Timestamp;
+  /**
+   * Audit reference for the audited preference change.
+   */
+  readonly audit_reference: string;
+}
+
+/**
+ * Input for `engineering.review.record`: records one review or deterministic-validation
+ * attestation for one exact record version at one target snapshot. This cannot accept knowledge,
+ * cannot clear a stale or unknown target applicability without new evidence, and never replaces
+ * the governed review path.
+ */
+export interface EngineeringReviewRecordInput {
+  /**
+   * The exact record version being reviewed.
+   */
+  readonly record_ref: EngineeringRecordVersionRef;
+  /**
+   * The target snapshot the review is recorded against.
+   */
+  readonly target_snapshot: EngineeringSnapshotRef;
+  /**
+   * Open, bounded code naming what the review recorded, such as `acknowledged`,
+   * `evidence_attached` or `revision_proposed`.
+   */
+  readonly review_outcome: string;
+  /**
+   * Immutable evidence identity backing the review, when evidence was attached.
+   */
+  readonly review_evidence_id?: Identifier;
+  /**
+   * Mutation precondition: the applicability assessment version the caller believes is
+   * current.
+   */
+  readonly expected_assessment_version?: Identifier;
+}
+
+/**
+ * Result of `engineering.review.record`. The returned applicability is the target-specific
+ * assessment after this review; acknowledging review without sufficient evidence leaves
+ * `potentially_stale`, `invalid` and `unknown` intact.
+ */
+export interface EngineeringReviewRecordResult {
+  /**
+   * The reviewed record version.
+   */
+  readonly record_ref: EngineeringRecordVersionRef;
+  /**
+   * The target-specific assessment after this review.
+   */
+  readonly applicability: EngineeringApplicabilityStatus;
+  /**
+   * The proposed revision created by this review, when the outcome proposed one.
+   */
+  readonly revision_ref?: EngineeringRecordVersionRef;
+  /**
+   * Audit reference for the recorded attestation.
+   */
+  readonly audit_reference: string;
+}
+
+/**
+ * Input for `engineering.source.record`: a trusted source producer records one immutable
+ * snapshot of one logical repository as the next event of its own source stream. Not a model-
+ * facing tool, and never reachable through contributed observations: it requires the distinct
+ * `engineering:source` scope and `engineering.source` capability. The payload carries
+ * identities, the producer's monotonic stream sequence and predecessor, the snapshot kind,
+ * capture coverage and a bounded canonical manifest of repository-relative paths and SHA-256
+ * digests - never a path to read, a command, raw file content, a credential, an installation or
+ * principal field, or a repository label. The authenticated principal owns the stream; a stream
+ * bound to another principal or repository is refused, never replaced. Unknown keys are refused.
+ */
+export interface EngineeringSourceRecordInput {
+  /**
+   * Stable logical repository identity; registered on first use and never derived from a path
+   * or label.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * The producer's source stream: one ordered history such as one worktree or checkout.
+   * Streams never share coverage.
+   */
+  readonly stream_id: Identifier;
+  /**
+   * The producer's monotonic sequence within the stream, from 1.
+   */
+  readonly sequence: number;
+  /**
+   * Required exactly when `sequence` is greater than 1.
+   */
+  readonly predecessor?: EngineeringSourcePredecessor;
+  /**
+   * Identity of the immutable snapshot this event records; never reused for different content
+   * or position.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * `git_commit` (a clean commit, stating `base_commit`), `working_tree` (a dirty or
+   * uncommitted tree, which never asserts a base commit) or `source_archive`. Other values are
+   * refused.
+   */
+  readonly snapshot_kind: string;
+  /**
+   * The commit a `git_commit` snapshot records. Provenance only: a shared base commit or
+   * branch never makes two snapshots equivalent.
+   */
+  readonly base_commit?: string;
+  /**
+   * `complete` when the manifest lists every file of the snapshot, otherwise `incomplete`. An
+   * incomplete manifest is recorded but never qualifies `matched`.
+   */
+  readonly capture_status: string;
+  /**
+   * The bounded manifest: at most 256 entries and 65536 canonical bytes, each path unique.
+   */
+  readonly manifest: readonly EngineeringSourceManifestEntry[];
+  /**
+   * Optional digest the producer computed over the canonical manifest; when present it must
+   * equal the server's own computation.
+   */
+  readonly manifest_digest?: ContentChecksum;
+}
+
+/**
+ * Input for `engineering.source.capture.commit`: it references an already sealed Core capture
+ * and derives every other value from the persisted capture header, indexed file evidence and
+ * stream state -- never from the payload. It carries only identities, the producer's stream
+ * sequence and predecessor, the sealed snapshot identity, and an optional fail-closed
+ * precondition digest. It never accepts a checkout path, a repository path, a file path, a
+ * manifest body, raw bytes, a command, `checkout_id`, `installation_id`, a workspace, principal,
+ * purpose, scope, role or capability field, or a caller-selected capture status, file count,
+ * coverage digest or audit identity. Unknown keys are refused.
+ */
+export interface EngineeringSourceCaptureCommitInput {
+  /**
+   * Stable logical repository identity of the sealed capture.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * The producer's source stream: one ordered history such as one worktree or checkout.
+   * Streams never share coverage.
+   */
+  readonly stream_id: Identifier;
+  /**
+   * The producer's monotonic sequence within the stream, from 1.
+   */
+  readonly sequence: number;
+  /**
+   * Required exactly when `sequence` is greater than 1.
+   */
+  readonly predecessor?: EngineeringSourcePredecessor;
+  /**
+   * Identity of the already sealed Core capture this event commits.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Optional fail-closed precondition against the sealed rich-manifest digest. It never
+   * substitutes for the server-owned digest.
+   */
+  readonly expected_manifest_digest?: ContentChecksum;
+}
 
 /**
  * Everything the server needs to route, scope, bound, and audit a request, independent of the
@@ -5435,6 +9662,120 @@ export interface CandidateRejectInput {
 }
 
 /**
+ * Result of `knowledge.share.lineage`: the share, the state its decisions currently derive, and
+ * every decision in the order it was recorded.
+ */
+export interface KnowledgeShareLineageResult {
+  /**
+   * The share this result describes.
+   */
+  readonly share_id: Identifier;
+  /**
+   * The Project that owns the shared record, as the server's Project binding states it.
+   */
+  readonly source_project_id: Identifier;
+  /**
+   * The one Project the share is addressed to.
+   */
+  readonly recipient_project_id: Identifier;
+  /**
+   * The governed record shared.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The one sealed, canonical, accepted governed version the share is bound to.
+   */
+  readonly governed_record_version_id: Identifier;
+  /**
+   * The digest of that version's content, which a recipient read must still find unchanged.
+   */
+  readonly content_digest: ContentChecksum;
+  /**
+   * The state the recorded decisions derive.
+   */
+  readonly state: KnowledgeShareState;
+  /**
+   * The principal that proposed the share.
+   */
+  readonly proposed_by: Identifier;
+  /**
+   * Every decision recorded against the share, accepted and revoked, in the order recorded.
+   */
+  readonly decisions: readonly KnowledgeShareDecisionRecord[];
+}
+
+/**
+ * One reviewed, canonical summary of an outcome admission, in the closed shape Dev produces: the
+ * revision, the fixed status labels, the objective, the initiating App, the declared bindings
+ * and roles, the assumptions, constraints, requested scopes (in ascending order) and budgets.
+ * Dev grants no authority; Core admits it only against its own bindings.
+ */
+export interface OutcomeAdmissionSummary {
+  /**
+   * The summary revision, a positive integer.
+   */
+  readonly revision: AdmissionRevision;
+  /**
+   * The producing adapter.
+   */
+  readonly adapter: AdmissionAdapter;
+  /**
+   * Always a draft for review.
+   */
+  readonly disposition: AdmissionDisposition;
+  /**
+   * Always not authorized.
+   */
+  readonly executionState: AdmissionExecutionState;
+  /**
+   * Always declared, not verified.
+   */
+  readonly bindingStatus: AdmissionBindingStatus;
+  /**
+   * Always requested, not granted.
+   */
+  readonly scopeStatus: AdmissionScopeStatus;
+  /**
+   * Always declared, not authenticated.
+   */
+  readonly roleStatus: AdmissionRoleStatus;
+  /**
+   * The objective, which must equal the request's top-level objective.
+   */
+  readonly outcomeObjective: string;
+  /**
+   * The App that initiated the outcome, and its surface.
+   */
+  readonly appContext: AdmissionAppContext;
+  /**
+   * The declared Project, Workspace, Work and source facts.
+   */
+  readonly declaredBindings: AdmissionDeclaredBindings;
+  /**
+   * The declared owner, executor and reviewer.
+   */
+  readonly declaredRoles: AdmissionRoles;
+  /**
+   * The assumptions the summary rests on, in the order given. Items are non-blank, and their
+   * total UTF-8 size with the constraints is bounded.
+   */
+  readonly assumptions: readonly string[];
+  /**
+   * The constraints the outcome must respect, in the order given. Items are non-blank, and
+   * their total UTF-8 size with the assumptions is bounded.
+   */
+  readonly constraints: readonly string[];
+  /**
+   * The requested scopes, distinct and in ascending order.
+   */
+  readonly requestedScopes: readonly AdmissionScope[];
+  /**
+   * The explicit budgets and their estimator.
+   */
+  readonly budgets: AdmissionBudgets;
+}
+
+/**
  * Input for `memory.list`. Workspace-scoped: the workspace is the request envelope's selected
  * workspace; this payload never carries a second, independent workspace identifier.
  */
@@ -5788,6 +10129,219 @@ export interface WorkflowRunProjection {
 }
 
 /**
+ * Input for `trigger.health`: a bounded read of trigger health for one Project and one Workflow.
+ * Without `trigger_id` it reads one page of that Workflow's triggers, ordered by trigger
+ * identifier. With `trigger_id` it reads that one trigger, and `limit` and `page` must be
+ * absent. `observation_limit` bounds how many recent observations each trigger returns, newest
+ * first. A trigger of another Project or Workflow reads as not found, never as someone else's.
+ * Workspace-scoped through the request envelope's selected workspace.
+ */
+export interface TriggerHealthInput {
+  /**
+   * The Project whose triggers to read.
+   */
+  readonly project_id: Identifier;
+  /**
+   * The Workflow whose triggers to read.
+   */
+  readonly workflow_id: Identifier;
+  /**
+   * The one trigger to read. Absent reads a page of the Workflow's triggers.
+   */
+  readonly trigger_id?: Identifier;
+  /**
+   * Most recent observations to return per trigger, newest first. Absent reads 5.
+   */
+  readonly observation_limit?: number;
+  /**
+   * Most triggers to return in this page. The server returns at most 50.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Continuation position from a prior page. Absent means the first page.
+   */
+  readonly page?: PageMetadata;
+}
+
+/**
+ * One trigger's health: its declaration, its subscription, its last observation and recent
+ * observations, and the failures and uncertainty among them.
+ */
+export interface TriggerHealth {
+  /**
+   * The trigger.
+   */
+  readonly trigger_id: Identifier;
+  /**
+   * The kind the trigger declares.
+   */
+  readonly trigger_kind: TriggerKind;
+  /**
+   * The Workflow version of its latest declaration.
+   */
+  readonly workflow_version: ReleaseVersion;
+  /**
+   * The number of its latest declaration.
+   */
+  readonly declaration_sequence: number;
+  /**
+   * The event type its latest declaration admits.
+   */
+  readonly event_type: Identifier;
+  /**
+   * Its current subscription.
+   */
+  readonly subscription: TriggerSubscriptionHealth;
+  /**
+   * Its newest observation. Absent when none was recorded.
+   */
+  readonly last_observation?: TriggerObservationHealth;
+  /**
+   * How many observations it has recorded across its whole history.
+   */
+  readonly observation_total: number;
+  /**
+   * Its newest observations, newest first, up to the requested observation limit.
+   */
+  readonly observations: readonly TriggerObservationHealth[];
+  /**
+   * How many of the observations returned carry each delivery status.
+   */
+  readonly delivery_counts: TriggerDeliveryCounts;
+  /**
+   * Failures among the observations returned.
+   */
+  readonly failures: readonly TriggerFailure[];
+  /**
+   * Uncertainty carried by the subscription and the observations returned.
+   */
+  readonly uncertainty: readonly OpenCode[];
+}
+
+/**
+ * A managed Skills manifest: inert data naming a skill, its version, its text, the roles it is
+ * compatible with and the capabilities it requires to be present. It grants nothing. Its field
+ * set is closed, and a member that would state a permission, tool, budget, path, network right,
+ * credential, escalation or sandbox setting is refused, never ignored.
+ */
+export interface SkillManifest {
+  /**
+   * The skill this names.
+   */
+  readonly skill_name: Identifier;
+  /**
+   * The version of that skill.
+   */
+  readonly version: SkillVersion;
+  /**
+   * What the skill is for, as inert text.
+   */
+  readonly description: string;
+  /**
+   * The skill's instruction text, carried as data and never executed.
+   */
+  readonly instructions: string;
+  /**
+   * Named digests of material the skill refers to.
+   */
+  readonly references: readonly SkillReference[];
+  /**
+   * Other skills this one needs, each pinned to one exact published manifest.
+   */
+  readonly dependencies: readonly SkillDependency[];
+  /**
+   * The roles this skill may be selected for.
+   */
+  readonly compatible_roles: readonly Identifier[];
+  /**
+   * Capabilities that must be present before execution. A requirement, never a grant.
+   */
+  readonly required_capabilities: readonly Identifier[];
+}
+
+/**
+ * The skills one Run role selects, in the caller's order. Core resolves each to exact manifest
+ * ids and a bounded closure, and the Run binds all of them in its admission.
+ */
+export interface SkillRoleSelection {
+  /**
+   * The Run role that selects these skills.
+   */
+  readonly role_id: Identifier;
+  /**
+   * The skills the role asks for, in the caller's order.
+   */
+  readonly selections: readonly SkillSelection[];
+}
+
+/**
+ * Input for `skills.proposal.submit`. Sends the draft's latest revision to the publisher queue,
+ * once, with the evidence the author cites. Submitting grants no publication.
+ */
+export interface SkillProposalSubmitInput {
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The draft revision the caller last read. A different current revision is a conflict.
+   */
+  readonly expected_revision: number;
+  /**
+   * The evidence the author cites for the proposal.
+   */
+  readonly evidence_refs: readonly SkillEvidenceRef[];
+}
+
+/**
+ * Input for `skills.version.publish`. Mints the immutable version a proposal submitted, naming
+ * the reviewing evidence and the publisher. It needs the publisher role, which authorship never
+ * implies. A version is published once per skill and version: changed content takes a new
+ * version.
+ */
+export interface SkillVersionPublishInput {
+  /**
+   * The proposal this names.
+   */
+  readonly proposal_id: Identifier;
+  /**
+   * The reviewing evidence the publisher relies on.
+   */
+  readonly review_evidence_refs: readonly SkillEvidenceRef[];
+}
+
+/**
+ * Input for `skills.resolve`. Resolves one role's skill selections to exact manifest ids and
+ * their bounded dependency closure, using the registry's precedence. It is a read: it binds
+ * nothing and changes nothing.
+ */
+export interface SkillResolveInput {
+  /**
+   * The Run role this names.
+   */
+  readonly role_id: Identifier;
+  /**
+   * The skills the role asks for, in the caller's order.
+   */
+  readonly selections: readonly SkillSelection[];
+}
+
+/**
+ * Result of `skills.resolve`: the closure the role would be bound to, dependencies first.
+ * Bounded, and deterministic for the same registry state.
+ */
+export interface SkillResolveResult {
+  /**
+   * The Run role this names.
+   */
+  readonly role_id: Identifier;
+  /**
+   * The resolved closure, dependencies first.
+   */
+  readonly entries: readonly SkillResolvedEntry[];
+}
+
+/**
  * The published coordination facts a client needs to find one running service instance and
  * decide whether it can talk to it, before any request is sent. Coordination data only: a
  * descriptor carries no bearer credential or token, no granted or effective capability
@@ -6095,6 +10649,64 @@ export interface WorkspaceListInput {
 }
 
 /**
+ * Input for `analysis.start`. Workspace-scoped: the workspace is the request envelope's selected
+ * workspace; this payload never carries a second, independent workspace identifier. Exactly one
+ * temporal scope is stated: an `as_of` business date or an explicit `period` half-open interval,
+ * never both and never neither.
+ */
+export interface AnalysisStartInput {
+  /**
+   * The payload schema version this request was authored against, as `major.minor`. Milestone
+   * 1 supports `1.0` only.
+   */
+  readonly request_version: ContractVersion;
+  /**
+   * The exact governed definition this analysis names.
+   */
+  readonly target: AnalysisTarget;
+  /**
+   * Point-in-time business scope: evaluate the governed definition as of this business date in
+   * the business timezone. Mutually exclusive with `period`.
+   */
+  readonly as_of_date?: BusinessDate;
+  /**
+   * Inclusive start of the business-period scope. Required with `period_end` and forbidden
+   * with `as_of_date`.
+   */
+  readonly period_start?: BusinessDate;
+  /**
+   * Exclusive end of the business-period scope. Required with `period_start` and forbidden
+   * with `as_of_date`.
+   */
+  readonly period_end?: BusinessDate;
+  /**
+   * IANA timezone interpreting every business date in this request.
+   */
+  readonly business_timezone: BusinessTimezone;
+  /**
+   * The requested result-use class. Requesting a class does not grant it; the result-use gate
+   * evaluates permission separately.
+   */
+  readonly use_class: AnalysisUseClass;
+  /**
+   * Exact typed parameters, each a name plus JSON data value. Absent means the governed
+   * definition's declared defaults apply. Order is not significant; duplicate names are
+   * refused.
+   */
+  readonly parameters?: readonly AnalysisParameter[];
+  /**
+   * Explicit bounded output. Absent means the admitted server profile default bounds.
+   */
+  readonly output_bounds?: AnalysisOutputBounds;
+  /**
+   * Caller-visible reference to the purpose this analysis is requested under. A purpose
+   * reference is a claim the service validates; it is never a substitute for identity,
+   * authorisation or policy checks.
+   */
+  readonly purpose_reference: Identifier;
+}
+
+/**
  * Everything a caller needs to reason about what this server accepted and what it can do.
  * Returned on every response, success or error.
  */
@@ -6259,6 +10871,266 @@ export interface ContextPackAuthorizedCandidateSetManifest {
 }
 
 /**
+ * Input for `decision.evaluate`: one bounded, evidence-bearing assessment request. Identity,
+ * effective authority, scopes and purpose come from the authorised request envelope, never from
+ * these fields. The envelope's `idempotency_key` (required by the catalogue) is bound to the
+ * canonical request digest; reuse with a different request is an explicit conflict. Evaluation
+ * has durable side effects - it reads authorised sources and writes evaluation, attempt and
+ * audit records - even though it never mutates business records.
+ */
+export interface DecisionEvaluateInput {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * DecisionDefinitionRef — An immutable Decision Definition version. Definitions are
+   * immutable; a semantic change to question, rubric, options or recipe is a new version.
+   */
+  readonly definition_ref: DecisionDefinitionRef;
+  /**
+   * The subjects this evaluation is about.
+   */
+  readonly subject_refs: readonly DecisionSubjectRef[];
+  /**
+   * Authorised evidence inputs, resolved after admission.
+   */
+  readonly input: DecisionInputBundle;
+  /**
+   * DecisionExecutionConstraints — Caller constraints on one evaluation. Policy composes these
+   * with installation, workspace and definition limits using the most restrictive effective
+   * result; a caller cannot elevate an unqualified template or escape a local-only floor.
+   */
+  readonly execution: DecisionExecutionConstraints;
+}
+
+/**
+ * One page of authorised evaluation records.
+ */
+export interface DecisionRecordListResult {
+  /**
+   * DecisionRecord — The durable record of one evaluation. Every terminal record identifies
+   * the evaluation, the effective context it ran under, the exact definition/subject/source
+   * revisions, provider and preparation identities, the typed prediction, the deterministic
+   * disposition and the execution facts. Abstention, cancellation and failure are first-class
+   * terminal states with their own reason codes.
+   */
+  readonly records: readonly DecisionRecord[];
+  /**
+   * Cursor for the next page, or null when the list is exhausted.
+   */
+  readonly next_cursor?: string;
+  /**
+   * Pagination position: the continuation for the next page, always present.
+   */
+  readonly page: PageMetadata;
+}
+
+/**
+ * Wraps one DecisionRecord document.
+ */
+export interface DecisionRecordGetResult {
+  /**
+   * DecisionRecord — The durable record of one evaluation. Every terminal record identifies
+   * the evaluation, the effective context it ran under, the exact definition/subject/source
+   * revisions, provider and preparation identities, the typed prediction, the deterministic
+   * disposition and the execution facts. Abstention, cancellation and failure are first-class
+   * terminal states with their own reason codes.
+   */
+  readonly record: DecisionRecord;
+}
+
+/**
+ * Result of `continuity.session.register`.
+ */
+export interface ContinuitySessionRegisterResult {
+  /**
+   * The service-issued binding.
+   */
+  readonly session: ContinuitySessionBinding;
+}
+
+/**
+ * Input for `continuity.session.close`: closes one bound session, optionally committing a final
+ * checkpoint in the same atomic metadata transaction. A close without a checkpoint explicitly
+ * records that no checkpoint exists; it never fabricates a summary. The expected sequence is a
+ * mutation precondition against the session's last acknowledged checkpoint.
+ */
+export interface ContinuitySessionCloseInput {
+  /**
+   * The bound session to close.
+   */
+  readonly session_id: Identifier;
+  /**
+   * Optional mutation precondition: the checkpoint sequence the caller believes is currently
+   * the last acknowledged one for this session.
+   */
+  readonly expected_sequence?: number;
+  /**
+   * Optional final checkpoint payload committed atomically with the close.
+   */
+  readonly final_checkpoint?: EngineeringCheckpointPayload;
+}
+
+/**
+ * Input for `continuity.checkpoint.append`: appends one immutable checkpoint to a bound session.
+ * The envelope's idempotency key makes a lost-reply retry return the original receipt; reusing
+ * the key with a different payload is an explicit conflict. The expected parent sequence
+ * serialises competing successors: two clients cannot both become the successor of one
+ * checkpoint.
+ */
+export interface ContinuityCheckpointAppendInput {
+  /**
+   * The bound session to append to.
+   */
+  readonly session_id: Identifier;
+  /**
+   * Exact predecessor checkpoint, required for an explicit continuation.
+   */
+  readonly parent_checkpoint_id?: Identifier;
+  /**
+   * The parent sequence the caller expects; a concurrent successor makes this append a
+   * precondition failure rather than a silent replacement.
+   */
+  readonly expected_parent_sequence?: number;
+  /**
+   * The validated checkpoint payload stored as immutable L0 evidence.
+   */
+  readonly payload: EngineeringCheckpointPayload;
+}
+
+/**
+ * Result of `engineering.expand`: bounded nodes and filtered edges around the anchor, with
+ * explicit truncation and coverage.
+ */
+export interface EngineeringExpandResult {
+  /**
+   * Exact record versions reached, including the anchor.
+   */
+  readonly nodes: readonly EngineeringRecordVersionRef[];
+  /**
+   * Relationship candidates whose endpoints are both visible to this caller.
+   */
+  readonly edges: readonly EngineeringRelationEdge[];
+  /**
+   * Whether expansion stopped at a budget rather than exhausting the neighbourhood.
+   */
+  readonly truncated: boolean;
+  /**
+   * Projection and applicability coverage qualifying this expansion.
+   */
+  readonly coverage: EngineeringCoverage;
+}
+
+/**
+ * A non-persisted deterministic engineering context view built from a pinned BuildContext and
+ * the authorised frontier. Legacy `engineering_context.v1` retains the pinned pattern-token
+ * count. Negotiated `engineering_context.v2` carries exact UTF-8 byte accounting and no token
+ * estimate. `pack_id` equals the canonical artifact checksum computed after removing exactly the
+ * root `pack_id` and the nested reproducibility artifact checksum. A checksum is not a bearer
+ * token: following any citation requires fresh authorisation, and a previously generated pack
+ * may no longer be deliverable after revocation even when its bytes are reproducible.
+ */
+export interface EngineeringContextPack {
+  /**
+   * The engineering pack representation format. This representation is never decoded as a
+   * legacy application-v1 ContextPackBuildResult.
+   */
+  readonly format_version: string;
+  /**
+   * The pack's content identity: SHA-256 of the canonical result after removing exactly root
+   * `pack_id` and nested `reproducibility.artifact_checksum`.
+   */
+  readonly pack_id: ContentChecksum;
+  /**
+   * The normalized build request the pack answers.
+   */
+  readonly normalized_request: JsonObject;
+  /**
+   * The exact snapshots this pack is about.
+   */
+  readonly targets: readonly EngineeringSnapshotRef[];
+  /**
+   * The retrieval profile used, such as `investigate`, `implement`, `review` or `resume`. A
+   * retrieval template, not a permission or work instruction.
+   */
+  readonly profile: string;
+  /**
+   * The pack's sections, each under exactly one knowledge partition.
+   */
+  readonly sections: readonly EngineeringPackSection[];
+  /**
+   * The pack's citation registry.
+   */
+  readonly citations: readonly EngineeringCitation[];
+  /**
+   * Mandatory conflict notices; reserved before optional content is selected.
+   */
+  readonly conflicts: readonly EngineeringConflictNotice[];
+  /**
+   * Mandatory uncertainty notices, reserved before optional content is selected.
+   */
+  readonly uncertainties: readonly string[];
+  /**
+   * What was omitted and why, without exposing inaccessible identities.
+   */
+  readonly omissions: readonly EngineeringOmission[];
+  /**
+   * The complete model-facing rendering and its exact counts.
+   */
+  readonly rendering: EngineeringRendering;
+  /**
+   * Requested, effective and actually consumed budgets.
+   */
+  readonly budget: EngineeringBudgetOutcome;
+  /**
+   * Per-target applicability, evaluated at the pinned BuildContext.
+   */
+  readonly applicability: readonly EngineeringTargetApplicability[];
+  /**
+   * The authorisation facts (epochs, policy digests) this pack was built under. Historical
+   * authorisation is not permission to disclose today.
+   */
+  readonly authorization_context: JsonObject;
+  /**
+   * Evaluation time, source/record versions, projection versions and watermarks,
+   * renderer/tokenizer versions, ranking profile, frontier checksum, policy/ACL epoch and
+   * resolver version, plus the artifact canonicalisation and checksum. Replay requires all of
+   * these inputs; missing inputs mean a new build gets a new identity.
+   */
+  readonly reproducibility: JsonObject;
+  /**
+   * Always true: consuming this pack always requires a fresh authorisation check.
+   */
+  readonly fresh_authorization_required: boolean;
+}
+
+/**
+ * The explicit byte-only v2 view. The established type name remains the strict v1 consumer
+ * surface; this view removes v1-only fields and substitutes v2 views for nested versioned
+ * values.
+ */
+export type EngineeringContextPackV2 = Omit<
+  EngineeringContextPack,
+  "format_version" | "rendering" | "budget"
+> & {
+  /**
+   * The engineering pack representation format. This representation is never decoded as a
+   * legacy application-v1 ContextPackBuildResult.
+   */
+  readonly format_version: "engineering_context.v2";
+  /**
+   * The complete model-facing rendering and its exact counts.
+   */
+  readonly rendering: EngineeringRenderingV2;
+  /**
+   * Requested, effective and actually consumed budgets.
+   */
+  readonly budget: EngineeringBudgetOutcomeV2;
+};
+
+/**
  * A single application request: what to do, under what conditions, with what payload.
  */
 export interface RequestEnvelope {
@@ -6419,6 +11291,21 @@ export interface JobTerminalCancellation {
 }
 
 /**
+ * A structured outcome admission: one closed reviewed summary and the identity the caller claims
+ * for it. Core recomputes the identity from the summary and refuses a mismatch.
+ */
+export interface OutcomeAdmission {
+  /**
+   * The reviewed canonical summary.
+   */
+  readonly summary: OutcomeAdmissionSummary;
+  /**
+   * The claimed canonical identity of the summary.
+   */
+  readonly identity: AdmissionIdentity;
+}
+
+/**
  * Who is asserting a governed record's claim, when, and on what evidence, plus the validity
  * window they propose for it. This is caller-supplied provenance for the claim -- carried into
  * `memory.create` and `record.supersede` inputs, and preserved on the resulting record's
@@ -6560,6 +11447,34 @@ export interface RunStep {
 }
 
 /**
+ * Input for `workflow.start`. Names one released Workflow version to run. Workspace-scoped
+ * through the request envelope's selected workspace, so this payload never carries a second,
+ * independent workspace identifier. There is no definition, plan, binding or logical-key member.
+ * A caller that could state the material it runs against could state material nobody released,
+ * so the plan is sealed and the binding is resolved server-side from the exact release this
+ * names; and a Run's logical identity is the request's own `idempotency_key`, which migration
+ * 0018 requires them to be equal to, so stating it twice could only introduce a disagreement.
+ * Its one optional member, `skill_selections`, names the skills each role selects; Core resolves
+ * them to exact manifest ids in the same admission, and no caller states a binding.
+ */
+export interface WorkflowStartInput {
+  /**
+   * The Workflow to run.
+   */
+  readonly workflow_id: Identifier;
+  /**
+   * The released version of it to run.
+   */
+  readonly workflow_version: ReleaseVersion;
+  /**
+   * The skills each Run role selects, when the Run needs any. Absent, the Run binds no skill.
+   * Each selection is resolved to exact manifest ids and a bounded closure in the admission
+   * transaction, so a selection that cannot be resolved refuses the whole start.
+   */
+  readonly skill_selections?: readonly SkillRoleSelection[];
+}
+
+/**
  * Result of `workflow.start`: the Run as it now stands durably. There is no admitted-versus-
  * replayed member, because an honest replay is answered from the stored bytes of the first call
  * and so could not carry a different one; the Run this names is the caller's Run either way.
@@ -6651,6 +11566,63 @@ export interface WorkflowReviewResult {
    * Progress of a recorded stop on this Run, when there is one to report.
    */
   readonly stop?: RuntimeStopProjection;
+}
+
+/**
+ * Result of `trigger.health`. Expose trigger health through a shared aggregation keyed by
+ * Project/Workflow, including per-trigger subscription state, last observation,
+ * delivery/processing status, failures and uncertainty. Each trigger reports its subscription,
+ * its last observation, the delivery and processing status of its recent observations, the
+ * failures among them, and the uncertainty they carry. Uncertainty is derived on read and never
+ * stored as a guess. `delivery_counts` and `failures` cover only the observations returned,
+ * while `observation_total` counts the trigger's whole history.
+ */
+export interface TriggerHealthResult {
+  /**
+   * The triggers in this page, ordered by trigger identifier. One item for an exact read.
+   */
+  readonly items: readonly TriggerHealth[];
+  /**
+   * The position this read reached. A continuation token means more triggers remain; `{}`
+   * means the read is exhausted.
+   */
+  readonly page: PageMetadata;
+}
+
+/**
+ * Input for `skills.draft.create`. Opens one draft at revision 1 from a manifest, from reviewed
+ * work or fresh. The skill name is fixed for the draft's life. It publishes nothing and installs
+ * nothing: authorship never grants either.
+ */
+export interface SkillDraftCreateInput {
+  /**
+   * The first revision of the draft's manifest.
+   */
+  readonly manifest: SkillManifest;
+  /**
+   * The reviewed work this draft came from, when there is one.
+   */
+  readonly source_work_ref?: Identifier;
+}
+
+/**
+ * Input for `skills.draft.update`. Appends one revision to a draft, and only on top of the
+ * revision the caller last read. A stale `expected_revision` is a conflict, so two authors never
+ * overwrite each other. A submitted draft is closed to revision.
+ */
+export interface SkillDraftUpdateInput {
+  /**
+   * The draft this names.
+   */
+  readonly draft_id: Identifier;
+  /**
+   * The draft revision the caller last read. A different current revision is a conflict.
+   */
+  readonly expected_revision: number;
+  /**
+   * The manifest, as inert data.
+   */
+  readonly manifest: SkillManifest;
 }
 
 /**
@@ -6910,6 +11882,85 @@ export interface ContextPackReproducibility {
 }
 
 /**
+ * Admission result for `decision.evaluate`: the durable evaluation identity and its job
+ * reference. A bounded caller wait may return the terminal record via `decision.record.get`; a
+ * cold start returns pending status without holding the transport.
+ */
+export interface DecisionEvaluateResult {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * Durable evaluation identifier; opaque, and not a bearer authorisation token.
+   */
+  readonly evaluation_id: Identifier;
+  /**
+   * The durable job carrying the evaluation.
+   */
+  readonly job: JobHandle;
+}
+
+/**
+ * Immediate admission result for the model management action: the durable job carrying it. The
+ * refreshed profile state is the job's terminal result.
+ */
+export interface DecisionModelInstallResult {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * The durable job carrying the install/activation.
+   */
+  readonly job: JobHandle;
+}
+
+/**
+ * Immediate admission result for the model management action: the durable job carrying it. The
+ * refreshed profile state is the job's terminal result.
+ */
+export interface DecisionModelActivateResult {
+  /**
+   * DecisionSchemaVersion — The payload schema version for every decision payload in this
+   * boundary. Independent of the application envelope and workspace format versions.
+   */
+  readonly schema_version: DecisionSchemaVersion;
+  /**
+   * The durable job carrying the install/activation.
+   */
+  readonly job: JobHandle;
+}
+
+/**
+ * Result of `engineering.context.build`. Nothing is persisted: the pack is regenerated or fails
+ * with an explicit replay-inputs error, never silently reissued from absent projections.
+ */
+export interface EngineeringContextBuildResult {
+  /**
+   * The built pack. Non-persisted; regeneration requires its recorded replay inputs.
+   */
+  readonly pack: EngineeringContextPack;
+}
+
+/**
+ * The explicit byte-only v2 view. The established type name remains the strict v1 consumer
+ * surface; this view removes v1-only fields and substitutes v2 views for nested versioned
+ * values.
+ */
+export type EngineeringContextBuildResultV2 = Omit<
+  EngineeringContextBuildResult,
+  "pack"
+> & {
+  /**
+   * The built pack. Non-persisted; regeneration requires its recorded replay inputs.
+   */
+  readonly pack: EngineeringContextPackV2;
+};
+
+/**
  * Operation-independent response metadata. Present on both success and error responses so a
  * caller can always negotiate versions and read its own authority, even when the operation
  * failed.
@@ -7112,6 +12163,126 @@ export interface JobRetryResult {
    * What this call actually did: scheduled a retry, scheduled a resume, or refused.
    */
   readonly recovery_disposition: JobRecoveryDisposition;
+}
+
+/**
+ * Input for `outcome.request.create`. The caller asks for an outcome against one stored task-
+ * context export, carrying a bounded natural-language objective verbatim. The export is named by
+ * identifier only. The workspace and the requesting principal are the authenticated caller's,
+ * and the export must be in this workspace, recorded under the current fencing generation and
+ * produced under the policy this build serves.
+ */
+export interface OutcomeRequestCreateInput {
+  /**
+   * The objective, kept verbatim. It must not be empty and must fit the Core byte bound.
+   */
+  readonly objective: string;
+  /**
+   * The export this request is made against.
+   */
+  readonly export_id: Identifier;
+  /**
+   * Optional structured admission. Absent for a legacy request. When present, it is one closed
+   * reviewed summary and its claimed identity, and Core admits the request only if every
+   * declared fact holds at the time of the request.
+   */
+  readonly admission?: OutcomeAdmission;
+}
+
+/**
+ * Result of `outcome.request.create`: one received outcome request as recorded. A replay under
+ * the same idempotency key returns this result without a second write.
+ */
+export interface OutcomeRequestCreateResult {
+  /**
+   * The request's identity: the prefix `outreq-` and the SHA-256 of its canonical body.
+   */
+  readonly outcome_request_id: Identifier;
+  /**
+   * The export the request names.
+   */
+  readonly export_id: Identifier;
+  /**
+   * The source handoff identity the named export records.
+   */
+  readonly source_handoff_identity: Identifier;
+  /**
+   * The principal that made the request, as the authenticated caller.
+   */
+  readonly requested_by: Identifier;
+  /**
+   * The objective, verbatim.
+   */
+  readonly objective: string;
+  /**
+   * Where the request stands. `received` is the only value this build records.
+   */
+  readonly status: string;
+  /**
+   * The workspace fencing generation the request was recorded under.
+   */
+  readonly fencing_generation: number;
+  /**
+   * When the request settled.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * The admission this request was accepted under. Absent for a legacy request.
+   */
+  readonly admission?: OutcomeAdmission;
+  /**
+   * The active Project context generation the admission was accepted under. Absent for a
+   * legacy request.
+   */
+  readonly context_generation?: ProjectContextToken;
+}
+
+/**
+ * Result of `outcome.request.read`: one received outcome request as recorded, re-derived from
+ * its stored fields before it is served.
+ */
+export interface OutcomeRequestReadResult {
+  /**
+   * The request's identity: the prefix `outreq-` and the SHA-256 of its canonical body.
+   */
+  readonly outcome_request_id: Identifier;
+  /**
+   * The export the request names.
+   */
+  readonly export_id: Identifier;
+  /**
+   * The source handoff identity the named export records.
+   */
+  readonly source_handoff_identity: Identifier;
+  /**
+   * The principal that made the request, as the authenticated caller.
+   */
+  readonly requested_by: Identifier;
+  /**
+   * The objective, verbatim.
+   */
+  readonly objective: string;
+  /**
+   * Where the request stands. `received` is the only value this build records.
+   */
+  readonly status: string;
+  /**
+   * The workspace fencing generation the request was recorded under.
+   */
+  readonly fencing_generation: number;
+  /**
+   * When the request settled.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * The admission this request was accepted under. Absent for a legacy request.
+   */
+  readonly admission?: OutcomeAdmission;
+  /**
+   * The active Project context generation the admission was accepted under. Absent for a
+   * legacy request.
+   */
+  readonly context_generation?: ProjectContextToken;
 }
 
 /**
@@ -7970,12 +13141,15 @@ export const FROZEN_ERROR_CODES = [
   "workspace_lease_unavailable",
   "workspace_migration_required",
   "incompatible_version",
+  "unsupported_minor_version",
   "upgrade_required",
   "projection_unavailable",
   "stale_projection",
   "rate_limited",
   "size_limit_exceeded",
+  "context_budget_insufficient",
   "token_limit_exceeded",
+  "tokenizer_unavailable",
   "deadline_exceeded",
   "cancelled",
   "dependency_unavailable",
@@ -8025,12 +13199,15 @@ export const DEFAULT_RETRY_CLASSIFICATION: Readonly<Record<FrozenErrorCode, Froz
   workspace_lease_unavailable: "retryable_after_delay",
   workspace_migration_required: "non_retryable",
   incompatible_version: "non_retryable",
+  unsupported_minor_version: "non_retryable",
   upgrade_required: "non_retryable",
   projection_unavailable: "retryable_after_delay",
   stale_projection: "retryable_after_delay",
   rate_limited: "retryable_after_delay",
   size_limit_exceeded: "non_retryable",
+  context_budget_insufficient: "non_retryable",
   token_limit_exceeded: "non_retryable",
+  tokenizer_unavailable: "non_retryable",
   deadline_exceeded: "retryable",
   cancelled: "non_retryable",
   dependency_unavailable: "retryable_after_delay",
@@ -8927,6 +14104,7 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "authorization_denied",
       "cancelled",
       "capability_not_granted",
+      "conflict",
       "deadline_exceeded",
       "dependency_unavailable",
       "idempotency_conflict",
@@ -9034,6 +14212,1784 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "invalid_request",
       "rate_limited",
       "upgrade_required",
+    ],
+  },
+  {
+    name: "decision.status",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionStatusInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionStatusResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.evaluate",
+    scope: { required_scopes: ["decision:invoke"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionEvaluateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionEvaluateResult",
+    required_capability: { id: "decision.invoke", minimum_version: "1.0", required: true },
+    job: {
+      completion_mode: "always_returns_job",
+      job_kind: "decision.evaluate",
+      terminal_result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecord",
+    },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.record.get",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordGetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordGetResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.record.list",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordListInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionRecordListResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: true, max_page_size: 1000 },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.definition.list",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionListInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionListResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.definition.get",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionGetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionGetResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.definition.publish",
+    scope: {
+      required_scopes: ["decision:configure"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionPublishInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionPublishResult",
+    required_capability: { id: "decision.configure", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.definition.disable",
+    scope: {
+      required_scopes: ["decision:configure"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionDisableInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionDefinitionDisableResult",
+    required_capability: { id: "decision.configure", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.outcome.submit",
+    scope: {
+      required_scopes: ["decision:feedback"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionOutcomeSubmitInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionOutcomeSubmitResult",
+    required_capability: { id: "decision.feedback", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.model.list",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelListInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelListResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.model.install",
+    scope: {
+      required_scopes: ["decision:configure"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelInstallInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelInstallResult",
+    required_capability: { id: "decision.configure", minimum_version: "1.0", required: true },
+    job: {
+      completion_mode: "always_returns_job",
+      job_kind: "decision.model_install",
+      terminal_result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelInstallResult",
+    },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.model.activate",
+    scope: {
+      required_scopes: ["decision:configure"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelActivateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelActivateResult",
+    required_capability: { id: "decision.configure", minimum_version: "1.0", required: true },
+    job: {
+      completion_mode: "always_returns_job",
+      job_kind: "decision.model_activate",
+      terminal_result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelActivateResult",
+    },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.model.remove",
+    scope: {
+      required_scopes: ["decision:configure"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelRemoveInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionModelRemoveResult",
+    required_capability: { id: "decision.configure", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.settings.get",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsGetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsGetResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.settings.update",
+    scope: {
+      required_scopes: ["decision:configure"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsUpdateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSettingsUpdateResult",
+    required_capability: { id: "decision.configure", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: true, required: true },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "continuity.session.register",
+    scope: {
+      required_scopes: ["engineering:write"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionRegisterInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionRegisterResult",
+    required_capability: { id: "engineering.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "continuity.checkpoint.append",
+    scope: {
+      required_scopes: ["engineering:write"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityCheckpointAppendInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityCheckpointAppendResult",
+    required_capability: { id: "engineering.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: true, required: true },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "continuity.session.close",
+    scope: {
+      required_scopes: ["engineering:write"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionCloseInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuitySessionCloseResult",
+    required_capability: { id: "engineering.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: true, required: true },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "continuity.handoff.read",
+    scope: { required_scopes: ["engineering:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffReadInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffReadResult",
+    required_capability: { id: "engineering.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.search",
+    scope: { required_scopes: ["engineering:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSearchInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSearchResult",
+    required_capability: { id: "engineering.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: true, max_page_size: 1000 },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "projection_unavailable",
+      "rate_limited",
+      "size_limit_exceeded",
+      "stale_projection",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.expand",
+    scope: { required_scopes: ["engineering:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringExpandInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringExpandResult",
+    required_capability: { id: "engineering.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "projection_unavailable",
+      "rate_limited",
+      "size_limit_exceeded",
+      "stale_projection",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.context.build",
+    scope: { required_scopes: ["engineering:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringContextBuildInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringContextBuildResult",
+    required_capability: { id: "engineering.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "context_budget_insufficient",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "projection_unavailable",
+      "rate_limited",
+      "size_limit_exceeded",
+      "stale_projection",
+      "token_limit_exceeded",
+      "tokenizer_unavailable",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "context.priority.set",
+    scope: {
+      required_scopes: ["engineering:write"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContextPrioritySetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContextPrioritySetResult",
+    required_capability: { id: "engineering.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.review.record",
+    scope: {
+      required_scopes: ["engineering:curate"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringReviewRecordInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringReviewRecordResult",
+    required_capability: { id: "engineering.curate", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: true, required: true },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.source.capture.commit",
+    scope: {
+      required_scopes: ["engineering:source"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureCommitInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceCaptureCommitResult",
+    required_capability: { id: "engineering.source", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.source.record",
+    scope: {
+      required_scopes: ["engineering:source"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceRecordInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringSourceRecordResult",
+    required_capability: { id: "engineering.source", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "engineering.repository.register",
+    scope: {
+      required_scopes: ["engineering:repository"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRepositoryRegisterInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/EngineeringRepositoryRegisterResult",
+    required_capability: { id: "engineering.repository", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "analysis.start",
+    scope: { required_scopes: ["insights:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisStartInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisStartResult",
+    required_capability: { id: "insights.analysis", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "unsupported_minor_version",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "decision.result_use.evaluate",
+    scope: { required_scopes: ["decision:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/ResultUseEvaluateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/ResultUseEvaluateResult",
+    required_capability: { id: "decision.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "unsupported_minor_version",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "trigger.declare",
+    scope: {
+      required_scopes: ["trigger:configure"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeclareInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerDeclareResult",
+    required_capability: { id: "trigger.configure", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "trigger.lifecycle",
+    scope: {
+      required_scopes: ["trigger:configure"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerLifecycleInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerLifecycleResult",
+    required_capability: { id: "trigger.configure", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "trigger.ingest",
+    scope: { required_scopes: ["trigger:invoke"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerIngestInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerIngestResult",
+    required_capability: { id: "trigger.invoke", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "trigger.health",
+    scope: { required_scopes: ["trigger:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealthInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/TriggerHealthResult",
+    required_capability: { id: "trigger.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: true, max_page_size: 50 },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.draft.create",
+    scope: { required_scopes: ["skill:author"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftCreateResult",
+    required_capability: { id: "skill.author", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.draft.update",
+    scope: { required_scopes: ["skill:author"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillDraftUpdateResult",
+    required_capability: { id: "skill.author", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.proposal.submit",
+    scope: { required_scopes: ["skill:author"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillProposalSubmitResult",
+    required_capability: { id: "skill.author", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.version.publish",
+    scope: { required_scopes: ["skill:publish"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionPublishInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionPublishResult",
+    required_capability: { id: "skill.publish", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.version.deprecate",
+    scope: { required_scopes: ["skill:publish"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionDeprecateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillVersionDeprecateResult",
+    required_capability: { id: "skill.publish", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.install",
+    scope: { required_scopes: ["skill:install"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillInstallResult",
+    required_capability: { id: "skill.install", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.remove",
+    scope: { required_scopes: ["skill:install"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillRemoveInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillRemoveResult",
+    required_capability: { id: "skill.install", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "skills.resolve",
+    scope: { required_scopes: ["skill:resolve"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolveInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/SkillResolveResult",
+    required_capability: { id: "skill.resolve", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "knowledge.share.propose",
+    scope: { required_scopes: ["knowledge:share"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareProposeInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareProposeResult",
+    required_capability: { id: "knowledge.share", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "knowledge.share.decide",
+    scope: { required_scopes: ["knowledge:share"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecideInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecideResult",
+    required_capability: { id: "knowledge.share", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "knowledge.share.read",
+    scope: {
+      required_scopes: ["knowledge:share_read"],
+      side_effect: "none",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareReadInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareReadResult",
+    required_capability: { id: "knowledge.share_read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "knowledge.share.lineage",
+    scope: { required_scopes: ["knowledge:share"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareLineageInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareLineageResult",
+    required_capability: { id: "knowledge.share", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "task_context.export",
+    scope: {
+      required_scopes: ["task_context:export"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportResult",
+    required_capability: { id: "task_context.export", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "task_context.export.read",
+    scope: {
+      required_scopes: ["task_context:export_read"],
+      side_effect: "none",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportReadInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/TaskContextExportReadResult",
+    required_capability: { id: "task_context.export_read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "outcome.request.create",
+    scope: { required_scopes: ["outcome:request"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestCreateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestCreateResult",
+    required_capability: { id: "outcome.request", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "outcome.request.read",
+    scope: {
+      required_scopes: ["outcome:request_read"],
+      side_effect: "none",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestReadInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeRequestReadResult",
+    required_capability: { id: "outcome.request_read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "project.context.read",
+    scope: {
+      required_scopes: ["project_context:read"],
+      side_effect: "none",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextReadInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextReadResult",
+    required_capability: { id: "project_context.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "project.context.switch",
+    scope: {
+      required_scopes: ["project_context:switch"],
+      side_effect: "update",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextSwitchInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextSwitchResult",
+    required_capability: { id: "project_context.switch", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
     ],
   },
 ] as const;

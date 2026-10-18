@@ -25,6 +25,7 @@ from __future__ import annotations
 __all__ = [
     "ClientError",
     "CompatibilityError",
+    "ContinuityRegistrationError",
     "CredentialDeniedError",
     "CredentialError",
     "CredentialInvalidError",
@@ -88,6 +89,16 @@ class CompatibilityError(ClientError):
     version in common. Also raised for a protocol or descriptor major this
     build does not implement, because a major difference is breaking by
     definition and there is no safe way to proceed on a guess.
+    """
+
+
+class ContinuityRegistrationError(ClientError):
+    """A continuity registration did not produce a trusted session binding.
+
+    Registration responses cross an adapter boundary and may contain peer-controlled
+    diagnostics or payloads. The registration workflow therefore raises only a fresh
+    instance with its own fixed sentence; it never retains the response or a caught
+    exception on this value.
     """
 
 

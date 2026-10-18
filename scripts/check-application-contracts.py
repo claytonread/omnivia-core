@@ -24,7 +24,7 @@ required beyond the ``jsonschema``/``referencing`` dev dependency):
   semantic expectation (version/capability negotiation math, retry
   fail-safety, tolerant decode of an otherwise-invalid document, and so on);
 - the canonical ``x-omnivia-operation-catalogue`` annotation holds exactly the
-  frozen 20 application operations, in the frozen order, each strictly valid
+  frozen 77 application operations, in the frozen order, each strictly valid
   against ``OperationMetadata``, binding resolvable in-contract payload
   references, and carrying exactly the frozen scope, capability, completion,
   pagination, idempotency, precondition, audit and allowed-error posture -- with
@@ -94,6 +94,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "records",
     "jobs",
     "operations",
+    "analysis",
     "workspace",
     "memory",
     "evidence",
@@ -103,6 +104,8 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "compatibility-matrix",
     "runtime",
     "chat",
+    "decision",
+    "engineering",
     "settings",
 )
 REGISTRY_SCHEMA = "application-v1"
@@ -1171,6 +1174,13 @@ _INSTALL_READ: tuple[str, ...] = tuple(sorted((*_BASE_INSTALL, "bootstrap_in_pro
 _INSTALL_CREATE: tuple[str, ...] = tuple(
     sorted((*_INSTALL_READ, "conflict", "idempotency_conflict"))
 )
+#: Governed analysis (SPEC-CORE-DATA-001, T-0715 milestone 1): the workspace
+#: base set plus the new payload-version code. No size/token codes: the
+#: milestone admits no unbounded read, and output bounds ride the profile that
+#: introduces them.
+_ANALYSIS_START: tuple[str, ...] = tuple(
+    sorted((*_BASE_WORKSPACE, "unsupported_minor_version"))
+)
 _POINT_READ: tuple[str, ...] = tuple(sorted((*_BASE_WORKSPACE, "not_found")))
 _PROJECTION_READ: tuple[str, ...] = tuple(
     sorted((*_BASE_WORKSPACE, "projection_unavailable", "stale_projection"))
@@ -1178,6 +1188,15 @@ _PROJECTION_READ: tuple[str, ...] = tuple(
 _GRAPH_READ: tuple[str, ...] = tuple(sorted((*_PROJECTION_READ, "not_found", "size_limit_exceeded")))
 _CONTEXT_READ: tuple[str, ...] = tuple(
     sorted((*_PROJECTION_READ, "size_limit_exceeded", "token_limit_exceeded"))
+)
+_ENGINEERING_CONTEXT_READ: tuple[str, ...] = tuple(
+    sorted(
+        (
+            *_CONTEXT_READ,
+            "context_budget_insufficient",
+            "tokenizer_unavailable",
+        )
+    )
 )
 _CREATE_MUT: tuple[str, ...] = tuple(
     sorted(
@@ -1215,10 +1234,12 @@ _JOB_EVENTS: tuple[str, ...] = tuple(
 )
 #: Deliberately includes ``not_found``, which ``CREATE_MUT`` does not: starting a
 #: Workflow Run names an exact released Workflow version, and a release authority that
-#: serves no such version is a ``not_found`` about the thing the caller named. Every
-#: other ``CREATE_MUT`` operation creates a record from the request alone and has no
-#: prior thing to fail to find.
-_WORKFLOW_START: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
+#: serves no such version is a ``not_found`` about the thing the caller named. A
+#: skill selection the installed state cannot satisfy, or a binding the registry
+#: refuses, is a ``conflict`` that rolls the whole start back. Every other
+#: ``CREATE_MUT`` operation creates a record from the request alone and has no prior
+#: thing to fail to find.
+_WORKFLOW_START: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict", "not_found")))
 #: Deliberately includes ``conflict``, which ``JOB_CONTROL`` excludes. The reason
 #: ``job.cancel`` and ``job.retry`` exclude it holds for this operation's ``cancel``
 #: too -- a finished Run settles as ``cancellation_ignored_already_terminal``, an
@@ -1230,7 +1251,96 @@ _WORKFLOW_CONTROL: tuple[str, ...] = tuple(
     sorted((*_CREATE_MUT, "conflict", "not_found"))
 )
 
+#: Decision Runtime (ADR-042). Reads reuse POINT_READ; evaluation adds the
+#: provider/queue/admission failures an assessment can hit (dependency for the
+#: optional worker, deadline and rate for bounded budgets, not_found for an
+#: unknown definition); configuration mutations reuse the governance profile.
+_DECISION_EVALUATE: tuple[str, ...] = tuple(
+    sorted(
+        {
+            *_CREATE_MUT,
+            "dependency_unavailable",
+            "deadline_exceeded",
+            "not_found",
+            "rate_limited",
+        }
+    )
+)
+_DECISION_CONFIGURE: tuple[str, ...] = _GOV_MUT
+
+#: Engineering memory (SPEC-CORE-ENGMEM-001). Continuity mutations append immutable
+#: L0 artefacts to a bound session: a session/checkpoint reference that does not
+#: resolve is `not_found`, and the bounded payload caps make `size_limit_exceeded`
+#: reachable. Priority changes name an exact visible record version, so they can
+#: fail to find it; reviews reuse the governance profile (they carry a mutation
+#: precondition and resolve exact versions).
+_ENG_CONTINUITY_MUT: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "not_found", "size_limit_exceeded"))
+)
+#: `continuity.checkpoint.append` states its expected predecessor as a real
+#: mutation precondition (SPEC-CORE-ENGMEM-001 §9.2): two concurrent successors
+#: of one checkpoint must resolve as a precondition failure, not a silent
+#: replacement, and a session that moved under the caller is a `conflict`.
+_ENG_CONTINUITY_APPEND: tuple[str, ...] = tuple(
+    sorted({*_GOV_MUT, "not_found", "size_limit_exceeded"})
+)
+_ENG_PRIORITY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
+#: `engineering.source.record` appends one immutable event to a source stream the
+#: caller owns: reusing a sequence or snapshot identity for different content, or
+#: naming a stream bound to another repository, is a `conflict`, and the bounded
+#: manifest and pending window make `size_limit_exceeded` reachable.
+_ENG_SOURCE_MUT: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "conflict", "size_limit_exceeded"))
+)
+#: The captured-source commit resolves an already sealed header (`not_found`),
+#: checks an optional rich-manifest precondition, and preserves the same immutable
+#: stream/pending-window conflicts as the inline source mutation.
+_ENG_CAPTURE_MUT: tuple[str, ...] = tuple(
+    sorted(
+        (
+            *_CREATE_MUT,
+            "conflict",
+            "mutation_precondition_failed",
+            "not_found",
+            "size_limit_exceeded",
+        )
+    )
+)
+#: `engineering.repository.register` binds an exact local checkout to a repository
+#: identity: re-registering the same identity with different metadata is a
+#: `conflict`, but there is no bounded manifest here, so `size_limit_exceeded` does
+#: not apply the way it does to `engineering.source.record`.
+_ENG_REPOSITORY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
+#: Trigger configuration (C21). A declaration names a released Workflow version, which
+#: the Workflow Runtime must hold (`not_found`); a lifecycle move names a trigger bound to
+#: the Project and Workflow given (`not_found`). A declaration whose plan is not the
+#: released plan, or a subscription move the trigger store refuses, is a `conflict`.
+_TRIGGER_CONFIGURE: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "conflict", "not_found"))
+)
+#: Ingestion names the declared trigger it delivers to, so it can fail to find it. A
+#: stimulus the trigger does not admit is recorded as dead-lettered, not refused.
+_TRIGGER_INGEST: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
+#: Managed Skills (C17). A draft, proposal, version, deprecation or installed skill that the
+#: registry does not hold is `not_found`; a stale draft revision, a closed or already-published
+#: draft, a version already published or a state the registry refuses is a `conflict`.
+_SKILL_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict", "not_found")))
+#: Cross-Project knowledge sharing (DEV-REQ-081). A proposal names a governed record the server
+#: may not hold or a recipient Project it does not bind (`not_found`); a version that is not the
+#: record's sealed, canonical, unsuperseded one, a share the store holds differently, or a
+#: decision out of order is a `conflict`. A caller that is not a bound owner of the Project the
+#: share belongs to is refused as `authorization_denied`, which every profile already carries.
+_SHARE_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict", "not_found")))
+#: The recipient read adds `conflict` to a point read: a share whose source version has since
+#: changed is a state the caller re-reads, not a record it fails to find.
+_SHARE_READ: tuple[str, ...] = tuple(sorted((*_POINT_READ, "conflict")))
+#: Task-context writes (DEV-REQ-159, DEV-REQ-008). A handoff or objective that is malformed, or a budget
+#: outside its bounds, is `invalid_request`. An export that does not fit its budget, or an objective over
+#: its byte bound, is `size_limit_exceeded`. A stale or ineligible export is a `conflict`, and an export the
+#: workspace does not hold is `not_found`. `context_budget_insufficient` stays with engineering context.
+_TASK_CONTEXT_MUT: tuple[str, ...] = tuple(sorted((*_SHARE_MUT, "size_limit_exceeded")))
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
+    "ANALYSIS_START": _ANALYSIS_START,
     "BASE_INSTALL": _BASE_INSTALL,
     "BASE_WORKSPACE": _BASE_WORKSPACE,
     "INSTALL_READ": _INSTALL_READ,
@@ -1240,6 +1350,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "PROJECTION_READ": _PROJECTION_READ,
     "GRAPH_READ": _GRAPH_READ,
     "CONTEXT_READ": _CONTEXT_READ,
+    "ENGINEERING_CONTEXT_READ": _ENGINEERING_CONTEXT_READ,
     "CREATE_MUT": _CREATE_MUT,
     "EVIDENCE_CAPTURE": _EVIDENCE_CAPTURE,
     "GOV_MUT": _GOV_MUT,
@@ -1249,6 +1360,32 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "JOB_EVENTS": _JOB_EVENTS,
     "WORKFLOW_START": _WORKFLOW_START,
     "WORKFLOW_CONTROL": _WORKFLOW_CONTROL,
+    "DECISION_STATUS": _POINT_READ,
+    "DECISION_EVALUATE": _DECISION_EVALUATE,
+    "DECISION_RECORD_GET": _POINT_READ,
+    "DECISION_RECORD_LIST": _POINT_READ,
+    "DECISION_DEFINITION_LIST": _POINT_READ,
+    "DECISION_DEFINITION_GET": _POINT_READ,
+    "DECISION_CONFIGURE": _DECISION_CONFIGURE,
+    "DECISION_OUTCOME_SUBMIT": _DECISION_EVALUATE,
+    "DECISION_MODEL_LIST": _POINT_READ,
+    "DECISION_MODEL_INSTALL": _DECISION_CONFIGURE,
+    "DECISION_MODEL_ACTIVATE": _DECISION_CONFIGURE,
+    "DECISION_MODEL_REMOVE": _DECISION_CONFIGURE,
+    "DECISION_SETTINGS_GET": _POINT_READ,
+    "DECISION_SETTINGS_UPDATE": _DECISION_CONFIGURE,
+    "ENG_CONTINUITY_MUT": _ENG_CONTINUITY_MUT,
+    "ENG_CONTINUITY_APPEND": _ENG_CONTINUITY_APPEND,
+    "ENG_PRIORITY_MUT": _ENG_PRIORITY_MUT,
+    "ENG_SOURCE_MUT": _ENG_SOURCE_MUT,
+    "ENG_CAPTURE_MUT": _ENG_CAPTURE_MUT,
+    "ENG_REPOSITORY_MUT": _ENG_REPOSITORY_MUT,
+    "TRIGGER_CONFIGURE": _TRIGGER_CONFIGURE,
+    "TRIGGER_INGEST": _TRIGGER_INGEST,
+    "SKILL_MUT": _SKILL_MUT,
+    "SHARE_MUT": _SHARE_MUT,
+    "SHARE_READ": _SHARE_READ,
+    "TASK_CONTEXT_MUT": _TASK_CONTEXT_MUT,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1278,9 +1415,12 @@ class FrozenOperation(NamedTuple):
     paginated: bool
     job_kind: str | None = None
     terminal_result: str | None = None
+    #: The largest page served. Paginated operations default to the frozen page size; only
+    #: `trigger.health` serves less (`MAX_TRIGGER_PAGE`, 50 triggers).
+    max_page_size: int = FROZEN_PAGE_SIZE
 
 
-#: The exact 30 application operations, in the frozen code-point order. Runtime
+#: The exact 81 application operations, in the frozen insertion order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1406,17 +1546,245 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "installation", ("workspace:read",), "none", "workspace.read",
         "workspace", "WorkspaceList", "INSTALL_READ", True,
     ),
+    # --- Decision Runtime (ADR-042 / SPEC-CORE-DEC-001) -----------------------
+    "decision.status": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionStatus", "DECISION_STATUS", False,
+    ),
+    "decision.evaluate": FrozenOperation(
+        "workspace", ("decision:invoke",), "update", "decision.invoke",
+        "decision", "DecisionEvaluate", "DECISION_EVALUATE", False,
+        job_kind="decision.evaluate", terminal_result="DecisionRecord",
+    ),
+    "decision.record.get": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionRecordGet", "DECISION_RECORD_GET", False,
+    ),
+    "decision.record.list": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionRecordList", "DECISION_RECORD_LIST", True,
+    ),
+    "decision.definition.list": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionDefinitionList", "DECISION_DEFINITION_LIST", False,
+    ),
+    "decision.definition.get": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionDefinitionGet", "DECISION_DEFINITION_GET", False,
+    ),
+    "decision.definition.publish": FrozenOperation(
+        "workspace", ("decision:configure",), "create", "decision.configure",
+        "decision", "DecisionDefinitionPublish", "DECISION_CONFIGURE", False,
+    ),
+    "decision.definition.disable": FrozenOperation(
+        "workspace", ("decision:configure",), "update", "decision.configure",
+        "decision", "DecisionDefinitionDisable", "DECISION_CONFIGURE", False,
+    ),
+    "decision.outcome.submit": FrozenOperation(
+        "workspace", ("decision:feedback",), "create", "decision.feedback",
+        "decision", "DecisionOutcomeSubmit", "DECISION_EVALUATE", False,
+    ),
+    "decision.model.list": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionModelList", "DECISION_MODEL_LIST", False,
+    ),
+    "decision.model.install": FrozenOperation(
+        "workspace", ("decision:configure",), "create", "decision.configure",
+        "decision", "DecisionModelInstall", "DECISION_CONFIGURE", False,
+        job_kind="decision.model_install", terminal_result="DecisionModelInstallResult",
+    ),
+    "decision.model.activate": FrozenOperation(
+        "workspace", ("decision:configure",), "update", "decision.configure",
+        "decision", "DecisionModelActivate", "DECISION_CONFIGURE", False,
+        job_kind="decision.model_activate", terminal_result="DecisionModelActivateResult",
+    ),
+    "decision.model.remove": FrozenOperation(
+        "workspace", ("decision:configure",), "update", "decision.configure",
+        "decision", "DecisionModelRemove", "DECISION_CONFIGURE", False,
+    ),
+    "decision.settings.get": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "DecisionSettingsGet", "DECISION_SETTINGS_GET", False,
+    ),
+    "decision.settings.update": FrozenOperation(
+        "workspace", ("decision:configure",), "update", "decision.configure",
+        "decision", "DecisionSettingsUpdate", "DECISION_CONFIGURE", False,
+    ),
+    # Engineering memory (SPEC-CORE-ENGMEM-001): continuity + engineering retrieval.
+    # Reads: handoff reads authoritative L0 checkpoints (POINT_READ); retrieval goes
+    # through serving projections with bounded results (GRAPH_READ); the pack build
+    # adds counting-contract budgets (ENGINEERING_CONTEXT_READ). Mutations: continuity
+    # appends (ENG_CONTINUITY_MUT),
+    # priority is a principal-scoped preference (ENG_PRIORITY_MUT), and review records
+    # a governed attestation with a precondition (GOV_MUT).
+    "continuity.session.register": FrozenOperation(
+        "workspace", ("engineering:write",), "create", "engineering.write",
+        "engineering", "ContinuitySessionRegister", "ENG_CONTINUITY_MUT", False,
+    ),
+    "continuity.checkpoint.append": FrozenOperation(
+        "workspace", ("engineering:write",), "create", "engineering.write",
+        "engineering", "ContinuityCheckpointAppend", "ENG_CONTINUITY_APPEND", False,
+    ),
+    "continuity.session.close": FrozenOperation(
+        "workspace", ("engineering:write",), "update", "engineering.write",
+        "engineering", "ContinuitySessionClose", "GOV_MUT", False,
+    ),
+    "continuity.handoff.read": FrozenOperation(
+        "workspace", ("engineering:read",), "none", "engineering.read",
+        "engineering", "ContinuityHandoffRead", "POINT_READ", False,
+    ),
+    "engineering.search": FrozenOperation(
+        "workspace", ("engineering:read",), "none", "engineering.read",
+        "engineering", "EngineeringSearch", "GRAPH_READ", True,
+    ),
+    "engineering.expand": FrozenOperation(
+        "workspace", ("engineering:read",), "none", "engineering.read",
+        "engineering", "EngineeringExpand", "GRAPH_READ", False,
+    ),
+    "engineering.context.build": FrozenOperation(
+        "workspace", ("engineering:read",), "none", "engineering.read",
+        "engineering", "EngineeringContextBuild", "ENGINEERING_CONTEXT_READ", False,
+    ),
+    "context.priority.set": FrozenOperation(
+        "workspace", ("engineering:write",), "update", "engineering.write",
+        "engineering", "ContextPrioritySet", "ENG_PRIORITY_MUT", False,
+    ),
+    "engineering.review.record": FrozenOperation(
+        "workspace", ("engineering:curate",), "create", "engineering.curate",
+        "engineering", "EngineeringReviewRecord", "GOV_MUT", False,
+    ),
+    # A trusted source producer's own grant: distinct from `engineering:write`, so
+    # contributed observations never carry the authority to attest source state.
+    "engineering.source.capture.commit": FrozenOperation(
+        "workspace", ("engineering:source",), "create", "engineering.source",
+        "engineering", "EngineeringSourceCaptureCommit", "ENG_CAPTURE_MUT", False,
+    ),
+    "engineering.source.record": FrozenOperation(
+        "workspace", ("engineering:source",), "create", "engineering.source",
+        "engineering", "EngineeringSourceRecord", "ENG_SOURCE_MUT", False,
+    ),
+    # An explicitly authorized local operator's own grant: distinct from
+    # `engineering:write` and `engineering:source`, so neither a contributed
+    # observation nor a trusted source stream carries the authority to bind a
+    # local checkout to a repository identity.
+    "engineering.repository.register": FrozenOperation(
+        "workspace", ("engineering:repository",), "create", "engineering.repository",
+        "engineering", "EngineeringRepositoryRegister", "ENG_REPOSITORY_MUT", False,
+    ),
+    "analysis.start": FrozenOperation(
+        "workspace", ("insights:read",), "none", "insights.analysis",
+        "analysis", "AnalysisStart", "ANALYSIS_START", False,
+    ),
+    "decision.result_use.evaluate": FrozenOperation(
+        "workspace", ("decision:read",), "none", "decision.read",
+        "decision", "ResultUseEvaluate", "ANALYSIS_START", False,
+    ),
+    # Trigger telemetry (C21). Configuration and ingestion are separate grants, so a
+    # principal allowed to declare or move a trigger is not thereby allowed to deliver a
+    # stimulus to one, and the read carries neither.
+    "trigger.declare": FrozenOperation(
+        "workspace", ("trigger:configure",), "create", "trigger.configure",
+        "runtime", "TriggerDeclare", "TRIGGER_CONFIGURE", False,
+    ),
+    "trigger.lifecycle": FrozenOperation(
+        "workspace", ("trigger:configure",), "update", "trigger.configure",
+        "runtime", "TriggerLifecycle", "TRIGGER_CONFIGURE", False,
+    ),
+    "trigger.ingest": FrozenOperation(
+        "workspace", ("trigger:invoke",), "create", "trigger.invoke",
+        "runtime", "TriggerIngest", "TRIGGER_INGEST", False,
+    ),
+    "trigger.health": FrozenOperation(
+        "workspace", ("trigger:read",), "none", "trigger.read",
+        "runtime", "TriggerHealth", "POINT_READ", True, max_page_size=50,
+    ),
+    # Managed Skills (C17). Authoring, publication, installation and resolution are four
+    # grants: authorship never implies publication or installation, and resolution is a read.
+    "skills.draft.create": FrozenOperation(
+        "workspace", ("skill:author",), "create", "skill.author",
+        "runtime", "SkillDraftCreate", "CREATE_MUT", False,
+    ),
+    "skills.draft.update": FrozenOperation(
+        "workspace", ("skill:author",), "update", "skill.author",
+        "runtime", "SkillDraftUpdate", "SKILL_MUT", False,
+    ),
+    "skills.proposal.submit": FrozenOperation(
+        "workspace", ("skill:author",), "create", "skill.author",
+        "runtime", "SkillProposalSubmit", "SKILL_MUT", False,
+    ),
+    "skills.version.publish": FrozenOperation(
+        "workspace", ("skill:publish",), "create", "skill.publish",
+        "runtime", "SkillVersionPublish", "SKILL_MUT", False,
+    ),
+    "skills.version.deprecate": FrozenOperation(
+        "workspace", ("skill:publish",), "update", "skill.publish",
+        "runtime", "SkillVersionDeprecate", "SKILL_MUT", False,
+    ),
+    "skills.install": FrozenOperation(
+        "workspace", ("skill:install",), "update", "skill.install",
+        "runtime", "SkillInstall", "SKILL_MUT", False,
+    ),
+    "skills.remove": FrozenOperation(
+        "workspace", ("skill:install",), "update", "skill.install",
+        "runtime", "SkillRemove", "SKILL_MUT", False,
+    ),
+    "skills.resolve": FrozenOperation(
+        "workspace", ("skill:resolve",), "none", "skill.resolve",
+        "runtime", "SkillResolve", "POINT_READ", False,
+    ),
+    # Cross-Project knowledge sharing (DEV-REQ-081). Owning a Project and reading what another
+    # Project shares with it are two grants, and neither is the workspace-wide `memory:*` scope:
+    # the Project authority is a server binding, and these scopes only say the session may ask.
+    "knowledge.share.propose": FrozenOperation(
+        "workspace", ("knowledge:share",), "create", "knowledge.share",
+        "knowledge", "KnowledgeSharePropose", "SHARE_MUT", False,
+    ),
+    "knowledge.share.decide": FrozenOperation(
+        "workspace", ("knowledge:share",), "update", "knowledge.share",
+        "knowledge", "KnowledgeShareDecide", "SHARE_MUT", False,
+    ),
+    "knowledge.share.read": FrozenOperation(
+        "workspace", ("knowledge:share_read",), "none", "knowledge.share_read",
+        "knowledge", "KnowledgeShareRead", "SHARE_READ", False,
+    ),
+    "knowledge.share.lineage": FrozenOperation(
+        "workspace", ("knowledge:share",), "none", "knowledge.share",
+        "knowledge", "KnowledgeShareLineage", "POINT_READ", False,
+    ),
+    "task_context.export": FrozenOperation(
+        "workspace", ("task_context:export",), "create", "task_context.export",
+        "knowledge", "TaskContextExport", "TASK_CONTEXT_MUT", False,
+    ),
+    "task_context.export.read": FrozenOperation(
+        "workspace", ("task_context:export_read",), "none", "task_context.export_read",
+        "knowledge", "TaskContextExportRead", "POINT_READ", False,
+    ),
+    "outcome.request.create": FrozenOperation(
+        "workspace", ("outcome:request",), "create", "outcome.request",
+        "knowledge", "OutcomeRequestCreate", "TASK_CONTEXT_MUT", False,
+    ),
+    "outcome.request.read": FrozenOperation(
+        "workspace", ("outcome:request_read",), "none", "outcome.request_read",
+        "knowledge", "OutcomeRequestRead", "POINT_READ", False,
+    ),
+    "project.context.read": FrozenOperation(
+        "workspace", ("project_context:read",), "none", "project_context.read",
+        "knowledge", "ProjectContextRead", "POINT_READ", False,
+    ),
+    "project.context.switch": FrozenOperation(
+        "workspace", ("project_context:switch",), "update", "project_context.switch",
+        "knowledge", "ProjectContextSwitch", "TASK_CONTEXT_MUT", False,
+    ),
 }
 
 #: The four governance transitions that support and require a mutation
-#: precondition. Every other operation sets both precondition booleans false.
+#: precondition, plus `decision.settings.update`, whose compare-and-swap
+#: revision is a mutation precondition: a mismatch is a state the caller
+#: re-reads and re-decides against.
 FROZEN_PRECONDITION_OPERATIONS: frozenset[str] = frozenset(
-    {
-        "candidate.approve",
-        "candidate.reject",
-        "knowledge.propose",
-        "record.supersede",
-    }
+    {"candidate.approve", "candidate.reject", "knowledge.propose", "record.supersede",
+     "decision.settings.update", "continuity.session.close", "continuity.checkpoint.append",
+     "engineering.review.record"}
 )
 
 
@@ -1441,7 +1809,7 @@ def _expected_entry(name: str, frozen: FrozenOperation) -> dict[str, Any]:
         }
     pagination: dict[str, Any] = {"paginated": frozen.paginated}
     if frozen.paginated:
-        pagination["max_page_size"] = FROZEN_PAGE_SIZE
+        pagination["max_page_size"] = frozen.max_page_size
     return {
         "name": name,
         "scope": {
@@ -1777,10 +2145,12 @@ def check_operation_catalogue_postures() -> list[str]:
             # float that Draft 2020-12 accepts as an integer and that compares
             # equal to 1000, so an equality test alone would let it through here.
             page_size = pagination.get("max_page_size")
-            if type(page_size) is not int or page_size != FROZEN_PAGE_SIZE:
+            frozen = FROZEN_OPERATIONS.get(name) if isinstance(name, str) else None
+            expected_page_size = FROZEN_PAGE_SIZE if frozen is None else frozen.max_page_size
+            if type(page_size) is not int or page_size != expected_page_size:
                 findings.append(
                     f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].pagination: max_page_size must be "
-                    f"the integer {FROZEN_PAGE_SIZE}, found {page_size!r}"
+                    f"the integer {expected_page_size}, found {page_size!r}"
                 )
         if idempotency.get("required") and not idempotency.get("supports_idempotency_key"):
             findings.append(

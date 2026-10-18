@@ -1,0 +1,68 @@
+{
+  "currency": "AUD",
+  "timezone": "Australia/Sydney",
+  "invoices": [
+    {
+      "invoice_id": "INV-A",
+      "amount_cents": 110000,
+      "due_date": "2026-09-01",
+      "status": "open"
+    },
+    {
+      "invoice_id": "INV-B",
+      "amount_cents": 55000,
+      "due_date": "2026-09-05",
+      "status": "open"
+    },
+    {
+      "invoice_id": "INV-C",
+      "amount_cents": 22000,
+      "due_date": "2026-09-12",
+      "status": "open"
+    },
+    {
+      "invoice_id": "INV-D",
+      "amount_cents": 40000,
+      "due_date": "2026-09-01",
+      "status": "void"
+    },
+    {
+      "invoice_id": "INV-E",
+      "amount_cents": 10000,
+      "due_date": "2026-09-01",
+      "status": "disputed"
+    }
+  ],
+  "events": [
+    {
+      "invoice_id": "INV-A",
+      "kind": "payment",
+      "amount_cents": 30000,
+      "event_date": "2026-09-03"
+    },
+    {
+      "invoice_id": "INV-A",
+      "kind": "payment",
+      "amount_cents": 20000,
+      "event_date": "2026-09-07"
+    },
+    {
+      "invoice_id": "INV-A",
+      "kind": "payment",
+      "amount_cents": 60000,
+      "event_date": "2026-09-15"
+    },
+    {
+      "invoice_id": "INV-B",
+      "kind": "credit",
+      "amount_cents": 5000,
+      "event_date": "2026-09-02"
+    },
+    {
+      "invoice_id": "INV-C",
+      "kind": "payment",
+      "amount_cents": 22000,
+      "event_date": "2026-09-13"
+    }
+  ]
+}

@@ -296,6 +296,13 @@ def mark_authorizer_installed(connection: sqlite3.Connection) -> None:
 #: Name of the connection-local function the persisted guard triggers call.
 SERVICE_WRITER_FUNCTION = "omnivia_service_writer"
 
+#: Name of the connection-local function that returns the lowercase SHA-256 hex of its text argument.
+DIGEST_FUNCTION = "omnivia_sha256_hex"
+
+
+def _sha256_hex(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
 
 def _service_writer_token() -> int:
     """The value the guard predicate expects. Presence is the whole signal."""
@@ -359,6 +366,9 @@ def open_database(
     connection.create_function(
         SERVICE_WRITER_FUNCTION, 0, _service_writer_token, deterministic=True
     )
+    # Recomputes a completion decision's digest inside its guard trigger (migration 0066). SQLite
+    # has no SHA-256, and a digest the database cannot check is one it would store unverified.
+    connection.create_function(DIGEST_FUNCTION, 1, _sha256_hex, deterministic=True)
 
     if mode is OpenMode.SERVICE_OWNED:
         # T-0629F requires the authorizer on every runtime-created connection, and

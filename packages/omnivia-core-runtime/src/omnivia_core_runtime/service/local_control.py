@@ -79,7 +79,7 @@ LOCAL_CONTROL_RESULT_FIELD: Final = "local_control_result"
 #: This wrapper's frozen version. A later shape gets a later string and is
 #: admitted by a build that knows it; there is no range, no minimum and no
 #: negotiation, because both ends of this wire ship in one installation.
-LOCAL_CONTROL_VERSION: Final = "omnivia.local-control.v1"
+LOCAL_CONTROL_VERSION: Final = "omnivia.local-control.v2"
 
 #: A bearer is ``secrets.token_urlsafe(32)`` -- 43 characters. The bound is far
 #: above that and far below anything worth buffering, and exists so a peer cannot

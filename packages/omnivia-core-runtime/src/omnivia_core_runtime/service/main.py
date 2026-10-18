@@ -2,8 +2,8 @@
 
 This process owns and advertises one writable workspace and participates in the
 single fenced catalogue authority for its installation. The production
-application surface is the exact frozen 30-operation catalogue, composed from
-eight separate authority families. Health, readiness and discovery remain
+application surface is the exact frozen 81-operation catalogue, composed from
+fifteen separate authority families. Health, readiness and discovery remain
 distinct from product operations, per ADR-037, and stay on the probe dispatcher.
 
 **One console script, four kinds of process.** `--managed-start` (R004-08) does
@@ -12,7 +12,9 @@ when one is needed, waits for that service to answer a live readiness call, prin
 a versioned result document and exits. `--init` (R004-10) does not serve either: it
 creates the workspace a service can then own, prints its own versioned result, and
 starts nothing. `--capture-source` briefly becomes the fenced workspace owner, commits
-one already-local file as immutable evidence, prints a redacted result, and exits.
+one already-local file as immutable evidence, prints a redacted result, and exits;
+`--import-legacy` does the same for one legacy Engineering Memory note document,
+committing each note as a proposed candidate (`legacy_import`).
 Every other mode here belongs to a process that *is* the service.
 The CLI and, later, the MCP adapter reach both shared paths by launching this
 script -- never by importing the runtime -- so there is one implementation of
@@ -28,29 +30,39 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, Final, Protocol
 
 from omnivia_core.contracts.v1 import RequestEnvelope, ResponseEnvelope
+from omnivia_core.contracts.v1.generated import OPERATION_CATALOGUE
 from omnivia_core_runtime.service.application import (
     LOCAL_TRANSPORT_ADAPTER,
     ApplicationDispatcher,
     ProductionApplicationSurface,
     build_application_registry,
     build_chat_application_dispatcher,
+    build_decision_application_dispatcher,
+    build_engineering_application_dispatcher,
     build_governance_application_dispatcher,
     build_job_application_dispatcher,
+    build_knowledge_sharing_application_dispatcher,
     build_memory_application_dispatcher,
     build_settings_application_dispatcher,
+    build_skill_application_dispatcher,
+    build_skill_resolution_application_dispatcher,
+    build_task_context_application_dispatcher,
+    build_trigger_application_dispatcher,
     build_workflow_application_dispatcher,
     compose_production_application_surface,
     local_owner_session,
 )
 from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
+    ContinuityAssociationProvenance,
     Grant,
     ServiceBinding,
+    TrustedContinuityAssociation,
 )
 from omnivia_core_runtime.service.chat_generation_executor import (
     ChatGenerationExecutor,
@@ -59,6 +71,17 @@ from omnivia_core_runtime.service.chat_generation_executor import (
 )
 from omnivia_core_runtime.service.chat_provider_route import provider_route_from_env
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.engineering_conflict_execution import (
+    EngineeringConflictExecutor,
+)
+from omnivia_core_runtime.service.engineering_relation_assessment import (
+    EngineeringRelationAssessmentExecutor,
+    RelationAssessmentPolicy,
+    RelationAssessmentProvider,
+)
+from omnivia_core_runtime.service.engineering_source_capture_execution import (
+    EngineeringSourceCaptureExecutor,
+)
 from omnivia_core_runtime.service.handlers.chat import ChatGenerationExecution
 from omnivia_core_runtime.service.handlers.workflow import WorkflowReleaseResolver
 from omnivia_core_runtime.service.http_transport import (
@@ -75,6 +98,16 @@ from omnivia_core_runtime.service.installation_bootstrap import (
 from omnivia_core_runtime.service.installation_host import (
     InstallationAuthorityCoordinator,
 )
+from omnivia_core_runtime.service.knowledge_projects import (
+    KnowledgeProjectsRefused,
+    load_project_documents,
+)
+from omnivia_core_runtime.service.knowledge_sharing import NO_PROJECTS, ProjectAuthority
+from omnivia_core_runtime.service.legacy_import import (
+    LegacyImportRefused,
+    LegacyImportResult,
+    import_legacy_notes,
+)
 from omnivia_core_runtime.service.managed_start import (
     ManagedStartStatus,
     managed_start,
@@ -87,9 +120,17 @@ from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
     server_capability_snapshot,
 )
+from omnivia_core_runtime.service.outcome_admission import (
+    NO_OUTCOME_ADMISSIONS,
+    OutcomeAdmissionAuthority,
+)
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
-from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
+from omnivia_core_runtime.service.runner import (
+    ServiceRunner,
+    ServiceSettings,
+    StartupReport,
+)
 from omnivia_core_runtime.service.runtime_waits import WaitResolutionPolicy
 from omnivia_core_runtime.service.source_capture import (
     SourceCaptureRefused,
@@ -254,11 +295,13 @@ def _build_production_application_surface(
     execute_chat_generation: ChatGenerationExecution | None = None,
     resolve_workflow_release: WorkflowReleaseResolver | None = None,
     workflow_wait_policy: WaitResolutionPolicy | None = None,
+    project_authority: ProjectAuthority = NO_PROJECTS,
+    admission_authority: OutcomeAdmissionAuthority = NO_OUTCOME_ADMISSIONS,
 ) -> ProductionApplicationSurface:
     """Compose the exact production route for one live service.
 
     The global installation catalogue supplies the installation id used by all
-    eight authority families. The workspace service instance keeps its own
+    fifteen authority families. The workspace service instance keeps its own
     service identity and fencing generation; those facts do not become
     installation authority merely because both authorities live in one process.
 
@@ -268,6 +311,12 @@ def _build_production_application_surface(
 
     `resolve_workflow_release` is an override rather than a dependency: left out, the
     Workflow release authority is composed here (founder Ruling 2). See below.
+
+    `project_authority` is the server's Project binding for cross-Project knowledge sharing
+    (DEV-REQ-081): who owns a Project's domain scope and who is a member of it. It is composition
+    state, not a request field. `serve` takes it from the installation's own Project document
+    (`service/knowledge_projects.py`), and a service with no document binds no Project, so every
+    `knowledge.share.*` operation refuses.
     """
     if started.workspace_id is None:
         raise ValueError("a production application surface needs a workspace")
@@ -279,7 +328,12 @@ def _build_production_application_surface(
             principal_id=LOCAL_PRINCIPAL,
             installation_id=installation_id,
             workspace_id=started.workspace_id,
-            operations=registry.operations,
+            operations=frozenset(
+                op for op in registry.operations
+                if next(
+                    e for e in OPERATION_CATALOGUE if e.name == op
+                ).scope.side_effect == "none"
+            ),
         ),
         binding=ServiceBinding(
             installation_id=installation_id, workspace_id=started.workspace_id
@@ -339,6 +393,13 @@ def _build_production_application_surface(
     # `dependency_unavailable`, which is the honest answer for a build that cannot say
     # whether a resolution was approved. Fabricating one would resolve a wait nobody
     # approved.
+    release_authority = (
+        resolve_workflow_release
+        if resolve_workflow_release is not None
+        else WorkspaceWorkflowReleaseAuthority(
+            service=started, workspace_id=started.workspace_id
+        )
+    )
     workflow = build_workflow_application_dispatcher(
         service=started,
         principal_id=LOCAL_PRINCIPAL,
@@ -346,21 +407,85 @@ def _build_production_application_surface(
         workspace_id=started.workspace_id,
         fallback=chat,
         clock=started.clock,
-        resolve_release=(
-            resolve_workflow_release
-            if resolve_workflow_release is not None
-            else WorkspaceWorkflowReleaseAuthority(
-                service=started, workspace_id=started.workspace_id
-            )
-        ),
+        resolve_release=release_authority,
         wait_policy=workflow_wait_policy,
+    )
+    # The trigger family sits beside the workflow family it belongs to, and confirms a
+    # declared Workflow version against the same release authority `workflow.start` uses.
+    trigger = build_trigger_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=workflow,
+        clock=started.clock,
+        resolve_release=release_authority,
+    )
+    decision = build_decision_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=trigger,
+        clock=started.clock,
+    )
+    # The Managed Skills families sit beside the decision family. The mutations hold the three
+    # skill roles; the restricted resolution read holds none and sits in front of them.
+    skill = build_skill_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=decision,
+        clock=started.clock,
+    )
+    skill_resolution = build_skill_resolution_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=skill,
+        clock=started.clock,
+    )
+    engineering = build_engineering_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=skill_resolution,
+        local_continuity_association=TrustedContinuityAssociation(
+            association_id="core-local-application",
+            principal_id=LOCAL_PRINCIPAL,
+            workspace_id=started.workspace_id,
+            provenance=ContinuityAssociationProvenance.CORE_LOCAL_CONNECTION,
+        ),
+    )
+    knowledge_sharing = build_knowledge_sharing_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=engineering,
+        projects=project_authority,
+        clock=started.clock,
+    )
+    # The task-context family sits beside knowledge sharing: an export and an outcome request are the
+    # routine-flow writes, and their reads are observations under their own purpose.
+    task_context = build_task_context_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=knowledge_sharing,
+        admission=admission_authority,
+        clock=started.clock,
     )
     settings = build_settings_application_dispatcher(
         service=started,
         principal_id=LOCAL_PRINCIPAL,
         installation_id=installation_id,
         workspace_id=started.workspace_id,
-        fallback=workflow,
+        fallback=task_context,
         clock=started.clock,
     )
     return compose_production_application_surface(
@@ -371,6 +496,13 @@ def _build_production_application_surface(
         governance=governance,
         chat=chat,
         workflow=workflow,
+        trigger=trigger,
+        decision=decision,
+        skill=skill,
+        skill_resolution=skill_resolution,
+        engineering=engineering,
+        knowledge_sharing=knowledge_sharing,
+        task_context=task_context,
         settings=settings,
         probe=probe,
     )
@@ -470,6 +602,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="captured source media type (default: text/plain)",
     )
     parser.add_argument(
+        "--import-legacy",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help=(
+            "do not serve; while holding normal workspace ownership, import one "
+            "omnivia.engineering-legacy-import.v1 document of legacy Engineering "
+            "Memory notes as proposed candidate records, never accepted knowledge, "
+            "and print a redacted versioned receipt. Idempotent and resumable. The "
+            "document path is never persisted or returned"
+        ),
+    )
+    parser.add_argument(
         "--managed-start-log",
         default=None,
         type=Path,
@@ -528,8 +673,13 @@ def _http_bind_to_serve(endpoint: str | None) -> HttpBind | None:
     return parse_http_endpoint(endpoint)
 
 
-def _serve_until_stopped(runner: ServiceRunner, stopping: threading.Event) -> int:
-    """Hold the workspace until asked to stop, keeping the lease current meanwhile.
+def _serve_until_stopped(
+    runner: ServiceRunner,
+    stopping: threading.Event,
+    *,
+    source_work: Callable[[], object] | None = None,
+) -> int:
+    """Hold the workspace, renew its lease and run bounded source work.
 
     A single indefinite `wait()` never returns to the bytecode loop, so on Windows
     the pending signal set by the console control handler thread is never serviced:
@@ -539,11 +689,12 @@ def _serve_until_stopped(runner: ServiceRunner, stopping: threading.Event) -> in
     interrupted (EINTR) and the signal runs immediately -- but polling is harmless
     there too, so one path serves both platforms.
 
-    **That poll is the lease-renewal seam as well as the signal seam, and it is why
-    there is no scheduler here.** Renewal has to run on the thread that opened the
-    exclusive connection, this loop already runs there, and `renew_lease_if_due()`
-    decides for itself whether the interval has elapsed -- so nothing is written on
-    the other 39 ticks out of 40.
+    The poll is also the service-owned source scheduler and invalidation recovery
+    seam. ``source_work`` is a bounded, internally rate-limited pass, so it advances
+    sealed or registered checkouts while both transports are idle and under HTTP-only
+    traffic. Git and filesystem work run without the shared SQLite gate; the pass
+    acquires that gate only for short reads, fenced settlement and lease renewal.
+    ``drain_pending_invalidation()`` is also bounded and cheap when no backlog exists.
 
     A renewal this instance can no longer show succeeded ends the run, through the
     same unwind and the same reverse resource order a signal takes. Nothing keeps
@@ -551,6 +702,7 @@ def _serve_until_stopped(runner: ServiceRunner, stopping: threading.Event) -> in
     non-zero exit says the process did not stop because it was asked to.
     """
     renewal_failed = False
+    stop_report: StartupReport | None = None
     try:
         while not stopping.wait(timeout=0.25):
             try:
@@ -558,10 +710,32 @@ def _serve_until_stopped(runner: ServiceRunner, stopping: threading.Event) -> in
             except Exception:  # noqa: BLE001 - the public message is structural only
                 renewal_failed = True
                 break
+            if source_work is not None:
+                try:
+                    source_work()
+                except Exception:  # noqa: BLE001 - bounded work cannot end serving
+                    # A capture failure is recovered from its durable seal on a later
+                    # pass. Recheck the lease immediately: renewal failures raised
+                    # from inside capture must still make this loop fail closed.
+                    try:
+                        runner.renew_lease_if_due()
+                    except Exception:  # noqa: BLE001 - same structural output below
+                        renewal_failed = True
+                        break
+            drain_invalidation = getattr(runner, "drain_pending_invalidation", None)
+            if drain_invalidation is not None:
+                drain_invalidation()
     finally:
         # One unwind, in reverse acquisition order: the socket server was pushed onto
         # the same stack as the guard, lease, connection and lock.
-        runner.stop()
+        stop_report = runner.stop()
+    if stop_report is not None and stop_report.reason == "shutdown incomplete":
+        # A resource -- a listener, most likely, still admitting an in-flight
+        # request -- did not release within its own bound. Fixed message: the
+        # blocked resource's own diagnostics are not this stream's to repeat, and
+        # a later `runner.stop()` retry is what finishes the unwind.
+        sys.stderr.write("stopping: shutdown did not complete; resources remain held\n")
+        return 1
     if renewal_failed:
         # Structural, and built from nothing the failure carried: a lease error
         # quotes workspace, instance and generation identifiers, and this stream is
@@ -675,12 +849,33 @@ def _capture_source(args: argparse.Namespace) -> int:
     return 0
 
 
+def _import_legacy(args: argparse.Namespace) -> int:
+    """Run the service-owned legacy note import with the same redacted output."""
+    try:
+        result = import_legacy_notes(
+            workspace_root=args.workspace,
+            installation_root=args.installation_state,
+            document_path=args.import_legacy,
+            core_version=args.core_version,
+        )
+    except LegacyImportRefused as refused:
+        result = LegacyImportResult(status="refused", reason=str(refused))
+    sys.stdout.write(json.dumps(result.to_dict(), sort_keys=True) + "\n")
+    sys.stdout.flush()
+    if not result.accepted:
+        sys.stderr.write(result.reason + "\n")
+        return 1
+    return 0
+
+
 def main(
     argv: list[str] | None = None,
     *,
     resolve_credential: CredentialResolver | None = None,
     resolve_workflow_release: WorkflowReleaseResolver | None = None,
     workflow_wait_policy: WaitResolutionPolicy | None = None,
+    relation_assessment_policy: RelationAssessmentPolicy | None = None,
+    relation_assessment_provider: RelationAssessmentProvider | None = None,
 ) -> int:
     """Own one workspace until told to stop.
 
@@ -743,10 +938,20 @@ def main(
         # itself, and starts nothing.
         return _init(args)
 
+    if args.capture_source is not None and args.import_legacy is not None:
+        sys.stderr.write(
+            "choose one maintenance mode: --capture-source or --import-legacy\n"
+        )
+        return 2
+
     if args.capture_source is not None:
         # A bounded maintenance process: it owns and fences the workspace exactly
         # like the server, publishes no endpoint and exits after one append.
         return _capture_source(args)
+
+    if args.import_legacy is not None:
+        # The same kind of process, committing one fenced transaction per note.
+        return _import_legacy(args)
 
     if args.managed_start:
         # This process serves nothing and owns nothing. It arbitrates, may start an
@@ -786,6 +991,23 @@ def main(
         )
         return 2
 
+    # The Project bindings each served workspace is composed with. Read here, before anything can be
+    # advertised, and not for --check-only, which serves nothing. A refusal is a refusal to start.
+    # Both authorities come from one read of the same document, so sharing and admission cannot disagree about who
+    # is in a Project. Nothing else reads it.
+    project_authorities: Mapping[str, ProjectAuthority] = {}
+    admission_authorities: Mapping[str, OutcomeAdmissionAuthority] = {}
+    if not args.check_only:
+        try:
+            project_authorities, admission_authorities = load_project_documents(
+                settings.installation_root
+            )
+        except KnowledgeProjectsRefused as refused:
+            sys.stderr.write(f"refusing to serve: {refused}\n")
+            return 2
+
+    source_work: Callable[[], object] | None = None
+
     def serve(started: ServiceRunner) -> None:
         """Start the endpoint, and hand its shutdown to the resource stack.
 
@@ -795,6 +1017,7 @@ def main(
         is about to die. The `evidence.search` projection is brought up on that same
         rule and for the same reason -- see the build below.
         """
+        nonlocal source_work
         assert endpoint is not None and started.workspace_id is not None
         assert started.identity is not None
         assert started.connection is not None and started.generation is not None
@@ -863,6 +1086,12 @@ def main(
             installation=installation,
             resolve_workflow_release=resolve_workflow_release,
             workflow_wait_policy=workflow_wait_policy,
+            project_authority=project_authorities.get(
+                started.workspace_id, NO_PROJECTS
+            ),
+            admission_authority=admission_authorities.get(
+                started.workspace_id, NO_OUTCOME_ADMISSIONS
+            ),
         )
         # One router, handed to both transports. That is the whole of how HTTP shares
         # the probe router and the application dispatcher rather than growing its own:
@@ -875,12 +1104,10 @@ def main(
         # through the authoritative live process rather than opening its database.
         # HTTP is deliberately not given either: this slice adds no HTTP behaviour.
         #
-        # The seam service-owned work runs on, and the only one in this process that
-        # holds the connection, the identity and the current generation together
-        # without also holding a caller's transaction open. `import.start` settles a
-        # job and answers; this executes it, between requests, on the thread that
-        # already owns the writable connection. See `ImportJobExecutor` for why the
-        # work is bounded and why it never raises into the accept loop.
+        # Imports and conflict discovery remain bounded request-adjacent work on the
+        # local-socket thread that owns the writable connection. Source capture is
+        # assigned to the managed service tick below so it advances while idle or
+        # serving HTTP without inheriting a request-held SQLite gate.
         executor = ImportJobExecutor(
             connection=started.connection,
             identity=started.identity,
@@ -889,17 +1116,55 @@ def main(
             clock=started.clock,
             blobs_root=started.layout.blobs_path,
         )
+        conflict_executor = EngineeringConflictExecutor(
+            connection=started.connection,
+            identity=started.identity,
+            workspace_id=started.workspace_id,
+            fencing_generation=started.generation,
+            clock=started.clock,
+        )
+        source_executor = EngineeringSourceCaptureExecutor(
+            runner=started,
+            application=application,
+            principal_id=LOCAL_PRINCIPAL,
+        )
+        source_work = source_executor.run_pending
+        assessment_policy = relation_assessment_policy or RelationAssessmentPolicy()
+        assessment_executor = (
+            EngineeringRelationAssessmentExecutor(
+                connection=started.connection,
+                identity=started.identity,
+                workspace_id=started.workspace_id,
+                fencing_generation=started.generation,
+                clock=started.clock,
+                policy=assessment_policy,
+                provider=relation_assessment_provider,
+            )
+            if assessment_policy.enabled
+            else None
+        )
+
+        def service_work() -> None:
+            executor.run_pending()
+            conflict_executor.run_pending()
+            if assessment_executor is not None:
+                # Discovery has returned and committed before an assessment request is
+                # staged. The executor likewise closes staging before provider egress.
+                assessment_executor.run_pending()
+
         server = LocalSocketServer(
             router=router,
             authenticated=AuthenticatedApplicationDispatch(
                 seam=installation_authority, dispatcher=application
             ),
             mcp_administration=installation_authority,
-            service_work=executor.run_pending,
+            service_work=service_work,
             endpoint=endpoint,
+            gate=started.sqlite_gate,
         )
         server.start()
         started.lifecycle.resources.push("socket_server", server.stop)
+        http: HttpListener | None = None
         if http_bind is not None:
             http = HttpListener(
                 router=router,
@@ -909,9 +1174,27 @@ def main(
                 resolver=resolve_credential,
                 authenticated_dispatch=application.dispatch_for_session,
                 bind=http_bind,
+                gate=started.sqlite_gate,
             )
             http.start()
             started.lifecycle.resources.push("http_server", http.stop)
+
+        def _request_transport_stop() -> None:
+            """Signal both public listeners to stop before either's own unwind.
+
+            Pushed last so it releases first: `request_stop()` is idempotent and
+            nonblocking on both transports, so a stop reaches the local socket
+            server and HTTP listener at once, ahead of either transport's own
+            bounded `stop()` -- and ahead of `http_server`'s own unwind even when
+            HTTP later defers with `ResourceReleaseBlocked`.
+            """
+            try:
+                server.request_stop()
+            finally:
+                if http is not None:
+                    http.request_stop()
+
+        started.lifecycle.resources.push("transport_admission", _request_transport_stop)
 
     report = runner.start(serve=None if args.check_only else serve)
     sys.stdout.write(json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n")
@@ -948,7 +1231,7 @@ def main(
     # Reached only by a process that serves. `--check-only` stopped and returned
     # above, so it never enters the loop and never renews a lease it took only to
     # report on.
-    return _serve_until_stopped(runner, stopping)
+    return _serve_until_stopped(runner, stopping, source_work=source_work)
 
 
 if __name__ == "__main__":

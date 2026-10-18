@@ -101,14 +101,35 @@ def _bootstrap(home: Path) -> None:
     )
 
 
+def _pinned_child_env() -> dict[str, str]:
+    """This checkout's console scripts first on `PATH` for a CLI child.
+
+    The production launcher resolves the managed service through `PATH` so a
+    deliberately shadowed build is honoured. `_locate` already prefers the
+    interpreter's own environment for the direct managed-start calls here; this
+    pins the same choice for the tests that go through the CLI child, which
+    would otherwise resolve a foreign same-named service from `PATH`.
+    """
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join([str(Path(sys.executable).parent), env.get("PATH", "")])
+    return env
+
+
 def _locate() -> str:
-    """The service console script, or skip: these tests are about the real one."""
-    found = shutil.which(SERVICE_EXECUTABLE)
-    if found is not None:
-        return found
+    """The service console script, or skip: these tests are about the real one.
+
+    The interpreter's own environment is preferred over `PATH`: the tests run
+    under an editable install of this tree, and a same-named console script
+    from an unrelated environment earlier on `PATH` would serve a schema this
+    build's fingerprints refuse -- an environment accident reading as a code
+    failure.
+    """
     beside = Path(sys.executable).parent / SERVICE_EXECUTABLE
     if beside.is_file() and os.access(beside, os.X_OK):
         return str(beside)
+    found = shutil.which(SERVICE_EXECUTABLE)
+    if found is not None:
+        return found
     pytest.skip(f"{SERVICE_EXECUTABLE} is not installed in this environment")
 
 
@@ -590,7 +611,7 @@ def test_the_result_document_is_versioned_and_shaped(home: Path) -> None:
 def test_a_missing_workspace_is_a_deterministic_refusal_that_creates_nothing(
     home: Path,
 ) -> None:
-    """R004-08 and §10: managed start never creates a workspace. `omnivia init` does."""
+    """R004-08 and §10: managed start creates no workspace; service `--init` does."""
     empty = home / "not-a-workspace"
     empty.mkdir()
 
@@ -1088,6 +1109,7 @@ def test_the_cli_call_reaches_the_service_through_the_shared_managed_start_path(
         text=True,
         timeout=240,
         check=False,
+        env=_pinned_child_env(),
     )
     log_path = home / "run" / "service.log"
     diagnostic = (
@@ -1124,6 +1146,7 @@ def test_the_cli_call_reaches_the_service_through_the_shared_managed_start_path(
         text=True,
         timeout=240,
         check=False,
+        env=_pinned_child_env(),
     )
     assert again.returncode == 0, again.stderr
     assert json.loads(again.stdout)["status"] == "pass"

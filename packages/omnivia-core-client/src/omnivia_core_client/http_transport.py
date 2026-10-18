@@ -714,3 +714,20 @@ class HttpTransport:
         if not decoded:
             _raise_not_a_probe_result()
         return result
+
+
+def fetch_https_bytes(url: str, *, timeout_seconds: float, max_bytes: int) -> bytes:
+    """One bounded HTTPS GET of a static document, for the update channel.
+
+    The one public-HTTPS reader in this distribution: TLS-verified by the
+    default context, no redirects followed (a static channel URL has nothing
+    to redirect), and size-capped before any caller parses what came back.
+    """
+    import urllib.request
+
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        data: bytes = response.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise TransportError("the fetched document exceeds its size limit")
+    return data

@@ -1,6 +1,6 @@
 """Service-owned workspace bootstrap (R004-10, owner resolution 004 Packet B).
 
-Owner resolution 004 §11 lists five things `omnivia init` has to be shown to do.
+Owner resolution 004 §11 lists five things `omnivia-core-service --init` has to do.
 Three of them are claims about *this* module -- the workspace becomes bootstrapped,
 repeating is safe, and nothing existing is overwritten -- and they are exercised
 here as function calls, because the thing under test is a filesystem and database
@@ -949,7 +949,7 @@ def test_idempotence_is_read_from_the_database_not_from_the_manifest(
     writes the manifest and creates no database at all, so the half-state this
     reconstructs is reachable by any interruption between the two. If this command
     answered "already initialised" to it, `omnivia start` would then refuse the
-    workspace `omnivia init` had just called done.
+    workspace that `omnivia-core-service --init` had just called done.
     """
     first = _init(tmp_path)
     layout = WorkspaceLayout(root=tmp_path / "workspace")
@@ -975,8 +975,8 @@ def test_a_database_whose_manifest_is_gone_is_refused_before_anything_is_written
     did the exclusive open find it disagreeing with the database. The refusal itself
     was right; what was wrong is that the manifest it had just written survived it,
     so every later `init` refused against a manifest no user had ever asked for.
-    Recoverable by hand before the first `omnivia init`, and un-initialisable by any
-    shipped command after it.
+    Recoverable by hand before the first `omnivia-core-service --init`, and
+    un-initialisable by any shipped command after it.
 
     The identity is now compared before anything is written, which is why this is a
     refusal rather than a rollback: there is nothing to roll back. The run is
@@ -1713,7 +1713,7 @@ def test_a_workspace_root_that_does_not_exist_yet_still_qualifies(
 def test_a_file_manager_visiting_the_home_does_not_make_it_somebody_elses(
     tmp_path: Path, litter: str
 ) -> None:
-    """Opening `~/.omnivia` in Finder used to make `omnivia init` refuse for good.
+    """Opening `~/.omnivia` in Finder used to make workspace initialization refuse.
 
     A `.DS_Store` in `workspace/` was counted as content a person had put there and
     refused as `UNRELATED_DIRECTORY`; the same file in `installation-state/` was
@@ -1763,8 +1763,9 @@ def test_a_directory_the_filesystem_made_does_not_make_the_home_somebody_elses(
     *filesystem* writes, and nobody asks for any of them: `mke2fs` puts `lost+found`
     at the root of every ext2/3/4 volume, Windows puts `$RECYCLE.BIN` on every one
     of its own, and macOS makes the rest the first time a volume is written to or
-    backed up. A user whose home is the root of its own disk had `omnivia init`
-    refuse permanently over a directory they never created and cannot remove.
+    backed up. A user whose home is the root of its own disk had workspace
+    initialization refuse permanently over a directory they never created and
+    cannot remove.
 
     `.Trash-1001` is in the list beside `.Trash-1000` on purpose: freedesktop.org's
     trash is per-uid, so a closed list of names would unbrick the machine's first

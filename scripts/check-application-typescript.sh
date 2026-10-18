@@ -30,6 +30,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TARGET="${REPO_ROOT}/generated/typescript/application/v1/index.ts"
+CONSUMERS=(
+  "${REPO_ROOT}/tests/contracts/typescript/engineering-v1-compat-consumer.ts"
+  "${REPO_ROOT}/tests/contracts/typescript/engineering-v2-view-consumer.ts"
+)
 LOCAL_TSC="${REPO_ROOT}/node_modules/.bin/tsc"
 
 if [[ -n "${TSC:-}" ]]; then
@@ -51,8 +55,16 @@ if [[ ! -f "${TARGET}" ]]; then
   exit 1
 fi
 
+for consumer in "${CONSUMERS[@]}"; do
+  if [[ ! -f "${consumer}" ]]; then
+    echo "check-application-typescript.sh: compile fixture is missing: ${consumer}" >&2
+    exit 1
+  fi
+done
+
 echo "TypeScript compiler: ${TSC_BIN}"
 echo "Target: ${TARGET}"
+printf 'Compatibility fixture: %s\n' "${CONSUMERS[@]}"
 echo
 
 "${TSC_BIN}" \
@@ -62,6 +74,7 @@ echo
   --target ES2022 \
   --module ESNext \
   --moduleResolution Bundler \
+  "${CONSUMERS[@]}" \
   "${TARGET}"
 
 echo "TypeScript strict compile check passed."

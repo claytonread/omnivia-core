@@ -142,10 +142,12 @@ import socket
 import ssl
 import threading
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from time import monotonic
 from typing import Any, Final, Self, TypeAlias
 from urllib.parse import urlsplit
 
@@ -155,6 +157,7 @@ from omnivia_core.contracts.v1 import (
     ResponseEnvelope,
 )
 from omnivia_core_runtime.service.authorization import AuthenticatedSession
+from omnivia_core_runtime.service.lifecycle import ResourceReleaseBlocked
 from omnivia_core_runtime.service.ovc1 import (
     LENGTH_BYTES,
     MAGIC,
@@ -186,6 +189,12 @@ BEARER_PREFIX: Final = "Bearer "
 #: The default bind. IPv4 loopback, per the accepted freeze; `::1` is opt-in by
 #: naming it, and anything that is not a loopback literal is refused.
 DEFAULT_HOST: Final = "127.0.0.1"
+
+#: How long `stop()` waits, in total, for the shutdown helper and the serving
+#: thread before giving up and raising `ResourceReleaseBlocked`. Short and fixed
+#: rather than the request deadline: a caller unwinding the resource stack on a
+#: renewal failure must not itself hang, whatever an in-flight handler is doing.
+_HTTP_STOP_DEADLINE_SECONDS: Final = 1.0
 
 #: What a bearer credential resolves to, injected.
 #:
@@ -565,6 +574,13 @@ class _HttpService(HTTPServer):
         of the order of two assignments in `start`.
         """
         sock, address = super().get_request()
+        if self.adapter.closing.is_set():
+            # `request_stop` was called: reject a socket accepted after closing
+            # began rather than let it reach a handler. `_handle_request_noblock`
+            # catches `OSError` out of here and moves on with no handler built,
+            # exactly as the TLS refusal below does.
+            sock.close()
+            raise OSError("HTTP listener is closing")
         if self.adapter.bind.tls is None:
             return sock, address
         sock.settimeout(self.adapter.request_deadline)
@@ -791,16 +807,34 @@ class _Handler(BaseHTTPRequestHandler):
         per-request containment the local transport applies per connection: the set of
         ways a caller can be bad is not enumerable from here, and one that escaped
         would reach `handle_error` with the request attached.
+
+        The adapter's `gate`, if any, is held around the `router.route(...)` call
+        alone -- not around the body already read above nor the response written
+        below -- so this is the third entrant to the runner's shared SQLite
+        connection serialized against the serving and lease-renewal threads.
         """
+        gate = self.server_adapter.gate
         try:
             authenticated = self.server_adapter.authenticated_dispatch
-            if session is None or authenticated is None:
-                result = self.server_adapter.router.route(document)
-            else:
-                def dispatch(request: RequestEnvelope) -> ResponseEnvelope:
-                    return authenticated(request, session)
+            with gate if gate is not None else nullcontext():
+                # Check immediately before dispatch, including after a wait for
+                # the gate. Send the refusal only after releasing the gate: a
+                # slow peer must not hold up SQLite work while reading a 503.
+                closing = self.server_adapter.closing.is_set()
+                if closing:
+                    result = None
+                elif session is None or authenticated is None:
+                    result = self.server_adapter.router.route(document)
+                else:
+                    def dispatch(request: RequestEnvelope) -> ResponseEnvelope:
+                        return authenticated(request, session)
 
-                result = self.server_adapter.router.route(document, dispatch=dispatch)
+                    result = self.server_adapter.router.route(
+                        document, dispatch=dispatch
+                    )
+            if result is None:
+                self._refuse(HTTPStatus.SERVICE_UNAVAILABLE)
+                return
             payload = canonical_json_bytes(result.to_wire())
         except (ProtocolError, ProbeError, ContractDecodeError, OVC1Error):
             self._refuse(HTTPStatus.BAD_REQUEST)
@@ -986,12 +1020,24 @@ class HttpListener:
     principal: str
     resolver: CredentialResolver | None = None
     authenticated_dispatch: AuthenticatedApplicationDispatch | None = None
+    #: The same gate the runner holds around its own use of the shared SQLite
+    #: connection, or `None` for an embedder or test that owns no such connection to
+    #: protect. Held around each complete `router.route(...)` call in `_route` --
+    #: never over reading the request body or writing the response -- so this
+    #: thread and the lease-renewal thread never have SQLite's connection-global
+    #: mutex held by one while the other waits on the GIL inside it.
+    gate: threading.RLock | None = None
     bind: HttpBind = field(default_factory=HttpBind)
     #: The total budget for reading one request, not a per-read one. Named on the
     #: adapter so a test can assert the bound in a second rather than in ten.
     request_deadline: float = DEFAULT_TIMEOUT_SECONDS
+    #: Set synchronously by `request_stop`, checked in `_HttpService.get_request`
+    #: (refuse a newly accepted socket) and in `_Handler._route` (refuse a route
+    #: immediately before dispatch, including one that just waited for `gate`).
+    closing: threading.Event = field(default_factory=threading.Event)
     _service: _HttpService | None = None
     _thread: threading.Thread | None = None
+    _shutdown_thread: threading.Thread | None = None
 
     def __post_init__(self) -> None:
         if self.resolver is None:
@@ -1048,6 +1094,9 @@ class HttpListener:
         if failed:
             raise HttpTransportError("HTTP transport could not bind")
         assert service is not None
+        # A stopped listener can be started again on the same instance. Clear
+        # the old stop signal only after the new bind has succeeded.
+        self.closing.clear()
         service.adapter = self
         service.tls = tls
         self._service = service
@@ -1083,15 +1132,60 @@ class HttpListener:
             return f"{scheme}://[{host}]:{port}"
         return f"{scheme}://{host}:{port}"
 
-    def stop(self) -> None:
-        service, thread = self._service, self._thread
-        self._service, self._thread = None, None
+    def request_stop(self) -> None:
+        """Signal the listener to stop, without waiting on a synchronous handler.
+
+        Idempotent and nonblocking: safe to call before `start()`, safe to call
+        more than once, and safe from a thread other than the one that will
+        call `stop()`. `HTTPServer.shutdown()` blocks until `serve_forever()`
+        notices, and `serve_forever()` runs whatever handler is currently in
+        flight on that same thread -- one waiting on the shared sqlite gate,
+        say. Calling it directly here would then wait on that handler with no
+        bound, so it runs on a daemon thread of its own instead: this call
+        returns as soon as `closing` is set, regardless of what the listener is
+        doing.
+        """
+        self.closing.set()
+        service = self._service
         if service is None:
             return
-        service.shutdown()
-        service.server_close()
+        helper = self._shutdown_thread
+        if helper is not None and helper.is_alive():
+            return
+        helper = threading.Thread(
+            target=service.shutdown, name="omnivia-http-shutdown", daemon=True
+        )
+        self._shutdown_thread = helper
+        try:
+            helper.start()
+        except Exception as error:
+            # An active serving thread still owns the listener. Retain every
+            # lower resource for a retry if the helper cannot be started.
+            self._shutdown_thread = None
+            raise ResourceReleaseBlocked("HTTP listener did not stop") from error
+
+    def stop(self) -> None:
+        self.request_stop()
+        deadline = monotonic() + _HTTP_STOP_DEADLINE_SECONDS
+        shutdown_thread = self._shutdown_thread
+        if shutdown_thread is not None:
+            shutdown_thread.join(timeout=max(0.0, deadline - monotonic()))
+        thread = self._thread
         if thread is not None:
-            thread.join(timeout=DEFAULT_TIMEOUT_SECONDS)
+            thread.join(timeout=max(0.0, deadline - monotonic()))
+        still_blocked = (shutdown_thread is not None and shutdown_thread.is_alive()) or (
+            thread is not None and thread.is_alive()
+        )
+        if still_blocked:
+            # The shutdown helper or the serving thread -- possibly still
+            # holding the shared sqlite gate inside an in-flight handler -- has
+            # not finished within the bound. Service, thread and helper are all
+            # retained so a retry can rejoin exactly this wait.
+            raise ResourceReleaseBlocked("HTTP listener did not stop")
+        service = self._service
+        self._service, self._thread, self._shutdown_thread = None, None, None
+        if service is not None:
+            service.server_close()
 
     def __enter__(self) -> Self:
         self.start()

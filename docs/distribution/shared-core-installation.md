@@ -24,6 +24,68 @@ socket below the explicit installation state. A second launch forwards only the
 fixed `refresh` intent and exits. Quitting it performs no Core lifecycle action.
 No login item or LaunchAgent is installed by this programme.
 
+## Headless service operation
+
+The service is `omnivia-core-service`, and it runs without the companion app,
+a login item or a LaunchAgent. The companion is optional.
+
+**Workspace ownership.** `omnivia-core-service --workspace DIR
+--installation-state STATE --init` creates a workspace and registers it with
+the installation, which records the workspaces it created and under whose
+authority. Read success from the `status` field of the printed document, not
+from the exit code alone. Every other command selects an existing workspace and
+creates nothing: the CLI names it with `--workspace-id`, and an uninitialised
+workspace is refused by the MCP server. The operator names both the installation
+state and the workspace. Runtime selection reads no `HOME`, consults no `PATH`
+and searches nothing recursively.
+
+**Service lifetime.** `omnivia service start` attaches to a live service or
+starts one detached, waits for a live readiness answer and exits. The service
+then runs as an independent process. It outlives the CLI command, any MCP
+session and the host that started it. Only `omnivia service stop` ends it: that
+command requests graceful shutdown and waits for the descriptor to be withdrawn
+and the process to exit.
+
+**Restart and recovery.** A service killed without cleanup leaves a stale
+descriptor. The next CLI call retires that descriptor, starts a new owner and
+reports healthy. The Standard journey proves this path. Quitting the companion
+performs no Core lifecycle action.
+
+**Staged-only import.** Source content reaches Core only through a service-owned
+staging step: the authoring `evidence_capture` tool, or an operator-run
+`omnivia-core-service --workspace DIR --installation-state STATE
+--capture-source FILE --source-id ID`. The latter briefly takes the workspace
+lease, commits one local file as immutable evidence and exits. Import then
+accepts only the server-issued `staged_source_ref` of that staged content.
+`import.start` accepts no path, URL, inline archive, parser name or storage
+option.
+
+**Why MCP accepts no path or URL.** The MCP surface is driven by a model. A
+path or URL field would let the model choose what the service reads or fetches,
+so no MCP tool accepts one. The only file-reading lane is the maintenance path
+above, and no exposed tool can reach it.
+
+**No folder scanning.** Neither the installation nor the MCP server enumerates a
+user folder. Their directory walks cover only the installation's own receipts,
+candidates, runtime payload trees and workspaces.
+
+**macOS permissions.** Core and the MCP server request no Apple privacy
+entitlement. The default owned installation state, the installation root
+`~/Library/Application Support/OmniVia/Core`, is not a protected folder, so the
+installation and runtime state Core owns needs no Files and Folders or Full Disk
+Access permission. A workspace is wherever the operator places it. If an
+operator-selected workspace, or a user-directed staging source, sits in Desktop,
+Documents, Downloads or another protected location, macOS can require that
+permission for the application that launched the process. That prompt is the
+operating system's, about that location, and is not a Core permission.
+
+A separate, user-directed process that reads a protected source, such as a
+`--capture-source` run against a file in Documents or a connector, needs Files
+and Folders access, or Full Disk Access for broader locations. macOS attributes
+that access to the launching application. A grant of that kind does not widen
+MCP: no MCP tool gains a path or URL input, and MCP authority still comes only
+from its configuration and the installed rights.
+
 ## Trusted runtime payloads
 
 Selection above is deterministic. It is not trust: it decides *which* payload,

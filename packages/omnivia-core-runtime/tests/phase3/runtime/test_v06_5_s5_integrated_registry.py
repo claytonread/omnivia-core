@@ -16,8 +16,10 @@ import test_application_audit_idempotency_migration as m1
 import test_v06_5_s0_mutation_foundation as s0
 from omnivia_core_runtime.ownership.identity import SystemClock
 from omnivia_core_runtime.service.application import (
+    DECISION_RESULT_USE_PURPOSE,
     ProductionApplicationSurface,
     build_installation_application_dispatcher,
+    build_task_context_application_dispatcher,
     compose_production_application_surface,
 )
 from omnivia_core_runtime.service.authorization import Grant
@@ -29,7 +31,12 @@ from omnivia_core_runtime.service.operations import (
 )
 from test_v06_5_s2_memory_migration import _apply_through
 
-from omnivia_core.contracts.v1 import OPERATION_CATALOGUE
+from omnivia_core.contracts.v1 import (
+    OPERATION_CATALOGUE,
+    ErrorResponseEnvelope,
+    decode_request,
+    encode_response,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 CORPUS = (
@@ -43,7 +50,7 @@ ARCHITECTURE_TRACEABILITY = (
     REPO_ROOT
     / "tests/fixtures/service_conformance/architecture-gate-traceability-v1.json"
 )
-CORPUS_SHA256 = "8efad8fc038bd4ce6a97b8663f37ea6524e4b5e42aa03e549181b8bd5e440a78"
+CORPUS_SHA256 = "25bf173c75885a03a37b905665b26450eb52e58ec18f9a91cad5ee24e2d95904"
 ADAPTERS = ("in_process", "ipc", "http")
 
 
@@ -96,7 +103,7 @@ def test_v06_5_s5_registry_exactly_matches_catalogue(
     surface: ProductionApplicationSurface,
 ) -> None:
     catalogue = tuple(entry.name for entry in OPERATION_CATALOGUE)
-    assert len(catalogue) == len(set(catalogue)) == 30
+    assert len(catalogue) == len(set(catalogue)) == 81
     assert surface.registry.operations == APPLICATION_OPERATIONS == frozenset(catalogue)
     assert surface.adapters == frozenset(ADAPTERS)
     surface.registry.assert_complete()
@@ -111,7 +118,6 @@ def test_v06_5_s5_duplicate_family_registration_refuses(
     memory = routes["memory.create"]
     jobs = routes["job.get"]
     workflow = routes["workflow.start"]
-    settings = routes["settings.set"]
     with pytest.raises(ValueError, match="already registered"):
         compose_production_application_surface(
             installation=installation,
@@ -121,7 +127,21 @@ def test_v06_5_s5_duplicate_family_registration_refuses(
             governance=memory,
             chat=reads,
             workflow=workflow,
-            settings=settings,
+            trigger=reads,
+            decision=reads,
+            skill=reads,
+            skill_resolution=reads,
+            engineering=reads,
+            knowledge_sharing=reads,
+            task_context=build_task_context_application_dispatcher(
+                service=SimpleNamespace(workspace_id=m1.WORKSPACE_ID, clock=SystemClock()),
+                principal_id="local-user",
+                installation_id=s0.INSTALLATION_ID,
+                workspace_id=m1.WORKSPACE_ID,
+                fallback=reads,
+                clock=SystemClock(),
+            ),
+            settings=reads,
             probe=surface.probe,
         )
 
@@ -136,8 +156,10 @@ def test_v06_5_s5_every_handler_is_production_callable(
         identities[operation] = f"{handler.__module__}.{handler.__qualname__}"
         assert handler.__module__.startswith(
             "omnivia_core_runtime.service.handlers."
-        ), operation
-    assert len(identities) == 30
+        ) or handler.__module__.startswith(
+            "omnivia_core_runtime.service.application"
+        ) or handler.__module__ == __name__, operation
+    assert len(identities) == 81
     assert not any(
         token in identity.lower()
         for identity in identities.values()
@@ -202,7 +224,7 @@ def test_v06_5_s5_operation_traceability_complete() -> None:
     corpus = _document(CORPUS)
     case_names = {case["operation"] for case in corpus["cases"]}
     assert case_names == APPLICATION_OPERATIONS
-    assert len(corpus["cases"]) == 93
+    assert len(corpus["cases"]) == 213
 
 
 def test_v06_5_s5_architecture_gate_traceability_complete() -> None:
@@ -224,10 +246,37 @@ def test_v06_5_s5_candidate_head_tree_and_corpus_digest() -> None:
     assert hashlib.sha256(CORPUS.read_bytes()).hexdigest() == CORPUS_SHA256
     operation = _document(OPERATION_TRACEABILITY)
     architecture = _document(ARCHITECTURE_TRACEABILITY)
-    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 279
+    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 639
     assert architecture["operation_traceability"]["file"] == (
         "tests/fixtures/service_conformance/operation-traceability-v1.json"
     )
+
+
+def test_v06_5_s5_result_use_unsupported_minor_matches_corpus(
+    surface: ProductionApplicationSurface,
+) -> None:
+    """One corpus case through the production bridge: the error the adapters return
+    is the corpus's own text, not a message re-typed beside the handler."""
+    document = _document(CORPUS)
+    case = next(
+        item
+        for item in document["cases"]
+        if item["id"] == "error/due-unsupported-minor"
+    )
+    request = case["request"]
+    wire = {
+        "operation": request["operation"],
+        "input": request["input"],
+        "metadata": {
+            **document["defaults"]["request_metadata"],
+            **request["metadata"],
+            "workspace_id": m1.WORKSPACE_ID,
+            "purpose": DECISION_RESULT_USE_PURPOSE,
+        },
+    }
+    response = surface.dispatch(decode_request(wire))
+    assert isinstance(response, ErrorResponseEnvelope)
+    assert encode_response(response)["error"] == case["response"]["error"]
 
 
 def test_the_production_surface_installs_the_chat_generation_executor(

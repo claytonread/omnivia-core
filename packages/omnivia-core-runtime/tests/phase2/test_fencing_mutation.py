@@ -781,6 +781,12 @@ def test_sb05_every_mutable_table_is_guarded_for_every_statement() -> None:
         for sql in connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'trigger'"
         ):
+            # AFTER triggers derive or audit; they never guard a statement, so
+            # they are skipped rather than failing the guard-coverage scan.
+            # The timing is read from the CREATE TRIGGER declaration, not from
+            # anywhere in the body (a guard's own error text may say "AFTER").
+            if re.search(r"CREATE\s+TRIGGER\s+\S+\s+AFTER\b", sql[0], re.IGNORECASE):
+                continue
             found = re.search(r"BEFORE\s+(INSERT|UPDATE|DELETE)\s+ON\s+(\w+)", sql[0], re.IGNORECASE)
             assert found is not None, sql[0]
             covered.setdefault(found.group(2), set()).add(found.group(1).upper())

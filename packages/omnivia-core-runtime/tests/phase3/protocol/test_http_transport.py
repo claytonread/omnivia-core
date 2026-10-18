@@ -34,8 +34,10 @@ from omnivia_core_runtime.service.http_transport import (
     HttpListener,
     HttpTls,
     HttpTransportError,
+    _Handler,
     parse_http_endpoint,
 )
+from omnivia_core_runtime.service.lifecycle import ResourceReleaseBlocked, ResourceStack
 from omnivia_core_runtime.service.main import build_parser
 from omnivia_core_runtime.service.main import main as service_main
 from omnivia_core_runtime.service.operations import failure, success
@@ -524,6 +526,174 @@ def test_the_request_deadline_defaults_to_the_local_transport_s_reviewed_value()
     assert server.request_deadline == DEFAULT_TIMEOUT_SECONDS
 
 
+# --- the shared sqlite gate ----------------------------------------------------
+
+
+class _ObservedGate:
+    """A real `RLock` that publishes the moment a caller begins to wait for it.
+
+    `threading.RLock` gives no hook for "a caller is blocked trying to acquire
+    this", and a plain "the worker thread is still alive" join proves only that
+    *something* has not finished -- which is equally true if the handler is
+    blocked on the gate, blocked somewhere else entirely, or simply has not been
+    scheduled yet. `waiting` is set the instant `acquire()` is entered, before it
+    can block, so seeing it set is proof the handler reached this exact call;
+    `entered` is set only once the underlying lock was actually taken, so seeing
+    it clear while another thread holds the real lock is proof the handler is
+    still refused rather than merely slow to report.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self.waiting = threading.Event()
+        self.entered = threading.Event()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        self.waiting.set()
+        got = self._lock.acquire(blocking, timeout)
+        if got:
+            self.entered.set()
+        return got
+
+    def release(self) -> None:
+        self.entered.clear()
+        self._lock.release()
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+
+def test_a_held_gate_blocks_dispatch_until_released_then_serves_cleanly() -> None:
+    """A real lock held outside the serving thread must gate `router.route(...)`.
+
+    Stands in for the runner's own lease-renewal thread, which holds the same
+    `RLock` around its own use of the shared SQLite connection. While *this*
+    thread holds it, the serving thread must be blocked before the router is
+    ever entered -- not merely before its response is sent -- and releasing it
+    must let a normal, valid response through with the listener stoppable
+    afterwards.
+
+    The proof that the handler is blocked *on the gate* -- rather than merely
+    not yet dispatched, which a bare `worker.is_alive()` cannot distinguish from
+    a hang anywhere else in the request -- is `_ObservedGate.waiting`: set the
+    instant the handler's own `acquire()` call begins, before it can block. Only
+    once that is observed does the test trust that `dispatch.calls == []` and a
+    still-blocked `entered` mean what they claim.
+
+    Bounded throughout: every wait below is a watchdog with a timeout, so a
+    regression that never reaches the gate, or one that deadlocks past release,
+    fails this test rather than hanging the suite.
+    """
+    dispatch = CountingDispatch()
+    gate = _ObservedGate()
+    server = HttpListener(
+        router=_router(dispatch),
+        principal=PRINCIPAL,
+        resolver=_resolver,
+        gate=gate,  # type: ignore[arg-type]
+    )
+    server.start()
+    port = int(server.url.rsplit(":", 1)[1])
+    result: dict[str, Any] = {}
+
+    def call() -> None:
+        result["status"], result["body"] = _post(
+            port,
+            APPLICATION_PATH,
+            canonical_json_bytes(_request().to_wire()),
+            credential=ACCEPTED_CREDENTIAL,
+        )
+
+    try:
+        gate._lock.acquire()
+        try:
+            worker = threading.Thread(target=call, daemon=True)
+            worker.start()
+            assert gate.waiting.wait(timeout=5), (
+                "the handler never attempted to acquire the gate"
+            )
+            # The real lock is still held by this thread, so the handler's own
+            # acquire cannot have succeeded -- checked directly rather than
+            # inferred from a short join.
+            assert not gate.entered.wait(timeout=0.5), (
+                "the handler entered the gate while another thread still holds it"
+            )
+            assert worker.is_alive(), "the handler must still be blocked on the gate"
+            assert dispatch.calls == []
+        finally:
+            gate._lock.release()
+
+        assert gate.entered.wait(timeout=10), (
+            "the handler never acquired the gate after release"
+        )
+        worker.join(timeout=10)
+        assert not worker.is_alive(), "the handler never unblocked after release"
+    finally:
+        server.stop()
+
+    assert result["status"] == 200
+    assert result["body"] != b""
+    assert len(dispatch.calls) == 1
+
+
+def test_a_closing_refusal_does_not_hold_the_sqlite_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatch = CountingDispatch()
+    gate = _ObservedGate()
+    server = HttpListener(
+        router=_router(dispatch),
+        principal=PRINCIPAL,
+        resolver=_resolver,
+        gate=gate,  # type: ignore[arg-type]
+    )
+    refused = threading.Event()
+    release_refusal = threading.Event()
+    original_refuse = _Handler._refuse
+
+    def held_refusal(handler: Any, status: Any, **kwargs: Any) -> None:
+        refused.set()
+        assert release_refusal.wait(timeout=5), "the refusal was never released"
+        original_refuse(handler, status, **kwargs)
+
+    monkeypatch.setattr(_Handler, "_refuse", held_refusal)
+    server.start()
+    result: dict[str, Any] = {}
+
+    def call() -> None:
+        result["status"], result["body"] = _post(
+            int(server.url.rsplit(":", 1)[1]),
+            APPLICATION_PATH,
+            canonical_json_bytes(_request().to_wire()),
+            credential=ACCEPTED_CREDENTIAL,
+        )
+
+    worker = threading.Thread(target=call, daemon=True)
+    try:
+        gate._lock.acquire()
+        try:
+            worker.start()
+            assert gate.waiting.wait(timeout=5), "the handler never reached the gate"
+            server.request_stop()
+        finally:
+            gate._lock.release()
+        assert refused.wait(timeout=5), "the closing request was not refused"
+        assert gate._lock.acquire(timeout=0.5), (
+            "the HTTP response write retained the SQLite gate"
+        )
+        gate._lock.release()
+    finally:
+        release_refusal.set()
+        worker.join(timeout=5)
+        server.stop()
+    assert not worker.is_alive()
+    assert result["status"] == 503
+    assert dispatch.calls == []
+
+
 # --- the bind policy ----------------------------------------------------------
 
 
@@ -544,6 +714,26 @@ def test_the_default_bind_is_ipv4_loopback_and_serves() -> None:
         server.stop()
 
     assert status == 200
+
+
+def test_http_listener_can_restart_on_the_same_instance() -> None:
+    dispatch = CountingDispatch()
+    server = HttpListener(
+        router=_router(dispatch), principal=PRINCIPAL, resolver=_resolver
+    )
+    for _ in range(2):
+        url = server.start()
+        try:
+            status, _ = _post(
+                int(url.rsplit(":", 1)[1]),
+                APPLICATION_PATH,
+                canonical_json_bytes(_request().to_wire()),
+                credential=ACCEPTED_CREDENTIAL,
+            )
+            assert status == 200
+        finally:
+            server.stop()
+    assert len(dispatch.calls) == 2
 
 
 @pytest.mark.skipif(not socket.has_ipv6, reason="requires IPv6")
@@ -976,3 +1166,152 @@ def test_the_shared_router_object_is_handed_to_both_transports() -> None:
 def test_the_operation_field_names_the_application_branch() -> None:
     """Pins the constant the route/document agreement is written against."""
     assert OPERATION_FIELD in _request().to_wire()
+
+
+# --- fail-closed shutdown: a dispatch that is genuinely still running --------
+
+
+class _BlockingDispatch:
+    """An application dispatch that blocks until released, and reports entry."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, request: RequestEnvelope) -> ResponseEnvelope:
+        self.entered.set()
+        self.release.wait(timeout=10)
+        return success(request, {"ok": True}, principal=PRINCIPAL)
+
+
+class _FakeSocketServer:
+    """Stands in for `LocalSocketServer` in the `main.serve` admission wiring.
+
+    What is under test here is the ordering and the admission signal --
+    `transport_admission` requesting a stop on both transports before either's
+    own `stop()` unwinds -- not the real accept loop, which is already covered
+    in `test_transport_lifecycle.py`.
+    """
+
+    def __init__(self) -> None:
+        self.request_stop_calls = 0
+        self.stop_calls = 0
+
+    def request_stop(self) -> None:
+        self.request_stop_calls += 1
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+
+def test_a_blocked_http_dispatch_defers_stop_and_requests_both_listeners_to_stop() -> (
+    None
+):
+    """The `main.serve` admission wiring, reproduced directly.
+
+    `transport_admission` is pushed last, so it releases first: it calls
+    `request_stop()` on both transports before either transport's own `stop()`
+    is unwound. A dispatch that is genuinely still running when `http_server`'s
+    `stop()` is reached must make that `stop()` raise `ResourceReleaseBlocked`
+    within its own short bound rather than hang the unwind -- and everything
+    beneath it, a fake SQLite cleanup included, must stay untouched until a
+    retry, once the dispatch has actually returned, finishes the job.
+    """
+    dispatch = _BlockingDispatch()
+    http = HttpListener(
+        router=_router(dispatch), principal=PRINCIPAL, resolver=_resolver
+    )
+    http.start()
+    socket_server = _FakeSocketServer()
+    sqlite_cleanup_calls: list[None] = []
+
+    stack = ResourceStack()
+    stack.push("lifetime_storage_lock", lambda: sqlite_cleanup_calls.append(None))
+    stack.push("socket_server", socket_server.stop)
+    stack.push("http_server", http.stop)
+
+    def _request_transport_stop() -> None:
+        socket_server.request_stop()
+        http.request_stop()
+
+    stack.push("transport_admission", _request_transport_stop)
+
+    port = int(http.url.rsplit(":", 1)[1])
+    result: dict[str, Any] = {}
+
+    def call() -> None:
+        result["status"], result["body"] = _post(
+            port,
+            APPLICATION_PATH,
+            canonical_json_bytes(_request().to_wire()),
+            credential=ACCEPTED_CREDENTIAL,
+        )
+
+    worker = threading.Thread(target=call, daemon=True)
+    worker.start()
+    try:
+        assert dispatch.entered.wait(timeout=5), "the dispatch was never reached"
+
+        started = time.monotonic()
+        first = stack.unwind()
+        elapsed = time.monotonic() - started
+
+        assert first == ["transport_admission"]
+        assert stack.names == ["lifetime_storage_lock", "socket_server", "http_server"]
+        assert elapsed < 3.0, (
+            f"the blocked dispatch was not deferred promptly: {elapsed:.1f}s"
+        )
+        assert socket_server.request_stop_calls == 1, (
+            "both listeners must be asked to stop, not only the blocked one"
+        )
+        assert socket_server.stop_calls == 0, "nothing beneath the block may unwind"
+        assert http.closing.is_set()
+        assert sqlite_cleanup_calls == [], "no lower SQLite cleanup while HTTP is blocked"
+
+        dispatch.release.set()
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+
+        second = stack.unwind()
+        assert second == ["http_server", "socket_server", "lifetime_storage_lock"]
+        assert stack.names == []
+        assert socket_server.stop_calls == 1
+        assert sqlite_cleanup_calls == [None]
+    finally:
+        dispatch.release.set()
+        worker.join(timeout=5)
+        if http._service is not None:
+            try:
+                http.stop()
+            except ResourceReleaseBlocked:
+                pass
+
+
+def test_shutdown_helper_start_failure_retains_a_live_http_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http = HttpListener(
+        router=_router(CountingDispatch()), principal=PRINCIPAL, resolver=_resolver
+    )
+    http.start()
+    released: list[str] = []
+    stack = ResourceStack()
+    stack.push("sqlite_connection", lambda: released.append("sqlite_connection"))
+    stack.push("http_server", http.stop)
+    original_start = threading.Thread.start
+
+    def fail_shutdown_helper(thread: threading.Thread) -> None:
+        if thread.name == "omnivia-http-shutdown":
+            raise RuntimeError("cannot start thread")
+        original_start(thread)
+
+    try:
+        monkeypatch.setattr(threading.Thread, "start", fail_shutdown_helper)
+        assert stack.unwind() == []
+        assert stack.names == ["sqlite_connection", "http_server"]
+        assert released == []
+        assert http._thread is not None and http._thread.is_alive()
+    finally:
+        monkeypatch.setattr(threading.Thread, "start", original_start)
+        assert stack.unwind() == ["http_server", "sqlite_connection"]
+    assert released == ["sqlite_connection"]

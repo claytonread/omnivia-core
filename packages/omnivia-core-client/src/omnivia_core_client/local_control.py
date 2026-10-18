@@ -81,7 +81,7 @@ __all__ = [
 #: The wrapper version this build speaks. Exactly one, matched exactly: an
 #: installation ships both ends together, so there is nothing to negotiate and a
 #: mismatch is a broken installation rather than an older peer.
-LOCAL_CONTROL_VERSION: Final = "omnivia.local-control.v1"
+LOCAL_CONTROL_VERSION: Final = "omnivia.local-control.v2"
 
 _FIELD: Final = "local_control"
 _RESULT_FIELD: Final = "local_control_result"

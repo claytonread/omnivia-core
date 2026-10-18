@@ -6,6 +6,9 @@
 
 **Source specification:** `omnivia-core-mcp-standalone-authoring-and-ingestion-requirements-2026-09-12-v1.3.md`
 
+**Normative completion baseline:** `omnivia-core-mcp-standalone-authoring-and-ingestion-requirements-2026-10-03-v1.4-addendum.md`.
+Where this plan states the inventory or read-only restricted profile (for example "six read-only tools" in section 1, or "six restricted or eleven authoring tools" in section 9), the addendum controls: restricted is thirteen tools and is bounded non-authoring, and authoring is eighteen. The original text is preserved as historical record.
+
 **Working branch:** `codex/core-mcp-completion-integration`
 
 **Current planning baseline:** `54edeb8`

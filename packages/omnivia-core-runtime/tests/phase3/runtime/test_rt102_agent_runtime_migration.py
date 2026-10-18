@@ -197,11 +197,11 @@ def owned(migrated: Path) -> Iterator[m1.Owned]:
     holder.connection.close()
 
 
-def guarded(holder: m1.Owned) -> Any:
+def guarded(holder: m1.Owned, *, workspace_id: str = WORKSPACE_ID) -> Any:
     return fenced_transaction(
         holder.connection,
         holder.identity,
-        workspace_id=WORKSPACE_ID,
+        workspace_id=workspace_id,
         fencing_generation=holder.generation,
     )
 
@@ -266,7 +266,7 @@ def seed_job(
     adds no fifth, and the run's admission guard checks that it agrees with all of them.
     """
     audit_ref = audit_ref or audit_ref_for(job_id)
-    with guarded(holder):
+    with guarded(holder, workspace_id=workspace_id):
         holder.connection.execute(
             "INSERT OR IGNORE INTO omnivia_application_audit_events "
             "(audit_ref, workspace_id, principal_id, operation, purpose, request_id, "

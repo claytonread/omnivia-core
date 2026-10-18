@@ -507,7 +507,18 @@ def test_authorization_never_touches_storage() -> None:
 
     source = Path(module.__file__).read_text(encoding="utf-8")
     assert "sqlite3" not in source
-    assert "connection" not in source.lower()
+    # The continuity provenance vocabulary legitimately names the *transport*
+    # seams ("..._connection" enum values); what must never appear is any
+    # storage coupling: a database handle, cursor or driver import.
+    for storage_coupling in (
+        "sqlite3.connect",
+        ".cursor(",
+        "CREATE TABLE",
+        "INSERT INTO",
+        "UPDATE omnivia_",
+        "DELETE FROM",
+    ):
+        assert storage_coupling not in source
 
 
 # --- B10: CLI and MCP are clients --------------------------------------------
@@ -995,6 +1006,41 @@ def test_the_service_wait_loop_stops_cleanly_without_an_extra_renewal() -> None:
     assert runner.stops == 1
 
 
+def test_the_service_wait_loop_runs_bounded_source_work_without_requests() -> None:
+    """The service-owned tick drives capture while both listeners are idle."""
+
+    class OneTick:
+        calls = 0
+
+        def wait(self, *, timeout: float) -> bool:
+            assert timeout == 0.25
+            self.calls += 1
+            return self.calls > 1
+
+    class CleanRunner:
+        renewals = 0
+        stops = 0
+
+        def renew_lease_if_due(self) -> bool:
+            self.renewals += 1
+            return False
+
+        def stop(self) -> None:
+            self.stops += 1
+
+    passes: list[int] = []
+    runner = CleanRunner()
+    code = _serve_until_stopped(
+        runner,  # type: ignore[arg-type]
+        OneTick(),  # type: ignore[arg-type]
+        source_work=lambda: passes.append(len(passes) + 1),
+    )
+
+    assert code == 0
+    assert passes == [1]
+    assert runner.renewals == runner.stops == 1
+
+
 def test_check_only_stops_a_ready_workspace_without_entering_the_renewal_loop(
     tmp_path: Path, migrated, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1047,8 +1093,16 @@ def test_a_serving_run_hands_the_started_runner_to_the_renewal_loop(
     workspace, installation = migrated
     entered: list[object] = []
 
-    def record(runner: object, stopping: object) -> int:
+    scheduled: list[object] = []
+
+    def record(
+        runner: object,
+        stopping: object,
+        *,
+        source_work: object | None = None,
+    ) -> int:
         entered.append(runner)
+        scheduled.append(source_work)
         runner.stop()  # type: ignore[attr-defined]
         return 0
 
@@ -1066,7 +1120,10 @@ def test_a_serving_run_hands_the_started_runner_to_the_renewal_loop(
                 str(installation.root),
                 "--endpoint",
                 endpoint_for_path(socket_directory / "s.sock").url,
-            ]
+                "--http-endpoint",
+                "http://127.0.0.1:0",
+            ],
+            resolve_credential=lambda _credential: None,
         )
     finally:
         shutil.rmtree(socket_directory, ignore_errors=True)
@@ -1077,6 +1134,7 @@ def test_a_serving_run_hands_the_started_runner_to_the_renewal_loop(
     assert isinstance(runner, ServiceRunner)
     assert runner.workspace_id == WORKSPACE_ID
     assert runner.generation is not None
+    assert len(scheduled) == 1 and callable(scheduled[0])
 
 
 def _serve_subprocess(workspace: Path, installation: InstallationLayout, endpoint: str):

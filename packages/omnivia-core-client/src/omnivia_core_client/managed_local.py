@@ -1117,3 +1117,36 @@ def _status(stdout: str) -> _ManagedStartAnswer:
     if not isinstance(service_instance_id, str) or not service_instance_id:
         _refuse()
     return _ManagedStartAnswer(status=status, service_instance_id=service_instance_id)
+
+
+def run_first_party_command(
+    command: list[str], **kwargs: Any
+) -> subprocess.CompletedProcess[bytes]:
+    """Run one first-party command to completion.
+
+    The update worker's runner (v0.4 §9.1): it stops services, installs the
+    staged wheels and verifies versions, all through commands composed by the
+    coordinator and never by feed text. This module owns process execution by
+    design, so the worker's runner lives here too.
+    """
+    return subprocess.run(command, check=False, **kwargs)
+
+
+def spawn_detached_worker(
+    command: list[str], *, pass_fds: tuple[int, ...] = ()
+) -> subprocess.Popen[bytes]:
+    """Start one detached, session-leading worker with inherited descriptors.
+
+    The update coordinator's spawn point (v0.4 §9.1): the worker survives the
+    CLI process exiting and the service it stops, and the inherited lock
+    descriptor keeps exclusive update ownership through the hand-off with no
+    gap. This is the only module that starts a process by design; the update
+    coordinator calls it instead of owning its own ``Popen``.
+    """
+    return subprocess.Popen(
+        command,
+        pass_fds=pass_fds,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+    )

@@ -31,6 +31,8 @@ library.
   two configurations it connects from: :class:`InstallationServiceConfig` for
   whatever an installation publishes, :class:`HttpServiceConfig` for an
   explicitly named HTTP service
+- :mod:`~omnivia_core_client.continuity` -- trusted registration request and
+  response admission for service-issued continuity session bindings
 - :mod:`~omnivia_core_client.managed_local` -- one managed-local connect/start/
   reconnect path shared by the CLI and MCP adapters
 
@@ -65,6 +67,10 @@ from omnivia_core_client.compatibility import (
     select_protocol_version,
     validate_descriptor_version,
 )
+from omnivia_core_client.continuity import (
+    ContinuityRegistrationRequest,
+    register_continuity_session,
+)
 from omnivia_core_client.credentials import (
     DEFAULT_CREDENTIAL_TTL_SECONDS,
     MAXIMUM_CREDENTIAL_CHARACTERS,
@@ -90,6 +96,7 @@ from omnivia_core_client.discovery import (
 from omnivia_core_client.errors import (
     ClientError,
     CompatibilityError,
+    ContinuityRegistrationError,
     CredentialDeniedError,
     CredentialError,
     CredentialInvalidError,
@@ -215,6 +222,8 @@ __all__ = [
     "ClientError",
     "ClientTransport",
     "CompatibilityError",
+    "ContinuityRegistrationError",
+    "ContinuityRegistrationRequest",
     "Credential",
     "CredentialCache",
     "CredentialDeniedError",
@@ -271,6 +280,7 @@ __all__ = [
     "parse_http_endpoint",
     "pipe_address_for",
     "read_owner_private",
+    "register_continuity_session",
     "select_api_version",
     "select_protocol_version",
     "socket_path_for",

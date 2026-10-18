@@ -4,7 +4,7 @@
 have raised before a test ran. These assert it from the outside anyway, and
 assert the parts import-time validation cannot: the *order* the commands are
 declared in, the exact purpose each command declares, the exact probe set, and
-every one of the twenty-six exit codes by value rather than by coverage.
+every one of the twenty-eight exit codes by value rather than by coverage.
 
 The last test is the one that is about more than data. The surface must be
 importable by a client that has installed neither the runtime nor the MCP
@@ -59,6 +59,78 @@ EXPECTED_COMMANDS = (
     (("workflow", "inspect"), "workflow.inspect", "workflow_observation"),
     (("workflow", "control"), "workflow.control", "workflow_control"),
     (("workflow", "review"), "workflow.review", "workflow_observation"),
+    (("decisions", "status"), "decision.status", "decision_status"),
+    (("decisions", "evaluate"), "decision.evaluate", "decision_evaluation"),
+    (("decisions", "record"), "decision.record.get", "decision_record"),
+    (("decisions", "records"), "decision.record.list", "decision_record"),
+    (("decisions", "definitions"), "decision.definition.list", "decision_read"),
+    (("decisions", "definition"), "decision.definition.get", "decision_read"),
+    (("decisions", "publish"), "decision.definition.publish", "decision_configuration"),
+    (("decisions", "disable"), "decision.definition.disable", "decision_configuration"),
+    (("decisions", "outcome"), "decision.outcome.submit", "decision_evaluation"),
+    (("decisions", "models"), "decision.model.list", "decision_read"),
+    (("decisions", "install"), "decision.model.install", "decision_configuration"),
+    (("decisions", "activate"), "decision.model.activate", "decision_configuration"),
+    (("decisions", "remove"), "decision.model.remove", "decision_configuration"),
+    (("decisions", "settings"), "decision.settings.get", "decision_settings"),
+    (("decisions", "configure"), "decision.settings.update", "decision_configuration"),
+    # Engineering memory (SPEC-CORE-ENGMEM-001), appended in amendment order.
+    (("continuity", "register"), "continuity.session.register", "continuity_session"),
+    (
+        ("continuity", "checkpoint"),
+        "continuity.checkpoint.append",
+        "continuity_checkpoint",
+    ),
+    (("continuity", "close"), "continuity.session.close", "continuity_session"),
+    (("continuity", "handoff"), "continuity.handoff.read", "continuity_handoff"),
+    (("engineering", "search"), "engineering.search", "engineering_search"),
+    (("engineering", "expand"), "engineering.expand", "engineering_expand"),
+    (("engineering", "context"), "engineering.context.build", "engineering_context"),
+    (("context", "priority"), "context.priority.set", "context_priority"),
+    (("engineering", "review"), "engineering.review.record", "engineering_review"),
+    (
+        ("engineering", "capture"),
+        "engineering.source.capture.commit",
+        "engineering_source",
+    ),
+    (("engineering", "source"), "engineering.source.record", "engineering_source"),
+    (
+        ("repository", "register"),
+        "engineering.repository.register",
+        "engineering_repository",
+    ),
+    (
+        ("analysis", "start"),
+        "analysis.start",
+        "insights_analysis_request",
+    ),
+    (
+        ("decisions", "result-use"),
+        "decision.result_use.evaluate",
+        "decision_result_use",
+    ),
+    (("trigger", "declare"), "trigger.declare", "trigger_configuration"),
+    (("trigger", "lifecycle"), "trigger.lifecycle", "trigger_configuration"),
+    (("trigger", "ingest"), "trigger.ingest", "trigger_ingestion"),
+    (("trigger", "health"), "trigger.health", "trigger_observation"),
+    (("skills", "draft-create"), "skills.draft.create", "skill_authoring"),
+    (("skills", "draft-update"), "skills.draft.update", "skill_authoring"),
+    (("skills", "propose"), "skills.proposal.submit", "skill_authoring"),
+    (("skills", "publish"), "skills.version.publish", "skill_publication"),
+    (("skills", "deprecate"), "skills.version.deprecate", "skill_publication"),
+    (("skills", "install"), "skills.install", "skill_installation"),
+    (("skills", "remove"), "skills.remove", "skill_installation"),
+    (("skills", "resolve"), "skills.resolve", "skill_resolution"),
+    (("knowledge", "share-propose"), "knowledge.share.propose", "knowledge_sharing"),
+    (("knowledge", "share-decide"), "knowledge.share.decide", "knowledge_sharing"),
+    (("knowledge", "share-read"), "knowledge.share.read", "knowledge_share_observation"),
+    (("knowledge", "share-lineage"), "knowledge.share.lineage", "knowledge_share_observation"),
+    (("task-context", "export"), "task_context.export", "task_context_export"),
+    (("task-context", "export-read"), "task_context.export.read", "task_context_observation"),
+    (("outcome", "request-create"), "outcome.request.create", "outcome_request"),
+    (("outcome", "request-read"), "outcome.request.read", "task_context_observation"),
+    (("project-context", "read"), "project.context.read", "task_context_observation"),
+    (("project-context", "switch"), "project.context.switch", "project_context"),
 )
 
 EXPECTED_PROBES = (
@@ -71,6 +143,8 @@ EXPECTED_LIFECYCLE = (
     (("service", "start"), "start"),
     (("service", "stop"), "stop"),
     (("service", "status"), "status"),
+    (("service", "update-check"), "update-check"),
+    (("service", "update"), "update"),
 )
 
 EXPECTED_EXITS = {
@@ -83,6 +157,7 @@ EXPECTED_EXITS = {
     "workspace_migration_required": 4,
     "incompatible_version": 4,
     "upgrade_required": 4,
+    "tokenizer_unavailable": 4,
     "conflict": 5,
     "mutation_precondition_failed": 5,
     "idempotency_conflict": 5,
@@ -98,19 +173,20 @@ EXPECTED_EXITS = {
     "internal_recoverable": 7,
     "not_found": 8,
     "size_limit_exceeded": 8,
+    "context_budget_insufficient": 8,
     "token_limit_exceeded": 8,
     "internal_non_recoverable": 1,
 }
 
 
-def test_the_thirty_application_commands_are_declared_in_order() -> None:
+def test_the_eighty_one_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 30
+    assert len(APPLICATION_COMMANDS) == 81
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:
@@ -137,7 +213,7 @@ def test_the_probe_commands_are_exactly_the_three_runtime_probes() -> None:
     assert not hasattr(PROBE_COMMANDS[0], "purpose")
 
 
-def test_lifecycle_is_a_separate_three_command_administrative_surface() -> None:
+def test_lifecycle_is_a_separate_administrative_surface_with_a_local_check() -> None:
     assert tuple((item.path, item.action) for item in LIFECYCLE_COMMANDS) == (
         EXPECTED_LIFECYCLE
     )
@@ -156,7 +232,7 @@ def test_each_frozen_error_code_maps_to_its_exit_code(
 
 def test_the_exit_map_covers_the_frozen_error_codes_exactly() -> None:
     assert set(EXIT_CODES) == set(FROZEN_ERROR_CODES)
-    assert len(EXPECTED_EXITS) == 26
+    assert len(EXPECTED_EXITS) == 28
 
 
 def test_an_unknown_error_code_exits_one() -> None:

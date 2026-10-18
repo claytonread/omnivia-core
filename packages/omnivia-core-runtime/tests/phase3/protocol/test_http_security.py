@@ -981,4 +981,8 @@ def test_the_session_seam_carries_no_credential_field() -> None:
         "scopes",
         "purposes",
         "capabilities",
+        # Continuity facts, not credentials: references the continuity lanes
+        # resolved server-side, carried exactly like the other grants.
+        "continuity_binding",
+        "continuity_association",
     }

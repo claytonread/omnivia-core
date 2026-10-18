@@ -50,6 +50,22 @@ def _bootstrap(home: Path) -> None:
         (home / "installation-state" / "runtime" / WORKSPACE_ID).chmod(0o700)
 
 
+def _pinned_child_env() -> dict[str, str]:
+    """This checkout's console scripts first on `PATH` for a CLI child.
+
+    The production launcher resolves the managed service through `PATH` so a
+    deliberately shadowed build is honoured. These helpers invoke the CLI by
+    full interpreter path, which leaves the checkout's own `.venv/bin` off
+    `PATH` entirely -- so a same-named `omnivia-core-service` from an unrelated
+    installation would be selected and serve a schema these fingerprints
+    refuse. Pin the scripts beside this interpreter ahead of every inherited
+    entry.
+    """
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join([str(Path(sys.executable).parent), env.get("PATH", "")])
+    return env
+
+
 def _cli(home: Path, action: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -70,6 +86,7 @@ def _cli(home: Path, action: str) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=120,
         check=False,
+        env=_pinned_child_env(),
     )
 
 
@@ -132,6 +149,28 @@ def test_status_start_status_stop_is_one_safe_namespaced_lifecycle(home: Path) -
     assert stopped.returncode == 0
     assert _document(stopped)["code"] == "stop_stopped"
     assert _service_pid(home) is None
+
+
+def test_a_foreign_same_named_service_on_path_is_not_selected(home: Path, tmp_path: Path) -> None:
+    """The helper pins this checkout's scripts ahead of a shadowing `PATH` entry.
+
+    A foreign `omnivia-core-service` earlier on `PATH` would serve a schema this
+    build's readiness fingerprints refuse; without the pinned environment the
+    start below would run the foreign script and fail.
+    """
+    foreign = tmp_path / "omnivia-core-service"
+    foreign.write_text("#!/bin/sh\nexit 42\n")
+    foreign.chmod(0o755)
+    old_path = os.environ["PATH"]
+    os.environ["PATH"] = os.pathsep.join([str(tmp_path), old_path])
+    try:
+        started = _cli(home, "start")
+    finally:
+        os.environ["PATH"] = old_path
+    assert started.returncode == 0, started.stderr
+    pid = _service_pid(home)
+    assert pid is not None
+    os.kill(pid, signal.SIGKILL)
 
 
 def test_a_stale_descriptor_never_authorizes_a_signal(home: Path) -> None:

@@ -5655,6 +5655,18 @@ REJECTED_INPUT_CONTROLS: tuple[tuple[str, Any], ...] = (
     ("async", True),
     ("job", {"job_id": "job-1"}),
     ("job_id", "job-1"),
+    ("targets", [{"repository_id": "erepo-1", "snapshot_id": "esnap-1"}]),
+    ("repository_target", {"repository_id": "erepo-1", "snapshot_id": "esnap-1"}),
+    ("profile", "investigate"),
+    ("topic_refs", [{"proposed_key": "auth/provider"}]),
+    ("checkpoint_refs", ["checkpoint-1"]),
+    ("budget", {"model_tokens": 4_000, "model_bytes": 16_384}),
+    ("applicability_mode", "current_safe"),
+    ("counting_mode", "exact_tokenizer.v1"),
+    (
+        "tokenizer",
+        {"tokenizer_id": "tokenizer.test", "tokenizer_version": "1.0"},
+    ),
 )
 
 
@@ -5767,7 +5779,12 @@ def test_context_pack_result_declares_no_persistence_vocabulary() -> None:
     declared: set[str] = set()
     for definition in schema["$defs"].values():
         declared.update(definition.get("properties", {}))
-    assert declared.isdisjoint(sem_knowledge.CONTEXT_PACK_REJECTED_INPUT_FIELDS - {"view"})
+    # `view` and `budget` are result facts even though callers cannot select a
+    # legacy view or smuggle the engineering operation's structured budget into
+    # this input. The remaining refused controls have no result vocabulary.
+    assert declared.isdisjoint(
+        sem_knowledge.CONTEXT_PACK_REJECTED_INPUT_FIELDS - {"view", "budget"}
+    )
     # `view` survives only on the normalized request, where it records a resolved value
     # rather than accepting a caller-selected one.
     assert "view" in schema["$defs"]["ContextPackNormalizedRequest"]["properties"]

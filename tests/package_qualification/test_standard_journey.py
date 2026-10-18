@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tomllib
@@ -1074,20 +1075,48 @@ def _result(module: ModuleType, name: str) -> object:
     return {"one": "value"} if name in module._MAPPING_RESULTS else ["one"]
 
 
+def _typed(code: str, message: str | None = None) -> str:
+    """A service error document carrying one typed code, in the canonical form."""
+    error = {"code": code} if message is None else {"code": code, "message": message}
+    return json.dumps({"error": error}, separators=(",", ":"), sort_keys=True)
+
+
+def _refused(name: str, document: str) -> dict[str, object]:
+    """A tool result as the MCP server relays a service refusal."""
+    return {
+        "is_error": True,
+        "content": [
+            {"type": "text", "text": f"{name} was refused by the service: {document}"}
+        ],
+    }
+
+
 def _observation(module: ModuleType, names, **overrides) -> dict[str, object]:
-    """A complete, accepted session observation, before any mutation."""
+    """A complete, accepted session observation, before any mutation.
+
+    `names` are the six data-bearing reads; the eight decision, engineering and
+    trigger tools are appended with their expected success or typed-refusal
+    outcomes.
+    """
+    called = {
+        name: {
+            "is_error": False,
+            "structured_content": {module._RESULT_KEYS[name]: _result(module, name)},
+        }
+        for name in names
+    }
+    for name, expectation in module._DECISION_EXPECTATIONS.items():
+        if expectation == "success":
+            called[name] = {
+                "is_error": False,
+                "structured_content": {"projection": ["one"]},
+            }
+        else:
+            called[name] = _refused(name, _typed(expectation.split(":", 1)[1]))
     observed = {
         "server": "omnivia-core-mcp",
-        "tools": [{"name": name} for name in names],
-        "called": {
-            name: {
-                "is_error": False,
-                "structured_content": {
-                    module._RESULT_KEYS[name]: _result(module, name)
-                },
-            }
-            for name in names
-        },
+        "tools": [{"name": name} for name in [*names, *module._DECISION_EXPECTATIONS]],
+        "called": called,
     }
     observed.update(overrides)
     return observed
@@ -1384,9 +1413,9 @@ def test_retained_host_evidence_exposes_exactly_the_accepted_fields(
             "config_format": profile.config_format,
             "connected": True,
             "session_completed": True,
-            "tool_count": 6,
+            "tool_count": 14,
             "tool_calls": 6,
-            "tools": sorted(names),
+            "tools": sorted([*names, *module._DECISION_EXPECTATIONS]),
             "result_counts": dict.fromkeys(names, 1),
             "verdict": "pass",
         }
@@ -1425,10 +1454,12 @@ def test_every_advertised_tool_is_called_from_every_host(
         _calls(module),
     )
 
+    # `_mcp_session` is patched out, so only the reads cross this seam; the
+    # stub-refusal calls happen inside the real session driver.
     assert len(called) == 24
     assert {name for _command, name in called} == set(names)
-    assert result["tool_count"] == 6
-    assert result["tools"] == sorted(names)
+    assert result["tool_count"] == 14
+    assert result["tools"] == sorted([*names, *module._DECISION_EXPECTATIONS])
     assert result["knowledge_records"] == 1
     assert result["context_records"] == 1
     assert result["stdio_session_completed"] is True
@@ -1499,13 +1530,13 @@ def test_a_host_manifest_that_differs_from_the_others_fails_closed(
 
     def _per_host(command, arguments, calls, profile):
         seen.append(profile.name)
-        advertised = sorted(calls)
+        advertised = sorted([*calls, *module._DECISION_EXPECTATIONS])
         return {
             "client": profile.name,
             "config_format": profile.config_format,
             "connected": True,
             "session_completed": True,
-            "tool_count": 6,
+            "tool_count": 14,
             "tool_calls": 6,
             # The second host sees a different manifest from the first.
             "tools": advertised[1:] if len(seen) == 2 else advertised,
@@ -1526,12 +1557,15 @@ def test_a_host_manifest_that_differs_from_the_others_fails_closed(
     assert str(excinfo.value) == "the advertised tool manifest differed between hosts"
 
 
-def test_a_manifest_that_is_not_the_accepted_six_tools_fails_closed(
+def test_a_manifest_that_is_not_the_accepted_fourteen_tools_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _module()
     names = list(module._RESULT_KEYS)
-    renamed = [{"name": name} for name in (*names[:-1], "context_pack_write")]
+    renamed = [
+        {"name": name}
+        for name in (*names[:-1], "context_pack_write", *module._DECISION_EXPECTATIONS)
+    ]
     monkeypatch.setattr(
         module, "_mcp_session", _session(_observation(module, names, tools=renamed))
     )
@@ -1540,7 +1574,7 @@ def test_a_manifest_that_is_not_the_accepted_six_tools_fails_closed(
         module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[0])
 
     assert str(excinfo.value) == (
-        "the claude_desktop tool manifest was not the accepted six tools"
+        "the claude_desktop tool manifest was not the accepted fourteen tools"
     )
 
 
@@ -1559,7 +1593,10 @@ def test_a_manifest_of_the_wrong_size_fails_closed(
     with pytest.raises(module.JourneyError) as excinfo:
         module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[1])
 
-    assert str(excinfo.value) == "MCP did not advertise the accepted six-tool manifest"
+    assert (
+        str(excinfo.value)
+        == "MCP did not advertise the accepted fourteen-tool manifest"
+    )
 
 
 def test_a_session_that_did_not_identify_the_server_fails_closed(
@@ -1638,7 +1675,7 @@ def test_a_tool_that_was_never_called_fails_closed(
         module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[3])
 
     assert str(excinfo.value) == (
-        "the official_python_sdk session did not call all six tools"
+        "the official_python_sdk session did not call all fourteen tools"
     )
 
 
@@ -1655,7 +1692,7 @@ def test_a_tool_that_was_never_called_fails_closed(
 def test_a_missing_or_malformed_call_table_fails_closed(
     monkeypatch: pytest.MonkeyPatch, called: object
 ) -> None:
-    """`called` is validated as a mapping of exactly the six call names.
+    """`called` is validated as a mapping of exactly the fourteen call names.
 
     Indexing it blind would raise a `KeyError` or a `TypeError` out of this
     program rather than a bounded journey failure.
@@ -1668,7 +1705,7 @@ def test_a_missing_or_malformed_call_table_fails_closed(
     with pytest.raises(module.JourneyError) as excinfo:
         module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[2])
 
-    assert str(excinfo.value) == "the codex session did not call all six tools"
+    assert str(excinfo.value) == "the codex session did not call all fourteen tools"
 
 
 def test_a_call_table_carrying_a_tool_nobody_called_fails_closed(
@@ -1684,7 +1721,7 @@ def test_a_call_table_carrying_a_tool_nobody_called_fails_closed(
         module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[0])
 
     assert str(excinfo.value) == (
-        "the claude_desktop session did not call all six tools"
+        "the claude_desktop session did not call all fourteen tools"
     )
 
 
@@ -1717,7 +1754,10 @@ def test_a_malformed_tool_entry_or_name_fails_closed(
     with pytest.raises(module.JourneyError) as excinfo:
         module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[1])
 
-    assert str(excinfo.value) == "MCP did not advertise the accepted six-tool manifest"
+    assert (
+        str(excinfo.value)
+        == "MCP did not advertise the accepted fourteen-tool manifest"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1769,6 +1809,162 @@ def test_a_result_under_a_key_this_tool_does_not_answer_with_fails_closed(
     assert str(excinfo.value) == (
         "MCP graph_traverse returned nothing for official_python_sdk"
     )
+
+
+@pytest.mark.parametrize(
+    ("result", "message"),
+    [
+        # A refusal is not an answer, whatever it says.
+        (
+            _refused("trigger_health", _typed("not_found")),
+            "MCP trigger_health did not answer for claude_desktop",
+        ),
+        # A result that does not state `is_error` is not accepted as a success.
+        (
+            {"structured_content": {"items": [], "page": {}}},
+            "MCP trigger_health did not answer for claude_desktop",
+        ),
+        ("items", "MCP trigger_health did not answer for claude_desktop"),
+        # Its structured content must be a non-empty object.
+        (
+            {"is_error": False, "structured_content": None},
+            "MCP trigger_health returned nothing for claude_desktop",
+        ),
+        (
+            {"is_error": False, "structured_content": {}},
+            "MCP trigger_health returned nothing for claude_desktop",
+        ),
+        (
+            {"is_error": False, "structured_content": ["items"]},
+            "MCP trigger_health returned nothing for claude_desktop",
+        ),
+    ],
+)
+def test_a_malformed_or_error_trigger_health_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, result: object, message: str
+) -> None:
+    """`trigger_health` is judged like every other tool outside the six reads.
+
+    Each answer here is one the journey must refuse: a refusal, a result that is
+    not stated as a success, or structured content that is not a non-empty object.
+    """
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    observed = _observation(module, names)
+    observed["called"]["trigger_health"] = result
+    monkeypatch.setattr(module, "_mcp_session", _session(observed))
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[0])
+
+    assert str(excinfo.value) == message
+
+
+@pytest.mark.parametrize(
+    ("name", "result", "message"),
+    [
+        # The code must be the one this tool states, and no other.
+        (
+            "decision_record_get",
+            _refused("decision_record_get", _typed("capability_not_granted")),
+            "MCP decision_record_get refused for the wrong reason for claude_code",
+        ),
+        (
+            "decision_evaluate",
+            _refused("decision_evaluate", _typed("not_found")),
+            "MCP decision_evaluate refused for the wrong reason for claude_code",
+        ),
+        # An exact match: a longer code that begins with the right one is another.
+        (
+            "engineering_expand",
+            _refused("engineering_expand", _typed("not_found_absent")),
+            "MCP engineering_expand refused for the wrong reason for claude_code",
+        ),
+        # The code is `error.code`, never a word that sits in the message.
+        (
+            "engineering_expand",
+            _refused("engineering_expand", _typed("invalid_request", "not_found")),
+            "MCP engineering_expand refused for the wrong reason for claude_code",
+        ),
+        # An MCP-side refusal never reached the service and carries no typed code.
+        (
+            "decision_evaluate",
+            {
+                "is_error": True,
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "decision_evaluate could not be called: stream closed",
+                    }
+                ],
+            },
+            "MCP decision_evaluate refused for the wrong reason for claude_code",
+        ),
+        # A tool that answered where a refusal was stated did not refuse.
+        (
+            "decision_record_get",
+            {"is_error": False, "structured_content": {"projection": ["one"]}},
+            "MCP decision_record_get did not refuse for claude_code",
+        ),
+    ],
+)
+def test_a_refusal_with_the_wrong_typed_code_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, name: str, result: object, message: str
+) -> None:
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    observed = _observation(module, names)
+    observed["called"][name] = result
+    monkeypatch.setattr(module, "_mcp_session", _session(observed))
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[1])
+
+    assert str(excinfo.value) == message
+
+
+def test_a_fourteen_tool_observation_with_every_outcome_as_stated_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    observed = _observation(module, names)
+    monkeypatch.setattr(module, "_mcp_session", _session(observed))
+
+    result = module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[0])
+
+    assert result["tool_count"] == 14
+    assert result["tool_calls"] == 6
+    assert result["result_counts"] == dict.fromkeys(names, 1)
+    assert result["tools"] == sorted([*names, *module._DECISION_EXPECTATIONS])
+    assert result["verdict"] == "pass"
+
+
+def test_every_decision_outcome_is_judged_not_only_the_populated_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each tool outside the six reads fails when it answers against its outcome.
+
+    Every entry in `_DECISION_EXPECTATIONS` is judged, so each one here is given
+    the opposite of its stated outcome and must be refused for that tool.
+    """
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    for name, expectation in module._DECISION_EXPECTATIONS.items():
+        observed = _observation(module, names)
+        if expectation == "success":
+            observed["called"][name] = _refused(name, _typed("not_found"))
+        else:
+            observed["called"][name] = {
+                "is_error": False,
+                "structured_content": {"projection": ["one"]},
+            }
+        monkeypatch.setattr(module, "_mcp_session", _session(observed))
+
+        with pytest.raises(module.JourneyError) as excinfo:
+            module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[2])
+
+        assert str(excinfo.value).startswith(f"MCP {name} "), name
 
 
 def test_the_journey_calls_every_tool_the_manifest_advertises() -> None:
@@ -1925,9 +2121,7 @@ def test_visibility_wait_polls_at_the_fixed_interval_until_visible(
 ) -> None:
     module = _module()
     outcomes = iter([False, False, True])
-    monkeypatch.setattr(
-        module, "_knowledge_search_visible", lambda *_: next(outcomes)
-    )
+    monkeypatch.setattr(module, "_knowledge_search_visible", lambda *_: next(outcomes))
     slept: list[float] = []
     monkeypatch.setattr(module.time, "sleep", slept.append)
 
@@ -1965,3 +2159,93 @@ def test_visibility_wait_raises_with_the_elapsed_budget_after_the_deadline(
         "after waiting 32.0s (budget 30s)"
     )
     assert len(attempts) == 2
+
+
+DOCS = REPO_ROOT / "docs" / "distribution"
+CANDIDATE_GUIDE = DOCS / "standard-profile-candidate.md"
+INSTALLATION_GUIDE = DOCS / "shared-core-installation.md"
+HOST_GUIDE = DOCS / "mcp-host-interoperability.md"
+CLI_README = REPO_ROOT / "packages" / "omnivia-core-cli" / "README.md"
+MCP_README = REPO_ROOT / "packages" / "omnivia-core-mcp" / "README.md"
+CANDIDATE_BUILDER = REPO_ROOT / "scripts" / "build-standard-candidate.py"
+
+#: A current-profile claim of the superseded six-tool server. A line that marks
+#: itself historical is the only exception, as the v1.3 and version notes do.
+_SIX_TOOL_CLAIM = re.compile(r"six[- ]tool|six read-only tools|tool_count\": 6")
+
+
+def _flat(path: Path) -> str:
+    """The file's text with every run of whitespace collapsed, so a phrase may
+    wrap across source lines without changing what the guide says."""
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def _candidate_builder() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "standard_candidate_builder", CANDIDATE_BUILDER
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("path", [CANDIDATE_GUIDE, JOURNEY])
+def test_no_current_profile_is_described_as_the_six_tool_server(path: Path) -> None:
+    stale = [
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if _SIX_TOOL_CLAIM.search(line) and "historical" not in line.lower()
+    ]
+    assert stale == []
+
+
+def test_the_candidate_guide_example_is_the_builder_pinned_fourteen_tool_record() -> None:
+    text = CANDIDATE_GUIDE.read_text(encoding="utf-8")
+    blocks = re.findall(r"```json\n(.*?)```", text, re.DOTALL)
+    assert len(blocks) == 1
+    example = json.loads(blocks[0])
+    pins = _candidate_builder()
+
+    assert set(example) == pins.HOST_FIELDS
+    assert example["tools"] == pins.HOST_TOOLS
+    assert len(pins.HOST_TOOLS) == 14
+    assert example["tool_count"] == pins.HOST_EVIDENCE["tool_count"] == 14
+    assert example["tool_calls"] == pins.HOST_EVIDENCE["tool_calls"] == 6
+    assert list(example["result_counts"]) == pins.HOST_READ_TOOLS
+
+
+@pytest.mark.parametrize(
+    ("path", "phrase"),
+    [
+        (CANDIDATE_GUIDE, "verifying the exact restricted fourteen-tool manifest"),
+        (CANDIDATE_GUIDE, "None of the eight counts toward"),
+        (CANDIDATE_GUIDE, "bounded and non-authoring, not read-only"),
+        (CANDIDATE_GUIDE, "not installed and do not run"),
+        (INSTALLATION_GUIDE, "## Headless service operation"),
+        (INSTALLATION_GUIDE, "Only `omnivia service stop` ends it"),
+        (INSTALLATION_GUIDE, "independent process"),
+        (INSTALLATION_GUIDE, "Read success from the `status` field"),
+        (INSTALLATION_GUIDE, "--capture-source FILE --source-id ID"),
+        (INSTALLATION_GUIDE, "staged_source_ref"),
+        (INSTALLATION_GUIDE, "accepts no path, URL, inline archive"),
+        (INSTALLATION_GUIDE, "so no MCP tool accepts one"),
+        (INSTALLATION_GUIDE, "Neither the installation nor the MCP server enumerates a user folder"),
+        (INSTALLATION_GUIDE, "Core and the MCP server request no Apple privacy entitlement"),
+        (INSTALLATION_GUIDE, "needs no Files and Folders or Full Disk Access permission"),
+        (INSTALLATION_GUIDE, "A grant of that kind does not widen MCP"),
+        (HOST_GUIDE, "## Operating the MCP server"),
+        (HOST_GUIDE, "reads its `--config` document once"),
+        (HOST_GUIDE, "applies to the next call"),
+        (HOST_GUIDE, "No MCP tool accepts a filesystem path or URL"),
+        (HOST_GUIDE, "shared-core-installation.md#headless-service-operation"),
+        (CLI_README, "shared-core-installation.md#headless-service-operation"),
+        (MCP_README, "shared-core-installation.md#headless-service-operation"),
+        (MCP_README, "`omnivia service stop`"),
+    ],
+)
+def test_operational_guidance_is_pinned_in_the_distribution_docs(
+    path: Path, phrase: str
+) -> None:
+    assert phrase in _flat(path)

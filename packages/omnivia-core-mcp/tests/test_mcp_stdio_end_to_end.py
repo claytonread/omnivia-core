@@ -36,7 +36,7 @@ the probe then runs whichever `omnivia_core_mcp` is installed rather than the on
 under test, and the failure looks like a stale one-tool manifest rather than like
 a harness bug. `_environment()` is what stops that.
 
-**One session calls all six, and "all six" is read off the manifest.**
+**One session calls all fourteen, and "all fourteen" is read off the manifest.**
 :data:`ARGUMENTS` is keyed by tool name and is asserted to be exactly
 `EXPOSURE_MANIFEST`'s tool names in order, so a seventh tool cannot be exposed
 without an end-to-end call for it: the coverage check fails first.
@@ -72,7 +72,11 @@ from jsonschema import Draft202012Validator
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from omnivia_core_client import Deadline, InstallationServiceConfig, stop_managed_local
-from omnivia_core_mcp.manifest import EXPOSURE_MANIFEST, exposure_manifest, tools
+from omnivia_core_mcp.manifest import (
+    EXPOSURE_MANIFEST,
+    exposure_manifest,
+    tools,
+)
 
 from omnivia_core.contracts.v1 import to_canonical_json
 
@@ -111,7 +115,87 @@ ARGUMENTS: dict[str, dict[str, Any]] = {
         "mode": "deterministic_view",
         "token_budget": 4000,
     },
+    "engineering_search": {"query": "authentication provider"},
+    "engineering_expand": {
+        "anchor": {"record_id": fixture.SOURCE_RECORD_ID, "version": fixture.version_of(fixture.SOURCE_RECORD_ID)},
+    },
+    "engineering_context_build": {
+        "query": fixture.SEEDED_TOKEN,
+        "targets": [{"snapshot_id": "esnap-e2e", "snapshot_kind": "working_tree"}],
+        "profile": "investigate",
+    },
+    "decision_evaluate": {
+        "input": {
+            "schema_version": "decision.1",
+            "definition_ref": {"id": "core.document_category", "version": "1.0.0"},
+            "subject_refs": [{"id": fixture.SOURCE_RECORD_ID, "revision": "r1"}],
+            "input": {
+                "source_refs": [{"id": fixture.SOURCE_RECORD_ID, "revision": "r1"}]
+            },
+            "execution": {"mode": "advisory", "privacy": "local_only"},
+        },
+        "idempotency_key": "decision-evaluate-e2e-1",
+    },
+    "decision_record_get": {"evaluation_id": "eval-e2e-1"},
+    "decision_record_list": {},
+    "decision_status": {},
+    "trigger_health": {"project_id": "project-1", "workflow_id": "workflow-1", "limit": 1},
 }
+
+#: The tools the authoring profile adds, smallest call each.
+AUTHORING_ARGUMENTS: dict[str, dict[str, Any]] = {
+    "memory_create": {
+        "input": {
+            "record_type": "memory.fact",
+            "domain_scope": "product.core",
+            "content": {"fact": "an authoring-profile memory"},
+            "evidence_disposition": "available",
+            "sources": [{"kind": "direct_submission", "source_id": fixture.SOURCE_RECORD_ID}],
+            "assertion": {
+                "actor_id": "local-user",
+                "actor_kind": "agent",
+                "actor_role": "author",
+                "asserted_at": "2026-01-01T00:00:00Z",
+                "evidence": [],
+            },
+        },
+        "idempotency_key": "mcp-authoring-memory-002",
+    },
+}
+
+#: The four decision tools, with what a default (capability-off) session must
+#: answer for each: the passive status and record-list projections succeed with
+#: structured content, while an admission against a disabled capability and a
+#: lookup of an absent record are the typed refusals the handlers state. The
+#: schema-driven checks below validate the two successes like every other read.
+DECISION_OUTCOMES: dict[str, str] = {
+    "decision_status": "success",
+    "decision_record_list": "success",
+    "decision_record_get": "refused:not_found",
+    "decision_evaluate": "refused:capability_not_granted",
+}
+
+#: The tools a live session must answer successfully.
+SUCCESSFUL_TOOLS: tuple[str, ...] = tuple(
+    name for name in ARGUMENTS if name not in DECISION_OUTCOMES
+)
+
+
+def assert_call_outcome(observed: dict[str, Any], name: str) -> None:
+    """One call succeeded, or a decision tool answered its stated outcome."""
+    called = observed["calls"][name]
+    expected = DECISION_OUTCOMES.get(name)
+    if expected is None:
+        assert called["is_error"] is False, called
+        return
+    if expected == "success":
+        assert called["is_error"] is False, called
+        assert isinstance(called.get("structured_content"), dict), called
+        return
+    assert called["is_error"] is True, called
+    assert f'"code":"{expected.split(":", 1)[1]}"' in called["content"][0]["text"], (
+        called
+    )
 
 #: Names that must not resolve to a tool, and the R004-06 boundary each one is on.
 #: Literal on purpose: a future edit that exposes one of these has to delete the
@@ -130,18 +214,33 @@ NEVER_A_TOOL: tuple[tuple[str, str], ...] = (
 
 
 #: The purposes the exposure manifest claims. A configuration that allow-lists
-#: exactly these is the one under which all six tools are callable; the
+#: exactly these is the one under which all fourteen tools are callable; the
 #: adversarial suite is where a narrower one refuses.
-ALL_PURPOSES = ("workspace_inspection", "knowledge_retrieval")
+ALL_PURPOSES = (
+    "workspace_inspection",
+    "knowledge_retrieval",
+    "engineering_search",
+    "engineering_expand",
+    "engineering_context",
+    "decision_evaluation",
+    "decision_record",
+    "decision_status",
+    "trigger_observation",
+)
 
 
-#: What an authoring installation allows: the two read purposes plus the three
+#: What an authoring installation allows: the restricted purposes plus the ones
 #: the wider profile's tools claim. Every one is the service's own.
 AUTHORING_PURPOSES = (
     *ALL_PURPOSES,
     "memory_authoring",
     "content_ingestion",
+    "trigger_configuration",
+    "trigger_ingestion",
     "job_observation",
+    "skill_authoring",
+    "knowledge_sharing",
+    "knowledge_share_observation",
 )
 
 
@@ -390,12 +489,16 @@ def test_every_advertised_tool_is_read_only_and_closed(
     host decides whether to let a model call a tool from exactly this document.
     """
     for tool in observed["tools"]:
-        assert tool["annotations"]["read_only_hint"] is True
+        if tool["name"] == "decision_evaluate":
+            assert tool["annotations"]["read_only_hint"] is False
+            assert tool["input_schema"]["additionalProperties"] is False
+        else:
+            assert tool["annotations"]["read_only_hint"] is True
+            assert tool["input_schema"]["unevaluatedProperties"] is False
         assert tool["annotations"]["destructive_hint"] is False
         assert tool["annotations"]["open_world_hint"] is False
-        assert tool["input_schema"]["unevaluatedProperties"] is False
         assert tool["output_schema"]["type"] == "object"
-        assert tool["meta"]["omnivia.manifestVersion"] == "2.0"
+        assert tool["meta"]["omnivia.manifestVersion"] == "2.8"
 
     inspect = advertised(observed, "workspace_inspect")
     assert inspect["meta"]["omnivia.operation"] == "workspace.inspect"
@@ -403,21 +506,21 @@ def test_every_advertised_tool_is_read_only_and_closed(
     assert inspect["input_schema"]["required"] == []
 
 
-# --- one session calls all six ------------------------------------------------
+# --- one session calls all fourteen -------------------------------------------
 
 
-def test_the_session_calls_exactly_the_advertised_six(
+def test_the_session_calls_exactly_the_advertised_fourteen(
     observed: dict[str, Any],
 ) -> None:
-    """The coverage check, and the reason a seventh tool cannot land untested.
+    """The coverage check, and the reason a fifteenth tool cannot land untested.
 
     Order and membership, against the manifest rather than against a literal, so
-    this file cannot drift into calling five of six and passing.
+    this file cannot drift into calling fourteen of fourteen and passing.
     """
     assert list(ARGUMENTS) == [entry.tool_name for entry in EXPOSURE_MANIFEST]
     assert list(observed["calls"]) == list(ARGUMENTS)
     for name in ARGUMENTS:
-        assert observed["calls"][name]["is_error"] is False, observed["calls"][name]
+        assert_call_outcome(observed, name)
 
 
 @pytest.mark.parametrize("tool_name", list(ARGUMENTS))
@@ -435,7 +538,7 @@ def test_every_request_validates_against_the_advertised_input_schema(
     )
 
 
-@pytest.mark.parametrize("tool_name", list(ARGUMENTS))
+@pytest.mark.parametrize("tool_name", SUCCESSFUL_TOOLS)
 def test_every_structured_result_validates_against_the_advertised_output_schema(
     observed: dict[str, Any], tool_name: str
 ) -> None:
@@ -449,7 +552,7 @@ def test_every_structured_result_validates_against_the_advertised_output_schema(
     )
 
 
-@pytest.mark.parametrize("tool_name", list(ARGUMENTS))
+@pytest.mark.parametrize("tool_name", SUCCESSFUL_TOOLS)
 def test_every_success_carries_one_json_text_item_equal_to_its_structured_content(
     observed: dict[str, Any], tool_name: str
 ) -> None:
@@ -748,7 +851,7 @@ def test_a_root_nobody_configured_refuses_before_anything_is_started(
 def test_a_purpose_outside_the_configuration_refuses_over_the_wire(
     live_service: fixture.GovernedService, tmp_path: Path
 ) -> None:
-    """The same six tools are listed; only the granted purpose is callable.
+    """The same fourteen tools are listed; only the granted purpose is callable.
 
     `tools/list` stays deterministic -- it is not filtered by authority, which
     would make one host's listing differ from another's -- so the model can see
@@ -806,8 +909,21 @@ CAPTURE_KEY = "mcp-authoring-capture-001"
 CAPTURED_SOURCE = "mcp-authoring-note-1"
 
 
+#: A minimal managed Skills manifest: inert data, naming nothing it may not.
+SKILL_MANIFEST: dict[str, Any] = {
+    "skill_name": "triage",
+    "version": "1.0.0",
+    "description": "triage skill",
+    "instructions": "Review the change and report what you find.",
+    "references": [],
+    "dependencies": [],
+    "compatible_roles": ["reviewer"],
+    "required_capabilities": ["repo.read"],
+}
+
+
 def authoring_calls(principal_id: str) -> list[tuple[str, dict[str, Any]]]:
-    """The five calls, bound to the dedicated principal the installation issued.
+    """The twenty-one additions' calls, bound to the dedicated principal the installation issued.
 
     A function rather than a constant because one of them names an actor, and the
     only actor an installed session may name is the principal its bearer resolves
@@ -873,8 +989,149 @@ def authoring_calls(principal_id: str) -> list[tuple[str, dict[str, Any]]]:
                 "idempotency_key": "mcp-authoring-import-001",
             },
         ),
+        # The trigger calls run in declare, ingest, lifecycle order, so the
+        # stimulus is admitted to an active subscription before it is paused.
+        (
+            "trigger_declare",
+            {
+                "input": {
+                    "project_id": "project-1",
+                    "workflow_id": "workflow-1",
+                    "trigger_id": "trigger-e2e-1",
+                    "trigger_kind": "webhook",
+                    "workflow_version": "1.0.0",
+                    "plan_hash": "sha256:" + "a" * 64,
+                    "event_type": "invoice.received",
+                    "event_contract_digest": "sha256:" + "c" * 64,
+                    "configuration_digest": "sha256:" + "d" * 64,
+                    "subscription_state": "active",
+                    "subscription_reason": "subscription.created",
+                },
+                "idempotency_key": "mcp-authoring-trigger-declare-001",
+            },
+        ),
+        (
+            "trigger_ingest",
+            {
+                "input": {
+                    "project_id": "project-1",
+                    "workflow_id": "workflow-1",
+                    "trigger_id": "trigger-e2e-1",
+                    "event_id": "event-e2e-1",
+                    "event_idempotency_key": "key-e2e-1",
+                    "event_type": "invoice.received",
+                    "envelope_digest": "sha256:" + "b" * 64,
+                    "occurred_at": "2026-10-04T02:59:00.000000Z",
+                },
+                "idempotency_key": "mcp-authoring-trigger-ingest-001",
+            },
+        ),
+        (
+            "trigger_lifecycle",
+            {
+                "input": {
+                    "project_id": "project-1",
+                    "workflow_id": "workflow-1",
+                    "trigger_id": "trigger-e2e-1",
+                    "subscription_state": "paused",
+                    "reason": "operator.paused",
+                },
+                "idempotency_key": "mcp-authoring-trigger-lifecycle-001",
+            },
+        ),
         ("job_get", {"job_id": "job-not-in-this-workspace"}),
         ("job_events", {"job_id": "job-not-in-this-workspace"}),
+        (
+            "skills_draft_create",
+            {
+                "input": {"manifest": SKILL_MANIFEST},
+                "idempotency_key": "mcp-authoring-skill-create-001",
+            },
+        ),
+        (
+            "skills_draft_update",
+            {
+                "input": {
+                    "draft_id": "skdraft-not-in-this-workspace",
+                    "expected_revision": 1,
+                    "manifest": SKILL_MANIFEST,
+                },
+                "idempotency_key": "mcp-authoring-skill-update-001",
+            },
+        ),
+        (
+            "skills_proposal_submit",
+            {
+                "input": {
+                    "draft_id": "skdraft-not-in-this-workspace",
+                    "expected_revision": 1,
+                    "evidence_refs": [
+                        {
+                            "evidence_id": "evidence-not-in-this-workspace",
+                            "content_digest": "sha256:" + "e" * 64,
+                        }
+                    ],
+                },
+                "idempotency_key": "mcp-authoring-skill-submit-001",
+            },
+        ),
+        (
+            "knowledge_share_propose",
+            {
+                "input": {
+                    "share_id": "share-not-in-this-workspace",
+                    "record_id": "record-not-in-this-workspace",
+                    "recipient_project_id": "project-2",
+                },
+                "idempotency_key": "mcp-authoring-share-propose-001",
+            },
+        ),
+        (
+            "knowledge_share_decide",
+            {
+                "input": {
+                    "share_id": "share-not-in-this-workspace",
+                    "decision": "accepted",
+                },
+                "idempotency_key": "mcp-authoring-share-decide-001",
+            },
+        ),
+        ("knowledge_share_read", {"share_id": "share-not-in-this-workspace"}),
+        ("knowledge_share_lineage", {"share_id": "share-not-in-this-workspace"}),
+        (
+            "task_context_export",
+            {
+                "input": {
+                    "handoff": {"handoff_identity": "handoff-not-in-this-workspace"},
+                    "token_budget": 4000,
+                    "byte_budget": 65536,
+                },
+                "idempotency_key": "mcp-authoring-task-context-export-001",
+            },
+        ),
+        (
+            "task_context_export_read",
+            {"export_id": "tcx-not-in-this-workspace"},
+        ),
+        (
+            "outcome_request_create",
+            {
+                "input": {
+                    "objective": "summarise the handoff",
+                    "export_id": "tcx-not-in-this-workspace",
+                },
+                "idempotency_key": "mcp-authoring-outcome-request-001",
+            },
+        ),
+        ("outcome_request_read", {"outcome_request_id": "outreq-not-in-this-workspace"}),
+        ("project_context_read", {}),
+        (
+            "project_context_switch",
+            {
+                "input": {"project_id": "project-not-in-this-workspace"},
+                "idempotency_key": "mcp-authoring-project-context-switch-001",
+            },
+        ),
     ]
 
 
@@ -897,7 +1154,7 @@ def service_error(called: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _authoring_probe(config: Path, principal_id: str) -> dict[str, Any]:
-    """One admitted stdio session: the listing, the five calls, then the replay."""
+    """One admitted stdio session: the listing, the authoring calls, the replay."""
     wanted = authoring_calls(principal_id)
     async with (
         stdio_client(parameters(config, "--authoring")) as (read_stream, write_stream),
@@ -923,11 +1180,11 @@ async def _authoring_probe(config: Path, principal_id: str) -> dict[str, Any]:
 def test_the_ceiling_alone_leaves_the_server_restricted_over_the_wire(
     live_service: fixture.GovernedService, tmp_path: Path
 ) -> None:
-    """`mutation_enabled: true` in the trusted file, and still six read tools.
+    """`mutation_enabled: true` in the trusted file, and still the restricted fourteen.
 
     This is the upgrade rule and the security property together: the public
     configuration is a ceiling, not a switch, and the probe here is started the
-    way production starts one -- no admission injected. A model sees the same six
+    way production starts one -- no admission injected. A model sees the same fourteen
     tools it saw before, and `memory_create` is not merely absent from the
     listing but unresolvable at the call.
     """
@@ -941,13 +1198,14 @@ def test_the_ceiling_alone_leaves_the_server_restricted_over_the_wire(
         entry.tool_name for entry in EXPOSURE_MANIFEST
     ]
     for name in ARGUMENTS:
-        assert observed["calls"][name]["is_error"] is False, observed["calls"][name]
+        assert_call_outcome(observed, name)
     refusal = observed["refusals"]["memory_create"]
     assert refusal["is_error"] is True
     assert "is not a tool this server exposes" in refusal["content"][0]["text"]
 
 
-def test_an_admitted_authoring_session_lists_eleven_and_calls_every_new_tool(
+# The name keeps its original figures because the dated traceability ledger cites it.
+def test_an_admitted_authoring_session_lists_twenty_five_and_calls_every_new_tool(
     tmp_path: Path,
 ) -> None:
     """The whole authoring surface, over real pipes, against a real service.
@@ -962,8 +1220,8 @@ def test_an_admitted_authoring_session_lists_eleven_and_calls_every_new_tool(
 
     What each call proves, in one session:
 
-    * the listing is the eleven, in manifest order, and the three mutations
-      advertise the closed wrapper with the read hints inverted;
+    * the listing is the thirty-five, in manifest order, and the fourteen authoring
+      mutations advertise the closed wrapper with the read hints inverted;
     * `evidence_capture` writes -- the content travels in the call, with no path,
       URL or credential anywhere in it -- and the artifact is then findable
       through `evidence_search`, which is the same synchronous guarantee the
@@ -996,7 +1254,19 @@ def test_an_admitted_authoring_session_lists_eleven_and_calls_every_new_tool(
     assert observed["tools"] == [
         tool.model_dump(mode="json") for tool in tools("authoring")
     ]
-    for name in ("memory_create", "evidence_capture", "import_start"):
+    for name in (
+        "memory_create",
+        "evidence_capture",
+        "import_start",
+        "trigger_declare",
+        "trigger_lifecycle",
+        "trigger_ingest",
+        "skills_draft_create",
+        "skills_draft_update",
+        "skills_proposal_submit",
+        "knowledge_share_propose",
+        "knowledge_share_decide",
+    ):
         advertised = next(tool for tool in observed["tools"] if tool["name"] == name)
         assert set(advertised["input_schema"]["properties"]) == {
             "input",
@@ -1298,11 +1568,11 @@ def test_a_lost_capture_response_replays_after_a_real_service_restart(
 
 
 def test_the_authoring_calls_cover_every_tool_the_profile_adds() -> None:
-    """The coverage check for the wider profile, matching the one the six have.
+    """The coverage check for the wider profile, matching the restricted fourteen.
 
     By set rather than by order, because :func:`authoring_calls` is ordered by
     what the calls depend on -- the capture before the memory that cites it --
-    and not by the manifest. A twelfth tool still cannot land without an
+    and not by the manifest. A twentieth tool still cannot land without an
     end-to-end call.
     """
     assert {name for name, _ in authoring_calls("mcp-coverage-principal")} == {
@@ -1379,7 +1649,7 @@ def test_the_stdio_stream_carries_only_protocol_even_under_contamination(
     """R004-07: stdout is protocol-only, proved against a server trying to break it.
 
     The probe writes to `sys.stdout` twice from inside a live handler, on every
-    call -- six of them now. If any reached the wire the session below would fail
+    call -- fourteen of them now. If any reached the wire the session below would fail
     to parse a frame; instead every call completes and the strings are nowhere in
     what the client received.
 
@@ -1394,11 +1664,7 @@ def test_the_stdio_stream_carries_only_protocol_even_under_contamination(
     contaminated = session(live_config, "--contaminate")
     assert contaminated["tools"] == [tool.model_dump(mode="json") for tool in tools()]
     for name in ARGUMENTS:
-        assert contaminated["calls"][name]["is_error"] is False, (
-            name,
-            contaminated["calls"][name],
-            live_service.diagnosis(),
-        )
+        assert_call_outcome(contaminated, name)
     serialised = json.dumps(contaminated)
     assert "CONTAMINATION-FROM-A-HANDLER" not in serialised
     assert "CONTAMINATION-VIA-PRINT" not in serialised
@@ -1523,8 +1789,11 @@ def test_the_server_refuses_a_missing_workspace_and_creates_nothing(
     installation is real, the dedicated principal's bearer resolves, and the
     workspace named is simply one this installation does not have. Nothing is
     published for it, so `--managed-start` is invoked once and the launcher's own
-    refusal comes back: run `omnivia init`. `main()` writes it to stderr and not
-    one byte to stdout, which is what makes the failure protocol-safe.
+    refusal comes back: create the workspace with the Core service's `--init`
+    maintenance mode and configure with `omnivia mcp configure`. `main()` writes it
+    to stderr and not one byte to stdout, which is what makes the failure
+    protocol-safe. The guidance names no service program: the runtime's
+    architecture guard forbids the program name in adapter source.
 
     Nothing is created, and that is checked where it could now happen: under the
     installation state root the refused start was pointed at, which must hold
@@ -1542,8 +1811,16 @@ def test_the_server_refuses_a_missing_workspace_and_creates_nothing(
 
     assert completed.returncode == 1
     assert completed.stdout == "", "a failed start must write no protocol"
-    assert "omnivia init" in completed.stderr
-    assert "creates none" in completed.stderr
+    assert "Core service's own `--init` maintenance mode" in completed.stderr
+    assert "omnivia-core-service" not in completed.stderr
+    assert "--workspace" in completed.stderr
+    assert "--installation-state" in completed.stderr
+    assert "omnivia --installation-state" in completed.stderr
+    assert "mcp configure" in completed.stderr
+    assert "restart the host" in completed.stderr
+    assert "omnivia init" not in completed.stderr
+    assert "creates no workspace" in completed.stderr
+    assert "same explicit" not in completed.stderr, "config carries no workspace path"
     assert set(live_service.installation_state.rglob("*")) == before, (
         "a refused start created state"
     )

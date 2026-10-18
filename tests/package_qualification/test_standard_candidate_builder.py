@@ -65,6 +65,8 @@ def test_builder_defines_the_exact_standard_profile_and_candidate_evidence() -> 
         "compatibility-matrix.json",
         "qualification-result.json",
         "standard-lifecycle-result.json",
+        "mcp-authoring-qualification.json",
+        "run-mcp-authoring-qualification.py",
         "unsigned",
         "--no-index",
         "--only-binary=:all:",
@@ -360,10 +362,18 @@ def test_the_builder_requires_the_same_four_client_families_the_journey_drives()
 
 _TOOLS = [
     "context_pack_build",
+    "decision_evaluate",
+    "decision_record_get",
+    "decision_record_list",
+    "decision_status",
+    "engineering_context_build",
+    "engineering_expand",
+    "engineering_search",
     "evidence_search",
     "graph_traverse",
     "knowledge_search",
     "memory_search",
+    "trigger_health",
     "workspace_inspect",
 ]
 _FORMATS = {
@@ -385,10 +395,20 @@ def _accepted_result() -> dict[str, object]:
                     "config_format": config_format,
                     "connected": True,
                     "session_completed": True,
-                    "tool_count": 6,
+                    "tool_count": 14,
                     "tool_calls": 6,
                     "tools": list(_TOOLS),
-                    "result_counts": dict.fromkeys(_TOOLS, 1),
+                    "result_counts": dict.fromkeys(
+                        [
+                            "context_pack_build",
+                            "evidence_search",
+                            "graph_traverse",
+                            "knowledge_search",
+                            "memory_search",
+                            "workspace_inspect",
+                        ],
+                        1,
+                    ),
                     "verdict": "pass",
                 }
                 for family, config_format in _FORMATS.items()
@@ -471,7 +491,7 @@ def test_the_candidate_gate_refuses_an_unnamed_extra_family() -> None:
         ("config_format", "claude_code_json"),
         ("config_format", "codex_toml_v2"),
         ("config_format", None),
-        # A manifest that is not the stable six, in any of its wrong shapes.
+        # A manifest that is not the stable fourteen, in any of its wrong shapes.
         ("tools", _TOOLS[:5]),
         ("tools", [*_TOOLS, "context_pack_write"]),
         ("tools", [*_TOOLS[:-1], "context_pack_write"]),
@@ -575,7 +595,7 @@ def test_the_builder_gate_requires_the_same_evidence_the_journey_retains() -> No
     assert module.HOST_EVIDENCE == {
         "connected": True,
         "session_completed": True,
-        "tool_count": 6,
+        "tool_count": 14,
         "tool_calls": 6,
         "verdict": "pass",
     }
@@ -683,6 +703,7 @@ def test_provenance_and_the_current_matrix_row_carry_the_same_host_identity(
         [],
         _journey(),
         {},
+        {},
         [],
     )
     metadata = tmp_path / builder.METADATA_DIRECTORY
@@ -779,7 +800,7 @@ def test_architecture_gate_clean_install_mcp_without_desktop(
     Claude Code configuration forms included. This test holds the two gates that
     make a pass mean that: the install is refused unless its first-party set is
     exactly the five Standard distributions, and the journey is refused unless
-    every host profile connected and called all six tools.
+    every host profile connected and called all fourteen tools.
 
     `_offline_qualification` is driven for real, with only process launches
     stubbed, so the ordering is proven rather than read: a freeze carrying a

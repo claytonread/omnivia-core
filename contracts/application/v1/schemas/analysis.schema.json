@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/analysis.schema.json",
+  "title": "OmniVia Core Application Contract v1 - governed analysis payloads",
+  "description": "Request and result payloads for the governed analysis operation `analysis.start`. The payload carries a governed reference to an exact metric or Data View revision, a bounded temporal scope, the requested use class, exact typed parameters as JSON data, explicit output bounds and a purpose reference. It carries no SQL, no connection string, no filesystem path, no function name and no executable fragment of any kind: the server resolves policy, source handles and physical execution. Authentication, correlation, idempotency and purpose authority remain in the request envelope and are deliberately not duplicated here. Milestone 1 of the structured-data programme defines decoding and refusal only: every well-formed request is answered with the typed outcome `dependency_unavailable`, and the result type below is reserved and never returned by the milestone-1 build.",
+  "$defs": {
+    "AnalysisUseClass": {
+      "title": "AnalysisUseClass",
+      "description": "The requested result-use class. `action_input` is deliberately absent from the v1 vocabulary: action consumption is denied until an accepted action-input policy exists (UDL-D06), and a request naming it is refused as `invalid_request` rather than decoded as an admitted use class.",
+      "type": "string",
+      "enum": ["exploration", "historical_display", "current_publication"]
+    },
+    "BusinessDate": {
+      "title": "BusinessDate",
+      "description": "A calendar date in the business timezone, without a time or offset. Distinct from a UTC instant: the envelope records instants; this type records a business-date boundary.",
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 10
+    },
+    "BusinessTimezone": {
+      "title": "BusinessTimezone",
+      "description": "An IANA timezone identifier interpreting the request's business dates, such as `Australia/Brisbane`. A fixed offset is not a timezone and is refused.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "GovernedMetricReference": {
+      "title": "GovernedMetricReference",
+      "description": "A governed analysis target that is a metric, named by its exact immutable revision identifier. A mutable `latest` alias is not accepted: the revision must be stated.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Discriminator for the governed-reference union; constant for this member.",
+          "type": "string",
+          "enum": ["metric"]
+        },
+        "metric_revision_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Exact immutable revision identifier of the approved metric definition. Required on the metric branch and absent on the Data View branch; its presence is what distinguishes the two union members."
+        }
+      },
+      "required": ["kind", "metric_revision_id"],
+      "unevaluatedProperties": false
+    },
+    "GovernedDataViewReference": {
+      "title": "GovernedDataViewReference",
+      "description": "A governed analysis target that is a Data View, named by its exact immutable revision identifier. A mutable `latest` alias is not accepted: the revision must be stated.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Discriminator for the governed-reference union; constant for this member.",
+          "type": "string",
+          "enum": ["data_view"]
+        },
+        "data_view_revision_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Exact immutable revision identifier of the approved Data View definition. Required on the Data View branch and absent on the metric branch; its presence is what distinguishes the two union members."
+        }
+      },
+      "required": ["kind", "data_view_revision_id"],
+      "unevaluatedProperties": false
+    },
+    "AnalysisTarget": {
+      "title": "AnalysisTarget",
+      "description": "Exactly one governed analysis target: an exact metric revision or an exact Data View revision. The union is discriminated by the required `kind` member unique to each branch.",
+      "oneOf": [
+        {
+          "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/GovernedMetricReference"
+        },
+        {
+          "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/GovernedDataViewReference"
+        }
+      ]
+    },
+    "AnalysisParameter": {
+      "title": "AnalysisParameter",
+      "description": "One exact typed parameter: a bounded parameter name and its JSON data value. Values are data, never expressions: an executable fragment is not a representable parameter value, and the server interprets parameter meaning only through the governed definition the target names.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Parameter name as declared by the governed definition."
+        },
+        "value": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The parameter's JSON data value. JSON data only: no expression channel exists in this contract."
+        }
+      },
+      "required": ["name", "value"],
+      "unevaluatedProperties": false
+    },
+    "AnalysisOutputBounds": {
+      "title": "AnalysisOutputBounds",
+      "description": "Explicit bounded output. Requested bounds narrow the host and runtime limits; they never override them and never grant execution.",
+      "type": "object",
+      "properties": {
+        "max_rows": {
+          "type": "integer",
+          "description": "Maximum returned rows for a bounded Data View read result. Absent means the admitted server profile default.",
+          "minimum": 1
+        }
+      },
+      "required": [],
+      "unevaluatedProperties": false
+    },
+    "AnalysisStartInput": {
+      "title": "AnalysisStartInput",
+      "description": "Input for `analysis.start`. Workspace-scoped: the workspace is the request envelope's selected workspace; this payload never carries a second, independent workspace identifier. Exactly one temporal scope is stated: an `as_of` business date or an explicit `period` half-open interval, never both and never neither.",
+      "type": "object",
+      "properties": {
+        "request_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "The payload schema version this request was authored against, as `major.minor`. Milestone 1 supports `1.0` only."
+        },
+        "target": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisTarget",
+          "description": "The exact governed definition this analysis names."
+        },
+        "as_of_date": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/BusinessDate",
+          "description": "Point-in-time business scope: evaluate the governed definition as of this business date in the business timezone. Mutually exclusive with `period`."
+        },
+        "period_start": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/BusinessDate",
+          "description": "Inclusive start of the business-period scope. Required with `period_end` and forbidden with `as_of_date`."
+        },
+        "period_end": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/BusinessDate",
+          "description": "Exclusive end of the business-period scope. Required with `period_start` and forbidden with `as_of_date`."
+        },
+        "business_timezone": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/BusinessTimezone",
+          "description": "IANA timezone interpreting every business date in this request."
+        },
+        "use_class": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisUseClass",
+          "description": "The requested result-use class. Requesting a class does not grant it; the result-use gate evaluates permission separately."
+        },
+        "parameters": {
+          "type": "array",
+          "description": "Exact typed parameters, each a name plus JSON data value. Absent means the governed definition's declared defaults apply. Order is not significant; duplicate names are refused.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisParameter"
+          }
+        },
+        "output_bounds": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/analysis.schema.json#/$defs/AnalysisOutputBounds",
+          "description": "Explicit bounded output. Absent means the admitted server profile default bounds."
+        },
+        "purpose_reference": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Caller-visible reference to the purpose this analysis is requested under. A purpose reference is a claim the service validates; it is never a substitute for identity, authorisation or policy checks."
+        }
+      },
+      "required": [
+        "request_version",
+        "target",
+        "business_timezone",
+        "use_class",
+        "purpose_reference"
+      ],
+      "unevaluatedProperties": false
+    },
+    "AnalysisStartResult": {
+      "title": "AnalysisStartResult",
+      "description": "Result of `analysis.start`. Reserved in milestone 1: the milestone-1 build never returns a success result, so this type declares no members. It exists so the catalogue's result reference resolves and so a later milestone extends this shape additively rather than inventing a second result type.",
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "unevaluatedProperties": false
+    }
+  }
+}

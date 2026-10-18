@@ -1,0 +1,1524 @@
+"""Engineering source coverage and dependency applicability
+(SPEC-CORE-ENGMEM-001, plan P0-04; spec §6.3, §15; migrations 0050 and 0051).
+
+The trusted-source vertical. `engineering.source.record` appends immutable source
+events to a stream its principal owns; the stream's coverage barrier advances
+only along a contiguous, validated predecessor chain; `memory.create` records a
+record version's whole-file dependency set against a recorded baseline, and the
+claim-preserving `knowledge.propose` and `candidate.approve` carry that set
+unchanged to the exact version they mint; and one deterministic evaluator
+compares a version's set with an explicitly requested target's manifest. Every
+write runs inside the fenced mutation transaction the coordinator opens, and the
+guard triggers of migrations 0050 and 0051 hold the ownership, chain, coverage
+and carry invariants a second time.
+
+Rules enforced here:
+
+- validation is strict and total. Unknown keys, malformed or duplicate paths,
+  absolute, drive-prefixed, backslashed, empty, `.` or `..` segments, control
+  characters, malformed digests and oversized manifests are refused, never
+  repaired. Paths keep their exact Unicode and case;
+- a stream belongs to the principal and repository that opened it. Another
+  principal or repository cannot write to it or replace it;
+- coverage follows the producer's sequence and predecessor chain, never capture
+  time. An event may arrive out of order and wait inside a bounded pending
+  window, and one bounded drain advances the barrier through every contiguous
+  validated event. All history is retained;
+- an identical redelivery records no new source event or snapshot (its audit
+  and idempotency settlement still occur). A different event under a used
+  sequence or snapshot identity is a conflict, whichever idempotency key it
+  arrives under;
+- the evaluator returns `matched` only for a complete, evidence-backed
+  dependency set whose every required whole-file digest is attested by its
+  recorded, covered baseline and equal at a covered, completely captured target
+  in the same repository and stream. A changed required file is
+  `potentially_stale`, an absent one under complete capture is `invalid`, and
+  anything unqualified is `unknown`. Reviews, labels, base commits and recency
+  play no part.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import unicodedata
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
+from typing import Any, Final, TypeGuard
+
+from omnivia_core.contracts.v1 import is_content_checksum, is_identifier
+from omnivia_core_runtime.storage import repository_identity as repo_identity
+from omnivia_core_runtime.storage.decisions import canonical_document, content_digest
+from omnivia_core_runtime.storage.payload_budget import (
+    PayloadLengthMismatch,
+    PayloadReadBudget,
+)
+
+#: The documented v1 bounds (spec §6.3 caps, stated here once).
+MAX_MANIFEST_ENTRIES: Final = 256
+MAX_MANIFEST_BYTES: Final = 65536
+MAX_PATH_CHARS: Final = 512
+MAX_SEQUENCE: Final = 2_147_483_647
+MAX_DEPENDENCIES: Final = 64
+#: How far past its covered chain a stream may announce. Out-of-order events wait
+#: inside this window, which is also what bounds one drain: a stream never holds
+#: more pending events than this, so one drain always reaches the end of a chain.
+PENDING_WINDOW: Final = 64
+
+SNAPSHOT_KINDS: Final = frozenset({"git_commit", "working_tree", "source_archive"})
+#: 0056's closed source-event representation vocabulary. `flat_v1` is 0050's
+#: inline canonical manifest; `captured_v1` is the indexed captured snapshot,
+#: sealed by `omnivia_engineering_snapshot_captures`. Unknown values fail closed.
+MANIFEST_FORMATS: Final = frozenset({"flat_v1", "captured_v1"})
+CAPTURE_STATUSES: Final = frozenset({"complete", "incomplete"})
+#: 0049's selector and meaning vocabularies. Only `whole_file` is evaluated in v1;
+#: every other selector type is recorded and yields `unknown`.
+SELECTOR_TYPES: Final = frozenset(
+    {
+        "whole_file",
+        "source_span",
+        "symbol",
+        "config_key",
+        "schema_contract",
+        "external_evidence",
+    }
+)
+MEANINGS: Final = frozenset(
+    {"must_match", "requires_revalidation_on_change", "context_only"}
+)
+DEPENDENCY_COVERAGES: Final = frozenset({"complete", "partial"})
+
+_RECORD_KEYS: Final = frozenset(
+    {
+        "repository_id",
+        "stream_id",
+        "sequence",
+        "predecessor",
+        "snapshot_id",
+        "snapshot_kind",
+        "base_commit",
+        "capture_status",
+        "manifest",
+        "manifest_digest",
+    }
+)
+_CAPTURE_COMMIT_KEYS: Final = frozenset(
+    {
+        "repository_id",
+        "stream_id",
+        "sequence",
+        "predecessor",
+        "snapshot_id",
+        "expected_manifest_digest",
+    }
+)
+_PREDECESSOR_KEYS: Final = frozenset({"sequence", "snapshot_id"})
+_ENTRY_KEYS: Final = frozenset({"path", "digest"})
+_PROFILE_KEYS: Final = frozenset(
+    {
+        "repository_id",
+        "stream_id",
+        "snapshot_id",
+        "producer",
+        "producer_version",
+        "coverage",
+        "dependencies",
+    }
+)
+_DEPENDENCY_KEYS: Final = frozenset(
+    {"selector_type", "selector", "meaning", "expected_digest"}
+)
+
+
+class SourceRecordInvalid(ValueError):
+    """The source record is outside its bounded, validated shape."""
+
+
+class SourceRecordTooLarge(ValueError):
+    """The manifest exceeds its entry or canonical byte cap."""
+
+
+class SourceStreamForeignPrincipal(RuntimeError):
+    """The stream is owned by another principal."""
+
+
+class SourceConflict(RuntimeError):
+    """The event disagrees with an immutable identity or binding already stored."""
+
+
+class SourceWindowExceeded(RuntimeError):
+    """The event is further ahead of the covered chain than the pending window."""
+
+
+class CapturedSourceNotFound(LookupError):
+    """The requested snapshot has no sealed captured-source header."""
+
+
+class CapturedSourceUnauthorized(RuntimeError):
+    """The capture or stream belongs to another authenticated installation."""
+
+
+class CapturedSourcePreconditionFailed(RuntimeError):
+    """The caller's expected rich-manifest digest is not the sealed digest."""
+
+
+class DependencyManifestInvalid(ValueError):
+    """The `dependency_manifest` content profile is malformed."""
+
+
+class DependencyBaselineUnavailable(LookupError):
+    """The dependency manifest's baseline is not a recorded source event."""
+
+
+@dataclass(frozen=True)
+class SourceRecord:
+    """One validated source event, with its canonical manifest and digests."""
+
+    repository_id: str
+    stream_id: str
+    sequence: int
+    predecessor_snapshot_id: str | None
+    snapshot_id: str
+    snapshot_kind: str
+    base_commit: str | None
+    capture_status: str
+    manifest: Mapping[str, str]
+    manifest_json: str
+    manifest_digest: str
+    event_digest: str
+
+
+@dataclass(frozen=True)
+class CapturedSourceCommit:
+    """One strictly validated request to bind a sealed capture into a stream."""
+
+    repository_id: str
+    stream_id: str
+    sequence: int
+    predecessor_snapshot_id: str | None
+    snapshot_id: str
+    expected_manifest_digest: str | None
+
+
+@dataclass(frozen=True)
+class SealedSourceCapture:
+    """The immutable server-owned facts resolved from one 0056 capture seal."""
+
+    repository_id: str
+    installation_id: str
+    checkout_id: str
+    manifest_evidence_id: str
+    rich_manifest_digest: str
+    coverage_digest: str
+    file_count: int
+    capture_status: str
+    captured_at_us: int
+
+
+@dataclass(frozen=True)
+class CoveredSnapshot:
+    """A recorded snapshot inside its stream's contiguous validated coverage.
+
+    `manifest` is the full inline map for a `flat_v1` representation; for
+    `captured_v1` it starts empty (the rich manifest is never hydrated here) and
+    is filled with only the bounded, requested paths by `evaluate_applicability`.
+    """
+
+    repository_id: str
+    stream_id: str
+    sequence: int
+    snapshot_id: str
+    capture_status: str
+    manifest_digest: str
+    manifest: Mapping[str, str]
+    representation: str = "flat_v1"
+
+
+@dataclass(frozen=True)
+class Dependency:
+    selector_type: str
+    selector: str
+    meaning: str
+    expected_digest: str | None
+
+
+@dataclass(frozen=True)
+class DependencyManifest:
+    """The validated `dependency_manifest` content profile of one observation."""
+
+    repository_id: str
+    stream_id: str
+    snapshot_id: str
+    producer: str
+    producer_version: str
+    coverage: str
+    dependencies: tuple[Dependency, ...]
+
+
+def _plain(value: Any) -> Any:
+    """The contract's immutable containers as plain JSON values."""
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [_plain(item) for item in value]
+    return value
+
+
+def _is_int(value: object) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _control_free(text: str) -> bool:
+    """No control characters and no lone surrogates (which UTF-8 cannot carry)."""
+    return all(unicodedata.category(char) not in ("Cc", "Cs") for char in text)
+
+
+def _member(value: object, vocabulary: frozenset[str]) -> TypeGuard[str]:
+    """A closed-vocabulary value: a string first, so a list or dict is refused
+    rather than raising `TypeError` on the hash lookup."""
+    return isinstance(value, str) and value in vocabulary
+
+
+def _bounded_text(value: object, limit: int) -> bool:
+    return (
+        isinstance(value, str) and 1 <= len(value) <= limit and _control_free(value)
+    )
+
+
+def valid_path(value: object) -> bool:
+    """A repository-relative `/`-separated path, preserved exactly.
+
+    Unicode and case are never normalized: `A.py` and `a.py` are two paths. An
+    absolute path, a Windows drive prefix, a backslash, an empty, `.` or `..`
+    segment and a control character are refused.
+    """
+    if not isinstance(value, str) or not _bounded_text(value, MAX_PATH_CHARS):
+        return False
+    if value.startswith("/") or "\\" in value:
+        return False
+    segments = value.split("/")
+    if any(segment in ("", ".", "..") for segment in segments):
+        return False
+    first = segments[0]
+    return not (
+        len(first) >= 2 and first[1] == ":" and first[0].isascii() and first[0].isalpha()
+    )
+
+
+def _identifier(value: Mapping[str, Any], key: str) -> str:
+    item = value.get(key)
+    if not isinstance(item, str) or not is_identifier(item):
+        raise SourceRecordInvalid("a source identity is malformed")
+    return item
+
+
+def parse_source_record(raw: object) -> SourceRecord:
+    """Validate one `engineering.source.record` payload, strictly and totally."""
+    value = _plain(raw)
+    if not isinstance(value, dict) or not set(value) <= _RECORD_KEYS:
+        raise SourceRecordInvalid("unknown or missing source record fields")
+    repository_id = _identifier(value, "repository_id")
+    stream_id = _identifier(value, "stream_id")
+    snapshot_id = _identifier(value, "snapshot_id")
+    sequence = value.get("sequence")
+    if (
+        not isinstance(sequence, int)
+        or isinstance(sequence, bool)
+        or not 1 <= sequence <= MAX_SEQUENCE
+    ):
+        raise SourceRecordInvalid("the stream sequence is outside its bounds")
+    predecessor = value.get("predecessor")
+    predecessor_snapshot_id: str | None = None
+    if sequence == 1:
+        if predecessor is not None:
+            raise SourceRecordInvalid("the first event of a stream has no predecessor")
+    else:
+        if (
+            not isinstance(predecessor, dict)
+            or set(predecessor) != _PREDECESSOR_KEYS
+            or not _is_int(predecessor["sequence"])
+            or predecessor["sequence"] != sequence - 1
+            or not is_identifier(predecessor["snapshot_id"])
+            or predecessor["snapshot_id"] == snapshot_id
+        ):
+            raise SourceRecordInvalid("the predecessor must name the previous sequence")
+        predecessor_snapshot_id = predecessor["snapshot_id"]
+    snapshot_kind = value.get("snapshot_kind")
+    if not _member(snapshot_kind, SNAPSHOT_KINDS):
+        raise SourceRecordInvalid("the snapshot kind is not supported")
+    base_commit = value.get("base_commit")
+    if snapshot_kind == "git_commit":
+        if not _bounded_text(base_commit, 128):
+            raise SourceRecordInvalid("a git_commit snapshot states its commit")
+    elif base_commit is not None:
+        # A dirty working tree or an archive never asserts a base commit (§6.3).
+        raise SourceRecordInvalid("only a git_commit snapshot states a base commit")
+    capture_status = value.get("capture_status")
+    if not _member(capture_status, CAPTURE_STATUSES):
+        raise SourceRecordInvalid("the capture status is not supported")
+    entries = value.get("manifest")
+    if not isinstance(entries, list):
+        raise SourceRecordInvalid("the manifest must be a list")
+    if len(entries) > MAX_MANIFEST_ENTRIES:
+        raise SourceRecordTooLarge("the manifest exceeds its entry cap")
+    manifest: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != _ENTRY_KEYS:
+            raise SourceRecordInvalid("a manifest entry is malformed")
+        path = entry["path"]
+        digest = entry["digest"]
+        if not valid_path(path) or not is_content_checksum(digest):
+            raise SourceRecordInvalid("a manifest path or digest is malformed")
+        if path in manifest:
+            raise SourceRecordInvalid("a manifest path is repeated")
+        manifest[path] = digest
+    manifest_json = canonical_document(manifest)
+    if len(manifest_json.encode("utf-8")) > MAX_MANIFEST_BYTES:
+        raise SourceRecordTooLarge("the canonical manifest exceeds its byte cap")
+    manifest_digest = content_digest(manifest_json)
+    stated = value.get("manifest_digest")
+    if stated is not None and stated != manifest_digest:
+        raise SourceRecordInvalid("the stated manifest digest is not the manifest's")
+    event_digest = content_digest(
+        canonical_document(
+            {
+                "repository_id": repository_id,
+                "stream_id": stream_id,
+                "sequence": sequence,
+                "predecessor_snapshot_id": predecessor_snapshot_id,
+                "snapshot_id": snapshot_id,
+                "snapshot_kind": snapshot_kind,
+                "base_commit": base_commit,
+                "capture_status": capture_status,
+                "manifest_digest": manifest_digest,
+            }
+        )
+    )
+    return SourceRecord(
+        repository_id=repository_id,
+        stream_id=stream_id,
+        sequence=sequence,
+        predecessor_snapshot_id=predecessor_snapshot_id,
+        snapshot_id=snapshot_id,
+        snapshot_kind=snapshot_kind,
+        base_commit=base_commit,
+        capture_status=capture_status,
+        manifest=manifest,
+        manifest_json=manifest_json,
+        manifest_digest=manifest_digest,
+        event_digest=event_digest,
+    )
+
+
+def parse_captured_source_commit(raw: object) -> CapturedSourceCommit:
+    """Validate the accepted captured-source request without accepting capture facts."""
+
+    value = _plain(raw)
+    if not isinstance(value, dict) or not set(value) <= _CAPTURE_COMMIT_KEYS:
+        raise SourceRecordInvalid("unknown or missing captured-source fields")
+    repository_id = _identifier(value, "repository_id")
+    stream_id = _identifier(value, "stream_id")
+    snapshot_id = _identifier(value, "snapshot_id")
+    sequence = value.get("sequence")
+    if not _is_int(sequence) or not 1 <= sequence <= MAX_SEQUENCE:
+        raise SourceRecordInvalid("the stream sequence is outside its bounds")
+    predecessor = value.get("predecessor")
+    predecessor_snapshot_id: str | None = None
+    if sequence == 1:
+        if predecessor is not None:
+            raise SourceRecordInvalid("the first event of a stream has no predecessor")
+    elif (
+        not isinstance(predecessor, dict)
+        or set(predecessor) != _PREDECESSOR_KEYS
+        or not _is_int(predecessor.get("sequence"))
+        or predecessor["sequence"] != sequence - 1
+        or not is_identifier(predecessor.get("snapshot_id"))
+        or predecessor["snapshot_id"] == snapshot_id
+    ):
+        raise SourceRecordInvalid("the predecessor must name the previous sequence")
+    else:
+        predecessor_snapshot_id = str(predecessor["snapshot_id"])
+    expected = value.get("expected_manifest_digest")
+    if expected is not None and not is_content_checksum(expected):
+        raise SourceRecordInvalid("the expected manifest digest is malformed")
+    return CapturedSourceCommit(
+        repository_id=repository_id,
+        stream_id=stream_id,
+        sequence=sequence,
+        predecessor_snapshot_id=predecessor_snapshot_id,
+        snapshot_id=snapshot_id,
+        expected_manifest_digest=expected,
+    )
+
+
+def _timestamp(us: int) -> str:
+    moment = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=us)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _stream(
+    connection: sqlite3.Connection, workspace_id: str, stream_id: str
+) -> tuple[str, str, int, int, int] | None:
+    """`(repository, principal, announced, covered, updated_at_us)`, or None."""
+    row = connection.execute(
+        "SELECT repository_id, principal_id, announced_sequence, covered_sequence, "
+        "updated_at_us FROM omnivia_engineering_source_streams "
+        "WHERE workspace_id = ? AND stream_id = ?",
+        (workspace_id, stream_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row[0]), str(row[1]), int(row[2]), int(row[3]), int(row[4])
+
+
+def _event(
+    connection: sqlite3.Connection, workspace_id: str, stream_id: str, sequence: int
+) -> tuple[str, str | None, str, int] | None:
+    """`(snapshot, predecessor snapshot, event digest, recorded_at_us)`, or None."""
+    row = connection.execute(
+        "SELECT snapshot_id, predecessor_snapshot_id, event_digest, recorded_at_us "
+        "FROM omnivia_engineering_source_events "
+        "WHERE workspace_id = ? AND stream_id = ? AND sequence = ?",
+        (workspace_id, stream_id, sequence),
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row[0]), None if row[1] is None else str(row[1]), str(row[2]), int(row[3])
+
+
+def _advance_coverage(
+    connection: sqlite3.Connection, workspace_id: str, stream_id: str, covered: int
+) -> int:
+    """The bounded drain: walk the contiguous validated chain past `covered`.
+
+    Stops at the first missing sequence or broken predecessor link. The pending
+    window bounds how many events can be waiting, so the loop bound is never what
+    stops a valid chain short.
+    """
+    previous = None
+    if covered:
+        head = _event(connection, workspace_id, stream_id, covered)
+        assert head is not None
+        previous = head[0]
+    for _ in range(PENDING_WINDOW):
+        following = _event(connection, workspace_id, stream_id, covered + 1)
+        if following is None or following[1] != previous:
+            break
+        covered += 1
+        previous = following[0]
+    return covered
+
+
+def _result(
+    record: SourceRecord,
+    *,
+    disposition: str,
+    recorded_at_us: int,
+    covered: int,
+    announced: int,
+    audit_ref: str,
+) -> dict[str, Any]:
+    return {
+        "repository_id": record.repository_id,
+        "stream_id": record.stream_id,
+        "sequence": record.sequence,
+        "snapshot_id": record.snapshot_id,
+        "manifest_digest": record.manifest_digest,
+        "capture_status": record.capture_status,
+        "disposition": disposition,
+        "coverage": {
+            "state": "current" if covered == announced else "pending",
+            "covered_sequence": covered,
+            "announced_sequence": announced,
+        },
+        "recorded_at": _timestamp(recorded_at_us),
+        "audit_reference": audit_ref,
+    }
+
+
+def record_source_event(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    record: SourceRecord,
+) -> dict[str, Any]:
+    """Register the stream (and repository) on first use, append one event, and
+    advance the coverage barrier, all inside the caller's fenced transaction."""
+    now_us = settlement.settled_at_us
+    stream = _stream(connection, workspace_id, record.stream_id)
+    if stream is not None:
+        repository_id, owner, announced, covered, updated_us = stream
+        if owner != principal_id:
+            raise SourceStreamForeignPrincipal(record.stream_id)
+        if repository_id != record.repository_id:
+            raise SourceConflict("the stream is bound to another repository")
+        existing = _event(connection, workspace_id, record.stream_id, record.sequence)
+        if existing is not None:
+            if existing[2] != record.event_digest:
+                raise SourceConflict("the stream sequence already holds another event")
+            return _result(
+                record,
+                disposition="already_recorded",
+                recorded_at_us=existing[3],
+                covered=covered,
+                announced=announced,
+                audit_ref=settlement.audit_ref,
+            )
+    else:
+        announced, covered, updated_us = 0, 0, now_us
+    if connection.execute(
+        "SELECT 1 FROM omnivia_engineering_snapshots "
+        "WHERE workspace_id = ? AND snapshot_id = ?",
+        (workspace_id, record.snapshot_id),
+    ).fetchone():
+        raise SourceConflict("the snapshot identity is already recorded")
+    if record.sequence > covered + PENDING_WINDOW:
+        raise SourceWindowExceeded(record.stream_id)
+    before = _event(connection, workspace_id, record.stream_id, record.sequence - 1)
+    after = _event(connection, workspace_id, record.stream_id, record.sequence + 1)
+    if (before is not None and before[0] != record.predecessor_snapshot_id) or (
+        after is not None and after[1] != record.snapshot_id
+    ):
+        raise SourceConflict("the event disagrees with its stored neighbours")
+
+    updated_us = max(updated_us, now_us)
+    if stream is None:
+        if (
+            repo_identity.resolve_repository(
+                connection, workspace_id=workspace_id, repository_id=record.repository_id
+            )
+            is None
+        ):
+            repo_identity.register_repository(
+                connection,
+                settlement,
+                workspace_id=workspace_id,
+                repository_id=record.repository_id,
+                display_name=record.repository_id,
+                provider_hint=None,
+                registered_at_us=now_us,
+            )
+        announced = record.sequence
+        connection.execute(
+            "INSERT INTO omnivia_engineering_source_streams "
+            "(workspace_id, stream_id, repository_id, principal_id, announced_sequence, "
+            "covered_sequence, registered_at_us, updated_at_us, audit_ref) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)",
+            (
+                workspace_id,
+                record.stream_id,
+                record.repository_id,
+                principal_id,
+                announced,
+                now_us,
+                updated_us,
+                settlement.audit_ref,
+            ),
+        )
+    elif record.sequence > announced:
+        # The newest announced head is written before its event, in the same
+        # transaction, so no reader ever sees an event beyond the stated head.
+        announced = record.sequence
+        connection.execute(
+            "UPDATE omnivia_engineering_source_streams SET announced_sequence = ?, "
+            "updated_at_us = ?, audit_ref = ? WHERE workspace_id = ? AND stream_id = ?",
+            (announced, updated_us, settlement.audit_ref, workspace_id, record.stream_id),
+        )
+
+    digest = repo_identity.record_snapshot(
+        connection,
+        settlement,
+        workspace_id=workspace_id,
+        snapshot_id=record.snapshot_id,
+        repository_id=record.repository_id,
+        snapshot_kind=record.snapshot_kind,
+        manifest=record.manifest,
+        base_commit=record.base_commit,
+        capture_status=record.capture_status,
+        captured_at_us=now_us,
+    )
+    if digest != record.manifest_digest:  # pragma: no cover - one canonicalization
+        raise SourceConflict("the snapshot manifest digest disagrees with its body")
+    connection.execute(
+        "INSERT INTO omnivia_engineering_source_events "
+        "(workspace_id, stream_id, sequence, snapshot_id, predecessor_sequence, "
+        "predecessor_snapshot_id, manifest_json, manifest_digest, manifest_entry_count, "
+        "event_digest, recorded_at_us, audit_ref) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            workspace_id,
+            record.stream_id,
+            record.sequence,
+            record.snapshot_id,
+            None if record.sequence == 1 else record.sequence - 1,
+            record.predecessor_snapshot_id,
+            record.manifest_json,
+            record.manifest_digest,
+            len(record.manifest),
+            record.event_digest,
+            now_us,
+            settlement.audit_ref,
+        ),
+    )
+    covered = _advance_coverage(connection, workspace_id, record.stream_id, covered)
+    connection.execute(
+        "UPDATE omnivia_engineering_source_streams SET covered_sequence = ?, "
+        "updated_at_us = ?, audit_ref = ? WHERE workspace_id = ? AND stream_id = ?",
+        (covered, updated_us, settlement.audit_ref, workspace_id, record.stream_id),
+    )
+    return _result(
+        record,
+        disposition="recorded",
+        recorded_at_us=now_us,
+        covered=covered,
+        announced=announced,
+        audit_ref=settlement.audit_ref,
+    )
+
+
+def _sealed_capture(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    snapshot_id: str,
+) -> SealedSourceCapture:
+    """Resolve one seal and recheck every relation the seal is meant to freeze."""
+
+    row = connection.execute(
+        "SELECT c.repository_id, c.installation_id, c.checkout_id, "
+        "c.manifest_evidence_id, c.rich_manifest_digest, c.coverage_digest, "
+        "c.file_count, c.capture_status, c.captured_at_us, "
+        "sn.repository_id, sn.manifest_digest, sn.capture_status, sn.captured_at_us, "
+        "e.workspace_id, e.source_native_id, e.blob_content_digest, "
+        "co.repository_id, co.installation_id, "
+        "(SELECT COUNT(*) FROM omnivia_engineering_snapshot_files f "
+        " WHERE f.workspace_id = c.workspace_id AND f.snapshot_id = c.snapshot_id) "
+        "FROM omnivia_engineering_snapshot_captures c "
+        "LEFT JOIN omnivia_engineering_snapshots sn "
+        "  ON sn.workspace_id = c.workspace_id AND sn.snapshot_id = c.snapshot_id "
+        "LEFT JOIN omnivia_evidence_artifacts e "
+        "  ON e.evidence_id = c.manifest_evidence_id "
+        "LEFT JOIN omnivia_engineering_checkouts co "
+        "  ON co.workspace_id = c.workspace_id AND co.checkout_id = c.checkout_id "
+        "WHERE c.workspace_id = ? AND c.snapshot_id = ?",
+        (workspace_id, snapshot_id),
+    ).fetchone()
+    if row is None:
+        raise CapturedSourceNotFound(snapshot_id)
+    capture = SealedSourceCapture(
+        repository_id=str(row[0]),
+        installation_id=str(row[1]),
+        checkout_id=str(row[2]),
+        manifest_evidence_id=str(row[3]),
+        rich_manifest_digest=str(row[4]),
+        coverage_digest=str(row[5]),
+        file_count=int(row[6]),
+        capture_status=str(row[7]),
+        captured_at_us=int(row[8]),
+    )
+    expected_source_id = f"working-tree-manifest.{snapshot_id}"
+    if (
+        row[9] is None
+        or str(row[9]) != capture.repository_id
+        or str(row[10]) != capture.rich_manifest_digest
+        or str(row[11]) != capture.capture_status
+        or int(row[12]) != capture.captured_at_us
+        or row[13] is None
+        or str(row[13]) != workspace_id
+        or str(row[14]) != expected_source_id
+        or str(row[15]) != capture.rich_manifest_digest
+        or row[16] is None
+        or str(row[16]) != capture.repository_id
+        or str(row[17]) != capture.installation_id
+        or int(row[18]) != capture.file_count
+    ):
+        raise SourceConflict("the sealed capture relations no longer agree")
+    return capture
+
+
+def _captured_result(
+    request: CapturedSourceCommit,
+    capture: SealedSourceCapture,
+    *,
+    disposition: str,
+    recorded_at_us: int,
+    covered: int,
+    announced: int,
+    audit_ref: str,
+) -> dict[str, Any]:
+    return {
+        "repository_id": capture.repository_id,
+        "stream_id": request.stream_id,
+        "sequence": request.sequence,
+        "snapshot_id": request.snapshot_id,
+        "rich_manifest_digest": capture.rich_manifest_digest,
+        "coverage_digest": capture.coverage_digest,
+        "capture_status": capture.capture_status,
+        "file_count": capture.file_count,
+        "disposition": disposition,
+        "coverage": {
+            "state": "current" if covered == announced else "pending",
+            "covered_sequence": covered,
+            "announced_sequence": announced,
+        },
+        "recorded_at": _timestamp(recorded_at_us),
+        "audit_reference": audit_ref,
+    }
+
+
+def record_captured_source_event(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    principal_id: str,
+    installation_id: str,
+    request: CapturedSourceCommit,
+) -> dict[str, Any]:
+    """Bind one sealed 0056 capture to a stream and advance contiguous coverage."""
+
+    capture = _sealed_capture(
+        connection, workspace_id=workspace_id, snapshot_id=request.snapshot_id
+    )
+    if capture.repository_id != request.repository_id:
+        raise SourceConflict("the capture belongs to another repository")
+    if capture.installation_id != installation_id:
+        raise CapturedSourceUnauthorized("the capture belongs to another installation")
+    if (
+        request.expected_manifest_digest is not None
+        and request.expected_manifest_digest != capture.rich_manifest_digest
+    ):
+        raise CapturedSourcePreconditionFailed(request.snapshot_id)
+
+    event_digest = content_digest(
+        canonical_document(
+            {
+                "manifest_format": "captured_v1",
+                "repository_id": capture.repository_id,
+                "stream_id": request.stream_id,
+                "sequence": request.sequence,
+                "predecessor_snapshot_id": request.predecessor_snapshot_id,
+                "snapshot_id": request.snapshot_id,
+                "installation_id": capture.installation_id,
+                "checkout_id": capture.checkout_id,
+                "manifest_evidence_id": capture.manifest_evidence_id,
+                "rich_manifest_digest": capture.rich_manifest_digest,
+                "coverage_digest": capture.coverage_digest,
+                "file_count": capture.file_count,
+                "capture_status": capture.capture_status,
+                "captured_at_us": capture.captured_at_us,
+            }
+        )
+    )
+    now_us = settlement.settled_at_us
+    stream = _stream(connection, workspace_id, request.stream_id)
+    if stream is not None:
+        repository_id, owner, announced, covered, updated_us = stream
+        if owner != principal_id:
+            raise SourceStreamForeignPrincipal(request.stream_id)
+        if repository_id != capture.repository_id:
+            raise SourceConflict("the stream is bound to another repository")
+        origin = connection.execute(
+            "SELECT repository_id, installation_id, checkout_id "
+            "FROM omnivia_engineering_source_stream_origins "
+            "WHERE workspace_id = ? AND stream_id = ?",
+            (workspace_id, request.stream_id),
+        ).fetchone()
+        if origin is None:
+            raise SourceConflict("a legacy source stream has no captured origin")
+        if str(origin[1]) != installation_id:
+            raise CapturedSourceUnauthorized("the stream belongs to another installation")
+        if tuple(map(str, origin)) != (
+            capture.repository_id,
+            capture.installation_id,
+            capture.checkout_id,
+        ):
+            raise SourceConflict("the stream is bound to another captured origin")
+        existing = connection.execute(
+            "SELECT snapshot_id, predecessor_snapshot_id, event_digest, "
+            "recorded_at_us, manifest_format FROM omnivia_engineering_source_events "
+            "WHERE workspace_id = ? AND stream_id = ? AND sequence = ?",
+            (workspace_id, request.stream_id, request.sequence),
+        ).fetchone()
+        if existing is not None:
+            if str(existing[2]) != event_digest or str(existing[4]) != "captured_v1":
+                raise SourceConflict("the stream sequence already holds another event")
+            return _captured_result(
+                request,
+                capture,
+                disposition="already_recorded",
+                recorded_at_us=int(existing[3]),
+                covered=covered,
+                announced=announced,
+                audit_ref=settlement.audit_ref,
+            )
+    else:
+        announced, covered, updated_us = 0, 0, now_us
+
+    other = connection.execute(
+        "SELECT stream_id, sequence FROM omnivia_engineering_source_events "
+        "WHERE workspace_id = ? AND snapshot_id = ?",
+        (workspace_id, request.snapshot_id),
+    ).fetchone()
+    if other is not None:
+        raise SourceConflict("the snapshot identity is already recorded")
+    if request.sequence > covered + PENDING_WINDOW:
+        raise SourceWindowExceeded(request.stream_id)
+    before = _event(connection, workspace_id, request.stream_id, request.sequence - 1)
+    after = _event(connection, workspace_id, request.stream_id, request.sequence + 1)
+    if (before is not None and before[0] != request.predecessor_snapshot_id) or (
+        after is not None and after[1] != request.snapshot_id
+    ):
+        raise SourceConflict("the event disagrees with its stored neighbours")
+
+    updated_us = max(updated_us, now_us)
+    if stream is None:
+        announced = request.sequence
+        connection.execute(
+            "INSERT INTO omnivia_engineering_source_streams "
+            "(workspace_id, stream_id, repository_id, principal_id, announced_sequence, "
+            "covered_sequence, registered_at_us, updated_at_us, audit_ref) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)",
+            (
+                workspace_id,
+                request.stream_id,
+                capture.repository_id,
+                principal_id,
+                announced,
+                now_us,
+                updated_us,
+                settlement.audit_ref,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO omnivia_engineering_source_stream_origins "
+            "(workspace_id, stream_id, repository_id, installation_id, checkout_id, "
+            "bound_at_us, audit_ref) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                workspace_id,
+                request.stream_id,
+                capture.repository_id,
+                capture.installation_id,
+                capture.checkout_id,
+                now_us,
+                settlement.audit_ref,
+            ),
+        )
+    elif request.sequence > announced:
+        announced = request.sequence
+        connection.execute(
+            "UPDATE omnivia_engineering_source_streams SET announced_sequence = ?, "
+            "updated_at_us = ?, audit_ref = ? WHERE workspace_id = ? AND stream_id = ?",
+            (announced, updated_us, settlement.audit_ref, workspace_id, request.stream_id),
+        )
+
+    connection.execute(
+        "INSERT INTO omnivia_engineering_source_events "
+        "(workspace_id, stream_id, sequence, snapshot_id, predecessor_sequence, "
+        "predecessor_snapshot_id, manifest_json, manifest_digest, manifest_entry_count, "
+        "event_digest, recorded_at_us, audit_ref, manifest_format) "
+        "VALUES (?, ?, ?, ?, ?, ?, '{}', ?, 0, ?, ?, ?, 'captured_v1')",
+        (
+            workspace_id,
+            request.stream_id,
+            request.sequence,
+            request.snapshot_id,
+            None if request.sequence == 1 else request.sequence - 1,
+            request.predecessor_snapshot_id,
+            capture.rich_manifest_digest,
+            event_digest,
+            now_us,
+            settlement.audit_ref,
+        ),
+    )
+    covered = _advance_coverage(connection, workspace_id, request.stream_id, covered)
+    connection.execute(
+        "UPDATE omnivia_engineering_source_streams SET covered_sequence = ?, "
+        "updated_at_us = ?, audit_ref = ? WHERE workspace_id = ? AND stream_id = ?",
+        (covered, updated_us, settlement.audit_ref, workspace_id, request.stream_id),
+    )
+    return _captured_result(
+        request,
+        capture,
+        disposition="recorded",
+        recorded_at_us=now_us,
+        covered=covered,
+        announced=announced,
+        audit_ref=settlement.audit_ref,
+    )
+
+
+def covered_snapshot(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    snapshot_id: str,
+    repository_id: str | None = None,
+    payload_budget: PayloadReadBudget | None = None,
+    cache: dict[tuple[str, str, str | None], CoveredSnapshot | None] | None = None,
+) -> CoveredSnapshot | None:
+    """The recorded snapshot if its event is inside its stream's coverage.
+
+    None when the snapshot was never recorded as a source event, lies beyond a
+    gap in its stream, belongs to another repository than the one stated, its
+    stored manifest body no longer matches its digest (`flat_v1`), or its sealed
+    capture header is missing or inconsistent (`captured_v1`). An unrecognised
+    representation fails closed. A read; it writes nothing.
+
+    A `captured_v1` snapshot's `manifest` starts empty: the rich manifest is
+    never hydrated here, only the bounded paths `evaluate_applicability` later
+    resolves through `omnivia_engineering_snapshot_files`. No sentinel is ever
+    mistaken for an empty repository.
+    """
+    cache_key = (workspace_id, snapshot_id, repository_id)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+    manifest_projection = (
+        "e.manifest_json"
+        if payload_budget is None
+        else payload_budget.byte_length_sql(connection, "e.manifest_json")
+    )
+    row = connection.execute(
+        "SELECT st.repository_id, e.stream_id, e.sequence, st.covered_sequence, "
+        f"{manifest_projection}, e.manifest_digest, sn.capture_status, e.manifest_format "
+        "FROM omnivia_engineering_source_events e "
+        "JOIN omnivia_engineering_source_streams st "
+        "ON st.workspace_id = e.workspace_id AND st.stream_id = e.stream_id "
+        "JOIN omnivia_engineering_snapshots sn "
+        "ON sn.workspace_id = e.workspace_id AND sn.snapshot_id = e.snapshot_id "
+        "WHERE e.workspace_id = ? AND e.snapshot_id = ?",
+        (workspace_id, snapshot_id),
+    ).fetchone()
+    if row is None or int(row[2]) > int(row[3]):
+        if cache is not None:
+            cache[cache_key] = None
+        return None
+    if repository_id is not None and repository_id != str(row[0]):
+        if cache is not None:
+            cache[cache_key] = None
+        return None
+    representation = str(row[7])
+    manifest_json = ""
+    manifest: Mapping[str, str] = {}
+    if representation == "flat_v1":
+        if payload_budget is None:
+            manifest_json = str(row[4])
+        else:
+            expected_bytes = int(row[4])
+            if not 2 <= expected_bytes <= MAX_MANIFEST_BYTES:
+                raise PayloadLengthMismatch("the source manifest byte length is invalid")
+            payload_budget.precheck([expected_bytes])
+            payload_row = connection.execute(
+                "SELECT manifest_json FROM omnivia_engineering_source_events "
+                "WHERE workspace_id = ? AND snapshot_id = ?",
+                (workspace_id, snapshot_id),
+            ).fetchone()
+            if payload_row is None:
+                if cache is not None:
+                    cache[cache_key] = None
+                return None
+            manifest_json = str(payload_row[0])
+            payload_budget.consume(manifest_json, expected_bytes)
+        if content_digest(manifest_json) != str(row[5]):
+            if cache is not None:
+                cache[cache_key] = None
+            return None
+        manifest = json.loads(manifest_json)
+    elif representation == "captured_v1":
+        # The rich manifest is never hydrated here: only the bounded paths
+        # `evaluate_applicability` later resolves through
+        # `omnivia_engineering_snapshot_files`, so the budget is not consumed
+        # for this representation.
+        header = connection.execute(
+            "SELECT repository_id, rich_manifest_digest, capture_status "
+            "FROM omnivia_engineering_snapshot_captures "
+            "WHERE workspace_id = ? AND snapshot_id = ?",
+            (workspace_id, snapshot_id),
+        ).fetchone()
+        if (
+            header is None
+            or str(header[0]) != str(row[0])
+            or str(header[1]) != str(row[5])
+            or str(header[2]) != str(row[6])
+        ):
+            if cache is not None:
+                cache[cache_key] = None
+            return None
+        manifest = {}
+    else:  # pragma: no cover - manifest_format is a closed, migration-enforced column
+        return None
+    covered = CoveredSnapshot(
+        repository_id=str(row[0]),
+        stream_id=str(row[1]),
+        sequence=int(row[2]),
+        snapshot_id=snapshot_id,
+        capture_status=str(row[6]),
+        manifest_digest=str(row[5]),
+        manifest=manifest,
+        representation=representation,
+    )
+    if cache is not None:
+        cache[cache_key] = covered
+    return covered
+
+
+def captured_manifest_lookup(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    snapshot_id: str,
+    paths: Sequence[str],
+) -> dict[str, str]:
+    """The bounded per-path read of a captured snapshot's indexed files (§15).
+
+    Queries only `paths` (at most the 64 dependency selectors) through the
+    table's own `(workspace_id, snapshot_id, path)` primary-key prefix. Never
+    hydrates the rich manifest, selects every indexed file, or recounts the
+    index.
+    """
+    if not paths:
+        return {}
+    placeholders = ",".join("?" for _ in paths)
+    rows = connection.execute(
+        "SELECT path, content_digest FROM omnivia_engineering_snapshot_files "
+        f"WHERE workspace_id = ? AND snapshot_id = ? AND path IN ({placeholders})",
+        (workspace_id, snapshot_id, *paths),
+    ).fetchall()
+    return {str(path): str(digest) for path, digest in rows}
+
+
+def captured_coverage_digest(files: Mapping[str, str]) -> str:
+    """The canonical coverage digest of a captured path-to-digest index (§6.3):
+    `content_digest(canonical_document({path: content_digest, ...}))`. Paths are
+    preserved exactly; canonical JSON sorts object keys. Stage 2's capture writer
+    computes this once, over the frozen manifest, before sealing; defined here so
+    it has exactly one spelling. The digest identifies this lookup projection; it
+    makes no completeness claim. The sealed capture status and rich-manifest
+    evidence preserve exclusions, ignored files and unavailable paths.
+    """
+    return content_digest(canonical_document(dict(files)))
+
+
+@dataclass(frozen=True)
+class SequencedEvent:
+    """One stream's exact recorded event, by its own sequence, with its snapshot body."""
+
+    stream_id: str
+    sequence: int
+    snapshot_id: str
+    capture_status: str
+    manifest: Mapping[str, str]
+    audit_ref: str
+
+
+def sequenced_event(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    stream_id: str,
+    sequence: int,
+) -> SequencedEvent | None:
+    """One stream's recorded event and its snapshot body, addressed by sequence.
+
+    None when no event of this stream holds this sequence. Unlike
+    `covered_snapshot`, the sequence need not lie inside the coverage barrier:
+    the invalidation worker walks sequences it has already proven covered
+    itself, one at a time, so re-deriving that here would only repeat a check
+    the caller already made. A read; it writes nothing.
+    """
+    row = connection.execute(
+        "SELECT e.snapshot_id, e.manifest_json, e.manifest_digest, e.audit_ref, "
+        "sn.capture_status "
+        "FROM omnivia_engineering_source_events e "
+        "JOIN omnivia_engineering_snapshots sn "
+        "ON sn.workspace_id = e.workspace_id AND sn.snapshot_id = e.snapshot_id "
+        "WHERE e.workspace_id = ? AND e.stream_id = ? AND e.sequence = ?",
+        (workspace_id, stream_id, sequence),
+    ).fetchone()
+    if row is None:
+        return None
+    if content_digest(str(row[1])) != str(row[2]):
+        return None
+    return SequencedEvent(
+        stream_id=stream_id,
+        sequence=sequence,
+        snapshot_id=str(row[0]),
+        capture_status=str(row[4]),
+        manifest=json.loads(str(row[1])),
+        audit_ref=str(row[3]),
+    )
+
+
+
+def parse_dependency_manifest(raw: object) -> DependencyManifest:
+    """Validate one `dependency_manifest` content profile; never drop a dependency."""
+    value = _plain(raw)
+    if not isinstance(value, dict) or set(value) != _PROFILE_KEYS:
+        raise DependencyManifestInvalid("unknown or missing dependency manifest fields")
+    if not (
+        is_identifier(value["repository_id"])
+        and is_identifier(value["stream_id"])
+        and is_identifier(value["snapshot_id"])
+        and _bounded_text(value["producer"], 128)
+        and _bounded_text(value["producer_version"], 64)
+        and _member(value["coverage"], DEPENDENCY_COVERAGES)
+    ):
+        raise DependencyManifestInvalid("a dependency manifest field is malformed")
+    raw_dependencies = value["dependencies"]
+    if not isinstance(raw_dependencies, list) or len(raw_dependencies) > MAX_DEPENDENCIES:
+        raise DependencyManifestInvalid("the dependency list is malformed or too long")
+    dependencies: list[Dependency] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw_dependencies:
+        if (
+            not isinstance(item, dict)
+            or not set(item) <= _DEPENDENCY_KEYS
+            or not {"selector_type", "selector", "meaning"} <= set(item)
+        ):
+            raise DependencyManifestInvalid("a dependency is malformed")
+        selector_type = item["selector_type"]
+        selector = item["selector"]
+        meaning = item["meaning"]
+        expected = item.get("expected_digest")
+        if not (_member(selector_type, SELECTOR_TYPES) and _member(meaning, MEANINGS)):
+            raise DependencyManifestInvalid("a dependency vocabulary value is unknown")
+        if selector_type == "whole_file":
+            if not valid_path(selector) or not is_content_checksum(expected):
+                raise DependencyManifestInvalid("a whole-file dependency is malformed")
+        elif not _bounded_text(selector, MAX_PATH_CHARS) or (
+            expected is not None and not is_content_checksum(expected)
+        ):
+            raise DependencyManifestInvalid("a dependency selector is malformed")
+        if (selector_type, selector) in seen:
+            raise DependencyManifestInvalid("a dependency selector is repeated")
+        seen.add((selector_type, selector))
+        dependencies.append(Dependency(selector_type, selector, meaning, expected))
+    return DependencyManifest(
+        repository_id=value["repository_id"],
+        stream_id=value["stream_id"],
+        snapshot_id=value["snapshot_id"],
+        producer=value["producer"],
+        producer_version=value["producer_version"],
+        coverage=value["coverage"],
+        dependencies=tuple(dependencies),
+    )
+
+
+def record_dependency_set(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    record_id: str,
+    version: str,
+    manifest: DependencyManifest,
+    allocate_identifier: Any,
+) -> None:
+    """Persist one record version's dependencies and seal them with their set row.
+
+    The baseline must already be a recorded source event of the stated repository
+    and stream; the caller's claimed digests are stored as claims and attested
+    only by the evaluator against that recorded manifest.
+    """
+    if connection.execute(
+        "SELECT 1 FROM omnivia_engineering_source_events e "
+        "JOIN omnivia_engineering_source_streams st "
+        "ON st.workspace_id = e.workspace_id AND st.stream_id = e.stream_id "
+        "WHERE e.workspace_id = ? AND e.snapshot_id = ? AND e.stream_id = ? "
+        "AND st.repository_id = ?",
+        (workspace_id, manifest.snapshot_id, manifest.stream_id, manifest.repository_id),
+    ).fetchone() is None:
+        raise DependencyBaselineUnavailable(manifest.snapshot_id)
+    _seal_dependency_set(
+        connection,
+        settlement,
+        workspace_id=workspace_id,
+        record_id=record_id,
+        version=version,
+        claims=(
+            manifest.repository_id,
+            manifest.stream_id,
+            manifest.snapshot_id,
+            manifest.producer,
+            manifest.producer_version,
+            manifest.coverage,
+        ),
+        dependencies=[
+            (
+                dependency.selector_type,
+                dependency.selector,
+                dependency.meaning,
+                manifest.producer,
+                dependency.expected_digest,
+            )
+            for dependency in manifest.dependencies
+        ],
+        allocate_identifier=allocate_identifier,
+    )
+
+
+def carry_dependency_set(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    record_id: str,
+    source_version: str,
+    target_version: str,
+    allocate_identifier: Any,
+) -> bool:
+    """Carry a sealed set to the version a claim-preserving transition just minted.
+
+    `knowledge.propose` and `candidate.approve` copy content, claim and evidence
+    byte for byte, so the new exact version repeats the source's baseline,
+    producer, coverage and digest claims under fresh row identities and this
+    settlement's audit, sealed at once. The transition itself attests nothing: a
+    source with no set, or whose stored rows disagree with its seal or its
+    recorded baseline, carries nothing and the new version stays `unknown`, and
+    the evaluator still checks everything on every read. Migration 0051 holds
+    these conditions a second time. Returns whether a set was carried.
+    """
+    row = connection.execute(
+        "SELECT s.repository_id, s.stream_id, s.snapshot_id, s.producer, "
+        "s.producer_version, s.coverage, s.dependency_count, s.audit_ref "
+        "FROM omnivia_engineering_dependency_sets s "
+        "JOIN omnivia_engineering_source_events e "
+        "ON e.workspace_id = s.workspace_id AND e.snapshot_id = s.snapshot_id "
+        "AND e.stream_id = s.stream_id "
+        "JOIN omnivia_engineering_source_streams st "
+        "ON st.workspace_id = e.workspace_id AND st.stream_id = e.stream_id "
+        "AND st.repository_id = s.repository_id "
+        "WHERE s.workspace_id = ? AND s.record_id = ? AND s.version = ?",
+        (workspace_id, record_id, source_version),
+    ).fetchone()
+    if row is None:
+        return False
+    sealed = int(row[6])
+    # Bounded by the sealed count (at most 64) and, through 0050's version index, by
+    # this version's rows: without statistics the planner otherwise walks the
+    # workspace's dependencies. A missing or extra row, a row under another audit or
+    # a whole-file row without its digest is an inconsistent set.
+    dependencies = connection.execute(
+        "SELECT selector_type, selector, meaning, producer, expected_digest, audit_ref "
+        "FROM omnivia_engineering_dependencies "
+        "INDEXED BY omnivia_idx_engineering_dependencies_version "
+        "WHERE workspace_id = ? AND record_id = ? AND version = ? "
+        "ORDER BY selector_type, selector, meaning LIMIT ?",
+        (workspace_id, record_id, source_version, sealed + 1),
+    ).fetchall()
+    if len(dependencies) != sealed or any(
+        dep[5] != row[7] or (dep[0] == "whole_file" and dep[4] is None)
+        for dep in dependencies
+    ):
+        return False
+    _seal_dependency_set(
+        connection,
+        settlement,
+        workspace_id=workspace_id,
+        record_id=record_id,
+        version=target_version,
+        claims=row[:6],
+        dependencies=[dep[:5] for dep in dependencies],
+        allocate_identifier=allocate_identifier,
+    )
+    return True
+
+
+def _seal_dependency_set(
+    connection: sqlite3.Connection,
+    settlement: Any,
+    *,
+    workspace_id: str,
+    record_id: str,
+    version: str,
+    claims: Sequence[str],
+    dependencies: Sequence[Sequence[str | None]],
+    allocate_identifier: Any,
+) -> None:
+    """Write one version's dependency rows, then the set row that seals them.
+
+    `claims` is the set's (repository, stream, snapshot, producer, producer
+    version, coverage); each dependency is (selector type, selector, meaning,
+    producer, expected digest).
+    """
+    for dependency in dependencies:
+        connection.execute(
+            "INSERT INTO omnivia_engineering_dependencies "
+            "(workspace_id, dependency_id, record_id, version, selector_type, selector, "
+            "meaning, producer, expected_digest, recorded_at_us, audit_ref) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                workspace_id,
+                allocate_identifier("edep"),
+                record_id,
+                version,
+                *dependency,
+                settlement.settled_at_us,
+                settlement.audit_ref,
+            ),
+        )
+    connection.execute(
+        "INSERT INTO omnivia_engineering_dependency_sets "
+        "(workspace_id, record_id, version, repository_id, stream_id, snapshot_id, "
+        "producer, producer_version, coverage, dependency_count, recorded_at_us, "
+        "audit_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            workspace_id,
+            record_id,
+            version,
+            *claims,
+            len(dependencies),
+            settlement.settled_at_us,
+            settlement.audit_ref,
+        ),
+    )
+
+
+def decide(
+    dependencies: Sequence[tuple[str, str, str, str | None]],
+    *,
+    baseline: CoveredSnapshot,
+    target: CoveredSnapshot,
+    qualified: bool,
+) -> str:
+    """The pure v1 applicability rule over whole-file digests (§15.4).
+
+    Adverse findings need only an attested dependency: a required file the
+    baseline attests that changed is `potentially_stale`, and one absent from a
+    complete target is `invalid`. `matched` needs everything: a qualified set,
+    complete baseline and target captures, at least one required dependency,
+    only whole-file selectors, and every required digest attested by the baseline
+    and equal at the target.
+    """
+    invalid = stale = False
+    unknown = (
+        not qualified
+        or baseline.capture_status != "complete"
+        or target.capture_status != "complete"
+    )
+    required = 0
+    for selector_type, selector, meaning, expected in dependencies:
+        if selector_type != "whole_file":
+            unknown = True
+            continue
+        if meaning == "context_only":
+            continue
+        required += 1
+        if expected is None or baseline.manifest.get(selector) != expected:
+            # The caller's digest is a claim until the recorded baseline attests it.
+            unknown = True
+            continue
+        observed = target.manifest.get(selector)
+        if observed == expected:
+            continue
+        if observed is not None:
+            stale = True
+        elif target.capture_status == "complete":
+            invalid = True
+        else:
+            unknown = True
+    if invalid:
+        return "invalid"
+    if stale:
+        return "potentially_stale"
+    if unknown or required == 0:
+        return "unknown"
+    return "matched"
+
+
+def evaluate_applicability(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    record_id: str,
+    version: str,
+    evidence_available: bool,
+    target: CoveredSnapshot,
+    payload_budget: PayloadReadBudget | None = None,
+    snapshot_cache: dict[
+        tuple[str, str, str | None], CoveredSnapshot | None
+    ] | None = None,
+) -> str:
+    """The one evaluator: an exact record version's dependencies at one target.
+
+    A record version without a dependency set, or one recorded against another
+    repository or stream, is `unknown`: nothing is inherited across streams or
+    versions. The baseline must itself be covered, and the stored rows must be
+    exactly the sealed count. A read; it writes nothing.
+    """
+    row = connection.execute(
+        "SELECT repository_id, stream_id, snapshot_id, coverage, dependency_count "
+        "FROM omnivia_engineering_dependency_sets "
+        "WHERE workspace_id = ? AND record_id = ? AND version = ?",
+        (workspace_id, record_id, version),
+    ).fetchone()
+    if row is None:
+        return "unknown"
+    if str(row[0]) != target.repository_id or str(row[1]) != target.stream_id:
+        return "unknown"
+    baseline = covered_snapshot(
+        connection,
+        workspace_id=workspace_id,
+        snapshot_id=str(row[2]),
+        repository_id=str(row[0]),
+        payload_budget=payload_budget,
+        cache=snapshot_cache,
+    )
+    if baseline is None or baseline.stream_id != target.stream_id:
+        return "unknown"
+    sealed = int(row[4])
+    # Bounded by the sealed count (at most 64) and, through the version index, by
+    # this version's rows; one row more than sealed, or fewer, is an inconsistent
+    # set and fails closed rather than being evaluated.
+    dependencies = [
+        (str(dep[0]), str(dep[1]), str(dep[2]), None if dep[3] is None else str(dep[3]))
+        for dep in connection.execute(
+            "SELECT selector_type, selector, meaning, expected_digest "
+            "FROM omnivia_engineering_dependencies "
+            "INDEXED BY omnivia_idx_engineering_dependencies_version "
+            "WHERE workspace_id = ? AND record_id = ? AND version = ? "
+            "ORDER BY selector_type, selector, meaning LIMIT ?",
+            (workspace_id, record_id, version, sealed + 1),
+        ).fetchall()
+    ]
+    if len(dependencies) != sealed:
+        return "unknown"
+    if baseline.representation == "captured_v1" or target.representation == "captured_v1":
+        # Bounded by the sealed dependency count (at most 64): only the paths a
+        # whole-file selector actually names are ever looked up.
+        paths = list(
+            dict.fromkeys(
+                selector
+                for stype, selector, meaning, _expected in dependencies
+                if stype == "whole_file" and meaning != "context_only"
+            )
+        )
+        if baseline.representation == "captured_v1":
+            baseline = replace(
+                baseline,
+                manifest=captured_manifest_lookup(
+                    connection,
+                    workspace_id=workspace_id,
+                    snapshot_id=baseline.snapshot_id,
+                    paths=paths,
+                ),
+            )
+        if target.representation == "captured_v1":
+            target = replace(
+                target,
+                manifest=captured_manifest_lookup(
+                    connection,
+                    workspace_id=workspace_id,
+                    snapshot_id=target.snapshot_id,
+                    paths=paths,
+                ),
+            )
+    return decide(
+        dependencies,
+        baseline=baseline,
+        target=target,
+        qualified=evidence_available and str(row[3]) == "complete",
+    )
