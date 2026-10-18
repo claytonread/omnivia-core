@@ -92,7 +92,8 @@
     "repository_local_unit": "pure-value pytest, no storage",
     "repository_local_integration_real_sqlite_fixture_embedder": "pytest over a real migrated SQLite workspace with a deterministic model-free fixture embedder",
     "diff_inspection": "git diff review",
-    "none": "no evidence collected"
+    "none": "no evidence collected",
+    "l4_integrated_isolated_workspace": "a real Runtime (ServiceRunner) behind the shipped in-process, local-IPC and HTTP transports and the generic CLI against a managed service, in an isolated workspace: the specification's L4 integrated"
   },
   "binding_rule": "Work and acceptance IDs are bound to the supplied TECH-SPEC.md and ACCEPTANCE-MATRIX.md. PASS is used only where this slice meets the complete named scenario at its required evidence level; PARTIAL means useful repository-local evidence exists but the complete scenario or evidence level has not been met; NOT_RUN means no qualifying run was performed.",
   "environment": {
@@ -352,10 +353,15 @@
     {
       "id": "P19",
       "statement": "Python/TypeScript code-analysis producers and code graph import",
-      "status": "NOT_RUN",
-      "evidence_level": "none",
-      "tests": [],
-      "note": "Producer and governed-import work is outside this P1 slice. The supplied design already assigns accepted import and activation to the existing graph/governance authority; no new authority decision is required."
+      "status": "PARTIAL",
+      "evidence_level": "l4_integrated_isolated_workspace",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_the_production_route_imports_and_discovery_finds_the_binding",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_every_transport_serves_the_same_import_status_and_answers",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_unsupported_languages_are_stated_never_hidden",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_python_and_typescript_batches_import_through_one_authority"
+      ],
+      "note": "W13-C: the real Python producer reaches the governed import through code.import over shipped transports. The TypeScript producer imports through the W12 seam (repository-local) but has no production route. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
     },
     {
       "id": "P20",
@@ -498,12 +504,12 @@
         "P16",
         "P19"
       ],
-      "note": "Governed import, policy acceptance and atomic repository applicability are delivered as one storage seam (storage/code_analysis_import.py, migration 0074) with repository-local real-SQLite evidence over both real producers; see P8-W12-GOVERNED-IMPORT-2026-10-18.md. W13-B closed the two reads that did not apply code applicability: storage/memory.py's own frontier fold and service/knowledge_sharing.py's current-version lookup now exclude the engineering.code domain outright, so a retired or other-scope code fact is unreachable through either (test_code_context.py). Still PARTIAL: no production caller (catalogue operation, handler or scheduler) invokes the seam, owner policy authorisation has no public intent (the seam takes the executor's MutationSettlementContext and authenticated principal, and 0074 binds the authoriser to that settlement's audit), and every accepted fact of one import cites that snapshot's single manifest evidence artifact, which bounds per-record code visibility to import granularity. QP-04 and G8 are not claimed; QP-05 transport remains."
+      "note": "Governed import, policy acceptance and atomic repository applicability are one storage seam (storage/code_analysis_import.py, migration 0074); see P8-W12-GOVERNED-IMPORT-2026-10-18.md. W13-B made storage/memory.py's frontier fold and service/knowledge_sharing.py's current-version lookup exclude the engineering.code domain. W13-C closed the three gaps this note named, at l4_integrated_isolated_workspace: code.policy.register and code.import are catalogue operations that run register_import_policy and import_code_analysis as execute_mutation's domain callback, so owner policy authorisation has a public intent whose authoriser is the settlement's principal and a sealed snapshot reaches an active analysis through the real Python producer; and every fact cites its own captured file as well as the manifest, so code visibility is per file. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md. Still PARTIAL: the TypeScript producer has no production route (declared; refused dependency_unavailable/runtime_not_configured because the service has no verified Node runtime); a candidate a policy does not accept is a diagnostic, never a pending fact awaiting review (D10); D13 is proven for one Python dependency change only; D14 rename continuity rests on the storage-seam test; one batch per import, so MAX_CANDIDATES bounds a repository. QP-04 (real repositories, recorded producer build identities) did not run."
     },
     "W13": {
       "status": "PARTIAL",
       "property_refs": [],
-      "note": "W13-A and W13-B delivered: one read-only application operation, code.query (catalogue entry 89, graph:read, knowledge_retrieval purpose, local-owner read family), with the six closed intents definition/references/callers/callees/dependencies/code_context bound to one repository, snapshot, producer and profile and checked against the 0074 active import at the query instant; missing or no-longer-applicable analysis is refused as projection_unavailable with details.readiness=not_ready. code_context assembles content-addressed captured spans, same-analysis neighbours in both directions, and a separately labelled architecture component that is a real Context Pack produced by the one existing context authority (handlers/context_pack.build_task_context) over independently accepted knowledge carrying accepted reconciliation.supports, gated on the caller independently holding the context_pack.build grant. Principal visibility is enforced before traversal and revalidated at output; a seed carries the binding it was selected against and a mismatch disables graph expansion explicitly. Repository-local real-SQLite evidence over both real producers, the W12 import seam and the production dispatcher, with in-process/local-IPC/HTTP parity; see P8-W13A-CODE-QUERY-2026-10-18.md and P8-W13B-CODE-CONTEXT-2026-10-18.md. Still PARTIAL: code-fact visibility is import-granular because W12 links every fact of one import to that snapshot's single manifest evidence artifact, so differentiated visibility between two code definitions is not reachable from production data; no operation lists applicable bindings; and W12 imports still have no production caller."
+      "note": "W13-A and W13-B delivered code.query (catalogue entry 89, graph:read, knowledge_retrieval, local-owner read family) with six closed intents bound to one repository, snapshot, producer and profile and checked against the 0074 active import at the query instant, and code_context with a separately labelled architecture component from the one context authority; see P8-W13A-CODE-QUERY-2026-10-18.md and P8-W13B-CODE-CONTEXT-2026-10-18.md. W13-C delivered the production vertical at l4_integrated_isolated_workspace: code.policy.register and code.import (engineering family, entries 90-91) take a sealed admitted snapshot through the declared Python producer and W12 into an active analysis under the executor's idempotency, an envelope precondition (the scope's activation sequence) and the request deadline; code.status (entry 92, read family) discovers each declared producer profile's availability, readiness, binding, activation sequence, admitting policy, capture-based freshness (working_tree: not_observed) and coverage over files the caller may see. Each fact cites its own captured file, so a label on one file hides exactly that file's facts, diagnostics and coverage from another principal, and a hidden manifest is reported and answered as a scope nobody analysed. Gate G8 is met for the Python producer; see P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md. Verification: focused production vertical 15 passed; full preflight suite 4 failed, 38,388 passed, 59 skipped, 7 warnings in 3239.13s, where three throwaway-venv service-script failures passed when rerun with the repository main venv and worktree PYTHONPATH and AT09 fails identically at baseline f6f68dbb; benchmarks 23 passed; Ruff passed; strict mypy 429 source files, no issues; the Swift companion suite fails with baseline-reproduced host/service-start failures (bounded exception, not green; the full baseline Swift suite later timed out in OcrResourceAdministrationTests). Still PARTIAL: TypeScript has no production route; support finer than the occurrence and endpoint files is not recorded and no production writer labels code-file artifacts (D16); no production writer emits seeds (D17, W14); no similarity source reaches the read (D18)."
     },
     "W14": {
       "status": "NOT_RUN",
@@ -864,7 +870,7 @@
       "property_refs": [
         "P16"
       ],
-      "note": "Completeness and diagnostics are represented in the candidate contract; real producer unsupported-language scenarios were not run."
+      "note": "PARTIAL at l4_integrated_isolated_workspace. Through the production route with the real Python producer: an unparseable admitted file leaves coverage partial, never complete; code.status lists every suffix group no declared producer reads; a snapshot with no admitted Python source is refused conflict/no_admitted_source with zero writes, so zero extracted nodes never become an empty complete graph; an unresolved dependency stays a diagnostic and clears coverage.complete (test_unsupported_languages_are_stated_never_hidden, test_the_production_route_imports_and_discovery_finds_the_binding, test_a_dependency_change_re_resolves_an_unchanged_caller). Not complete: TypeScript is declared but has no production route, so its unsupported cases rest on the P7 producer-level evidence. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
     },
     "D04": {
       "status": "NOT_RUN",
@@ -892,33 +898,33 @@
       "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
     },
     "D09": {
-      "status": "PARTIAL",
+      "status": "PASS",
       "property_refs": [
         "P16"
       ],
-      "note": "Snapshot, locator, endpoint and relationship checks exist on candidate batches; the real governed import path was not run."
+      "note": "PASS at l4_integrated_isolated_workspace over repository-local real governed import evidence. W12 refuses a bad span, wrong digest, dangling endpoint, incomplete capture, forged manifest evidence and unlocked profile with zero writes, never copies an arbitrary worker relationship into the ontology, and takes the authoriser from the settlement, never from the policy (test_malformed_or_unprovable_input_fails_closed_and_writes_nothing, test_an_arbitrary_worker_relationship_is_never_copied_into_the_ontology, test_the_authoriser_is_the_settlements_principal_never_the_policys_claim). W13-C: the producer runs with no write path and its output is accepted only under a separately registered owner policy; the import payload cannot carry a path, principal, workspace or profile body; a policy cannot lock a profile the service does not declare; another repository's snapshot is not_found (test_the_import_route_carries_no_path_principal_or_profile_body, test_a_policy_is_owner_authorised_versioned_and_idempotent, test_unsupported_languages_are_stated_never_hidden). See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
     },
     "D10": {
-      "status": "NOT_RUN",
+      "status": "PARTIAL",
       "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+      "note": "PARTIAL at l4_integrated_isolated_workspace. With no registered policy code.import is refused not_found and writes nothing; enabling analysis creates no rule; the bulk rule is a separate owner-authorised, versioned code.policy.register; a candidate the policy does not accept is a diagnostic and never counted (test_without_a_registered_policy_nothing_imports_and_nothing_is_consented, test_a_policy_is_owner_authorised_versioned_and_idempotent; W12 test_policy_decides_and_enabling_analysis_is_not_consent, test_unaccepted_facts_stay_diagnostics_and_never_inflate_the_graph). Not complete: there is no pending or review state; an unaccepted candidate is a diagnostic, not a pending fact a reviewer can accept. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
     },
     "D11": {
-      "status": "PARTIAL",
+      "status": "PASS",
       "property_refs": [
         "P16"
       ],
-      "note": "Deterministic candidate and batch identities exist; real import replay/conflict reconciliation was not run."
+      "note": "PASS at l4_integrated_isolated_workspace through code.import. A replay returns the stored receipt without running the producer and writes nothing; a different request under the key is idempotency_conflict, refused without analysing and with zero writes; a repeated run of the same snapshot under a fresh key re-activates the same content-addressed import (one activation row) and writes no second import, member, record, assembly, evidence link or artifact (test_a_replay_reconciles_and_a_conflicting_replay_refuses_without_analysing, test_a_repeated_run_reactivates_the_same_import_and_copies_no_fact; W12 test_replay_returns_the_same_receipt_and_a_reused_key_or_stale_fence_is_refused). See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
     },
     "D12": {
-      "status": "NOT_RUN",
+      "status": "PASS",
       "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+      "note": "PASS at l4_integrated_isolated_workspace over repository-local real persistence evidence. W13-C: importing a newer capture retires the old binding atomically, the old binding answers projection_unavailable/snapshot_not_active and no answer holds members of both imports; a stale plan is mutation_precondition_failed and a deadline-cancelled import writes nothing, leaving the previous analysis answering (test_a_newer_capture_marks_the_analysis_stale_and_cutover_never_mixes_revisions, test_a_stale_attempt_is_fenced_and_a_cancelled_one_leaves_the_graph_intact). History, other-producer and manual-fact isolation and rollback re-activation: W12 test_cutover_is_atomic_isolated_and_retires_only_its_own_scope, re-run in this slice. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
     },
     "D13": {
-      "status": "NOT_RUN",
+      "status": "PARTIAL",
       "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+      "note": "PARTIAL at l4_integrated_isolated_workspace. Removing a definition from pkg/models.py changes resolution in the byte-identical caller pkg/service.py: the run -> make edge is gone and the producer reports the call unresolved-in-snapshot rather than W12 refusing a reused edge (test_a_dependency_change_re_resolves_an_unchanged_caller). There is no incremental reuse: every import re-resolves the whole declared project. Not complete: export and configuration changes were not exercised, and TypeScript (path mappings, re-exports) has no production route. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
     },
     "D14": {
       "status": "NOT_RUN",
@@ -926,14 +932,14 @@
       "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
     },
     "D15": {
-      "status": "NOT_RUN",
+      "status": "PASS",
       "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+      "note": "PASS at l4_integrated_isolated_workspace with the W13-A real graph query: same-name definitions return deterministic qualified choices (test_exact_and_same_name_definitions_are_deterministic_and_qualified); after a production import, definition, references, callers, callees, dependencies and code_context answer from the one bound snapshot over in-process, local IPC and HTTP, each fact citing the manifest and its own captured file (test_the_production_route_imports_and_discovery_finds_the_binding, test_every_transport_serves_the_same_import_status_and_answers). See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
     },
     "D16": {
       "status": "PARTIAL",
       "property_refs": [],
-      "note": "PARTIAL at repository_local_integration_real_sqlite_fixture_embedder. A hidden supported claim, a hidden supporting record and a hidden support relation each leave every disclosed path, depth, count, truncation flag and coverage field of the code answer byte-identical and drop the claim from the Context Pack's manifest as well as its content; a hidden code definition is not_found, byte-identical to a subject that does not exist; a hidden code endpoint is removed before the walk, so degree drops by exactly the edges that touched it; and a revocation committed between the two ACL reads refuses the whole answer rather than recomputing or counting. Not complete: W12 links every fact of one import to one manifest evidence artifact, so the per-record case is exercised by supplying the per-record label the writer cannot yet produce, and EVIDENCE-LABEL-GRANT-DEFERRED still bounds the grant model itself. See P8-W13B-CODE-CONTEXT-2026-10-18.md."
+      "note": "PARTIAL at repository_local_integration_real_sqlite_fixture_embedder. A hidden supported claim, a hidden supporting record and a hidden support relation each leave every disclosed path, depth, count, truncation flag and coverage field of the code answer byte-identical and drop the claim from the Context Pack's manifest as well as its content; a hidden code definition is not_found, byte-identical to a subject that does not exist; a hidden code endpoint is removed before the walk, so degree drops by exactly the edges that touched it; and a revocation committed between the two ACL reads refuses the whole answer rather than recomputing or counting. W13-C, at l4_integrated_isolated_workspace from production data: each fact cites its own captured file, so one label on one file hides exactly that file's definitions, the relations asserted in it, the diagnostics it names and its coverage count from another principal; a limit sized to the visible members truncates nothing; a hidden definition is refused byte-identically to one that does not exist; a hidden manifest, snapshot or newer capture is reported and answered as absent (test_one_restricted_file_hides_exactly_its_own_facts_from_another_principal, test_a_hidden_snapshot_is_reported_exactly_as_one_that_does_not_exist). Not complete: support finer than the occurrence and endpoint files (an intermediate file a resolution depends on) is not recorded by the producers; no production writer labels code-file artifacts (the tests attach the label through 0008's label stream); EVIDENCE-LABEL-GRANT-DEFERRED still bounds the grant model. See P8-W13B-CODE-CONTEXT-2026-10-18.md and P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
     },
     "D17": {
       "status": "PARTIAL",
