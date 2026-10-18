@@ -214,7 +214,7 @@
         "Core acceptance and the three Phase 2 platform rows green on the pull request"
       ],
       "artifact_hashes": null,
-      "result": "Blocked. Preconditions QP-01 to QP-04 are unmet; no pull request exists so the required checks have not reported; no clean plain preflight exists (WORK-STATUS P23 FAIL: AT09 test_selected_source_reaches_core_exact_and_is_left_unchanged fails identically at baseline f6f68dbb, and the P8 full run recorded 4 failed, 38,388 passed, 59 skipped); no signed or notarised package, signing authority (PACKAGED_TRUSTED_KEYS is empty) or candidate bundle exists. Every migration 0066-0074 is candidate, not accepted.",
+      "result": "Blocked. Preconditions QP-01 to QP-04 are unmet; no pull request exists so the required checks have not reported; no clean plain preflight exists (WORK-STATUS P23 FAIL: the P8 full run recorded 4 failed, 38,388 passed, 59 skipped, one of them AT09 test_selected_source_reaches_core_exact_and_is_left_unchanged at baseline f6f68dbb; that harness defect was repaired on 2026-10-18 and the test passes on its own, but no complete preflight has run since); no signed or notarised package, signing authority (PACKAGED_TRUSTED_KEYS is empty) or candidate bundle exists. Every migration 0066-0074 is candidate, not accepted.",
       "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
     }
   ]

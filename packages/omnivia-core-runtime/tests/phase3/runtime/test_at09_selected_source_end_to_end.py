@@ -108,6 +108,10 @@ def test_selected_source_reaches_core_exact_and_is_left_unchanged(home: Path) ->
     cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m omnivia_core_cli.main "$@"\n')
     cli.chmod(0o755)
     report = home / "report.json"
+    # The companion's delivery is attach-only (`--require-running`): it can never
+    # start a service, so one is started here. The `home` fixture kills it.
+    status, started, stderr = managed._run(home)
+    assert status == 0 and started["status"] == "started", (started, stderr)
     environment = {
         **os.environ,
         "PATH": os.pathsep.join([str(Path(sys.executable).parent), os.environ["PATH"]]),

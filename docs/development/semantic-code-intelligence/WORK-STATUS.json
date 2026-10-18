@@ -5,6 +5,29 @@
   "spec_version_note": "The P1 slice (2026-10-16) was recorded against spec v1.0/v1.2. This P10 reconciliation is against spec v1.7, acceptance matrix v1.3 (the 80 original cases A01-E08 plus U01-U16 and I01-I42 = 138 technical cases) and UI scenarios v2.3 (CS-R01-CS-R116). The v1.7 front matter still carries stale supersedes and ui_companion metadata and a 2026-10-17 date against a 2026-10-18 filename; the text is used unchanged. The gate labels G0-G10 in spec section 21.1 and in the matrix 'Work / gate' column are the SPECIFICATION's gates; the implementation plan's G0-G10 are different gates. Each acceptance row keeps the existing shape (status, property_refs, note); its note begins with [work ids / spec gate; the matrix's minimum evidence]. The plan's gates are not in this file.",
   "slice": "P1-P10 integrated qualification ledger: the P1 hybrid-lane ledger reconciled by the P10 closeout packet",
   "recorded_on": "2026-10-18",
+  "release_readiness_slice": {
+    "recorded_on": "2026-10-18",
+    "baseline": "f473481689b703629bb84a3ebea88046e9c74300 (codex/core-release-readiness-integration)",
+    "state": "uncommitted working-tree edits for Codex review; not merged, not pushed, not released",
+    "changed": [
+      "AT09: test_selected_source_reaches_core_exact_and_is_left_unchanged now starts the managed service with test_managed_start._run before the Swift half, because the companion's CLI delivery is attach-only (--require-running) and previously saw the item stay pending; the home fixture kills the service.",
+      ".gitattributes marks the AT-09 fixture -text -whitespace; the genuine trailing blank line in test_refresh_outcome_gates.py is removed, so git diff --check origin/main is clean.",
+      "scripts/preflight (Darwin with swift) and the macOS step of phase2-platform.yml typecheck both native extension source sets under -application-extension with the README's swiftc commands; no job, check name or matrix changed.",
+      "tests/fixtures/service_conformance/lexical-retrieval-traceability-v1.json and tests/service_conformance/test_lexical_retrieval_traceability.py map seven lexical clauses to named tests; LEX-02, LEX-04 and LEX-07 are covered; LEX-01 (erase/purge then search), LEX-03 (backup/restore preserves ranked results), LEX-05 (BM25 add/remove statistics) and LEX-06 (cross-workspace cache isolation) are pending, 3 covered and 4 pending.",
+      "test_lb_l13b adds a real migrated-only-to-0012 build-and-search test (LEX-04).",
+      "scripts/run-standard-journey.py now fails unless evidence.search and knowledge.search rank the seeded source and record first and the Context Pack cites the record and a governed_record section, identically on a second build; unit tests mutate each way it could be wrong.",
+      "WP-15 ledger: the AT-09 limitation records the repair; two missing_condition texts no longer say the extensions are not typechecked in CI."
+    ],
+    "decisions_preserved": {
+      "semantic_validation": "DO_NOT_SHIP",
+      "semantic_retrieval": "DISABLED",
+      "code_intelligence": "DISABLED by default; Python opt-in only; TypeScript DO_NOT_SHIP",
+      "settings_update_model_ux": "not release-enabled (DO_NOT_SHIP)",
+      "spotlight": "deferred, DISABLED"
+    },
+    "not_claimed": "Native L5/L6, signing, notarisation, accessibility, Intel or older macOS, a real security-scoped bookmark, removable or iCloud volumes, a real process-kill, any performance measurement, a hosted CI matrix result, or a complete plain ./scripts/preflight. No acceptance row or property status changed.",
+    "verification": "see IMPLEMENTATION-CLOSEOUT.md section 17"
+  },
   "p10_reconciliation": {
     "recorded_on": "2026-10-18",
     "purpose": "Make this ledger an honest per-work-ID and per-acceptance-case record of what is actually delivered and tested at the accepted P8 tip, with the Dev and Platform P9 evidence supplied by Codex recorded as supplied and not re-run.",
@@ -101,7 +124,7 @@
     },
     "history_pointer": "The P1 integration's own verification commands and outcomes are in git history at 4d453fe6 for this file and are summarised in commands below."
   },
-  "slice_state": "P1 hybrid-lane slice integrated 2026-10-18; P6 update trust and Settings v2, P7 producers and P8 governed import, code.query, code_context and the production vertical integrated on codex/core-tech-settings-integration; this file reconciled at 4d453fe6 by the P10 closeout packet. Not merged, not pushed, not released.",
+  "slice_state": "P1 hybrid-lane slice integrated 2026-10-18; P6 update trust and Settings v2, P7 producers and P8 governed import, code.query, code_context and the production vertical integrated on codex/core-tech-settings-integration; this file reconciled at 4d453fe6 by the P10 closeout packet. Not merged, not pushed, not released. Release-readiness slice (see release_readiness_slice) applied afterwards, uncommitted.",
   "status_vocabulary": ["PASS", "FAIL", "BLOCKED", "NOT_RUN", "NOT_APPLICABLE", "PARTIAL"],
   "status_rules": {
     "PASS": "The complete named scenario was met at (or above) its required evidence level, with exact test identifiers or a recorded command, and nothing in the row is left open.",
@@ -132,7 +155,7 @@
     "p10_worktree_venv": "worktree-local .venv: CPython 3.11.15, ruff 0.16.1, mypy 2.3.0 (compiled), pytest 9.1.1; editable installs resolve into this worktree; node v22.23.2; TypeScript 5.9.3 from npm ci; tesseract at /opt/homebrew/bin/tesseract; macOS 27.0.0 (Darwin) arm64",
     "contract_checkpoint": "OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT=499e8b3667b707dca58f097cd099d27a23882026 (read with gh from repository configuration)",
     "accepted_overlay_verbatim": "PATH=\"$PWD/.venv/bin:$PATH\" PYTEST_ADDOPTS=\"-o tmp_path_retention_policy=failed --deselect packages/omnivia-core-runtime/tests/phase3/runtime/test_at09_selected_source_end_to_end.py::test_selected_source_reaches_core_exact_and_is_left_unchanged\" ./scripts/preflight",
-    "overlay_note": "The overlay is the one the Settings v2 lane recorded (put this worktree's .venv/bin first so a stray ~/.local/bin/omnivia-core-service cannot win a PATH-first spawn; deselect exactly the one test that fails identically at the baseline). Without the deselect a plain ./scripts/preflight stops at the full-suite step."
+    "overlay_note": "The overlay is the one the Settings v2 lane recorded (put this worktree's .venv/bin first so a stray ~/.local/bin/omnivia-core-service cannot win a PATH-first spawn; deselect exactly the one test that fails identically at the baseline). Without the deselect a plain ./scripts/preflight stops at the full-suite step. Superseded on 2026-10-18 by release_readiness_slice: the AT09 harness now starts the managed service, so the deselect is no longer needed. The verbatim overlay stays as the command the runs RUN-01 to RUN-11 used."
   },
   "locks_and_pins": {
     "uv_lock_sha256": "7f0d79a2011020d4055fe79120e0aa6e27d45c8c3945d46383271e70249485a9",
@@ -453,7 +476,7 @@
       "tests": [
         "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_hidden_evidence_never_reaches_or_influences_either_lane"
       ],
-      "note": "The fixture directly proves semantic exclusion. The add/remove rare-term and long-text BM25 statistics matrix (acceptance B06) has not been run."
+      "note": "The fixture directly proves semantic exclusion. The add/remove rare-term and long-text BM25 statistics matrix (acceptance B06) has not been run. The lexical side is mapped clause by clause in tests/fixtures/service_conformance/lexical-retrieval-traceability-v1.json (LEX-05 is pending; its partial evidence is that an excluded 340-occurrence long text cannot reorder authorised members and new evidence supersedes the run); removal of evidence from the corpus and a rare-term matrix are not covered."
     },
     {
       "id": "P15",
@@ -536,7 +559,7 @@
       "status": "FAIL",
       "evidence_level": "none",
       "tests": [],
-      "note": "No clean plain ./scripts/preflight exists for this branch. Authoritative accepted-tip record (RUN-01): exit 1, 4 failed, 38,388 passed, 59 skipped; three failures were throwaway-venv environment and passed under the main venv, and AT09 test_selected_source_reaches_core_exact_and_is_left_unchanged fails identically at baseline f6f68dbb. With the accepted overlay (which deselects exactly that test) the Settings v2 lane recorded exit 0 at cf248b71 (RUN-04). The Swift companion suite is a bounded baseline-reproduced exception at the P8 tip. The P1-era stop at the isolated MCP source/wheel comparison no longer reproduces. This packet's own run (RUN-11) was stopped before completion and has no result; Codex will run and report one complete preflight after the closeout commit, against the exact immutable final tip."
+      "note": "No clean plain ./scripts/preflight exists for this branch. Authoritative accepted-tip record (RUN-01): exit 1, 4 failed, 38,388 passed, 59 skipped; three failures were throwaway-venv environment and passed under the main venv, and AT09 test_selected_source_reaches_core_exact_and_is_left_unchanged fails identically at baseline f6f68dbb. With the accepted overlay (which deselects exactly that test) the Settings v2 lane recorded exit 0 at cf248b71 (RUN-04). The Swift companion suite is a bounded baseline-reproduced exception at the P8 tip. The P1-era stop at the isolated MCP source/wheel comparison no longer reproduces. This packet's own run (RUN-11) was stopped before completion and has no result; Codex will run and report one complete preflight after the closeout commit, against the exact immutable final tip. Release-readiness slice, 2026-10-18: the AT09 harness is repaired and the exact test passes without a deselect when run on its own (see release_readiness_slice); a complete plain ./scripts/preflight has still not been run, so this status stays FAIL."
     },
     {
       "id": "P24",
@@ -887,13 +910,13 @@
     "A14": {"status": "PARTIAL", "property_refs": ["P13"], "note": "[W03/W08 / G2; integration] Retrieval policy identity is separate from generation identity; enqueue and migration behaviour not exercised."},
     "A15": {"status": "PARTIAL", "property_refs": ["P05", "P13"], "note": "[W03/W08 / G1; integration + qualification] Execution provenance and compatibility refusal exist; cross-execution qualification not run."},
     "A16": {"status": "PARTIAL", "property_refs": ["P12"], "note": "[W03 / G2; call-counting encoder] Occurrence provenance is distinct from vector input identity; no content-reuse test."},
-    "A17": {"status": "PARTIAL", "property_refs": ["P12"], "note": "[W03 / G2; two principals/workspaces] Workspace is part of occurrence and generation scope; two-workspace cache isolation not run (W12 import ids being content-derived is identity determinism, not cache isolation)."},
+    "A17": {"status": "PARTIAL", "property_refs": ["P12"], "note": "[W03 / G2; two principals/workspaces] Workspace is part of occurrence and generation scope; two-workspace cache isolation not run (W12 import ids being content-derived is identity determinism, not cache isolation). For the lexical path the traceability fixture (LEX-06, pending) holds only partial evidence: a test pins that no cache exists in fts.py, retrieval.py or the evidence handler, and a foreign-workspace frontier is refused; two live workspaces searched in one process and a cache-isolation scenario are not exercised."},
     "B01": {"status": "PARTIAL", "property_refs": ["P01", "P12"], "note": "[W02 / G2; integration] Keyword retrieval is model-independent; evidence-unit and span stability across tokenizer replacement not run."},
     "B02": {"status": "NOT_RUN", "property_refs": [], "note": "[W02 / G2; real extraction outputs + contract] Semantic chunk locator mapping is not implemented."},
     "B03": {"status": "NOT_RUN", "property_refs": ["P24", "P25"], "note": "[W02/W14 / G2; contract fixtures] Semantic chunk splitting is not implemented. Adjacent only: TypeScript exact byte spans over CRLF, multibyte, combining-mark, emoji and BOM fixtures (P25) and Python UTF-8 byte columns (P24) prove code locators, not evidence-unit splitting."},
     "B04": {"status": "PARTIAL", "property_refs": ["P02", "P09"], "note": "[W05/W06 / G2; integration + real-model] Semantic ranking uses the full authorized frontier and synthetic vectors surface nonlexical items; no real-model evidence."},
     "B05": {"status": "PARTIAL", "property_refs": ["P01", "P04", "P05"], "note": "[W06 / G2; integration] Lexical results survive an absent query embedding and lanes are independent; the exact-identifier scenario was not run."},
-    "B06": {"status": "PARTIAL", "property_refs": ["P02", "P14"], "note": "[W05/W06 / G2; real lexical/vector integration] Semantic exclusion directly tested; the add/remove rare-term and long-text statistics matrix was not run."},
+    "B06": {"status": "PARTIAL", "property_refs": ["P02", "P14"], "note": "[W05/W06 / G2; real lexical/vector integration] Semantic exclusion directly tested; the add/remove rare-term and long-text statistics matrix was not run. Lexical-only adjacent evidence is partial evidence for LEX-05 (pending) in the lexical traceability fixture (excluded long text cannot reorder authorised members; adding evidence starts a fresh run); removal and the rare-term matrix remain unrun."},
     "B07": {"status": "PARTIAL", "property_refs": ["P02", "P14"], "note": "[W05/W07 / G2; integration] Only authorized frontier members are scored; mixed-support-span chunk denial not run."},
     "B08": {"status": "PARTIAL", "property_refs": ["P07", "P09"], "note": "[W05 / G2; real database backend] The exact Python reference matches an independent oracle at 300 members; no production backend adapter exists to compare."},
     "B09": {"status": "PARTIAL", "property_refs": ["P09"], "note": "[W05 / G2; real database + exhaustion injection] Full-frontier scoring above the lane budget at 300 items; backend batching and limit exhaustion not run."},

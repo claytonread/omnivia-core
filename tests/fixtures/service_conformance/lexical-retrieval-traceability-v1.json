@@ -1,0 +1,93 @@
+{
+  "format": "omnivia.lexical-retrieval-traceability.v1",
+  "source": {
+    "document": "2026-10-18-omnivia-core-technical-specs-implementation-plan.md",
+    "section": "P3 lexical retrieval, evidence hydration and task context; exit gate G3",
+    "note": "The plan names no clause identifiers. LEX-nn are this repository's labels for the G3 and acceptance-matrix clauses that apply to the model-free lexical path. Semantic and hybrid retrieval are out of scope here."
+  },
+  "states": {
+    "covered": "Every named test exists, runs unconditionally and exercises the clause. evidence lists the tests and covers states what they show.",
+    "pending": "No test shows the clause. evidence is empty and pending_reason says what is missing. partial_evidence lists adjacent tests that do not satisfy it."
+  },
+  "clauses": [
+    {
+      "clause_id": "LEX-01",
+      "clause": "Erased or purged evidence is not found by a later search.",
+      "state": "pending",
+      "evidence": [],
+      "partial_evidence": [
+        "tests/service_conformance/test_lexical_retrieval_traceability.py::test_no_application_operation_erases_or_purges_searchable_evidence"
+      ],
+      "pending_reason": "The application catalogue has no operation that erases or purges evidence, documents or records, so there is no erase-then-search path to run. Tombstoned evidence is excluded (LEX-02) but a tombstone is not an erase."
+    },
+    {
+      "clause_id": "LEX-02",
+      "clause": "Tombstoned evidence is excluded from the search frontier unless the request asks for it, and asking never widens the permission filter.",
+      "state": "covered",
+      "evidence": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_retrieval_filter_chain.py::test_the_tombstone_filter_excludes_unless_the_request_asks",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_search_vertical.py::test_10_include_tombstoned_cannot_surface_what_the_acl_filter_excluded",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_search_vertical.py::test_the_tombstone_status_is_the_last_non_null_observation"
+      ],
+      "covers": "Default exclusion, the opt-in, the ACL filter surviving the opt-in, and a later unrelated event not un-tombstoning an artifact."
+    },
+    {
+      "clause_id": "LEX-03",
+      "clause": "A workspace backed up and restored returns the same ranked results.",
+      "state": "pending",
+      "evidence": [],
+      "partial_evidence": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py::test_lb_l20_reopening_rebuilds_the_index_from_the_durable_rows",
+        "packages/omnivia-core-runtime/tests/phase2/test_migration_backup_restore.py::test_mb21_mb22_rollback_restores_the_exact_schema_counts_and_values"
+      ],
+      "pending_reason": "No test restores a verified backup of a workspace that holds a built search projection and compares a ranked search before and after. The reopen test re-derives the index in the same database file; the backup test restores the pre-upgrade legacy database and never searches it. The standard lifecycle script restores that same legacy database, so it cannot carry the assertion either."
+    },
+    {
+      "clause_id": "LEX-04",
+      "clause": "A workspace migrated only to schema 0012 builds the search projection and answers a ranked search.",
+      "state": "covered",
+      "evidence": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py::test_lb_l13b_a_workspace_migrated_only_to_0012_answers_the_same_ranking",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_migration.py::test_lb_m3_the_migration_adds_exactly_one_table_and_its_three_guards",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_migration.py::test_lb_m20_reapplying_the_migration_is_a_no_op"
+      ],
+      "covers": "The migrator stopped at 0012 reports user_version 12, and the build and the ranking over that workspace equal the head-schema ranking; the migration's table shape and idempotence."
+    },
+    {
+      "clause_id": "LEX-05",
+      "clause": "BM25 scoring uses statistics from the authorised frontier only, and new evidence starts a fresh projection run.",
+      "state": "pending",
+      "evidence": [],
+      "partial_evidence": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_search_vertical.py::test_lb_v9_an_excluded_artifact_cannot_move_the_order_of_authorized_members",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_search_vertical.py::test_lb_v8_an_excluded_artifact_is_never_scored_even_when_the_page_is_identical",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py::test_lb_l24_the_narrowing_addresses_the_frontier_and_never_the_corpus",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py::test_lb_l7_new_evidence_starts_a_fresh_run_that_supersedes_and_reclaims"
+      ],
+      "pending_reason": "No test adds and removes evidence and checks BM25 statistics, and none runs the rare-term matrix. The adjacent tests show that an excluded artifact with a very long text and 340 occurrences of the term cannot reorder the authorised members, that it is never given to the ranker, and that adding evidence supersedes the previous run. None removes evidence from the corpus (LEX-01 has no such operation) or varies term rarity."
+    },
+    {
+      "clause_id": "LEX-06",
+      "clause": "A search in one workspace cannot return another workspace's evidence, and no cache is shared between workspaces.",
+      "state": "pending",
+      "evidence": [],
+      "partial_evidence": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py::test_lb_l18_a_frontier_from_another_workspace_is_refused",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py::test_lb_l19_the_index_lives_in_temp_and_touches_no_persisted_schema",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_search_vertical.py::test_another_workspaces_evidence_is_never_returned",
+        "tests/service_conformance/test_lexical_retrieval_traceability.py::test_the_lexical_path_holds_no_cache"
+      ],
+      "pending_reason": "No test searches two live workspaces in one process or exercises a cache-isolation scenario. The adjacent tests show that a foreign frontier is refused, that the index lives in a per-connection temp table, that the evidence read is workspace-scoped, and that fts.py, retrieval.py and the evidence handler contain no cache (a static check, not isolation)."
+    },
+    {
+      "clause_id": "LEX-07",
+      "clause": "A captured source is found by evidence.search, ranks first, and the Context Pack built for the same query cites the record and its section.",
+      "state": "covered",
+      "evidence": [
+        "scripts/run-standard-journey.py::_require_seeded_retrieval",
+        "tests/package_qualification/test_standard_journey.py::test_the_journey_asserts_the_seeded_record_ranks_first_and_is_cited"
+      ],
+      "covers": "The installed journey seeds one captured source and one approved record. The journey fails unless evidence.search and knowledge.search return them first and context_pack.build cites the record and a governed_record section, identically on a second build. With one candidate this proves position and citation, not discrimination between competing candidates (LEX-05 and the ranking tests do that). The journey runs in package qualification, not under pytest."
+    }
+  ]
+}

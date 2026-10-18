@@ -362,4 +362,3 @@ def test_identical_bytes_after_the_source_is_removed_do_not_become_the_head(
         assert not entry.is_current_source
     assert [e.intent_kind for e in extra] == [store.INTENT_AUTOMATIC, store.INTENT_REFRESH]
     assert after.captures[0] == removed.captures[0]
-

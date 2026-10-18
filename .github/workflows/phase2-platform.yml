@@ -165,3 +165,31 @@ jobs:
           else
             echo "skipped: the status menu companion requires macOS AppKit"
           fi
+
+      - name: Typecheck the macOS native extension sources
+        # The extension sources are not Swift Package targets, so the step above
+        # does not cover them. These are the commands in the companion README
+        # with `-typecheck` in place of linking.
+        shell: bash
+        run: |
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            xcrun swiftc -typecheck -target arm64-apple-macos13.0 -application-extension \
+              -parse-as-library \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeHandoffMailbox.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerRequirement.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerSocket.swift \
+              apps/core-status-menu-macos/Extensions/Shared/ExtensionSupport.swift \
+              apps/core-status-menu-macos/Extensions/FinderAction/FinderActionViewController.swift
+            xcrun swiftc -typecheck -target arm64-apple-macos13.0 -application-extension \
+              -parse-as-library \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeHandoffMailbox.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerRequirement.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerSocket.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/OwnedSnapshotStore.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareRepresentationPolicy.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareInboxStore.swift \
+              apps/core-status-menu-macos/Extensions/Shared/ExtensionSupport.swift \
+              apps/core-status-menu-macos/Extensions/Share/ShareViewController.swift
+          else
+            echo "skipped: the native extensions require macOS AppKit"
+          fi

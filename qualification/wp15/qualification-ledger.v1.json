@@ -318,7 +318,7 @@
       ],
       "status": "passed",
       "missing_condition": null,
-      "limitations": "Executed and passing on macOS with a Swift toolchain on 2026-10-16. The end-to-end half is a macOS-only pytest that runs `swift test`; it skips elsewhere, so core-acceptance's Linux row runs only the fixture-digest and extraction tests, and no required CI row runs the end-to-end half. The original is chosen by handing its URL to ManualCaptureSubmission rather than through a real picker, drag or Services invocation, and atime is deliberately excluded from the before-and-after comparison because a read may move it. Core's retained copy is read through read_retained_source against the stopped service's workspace rather than over the wire. One text fixture covers the gate; no OS or Xcode version is recorded with the result.",
+      "limitations": "Executed and passing on macOS with a Swift toolchain on 2026-10-16, then failing from the harness until it was repaired and re-executed passing on 2026-10-18: the companion's delivery is attach-only (`--require-running`), and the harness never started a service, so the Swift half saw `pending` instead of `admitted`; the test now starts the managed service first and the fixture kills it. The end-to-end half is a macOS-only pytest that runs `swift test`; it skips elsewhere, so core-acceptance's Linux row runs only the fixture-digest and extraction tests, and no required CI row runs the end-to-end half; only the local Darwin preflight does. The original is chosen by handing its URL to ManualCaptureSubmission rather than through a real picker, drag or Services invocation, and atime is deliberately excluded from the before-and-after comparison because a read may move it. Core's retained copy is read through read_retained_source against the stopped service's workspace rather than over the wire. One text fixture covers the gate; no OS or Xcode version is recorded with the result.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/source_capture.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py",
@@ -697,7 +697,7 @@
         }
       ],
       "status": "blocked_external",
-      "missing_condition": "A real NSItemProvider whose URL expires mid-callback only occurs inside a Share extension macOS has loaded. The Extensions tree is outside the Swift test target, has no tests, and is not even typechecked in CI.",
+      "missing_condition": "A real NSItemProvider whose URL expires mid-callback only occurs inside a Share extension macOS has loaded. The Extensions tree is outside the Swift test target and has no tests; its sources are only typechecked under -application-extension, never run, by the macOS row of the Phase 2 platform workflow and by the local Darwin preflight.",
       "limitations": "Copy-not-bookmark and survival-after-source-removal are proven against a test-owned temporary file. No provider, no expiry and no extension process are involved.",
       "source_bindings": [
         "apps/core-status-menu-macos/Extensions/Share/ShareViewController.swift",
@@ -2377,7 +2377,7 @@
         }
       ],
       "status": "blocked_external",
-      "missing_condition": "FinderActionViewController is not a Swift Package target, has no tests, and is not even typechecked by CI. Whether the action appears in Finder for the intended selections can only be observed on a signed installed build macOS has registered, and no signed build exists.",
+      "missing_condition": "FinderActionViewController is not a Swift Package target and has no tests; its sources are only typechecked under -application-extension, never run, by the macOS row of the Phase 2 platform workflow and by the local Darwin preflight. Whether the action appears in Finder for the intended selections can only be observed on a signed installed build macOS has registered, and no signed build exists.",
       "limitations": "The companion side of the handoff is covered well. The extension that returns the NSExtensionItem objects unmodified, which is the preservation claim, has no automated coverage at all.",
       "source_bindings": [
         "apps/core-status-menu-macos/Extensions/FinderAction/FinderActionViewController.swift",

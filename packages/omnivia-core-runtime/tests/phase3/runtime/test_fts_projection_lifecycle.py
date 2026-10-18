@@ -117,12 +117,14 @@ class Interrupted(RuntimeError):
     """The injected failure. Stands for a kill, a crash or a lost lease."""
 
 
-@pytest.fixture
-def owned(tmp_path: Path) -> Iterator[m2.Owned]:
-    """A workspace at 0012 carrying five evidence artifacts and no projection."""
-    path = tmp_path / "workspace.sqlite"
+def _owned_workspace(path: Path, *, through: int | None = None) -> m2.Owned:
+    """Five evidence artifacts and no projection; `through` stops the migrator there."""
     materialise_phase0_baseline(path)
-    m2.bootstrap_and_migrate(path)
+    if through is None:
+        m2.bootstrap_and_migrate(path)
+    else:
+        with m2.migration_catalogue_through(through):
+            m2.bootstrap_and_migrate(path)
     holder = m2.take_ownership(path)
     m2.seed_chain(holder)
     for evidence_id, native_id, locator, recorded_at, retrieved_at in EXTRA_ARTIFACTS:
@@ -135,6 +137,21 @@ def owned(tmp_path: Path) -> Iterator[m2.Owned]:
             source_retrieved_at_us=retrieved_at,
             recorded_at_us=recorded_at,
         )
+    return holder
+
+
+@pytest.fixture
+def owned(tmp_path: Path) -> Iterator[m2.Owned]:
+    """A workspace at the head schema carrying five evidence artifacts and no projection."""
+    holder = _owned_workspace(tmp_path / "workspace.sqlite")
+    yield holder
+    holder.connection.close()
+
+
+@pytest.fixture
+def owned_at_0012(tmp_path: Path) -> Iterator[m2.Owned]:
+    """The same five artifacts in a workspace migrated only as far as 0012."""
+    holder = _owned_workspace(tmp_path / "workspace.sqlite", through=12)
     yield holder
     holder.connection.close()
 
@@ -720,6 +737,23 @@ def test_lb_l13_ranking_returns_frontier_members_in_the_shared_total_order(
     # §8.2's first ordering hazard, which a sort keyed on relevance alone would show.
     shuffled = replace(frozen, candidates=tuple(reversed(frozen.candidates)))
     assert ranked(owned, projection, shuffled, "alpha", limit=10) == results
+
+
+def test_lb_l13b_a_workspace_migrated_only_to_0012_answers_the_same_ranking(
+    owned_at_0012: m2.Owned,
+) -> None:
+    """The projection's own migration is enough to build and search: the ranking over
+    a workspace stopped at 0012 is the one the head schema returns (`l13` above)."""
+    assert scalar(owned_at_0012, "PRAGMA user_version") == 12
+    build(owned_at_0012)
+    projection = fts.open_search_projection(owned_at_0012.connection, workspace_id=WORKSPACE_ID)
+    results = ranked(owned_at_0012, projection, frontier(owned_at_0012), "alpha", limit=10)
+
+    assert [candidate.evidence_id for candidate in results] == [
+        "evd-alpha-1",
+        "evd-tie-b",
+        "evd-tie-a",
+    ]
 
 
 def test_lb_l14_a_document_outside_the_frontier_is_never_returned(

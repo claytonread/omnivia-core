@@ -22,8 +22,8 @@ after the closeout commit, against the exact immutable final tip.
 - Settings v2 is a six-pane window whose Models, Search and embeddings, Code analysis, Local Decisions,
   Background processing and Activity details are explicit "not built" text. W17 (C-01) and W18 (indexing
   controls) are not implemented.
-- No clean plain preflight exists: the AT09 test fails identically at baseline, so the accepted
-  environment overlay deselects it (section 11).
+- No clean plain preflight exists. The AT09 harness defect that forced the overlay's deselect was repaired
+  on 2026-10-18 (section 17); no complete preflight has run since, so none is claimed.
 
 Ledger counts (from the JSON): work items 19 (14 PARTIAL, 5 NOT_RUN, none PASS); properties 38 (27 PASS,
 5 PARTIAL, 4 NOT_RUN, 1 BLOCKED, 1 FAIL); acceptance entries 256 = 138 technical cases + 116 UI scenarios
@@ -59,7 +59,7 @@ Ledger counts (from the JSON): work items 19 (14 PARTIAL, 5 NOT_RUN, none PASS);
 
 | Capability | State |
 |---|---|
-| Lexical evidence search, Context Pack, graph traverse (pre-existing) | In the tree; not re-qualified clause by clause here |
+| Lexical evidence search, Context Pack, graph traverse (pre-existing) | In the tree; applicable clauses mapped to tests, four pending (section 17) |
 | Native document intake (Waves 1-4) | In the tree; repository-level gates only (68 of 130 passed) |
 | Python code intelligence (`code.policy.register`, `code.import`, `code.status`, `code.query`) | Implemented, opt-in by owner policy, **not advertised** |
 | TypeScript/JavaScript code intelligence | Producer is component-only (L3); production route unavailable |
@@ -154,8 +154,8 @@ models, application updates. The Settings window's placeholders are static text,
 Platform/architecture: one host class only (macOS arm64); Intel, older macOS, Linux/Windows rows not run
 locally. Offline/network-denied: producers assert no network modules; Node permissions do not gate the
 network; no OS-level denial test. Permission revocation and hidden-corpus: code-graph differential and
-revocation tests exist (P29, P30); the BM25 add/remove statistics matrix (B06) and cross-workspace cache
-isolation (A17) are not run. Retention/deletion: WP-15 repository gates only. Performance/resource: calibration
+revocation tests exist (P29, P30); the BM25 add/remove rare-term statistics matrix (B06) and two-workspace cache
+isolation (A17) are not run (the lexical path's own partial evidence is mapped in section 17). Retention/deletion: WP-15 repository gates only. Performance/resource: calibration
 timings only; no p95, RSS or scale run (QP-02). Accessibility: none (blocked, external). Signing/notarisation
 and update activation: none. Native intake: 130 WP-15 gates = 68 passed, 47 blocked_external, 15 not_executed,
 0 failed; that ledger also says no test has a real companion talking to a real Core, which live-Core Swift test
@@ -170,8 +170,8 @@ review), **no area is SHIP**. The seventh area is the lexical path, added to the
 
 | # | Area | Decision | Evidence level | Rationale | Entry conditions |
 |---|---|---|---|---|---|
-| 1 | Native intake | BLOCKED | repository tests (L3); no L5 | 68/130 gates passed, 47 blocked_external, 15 not_executed; unsigned, `production_release_eligible: false`; AT09 and Swift host failures | signing identity and notarised build; installed-signed evidence; AT09 harness fix; extension tests; accessibility review |
-| 2 | Lexical retrieval, evidence, Context Pack | BLOCKED | L3-L4 where exercised; G3 clauses not mapped | pre-existing path, shared authority refactored; clause-level mapping and green exact-tip validation absent | green PR checks; G3 clause-to-test map; review |
+| 1 | Native intake | BLOCKED | repository tests (L3); no L5 | 68/130 gates passed, 47 blocked_external, 15 not_executed; unsigned, `production_release_eligible: false`; AT09 harness repaired 2026-10-18 and passing locally only; Swift host failures as recorded; extension sources typechecked, not run | signing identity and notarised build; installed-signed evidence; a hosted run of the AT09 end-to-end half; extension tests; accessibility review |
+| 2 | Lexical retrieval, evidence, Context Pack | BLOCKED | L3-L4 where exercised; clauses mapped (3 covered, 4 pending) | pre-existing path, shared authority refactored; erase-then-search, backup/restore-then-search, BM25 add/remove statistics and two-workspace cache isolation have no test; green exact-tip validation absent | green PR checks; evidence for LEX-01, LEX-03, LEX-05 and LEX-06; review |
 | 3 | Semantic validation | DO_NOT_SHIP | L0 | no claim gate, warrants, SHACL or Context Pack preservation exists | P4 sub-slices implemented and qualified |
 | 4 | Semantic retrieval | DISABLED | L1/L3 foundations | no embedder, backend, build job, operation or transport; QP-01 blocked | QP-01 to QP-03, QP-05, contract decision |
 | 5 | Code intelligence | DISABLED (Python, opt-in); TypeScript DO_NOT_SHIP | L4 Python fixtures; L3 TS | real repositories refused beyond about 35-40 modules; QP-04 not run; unaccepted migrations; MCP off | multi-batch or ceiling decision; real-repo run; Node provisioning for TS; migration acceptance |
@@ -194,7 +194,7 @@ G0-G10 collide.
 |---|---|---|
 | G1 shared contracts/migrations | not met | code and settings contracts pass generation/conformance; status, pause, C-01, model, update-state and validation contracts do not exist; no shared Swift/TS state fixture |
 | G2 native intake | partial | repository gates only; no L4 companion-to-Core claim, no L5 |
-| G3 lexical retrieval | partial | capability pre-existing; clauses not mapped here |
+| G3 lexical retrieval | partial | capability pre-existing; clauses mapped in the lexical traceability fixture, LEX-01, LEX-03, LEX-05 and LEX-06 pending; no hosted or packaged run |
 | G4 semantic validation | not met | not implemented; not a release claim |
 | G5 semantic retrieval | not met | disabled; not a release claim |
 | G6 Settings/updates/models | not met | none of the clauses |
@@ -212,13 +212,13 @@ packaging not run; G9 Settings/native input not met; G10 indexing controls not m
 
 Real model and backend; scale and latency; content-bearing input; real repositories and multi-batch import;
 TypeScript production route and pinned Node; hybrid public mode; MCP real host; packaged, signed and
-notarised builds; update activation; accessibility; Intel/older macOS; BM25 hidden-corpus matrix;
-cross-workspace cache isolation; C-01; indexing controls; shortcut; semantic validation.
+notarised builds; update activation; accessibility; Intel/older macOS; BM25 add/remove rare-term matrix;
+two-workspace cache isolation; C-01; indexing controls; shortcut; semantic validation.
 
 ## 15. Reproduction and retained evidence
 
 - Ledger parse: `jq empty` on `WORK-STATUS.json` and `QUALIFICATION-PLAN.json`.
-- Accepted overlay: `PATH="$PWD/.venv/bin:$PATH" PYTEST_ADDOPTS="-o tmp_path_retention_policy=failed --deselect packages/omnivia-core-runtime/tests/phase3/runtime/test_at09_selected_source_end_to_end.py::test_selected_source_reaches_core_exact_and_is_left_unchanged" ./scripts/preflight`.
+- Historical overlay (runs RUN-01 to RUN-11; the deselect is no longer needed after section 17): `PATH="$PWD/.venv/bin:$PATH" PYTEST_ADDOPTS="-o tmp_path_retention_policy=failed --deselect packages/omnivia-core-runtime/tests/phase3/runtime/test_at09_selected_source_end_to_end.py::test_selected_source_reaches_core_exact_and_is_left_unchanged" ./scripts/preflight`.
 - Retained in the repo: the P1, P7 (Python, TypeScript) and P8 (W12, W13-A/B/C) packets here; the Settings v2,
   update-trust and static-gate records; `docs/quality/wp15-qualification-status.md`. No raw log is retained.
 
@@ -228,3 +228,25 @@ Replaced by this file: "P1 only", "no production caller" for code, "code produce
 Still stale and **not edited** (outside this packet): `BASELINE-AND-BINDINGS.md` describes only the P1 slice
 (e.g. "Producers, import and graph activation are later work"); WP-15's "no companion-to-Core test" statement;
 the spec's own stale supersedes/ui_companion metadata. In the ledger, P15 is scoped to the P1 slice.
+
+## 17. Release-readiness slice (2026-10-18, uncommitted, for Codex review)
+
+Baseline `f4734816` on `codex/core-release-readiness-integration`. Working-tree edits only: not committed,
+pushed, merged or released. The decisions in section 11 are unchanged: semantic validation DO_NOT_SHIP,
+semantic retrieval DISABLED, code intelligence DISABLED by default (Python opt-in, TypeScript DO_NOT_SHIP),
+Settings/update/model UX not release-enabled, Spotlight deferred and DISABLED. No product behaviour changed.
+
+| Change | What it shows | What it does not |
+|---|---|---|
+| AT09 harness starts the managed service (`test_managed_start._run`) before the Swift half | The exact test passes with no deselect on a local Darwin host with Swift. The defect was the harness: the companion delivers attach-only (`--require-running`), so the item stayed `pending` | No hosted CI row runs the end-to-end half; one text fixture; no OS or Xcode version recorded |
+| `.gitattributes` `-text -whitespace` on the AT-09 fixture; blank line removed from `test_refresh_outcome_gates.py` | `git diff --check origin/main` (committed and uncommitted changes) is clean, with the fixture's bytes (pinned by SHA-256) untouched | The committed HEAD alone still carries the blank line until this slice is committed |
+| Native extension `swiftc -typecheck -application-extension` in `scripts/preflight` and the macOS step of `phase2-platform.yml` | Both extension source sets typecheck locally | Typechecked, never run; no job, check name or matrix changed; hosted result not observed |
+| Lexical traceability fixture and test | 7 clauses: LEX-02, 04, 07 covered by named, unskipped tests; LEX-01, 03, 05, 06 pending | LEX-01: the catalogue has no erase or purge operation. LEX-03: no test restores a backup of a workspace with a built projection and searches it. LEX-05: no BM25 add/remove statistics or rare-term matrix test (the adjacent long-text and supersede tests are partial evidence only). LEX-06: no two-live-workspace or cache-isolation test (the foreign-frontier refusal and no-cache check are partial evidence only). None is claimed |
+| `test_lb_l13b` migrated-only-to-0012 build and search | A workspace stopped at 0012 reports `user_version` 12 and ranks as the head schema does | No upgrade-from-populated-0011 data |
+| Installed journey: `_require_seeded_retrieval` | The seeded source and record rank first and the Context Pack cites the record and a `governed_record` section, identically on a second build; seven mutations each fail it | One seeded candidate, so position and citation, not discrimination. `pack_id` covers the build instant and is not compared. The journey runs in package qualification, not under pytest. A lifecycle restore-then-search assertion does not fit `run-standard-lifecycle.py`, which restores the legacy pre-upgrade database and never searches |
+| WP-15 ledger text | The AT-09 limitation records the repair and the extension typecheck; the generated status report is unchanged and matches | No gate status changed: still 68 passed, 47 blocked_external, 15 not_executed |
+
+Verification run for this slice is listed under "Verification" in the hand-back; no complete `./scripts/preflight`
+was run. Not produced: native L5/L6, signing, notarisation, accessibility, Intel or older macOS, a real
+security-scoped bookmark, removable or iCloud volumes, a real process kill, any performance measurement, or a
+hosted matrix result.
