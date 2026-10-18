@@ -498,7 +498,7 @@
         "P16",
         "P19"
       ],
-      "note": "Verified candidates map to proposed memory inputs without writer authority; governed import, acceptance and atomic graph activation remain."
+      "note": "Governed import, policy acceptance and atomic repository applicability are delivered as one storage seam (storage/code_analysis_import.py, migration 0074) with repository-local real-SQLite evidence over both real producers; see P8-W12-GOVERNED-IMPORT-2026-10-18.md. Still PARTIAL: no production caller (catalogue operation, handler or scheduler) invokes the seam, owner policy authorisation has no public intent (the seam takes the executor's MutationSettlementContext and authenticated principal, and 0074 binds the authoriser to that settlement's audit), and only resolver-routed reads apply code applicability. QP-04 and G8 are not claimed; W13 intents and QP-05 transport remain."
     },
     "W13": {
       "status": "NOT_RUN",
