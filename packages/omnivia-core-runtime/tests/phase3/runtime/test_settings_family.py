@@ -45,7 +45,12 @@ from omnivia_core_runtime.service.authorization import Grant
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.handlers.settings import (
     SETTINGS_FAMILY_OPERATIONS,
+    SETTINGS_SET_OPERATION,
     SETTINGS_WRITER,
+)
+from omnivia_core_runtime.service.mutation import (
+    MUTATION_ROLES,
+    WORKSPACE_OPERATOR_ROLE,
 )
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.storage.app_settings import read_setting
@@ -175,6 +180,12 @@ def test_the_family_grants_exactly_the_two_operations(owned: Any) -> None:
     # Both scopes, because the family holds a read and a write. No existing
     # mutating family grants `workspace:write`, which is why this one exists.
     assert dispatcher.session.scopes == frozenset({"workspace:read", "workspace:write"})
+    # Operator, not contributor. Pinned here as well as in `MUTATION_ROLES`
+    # because the two are separate statements that have to agree: the grant
+    # this session issues is checked against the map, and a session that drifted
+    # to contributor would be refused at issuance rather than quietly widened.
+    assert dispatcher.session.roles == frozenset({WORKSPACE_OPERATOR_ROLE})
+    assert MUTATION_ROLES[SETTINGS_SET_OPERATION] == WORKSPACE_OPERATOR_ROLE
 
 
 # --------------------------------------------------------------------------

@@ -1820,11 +1820,10 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "task_context.export": "workspace_contributor",
         "outcome.request.create": "workspace_contributor",
         "project.context.switch": "workspace_contributor",
-        # Administration purpose, contributor role: there is no
-        # workspace-administrator role in this vocabulary, and the
-        # installation role is refused at issuance on a workspace lane.
-        # `workspace_operator` is the live candidate to move to.
-        "settings.set": "workspace_contributor",
+        # Operator: storing a setting changes what the workspace runs with,
+        # which is the authority `skills.install` and `skills.remove` take.
+        # A contributor writes content into a workspace, which this is not.
+        "settings.set": "workspace_operator",
     }
     assert set(MUTATION_ROLES) == MUTATING_OPERATIONS
 

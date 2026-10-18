@@ -1818,25 +1818,28 @@ def build_knowledge_sharing_application_dispatcher(
 def settings_family_session(
     *, principal_id: str, installation_id: str, workspace_id: str
 ) -> AuthenticatedSession:
-    """The contributor grant for one workspace's stored settings.
+    """The operator grant for one workspace's stored settings.
 
-    Contributor rather than an administrator role because there is none:
-    `MUTATION_ROLES` declares `settings.set` as `workspace_contributor`, the
-    installation role is refused at issuance on this workspace lane, and the
-    role a grant is checked against is server-owned policy rather than anything
-    this constructor may choose. The purpose still says what the act is.
+    Operator rather than contributor, decided 2026-10-18 after the merge with
+    main made the role available. The distinction is the one the existing map
+    already draws: a contributor writes content *into* a workspace, and
+    `workspace_operator` is what `skills.install` and `skills.remove` carry --
+    changing what the workspace runs with. A stored setting is configuration,
+    and the `workspace_administration` purpose beside it says so; an
+    administration purpose carried by a contributor role was the mismatch this
+    replaces. There is still no workspace-administrator role, and the
+    installation role is refused at issuance on this lane.
 
-    `workspace_operator` is the live candidate to move to -- it is the role
-    `skills.install` and `skills.remove` carry, and configuring a workspace is
-    nearer that than authoring content in one -- but moving it is an authority
-    decision rather than a wiring change, so it is named here and left open.
+    The role a grant is checked against is server-owned policy in
+    `MUTATION_ROLES` rather than anything this constructor may choose; this
+    grant has to agree with it or `settings.set` is refused at issuance.
     """
     entries = tuple(
         get_operation_metadata(name) for name in sorted(SETTINGS_FAMILY_OPERATIONS)
     )
     return AuthenticatedSession(
         principal_id=principal_id,
-        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
+        roles=frozenset({WORKSPACE_OPERATOR_ROLE}),
         installations=frozenset({installation_id}),
         workspaces=frozenset({workspace_id}),
         operations=SETTINGS_FAMILY_OPERATIONS,

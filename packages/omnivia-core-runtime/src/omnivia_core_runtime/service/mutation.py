@@ -298,10 +298,14 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # Choosing the active Project is contributor work in one workspace: it writes no record and
         # reaches nothing outside it. Membership of the chosen Project is checked by the handler.
         "project.context.switch": WORKSPACE_CONTRIBUTOR_ROLE,
-        # Contributor, not installation administrator: this lane refuses the
-        # installation role at issuance, and a setting belongs to the one
-        # workspace the grant already names.
-        "settings.set": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Operator, not contributor: a contributor writes content *into* a
+        # workspace -- memory, chat, evidence, a skill draft -- and storing a
+        # setting is not that. It changes what the workspace runs with, which is
+        # the authority `skills.install` and `skills.remove` already take, and
+        # it is what the `workspace_administration` purpose beside it says.
+        # Installation administrator is refused at issuance on this lane, and a
+        # setting belongs to the one workspace the grant already names.
+        "settings.set": WORKSPACE_OPERATOR_ROLE,
     }
 )
 
