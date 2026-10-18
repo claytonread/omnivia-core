@@ -755,6 +755,26 @@ def test_a_replay_reconciles_and_a_conflicting_replay_refuses_without_analysing(
     assert runs == ["snap-1"] and captured.rows() == after_first
 
 
+def test_a_repeated_run_reactivates_the_same_import_and_copies_no_fact(captured: Vertical) -> None:
+    """D11: analysing the same snapshot again under a fresh key is a new activation of the
+    same content-addressed import, never a second copy of its facts or edges."""
+    policy_registered(captured)
+    first = imported(captured)
+    after_first = captured.rows()
+    again = captured.ok("code.import", import_request(), key="import-again", precondition="1")
+    assert again["binding"]["import_id"] == first["binding"]["import_id"]
+    assert again["activation_sequence"] == 2
+    grown = {table: count - after_first[table] for table, count in captured.rows().items() if count != after_first[table]}
+    # One activation plus the executor's own claim and audit; no import, member, record,
+    # assembly, evidence link or artifact is written twice.
+    assert set(grown) == {
+        "omnivia_code_analysis_activations", "omnivia_idempotency_claims", "omnivia_application_audit_events",
+    }
+    assert grown["omnivia_code_analysis_activations"] == 1
+    answer = captured.ok("code.query", query(again["binding"], "callers", semantic_key="pkg.models.make"))
+    assert records_of(answer) <= members(captured, first["binding"]["import_id"])
+
+
 def test_a_stale_attempt_is_fenced_and_a_cancelled_one_leaves_the_graph_intact(
     captured: Vertical, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1007,3 +1027,33 @@ def test_a_hidden_snapshot_is_reported_exactly_as_one_that_does_not_exist(
     )
     assert hidden_analysis.to_wire() == never_analysed.to_wire()
     assert dict(hidden_analysis.details or {}) == {"readiness": "not_ready", "reason": "no_active_import"}
+
+
+def test_a_dependency_change_re_resolves_an_unchanged_caller(captured: Vertical) -> None:
+    """Spec 16.3 / D13: every import re-resolves the whole declared project, so an edge in
+    a caller file whose bytes did not change is never carried over from the last analysis.
+
+    `pkg/service.py` is byte-identical in both snapshots; only `pkg/models.py` loses
+    `make`. The first analysis resolves `run -> make`; the second, of the same unchanged
+    caller, cannot, and says so as coverage rather than keeping the old edge.
+    """
+    policy_registered(captured)
+    old = imported(captured)["binding"]
+    first = captured.ok("code.query", query(old, "callees", semantic_key="pkg.service.run"))
+    assert "pkg.models.make" in [r["target_key"] for r in first["relations"]]
+    assert not [d for d in first["diagnostics"] if d["source_key"] == "pkg.service.run"]
+
+    (captured.checkouts[REPO] / "pkg/models.py").write_bytes(
+        _MODELS.replace(b"def make(key: str) -> Record:\n    return Record(key)\n", b"")
+    )
+    captured.capture(REPO, "snap-2")
+    new = captured.ok("code.import", import_request("snap-2"), key="import-2", precondition="1")["binding"]
+    second = captured.ok("code.query", query(new, "callees", semantic_key="pkg.service.run"))
+    caller = next(s for s in second["definitions"] if s["semantic_key"] == "pkg.service.run")
+    assert caller["source"]["content_digest"] == digest_of(_SERVICE)
+    assert [r["target_key"] for r in second["relations"]] == ["pkg.vault.unseal"]
+    # Re-resolved by the producer, not a reused edge W12 then refused as a dangling endpoint.
+    assert [(d["source_key"], d["reason"], d["target_descriptor"]) for d in second["diagnostics"]] == [
+        ("pkg.service.run", "unresolved", "unresolved-in-snapshot:pkg.models.make"),
+    ]
+    assert second["coverage"]["complete"] is False

@@ -505,7 +505,7 @@ def test_a_hidden_endpoint_or_support_moves_no_disclosed_path_degree_or_count(
     ]
 
 
-def test_a_hidden_code_definition_is_not_found_and_is_never_a_neighbour(
+def test_a_hidden_code_analysis_is_answered_as_a_scope_never_analysed(
     workspace: Any, blobs_root: Path, architecture: w13a.Imported
 ) -> None:
     """The same rule over the code graph. Every fact of one import cites that snapshot's
