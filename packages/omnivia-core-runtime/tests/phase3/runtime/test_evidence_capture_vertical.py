@@ -1255,7 +1255,7 @@ def test_the_ingestion_family_grant_covers_capture_without_widening(
 ) -> None:
     """Capture joins the S3 family by one operation and one capability, and no more.
 
-    The seven authority families are unchanged: this asserts the session the production
+    The authority families are unchanged: this asserts the session the production
     constructor builds holds `evidence.capture` under the family's single
     `content_ingestion` purpose and single contributor role, and that its scope set is
     the one `import.start` already carried.

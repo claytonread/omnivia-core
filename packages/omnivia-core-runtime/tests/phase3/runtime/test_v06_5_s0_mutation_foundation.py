@@ -795,10 +795,11 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
         "task_context.export",
         "outcome.request.create",
         "project.context.switch",
+        "settings.set",
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 44
+    assert len(MUTATION_PURPOSES) == 45
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -1819,6 +1820,10 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "task_context.export": "workspace_contributor",
         "outcome.request.create": "workspace_contributor",
         "project.context.switch": "workspace_contributor",
+        # Operator: storing a setting changes what the workspace runs with,
+        # which is the authority `skills.install` and `skills.remove` take.
+        # A contributor writes content into a workspace, which this is not.
+        "settings.set": "workspace_operator",
     }
     assert set(MUTATION_ROLES) == MUTATING_OPERATIONS
 

@@ -2,8 +2,8 @@
 
 This process owns and advertises one writable workspace and participates in the
 single fenced catalogue authority for its installation. The production
-application surface is the exact frozen 28-operation catalogue, composed from
-seven separate authority families. Health, readiness and discovery remain
+application surface is the exact frozen 81-operation catalogue, composed from
+fifteen separate authority families. Health, readiness and discovery remain
 distinct from product operations, per ADR-037, and stay on the probe dispatcher.
 
 **One console script, four kinds of process.** `--managed-start` (R004-08) does
@@ -48,6 +48,7 @@ from omnivia_core_runtime.service.application import (
     build_job_application_dispatcher,
     build_knowledge_sharing_application_dispatcher,
     build_memory_application_dispatcher,
+    build_settings_application_dispatcher,
     build_skill_application_dispatcher,
     build_skill_resolution_application_dispatcher,
     build_task_context_application_dispatcher,
@@ -300,7 +301,7 @@ def _build_production_application_surface(
     """Compose the exact production route for one live service.
 
     The global installation catalogue supplies the installation id used by all
-    seven authority families. The workspace service instance keeps its own
+    fifteen authority families. The workspace service instance keeps its own
     service identity and fencing generation; those facts do not become
     installation authority merely because both authorities live in one process.
 
@@ -479,6 +480,14 @@ def _build_production_application_surface(
         admission=admission_authority,
         clock=started.clock,
     )
+    settings = build_settings_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=task_context,
+        clock=started.clock,
+    )
     return compose_production_application_surface(
         installation=installation,
         reads=reads,
@@ -494,6 +503,7 @@ def _build_production_application_surface(
         engineering=engineering,
         knowledge_sharing=knowledge_sharing,
         task_context=task_context,
+        settings=settings,
         probe=probe,
     )
 

@@ -134,6 +134,12 @@ from omnivia_core_runtime.service.handlers.memory import (
     HmacContinuationTokenCodec,
     MemoryHandlers,
 )
+from omnivia_core_runtime.service.handlers.settings import (
+    SETTINGS_FAMILY_OPERATIONS,
+    SETTINGS_LIST_OPERATION,
+    SETTINGS_SET_OPERATION,
+    SettingsHandlers,
+)
 from omnivia_core_runtime.service.handlers.skills import (
     SKILL_DRAFT_CREATE_OPERATION,
     SKILL_DRAFT_UPDATE_OPERATION,
@@ -393,6 +399,25 @@ CHAT_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 #: authority -- and inspecting or reviewing a Run is an observation, which is not what
 #: a caller starts one under.
 WORKFLOW_OBSERVATION_PURPOSE: Final = "workflow_observation"
+#: The persisted-settings family (decision of 2026-10-18, Option A). Two purposes on
+#: the split every mutating family here uses: reading what is stored is the same
+#: `workspace_inspection` the workspace read is served under, and storing a value is
+#: served under the one purpose `MUTATION_PURPOSES` declares for it.
+#:
+#: It is deliberately a family of its own rather than two additions to existing ones.
+#: `settings.list` cannot join the read family, because that family's session is built
+#: by `local_owner_session` and the pair would then be split across two authorities for
+#: no reason a reader could recover; and `settings.set` cannot join any existing
+#: mutating family, because none of them grants `workspace:write` -- `workspace.create`
+#: is installation-scoped, and every other mutating family grants its own narrower
+#: scope. Configuring a workspace is its own authority.
+SETTINGS_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        SETTINGS_LIST_OPERATION: WORKSPACE_INSPECTION_PURPOSE,
+        SETTINGS_SET_OPERATION: MUTATION_PURPOSES[SETTINGS_SET_OPERATION],
+    }
+)
+
 TRIGGER_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         TRIGGER_DECLARE_OPERATION: TRIGGER_CONFIGURATION_PURPOSE,
@@ -1790,6 +1815,103 @@ def build_knowledge_sharing_application_dispatcher(
     )
 
 
+def settings_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The operator grant for one workspace's stored settings.
+
+    Operator rather than contributor, decided 2026-10-18 after the merge with
+    main made the role available. The distinction is the one the existing map
+    already draws: a contributor writes content *into* a workspace, and
+    `workspace_operator` is what `skills.install` and `skills.remove` carry --
+    changing what the workspace runs with. A stored setting is configuration,
+    and the `workspace_administration` purpose beside it says so; an
+    administration purpose carried by a contributor role was the mismatch this
+    replaces. There is still no workspace-administrator role, and the
+    installation role is refused at issuance on this lane.
+
+    The role a grant is checked against is server-owned policy in
+    `MUTATION_ROLES` rather than anything this constructor may choose; this
+    grant has to agree with it or `settings.set` is refused at issuance.
+    """
+    entries = tuple(
+        get_operation_metadata(name) for name in sorted(SETTINGS_FAMILY_OPERATIONS)
+    )
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({WORKSPACE_OPERATOR_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset({workspace_id}),
+        operations=SETTINGS_FAMILY_OPERATIONS,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(SETTINGS_FAMILY_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def build_settings_registry(handlers: SettingsHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        SETTINGS_LIST_OPERATION, cast(OperationHandler, handlers.settings_list)
+    )
+    registry.register(
+        SETTINGS_SET_OPERATION, cast(OperationHandler, handlers.settings_set)
+    )
+    return registry
+
+
+def build_settings_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the exact two-operation persisted-settings family around the router."""
+    session = settings_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    handlers = SettingsHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+    )
+    registry = build_settings_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 def build_application_registry(
     *, additional: Mapping[str, OperationHandler] | None = None
 ) -> ApplicationOperationRegistry:
@@ -1950,7 +2072,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 77/77 complete.
+    is anything other than 81/81 complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -1969,9 +2091,9 @@ class ProductionApplicationSurface:
         distinct_routes = tuple(
             {id(route): route for route in routes.values()}.values()
         )
-        if len(distinct_routes) != 14:
+        if len(distinct_routes) != 15:
             raise ValueError(
-                "the production surface requires exactly fourteen authority families"
+                "the production surface requires exactly fifteen authority families"
             )
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError(
@@ -2042,6 +2164,7 @@ def compose_production_application_surface(
     engineering: ApplicationDispatcher,
     knowledge_sharing: ApplicationDispatcher,
     task_context: ApplicationDispatcher,
+    settings: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
 ) -> ProductionApplicationSurface:
@@ -2061,6 +2184,7 @@ def compose_production_application_surface(
         engineering,
         knowledge_sharing,
         task_context,
+        settings,
     )
     registry = ApplicationOperationRegistry()
     routes: dict[str, ApplicationDispatcher] = {}
@@ -2761,6 +2885,7 @@ __all__ = [
     "MEMORY_SEARCH_OPERATION",
     "OPERATION_PURPOSES",
     "PRINCIPAL_SOURCE",
+    "SETTINGS_FAMILY_PURPOSES",
     "SKILL_FAMILY_ROLES",
     "SKILL_RESOLUTION_PURPOSE",
     "TRIGGER_FAMILY_PURPOSES",
@@ -2784,6 +2909,8 @@ __all__ = [
     "build_job_registry",
     "build_memory_application_dispatcher",
     "build_memory_registry",
+    "build_settings_application_dispatcher",
+    "build_settings_registry",
     "build_skill_application_dispatcher",
     "build_skill_resolution_application_dispatcher",
     "build_task_context_application_dispatcher",
@@ -2797,6 +2924,7 @@ __all__ = [
     "job_family_session",
     "local_owner_session",
     "memory_family_session",
+    "settings_family_session",
     "task_context_family_session",
     "trigger_family_session",
     "workflow_family_session",

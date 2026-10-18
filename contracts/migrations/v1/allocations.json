@@ -568,6 +568,17 @@
       "sha256": "fce1d79b1c73d9ef40d324568e619059a5b6954179a50a4d15d5a29ffa93b3e9",
       "introduced_commit": "9807ce91bcfe25db29d09757364105378fd58bda",
       "accepted_commit": null
+    },
+    {
+      "number": 69,
+      "filename": "0069_app_settings.sql",
+      "owner": "Core Settings",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 68,
+      "sha256": "56bc0e5507cc265f354da4ef97b7a25a356c0fb0147ccc2412ff00d54fff109d",
+      "introduced_commit": "703d0fdf96cea15d909ae56ededac1d79bfc7294",
+      "accepted_commit": null
     }
   ]
 }

@@ -98,6 +98,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "chat",
     "decision",
     "engineering",
+    "settings",
 )
 #: The reference-only registry. It contributes annotations, never definitions.
 REGISTRY_SCHEMA = "application-v1"

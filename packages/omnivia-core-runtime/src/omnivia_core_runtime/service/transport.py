@@ -750,6 +750,12 @@ class LocalSocketServer:
         except TransportError as error:
             failure = error
         except Exception:  # noqa: BLE001 - public start errors are normalized below
+            # Deliberately unchained. A chained cause is not merely extra detail
+            # here: the endpoint path is part of the raw OSError's message, and a
+            # socket path can carry a credential-looking token, so the cause
+            # would put it into every formatted traceback of this error.
+            # `test_transport_lifecycle` asserts `__cause__` and `__context__`
+            # are both None for exactly that reason.
             failure = TransportError("local service transport start failed")
         if failure is not None:
             self._clean_failed_start(listener)

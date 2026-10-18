@@ -106,6 +106,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "chat",
     "decision",
     "engineering",
+    "settings",
 )
 REGISTRY_SCHEMA = "application-v1"
 ALL_SCHEMAS: tuple[str, ...] = (*SOURCE_SCHEMAS, REGISTRY_SCHEMA)
@@ -1419,7 +1420,7 @@ class FrozenOperation(NamedTuple):
     max_page_size: int = FROZEN_PAGE_SIZE
 
 
-#: The exact 79 application operations, in the frozen insertion order. Runtime
+#: The exact 81 application operations, in the frozen insertion order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1765,6 +1766,14 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "project.context.switch": FrozenOperation(
         "workspace", ("project_context:switch",), "update", "project_context.switch",
         "knowledge", "ProjectContextSwitch", "TASK_CONTEXT_MUT", False,
+    ),
+    "settings.list": FrozenOperation(
+        "workspace", ("workspace:read",), "none", "workspace.read",
+        "settings", "SettingsList", "WORKSPACE_READ", False,
+    ),
+    "settings.set": FrozenOperation(
+        "workspace", ("workspace:write",), "update", "workspace.write",
+        "settings", "SettingsSet", "GOV_MUT", False,
     ),
 }
 

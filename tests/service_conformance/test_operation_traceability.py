@@ -168,10 +168,10 @@ def test_every_fixture_operation_has_exactly_the_two_expected_top_level_keys() -
 
 
 def test_the_fixture_covers_exactly_the_frozen_operations_in_catalogue_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 79
+    assert len(OPERATION_CATALOGUE) == 81
     assert FIXTURE_NAMES == [entry.name for entry in OPERATION_CATALOGUE]
-    assert len(FIXTURE_NAMES) == 79
-    assert len(set(FIXTURE_NAMES)) == 79
+    assert len(FIXTURE_NAMES) == 81
+    assert len(set(FIXTURE_NAMES)) == 81
 
 
 def test_the_fixture_names_no_operation_outside_the_generated_catalogue() -> None:
@@ -299,7 +299,7 @@ def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
     assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
     assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
     assert len(exposed) == 35
-    assert len(omitted) == 44
+    assert len(omitted) == 46
 
 
 def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() -> None:
@@ -341,21 +341,22 @@ def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() ->
         if entry["reason"] == "read_not_allow_listed"
     }
     assert reads_omitted == {
+        "analysis.start",
         "chat.events",
         "chat.snapshot",
         "continuity.handoff.read",
         "decision.definition.get",
         "decision.definition.list",
         "decision.model.list",
+        "decision.result_use.evaluate",
         "decision.settings.get",
         "memory.get",
         "memory.list",
+        "settings.list",
+        "skills.resolve",
         "workflow.inspect",
         "workflow.review",
-        "analysis.start",
-        "decision.result_use.evaluate",
         "workspace.list",
-        "skills.resolve",
     }
 
 
@@ -371,16 +372,16 @@ def test_the_fixture_references_the_accepted_corpus_by_name_and_format() -> None
     )
     assert reference["file"].endswith(ADAPTER_CONFORMANCE_CORPUS_FILE)
     assert reference["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
-    assert reference["case_count"] == 209
+    assert reference["case_count"] == 213
 
 
-def test_the_referenced_corpus_file_exists_and_holds_exactly_205_unique_cases() -> None:
+def test_the_referenced_corpus_file_exists_and_holds_exactly_213_unique_cases() -> None:
     assert CORPUS_PATH.is_file(), f"referenced corpus is missing at {CORPUS_PATH}"
     document = _load_json(CORPUS_PATH)
     assert document["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
     case_ids = [case["id"] for case in document["cases"]]
-    assert len(case_ids) == 209
-    assert len(set(case_ids)) == 209
+    assert len(case_ids) == 213
+    assert len(set(case_ids)) == 213
 
 
 def test_the_fixture_copies_no_case_from_the_referenced_corpus() -> None:

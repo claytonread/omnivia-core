@@ -180,6 +180,7 @@ EXPECTED_ALLOCATION = (
     (66, "0066_completion_decisions.sql", "Agent Runtime", "candidate"),
     (67, "0067_knowledge_shares.sql", "Agent Runtime", "candidate"),
     (68, "0068_task_context_outcomes.sql", "Agent Runtime", "candidate"),
+    (69, "0069_app_settings.sql", "Core Settings", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -267,6 +268,10 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0068 is the governed task-context outcomes candidate. It was introduced by c42e41d1 and
     # repinned to its current-content repair 9807ce91, which is where its current content lives.
     68: "9807ce91bcfe25db29d09757364105378fd58bda",
+    # 0069 is the Core Settings app-settings candidate. It was allocated 43 and
+    # reallocated when main took that number with 0043_runtime_trigger_telemetry;
+    # the SQL is byte-identical, so it stays pinned to its introducing commit.
+    69: "703d0fdf96cea15d909ae56ededac1d79bfc7294",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

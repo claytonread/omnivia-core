@@ -408,7 +408,24 @@ class ServiceRunner:
         )
 
     def _start_transport(self, serve: Callable[[ServiceRunner], None]) -> None:
-        """Run the transport hook without publishing its raw failure diagnostics."""
+        """Run the transport hook without publishing its raw failure diagnostics.
+
+        **The cause is dropped on purpose, and chaining it here is a mistake
+        that has already been made once.** It reads like free diagnostics: the
+        message stays structural while the cause reaches only this process's own
+        traceback. But the failure this swallows is usually a
+        `TransportError` whose own suite -- `test_transport_lifecycle`'s
+        `_assert_transport_error_is_non_disclosing` -- requires `__cause__` and
+        `__context__` to be `None` on the whole chain, because a socket path can
+        carry a credential-looking token and a chained cause puts it into every
+        formatted traceback. Re-raising `from error` reopens that at one remove.
+
+        The cost is real and should be recorded rather than rediscovered: an
+        application registry missing a handler surfaces here as nothing but
+        "local service transport start failed" on every test that spawns a
+        service, and finding it means instrumenting this method temporarily.
+        That is the price of the non-disclosure rule, not an oversight.
+        """
         failed = False
         try:
             serve(self)

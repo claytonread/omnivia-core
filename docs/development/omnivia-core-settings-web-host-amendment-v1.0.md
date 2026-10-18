@@ -2,7 +2,18 @@
 
 Date: 2026-09-21
 Amends: SPEC-CORE-MAC-READINESS-001 (§4.1 components, §5 binding "UI host", §15)
-Status: Accepted by owner direction, 2026-09-21 ("Electron-style web UI with a Swift adapter")
+Status: **SUPERSEDED, 2026-10-13.** Accepted by owner direction 2026-09-21
+("Electron-style web UI with a Swift adapter"), then reversed by owner
+direction: the Core Settings screen is rendered natively in AppKit and the
+prototype harness is not shipped.
+
+> **Superseded.** The WKWebView host, `SettingsBridge` and the bundled
+> `Resources/prototype` tree described below were removed on 2026-10-13. The
+> settings screen is now rendered natively by `SettingsWindowController`, which
+> is the only rendering path; `omnivia-core-settings` is a development-only
+> launcher for that same window. This document is retained for the decision
+> record and the native integration points it lists — it no longer describes
+> the code.
 
 ## Decision
 

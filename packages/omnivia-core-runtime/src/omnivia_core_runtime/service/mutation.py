@@ -200,6 +200,10 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "task_context.export": TASK_CONTEXT_EXPORT_PURPOSE,
         "outcome.request.create": OUTCOME_REQUEST_PURPOSE,
         "project.context.switch": PROJECT_CONTEXT_PURPOSE,
+        # Storing one workspace setting. Served under the administration purpose
+        # the CLI command declares, because the grant's purpose is checked against
+        # the declared one and the two must agree.
+        "settings.set": WORKSPACE_ADMINISTRATION_PURPOSE,
     }
 )
 
@@ -294,6 +298,14 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # Choosing the active Project is contributor work in one workspace: it writes no record and
         # reaches nothing outside it. Membership of the chosen Project is checked by the handler.
         "project.context.switch": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Operator, not contributor: a contributor writes content *into* a
+        # workspace -- memory, chat, evidence, a skill draft -- and storing a
+        # setting is not that. It changes what the workspace runs with, which is
+        # the authority `skills.install` and `skills.remove` already take, and
+        # it is what the `workspace_administration` purpose beside it says.
+        # Installation administrator is refused at issuance on this lane, and a
+        # setting belongs to the one workspace the grant already names.
+        "settings.set": WORKSPACE_OPERATOR_ROLE,
     }
 )
 
