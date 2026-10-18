@@ -62,10 +62,27 @@ NOT_READY_SNAPSHOT_NOT_ACTIVE: Final = "snapshot_not_active"
 
 _ACTIVATIONS: Final = "omnivia_code_analysis_activations"
 
+#: Every snapshot recorded on one snapshot's own stream after it and inside the stream's
+#: covered history, newest first, with its sealed manifest's evidence id (None for an
+#: inline `flat_v1` event, which has no manifest artifact).
+_NEWER: Final = (
+    "SELECT later.snapshot_id, c.manifest_evidence_id "
+    "FROM omnivia_engineering_source_events e "
+    "JOIN omnivia_engineering_source_streams st "
+    "  ON st.workspace_id = e.workspace_id AND st.stream_id = e.stream_id "
+    "JOIN omnivia_engineering_source_events later "
+    "  ON later.workspace_id = e.workspace_id AND later.stream_id = e.stream_id "
+    " AND later.sequence > e.sequence AND later.sequence <= st.covered_sequence "
+    "LEFT JOIN omnivia_engineering_snapshot_captures c "
+    "  ON c.workspace_id = later.workspace_id AND c.snapshot_id = later.snapshot_id "
+    "WHERE e.workspace_id = ? AND e.snapshot_id = ? "
+    "ORDER BY later.sequence DESC"
+)
+
 _ACTIVE: Final = (
     "SELECT i.import_id, i.repository_id, i.snapshot_id, i.producer_id, i.producer_version, "
     "       i.profile_digest, i.batch_digest, i.policy_id, i.policy_version, i.policy_digest, "
-    "       i.manifest_evidence_id, a.activated_at_us "
+    "       i.manifest_evidence_id, a.activated_at_us, a.activation_sequence "
     "FROM omnivia_code_analysis_activations a "
     "JOIN omnivia_code_analysis_imports i "
     "  ON i.workspace_id = a.workspace_id AND i.import_id = a.import_id "
@@ -163,7 +180,7 @@ def read_code_graph(
         if row is None:
             raise CodeAnalysisNotReady(NOT_READY_NO_ACTIVE_IMPORT)
         # 0074's CHECKs fix every column's storage type: eleven texts, then an integer.
-        scope = CodeImportScope(*row)
+        scope = CodeImportScope(*row[:12])
         if scope.snapshot_id != snapshot_id:
             raise CodeAnalysisNotReady(NOT_READY_SNAPSHOT_NOT_ACTIVE)
         # Performance note: resolves the workspace's whole frontier per query, as
@@ -247,6 +264,76 @@ def read_code_graph(
             (str(reason), MappingProxyType(json.loads(document))) for reason, document in diagnostics
         ),
     )
+
+
+def read_active_scope(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    repository_id: str,
+    producer_id: str,
+    profile_digest: str,
+    instant_us: int,
+) -> tuple[CodeImportScope, int] | None:
+    """The import applicable for one scope at `instant_us` and its activation sequence.
+
+    The same selection `read_code_graph` makes, without the facts: what `code.status`
+    reports, and the sequence a caller states as the next import's precondition.
+    """
+    with authorised(connection, mutations=False, ddl=False) as fenced:
+        migrated = fenced.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (_ACTIVATIONS,)
+        ).fetchone()
+        row = (
+            None
+            if migrated is None
+            else fenced.execute(
+                _ACTIVE, (workspace_id, repository_id, producer_id, profile_digest, instant_us)
+            ).fetchone()
+        )
+    return None if row is None else (CodeImportScope(*row[:12]), int(row[12]))
+
+
+def read_snapshot_files(
+    connection: sqlite3.Connection, *, workspace_id: str, snapshot_id: str
+) -> dict[str, str]:
+    """Path -> content digest for every file one sealed capture indexed."""
+    with authorised(connection, mutations=False, ddl=False) as fenced:
+        rows = fenced.execute(
+            "SELECT path, content_digest FROM omnivia_engineering_snapshot_files "
+            "WHERE workspace_id = ? AND snapshot_id = ?",
+            (workspace_id, snapshot_id),
+        ).fetchall()
+    return {str(path): str(digest) for path, digest in rows}
+
+
+def read_import_files(
+    connection: sqlite3.Connection, *, workspace_id: str, import_id: str
+) -> dict[str, str]:
+    """Path -> content digest for every file one import's candidates were read from."""
+    with authorised(connection, mutations=False, ddl=False) as fenced:
+        rows = fenced.execute(
+            "SELECT path, content_digest FROM omnivia_code_analysis_import_files "
+            "WHERE workspace_id = ? AND import_id = ?",
+            (workspace_id, import_id),
+        ).fetchall()
+    return {str(path): str(digest) for path, digest in rows}
+
+
+def newer_captures(
+    connection: sqlite3.Connection, *, workspace_id: str, snapshot_id: str
+) -> tuple[tuple[str, str | None], ...]:
+    """`(snapshot id, manifest evidence id)` for every admitted capture after one snapshot.
+
+    Only that snapshot's own stream is compared, because a stream is one checkout of one
+    repository on one installation and the order of its covered sequence is the only order
+    captures have; two checkouts have no "newer" between them. An empty answer means the
+    snapshot is still the newest admitted capture of the source it came from. Which of
+    these a caller may see is the caller's decision, so every one is returned.
+    """
+    with authorised(connection, mutations=False, ddl=False) as fenced:
+        rows = fenced.execute(_NEWER, (workspace_id, snapshot_id)).fetchall()
+    return tuple((str(row[0]), None if row[1] is None else str(row[1])) for row in rows)
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,5 +437,9 @@ __all__ = [
     "CodeFact",
     "CodeGraph",
     "CodeImportScope",
+    "newer_captures",
+    "read_active_scope",
     "read_code_graph",
+    "read_import_files",
+    "read_snapshot_files",
 ]

@@ -27,13 +27,21 @@ never walked against a newer graph, and the unavailability is always stated rath
 left to look like an empty neighbourhood.
 
 **Visibility is enforced before the walk and again at output.** Every fact is a governed
-version, and 0009 links every version to the evidence it cites. The effective caller's
-`EvidenceLabelGrant` is evaluated against those labels *before* the subject is resolved, so
-a definition the caller may not see is `not_found` exactly as a definition that does not
-exist, and an edge touching one is not an edge, not a symbol, not a depth and not a count.
-After the answer is assembled the labels are read again: a revocation that landed while it
-was being built makes it `not_found` as a whole, because an answer rebuilt around the gap,
-or one that said how much it dropped, would disclose the gap's shape.
+version, and 0009 links every version to the evidence it cites: the snapshot's manifest and
+the captured file the fact was read from. The effective caller's `EvidenceLabelGrant` is
+evaluated against those labels *before* the subject is resolved, so a definition the caller
+may not see is `not_found` exactly as a definition that does not exist, and an edge touching
+one is not an edge, not a symbol, not a depth and not a count. A diagnostic is no governed
+version, so it is held to the same two artifacts its own source binding names, and to the
+visibility of every definition it names. After the answer is assembled the labels are read
+again: a revocation that landed while it was being built makes it `not_found` as a whole,
+because an answer rebuilt around the gap, or one that said how much it dropped, would
+disclose the gap's shape.
+
+**Freshness compares captures, never the working tree.** `freshness.stale` is true when the
+analysed snapshot is no longer the newest admitted capture of its own stream -- a capture the
+caller may see was recorded after it. The answer is still the analysed snapshot's, and says
+so; Core never observes the live checkout between captures.
 
 **Static, and said so.** Every relation is an accepted `syntactic`/`resolved_static`
 edge of that one import. Candidates the import refused (unresolved, dynamic, external, out
@@ -107,13 +115,17 @@ from omnivia_core_runtime.service.operations import OperationContext, OperationE
 from omnivia_core_runtime.storage.code_analysis_import import (
     DOMAIN_SCOPE,
     RELATIONSHIPS,
+    file_evidence_id,
 )
 from omnivia_core_runtime.storage.code_query import (
+    NOT_READY_NO_ACTIVE_IMPORT,
     CapturedSource,
     CodeAnalysisNotReady,
     CodeEdge,
     CodeFact,
     CodeGraph,
+    newer_captures,
+    read_active_scope,
     read_code_graph,
 )
 from omnivia_core_runtime.storage.governed import GovernedRecordValue
@@ -241,19 +253,41 @@ def code_query(context: OperationContext) -> Mapping[str, Any]:
     # reason `context_pack.build` floors its own: the component composed below attests
     # this instant, and an unfloored one would filter at a moment it could not state.
     instant_us = time.time_ns() // 1_000_000 * 1000
+    grant = local_owner_label_grant(
+        principal_id=context.principal,
+        workspace_id=context.workspace_id,
+        granted_workspace=context.workspace_id,
+    )
+    evidence_labels = read_evidence_labels(connection, workspace_id=context.workspace_id)
+    # An analysis whose snapshot manifest this caller may not see is answered exactly as one
+    # that does not exist: every one of its facts cites that manifest, so the caller could see
+    # none of them, and a `not_found` here would disclose that there was something to find.
+    active = read_active_scope(
+        connection,
+        workspace_id=context.workspace_id,
+        repository_id=request.repository_id,
+        producer_id=request.producer_id,
+        profile_digest=request.profile_digest,
+        instant_us=instant_us,
+    )
     not_ready: str | None = None
-    try:
-        whole = read_code_graph(
-            connection,
-            workspace_id=context.workspace_id,
-            repository_id=request.repository_id,
-            snapshot_id=request.snapshot_id,
-            producer_id=request.producer_id,
-            profile_digest=request.profile_digest,
-            instant_us=instant_us,
-        )
-    except CodeAnalysisNotReady as refused:
-        not_ready = refused.reason
+    if active is not None and not grant.permits(
+        evidence_labels.get(active[0].manifest_evidence_id, ())
+    ):
+        not_ready = NOT_READY_NO_ACTIVE_IMPORT
+    else:
+        try:
+            whole = read_code_graph(
+                connection,
+                workspace_id=context.workspace_id,
+                repository_id=request.repository_id,
+                snapshot_id=request.snapshot_id,
+                producer_id=request.producer_id,
+                profile_digest=request.profile_digest,
+                instant_us=instant_us,
+            )
+        except CodeAnalysisNotReady as refused:
+            not_ready = refused.reason
     if not_ready is not None:
         raise OperationError(
             ERROR_CODE_PROJECTION_UNAVAILABLE,
@@ -263,13 +297,8 @@ def code_query(context: OperationContext) -> Mapping[str, Any]:
         )
 
     # The ACL, before the subject is resolved and therefore before anything is walked.
-    grant = local_owner_label_grant(
-        principal_id=context.principal,
-        workspace_id=context.workspace_id,
-        granted_workspace=context.workspace_id,
-    )
     labels = read_governed_record_labels(connection, workspace_id=context.workspace_id)
-    graph = _visible(whole, grant, labels)
+    graph = _visible(whole, grant, labels, evidence_labels)
 
     limit = CODE_QUERY_DEFAULT_LIMIT if request.limit is None else int(request.limit)
     contextual = request.intent == CODE_QUERY_INTENT_CODE_CONTEXT
@@ -381,18 +410,65 @@ def code_query(context: OperationContext) -> Mapping[str, Any]:
             as_of=_timestamp(instant_us),
             projection_versions={CODE_PROJECTION: CODE_PROJECTION_VERSION},
             projection_watermarks={CODE_PROJECTION: str(graph.watermark_us)},
-            stale=False,
+            stale=newest_visible_capture(
+                connection,
+                workspace_id=context.workspace_id,
+                snapshot_id=graph.scope.snapshot_id,
+                grant=grant,
+                evidence_labels=evidence_labels,
+            )
+            is not None,
         ),
         context=assembled,
     )
-    _revalidate(connection, context, grant, result)
+    _revalidate(connection, context, grant, result, graph)
     return result.to_wire()
+
+
+def file_admitted(
+    grant: EvidenceLabelGrant,
+    evidence_labels: Mapping[str, tuple[str, ...]],
+    *,
+    repository_id: str,
+    manifest_evidence_id: str,
+    relative_path: str,
+    content_digest: str,
+) -> bool:
+    """Whether `grant` admits one captured file of one analysed snapshot.
+
+    The two artifacts every fact read out of that file cites: its own and the snapshot's
+    manifest. A diagnostic, which is no governed version, is held to exactly these.
+    """
+    own = evidence_labels.get(file_evidence_id(repository_id, relative_path, content_digest), ())
+    return grant.permits((*evidence_labels.get(manifest_evidence_id, ()), *own))
+
+
+def newest_visible_capture(
+    connection: Any,
+    *,
+    workspace_id: str,
+    snapshot_id: str,
+    grant: EvidenceLabelGrant,
+    evidence_labels: Mapping[str, tuple[str, ...]],
+) -> str | None:
+    """The newest capture after `snapshot_id` on its stream that `grant` admits, or None.
+
+    A capture whose manifest the caller may not see is skipped rather than reported, so a
+    hidden newer capture neither names itself nor makes the analysis read as stale.
+    """
+    for later, manifest in newer_captures(
+        connection, workspace_id=workspace_id, snapshot_id=snapshot_id
+    ):
+        if manifest is None or grant.permits(evidence_labels.get(manifest, ())):
+            return later
+    return None
 
 
 def _visible(
     graph: CodeGraph,
     grant: EvidenceLabelGrant,
     labels: Mapping[tuple[str, str], tuple[str, ...]],
+    evidence_labels: Mapping[str, tuple[str, ...]],
 ) -> CodeGraph:
     """`graph` narrowed to what this grant admits, nodes first and edges after.
 
@@ -405,18 +481,22 @@ def _visible(
     says about an endpoint its own filters removed. A relation's own version is checked
     even when every definition is admitted: it can cite evidence neither of its ends does.
 
-    Diagnostics are carried through unchanged. A diagnostic is the import's record of a
-    candidate it refused and names only keys of this same import; it is anchored below to
-    definitions the walk actually expanded, so one anchored at a hidden definition is
-    never reached.
+    Diagnostics go the same way. A diagnostic is the import's record of a candidate it
+    refused; it stays only if the grant admits the file its own source binding names and
+    every definition it names is still in the universe, so a refused call read out of a
+    hidden file, or one pointing at a hidden definition, is no diagnostic, no count and no
+    `complete: false`. Those that stay are anchored below to definitions the walk
+    actually expanded.
     """
 
     def admits(fact: CodeFact) -> bool:
         return grant.permits(labels.get((fact.record_id, fact.version_id), ()))
 
     symbols = {key: fact for key, fact in graph.symbols.items() if admits(fact)}
+    hidden = graph.symbols.keys() - symbols.keys()
+    scope = graph.scope
     return CodeGraph(
-        scope=graph.scope,
+        scope=scope,
         watermark_us=graph.watermark_us,
         symbols=MappingProxyType(symbols),
         edges=tuple(
@@ -424,7 +504,20 @@ def _visible(
             for edge in graph.edges
             if edge.source_key in symbols and edge.target_key in symbols and admits(edge.fact)
         ),
-        diagnostics=graph.diagnostics,
+        diagnostics=tuple(
+            (reason, document)
+            for reason, document in graph.diagnostics
+            if document["source_key"] not in hidden
+            and document["target_key"] not in hidden
+            and file_admitted(
+                grant,
+                evidence_labels,
+                repository_id=scope.repository_id,
+                manifest_evidence_id=scope.manifest_evidence_id,
+                relative_path=document["source"]["relative_path"],
+                content_digest=document["source"]["content_digest"],
+            )
+        ),
     )
 
 
@@ -784,6 +877,7 @@ def _revalidate(
     context: OperationContext,
     grant: EvidenceLabelGrant,
     result: CodeQueryResult,
+    graph: CodeGraph,
 ) -> None:
     """Re-read the ACL and refuse unless every disclosed member is still visible.
 
@@ -791,9 +885,9 @@ def _revalidate(
     after the answer exists and before it goes to wire, because a revocation committed in
     between would otherwise be disclosed by an answer that was authorised a moment ago.
     Both partitions are re-checked: every governed version this result names -- the
-    definitions, the reached symbols, the relation records, and the component's own
-    records, history and context models -- and every evidence artifact the component
-    cites.
+    definitions, the reached symbols, the relation records, the definitions a diagnostic
+    names, and the component's own records, history and context models -- and every
+    evidence artifact the component cites or a diagnostic's own source binding names.
 
     A member that is no longer visible makes the whole answer `not_found`, with the same
     frozen message a subject that does not exist gets. Recomputing the answer without it
@@ -805,6 +899,22 @@ def _revalidate(
     versions.update((item.record.record_id, item.record.version) for item in result.symbols)
     versions.update((item.record.record_id, item.record.version) for item in result.relations)
     evidence: set[str] = set()
+    binding = result.binding
+    for diagnostic in result.diagnostics:
+        for key in (diagnostic.source_key, diagnostic.target_key):
+            named = None if key is None else graph.symbols.get(key)
+            if named is not None:
+                versions.add((named.record_id, named.version_id))
+        evidence.update(
+            (
+                binding.manifest_evidence_id,
+                file_evidence_id(
+                    binding.repository_id,
+                    diagnostic.source.relative_path,
+                    diagnostic.source.content_digest,
+                ),
+            )
+        )
     pack = None if result.context is None else result.context.architecture.pack
     if pack is not None:
         for partition in (pack.records, pack.history, pack.context_models):

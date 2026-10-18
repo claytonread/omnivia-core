@@ -510,8 +510,9 @@ def test_a_hidden_code_definition_is_not_found_and_is_never_a_neighbour(
 ) -> None:
     """The same rule over the code graph. Every fact of one import cites that snapshot's
     sealed manifest evidence, so restricting it hides the analysis whole -- and the
-    answer is then the one a caller gets for a subject that does not exist, with no
-    path, no degree, no count and no flag distinguishing the two."""
+    answer is then the one a caller gets for a scope nobody ever analysed (W13-C), with no
+    path, no degree, no count and no flag distinguishing the two. A `not_found` would say
+    there was an analysis to look in; `code.status` reports the same scope as having none."""
     body = payload(architecture.python, semantic_key="pkg.models.make")
     assert query(workspace, body, blobs_root=blobs_root, principal=READER)[
         "resolution"
@@ -524,8 +525,14 @@ def test_a_hidden_code_definition_is_not_found_and_is_never_a_neighbour(
         payload(architecture.python, semantic_key="pkg.models.no_such_definition"),
         blobs_root=blobs_root, principal=READER,
     ).error
-    assert hidden.code == "not_found"
-    assert hidden.to_wire() == absent.to_wire()
+    never_analysed = refusal(
+        workspace,
+        {**body, "profile_digest": "sha256:" + "0" * 64},
+        blobs_root=blobs_root, principal=READER,
+    ).error
+    assert hidden.code == "projection_unavailable"
+    assert dict(hidden.details or {}) == {"readiness": "not_ready", "reason": "no_active_import"}
+    assert hidden.to_wire() == absent.to_wire() == never_analysed.to_wire()
 
 
 def test_revocation_between_selection_and_output_refuses_and_discloses_nothing(

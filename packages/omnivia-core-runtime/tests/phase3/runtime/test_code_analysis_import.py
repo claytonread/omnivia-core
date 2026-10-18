@@ -182,6 +182,7 @@ class Snapshot:
         self.digests = {path: m2_digest(content) for path, content in files.items()}
         for path, content in files.items():
             publish_blob(blobs_root, self.digests[path], content)
+        register_blobs(workspace, files, at=base_us)
         self.sealed = captured._seal(
             workspace,
             repository_id=REPOSITORY_ID,
@@ -222,6 +223,27 @@ def m2_digest(content: bytes) -> str:
     import hashlib
 
     return "sha256:" + hashlib.sha256(content).hexdigest()
+
+
+def register_blobs(workspace: Any, files: dict[str, bytes], *, at: int) -> None:
+    """Register each captured file's blob object, as the capture's `_ensure_blob` does.
+
+    `captured._seal` registers only its manifest's blob; a real capture registers every
+    file's, and the import's file evidence is written over those registrations.
+    """
+    connection = workspace.holder.connection
+    with captured._fenced(workspace):
+        for content in files.values():
+            digest = m2_digest(content)
+            if connection.execute(
+                "SELECT 1 FROM omnivia_blob_objects WHERE workspace_id = ? AND content_digest = ?",
+                (WORKSPACE_ID, digest),
+            ).fetchone() is None:
+                connection.execute(
+                    "INSERT INTO omnivia_blob_objects (workspace_id, content_digest, "
+                    "content_length_bytes, created_at_us, verified_at_us) VALUES (?, ?, ?, ?, ?)",
+                    (WORKSPACE_ID, digest, len(content), at, at),
+                )
 
 
 @pytest.fixture(scope="module")
@@ -472,9 +494,32 @@ def test_accepted_facts_carry_exact_provenance_and_source_evidence(
         chosen.policy_id,
         "policy_evaluator",
     )
+    # Two citations: the snapshot's manifest, which every fact shares, and the captured
+    # file this fact was read from, which only that file's facts share.
+    file_evidence = subject.file_evidence_id(
+        REPOSITORY_ID, node.source.relative_path, node.source.content_digest
+    )
     assert [source.source_id for source in record.provenance.sources] == [
-        f"working-tree-manifest.{first.sealed.snapshot_id}"
+        f"working-tree-manifest.{first.sealed.snapshot_id}", file_evidence
     ]
+    artifact = workspace.holder.connection.execute(
+        "SELECT source_kind, source_locator, blob_content_digest, media_type "
+        "FROM omnivia_evidence_artifacts WHERE evidence_id = ?",
+        (file_evidence,),
+    ).fetchone()
+    assert artifact == (
+        subject.FILE_EVIDENCE_KIND, "pkg/models.py", first.digests["pkg/models.py"], "text/x-python"
+    )
+    # A relation cites the file of the occurrence that asserts it, not its target's.
+    call = next(
+        relation
+        for relation in code_relations(snapshot, PY)
+        if relation.record.content["producer_relationship"] == "calls"
+        and relation.record.content["source"]["relative_path"] == "pkg/service.py"
+    )
+    assert [source.source_id for source in call.record.provenance.sources][1] == (
+        subject.file_evidence_id(REPOSITORY_ID, "pkg/service.py", first.digests["pkg/service.py"])
+    )
 
     # The sealed candidate predecessor is the producer's extraction, never a decision.
     candidates = {

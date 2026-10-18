@@ -36,6 +36,16 @@ governed version decided by the `policy_evaluator` -- the policy's id and versio
 an actor -- correlated to the import's audit. A governed relation's endpoints are the
 governed entity versions; its candidate's are the candidate entity versions.
 
+**Every fact cites the file it was read from as well as the snapshot.** Each provenance
+event links two evidence artifacts: the snapshot's sealed manifest, which every fact of
+the import shares, and the captured file its own source binding names, which only the
+facts read out of that file share. The file artifact is ordinary 0008 L0 evidence over
+the blob the capture already registered, one per repository path and content digest, so
+its permission labels reach exactly that file's facts: a version's labels are the union
+of what it cites, and a restriction on one file hides that file's definitions and the
+relations asserted in it without touching any other file's. Nothing about a file
+artifact is decided here beyond its identity; the labels are the label stream's.
+
 **Staging then activation, in one transaction the caller owns.** The import rows, the
 coverage manifest, the members and the diagnostics are staged first; the activation row
 is written last, and 0074's trigger refuses it unless the fence, the staged counts and the
@@ -54,11 +64,12 @@ request returns the stored receipt; the same key with a different request is ref
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sqlite3
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
 from omnivia_core.contracts.v1 import to_canonical_json
@@ -83,6 +94,25 @@ from omnivia_core_runtime.storage.decisions import canonical_document, content_d
 IMPORT_FORMAT: Final = "code_analysis_import.v1"
 POLICY_FORMAT: Final = "code_analysis_import_policy.v1"
 DOMAIN_SCOPE: Final = "engineering.code"
+
+#: The evidence kind and metadata format of one captured file a code fact cites.
+FILE_EVIDENCE_KIND: Final = "engineering.captured_file"
+FILE_EVIDENCE_FORMAT: Final = "code_analysis_file.v1"
+#: Media types by suffix, for the files the two producers admit. None of them is a type
+#: `evidence.search` reads content for, so a file artifact is findable by its identity
+#: and path only: code content search is not something this module turns on.
+_FILE_MEDIA_TYPES: Final[Mapping[str, str]] = {
+    ".py": "text/x-python",
+    ".pyi": "text/x-python",
+    ".js": "text/javascript",
+    ".cjs": "text/javascript",
+    ".mjs": "text/javascript",
+    ".jsx": "text/javascript",
+    ".ts": "text/x-typescript",
+    ".cts": "text/x-typescript",
+    ".mts": "text/x-typescript",
+    ".tsx": "text/x-typescript",
+}
 
 #: The relation types 0074's seal trigger admits beyond 0009's five, spelled exactly as
 #: it spells them. A test seals each one; anything else cannot seal.
@@ -171,6 +201,16 @@ def _identifier(value: object, name: str) -> str:
 
 def _derived(prefix: str, *parts: str) -> str:
     return f"{prefix}-" + hashlib.sha256(canonical_document(list(parts)).encode()).hexdigest()
+
+
+def file_evidence_id(repository_id: str, relative_path: str, digest: str) -> str:
+    """The evidence id of one captured file of one repository, as every import cites it.
+
+    A pure function of the repository, the path and the bytes, so the same unchanged file
+    is one artifact across snapshots and imports, and a reader can name the artifact a
+    fact's own source binding cites without a second lookup.
+    """
+    return _derived("cfe", repository_id, relative_path, digest)
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,6 +415,106 @@ def active_import_id(
     return None if row is None else str(row[0])
 
 
+def read_import_policy(
+    connection: sqlite3.Connection, *, workspace_id: str, policy_id: str, policy_version: str
+) -> CodeAnalysisImportPolicy | None:
+    """The registered policy of that id and version, rebuilt from its stored document.
+
+    Rebuilt through the constructor, so every rule is checked again, and refused unless it
+    digests to the digest the owner's registration recorded: a stored document that no
+    longer is the policy it was is not a policy anything may import under.
+    """
+    row = connection.execute(
+        "SELECT policy_json, policy_digest FROM omnivia_code_analysis_import_policies "
+        "WHERE workspace_id = ? AND policy_id = ? AND policy_version = ?",
+        (workspace_id, policy_id, policy_version),
+    ).fetchone()
+    if row is None:
+        return None
+    document = json.loads(str(row[0]))
+    policy = CodeAnalysisImportPolicy(
+        policy_id=document["policy_id"],
+        policy_version=document["policy_version"],
+        producers=tuple(tuple(item) for item in document["producers"]),
+        accepted_node_kinds=tuple(tuple(item) for item in document["accepted_node_kinds"]),
+        accepted_relationships=tuple(
+            tuple(item) for item in document["accepted_relationships"]
+        ),
+        allow_reduced_coverage=document["allow_reduced_coverage"],
+        max_candidates=document["max_candidates"],
+    )
+    if policy.digest != str(row[1]):
+        raise CodeAnalysisImportError("a registered policy no longer digests to its record")
+    return policy
+
+
+def read_import_policies(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> tuple[tuple[CodeAnalysisImportPolicy, int], ...]:
+    """Every registered policy with the instant it was recorded, most recent first."""
+    rows = connection.execute(
+        "SELECT policy_id, policy_version, recorded_at_us "
+        "FROM omnivia_code_analysis_import_policies WHERE workspace_id = ? "
+        "ORDER BY recorded_at_us DESC, policy_id DESC, policy_version DESC",
+        (workspace_id,),
+    ).fetchall()
+    found = []
+    for policy_id, policy_version, recorded_at_us in rows:
+        policy = read_import_policy(
+            connection,
+            workspace_id=workspace_id,
+            policy_id=str(policy_id),
+            policy_version=str(policy_version),
+        )
+        assert policy is not None
+        found.append((policy, int(recorded_at_us)))
+    return tuple(found)
+
+
+def current_activation_sequence(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    repository_id: str,
+    producer_id: str,
+    profile_digest: str,
+) -> int:
+    """The newest activation sequence of one scope, 0 when it has never been activated.
+
+    The compare-and-swap token of the next activation: 0074 admits only the sequence one
+    past this, naming the import this one retires.
+    """
+    row = connection.execute(
+        "SELECT COALESCE(MAX(activation_sequence), 0) FROM omnivia_code_analysis_activations "
+        "WHERE workspace_id = ? AND repository_id = ? AND producer_id = ? AND profile_digest = ?",
+        (workspace_id, repository_id, producer_id, profile_digest),
+    ).fetchone()
+    return int(row[0])
+
+
+def import_file_evidence_ids(
+    connection: sqlite3.Connection, *, workspace_id: str, import_id: str
+) -> tuple[str, ...]:
+    """The file evidence every fact of one import cites, one artifact per covered file."""
+    rows = connection.execute(
+        "SELECT i.repository_id, f.path, f.content_digest "
+        "FROM omnivia_code_analysis_import_files f "
+        "JOIN omnivia_code_analysis_imports i "
+        "  ON i.workspace_id = f.workspace_id AND i.import_id = f.import_id "
+        "WHERE f.workspace_id = ? AND f.import_id = ? ORDER BY f.path",
+        (workspace_id, import_id),
+    ).fetchall()
+    return tuple(file_evidence_id(str(repo), str(path), str(digest)) for repo, path, digest in rows)
+
+
+def import_receipt(
+    connection: sqlite3.Connection, *, workspace_id: str, idempotency_key: str
+) -> CodeAnalysisActivationReceipt | None:
+    """The receipt an activation under `idempotency_key` recorded, if one did."""
+    stored = _receipt(connection, workspace_id=workspace_id, idempotency_key=idempotency_key)
+    return None if stored is None else stored[1]
+
+
 # --- re-verification ---------------------------------------------------------------
 
 
@@ -553,6 +693,7 @@ class _Import:
     evidence_id: str
     policy: CodeAnalysisImportPolicy
     now_us: int
+    repository_id: str
 
 
 def _ids(imp: _Import, kind: str, key: str) -> dict[str, str]:
@@ -634,9 +775,10 @@ def _insert_event(
     sequence: int,
     action: str,
     actor_id: str,
+    source: SourceBinding,
     predecessor: tuple[str, str] | None = None,
 ) -> str:
-    """One provenance event and the manifest-evidence link 0009 requires of it."""
+    """One provenance event and its two evidence links: the manifest, then the file."""
     event_id = _derived("cge", assembly_id, str(sequence))
     policy = imp.policy
     connection.execute(
@@ -669,14 +811,90 @@ def _insert_event(
             None if predecessor is None else predecessor[1],
         ),
     )
-    connection.execute(
+    file_evidence = file_evidence_id(
+        imp.repository_id, source.relative_path, source.content_digest
+    )
+    connection.executemany(
         "INSERT INTO omnivia_governed_version_evidence_links "
         "(workspace_id, assembly_id, provenance_event_id, link_ordinal, evidence_id, "
         "normalized_record_id, normalized_span_id, recorded_at_us) "
-        "VALUES (?, ?, ?, 1, ?, NULL, NULL, ?)",
-        (imp.workspace_id, assembly_id, event_id, imp.evidence_id, imp.now_us),
+        "VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)",
+        [
+            (imp.workspace_id, assembly_id, event_id, ordinal, evidence_id, imp.now_us)
+            for ordinal, evidence_id in enumerate((imp.evidence_id, file_evidence), 1)
+        ],
     )
     return event_id
+
+
+def _ensure_file_evidence(
+    connection: sqlite3.Connection, imp: _Import, *, relative_path: str, digest: str
+) -> None:
+    """The L0 artifact of one captured file, written once and reused after that.
+
+    Over the blob the capture registered: a file whose blob the capture never registered
+    is refused rather than registered here, because registering captured bytes is the
+    capture's act and an import that did it would be vouching for bytes it did not admit.
+    """
+    evidence_id = file_evidence_id(imp.repository_id, relative_path, digest)
+    if connection.execute(
+        "SELECT 1 FROM omnivia_evidence_artifacts WHERE evidence_id = ?", (evidence_id,)
+    ).fetchone() is not None:
+        return
+    if connection.execute(
+        "SELECT 1 FROM omnivia_blob_objects WHERE workspace_id = ? AND content_digest = ?",
+        (imp.workspace_id, digest),
+    ).fetchone() is None:
+        raise CodeAnalysisImportError("a captured file's blob is not registered")
+    metadata = canonical_document(
+        {
+            "format": FILE_EVIDENCE_FORMAT,
+            "repository_id": imp.repository_id,
+            "relative_path": relative_path,
+        }
+    )
+    connection.execute(
+        "INSERT INTO omnivia_evidence_artifacts "
+        "(evidence_id, workspace_id, source_kind, source_native_id, source_locator, "
+        "source_retrieved_at_us, event_at_us, observed_at_us, ingested_at_us, "
+        "recorded_at_us, content_checksum, blob_content_digest, media_type, "
+        "original_metadata_json, original_metadata_digest, sensitivity, parser_status, "
+        "ingestion_status, staged_source_ref, import_run_id) "
+        "VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, 'private', "
+        "'not_parsed', 'ingested', NULL, NULL)",
+        (
+            evidence_id,
+            imp.workspace_id,
+            FILE_EVIDENCE_KIND,
+            evidence_id,
+            relative_path,
+            imp.now_us,
+            imp.now_us,
+            digest,
+            digest,
+            _FILE_MEDIA_TYPES.get(PurePosixPath(relative_path).suffix, "application/octet-stream"),
+            metadata,
+            content_digest(metadata),
+        ),
+    )
+    connection.execute(
+        "INSERT INTO omnivia_evidence_provenance_events "
+        "(provenance_event_id, evidence_id, workspace_id, provenance_sequence, actor_id, "
+        "actor_kind, action, occurred_at_us, reason_code, reason_comment, parser_status, "
+        "ingestion_status, tombstoned_observation, source_kind, source_native_id, "
+        "audit_ref) VALUES (?, ?, ?, 1, ?, 'service', 'captured', ?, NULL, NULL, "
+        "'not_parsed', 'ingested', 0, ?, ?, ?)",
+        (
+            _derived("cfp", evidence_id),
+            evidence_id,
+            imp.workspace_id,
+            _IMPORT_PRINCIPAL,
+            imp.now_us,
+            FILE_EVIDENCE_KIND,
+            evidence_id,
+            imp.audit_ref,
+        ),
+    )
 
 
 def _insert_lineage(
@@ -796,6 +1014,7 @@ def _write_fact(
     record_type: str,
     content: dict[str, Any],
     ordinal: int,
+    binding: SourceBinding,
     relation: tuple[str, dict[str, str], dict[str, str]] | None = None,
 ) -> dict[str, str]:
     """One accepted fact: its record, sealed candidate, then sealed governed version."""
@@ -831,6 +1050,7 @@ def _write_fact(
             sequence=1,
             action="governance.accepted" if governed else "candidate.extracted",
             actor_id=batch.producer_id,
+            source=binding,
             predecessor=(ids["record"], ids["candidate_version"]) if governed else None,
         )
         if not governed:
@@ -848,6 +1068,7 @@ def _write_fact(
                 sequence=2,
                 action="relation.asserted",
                 actor_id=batch.producer_id,
+                source=binding,
             )
             side = "governed_version" if governed else "candidate_version"
             _insert_endpoints(
@@ -906,6 +1127,8 @@ def _stage(
         "(workspace_id, import_id, snapshot_id, path, content_digest) VALUES (?, ?, ?, ?, ?)",
         [(imp.workspace_id, imp.import_id, batch.snapshot_id, path, digest) for path, digest in plan.files],
     )
+    for path, digest in plan.files:
+        _ensure_file_evidence(connection, imp, relative_path=path, digest=digest)
     connection.executemany(
         "INSERT INTO omnivia_code_analysis_import_diagnostics "
         "(workspace_id, import_id, diagnostic_ordinal, candidate_kind, candidate_key, "
@@ -937,6 +1160,7 @@ def _stage(
             record_type="knowledge.entity",
             content=content,
             ordinal=ordinal,
+            binding=node.source,
         )
         entities[node.semantic_key] = ids
         members.append(("entity", node.semantic_key, ids))
@@ -967,6 +1191,7 @@ def _stage(
             record_type="knowledge.relation",
             content=content,
             ordinal=ordinal,
+            binding=edge.source,
             relation=(relation_type, entities[edge.source_key], entities[edge.target_key]),
         )
         members.append(("relation", edge.edge_key, ids))
@@ -1120,6 +1345,7 @@ def _import(
             evidence_id=proven.manifest_evidence_id,
             policy=policy,
             now_us=now_us,
+            repository_id=batch.repository_id,
         )
         _stage(connection, imp, proven, _plan(batch, policy))
 
@@ -1216,6 +1442,8 @@ __all__ = [
     "ACCEPTABLE_STRENGTHS",
     "CODE_RELATION_TYPES",
     "DOMAIN_SCOPE",
+    "FILE_EVIDENCE_FORMAT",
+    "FILE_EVIDENCE_KIND",
     "IMPORT_FORMAT",
     "NODE_KINDS",
     "POLICY_FORMAT",
@@ -1225,7 +1453,13 @@ __all__ = [
     "CodeAnalysisImportError",
     "CodeAnalysisImportPolicy",
     "active_import_id",
+    "current_activation_sequence",
+    "file_evidence_id",
     "import_code_analysis",
+    "import_file_evidence_ids",
+    "import_receipt",
     "read_import_diagnostics",
+    "read_import_policies",
+    "read_import_policy",
     "register_import_policy",
 ]
