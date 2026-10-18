@@ -132,7 +132,8 @@ run for this packet.
   (W12's scope rule); a request bound to an older profile whose import is still active is
   answered, because that import *is* current for its scope.
 - **O(workspace) per query.** The read resolves the whole governed frontier, as
-  `graph.traverse` and `context_pack.build` do (marked `ponytail:` in `storage/code_query.py`).
+  `graph.traverse` and `context_pack.build` do (see the performance note in
+  `storage/code_query.py`).
 - **Python emits no `references` relationship,** so Python `references` answers are empty
   of relations by producer design, with `unattributed_inbound` set.
 - **Adapters remain `pending_candidate`** in the operation-traceability ledger, like every

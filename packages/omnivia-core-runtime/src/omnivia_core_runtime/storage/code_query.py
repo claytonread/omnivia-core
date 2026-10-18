@@ -153,8 +153,9 @@ def read_code_graph(
         scope = CodeImportScope(*row)
         if scope.snapshot_id != snapshot_id:
             raise CodeAnalysisNotReady(NOT_READY_SNAPSHOT_NOT_ACTIVE)
-        # ponytail: resolves the workspace's whole frontier per query, as graph.traverse and
-        # context_pack.build do; push the member join into the resolver if this gets hot.
+        # Performance note: resolves the workspace's whole frontier per query, as
+        # graph.traverse and context_pack.build do. If profiling shows this path is
+        # hot, push the import-member join into the resolver.
         versions = resolve_governed_versions(
             connection, workspace_id=workspace_id, resolution_instant_us=instant_us
         )
