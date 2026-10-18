@@ -1,17 +1,19 @@
 {
   "format": "omnivia.qualification-plan.v1",
   "task": "TECH-CORE-RETRIEVAL-CODE-001",
-  "spec_version": "1.0",
+  "spec_version": "1.7",
   "recorded_on": "2026-10-16",
+  "reconciled_on": "2026-10-18",
   "baseline_commit": "fa660a5970f75929faf914af3415ac636504b56c",
   "integration": {
     "recorded_on": "2026-10-18",
-    "branch": "codex/core-tech-p1-p10-integration",
+    "branch": "codex/core-tech-settings-integration",
     "integrated_onto": "32c2015d2c602f82d97efa509e10a6c31763c1f6",
-    "effect_on_this_plan": "none. Nothing in this plan ran, no verdict moved and no threshold changed. The only repository fact it restates that the integration touched is the migration number: the semantic projection is 0073 here, not 0069."
+    "accepted_tip": "4d453fe614225c0aff4cdd55dcd6fd1695686728",
+    "effect_on_this_plan": "Reconciled against evidence recorded in WORK-STATUS.json (properties P17-P38, runs RUN-01 to RUN-10). Run statuses use only PASS, FAIL, NOT_RUN and BLOCKED. No threshold changed and no unrun threshold was converted into a pass. The migration number for the semantic projection is 0073; code analysis applicability is 0074 (both candidate, not accepted)."
   },
-  "status": "PREDECLARED",
-  "rule": "Nothing in this plan has run. Every artifact hash, result and verdict is null until a run records it. Pass criteria come from TECH-CORE-RETRIEVAL-CODE-001 v1.0; this plan does not restate or invent thresholds.",
+  "status": "BLOCKED",
+  "rule": "Plan-level status is BLOCKED because QP-06 (packaging, required CI rows and release) is blocked and QP-01 to QP-04 are not satisfied. Pass criteria come from TECH-CORE-RETRIEVAL-CODE-001; this plan does not restate or invent thresholds. A run is PASS only for exactly the scope its result states. Evidence cited here is the evidence recorded in WORK-STATUS.json; the complete preflight started by the P10 packet was stopped before completion after the documentation changed, has no result and does not satisfy final-tip verification; Codex will run and report one complete preflight after the closeout commit, against the exact immutable final tip. Dev and Platform results are supplied by Codex and were not re-run.",
   "fixed_repository_facts": {
     "normalization": "core_l2_unit_v1, unit-norm tolerance 1e-6, validated never repaired",
     "representation": "float32 little-endian, metric cosine or dot",
@@ -21,13 +23,16 @@
     "result_limit_default": 10,
     "result_limit_max": 50,
     "exact_oracle": "qualification/semantic_index/q1/oracle.py",
-    "q1_synthetic_campaign": "qualification/semantic_index/q1/README.md (768 dimensions, k in {1,10,50}, at most 10,000 active records; noncanonical synthetic)"
+    "q1_synthetic_campaign": "qualification/semantic_index/q1/README.md (768 dimensions, k in {1,10,50}, at most 10,000 active records; noncanonical synthetic)",
+    "application_catalogue_operations": 92,
+    "operations_added_by_this_lane": "87 settings.list, 88 settings.set, 89 code.query, 90 code.policy.register, 91 code.import, 92 code.status",
+    "code_candidate_ceiling": "MAX_CANDIDATES 10,000 per batch (about 35-40 real Python modules); one batch per import"
   },
   "runs": [
     {
       "id": "QP-01",
       "name": "Real embedding profile and execution qualification",
-      "status": "NOT_RUN",
+      "status": "BLOCKED",
       "preconditions": [
         "A SemanticEmbedder implementation outside this repository's model-free code, approved for install",
         "Declared SemanticEmbeddingProfile and ExecutionProvenance with an explicit CompatibilityDecision"
@@ -39,7 +44,7 @@
         "query-time decide_compatibility outcome against the index execution"
       ],
       "artifact_hashes": null,
-      "result": null,
+      "result": "Not run. Both preconditions are unmet: no embedder, model, tokenizer or runtime dependency exists or is approved, and search_authorized_frontier has no production caller (WORK-STATUS P17 BLOCKED, W01). Entry: an approved embedder and immutable model manifest, then a declared profile and compatibility decision.",
       "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
     },
     {
@@ -55,7 +60,7 @@
         "latency and memory measurements at the specification's declared scale"
       ],
       "artifact_hashes": null,
-      "result": null,
+      "result": "Not run. The campaign was not generated or executed and no latency or memory was measured. Related unit evidence only (P09): exact ranking equals the independent oracle at 300 members, above the 200 budget. No production backend adapter exists.",
       "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
     },
     {
@@ -70,12 +75,12 @@
         "rebuild and activation under the new profile, old generation refused as incompatible"
       ],
       "artifact_hashes": null,
-      "result": null,
+      "result": "Not run. The semantic projection still embeds kind, native id and locator only (WORK-STATUS P18 NOT_RUN).",
       "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
     },
     {
       "id": "QP-04",
-      "name": "Python and TypeScript code-analysis producers",
+      "name": "Python and TypeScript code-analysis producers on real repositories",
       "status": "NOT_RUN",
       "preconditions": [
         "Use the existing graph/governance authority selected by TECH-CORE-RETRIEVAL-CODE-001 decisions D19-D20",
@@ -87,13 +92,59 @@
         "VerifiedCodeAnalysisBatch bound to one sealed snapshot with exact file digests",
         "fail-closed behaviour for unresolved or mixed-resolution edges on real repositories"
       ],
-      "artifact_hashes": null,
-      "result": null,
+      "artifact_hashes": {
+        "python_producer_profile_digest": "sha256:c61f5515e55325fabda8abcd2fd20b80097b069435dc43976fe439fe46248eef",
+        "typescript_profile_digest": "sha256:c76a5c802ad78bcbb96303c9fe49d8b3afecc40d09602a7b0746f48425e1e9b0",
+        "typescript_analyser_digest": "sha256:fd3a6ba5483cedbae50a37b53f87c713ac2c83997d4bd0cc7f1021b1320c7eae",
+        "typescript_compiler_digest": "sha256:6ca61284adca4c30165a5df9e3c92ad5e83b506e13b5fa85b689895af6fef279"
+      },
+      "result": "The import binding and both producers now exist, but the run as written (real repositories) did not run. The producers were run on fixtures and, for calibration, on 15 and 30 real storage modules; 45 or more modules, and the repository's 194-module runtime package, are refused at the 10,000-candidate ceiling, so a repository of this size cannot be analysed in one batch. Producer identities and digests are recorded. Split into QP-04A and QP-04B below; this entry stays NOT_RUN until a real-repository run with a multi-batch or raised-ceiling decision exists.",
+      "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
+    },
+    {
+      "id": "QP-04A",
+      "name": "Python producer through governed import and the production route, on fixture repositories",
+      "status": "PASS",
+      "preconditions": [
+        "A sealed captured_v1 snapshot of a real git checkout registered through engineering.repository.register",
+        "An owner-registered import policy (code.policy.register)"
+      ],
+      "evidence_to_collect": [
+        "producer to code.import to graph and evidence operations through the shipped transports",
+        "replay idempotency, stale-plan fencing, atomic cutover with no mixed revisions",
+        "explicit analysed-snapshot freshness against working_tree: not_observed"
+      ],
+      "artifact_hashes": {
+        "python_producer_profile_digest": "sha256:c61f5515e55325fabda8abcd2fd20b80097b069435dc43976fe439fe46248eef",
+        "migration_0074_sha256": "62c2bfc2acbaecff7e341e274d36d1ba1cb1c332b3b9ea52172150669ebd0997",
+        "fixture_batch_digest_snap_python_1": "sha256:838c615ad3c52946fd18def40ca118a051fc09f17a4400efcbc6336bcbfd226e"
+      },
+      "result": "PASS at L4 for the fixture repository, scope Python only: 15 passed in test_code_analysis_vertical.py (WORK-STATUS P30, RUN-03 independent rerun at a6924504), with code.query 12 and code_context 22 tests (P28, P29); accepted by Codex at plan gate G8. Not covered by this PASS: real repositories (QP-04), TypeScript, MCP exposure, packaged or signed builds.",
+      "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
+    },
+    {
+      "id": "QP-04B",
+      "name": "TypeScript/JavaScript producer production route",
+      "status": "BLOCKED",
+      "preconditions": [
+        "A verified, provisioned Node runtime the service can locate",
+        "A heartbeat-capable runner so the service thread's lease is renewed during analysis"
+      ],
+      "evidence_to_collect": [
+        "TypeScript producer to code.import to graph operations through the shipped transports",
+        "Node runtime identity in the profile"
+      ],
+      "artifact_hashes": {
+        "typescript_profile_digest": "sha256:c76a5c802ad78bcbb96303c9fe49d8b3afecc40d09602a7b0746f48425e1e9b0",
+        "typescript_analyser_digest": "sha256:fd3a6ba5483cedbae50a37b53f87c713ac2c83997d4bd0cc7f1021b1320c7eae",
+        "typescript_compiler_digest": "sha256:6ca61284adca4c30165a5df9e3c92ad5e83b506e13b5fa85b689895af6fef279"
+      },
+      "result": "Not run through a production route: code.status reports TypeScript unavailable / runtime_not_configured and code.import refuses it dependency_unavailable, because the service has no verified Node runtime and nothing locates one without a provisioning decision. The producer itself passed at L3 on fixtures (32 cases, WORK-STATUS P25); Node is neither pinned nor packaged. Entry: the runtime-provisioning decision.",
       "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
     },
     {
       "id": "QP-05",
-      "name": "Transport and client exposure",
+      "name": "Transport and client exposure of a public hybrid mode",
       "status": "NOT_RUN",
       "preconditions": [
         "A contract decision for a public hybrid mode on an existing or new operation",
@@ -105,13 +156,56 @@
         "partial and unavailable statuses visible to clients without lexical substitution"
       ],
       "artifact_hashes": null,
-      "result": null,
+      "result": "Not run. No contract decision exists and no operation carries a keyword, semantic or combined mode (WORK-STATUS P20 NOT_RUN). Code-operation transport parity is recorded separately in QP-05A.",
+      "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
+    },
+    {
+      "id": "QP-05A",
+      "name": "Code-intelligence operations through the shipped Core transports",
+      "status": "PASS",
+      "preconditions": [
+        "code.query, code.policy.register, code.import and code.status in the Application catalogue (operations 89-92)"
+      ],
+      "evidence_to_collect": [
+        "in-process, local IPC and HTTP answers equal for import, status and every query intent",
+        "the generic CLI reaching a real managed service"
+      ],
+      "artifact_hashes": null,
+      "result": "PASS at L4, Python route (WORK-STATUS P28 test_every_transport_returns_the_same_answer[local-ipc] and [http]; P29 test_every_transport_returns_the_same_code_context[local-ipc] and [http]; P30 test_every_transport_serves_the_same_import_status_and_answers[local-ipc] and [http], plus the CLI lifecycle test test_the_code_analysis_commands_reach_the_service_through_the_generic_cli). MCP exposure is deliberately off; adapters remain pending_candidate in the operation-traceability ledger.",
+      "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
+    },
+    {
+      "id": "QP-05B",
+      "name": "Dev Project Map against a real Core (supplied by Codex)",
+      "status": "PASS",
+      "preconditions": [
+        "Core at 4d453fe6 and the Dev branch codex/core-code-intelligence-integration at 50a12d285d212eb138930ea1c8b7df08862b37e1"
+      ],
+      "evidence_to_collect": [
+        "Core-alone operation, Project Map and task-context journeys from one binding, bounded static imports, unanalysed revisions, unavailable snapshots"
+      ],
+      "artifact_hashes": null,
+      "result": "PASS at L4 as supplied by Codex, not re-run here (WORK-STATUS RUN-07, P34): real-Core qualification 6 passed; focused suites 527 passed; full Dev preflight exit 0 (2412 passed, 34 skipped). Python route only; Open captured source, Open current working file and Add evidence are disabled descriptors.",
+      "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
+    },
+    {
+      "id": "QP-05C",
+      "name": "Platform consumption against a real Core",
+      "status": "NOT_RUN",
+      "preconditions": [
+        "Platform at 0242519315d144c178078eaead7c18bfc2baf5fd driving a real Core through its shared adapter, IPC and preload boundary"
+      ],
+      "evidence_to_collect": [
+        "buildContextPack and a cross-workspace refusal against a real Core"
+      ],
+      "artifact_hashes": null,
+      "result": "Not run against a real Core. The supplied Platform results (adapter 4, workspace scoping 5, temporary qualification 2; WORK-STATUS RUN-08, P35) use a stub transport returning a canned result: L2 simulated. The temporary test (sha256 fd31e5bc62d3afc5069f69568ed3097b826ed7ba03dabeccac71ae6fc2fb69f2) is not retained in any repository, and no code-query Platform UI exists.",
       "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
     },
     {
       "id": "QP-06",
       "name": "Packaging, required CI rows and release",
-      "status": "NOT_RUN",
+      "status": "BLOCKED",
       "preconditions": [
         "QP-01 through QP-05 as the specification requires"
       ],
@@ -120,7 +214,7 @@
         "Core acceptance and the three Phase 2 platform rows green on the pull request"
       ],
       "artifact_hashes": null,
-      "result": null,
+      "result": "Blocked. Preconditions QP-01 to QP-04 are unmet; no pull request exists so the required checks have not reported; no clean plain preflight exists (WORK-STATUS P23 FAIL: AT09 test_selected_source_reaches_core_exact_and_is_left_unchanged fails identically at baseline f6f68dbb, and the P8 full run recorded 4 failed, 38,388 passed, 59 skipped); no signed or notarised package, signing authority (PACKAGED_TRUSTED_KEYS is empty) or candidate bundle exists. Every migration 0066-0074 is candidate, not accepted.",
       "pass_criteria_source": "TECH-CORE-RETRIEVAL-CODE-001 v1.0"
     }
   ]

@@ -1,13 +1,85 @@
 {
   "format": "omnivia.work-status.v1",
   "task": "TECH-CORE-RETRIEVAL-CODE-001",
-  "spec_version": "1.0",
-  "slice": "P1 hybrid-lane contract and repository binding evidence",
-  "recorded_on": "2026-10-16",
+  "spec_version": "1.7",
+  "spec_version_note": "The P1 slice (2026-10-16) was recorded against spec v1.0/v1.2. This P10 reconciliation is against spec v1.7, acceptance matrix v1.3 (the 80 original cases A01-E08 plus U01-U16 and I01-I42 = 138 technical cases) and UI scenarios v2.3 (CS-R01-CS-R116). The v1.7 front matter still carries stale supersedes and ui_companion metadata and a 2026-10-17 date against a 2026-10-18 filename; the text is used unchanged. The gate labels G0-G10 in spec section 21.1 and in the matrix 'Work / gate' column are the SPECIFICATION's gates; the implementation plan's G0-G10 are different gates. Each acceptance row keeps the existing shape (status, property_refs, note); its note begins with [work ids / spec gate; the matrix's minimum evidence]. The plan's gates are not in this file.",
+  "slice": "P1-P10 integrated qualification ledger: the P1 hybrid-lane ledger reconciled by the P10 closeout packet",
+  "recorded_on": "2026-10-18",
+  "p10_reconciliation": {
+    "recorded_on": "2026-10-18",
+    "purpose": "Make this ledger an honest per-work-ID and per-acceptance-case record of what is actually delivered and tested at the accepted P8 tip, with the Dev and Platform P9 evidence supplied by Codex recorded as supplied and not re-run.",
+    "this_is_not": "a release, a merge, a push, or an independent review. No product code, schema, migration, generated file, test or CI file was changed by this packet.",
+    "what_changed": [
+      "Work register extended to W00-W18. W17 and W18 were added from spec section 3.1 and audited against the code; neither is complete (see work_items.W17 and work_items.W18).",
+      "Acceptance extended from the 80 original rows to the 138 technical cases of matrix v1.3 (U01-U16 and I01-I42 added) and the 116 UI scenarios CS-R01-CS-R116. The update cases and the model-page checks are recorded as unnumbered groups because the specification does not number them per clause.",
+      "Properties P24-P38 added to carry exact test identifiers for the P6-P9 evidence; P01-P23 reconciled. U, I and CS-R rows, the unnumbered update-case group and the model-page group live in the same acceptance map, in the existing row shape.",
+      "Statuses moved only where a retained packet or record supports the move. NOT_RUN to PASS: D04, D06, D07 (P7 producers, L3). NOT_RUN to PARTIAL: D02, D05, D08, D14, D19, B20, C15, E03, E04, W10, W11, W15. NOT_RUN to BLOCKED: E01, E05, P17. Rows added by this packet (U, I, CS-R, the two groups, W17, W18, P24-P38) are new and conservative: no CS-R row and no U or I row is above NOT_RUN. Everything else keeps the status the accepted P1 and P8 ledgers gave it.",
+      "P15 is now explicitly scoped to the P1 slice (it was true for that slice by diff inspection and is false for the programme: the catalogue grew from 86 to 92 operations). P23 note rewritten against the later full-suite runs; its status stays FAIL."
+    ],
+    "what_did_not_run": [
+      "Nothing in this packet ran a model, a real embedding backend, a packaged or signed build, a notarised install, an Intel or older-macOS host, VoiceOver, a performance measurement or a pull-request CI row.",
+      "A complete ./scripts/preflight was started on the pristine accepted tree (tree b672ddf45c7b17c4251f3891a865aa4abc4d334e, 2026-10-18T06:35:30Z) and was stopped before completion after the documentation changed; it has no result and does not satisfy final-tip verification (see runs.RUN-11). Codex will run and report one complete preflight after the closeout commit, against the exact immutable final tip.",
+      "The W17 audit was bounded: Capture defaults rendering in the Settings window, CaptureIntent.swift and CaptureDraft.swift were read, repository-wide searches for review-configuration, defaults-revision and snapshot constructs found none, and the Swift queue tests were identified by name only (their bodies were not re-read, so they are adjacent evidence, not row evidence). The W18 audit was bounded to repository-wide searches for pause, hours, battery, first-pass and initial-pass constructs plus the Settings window's placeholder copy.",
+      "Six read-only audit agents were started during this packet and stopped before reporting; a late report from a child of one of them arrived after the stop. None of that output is used anywhere in this file."
+    ]
+  },
+  "accepted_commits": {
+    "core": {
+      "repository": "omnivia-core",
+      "branch": "codex/core-tech-settings-integration",
+      "tip": "4d453fe614225c0aff4cdd55dcd6fd1695686728",
+      "tree": "b672ddf45c7b17c4251f3891a865aa4abc4d334e",
+      "product_code_tip": "a6924504",
+      "accepted_gate": "Plan G8, Python production route, L4 (accepted by Codex)",
+      "waves_1_4_head": "32c2015d2c602f82d97efa509e10a6c31763c1f6",
+      "origin_main": "c9f589159ebc876aa1600b741aa605a38323f750",
+      "local_main_is_stale_at": "b75096ff14ea99ee517f71e71d603ac5ba189a50",
+      "commits_ahead_of_origin_main": 306,
+      "tech_specs_lane_commits": 36,
+      "tech_specs_lane_range": "32c2015d..4d453fe6",
+      "net_diff_tech_specs_lane": "193 files changed, 42438 insertions, 841 deletions",
+      "net_diff_against_origin_main": "491 files changed, 249660 insertions, 26245 deletions"
+    },
+    "dev": {
+      "repository": "omnivia-dev",
+      "branch": "codex/core-code-intelligence-integration",
+      "tip": "50a12d285d212eb138930ea1c8b7df08862b37e1",
+      "commits": [
+        "32faf17ec96f0c5f0e90b95660c0ed9b622e81ab",
+        "015da633e699baac4d716ea86f9cfdd7062d74cd",
+        "50a12d285d212eb138930ea1c8b7df08862b37e1"
+      ],
+      "parent_of_first": "e33cd5b21d5126081a1bcd7c1b3d79f3788ee2d8",
+      "files": "8 files changed, 3342 insertions, 606 deletions",
+      "evidence_source": "supplied by Codex; not re-run by this packet. Commit existence and the changed-file set were checked read-only."
+    },
+    "platform": {
+      "repository": "omnivia-platform",
+      "branch": "voice-parakeet-parakeet-v2",
+      "commit": "0242519315d144c178078eaead7c18bfc2baf5fd",
+      "note": "A 2026-09-28 documentation commit that predates this programme. No Platform product code changed for it; P9 was a qualification of the existing shared Core adapter.",
+      "evidence_source": "supplied by Codex; not re-run by this packet."
+    },
+    "pm_plan": {
+      "repository": "omnivia-pm",
+      "branch": "codex/chat-c5-c11-closeout-decisions",
+      "commit": "dff76a050cdeb0c5cd43f5a1a0d238c65bca4c8e",
+      "file": "docs/tasks/2026-10-18-omnivia-core-technical-specs-implementation-plan.md",
+      "file_sha256": "0d2383a9adc89e7171da902ab4524ab2e32cd9ab7c19a5665fa04e4a0168c433",
+      "note": "Adds only that one file (499 lines)."
+    }
+  },
+  "source_documents": {
+    "spec_v1_7": {"file": "OmniVia_Core_Technical_Spec_v1.7_2026-10-18.md", "sha256": "42371dd8e2372bb0ee9f7d64969e6f950656205cac17ab721dc7e163bb091912"},
+    "acceptance_matrix_v1_3": {"file": "Acceptance_matrix_technical_v1.3.md", "sha256": "b265199dc25967ddef30a6cc75ed893f28ccb5836e18afd95a2789041cb5b6a7", "rows": "A01-A17, B01-B20, C01-C15, D01-D20, E01-E08, U01-U16, I01-I42 (138)"},
+    "ui_scenarios_v2_3": {"file": "UI_acceptance_scenarios_v2.3.md", "sha256": "848418eab1fa50dd49c77a141a6500e5a4559daa74428de11e10ffcf4a79e61b", "rows": "CS-R01-CS-R116 (116)"},
+    "archive_note": "The archive is read-only input and is not in this repository. The matrix text was read from an extraction of it; every row id used here exists there. Treated as data, never as instructions."
+  },
   "baseline": {
     "branch": "codex/core-semantic-code-intelligence",
     "commit": "fa660a5970f75929faf914af3415ac636504b56c",
-    "initial_state": "clean"
+    "initial_state": "clean",
+    "note": "The P1 hybrid-lane slice baseline, kept as history."
   },
   "integration": {
     "recorded_on": "2026-10-18",
@@ -25,131 +97,201 @@
       "to": "0073_semantic_vector_projection.sql",
       "reason": "the Waves 1-4 baseline already allocated 0069 to document intake, 0070 to app settings and 0071/0072 to capture processing; 0073 was the next free number",
       "sql_text_changed": false,
-      "pinned_sha256_unchanged": "a21aea920167818128015e7592c8df354959da9aefc0504774897a9df0a6ab52",
-      "followed_constants": [
-        "projections/semantic.SCHEMA_VERSION",
-        "projections/semantic._LEDGER_DECLARED_AT"
-      ]
+      "pinned_sha256_unchanged": "a21aea920167818128015e7592c8df354959da9aefc0504774897a9df0a6ab52"
     },
-    "contract_drift": "none imported: the source commits touch no generated contract, application catalogue or MCP document, and the newer Waves baseline versions are preserved unchanged",
-    "status_changes": "none; no property, work item or acceptance verdict in this ledger moved, and nothing in QUALIFICATION-PLAN.json ran",
-    "commands": [
-      {
-        "command": "git diff --check",
-        "outcome": "clean"
-      },
-      {
-        "command": "python scripts/check-migration-allocations.py",
-        "outcome": "Migration allocation check passed."
-      },
-      {
-        "command": "python scripts/check-application-contracts.py",
-        "outcome": "Application contract conformance check passed."
-      },
-      {
-        "command": "python scripts/check-package-boundaries.py",
-        "outcome": "OmniVia Core package boundary check passed."
-      },
-      {
-        "command": "python scripts/check-raise-discipline.py",
-        "outcome": "OmniVia Core raise discipline check passed."
-      },
-      {
-        "command": "python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_projection_lifecycle.py packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py -q",
-        "outcome": "32 passed"
-      },
-      {
-        "command": "python -m pytest tests/test_migration_allocations.py 'packages/omnivia-core-runtime/tests/phase3/runtime/test_working_tree_snapshot.py::test_0059_upgrade_seeds_a_preexisting_0058_capture' -q",
-        "outcome": "74 passed"
-      },
-      {
-        "command": "python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_document_intake_migration.py packages/omnivia-core-runtime/tests/phase3/runtime/test_app_settings_migration.py packages/omnivia-core-runtime/tests/phase3/runtime/test_document_processing_settings.py packages/omnivia-core-runtime/tests/phase2/test_bootstrap_storage.py packages/omnivia-core-runtime/tests/phase2/test_migration_backup_restore.py packages/omnivia-core-runtime/tests/phase3/runtime/test_document_intake.py -q",
-        "outcome": "312 passed",
-        "note": "first run failed test_0069_is_the_unique_successor_to_0068 and test_0069_applies_all_document_intake_tables_and_guards, both of which pin the catalogue head literally at 72; moved to 73 as the new migration requires. No other Waves 1-4 assertion moved."
-      },
-      {
-        "command": "python -m ruff check <the eleven changed Python files>",
-        "outcome": "All checks passed!",
-        "note": "ruff format is not a gate in core-acceptance.yml, which runs ruff check only; the repository's 100-column style is not ruff format's default."
-      },
-      {
-        "command": "python -m mypy --strict packages/omnivia-core-runtime/src/omnivia_core_runtime/service/semantic_search.py packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/semantic_vectors.py packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/projections/semantic.py packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/code_analysis_candidates.py",
-        "outcome": "Success: no issues found in 4 source files"
-      }
-    ],
-    "environment": "no .venv in this worktree; /Users/claytonread/Projects/omnivia-core/.venv/bin/python (3.11, Ruff 0.16.1, mypy 2.3.0) with PYTHONPATH over this worktree's source trees, plus a throwaway pip --target overlay for pytesseract, pillow, pypdfium2 and pillow-heif, which the shared venv lacks and the Waves 1-4 capture tests import at collection"
+    "history_pointer": "The P1 integration's own verification commands and outcomes are in git history at 4d453fe6 for this file and are summarised in commands below."
   },
-  "slice_state": "reviewed and committed on codex/core-semantic-code-intelligence; the implementation commit is the Git commit containing this file. Integrated onto the Waves 1-4 baseline on codex/core-tech-p1-p10-integration on 2026-10-18 with the migration renumbered to 0073; see the integration block above",
-  "status_vocabulary": [
-    "PASS",
-    "PARTIAL",
-    "NOT_RUN",
-    "FAIL",
-    "BLOCKED",
-    "NOT_APPLICABLE"
-  ],
+  "slice_state": "P1 hybrid-lane slice integrated 2026-10-18; P6 update trust and Settings v2, P7 producers and P8 governed import, code.query, code_context and the production vertical integrated on codex/core-tech-settings-integration; this file reconciled at 4d453fe6 by the P10 closeout packet. Not merged, not pushed, not released.",
+  "status_vocabulary": ["PASS", "FAIL", "BLOCKED", "NOT_RUN", "NOT_APPLICABLE", "PARTIAL"],
+  "status_rules": {
+    "PASS": "The complete named scenario was met at (or above) its required evidence level, with exact test identifiers or a recorded command, and nothing in the row is left open.",
+    "FAIL": "Evidence exists and shows the required result is not met.",
+    "BLOCKED": "The row cannot run because a prerequisite outside this repository's code is missing (an approved model or embedder, a signing identity or notarised host, a real-hardware or human review, an external approval). Used sparingly: the P1 convention stands that unfinished implementation is NOT_RUN, not BLOCKED.",
+    "NOT_RUN": "No qualifying run was performed against the row. This includes rows whose implementation does not exist. Adjacent evidence that was not mapped to the row is named in the row and does not change the status.",
+    "NOT_APPLICABLE": "Reserved for optional-future cases with the disabled feature and reason named. Required cases never use it merely because implementation is unfinished. Nothing in this ledger uses it.",
+    "PARTIAL": "Retained, with the P1 definition: useful, named, executed evidence exists for part of the row (or the work item) while a stated part has not met its scenario or its evidence level. Every PARTIAL row states the gap. PARTIAL is kept only where the accepted P1 or P8 ledgers already used it, or where a retained packet or record names executed tests for part of the row."
+  },
   "evidence_levels": {
-    "repository_local_unit": "pure-value pytest, no storage",
-    "repository_local_integration_real_sqlite_fixture_embedder": "pytest over a real migrated SQLite workspace with a deterministic model-free fixture embedder",
-    "diff_inspection": "git diff review",
+    "repository_local_unit": "pure-value pytest, no storage (plan L1 contract)",
+    "repository_local_integration_real_sqlite_fixture_embedder": "pytest over a real migrated SQLite workspace with a deterministic model-free fixture embedder (plan L3 component)",
+    "diff_inspection": "git diff review (plan L0 inspected)",
     "none": "no evidence collected",
-    "l4_integrated_isolated_workspace": "a real Runtime (ServiceRunner) behind the shipped in-process, local-IPC and HTTP transports and the generic CLI against a managed service, in an isolated workspace: the specification's L4 integrated"
+    "l4_integrated_isolated_workspace": "a real Runtime (ServiceRunner) behind the shipped in-process, local-IPC and HTTP transports and the generic CLI against a managed service, in an isolated workspace: the plan's L4 integrated",
+    "l3_component": "a real parser, compiler adapter or store in isolation, over real sealed snapshots and blobs (plan L3)",
+    "l2_simulated": "a fake transport, model or store standing in for the property under test (plan L2)",
+    "supplied_l4": "L4 evidence in another repository supplied by Codex with exact results; not re-run by this packet",
+    "record_stated": "described by an accepted retained record or packet; not re-run by this packet",
+    "plan_scale": "L0 inspected; L1 contract; L2 simulated; L3 component; L4 integrated; L5 packaged (signed or supported installation); L6 release (full declared matrix, recovery, compatibility, independent acceptance). A higher level is never inferred from a lower one. No row or run in this ledger reaches L5 or L6."
   },
-  "binding_rule": "Work and acceptance IDs are bound to the supplied TECH-SPEC.md and ACCEPTANCE-MATRIX.md. PASS is used only where this slice meets the complete named scenario at its required evidence level; PARTIAL means useful repository-local evidence exists but the complete scenario or evidence level has not been met; NOT_RUN means no qualifying run was performed.",
+  "binding_rule": "Work and acceptance ids are bound to spec v1.7 section 3.1 and to acceptance matrix v1.3 (technical) and UI scenarios v2.3 (CS-R). PASS is used only where the complete named scenario is met at its required evidence level. Rows keep the existing shape: acceptance and work-item rows carry status, property_refs and note; properties carry id, statement, status, evidence_level, tests and note. Exact test identifiers live in the properties a row references. implementation_commit is the accepted tip for every row unless a row says otherwise; host, exit_code and observed_result live in runs; no raw log is retained in this repository, so log_path is null throughout (see runs).",
   "environment": {
-    "python": "/Users/claytonread/Projects/omnivia-core/.venv/bin/python (3.11.15, main checkout venv; this worktree has no .venv)",
+    "python": "/Users/claytonread/Projects/omnivia-core/.venv/bin/python (3.11.15, main checkout venv; the P1 to P8 lanes used this with a worktree PYTHONPATH, plus a throwaway overlay for pytesseract, pillow, pypdfium2 and pillow-heif)",
     "pythonpath": "PYTHONPATH=$W/src:$W/services/omnivia-memory/src:$W/packages/omnivia-core-runtime/src:$W/packages/omnivia-core-cli/src:$W/packages/omnivia-core-mcp/src:$W/packages/omnivia-core-client/src:$W/packages/omnivia-core-runtime/tests",
     "ruff": "0.16.1",
-    "mypy": "2.3.0"
+    "mypy": "2.3.0",
+    "p10_worktree_venv": "worktree-local .venv: CPython 3.11.15, ruff 0.16.1, mypy 2.3.0 (compiled), pytest 9.1.1; editable installs resolve into this worktree; node v22.23.2; TypeScript 5.9.3 from npm ci; tesseract at /opt/homebrew/bin/tesseract; macOS 27.0.0 (Darwin) arm64",
+    "contract_checkpoint": "OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT=499e8b3667b707dca58f097cd099d27a23882026 (read with gh from repository configuration)",
+    "accepted_overlay_verbatim": "PATH=\"$PWD/.venv/bin:$PATH\" PYTEST_ADDOPTS=\"-o tmp_path_retention_policy=failed --deselect packages/omnivia-core-runtime/tests/phase3/runtime/test_at09_selected_source_end_to_end.py::test_selected_source_reaches_core_exact_and_is_left_unchanged\" ./scripts/preflight",
+    "overlay_note": "The overlay is the one the Settings v2 lane recorded (put this worktree's .venv/bin first so a stray ~/.local/bin/omnivia-core-service cannot win a PATH-first spawn; deselect exactly the one test that fails identically at the baseline). Without the deselect a plain ./scripts/preflight stops at the full-suite step."
+  },
+  "locks_and_pins": {
+    "uv_lock_sha256": "7f0d79a2011020d4055fe79120e0aa6e27d45c8c3945d46383271e70249485a9",
+    "package_lock_json_sha256": "a04f0e4e64570823095a11d33f10b3f8b8b880f0530397ee45c169999ee23b11",
+    "python_producer_profile_digest": "sha256:c61f5515e55325fabda8abcd2fd20b80097b069435dc43976fe439fe46248eef",
+    "python_producer": "analyzer.python.stdlib 1.0.0, grammar 3.11, locator basis utf8_byte_columns.v1",
+    "typescript_profile_digest": "sha256:c76a5c802ad78bcbb96303c9fe49d8b3afecc40d09602a7b0746f48425e1e9b0",
+    "typescript_analyser_digest": "sha256:fd3a6ba5483cedbae50a37b53f87c713ac2c83997d4bd0cc7f1021b1320c7eae",
+    "typescript_analyser_file": "packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/code_analysis_typescript.cjs (51869 bytes; its sha256 equals the analyser digest)",
+    "typescript_compiler_digest": "sha256:6ca61284adca4c30165a5df9e3c92ad5e83b506e13b5fa85b689895af6fef279",
+    "typescript_compiler_version": "5.9.3",
+    "fixture_batch_digests": {"python_snapshot_snap_python_1": "sha256:838c615ad3c52946fd18def40ca118a051fc09f17a4400efcbc6336bcbfd226e", "typescript_snapshot_snap_ts_1": "sha256:af57ef1ff0ef49384672a0455d2d6e2bc5145f465b0c6b5522f56656f1e42040"},
+    "provenance": "The profile, analyser and migration digests were recomputed at 4d453fe6 by this packet and equal the values the P7 and P8 packets recorded. The fixture batch digests and the compiler digest pin are as recorded by the P7 packets (the compiler bytes are re-verified at runtime by the adapter and by its tests).",
+    "migrations": {
+      "0069_document_intake.sql": "362668d14ab0febe2d1baf2872255c62a1415639a7d17324238c8096b21974ec",
+      "0070_app_settings.sql": "56bc0e5507cc265f354da4ef97b7a25a356c0fb0147ccc2412ff00d54fff109d",
+      "0071_capture_processing_settings.sql": "f74b2de82896ed21f2ebf023827d7d25c7386530db96adf1dbee801123375c21",
+      "0072_capture_processing_resources.sql": "4f16b4ebcf9a6a728a41e56fd2585ddb2a43ff5f18aa009743021a322374a1e4",
+      "0073_semantic_vector_projection.sql": "a21aea920167818128015e7592c8df354959da9aefc0504774897a9df0a6ab52",
+      "0074_code_analysis_applicability.sql": "62c2bfc2acbaecff7e341e274d36d1ba1cb1c332b3b9ea52172150669ebd0997"
+    },
+    "migration_state": "Every migration from 0066 to 0074 is state candidate with accepted_commit null in contracts/migrations/v1/allocations.json; none is accepted."
   },
   "commands": [
+    {"command": "P1 slice, pytest on test_semantic_vectors.py, test_semantic_projection_lifecycle.py, test_hybrid_semantic_search.py", "outcome": "27 passed", "tip": "fa660a59"},
+    {"command": "P1 slice, pytest on test_code_analysis_candidates.py (then 5 tests)", "outcome": "5 passed", "tip": "fa660a59"},
+    {"command": "P1 slice, focused semantic/hybrid/code tests plus tests/test_migration_allocations.py", "outcome": "105 passed", "tip": "fa660a59"},
+    {"command": "P1 slice, ruff check on six files; mypy --strict on three modules", "outcome": "All checks passed; no issues in 3 source files", "tip": "fa660a59"},
+    {"command": "P1 slice, PYTHON=<main venv> OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT=499e8b36... ./scripts/preflight", "outcome": "FAIL before the repository suite: the isolated MCP wheel tool document differed from the source-tree generated document (manifest_version 2.0 versus 2.8 plus unrelated catalogue drift). Historical: later full runs no longer stop there.", "tip": "fa660a59"},
+    {"command": "P1 slice, eight ad-hoc source mutations, each restored byte for byte", "outcome": "every mutation failed at least one focused test", "note": "Supporting evidence only; the mutation script was not retained."},
+    {"command": "P1 integration (2026-10-18), focused semantic, migration, document-intake and settings suites, ruff on eleven files, mypy --strict on four modules, four static checkers", "outcome": "32 passed; 74 passed; 312 passed (two document-intake head pins moved 72 to 73); All checks passed; no issues in 4 source files; all checkers passed", "tip": "integration of fa660a59 onto 32c2015d"}
+  ],
+  "runs": [
     {
-      "command": "PYTHONPATH=$W/src:$W/services/omnivia-memory/src:$W/packages/omnivia-core-runtime/src:$W/packages/omnivia-core-cli/src:$W/packages/omnivia-core-mcp/src:$W/packages/omnivia-core-client/src:$W/packages/omnivia-core-runtime/tests /Users/claytonread/Projects/omnivia-core/.venv/bin/python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_projection_lifecycle.py packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py -q",
-      "outcome": "27 passed"
+      "id": "RUN-01",
+      "what": "Authoritative full preflight at the accepted P8 product code (Codex-supplied)",
+      "tip": "c5696685 working tree (product code of 4d453fe6)",
+      "command": "PYTHON=<throwaway worktree venv> ./scripts/preflight",
+      "host": "macOS arm64 (Darwin)",
+      "result": "exit 1. Full repository suite: 4 failed, 38,388 passed, 59 skipped, 7 warnings in 3239.13s. Three failures (test_v06_5_s1_two_legacy_workspace_services_still_coexist, the CLI test_a_foreign_same_named_service_on_path_is_not_selected, the MCP test_a_lost_capture_response_replays_after_a_real_service_restart) needed an omnivia-core-service console script the throwaway venv lacked and passed under the repository main venv with the worktree PYTHONPATH. The fourth, AT09 test_selected_source_reaches_core_exact_and_is_left_unchanged, fails identically at baseline f6f68dbb.",
+      "exit_code": 1,
+      "log_path": null,
+      "source": "P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md and Codex",
+      "independent": true,
+      "note": "Not a green whole-repository qualification."
     },
     {
-      "command": "PYTHONPATH=$W/src:$W/services/omnivia-memory/src:$W/packages/omnivia-core-runtime/src:$W/packages/omnivia-core-cli/src:$W/packages/omnivia-core-mcp/src:$W/packages/omnivia-core-client/src:$W/packages/omnivia-core-runtime/tests /Users/claytonread/Projects/omnivia-core/.venv/bin/python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py -q",
-      "outcome": "5 passed"
+      "id": "RUN-02",
+      "what": "Post-suite workflow steps, run separately (Codex-supplied)",
+      "tip": "4d453fe6 product code",
+      "command": "benchmark tests; ruff; strict mypy; Swift companion build and test",
+      "result": "benchmark tests 23 passed; Ruff passed; strict mypy no issues in 429 source files; the Swift companion suite is a bounded baseline-reproduced exception, not green (AbsentTarget acceptance tests fail with start_failed then an Index out of range crash; the full baseline Swift suite later timed out in OcrResourceAdministrationTests).",
+      "exit_code": null,
+      "log_path": null,
+      "source": "P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md and Codex",
+      "independent": true
     },
     {
-      "command": "PYTHONPATH=$W/src:$W/services/omnivia-memory/src:$W/packages/omnivia-core-runtime/src:$W/packages/omnivia-core-cli/src:$W/packages/omnivia-core-mcp/src:$W/packages/omnivia-core-client/src:$W/packages/omnivia-core-runtime/tests /Users/claytonread/Projects/omnivia-core/.venv/bin/python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_projection_lifecycle.py packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py tests/test_migration_allocations.py -q",
-      "outcome": "105 passed"
+      "id": "RUN-03",
+      "what": "Independent focused production vertical (Codex-supplied)",
+      "tip": "a6924504",
+      "command": "pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py",
+      "result": "15 passed",
+      "exit_code": 0,
+      "log_path": null,
+      "source": "Codex",
+      "independent": true
     },
     {
-      "command": "/Users/claytonread/Projects/omnivia-core/.venv/bin/python -m ruff check packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/semantic_vectors.py packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/projections/semantic.py packages/omnivia-core-runtime/src/omnivia_core_runtime/service/semantic_search.py packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_vectors.py packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_projection_lifecycle.py packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py",
-      "outcome": "All checks passed"
+      "id": "RUN-04",
+      "what": "Settings v2 lane full preflight (record-stated)",
+      "tip": "cf248b71",
+      "command": "the accepted overlay in environment.accepted_overlay_verbatim",
+      "result": "exit 0, Core preflight passed, 47 min 53 s; full suite 38060 passed, 56 skipped, 1 deselected (AT09); tests/contracts 11547 passed, 19 skipped; Ruff clean; strict mypy 422 source files; benchmarks 23 passed; Swift 1011 tests, 2 skipped, 0 failures in 230 s.",
+      "exit_code": 0,
+      "log_path": null,
+      "source": "2026-10-18-settings-v2-integration-record.md section 4.1",
+      "independent": false
     },
     {
-      "command": "/Users/claytonread/Projects/omnivia-core/.venv/bin/python -m mypy --strict packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/semantic_vectors.py packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/projections/semantic.py packages/omnivia-core-runtime/src/omnivia_core_runtime/service/semantic_search.py",
-      "outcome": "Success: no issues found in 3 source files"
+      "id": "RUN-05",
+      "what": "P7 TypeScript lane broad suite (record-stated)",
+      "tip": "27fbe9c3",
+      "command": "pytest -q from the repository root",
+      "result": "6 failed, 39296 passed, 56 skipped, 7 warnings in 2792.64s; all six reproduce identically on a pristine export of 27fbe9c3 (five MCP installed-qualification tests that import the main checkout from a worktree, and AT09).",
+      "exit_code": 1,
+      "log_path": null,
+      "source": "P7-TYPESCRIPT-PRODUCER-2026-10-18.md",
+      "independent": false
     },
     {
-      "command": "python -m json.tool docs/development/semantic-code-intelligence/WORK-STATUS.json",
-      "outcome": "valid"
+      "id": "RUN-06",
+      "what": "P7 Python lane broad suite, before its review repairs (record-stated)",
+      "tip": "84ea2dbc",
+      "command": "pytest services tests packages/*/tests",
+      "result": "6 failed, 38083 passed, 56 skipped, 7 warnings in 2699.71s; same six baseline failures. Pre-repair evidence only; the repaired tree ran tests (17711 passed, 24 skipped) and the runtime package suite (1 failed AT09, 16188 passed, 24 skipped).",
+      "exit_code": 1,
+      "log_path": null,
+      "source": "P7-PYTHON-PRODUCER-2026-10-18.md",
+      "independent": false
     },
     {
-      "command": "python -m json.tool docs/development/semantic-code-intelligence/QUALIFICATION-PLAN.json",
-      "outcome": "valid"
+      "id": "RUN-07",
+      "what": "Dev P9 qualification (Codex-supplied, Dev repository)",
+      "tip": "Dev 50a12d285d212eb138930ea1c8b7df08862b37e1 against Core 4d453fe6",
+      "command": "focused Core authority cutover, Project Map UI and screen inventory suites; real-Core qualification; full Dev ./scripts/preflight",
+      "result": "focused 527 passed; real-Core qualification 6 passed (Core-alone operation, real Project Map and task-context journeys from one binding, bounded static imports, unanalysed revisions, unavailable snapshots); full Dev preflight exit 0 (Ruff x2 and mypy clean, 2412 passed, 34 skipped in 51.24s); a broader delegated sweep was 559 passed (the difference is the independently selected subset).",
+      "exit_code": 0,
+      "log_path": null,
+      "source": "Codex",
+      "independent": true,
+      "note": "Not re-run by this packet."
     },
     {
-      "command": "PYTHON=/Users/claytonread/Projects/omnivia-core/.venv/bin/python OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT=499e8b3667b707dca58f097cd099d27a23882026 ./scripts/preflight",
-      "outcome": "FAIL before repository test suite: isolated MCP wheel tool document differs from the source-tree generated document (source manifest_version 2.0, wheel 2.8, plus unrelated catalogue drift)",
-      "note": "Package boundaries, 53 boundary tests, migration allocation and distribution build/install passed first. This slice changes no MCP, application-contract or generated-schema file, so unrelated regeneration was not folded into this implementation."
+      "id": "RUN-08",
+      "what": "Platform P9 qualification (Codex-supplied, Platform repository)",
+      "tip": "Platform 0242519315d144c178078eaead7c18bfc2baf5fd",
+      "command": "shared Core adapter tests; workspace-scoping tests; a temporary exact qualification at /private/tmp/omnivia-platform-context-pack.test.ts (sha256 fd31e5bc62d3afc5069f69568ed3097b826ed7ba03dabeccac71ae6fc2fb69f2, 65 lines, not retained in any repository)",
+      "result": "adapter tests 4 passed; workspace scoping 5 passed; temporary qualification 2 passed (buildContextPack through the shared adapter and a cross-workspace request refused with workspace_not_granted before transport).",
+      "exit_code": 0,
+      "log_path": null,
+      "source": "Codex; the temporary file was read by this packet",
+      "independent": true,
+      "note": "The temporary qualification injects a stub transport that returns a canned result, so it exercises Platform's real adapter against a simulated Core: plan level L2, not L4. Not re-run by this packet."
     },
     {
-      "command": "ad-hoc source mutations (eight), each restored byte-for-byte and the git diff digest re-checked",
-      "outcome": "every mutation failed at least one focused test",
-      "mutations": [
-        "semantic mode runs the lexical lane: 7 failed",
-        "checksum recompute removed: 1 failed",
-        "ordered membership check removed: 1 failed",
-        "empty input reads semantic state: 1 failed",
-        "missing vector raised as no-generation: 1 failed",
-        "truncation before ranking: 1 failed",
-        "zero-based semantic RRF rank: 4 failed",
-        "input digest replaced: 6 failed"
-      ],
-      "note": "Supporting evidence only. The mutation script was not retained in the repository."
+      "id": "RUN-09",
+      "what": "P10 collection of the whole suite (executed by this packet)",
+      "tip": "4d453fe6",
+      "command": "python -m pytest --collect-only -q -p no:cacheprovider services tests packages/omnivia-core-runtime/tests packages/omnivia-core-cli/tests packages/omnivia-core-client/tests packages/omnivia-core-mcp/tests benchmarks/tests",
+      "result": "38475 tests collected in 497 files, 0 collection errors. The code-intelligence and semantic modules collect 171 tests: hybrid 16, vectors 10, projection lifecycle 1, candidates 9, Python producer 36, TypeScript producer 32, import 18, code.query 12, code_context 22, production vertical 15.",
+      "exit_code": 0,
+      "log_path": null,
+      "source": "this packet",
+      "independent": false,
+      "note": "Collection only; nothing was executed. The earlier P1/P7/P8 citations in this ledger (54 test identifiers) all resolved against this collection before the rewrite."
+    },
+    {
+      "id": "RUN-10",
+      "what": "P10 hash and allocation re-check (executed by this packet)",
+      "tip": "4d453fe6",
+      "command": "recompute DEFAULT_PYTHON_PROFILE.digest, DEFAULT_TYPESCRIPT_PROFILE.digest, ANALYSER_DIGEST, the .cjs sha256, the 0073 and 0074 sha256; python scripts/check-migration-allocations.py",
+      "result": "every value equals the P7 and P8 record; Migration allocation check passed.",
+      "exit_code": 0,
+      "log_path": null,
+      "source": "this packet",
+      "independent": false
+    },
+    {
+      "id": "RUN-11",
+      "what": "P10 complete preflight on the pristine accepted tree (started by this packet, stopped before completion)",
+      "tip": "4d453fe6, tree b672ddf45c7b17c4251f3891a865aa4abc4d334e, clean at start",
+      "command": "the accepted overlay in environment.accepted_overlay_verbatim",
+      "result": "started 2026-10-18T06:35:30Z and stopped before completion after the documentation changed. It has no result and does not satisfy final-tip verification. Codex will run and report one complete preflight after the closeout commit, against the exact immutable final tip.",
+      "exit_code": null,
+      "log_path": null,
+      "source": "this packet",
+      "independent": false,
+      "note": "Its result is reported in the hand-back, not in this file. A document cannot cite the run of its own commit."
     }
   ],
   "properties": [
@@ -162,7 +304,7 @@
         "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_keyword_mode_needs_no_model_and_no_semantic_state",
         "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_empty_query_and_empty_frontier_are_deterministic_no_match"
       ],
-      "note": "Keyword mode is run against a closed sqlite3 connection, so any semantic-state read would raise."
+      "note": "Keyword mode is run against a closed sqlite3 connection, so any semantic-state read would raise. Scope: the internal composition seam, not a public operation."
     },
     {
       "id": "P02",
@@ -183,7 +325,8 @@
         "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_combined_ranks_both_lanes_with_one_based_rrf_and_carries_provenance",
         "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_semantic_mode_reports_no_match_rather_than_lexical_hits",
         "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_missing_generation_and_missing_query_embedding_fall_back"
-      ]
+      ],
+      "note": "Internal only: search_authorized_frontier is defined in service/semantic_search.py and is called by no production code (a repository search at 4d453fe6 found callers only in test_hybrid_semantic_search.py)."
     },
     {
       "id": "P04",
@@ -310,15 +453,15 @@
       "tests": [
         "packages/omnivia-core-runtime/tests/phase3/runtime/test_hybrid_semantic_search.py::test_hidden_evidence_never_reaches_or_influences_either_lane"
       ],
-      "note": "The fixture directly proves semantic exclusion. This slice does not rerun the full add/remove rare-term and long-text BM25 statistics matrix."
+      "note": "The fixture directly proves semantic exclusion. The add/remove rare-term and long-text BM25 statistics matrix (acceptance B06) has not been run."
     },
     {
       "id": "P15",
-      "statement": "No new public operation, contract catalogue entry, handler, CLI, MCP, HTTP or adapter",
+      "statement": "No new public operation, contract catalogue entry, handler, CLI, MCP, HTTP or adapter (scope: the P1 hybrid-lane slice only)",
       "status": "PASS",
       "evidence_level": "diff_inspection",
       "tests": [],
-      "note": "git diff --stat names only the allowed files; no catalogue, adapter, migration or contract file changed."
+      "note": "Scoped to the P1 slice at fa660a59, where git diff --stat named only the allowed files. It is NOT true of the programme: the catalogue grew from 86 to 92 operations across the Settings v2 and P8 lanes (settings.list, settings.set, code.query, code.policy.register, code.import, code.status), each recorded by its own packet. See P28-P32."
     },
     {
       "id": "P16",
@@ -332,15 +475,15 @@
         "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py::test_binding_requires_one_complete_sealed_snapshot_and_exact_file_digests",
         "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py::test_module_has_no_graph_or_governance_writer_imports"
       ],
-      "note": "Unchanged by this slice; re-run only."
+      "note": "The five tests still exist and are unchanged. The P7 producers additively extended the contract (identifier pattern widened, optional profile_digest, optional byte span); that is P26."
     },
     {
       "id": "P17",
       "statement": "Real embedding model, provider runtime and backend qualification",
-      "status": "NOT_RUN",
+      "status": "BLOCKED",
       "evidence_level": "none",
       "tests": [],
-      "note": "No model, dependency or artifact was installed or loaded. See QUALIFICATION-PLAN.json QP-01/QP-02."
+      "note": "QP-01's own preconditions are unmet and are external to this repository's code: no SemanticEmbedder implementation approved for install, and no declared real-model profile and execution provenance with a compatibility decision. No model, dependency or artifact has been installed or loaded. Was NOT_RUN in the P1 ledger; BLOCKED because the missing input is an approval and a model artifact, not unfinished code."
     },
     {
       "id": "P18",
@@ -357,11 +500,12 @@
       "evidence_level": "l4_integrated_isolated_workspace",
       "tests": [
         "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_the_production_route_imports_and_discovery_finds_the_binding",
-        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_every_transport_serves_the_same_import_status_and_answers",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_every_transport_serves_the_same_import_status_and_answers[local-ipc]",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_every_transport_serves_the_same_import_status_and_answers[http]",
         "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_unsupported_languages_are_stated_never_hidden",
         "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_python_and_typescript_batches_import_through_one_authority"
       ],
-      "note": "W13-C: the real Python producer reaches the governed import through code.import over shipped transports. The TypeScript producer imports through the W12 seam (repository-local) but has no production route. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
+      "note": "Accepted at plan gate G8 for the Python producer: the real Python producer reaches the governed import through code.import over the shipped transports. The TypeScript producer imports through the W12 seam (repository-local) and has no production route (declared, refused dependency_unavailable / runtime_not_configured because the service has no verified Node runtime). One batch per import, so MAX_CANDIDATES (10,000; about 35-40 real Python modules) bounds a repository. QP-04 (real repositories) did not run. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
     },
     {
       "id": "P20",
@@ -369,7 +513,7 @@
       "status": "NOT_RUN",
       "evidence_level": "none",
       "tests": [],
-      "note": "Internal composition seam only."
+      "note": "Internal composition seam only. The public search contract has no semantic or combined mode field; a client cannot request, or discover the absence of, a semantic lane."
     },
     {
       "id": "P21",
@@ -383,7 +527,8 @@
       "statement": "Packaging and release qualification",
       "status": "NOT_RUN",
       "evidence_level": "none",
-      "tests": []
+      "tests": [],
+      "note": "Adjacent, not a qualification: the P7 TypeScript lane's scripts/check-package-builds.sh verified the packaged analyser on TypeScript 5.9.3 from an isolated runtime wheel venv (record-stated). Nothing was signed, notarised, installed or activated, and the Standard candidate's SBOM does not list the vendored compiler."
     },
     {
       "id": "P23",
@@ -391,627 +536,596 @@
       "status": "FAIL",
       "evidence_level": "none",
       "tests": [],
-      "note": "Preflight failed at the isolated MCP source/wheel tool-document comparison after package build/install. The full repository suite was therefore not reached. The mismatch is outside this slice's changed files."
+      "note": "No clean plain ./scripts/preflight exists for this branch. Authoritative accepted-tip record (RUN-01): exit 1, 4 failed, 38,388 passed, 59 skipped; three failures were throwaway-venv environment and passed under the main venv, and AT09 test_selected_source_reaches_core_exact_and_is_left_unchanged fails identically at baseline f6f68dbb. With the accepted overlay (which deselects exactly that test) the Settings v2 lane recorded exit 0 at cf248b71 (RUN-04). The Swift companion suite is a bounded baseline-reproduced exception at the P8 tip. The P1-era stop at the isolated MCP source/wheel comparison no longer reproduces. This packet's own run (RUN-11) was stopped before completion and has no result; Codex will run and report one complete preflight after the closeout commit, against the exact immutable final tip."
+    },
+    {
+      "id": "P24",
+      "statement": "A non-executing Python producer analyses one sealed captured_v1 snapshot into deterministic, revision-bound candidates; resolution is stated, never guessed; a dropped file never moves or shadows an accepted definition; it executes nothing, writes nothing and reads only the blob root",
+      "status": "PASS",
+      "evidence_level": "l3_component",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_imports_resolve_through_aliases_relative_paths_and_cycles",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_calls_resolve_only_where_the_source_statically_supports_it",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_shadowing_and_overload_like_redefinition_are_stated_not_guessed",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_a_name_bound_by_anything_but_a_definition_never_resolves_to_an_outer_one",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_a_transient_scope_shadows_only_what_it_binds",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_the_method_receiver_resolves_until_the_body_rebinds_it",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_a_file_the_contract_cannot_key_contributes_nothing_at_all",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_a_dropped_file_cannot_move_or_shadow_a_valid_definition_of_the_same_path",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_resolved_edges_only_ever_name_a_node_in_their_own_batch",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_output_is_identical_across_runs_and_independent_of_stored_row_order",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_a_snapshot_or_profile_mismatch_fails_closed",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_snapshot_level_bounds_refuse_rather_than_analyse_a_prefix",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_the_producer_never_executes_the_source_it_analyses",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_the_producer_imports_no_execution_network_or_graph_machinery",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_the_producer_reads_nothing_outside_the_blob_root",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_python.py::test_the_producer_returns_candidates_and_writes_nothing"
+      ],
+      "note": "36 tests in the module (retained packet P7-PYTHON-PRODUCER-2026-10-18.md; reviewed twice by Codex). Real migrated workspace, really sealed capture, really published blobs. Limits recorded there: the contract's MAX_CANDIDATES (10,000) is reached at about 35-40 real modules and the producer refuses rather than analyse a prefix; locators carry lines and UTF-8 byte columns, not an original-file byte span; Python 3.12 binders (type statements, PEP 695) are not modelled and the pinned runtime is 3.11; decorators and monkey-patching are not shown as covered."
+    },
+    {
+      "id": "P25",
+      "statement": "A non-executing TypeScript/JavaScript producer built on the pinned compiler's Program and TypeChecker analyses one sealed captured_v1 snapshot; positions are exact original bytes; configuration is honoured and its gaps reported; the adapter refuses any analyser or compiler that is not the pinned build",
+      "status": "PASS",
+      "evidence_level": "l3_component",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_typescript.py::test_imports_resolve_through_aliases_paths_and_literal_modules",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_typescript.py::test_calls_are_precise_where_static_and_conservative_where_not",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_typescript.py::test_declarations_key_by_path_and_qualified_name",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_typescript.py::test_cycles_same_names_and_shadowing_resolve_by_binding_not_spelling",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_typescript.py::test_configuration_is_honoured_and_its_gaps_are_reported",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_typescript.py::test_config_and_dependency_changes_re_resolve_the_whole_program",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_typescript.py::test_spans_are_exact_bytes_of_the_captured_content",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_typescript.py::test_utf16_positions_convert_and_refuse_split_or_outside_offsets",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_typescript.py::test_source_is_never_executed_and_nothing_outside_the_snapshot_is_read",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_typescript.py::test_the_analyser_runs_confined_by_node_permissions",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_typescript.py::test_the_committed_analyser_is_the_pinned_compile_of_its_source",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_typescript.py::test_profile_runtime_and_snapshot_mismatches_refuse",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_typescript.py::test_a_malformed_or_mismatched_answer_refuses"
+      ],
+      "note": "32 collected cases from 19 functions (the last test above is 14 parametrised tamper cases). Retained packet P7-TYPESCRIPT-PRODUCER-2026-10-18.md. Limits recorded there: Node is caller-supplied and not pinned or packaged; Node's permission model does not gate the network, so network confinement rests on the analyser requiring no networking module (asserted) and running no analysed code; the Standard candidate SBOM does not list the vendored compiler; one large declaration file exhausts MAX_CANDIDATES. No production route (see P19)."
+    },
+    {
+      "id": "P26",
+      "statement": "The candidate contract was extended additively by the producers: Unicode and ECMAScript identifier characters are admitted, an optional profile_digest keeps legacy batch identity unchanged when absent, and an optional paired byte span is absent from legacy documents",
+      "status": "PASS",
+      "evidence_level": "repository_local_unit",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py::test_a_profile_less_batch_keeps_the_identity_code_analysis_v1_always_gave_it",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py::test_a_present_profile_digest_is_a_distinct_identity_on_every_candidate",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py::test_ecmascript_identifier_characters_are_admitted_without_widening_separators",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_candidates.py::test_an_exact_byte_span_is_optional_paired_and_absent_from_legacy_documents"
+      ],
+      "note": "9 tests in the module in total (5 original, P16, plus these 4)."
+    },
+    {
+      "id": "P27",
+      "statement": "One storage seam stages and atomically activates a producer's verified batch as the applicable governed code graph under an owner-authorised, versioned policy; nothing the worker says is trusted; retirement is a newer activation, never a deletion; replay is idempotent",
+      "status": "PASS",
+      "evidence_level": "l3_component",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_python_and_typescript_batches_import_through_one_authority",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_accepted_facts_carry_exact_provenance_and_source_evidence",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_unaccepted_facts_stay_diagnostics_and_never_inflate_the_graph",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_policy_decides_and_enabling_analysis_is_not_consent",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_the_authoriser_is_the_settlements_principal_never_the_policys_claim",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_an_arbitrary_worker_relationship_is_never_copied_into_the_ontology",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_replay_returns_the_same_receipt_and_a_reused_key_or_stale_fence_is_refused",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_cutover_is_atomic_isolated_and_retires_only_its_own_scope",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_a_refused_cutover_leaves_the_previous_graph_and_reduced_coverage_needs_consent",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_malformed_or_unprovable_input_fails_closed_and_writes_nothing",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_the_seam_requires_the_callers_fenced_transaction",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_the_seal_trigger_admits_only_the_bounded_code_namespace"
+      ],
+      "note": "18 tests in the module (retained packet P8-W12-GOVERNED-IMPORT-2026-10-18.md). Every accepted fact is an ordinary 0009 knowledge.entity or knowledge.relation under 0009's seal trigger; no second authority. A candidate the policy does not accept is a diagnostic, never a pending fact: there is no review queue."
+    },
+    {
+      "id": "P28",
+      "statement": "code.query answers definition, references, callers, callees and dependencies over exactly one applicable (repository, snapshot, producer, profile) analysis; ambiguity returns qualified choices; an analysis that is not ready is a typed refusal, never an empty answer; in-process, local IPC and HTTP answers are equal",
+      "status": "PASS",
+      "evidence_level": "l4_integrated_isolated_workspace",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_query.py::test_code_query_is_a_shipped_read_beside_graph_traverse",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_query.py::test_exact_and_same_name_definitions_are_deterministic_and_qualified",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_query.py::test_resolved_references_carry_the_exact_occurrence",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_query.py::test_callers_and_callees_follow_static_calls_in_their_own_direction",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_query.py::test_dependencies_honour_depth_and_type_only_semantics",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_query.py::test_dynamic_and_unresolved_calls_are_only_coverage_diagnostics",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_query.py::test_missing_or_mismatched_analysis_is_not_ready_never_empty",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_query.py::test_cutover_changes_the_answer_atomically_and_replay_adds_nothing",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_query.py::test_manual_facts_and_the_other_producer_stay_out",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_query.py::test_invalid_requests_are_refused_without_echoing_them",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_query.py::test_every_transport_returns_the_same_answer[local-ipc]",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_query.py::test_every_transport_returns_the_same_answer[http]"
+      ],
+      "note": "12 tests (retained packet P8-W13A-CODE-QUERY-2026-10-18.md). Catalogue operation 89, graph:read, read family, not MCP-exposed. Python emits no references relationship, so Python references answers carry no relations by producer design. Adapters remain pending_candidate in the operation-traceability ledger: the live-evidence runner was not run."
+    },
+    {
+      "id": "P29",
+      "statement": "code_context assembles exact captured spans, same-snapshot neighbours and a separately labelled architecture component from the one Context Pack authority; visibility is enforced before traversal and revalidated at output (a revocation is answered as not_found); a seed carries its binding and a mismatch disables expansion explicitly; imported code facts are unreachable from the memory and sharing reads",
+      "status": "PASS",
+      "evidence_level": "l4_integrated_isolated_workspace",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_a_code_context_is_spans_same_snapshot_neighbours_and_a_labelled_component",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_an_unsupported_assertion_is_not_architecture_knowledge",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_same_name_ambiguity_stays_choices_and_assembles_no_context",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_a_hidden_endpoint_or_support_moves_no_disclosed_path_degree_or_count[arch-support]",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_a_hidden_endpoint_or_support_moves_no_disclosed_path_degree_or_count[arch-claim]",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_a_hidden_endpoint_or_support_moves_no_disclosed_path_degree_or_count[arch-link]",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_a_hidden_code_analysis_is_answered_as_a_scope_never_analysed",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_a_hidden_code_endpoint_is_removed_before_the_walk_not_after_it",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_a_hidden_code_relation_between_visible_endpoints_is_never_walked_or_counted",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_revocation_between_selection_and_output_refuses_and_discloses_nothing",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_a_seed_of_this_analysis_expands_and_an_older_one_never_does",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_a_seed_naming_a_definition_this_analysis_does_not_hold_is_not_found",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_a_reference_out_of_a_test_module_is_static_and_never_runtime_coverage",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_supported_prose_never_becomes_a_code_relation",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_the_component_needs_the_context_authority_the_code_read_does_not_carry",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_imported_code_facts_never_reach_the_memory_or_sharing_reads",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_only_the_queried_imports_facts_are_ever_disclosed",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_the_context_fields_are_closed_to_their_own_intent",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_the_span_ceiling_truncates_and_says_so",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_every_transport_returns_the_same_code_context[local-ipc]",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_context.py::test_every_transport_returns_the_same_code_context[http]"
+      ],
+      "note": "22 tests (retained packet P8-W13B-CODE-CONTEXT-2026-10-18.md). The confidentiality tests run as a second real principal. The grant model is bounded by EVIDENCE-LABEL-GRANT-DEFERRED: the local owner holds every label and anyone else none. The architecture component needs the evidence.search projection and degrades to availability unavailable with a reason."
+    },
+    {
+      "id": "P30",
+      "statement": "The production vertical: code.policy.register, code.import and code.status take a sealed admitted snapshot through the declared Python producer and the W12 seam into an active analysis under the executor's idempotency, an envelope precondition and the request deadline; status discovers availability, readiness, binding, freshness (working_tree: not_observed) and coverage; one restricted file hides exactly its own facts from another principal",
+      "status": "PASS",
+      "evidence_level": "l4_integrated_isolated_workspace",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_the_three_operations_ship_where_their_authority_already_lives",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_without_a_registered_policy_nothing_imports_and_nothing_is_consented",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_a_policy_is_owner_authorised_versioned_and_idempotent",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_the_production_route_imports_and_discovery_finds_the_binding",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_every_transport_serves_the_same_import_status_and_answers[local-ipc]",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_every_transport_serves_the_same_import_status_and_answers[http]",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_a_replay_reconciles_and_a_conflicting_replay_refuses_without_analysing",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_a_repeated_run_reactivates_the_same_import_and_copies_no_fact",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_a_stale_attempt_is_fenced_and_a_cancelled_one_leaves_the_graph_intact",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_a_newer_capture_marks_the_analysis_stale_and_cutover_never_mixes_revisions",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_unsupported_languages_are_stated_never_hidden",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_one_restricted_file_hides_exactly_its_own_facts_from_another_principal",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_the_import_route_carries_no_path_principal_or_profile_body",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_a_hidden_snapshot_is_reported_exactly_as_one_that_does_not_exist",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_a_dependency_change_re_resolves_an_unchanged_caller",
+        "packages/omnivia-core-cli/tests/test_lifecycle.py::test_the_code_analysis_commands_reach_the_service_through_the_generic_cli"
+      ],
+      "note": "15 collected cases in the vertical module plus one CLI test against a real managed service (retained packet P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md). Codex's independent focused rerun at a6924504: 15 passed (RUN-03). Catalogue operations 90 (code.policy.register, engineering:curate, role knowledge_reviewer), 91 (code.import, engineering:source, role workspace_contributor, precondition required) and 92 (code.status, graph:read). Synchronous; a deadline or a stale plan writes nothing. Python only: TypeScript is declared and reported unavailable. Code-file artifacts join evidence.search by identity (path tokens), not content; W14 is not claimed."
+    },
+    {
+      "id": "P31",
+      "statement": "Migrations 0073 (semantic vector projection) and 0074 (code analysis applicability) apply on a fresh workspace, upgrade a real earlier workspace, refuse to replace a tampered seal trigger, refuse UPDATE and DELETE on their append-only tables, and are carried by backup and restore",
+      "status": "PASS",
+      "evidence_level": "l3_component",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_0074_is_the_head_and_adds_six_guarded_tables",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_0074_upgrades_a_0073_workspace_and_keeps_its_governed_graph",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_0074_refuses_to_replace_a_tampered_seal_trigger_and_rolls_back",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_0074_tables_refuse_update_delete_and_unproven_rows",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_import.py::test_backup_and_restore_carry_the_applicable_code_graph",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_semantic_projection_lifecycle.py::test_build_activate_and_project_only_the_authorized_frontier"
+      ],
+      "note": "Allocation check passed at 4d453fe6 (RUN-10). Every migration from 0066 to 0074 is state candidate with accepted_commit null; none is accepted. No downgrade path is tested; rollback of the code graph is re-activation of an earlier import, not a schema downgrade. The 0073 table set is omnivia_semantic_profiles, omnivia_semantic_run_executions, omnivia_semantic_vectors, omnivia_semantic_vector_occurrences."
+    },
+    {
+      "id": "P32",
+      "statement": "settings.list and settings.set are published in the Application Contract (catalogue operations 87 and 88), composed into a settings authority family and served as typed dependency_unavailable refusals that read and write nothing; no existing session gained anything",
+      "status": "PASS",
+      "evidence_level": "l3_component",
+      "tests": [
+        "packages/omnivia-core-cli/tests/test_lifecycle.py::test_the_settings_commands_reach_the_service_and_are_refused_as_unavailable"
+      ],
+      "note": "Module packages/omnivia-core-runtime/tests/phase3/runtime/test_settings_operations_refused.py holds 33 tests (record-stated 33 passed, including a SQL trace asserting no statement runs on the service connection). The property is that the operations are refused, not that settings are served: nothing in the Settings window or the CLI can read or write a persisted setting through them. Retained record 2026-10-18-settings-v2-integration-record.md."
+    },
+    {
+      "id": "P33",
+      "statement": "The application-update contract, channel trust verifier, journal and state machine, safe archive staging, publication tooling and client check and apply surfaces exist and pass their contract and component suites; production channel verification refuses every envelope because no signing authority is bound",
+      "status": "PASS",
+      "evidence_level": "record_stated",
+      "tests": [],
+      "note": "Modules tests/update_contract/test_update_conformance.py (70), test_update_publication.py (14), test_update_resources.py (26) and packages/omnivia-core-client/tests/test_service_update_check.py (42), test_service_update_apply.py (20) collect at the counts the record states; the record's focused batch was 339 passed (L1 and L3, fe3304e3). Not re-run by this packet. The property is deliberately narrow: PACKAGED_TRUSTED_KEYS is empty, nothing builds omnivia-core-standard-candidate.zip, no durable last-accepted sequence or version floor exists, and no signed or notarised package was built, installed or activated. Retained record 2026-10-18-update-trust-integration-record.md: L3 component and no higher."
+    },
+    {
+      "id": "P34",
+      "statement": "Dev's Project Map consumes Core's code.status and code.query through the configured Core CLI client, verifies the whole accepted binding, refuses stale, mismatched or malformed answers, requires context exactly for code_context, and refuses a Context Pack whose reported use exceeds its token budget",
+      "status": "PASS",
+      "evidence_level": "supplied_l4",
+      "tests": [],
+      "note": "Supplied by Codex, not re-run by this packet (RUN-07): Dev 50a12d285d212eb138930ea1c8b7df08862b37e1 against Core 4d453fe6, focused 527 passed, real-Core qualification 6 passed, full Dev preflight exit 0. Per the Dev README the screen is read-only, selects a repository and snapshot explicitly, renders Code analysis not ready for this revision for a missing or non-applicable analysis, and exposes Open captured source, Open current working file and Add permitted evidence to current task only as disabled handoff descriptors. Python route only."
+    },
+    {
+      "id": "P35",
+      "statement": "Platform consumes Core's memory-search, context-pack and evidence-graph capabilities through its shared adapter, IPC and preload boundary and refuses cross-workspace requests before transport",
+      "status": "PARTIAL",
+      "evidence_level": "l2_simulated",
+      "tests": [],
+      "note": "Supplied by Codex, not re-run (RUN-08). The exact temporary qualification (sha256 fd31e5bc62d3afc5069f69568ed3097b826ed7ba03dabeccac71ae6fc2fb69f2) injects a stub transport returning a canned result, so it proves Platform's real adapter shapes the request and refuses cross-workspace calls against a simulated Core, not a real Core: L2. It is not retained in any repository. No code-query Platform UI exists and none may be inferred."
+    },
+    {
+      "id": "P36",
+      "statement": "The native document-intake vertical's repository-level acceptance gates (a different acceptance family from the technical-spec rows: AT, NAT, DOC, MON and END ids from the document-ingestion v2.0 design section 20)",
+      "status": "PARTIAL",
+      "evidence_level": "record_stated",
+      "tests": [],
+      "note": "From the generated docs/quality/wp15-qualification-status.md (source qualification/wp15/qualification-ledger.v1.json, checker scripts/check-wp15-qualification.py): 130 gates, 68 passed with direct production-path coverage, 0 failed, 47 blocked_external, 15 not_executed, 0 not_implemented. By family AT 50 (25/0/19/6/0), NAT 17 (0/0/17/0/0), DOC 19 (11/0/1/7/0), MON 38 (28/0/10/0/0), END 6 (4/0/0/2/0). Required evidence classes: automated_repository_test 79, repository_checker 1, installed_signed_build 39, real_host_measurement 2, accessibility_review 6, external_fixture_corpus 3. The ledger itself says it is not a claim that the release is qualified and lists what is structurally out of reach here: signing and notarisation, security-scoped bookmarks (every test uses a stub codec), peer code-signing verification, the two extensions (untested and not type-checked in CI), accessibility, performance, Intel and older macOS (arm64 only), real providers and volumes, fixture hashes, and a real companion talking to a real Core (its statement that no test does so is contradicted by the live-Core Swift test files OriginalRelinkLiveCoreTests and OriginalDisconnectLiveCoreTests, which exist in the tree; the file is generated and was not edited)."
+    },
+    {
+      "id": "P37",
+      "statement": "Every disabled or partial capability is discoverable through a capability or status contract",
+      "status": "PARTIAL",
+      "evidence_level": "l4_integrated_isolated_workspace",
+      "tests": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_analysis_vertical.py::test_unsupported_languages_are_stated_never_hidden",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_code_query.py::test_missing_or_mismatched_analysis_is_not_ready_never_empty",
+        "packages/omnivia-core-cli/tests/test_lifecycle.py::test_the_settings_commands_reach_the_service_and_are_refused_as_unavailable"
+      ],
+      "note": "Code: code.status reports each declared producer profile's availability (TypeScript unavailable / runtime_not_configured), readiness, binding, activation sequence, admitting policy, capture-based freshness (working_tree: not_observed), coverage and the suffix groups no producer reads; code.query refuses an analysis that is not ready as projection_unavailable with details.readiness; graph_expansion is a required field. Settings: settings.list and settings.set answer dependency_unavailable. Not discoverable: semantic or hybrid retrieval (no mode field, no status operation), indexing state, models, application updates and the Settings window's own unbuilt details (those are static placeholder text in the window, not a contract)."
+    },
+    {
+      "id": "P38",
+      "statement": "The six-pane Core Settings window (General, Sources, Processing, Data & storage, Access, Maintenance) builds; route parsing, aliasing, the v1 route migration and its idempotence are unit-tested; Document processing and Capture defaults stay reachable as details of Processing and Sources",
+      "status": "PARTIAL",
+      "evidence_level": "record_stated",
+      "tests": [],
+      "note": "Record-stated (2026-10-18-settings-v2-integration-record.md sections 2.1, 4.5, 6.1): the 11 added RouteTests, Swift 1011 tests, 2 skipped, 0 failures at cf248b71; the test bodies were not re-read by this packet. No test renders a v2 pane or detail or drives Back and Escape, and no one walked the window. Unbuilt details (verified in SettingsWindowController.swift): Models, Search and embeddings, Code analysis, Local Decisions, Background processing and Processing activity each state what they wait for; Sources lists nothing and says Core does not advertise a source manager; General shows Find in Core, Check for updates and Open code in as This build has none; Capture defaults show four rows all Not reported. The Swift suite at the P8 tip is a bounded baseline-reproduced exception, not green."
     }
   ],
   "work_items": {
     "W00": {
       "status": "PARTIAL",
-      "property_refs": [
-        "P15"
-      ],
-      "note": "Owner/symbol and changed-file bindings are recorded, but a complete fresh regression baseline was not run for this slice."
+      "property_refs": ["P15", "P23", "P31"],
+      "note": "[Shared; minimum completion evidence: actual symbol/API map, dependency lock, dirty-state record and complete baseline logs] Delivered: owner and symbol bindings for the P1 slice (BASELINE-AND-BINDINGS.md) and, for the code-intelligence, Settings v2 and update work, in the retained packets and properties P24-P33; the dependency locks and producer pins are hashed in locks_and_pins; this packet started from a clean tree at 4d453fe6 in an isolated worktree. Not complete: no pre-implementation baseline log set was retained for the programme, no clean plain preflight exists (P23: AT09 fails at baseline), and BASELINE-AND-BINDINGS.md still describes only the P1 slice and was not updated by this packet. Entry: refresh that file against the programme tip and retain a complete baseline log set."
     },
     "W01": {
       "status": "PARTIAL",
-      "property_refs": [
-        "P17"
-      ],
-      "note": "Model-neutral profile, execution and vector contracts exist; no qualified local model, resource lifecycle or real encoder run exists."
+      "property_refs": ["P17"],
+      "note": "[Stream S; minimum completion evidence: offline real-model tests, exact manifest and verified recipe] Model-neutral profile, execution and vector contracts exist (spec section 22.1 names this contract portion). No embedder, no resource lifecycle (plan, acquire, qualify, register, enable, load, unload, remove), no model manifest and no real encoder run exists; QP-01's preconditions are unmet (P17 BLOCKED). The Settings window's Models detail says Core advertises none of that."
     },
     "W02": {
       "status": "PARTIAL",
-      "property_refs": [
-        "P01",
-        "P14",
-        "P18"
-      ],
-      "note": "Lexical identity remains model-independent and authority precedes ranking; content chunking and semantic span mapping are not implemented here."
+      "property_refs": ["P01", "P14", "P18"],
+      "note": "[Stream S; stable citation identities; Unicode, structure and permission tests] Lexical identity remains model-independent and authority precedes ranking; content chunking and semantic span mapping are not implemented."
     },
     "W03": {
       "status": "PARTIAL",
-      "property_refs": [
-        "P12",
-        "P13",
-        "P18"
-      ],
-      "note": "Workspace/generation/occurrence identities and provenance exist; content-bearing canonical inputs and full reuse qualification remain."
+      "property_refs": ["P12", "P13", "P18"],
+      "note": "[Shared/S; same input reused, every occurrence independently citable and removable] Workspace, generation and occurrence identities and provenance exist; content-bearing canonical inputs, computation reuse and two-workspace cache isolation are not implemented or run."
     },
     "W04": {
       "status": "PARTIAL",
-      "property_refs": [
-        "P06",
-        "P13"
-      ],
-      "note": "Staged generation and active projection foundations exist; crash, fence, cancellation and restart qualification remain."
+      "property_refs": ["P06", "P13", "P31"],
+      "note": "[Stream S; crash, stale worker, cancellation and restart tests] Staged generation and active projection foundations exist (migration 0073, build_semantic_projection, one lifecycle test). There is no semantic build job, no fence, no cancellation arbitration and no crash or restart test for one. Spec section 22.1 names only the contract portion of W04."
     },
     "W05": {
       "status": "PARTIAL",
-      "property_refs": [
-        "P02",
-        "P06",
-        "P07",
-        "P08",
-        "P09",
-        "P14",
-        "P17",
-        "P21"
-      ],
-      "note": "The model-free exact reference is implemented; the real database adapter, real-model and scale qualification are not."
+      "property_refs": ["P02", "P06", "P07", "P08", "P09", "P14", "P17", "P21"],
+      "note": "[Stream S; complete eligible-set oracle equality; no hidden-corpus influence] The model-free exact reference is implemented and matches an independent oracle at 300 members; the production backend adapter (sqlite-vec or a declared exact-reference backend), real-model, scale and the q1 campaign are not run."
     },
     "W06": {
       "status": "PARTIAL",
-      "property_refs": [
-        "P01",
-        "P02",
-        "P03",
-        "P04",
-        "P05",
-        "P07",
-        "P08",
-        "P10",
-        "P11",
-        "P13",
-        "P14"
-      ],
-      "note": "Independent internal lanes, deterministic fusion and typed degradation are implemented; timeout/disabled states and public integration remain."
+      "property_refs": ["P01", "P02", "P03", "P04", "P05", "P07", "P08", "P10", "P11", "P13", "P14"],
+      "note": "[Stream S; semantic-only discovery, lexical rescue and degraded-mode tests] Independent internal lanes, deterministic fusion and typed degradation are implemented and tested against fixtures. search_authorized_frontier has no production caller, so none of it is reachable through any operation or transport; timeout and disabled lane states and public integration remain."
     },
     "W07": {
       "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "Evidence hydration, delivery reauthorization, disclosure and bounded task-context integration were not implemented in this slice."
+      "property_refs": ["P29"],
+      "note": "[Shared; current access, source-revision and disclosure tests] NOT_RUN for the stream W07 names (evidence hydration and task-context delivery for semantic and lexical results, delivery reauthorisation, destination policy, requested/supplied/used receipts). Adjacent, not W07: code_context (W13-B) reuses the one Context Pack authority with access checked before traversal and revalidated at output (P29), and the pre-existing context_pack.build and task_context operations were not mapped to W07's rows by this packet."
     },
     "W08": {
       "status": "PARTIAL",
-      "property_refs": [
-        "P03",
-        "P05",
-        "P06",
-        "P13"
-      ],
-      "note": "Internal readiness/refusal states and generation provenance exist; lifecycle receipts, resource admission, migration and rollback remain."
+      "property_refs": ["P03", "P05", "P06", "P13"],
+      "note": "[Stream S; receipts, recovery and per-document and model-space transition tests] Internal readiness and refusal states and generation provenance exist; lifecycle receipts, resource admission, migration and rollback remain. No semantic enable, disable, rebuild or status operation exists."
     },
     "W09": {
       "status": "PARTIAL",
-      "property_refs": [
-        "P16"
-      ],
-      "note": "Revision-bound candidate-batch verification exists; repository admission and immutable snapshot acquisition are not implemented."
+      "property_refs": ["P16", "P24", "P25", "P30"],
+      "note": "[Stream C; manifest integrity; no source execution or path escape] Delivered: candidate batches bind to one complete sealed captured_v1 snapshot with exact file digests (P16); both producers read only content-addressed blobs opened O_NOFOLLOW and re-hashed and execute nothing (P24, P25); the production route admits a real git checkout registered through engineering.repository.register, captured by capture_working_tree_snapshot_owned and committed through engineering.source.capture.commit (P30). Not shown: commit-snapshot mode, SNAPSHOT_UNSTABLE retry-or-error behaviour, capture-time exclusion of secrets and git filters or hooks, and symlink-escape handling at capture."
     },
     "W10": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "Superseded for the Python half by P7-PYTHON-PRODUCER-2026-10-18.md, which records a delivered, non-executing Python analyser (storage/code_analysis_python.py) over one sealed captured snapshot. This ledger's verdict is left at NOT_RUN for Codex to reconcile: its status vocabulary scopes it to the P1 slice, and P7's exit gate also needs W11 and the governed import binding."
+      "status": "PARTIAL",
+      "property_refs": ["P16", "P19", "P24", "P26"],
+      "note": "[Stream C; executed source fixtures and explicit unsupported cases] Delivered and tested: the non-executing Python producer (P24, 36 tests, L3) and, through code.import, its production route (P30, L4); reconciled from the stale NOT_RUN. Not complete: acceptance D05 and D08 are PARTIAL and D20 is NOT_RUN; the 10,000-candidate ceiling is reached at about 35-40 real modules (P7 packet) so a repository this size is refused size_limit_exceeded; Python locators carry no byte span (lines and UTF-8 byte columns only); no real-repository run (QP-04)."
     },
     "W11": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "Superseded by P7-TYPESCRIPT-PRODUCER-2026-10-18.md, which records a delivered, non-executing TypeScript/JavaScript analyser (storage/code_analysis_typescript.py with its packaged compiler-backed analyser) over one sealed captured snapshot. This ledger's verdict is left at NOT_RUN for Codex to reconcile, as for W10: its status vocabulary scopes it to the P1 slice, and P7's exit gate also needs the governed import binding."
+      "status": "PARTIAL",
+      "property_refs": ["P19", "P25", "P26"],
+      "note": "[Stream C; executed alias, reference and module fixtures and diagnostics] Delivered and tested at L3: the compiler-backed TypeScript and JavaScript producer (P25, 32 cases) with a packaged, digest-pinned analyser and compiler; reconciled from the stale NOT_RUN. Not complete: it has no production route (declared, reported unavailable / runtime_not_configured because the service has no verified Node runtime and nothing locates one); Node is not pinned or packaged and the network is not OS-denied; the Standard candidate SBOM omits the vendored compiler; no real-repository run."
     },
     "W12": {
       "status": "PARTIAL",
-      "property_refs": [
-        "P16",
-        "P19"
-      ],
-      "note": "Governed import, policy acceptance and atomic repository applicability are one storage seam (storage/code_analysis_import.py, migration 0074); see P8-W12-GOVERNED-IMPORT-2026-10-18.md. W13-B made storage/memory.py's frontier fold and service/knowledge_sharing.py's current-version lookup exclude the engineering.code domain. W13-C closed the three gaps this note named, at l4_integrated_isolated_workspace: code.policy.register and code.import are catalogue operations that run register_import_policy and import_code_analysis as execute_mutation's domain callback, so owner policy authorisation has a public intent whose authoriser is the settlement's principal and a sealed snapshot reaches an active analysis through the real Python producer; and every fact cites its own captured file as well as the manifest, so code visibility is per file. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md. Still PARTIAL: the TypeScript producer has no production route (declared; refused dependency_unavailable/runtime_not_configured because the service has no verified Node runtime); a candidate a policy does not accept is a diagnostic, never a pending fact awaiting review (D10); D13 is proven for one Python dependency change only; D14 rename continuity rests on the storage-seam test; one batch per import, so MAX_CANDIDATES bounds a repository. QP-04 (real repositories, recorded producer build identities) did not run."
+      "property_refs": ["P16", "P19", "P27", "P30", "P31"],
+      "note": "Governed import, policy acceptance and atomic repository applicability are one storage seam (storage/code_analysis_import.py, migration 0074); see P8-W12-GOVERNED-IMPORT-2026-10-18.md. W13-B made storage/memory.py's frontier fold and service/knowledge_sharing.py's current-version lookup exclude the engineering.code domain. W13-C closed the three gaps this note named, at l4_integrated_isolated_workspace: code.policy.register and code.import are catalogue operations that run register_import_policy and import_code_analysis as execute_mutation's domain callback, so owner policy authorisation has a public intent whose authoriser is the settlement's principal and a sealed snapshot reaches an active analysis through the real Python producer; and every fact cites its own captured file as well as the manifest, so code visibility is per file. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md. Still PARTIAL: the TypeScript producer has no production route; a candidate a policy does not accept is a diagnostic, never a pending fact awaiting review (D10); D13 is proven for one Python dependency change only; D14 rename continuity rests on the storage-seam test; one batch per import, so MAX_CANDIDATES bounds a repository. QP-04 (real repositories, recorded producer build identities) did not run. Migration 0074 is candidate, not accepted."
     },
     "W13": {
       "status": "PARTIAL",
-      "property_refs": [],
-      "note": "W13-A and W13-B delivered code.query (catalogue entry 89, graph:read, knowledge_retrieval, local-owner read family) with six closed intents bound to one repository, snapshot, producer and profile and checked against the 0074 active import at the query instant, and code_context with a separately labelled architecture component from the one context authority; see P8-W13A-CODE-QUERY-2026-10-18.md and P8-W13B-CODE-CONTEXT-2026-10-18.md. W13-C delivered the production vertical at l4_integrated_isolated_workspace: code.policy.register and code.import (engineering family, entries 90-91) take a sealed admitted snapshot through the declared Python producer and W12 into an active analysis under the executor's idempotency, an envelope precondition (the scope's activation sequence) and the request deadline; code.status (entry 92, read family) discovers each declared producer profile's availability, readiness, binding, activation sequence, admitting policy, capture-based freshness (working_tree: not_observed) and coverage over files the caller may see. Each fact cites its own captured file, so a label on one file hides exactly that file's facts, diagnostics and coverage from another principal, and a hidden manifest is reported and answered as a scope nobody analysed. Gate G8 is met for the Python producer; see P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md. Verification: focused production vertical 15 passed; full preflight suite 4 failed, 38,388 passed, 59 skipped, 7 warnings in 3239.13s, where three throwaway-venv service-script failures passed when rerun with the repository main venv and worktree PYTHONPATH and AT09 fails identically at baseline f6f68dbb; benchmarks 23 passed; Ruff passed; strict mypy 429 source files, no issues; the Swift companion suite fails with baseline-reproduced host/service-start failures (bounded exception, not green; the full baseline Swift suite later timed out in OcrResourceAdministrationTests). Still PARTIAL: TypeScript has no production route; support finer than the occurrence and endpoint files is not recorded and no production writer labels code-file artifacts (D16); no production writer emits seeds (D17, W14); no similarity source reaches the read (D18)."
+      "property_refs": ["P28", "P29", "P30", "P37"],
+      "note": "W13-A and W13-B delivered code.query (catalogue entry 89, graph:read, knowledge_retrieval, local-owner read family) with six closed intents (definition, references, callers, callees, dependencies, code_context) bound to one repository, snapshot, producer and profile and checked against the 0074 active import at the query instant, and code_context with a separately labelled architecture component from the one context authority; see P8-W13A-CODE-QUERY-2026-10-18.md and P8-W13B-CODE-CONTEXT-2026-10-18.md. W13-C delivered the production vertical at l4_integrated_isolated_workspace: code.policy.register and code.import (engineering family, entries 90-91) take a sealed admitted snapshot through the declared Python producer and W12 into an active analysis under the executor's idempotency, an envelope precondition (the scope's activation sequence) and the request deadline; code.status (entry 92, read family) discovers each declared producer profile's availability, readiness, binding, activation sequence, admitting policy, capture-based freshness (working_tree: not_observed) and coverage over files the caller may see. Each fact cites its own captured file, so a label on one file hides exactly that file's facts, diagnostics and coverage from another principal, and a hidden manifest is reported and answered as a scope nobody analysed. Plan gate G8 is met for the Python producer (accepted by Codex). Verification at the accepted tip: focused production vertical 15 passed; full preflight suite 4 failed, 38,388 passed, 59 skipped in 3239.13s, where three throwaway-venv service-script failures passed under the main venv and AT09 fails identically at baseline f6f68dbb; benchmarks 23 passed; Ruff passed; strict mypy 429 source files; the Swift companion suite is a bounded baseline-reproduced exception. Still PARTIAL: TypeScript has no production route; support finer than the occurrence and endpoint files is not recorded and no production writer labels code-file artifacts (D16); no production writer emits seeds (D17, W14); no similarity source reaches the read (D18); the operations are not MCP-exposed and their adapters are pending_candidate in the operation-traceability ledger."
     },
     "W14": {
       "status": "NOT_RUN",
       "property_refs": [],
-      "note": "No code-oriented retrieval/source-navigation implementation was run."
+      "note": "[C + S where enabled; identifier fidelity, real locators, lexical-only support] No code-oriented retrieval or source-navigation implementation was run. Code-file artifacts join evidence.search by identity (path tokens) only; parser-span chunking, exact identifier lookup through the structural path as a retrieval feature and code embeddings are not claimed."
     },
     "W15": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "No client integration was implemented or run."
+      "status": "PARTIAL",
+      "property_refs": ["P34", "P35", "P37", "P38"],
+      "note": "[Client slices; no duplicate service authority or standalone Core app] Delivered and accepted by Codex, not re-run here: Dev's Project Map reads Core's code.status and code.query through the configured Core CLI client (P34, supplied L4, Python route; reconciled from the stale NOT_RUN). Platform's shared-adapter consumption is L2 against a stub transport (P35). Not delivered: the native Settings window shows unbuilt details and no Find in Core shortcut, Open code in, Updates or Models UI exists (P38); the status-menu and transient evidence panel integration; Dev's Open captured source and Add evidence controls are disabled descriptors. Platform does not exist in this repository."
     },
     "W16": {
       "status": "NOT_RUN",
-      "property_refs": [
-        "P17",
-        "P20",
-        "P21",
-        "P22",
-        "P23"
-      ],
-      "note": "Real-model, resource, transport, packaging and release qualification were not run."
+      "property_refs": ["P17", "P20", "P21", "P22", "P23"],
+      "note": "[Per shipped stream; verbatim logs, measured results and explicit release decision] No real-model quality, resource, scale, accessibility, packaging, signing or release qualification ran. What exists: L4 transport traces for the code operations (P28-P30), the local preflight records in runs (not green: P23), and no raw log retained in this repository. Per-area release decisions are the closeout's job and are not recorded in this file."
+    },
+    "W17": {
+      "status": "NOT_RUN",
+      "property_refs": ["P38"],
+      "note": "[Shared settings/intake; minimum completion evidence: C-01 review, queue, admission and restart tests; no retroactive default propagation or authority grandfathering] NOT_RUN: C-01 is not implemented. Bounded audit: (1) Settings > Sources > Capture defaults renders four rows (Destination, New files, Folders, Cloud files) each with status Not reported, and the window's own comment says the defaults are chosen per item at capture time, not set on that page, and that Core does not report them to the window: there is no global defaults object, no defaults revision and no draft initialised from one, so 'defaults change from r1 to r2' cannot occur. (2) CaptureDraft holds items and a note only, no configuration. (3) Repository searches for review_configuration, defaults_revision, configuration_snapshot and reviewed-configuration constructs found none in the capture flow (the only hits are the packaging scripts' unrelated 'reviewed configuration'). (4) Adjacent precursor, not C-01: CaptureIntentV3 (schema omnivia.macos.capture-intent.v3) is a persisted, digest-bound, immutable queue intent carrying targetRef, workspaceRef, targetBindingRevision, surface, originalBinding, bulkOrigin and a frozen ProcessingProfileBinding (profileRef, revision; its comment: queued and retained captures keep the immutable binding already frozen into them). Swift queue tests named CaptureIntentQueueTests.testQueuePersistsExactIntentAndPayloadAndReplaysExactEnqueue, testExactReplayReusesThePublishedBatchWhileConflictingReplayRefuses and testRestartTurnsInterruptedStageIntoUnknownInsteadOfBlindRetry and CaptureDeliveryCoordinatorTests.testReplayIsRefusedWhenTheBindingDiffers exist; their bodies were not re-read, so they are adjacent evidence and move no row. The intent carries no defaults revision, explicit overrides, review or configuration id, capture-mode or OCR options, or confirmation identity, and document-processing choices (recognition mode, embedded-image OCR) are Core workspace settings read through document.settings.get, not frozen with the item. (5) Safe settings migration: the v1-to-v2 route migration is record-stated unit-tested (P38); there is no legacy queue-item reconciliation and no bulk-policy migration review. Entry: define the review-configuration snapshot on the existing CaptureIntent and replay contracts, bind it to admission, then run U01-U06."
+    },
+    "W18": {
+      "status": "NOT_RUN",
+      "property_refs": ["P37"],
+      "note": "[Shared intake/indexing/settings; minimum completion evidence: existing companion and Runtime dispatch obey the same scoped policy; real pause, catch-up, hours/power and cross-surface tests] NOT_RUN: nothing is implemented. Bounded audit: repository searches (Python, Swift, contracts and scripts, excluding docs) for index-on-battery, indexing-hours, index-only-at, pause-indexing, manual-pause, first-pass and initial-pass constructs found only two strings in SettingsWindowController.swift and unrelated variables named firstPass or first_pass in tests. The strings are the Background processing destination's copy ('Control indexing hours, first-pass power use and paused work. This needs the bulk policy - which job classes it covers, the battery and host limits, and a schedule whose next start the service computes.') and the matching overview row; the Processing activity detail says 'Per-stage processing activity. Core does not report activity to this window, so there is nothing to show.' No indexing status read model, no pause barrier on native source reads or Runtime dispatch, no battery or hours policy, no dirty-hint journal, no status-menu indexing row, no Pause or Resume command and no Settings Activity route exists. Adjacent machinery exists in the companion (folder reconciliation scheduling, the bulk-run coordinator, an automatic scheduling state machine, the watch identity pause); it was not audited against W18 and no search hit shows it implementing the W18 policy. The Settings v2 record section 6.1 item 2 records the same absence. Entry: bind the status read model, pause command and policy to the existing scheduler and job owner and to the native source-read gate (spec section 12), then run I01-I42."
     }
   },
   "acceptance": {
-    "A01": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P15"
-      ],
-      "note": "Owner/symbol and changed-file binding report exists, but the complete W00 regression baseline was not rerun."
-    },
-    "A02": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P15"
-      ],
-      "note": "The implementation used a clean dedicated worktree and records the scoped changed-file inventory; a standalone before/after status artifact for the unrelated canonical checkout was not retained."
-    },
-    "A03": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P01",
-        "P07"
-      ],
-      "note": "Keyword and empty-input model independence are covered; fresh-workspace capture/extraction is outside this slice."
-    },
-    "A04": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "A05": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "A06": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "A07": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "A08": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "A09": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "A10": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "A11": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "A12": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P08",
-        "P09",
-        "P12"
-      ],
-      "note": "Strict vector width/value/norm and identity checks exist; no real provider batch/order integration was run."
-    },
-    "A13": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "A14": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P13"
-      ],
-      "note": "Retrieval policy identity is separate from generation identity; enqueue/migration behaviour was not exercised."
-    },
-    "A15": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P05",
-        "P13"
-      ],
-      "note": "Execution provenance and compatibility refusal exist; real cross-execution qualification was not run."
-    },
-    "A16": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P12"
-      ],
-      "note": "Occurrence provenance is distinct from vector input identity; call-counting content reuse was not run."
-    },
-    "A17": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P12"
-      ],
-      "note": "Workspace is part of occurrence and generation scope; two-workspace content-cache isolation was not run."
-    },
-    "B01": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P01",
-        "P12"
-      ],
-      "note": "Keyword retrieval is model-independent; full evidence-unit/span stability across tokenizer replacement was not run."
-    },
-    "B02": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "B03": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "B04": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P02",
-        "P09"
-      ],
-      "note": "Semantic ranking uses the full authorized frontier and synthetic vectors can surface nonlexical items; real-model evidence is absent."
-    },
-    "B05": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P01",
-        "P04",
-        "P05"
-      ],
-      "note": "Lexical results survive absent query embeddings and lanes are independent; the exact-identifier scenario was not run."
-    },
-    "B06": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P02",
-        "P14"
-      ],
-      "note": "Semantic exclusion is directly tested and lexical ranking is structurally limited to the authorized projection; the full add/remove rare-term and long-text statistics matrix was not run."
-    },
-    "B07": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P02",
-        "P14"
-      ],
-      "note": "Only authorized frontier members are scored; mixed-support-span publication behaviour was not run."
-    },
-    "B08": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P07",
-        "P09"
-      ],
-      "note": "The exact Python reference matches an independent oracle; no real database adapter was qualified."
-    },
-    "B09": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P09"
-      ],
-      "note": "Full-frontier scoring above the lane budget is covered at 300 items; backend batching/limit exhaustion was not run."
-    },
-    "B10": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "B11": {
-      "status": "PASS",
-      "property_refs": [
-        "P10"
-      ],
-      "note": "Exact expected-value tests cover one-based RRF k=60, absent-lane zero, duplicate refusal and stable tie-breaking."
-    },
-    "B12": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P03",
-        "P04",
-        "P05",
-        "P06",
-        "P07",
-        "P08"
-      ],
-      "note": "Unavailable, partial and no-match plus semantic non-substitution are covered; disabled and timed-out lanes are not."
-    },
-    "B13": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P10",
-        "P11"
-      ],
-      "note": "Zero scores and rank-score semantics are covered; reranking is disabled and not applicable to this slice."
-    },
-    "B14": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "B15": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "B16": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "B17": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "B18": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "B19": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "B20": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "C01": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "C02": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "C03": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "C04": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "C05": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "C06": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "C07": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P05",
-        "P06"
-      ],
-      "note": "Stale/incomplete semantic generations degrade without suppressing lexical results; per-source lexical-head publication was not run."
-    },
-    "C08": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "C09": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P05",
-        "P13"
-      ],
-      "note": "Generation/profile/execution mismatch is refused; concurrent model migration and atomic encoder/index switching were not run."
-    },
-    "C10": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "C11": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "C12": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "C13": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "C14": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "C15": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "D01": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P16"
-      ],
-      "note": "Candidate batches bind to one sealed snapshot and exact file digests; actual repository snapshot acquisition was not run."
-    },
-    "D02": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "D03": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P16"
-      ],
-      "note": "PARTIAL at l4_integrated_isolated_workspace. Through the production route with the real Python producer: an unparseable admitted file leaves coverage partial, never complete; code.status lists every suffix group no declared producer reads; a snapshot with no admitted Python source is refused conflict/no_admitted_source with zero writes, so zero extracted nodes never become an empty complete graph; an unresolved dependency stays a diagnostic and clears coverage.complete (test_unsupported_languages_are_stated_never_hidden, test_the_production_route_imports_and_discovery_finds_the_binding, test_a_dependency_change_re_resolves_an_unchanged_caller). Not complete: TypeScript is declared but has no production route, so its unsupported cases rest on the P7 producer-level evidence. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
-    },
-    "D04": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "D05": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "D06": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "D07": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "D08": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "D09": {
-      "status": "PASS",
-      "property_refs": [
-        "P16"
-      ],
-      "note": "PASS at l4_integrated_isolated_workspace over repository-local real governed import evidence. W12 refuses a bad span, wrong digest, dangling endpoint, incomplete capture, forged manifest evidence and unlocked profile with zero writes, never copies an arbitrary worker relationship into the ontology, and takes the authoriser from the settlement, never from the policy (test_malformed_or_unprovable_input_fails_closed_and_writes_nothing, test_an_arbitrary_worker_relationship_is_never_copied_into_the_ontology, test_the_authoriser_is_the_settlements_principal_never_the_policys_claim). W13-C: the producer runs with no write path and its output is accepted only under a separately registered owner policy; the import payload cannot carry a path, principal, workspace or profile body; a policy cannot lock a profile the service does not declare; another repository's snapshot is not_found (test_the_import_route_carries_no_path_principal_or_profile_body, test_a_policy_is_owner_authorised_versioned_and_idempotent, test_unsupported_languages_are_stated_never_hidden). See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
-    },
-    "D10": {
-      "status": "PARTIAL",
-      "property_refs": [],
-      "note": "PARTIAL at l4_integrated_isolated_workspace. With no registered policy code.import is refused not_found and writes nothing; enabling analysis creates no rule; the bulk rule is a separate owner-authorised, versioned code.policy.register; a candidate the policy does not accept is a diagnostic and never counted (test_without_a_registered_policy_nothing_imports_and_nothing_is_consented, test_a_policy_is_owner_authorised_versioned_and_idempotent; W12 test_policy_decides_and_enabling_analysis_is_not_consent, test_unaccepted_facts_stay_diagnostics_and_never_inflate_the_graph). Not complete: there is no pending or review state; an unaccepted candidate is a diagnostic, not a pending fact a reviewer can accept. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
-    },
-    "D11": {
-      "status": "PASS",
-      "property_refs": [
-        "P16"
-      ],
-      "note": "PASS at l4_integrated_isolated_workspace through code.import. A replay returns the stored receipt without running the producer and writes nothing; a different request under the key is idempotency_conflict, refused without analysing and with zero writes; a repeated run of the same snapshot under a fresh key re-activates the same content-addressed import (one activation row) and writes no second import, member, record, assembly, evidence link or artifact (test_a_replay_reconciles_and_a_conflicting_replay_refuses_without_analysing, test_a_repeated_run_reactivates_the_same_import_and_copies_no_fact; W12 test_replay_returns_the_same_receipt_and_a_reused_key_or_stale_fence_is_refused). See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
-    },
-    "D12": {
-      "status": "PASS",
-      "property_refs": [],
-      "note": "PASS at l4_integrated_isolated_workspace over repository-local real persistence evidence. W13-C: importing a newer capture retires the old binding atomically, the old binding answers projection_unavailable/snapshot_not_active and no answer holds members of both imports; a stale plan is mutation_precondition_failed and a deadline-cancelled import writes nothing, leaving the previous analysis answering (test_a_newer_capture_marks_the_analysis_stale_and_cutover_never_mixes_revisions, test_a_stale_attempt_is_fenced_and_a_cancelled_one_leaves_the_graph_intact). History, other-producer and manual-fact isolation and rollback re-activation: W12 test_cutover_is_atomic_isolated_and_retires_only_its_own_scope, re-run in this slice. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
-    },
-    "D13": {
-      "status": "PARTIAL",
-      "property_refs": [],
-      "note": "PARTIAL at l4_integrated_isolated_workspace. Removing a definition from pkg/models.py changes resolution in the byte-identical caller pkg/service.py: the run -> make edge is gone and the producer reports the call unresolved-in-snapshot rather than W12 refusing a reused edge (test_a_dependency_change_re_resolves_an_unchanged_caller). There is no incremental reuse: every import re-resolves the whole declared project. Not complete: export and configuration changes were not exercised, and TypeScript (path mappings, re-exports) has no production route. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
-    },
-    "D14": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "D15": {
-      "status": "PASS",
-      "property_refs": [],
-      "note": "PASS at l4_integrated_isolated_workspace with the W13-A real graph query: same-name definitions return deterministic qualified choices (test_exact_and_same_name_definitions_are_deterministic_and_qualified); after a production import, definition, references, callers, callees, dependencies and code_context answer from the one bound snapshot over in-process, local IPC and HTTP, each fact citing the manifest and its own captured file (test_the_production_route_imports_and_discovery_finds_the_binding, test_every_transport_serves_the_same_import_status_and_answers). See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
-    },
-    "D16": {
-      "status": "PARTIAL",
-      "property_refs": [],
-      "note": "PARTIAL at repository_local_integration_real_sqlite_fixture_embedder. A hidden supported claim, a hidden supporting record and a hidden support relation each leave every disclosed path, depth, count, truncation flag and coverage field of the code answer byte-identical and drop the claim from the Context Pack's manifest as well as its content; a hidden code definition is not_found, byte-identical to a subject that does not exist; a hidden code endpoint is removed before the walk, so degree drops by exactly the edges that touched it; and a revocation committed between the two ACL reads refuses the whole answer rather than recomputing or counting. W13-C, at l4_integrated_isolated_workspace from production data: each fact cites its own captured file, so one label on one file hides exactly that file's definitions, the relations asserted in it, the diagnostics it names and its coverage count from another principal; a limit sized to the visible members truncates nothing; a hidden definition is refused byte-identically to one that does not exist; a hidden manifest, snapshot or newer capture is reported and answered as absent (test_one_restricted_file_hides_exactly_its_own_facts_from_another_principal, test_a_hidden_snapshot_is_reported_exactly_as_one_that_does_not_exist). Not complete: support finer than the occurrence and endpoint files (an intermediate file a resolution depends on) is not recorded by the producers; no production writer labels code-file artifacts (the tests attach the label through 0008's label stream); EVIDENCE-LABEL-GRANT-DEFERRED still bounds the grant model. See P8-W13B-CODE-CONTEXT-2026-10-18.md and P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."
-    },
-    "D17": {
-      "status": "PARTIAL",
-      "property_refs": [],
-      "note": "PARTIAL at repository_local_integration_real_sqlite_fixture_embedder. A seed carries the repository, snapshot, producer and profile it was selected against; a seed of the applicable analysis expands, and the same seed against the next activated analysis answers resolution=seed_not_applicable with graph_expansion=unavailable, expansion_reason=seed_binding_mismatch and nothing disclosed. graph_expansion is required on every answer, so unavailability is never inferred from an empty list. Not complete: no production writer emits seeds yet, so the seed is a caller-supplied selection rather than one this repository produces. See P8-W13B-CODE-CONTEXT-2026-10-18.md."
-    },
-    "D18": {
-      "status": "PARTIAL",
-      "property_refs": [],
-      "note": "PARTIAL at repository_local_integration_real_sqlite_fixture_embedder. A real call out of a real test module is an ordinary static code.calls fact and the answer states analysis=static and claims no run; supported prose stays in the architecture component and never becomes code.calls/code.imports/code.references, and no code fact enters the component; an assertion with no accepted, visible reconciliation.supports is not disclosed as architecture knowledge at all. Not complete: no similarity source reaches this read, so 'similarity is not calls/depends_on' is held by construction rather than exercised against a real similarity producer. See P8-W13B-CODE-CONTEXT-2026-10-18.md."
-    },
-    "D19": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "D20": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "E01": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "E02": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "E03": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "E04": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "E05": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "E06": {
-      "status": "NOT_RUN",
-      "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
-    },
-    "E07": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P15",
-        "P23"
-      ],
-      "note": "Commands, environment and limitations are recorded, but full logs, host facts and release evidence are incomplete."
-    },
-    "E08": {
-      "status": "PARTIAL",
-      "property_refs": [
-        "P15",
-        "P17",
-        "P18",
-        "P19",
-        "P20",
-        "P21",
-        "P22",
-        "P23"
-      ],
-      "note": "This closeout names partial and not-run work, but the overall W00-W16 program remains incomplete."
-    }
+    "A01": {"status": "PARTIAL", "property_refs": ["P15", "P31"], "note": "[W00 / spec G0; repository binding report] Bindings are recorded in BASELINE-AND-BINDINGS.md (P1 slice) and in the retained packets for the code, Settings and update work (catalogue operations 87-92, modules, tables per property). Not re-verified symbol by symbol here; items with no implementation (embedder, model lifecycle, indexing status, pause) have no symbol to bind. L0 only."},
+    "A02": {"status": "PARTIAL", "property_refs": ["P15"], "note": "[W00 / G0; diff/hash record] Clean start in an isolated worktree; the lane's changed-file set is derivable (git diff --name-status 32c2015d 4d453fe6: 193 files, +42438 -841). No standalone before/after status artifact for the unrelated canonical checkout was retained; accepted-ADR compatibility was not audited."},
+    "A03": {"status": "PARTIAL", "property_refs": ["P01", "P07"], "note": "[W01/W05 / G1; integration] Keyword and empty-input model independence covered (P01, P07); fresh-workspace capture, extract and keyword search was not run as one scenario. No model exists in the build."},
+    "A04": {"status": "NOT_RUN", "property_refs": [], "note": "[W01 / G1; contract + integration] No install or activation path exists; nothing to reject."},
+    "A05": {"status": "NOT_RUN", "property_refs": [], "note": "[W01 / G1; real acquisition sandbox] No acquisition path."},
+    "A06": {"status": "NOT_RUN", "property_refs": [], "note": "[W01 / G1; integration + real-model smoke] No model initialisation."},
+    "A07": {"status": "NOT_RUN", "property_refs": [], "note": "[W01 / G1; integration] No model-loading profile registry."},
+    "A08": {"status": "NOT_RUN", "property_refs": [], "note": "[W01 / G1; integration] No embedding-model resource lifecycle. OCR resources have a separate lifecycle and prove nothing here."},
+    "A09": {"status": "NOT_RUN", "property_refs": [], "note": "[W01 / G1; real model + network-denial evidence] No model."},
+    "A10": {"status": "NOT_RUN", "property_refs": [], "note": "[W01/W03 / G1; token/input contract + real model] No query or document role templating; the semantic lane embeds identity text only."},
+    "A11": {"status": "NOT_RUN", "property_refs": [], "note": "[W01/W02 / G1; real tokenizer] No tokenizer."},
+    "A12": {"status": "PARTIAL", "property_refs": ["P08", "P09", "P12"], "note": "[W01 / G1; contract + integration] Strict vector width, value, norm and identity checks exist at contract level; no provider batch or order-restoration integration ran."},
+    "A13": {"status": "NOT_RUN", "property_refs": [], "note": "[W01 / G1; real model parity report] No model."},
+    "A14": {"status": "PARTIAL", "property_refs": ["P13"], "note": "[W03/W08 / G2; integration] Retrieval policy identity is separate from generation identity; enqueue and migration behaviour not exercised."},
+    "A15": {"status": "PARTIAL", "property_refs": ["P05", "P13"], "note": "[W03/W08 / G1; integration + qualification] Execution provenance and compatibility refusal exist; cross-execution qualification not run."},
+    "A16": {"status": "PARTIAL", "property_refs": ["P12"], "note": "[W03 / G2; call-counting encoder] Occurrence provenance is distinct from vector input identity; no content-reuse test."},
+    "A17": {"status": "PARTIAL", "property_refs": ["P12"], "note": "[W03 / G2; two principals/workspaces] Workspace is part of occurrence and generation scope; two-workspace cache isolation not run (W12 import ids being content-derived is identity determinism, not cache isolation)."},
+    "B01": {"status": "PARTIAL", "property_refs": ["P01", "P12"], "note": "[W02 / G2; integration] Keyword retrieval is model-independent; evidence-unit and span stability across tokenizer replacement not run."},
+    "B02": {"status": "NOT_RUN", "property_refs": [], "note": "[W02 / G2; real extraction outputs + contract] Semantic chunk locator mapping is not implemented."},
+    "B03": {"status": "NOT_RUN", "property_refs": ["P24", "P25"], "note": "[W02/W14 / G2; contract fixtures] Semantic chunk splitting is not implemented. Adjacent only: TypeScript exact byte spans over CRLF, multibyte, combining-mark, emoji and BOM fixtures (P25) and Python UTF-8 byte columns (P24) prove code locators, not evidence-unit splitting."},
+    "B04": {"status": "PARTIAL", "property_refs": ["P02", "P09"], "note": "[W05/W06 / G2; integration + real-model] Semantic ranking uses the full authorized frontier and synthetic vectors surface nonlexical items; no real-model evidence."},
+    "B05": {"status": "PARTIAL", "property_refs": ["P01", "P04", "P05"], "note": "[W06 / G2; integration] Lexical results survive an absent query embedding and lanes are independent; the exact-identifier scenario was not run."},
+    "B06": {"status": "PARTIAL", "property_refs": ["P02", "P14"], "note": "[W05/W06 / G2; real lexical/vector integration] Semantic exclusion directly tested; the add/remove rare-term and long-text statistics matrix was not run."},
+    "B07": {"status": "PARTIAL", "property_refs": ["P02", "P14"], "note": "[W05/W07 / G2; integration] Only authorized frontier members are scored; mixed-support-span chunk denial not run."},
+    "B08": {"status": "PARTIAL", "property_refs": ["P07", "P09"], "note": "[W05 / G2; real database backend] The exact Python reference matches an independent oracle at 300 members; no production backend adapter exists to compare."},
+    "B09": {"status": "PARTIAL", "property_refs": ["P09"], "note": "[W05 / G2; real database + exhaustion injection] Full-frontier scoring above the lane budget at 300 items; backend batching and limit exhaustion not run."},
+    "B10": {"status": "NOT_RUN", "property_refs": [], "note": "[W05/W06 / G2; integration] Per-evidence-unit budgets over overlapping chunks: chunks are not implemented."},
+    "B11": {"status": "PASS", "property_refs": ["P10"], "note": "[W06 / G2; exact expected-value contract] Exact tests cover one-based RRF k=60, absent-lane zero, duplicate and gapped-rank refusal and stable UTF-8 evidence-id tie-break (P10). Contract level, the row's required evidence."},
+    "B12": {"status": "PARTIAL", "property_refs": ["P03", "P04", "P05", "P06", "P07", "P08"], "note": "[W06 / G2; integration] Unavailable, partial and no-match lanes and semantic non-substitution covered; disabled and timed-out lanes are not."},
+    "B13": {"status": "PARTIAL", "property_refs": ["P10", "P11"], "note": "[W06 / G2; contract; reranker part NOT_APPLICABLE until enabled] Zero scores preserved; no public result field exists to show scores are not presented as confidence. Reranking disabled."},
+    "B14": {"status": "NOT_RUN", "property_refs": [], "note": "[W06/W07 / G2; concurrency integration] Not run."},
+    "B15": {"status": "NOT_RUN", "property_refs": [], "note": "[W07 / G2; integration + client] Not mapped. Adjacent: code_context reads spans from the analysed capture, never the working tree (P29)."},
+    "B16": {"status": "NOT_RUN", "property_refs": [], "note": "[W07 / G2; integration] Not mapped. Adjacent: the Context Pack authority's own budgets and Dev's refusal of an over-budget pack (P34)."},
+    "B17": {"status": "NOT_RUN", "property_refs": [], "note": "[W07 / G2; integration + dispatch boundary] Not run."},
+    "B18": {"status": "NOT_RUN", "property_refs": [], "note": "[W07 / G2; security fixtures] Not run. Adjacent: producers treat source as data and execute nothing (P24, P25)."},
+    "B19": {"status": "NOT_RUN", "property_refs": [], "note": "[W06/W07 / G2; integration] Not run."},
+    "B20": {"status": "PARTIAL", "property_refs": ["P34", "P35"], "note": "[W07/W15 / G7; actual client/transport] Supplied by Codex, not re-run: Dev requests a code_context against a real Core and receives cited spans (P34, L4, Python route). Not met: opening source is a disabled Dev descriptor, no supplied/used receipt exercised, Platform consumption simulated (P35, L2)."},
+    "C01": {"status": "NOT_RUN", "property_refs": [], "note": "[W04 / G3; persist/restart integration] No semantic build job exists."},
+    "C02": {"status": "NOT_RUN", "property_refs": [], "note": "[W04 / G3; real-store process-kill tests] No semantic build job."},
+    "C03": {"status": "NOT_RUN", "property_refs": [], "note": "[W04 / G3; concurrency integration] No semantic build job."},
+    "C04": {"status": "NOT_RUN", "property_refs": [], "note": "[W04 / G3; concurrency integration] No semantic build job. code.import's stale-plan fence and deadline (P30) are not semantic build arbitration."},
+    "C05": {"status": "NOT_RUN", "property_refs": [], "note": "[W04/W08 / G3; integration] No semantic build job."},
+    "C06": {"status": "NOT_RUN", "property_refs": [], "note": "[W04 / G3; real-store integration] No per-document segment replacement."},
+    "C07": {"status": "PARTIAL", "property_refs": ["P05", "P06"], "note": "[W04/W06 / G3; integration] Stale and incomplete generations degrade without suppressing lexical results; per-source lexical-head publication ordering not run."},
+    "C08": {"status": "NOT_RUN", "property_refs": [], "note": "[W07/W08 / G3; integration + native] Not mapped. Adjacent: disconnect and relink gates in the WP-15 ledger (P36)."},
+    "C09": {"status": "PARTIAL", "property_refs": ["P05", "P13"], "note": "[W08 / G3; concurrent real-store integration] Generation, profile and execution mismatch is refused; concurrent model migration and atomic switch not run."},
+    "C10": {"status": "NOT_RUN", "property_refs": [], "note": "[W08 / G3; integration] No backfill or migration."},
+    "C11": {"status": "NOT_RUN", "property_refs": [], "note": "[W08 / G3; integration] Adjacent: re-activating an earlier code import is a guarded activation (P27)."},
+    "C12": {"status": "NOT_RUN", "property_refs": [], "note": "[W03/W08 / G3; real-store integration] No computation cache or GC."},
+    "C13": {"status": "NOT_RUN", "property_refs": [], "note": "[W08 / G3; fault-injected integration] Not run."},
+    "C14": {"status": "NOT_RUN", "property_refs": [], "note": "[W08/W16 / G4; actual qualified host] No resource-admission or fairness qualification."},
+    "C15": {"status": "PARTIAL", "property_refs": ["P31"], "note": "[W08/W16 / G8; packaged migration test] Code graph only, L3: 0074 applies fresh, upgrades a real 0073 workspace keeping its governed graph, refuses a tampered seal trigger with rollback, and backup/restore carry the graph (P31). Not met: no packaged migration, no downgrade."},
+    "D01": {"status": "PARTIAL", "property_refs": ["P16", "P30"], "note": "[W09 / G5; real snapshot producer] Batches bind to one complete sealed snapshot and exact digests (P16); the production route captures a real git checkout (P30). Not shown: commit-snapshot mode and SNAPSHOT_UNSTABLE retry-or-error."},
+    "D02": {"status": "PARTIAL", "property_refs": ["P24", "P25"], "note": "[W09 / G5; sandboxed producer integration] L3: producers execute nothing, write nothing, read only O_NOFOLLOW re-hashed blobs (P24); TS host is in-memory, plugins ignored, Node permissions deny write/child process, sentinel module never runs (P25). Not met: symlink escape and secret exclusion at capture, git filters and hooks, OS-level network denial (Node permissions do not gate the network)."},
+    "D03": {"status": "PARTIAL", "property_refs": ["P30"], "note": "[W09/W10/W11 / G5; real producers] PARTIAL at l4_integrated_isolated_workspace. Through the production route with the real Python producer: an unparseable admitted file leaves coverage partial, never complete; code.status lists every suffix group no declared producer reads; a snapshot with no admitted Python source is refused conflict/no_admitted_source with zero writes; an unresolved dependency stays a diagnostic and clears coverage.complete. Not complete: TypeScript has no production route, so its unsupported cases rest on P7 producer-level evidence."},
+    "D04": {"status": "PASS", "property_refs": ["P24"], "note": "[W10 / G5; actual AST + resolver fixtures] L3, the required level (P24): aliases, relative imports, cycles, nested and overload-like redefinitions, ambiguous definitions and a dropped file that cannot shadow an accepted definition resolve only to supported unique targets or are stated unresolved/ambiguous. Packet P7-PYTHON-PRODUCER-2026-10-18.md."},
+    "D05": {"status": "PARTIAL", "property_refs": ["P24"], "note": "[W10 / G5; actual AST + resolver fixtures] Shadowing, reassignment, global/nonlocal and twelve binder forms never resolve to an outer definition; dynamic callees stay unresolved (P24). Not shown by a named test: decorators that replace callables, monkey-patching, conditional rebinding."},
+    "D06": {"status": "PASS", "property_refs": ["P25"], "note": "[W11 / G5; actual compiler-backed fixtures] L3 (P25): aliases, re-exports, overload and merge groups, baseUrl/paths, type-only versus runtime imports keep deterministic identities and evidence on the real Program and TypeChecker. Packet P7-TYPESCRIPT-PRODUCER-2026-10-18.md."},
+    "D07": {"status": "PASS", "property_refs": ["P25"], "note": "[W11 / G5; actual compiler-backed fixtures] L3 (P25): union receivers are ambiguous, indirect calls unresolved, any/computed callees are not edges, packages not in the snapshot are external."},
+    "D08": {"status": "PARTIAL", "property_refs": ["P24", "P25"], "note": "[W10/W11 / G5; real producers + byte assertions] TypeScript: UTF-16 positions convert to half-open byte ranges of the captured bytes and refuse surrogate-split/outside offsets over CRLF, multibyte, combining-mark, emoji, U+2028 and BOM fixtures (P25). Python: locators carry lines and UTF-8 byte columns, not an original-file byte span (code_context reads Python spans as whole lines). Spec section 15.4 asks for byte spans; not met for Python."},
+    "D09": {"status": "PASS", "property_refs": ["P16", "P27", "P30"], "note": "PASS at l4_integrated_isolated_workspace over repository-local real governed import evidence. W12 refuses a bad span, wrong digest, dangling endpoint, incomplete capture, forged manifest evidence and unlocked profile with zero writes, never copies an arbitrary worker relationship into the ontology, and takes the authoriser from the settlement, never from the policy (test_malformed_or_unprovable_input_fails_closed_and_writes_nothing, test_an_arbitrary_worker_relationship_is_never_copied_into_the_ontology, test_the_authoriser_is_the_settlements_principal_never_the_policys_claim). W13-C: the producer has no write path; its output is accepted only under a separately registered owner policy; the import payload cannot carry a path, principal, workspace or profile body; another repository's snapshot is not_found. See P8-W13C-PRODUCTION-VERTICAL-2026-10-18.md."},
+    "D10": {"status": "PARTIAL", "property_refs": ["P27", "P30"], "note": "PARTIAL at l4_integrated_isolated_workspace. With no registered policy code.import is refused not_found and writes nothing; enabling analysis creates no rule; the bulk rule is a separate owner-authorised, versioned code.policy.register; a candidate the policy does not accept is a diagnostic and never counted. Not complete: there is no pending or review state; an unaccepted candidate is a diagnostic, not a pending fact a reviewer can accept."},
+    "D11": {"status": "PASS", "property_refs": ["P27", "P30"], "note": "PASS at l4_integrated_isolated_workspace through code.import. A replay returns the stored receipt without running the producer and writes nothing; a different request under the key is idempotency_conflict with zero writes; a repeated run under a fresh key re-activates the same content-addressed import (one activation row) and writes no second import, member, record, assembly, evidence link or artifact (test_a_replay_reconciles_and_a_conflicting_replay_refuses_without_analysing, test_a_repeated_run_reactivates_the_same_import_and_copies_no_fact)."},
+    "D12": {"status": "PASS", "property_refs": ["P27", "P30"], "note": "PASS at l4_integrated_isolated_workspace. Importing a newer capture retires the old binding atomically; the old binding answers projection_unavailable/snapshot_not_active and no answer holds members of both imports; a stale plan is mutation_precondition_failed and a deadline-cancelled import writes nothing (test_a_newer_capture_marks_the_analysis_stale_and_cutover_never_mixes_revisions, test_a_stale_attempt_is_fenced_and_a_cancelled_one_leaves_the_graph_intact). History, other-producer and manual-fact isolation: W12 test_cutover_is_atomic_isolated_and_retires_only_its_own_scope."},
+    "D13": {"status": "PARTIAL", "property_refs": ["P30"], "note": "PARTIAL at l4_integrated_isolated_workspace. Removing a definition from pkg/models.py changes resolution in the byte-identical caller pkg/service.py: the edge is gone and the call is reported unresolved-in-snapshot (test_a_dependency_change_re_resolves_an_unchanged_caller). No incremental reuse exists: every import re-resolves the whole declared project. Not complete: export and configuration changes not exercised; TypeScript has no production route."},
+    "D14": {"status": "PARTIAL", "property_refs": ["P27"], "note": "[W12 / G6; integration] Deletion half executed at L3: a deleted file is retired with its incident current edges, another producer's and manual facts stay byte-identical, history reads as of an instant, rollback re-activation writes one activation (test_cutover_is_atomic_isolated_and_retires_only_its_own_scope). W13-C left the row NOT_RUN because it added no evidence; this moves it on the W12 test. Not met: rename and uncertain continuity are not exercised."},
+    "D15": {"status": "PASS", "property_refs": ["P28", "P30"], "note": "PASS at l4_integrated_isolated_workspace: same-name definitions return deterministic qualified choices (test_exact_and_same_name_definitions_are_deterministic_and_qualified); after a production import, definition, references, callers, callees, dependencies and code_context answer from the one bound snapshot over in-process, local IPC and HTTP, each fact citing the manifest and its own captured file (test_every_transport_serves_the_same_import_status_and_answers)."},
+    "D16": {"status": "PARTIAL", "property_refs": ["P29", "P30"], "note": "PARTIAL. A hidden claim, supporting record or support relation leaves every disclosed path, depth, count, truncation flag and coverage field byte-identical; a hidden definition is not_found, identical to a nonexistent one; a hidden endpoint is removed before the walk; a revocation between the two ACL reads refuses the whole answer (P29). W13-C, L4 from production data: each fact cites its own captured file, so one label hides exactly that file's facts, diagnostics and coverage from another principal (test_one_restricted_file_hides_exactly_its_own_facts_from_another_principal). Not complete: support finer than the occurrence and endpoint files is not recorded; no production writer labels code-file artifacts; EVIDENCE-LABEL-GRANT-DEFERRED bounds the grant model (owner sees all, others see unlabelled)."},
+    "D17": {"status": "PARTIAL", "property_refs": ["P29"], "note": "PARTIAL. A seed carries the repository, snapshot, producer and profile it was selected against; the same seed against the next analysis answers seed_not_applicable with graph_expansion unavailable and nothing disclosed. Not complete: no production writer emits seeds; the seed is caller-supplied."},
+    "D18": {"status": "PARTIAL", "property_refs": ["P29"], "note": "PARTIAL. A real call out of a test module is a static code.calls fact and claims no run; supported prose never becomes a code relation; an assertion with no accepted visible support is not architecture knowledge. Not complete: no similarity source reaches this read, so 'similarity is not calls' holds by construction rather than against a real producer."},
+    "D19": {"status": "PARTIAL", "property_refs": ["P34"], "note": "[W15 / G7; actual client journey] Supplied by Codex, not re-run (RUN-07): Dev's Project Map shows readiness, binding, coverage, unsupported languages and suffixes, snapshot freshness, definitions, bounded callers/dependencies and code_context spans from real Core output over the Core CLI client, renders 'Code analysis not ready for this revision' for a missing analysis, and adds no second graph service. Not met: Open captured source, Open current working file and Add evidence are disabled descriptors; Python route only."},
+    "D20": {"status": "NOT_RUN", "property_refs": [], "note": "[W10-W13 / G5/G6; qualification report] No per-language, per-relationship precision and coverage report against ground truth exists. Resolution counts and a calibration over 15 and 30 real storage modules are not precision."},
+    "E01": {"status": "BLOCKED", "property_refs": ["P17"], "note": "[W16 / G4; real models and scored labelled corpus] Blocked on external inputs: no approved embedder or model artifacts (QP-01 preconditions) and no approved held-out corpus with frozen ground truth."},
+    "E02": {"status": "NOT_RUN", "property_refs": ["P21"], "note": "[W16 / G4; real backend/host] No 5k/50k/250k fixed-vector run and no model-host measurement; the q1 campaign was not executed."},
+    "E03": {"status": "PARTIAL", "property_refs": ["P28", "P29", "P30"], "note": "[W16 / G7; real transport suites] The new code operations pass local-IPC and HTTP transport tests at L4 (P28-P30). The four previously failing graph/evidence cases the spec cites were not identified or mapped here; the P8 full suite's remaining failures are environment and AT09."},
+    "E04": {"status": "PARTIAL", "property_refs": ["P30", "P32", "P37"], "note": "[W15/W16 / G7; actual adapters] CLI commands reach a real managed service for settings and code analysis (P30, P32); the new operations are deliberately unexposed through MCP (omitted partitions), so no mutating MCP expansion. The retained real-host MCP records date from 2026-10-04 against an older manifest and say nothing about settings.* or code.*; native and no-start semantics not re-run."},
+    "E05": {"status": "BLOCKED", "property_refs": ["P36", "P38"], "note": "[W15 / G7; native/client] Keyboard, focus, screen-reader and state-copy checks need a human or real-host accessibility review; the WP-15 ledger lists accessibility_review gates as not producible in the repository and records no VoiceOver, keyboard-reachability or text-scaling test. No standalone Core app was introduced."},
+    "E06": {"status": "NOT_RUN", "property_refs": ["P22"], "note": "[W16 / G8; release manifest verification] No release manifest verification or distribution review ran. Locks and pins are hashed here; the vendored TypeScript compiler is absent from the Standard candidate SBOM; no model is packaged."},
+    "E07": {"status": "PARTIAL", "property_refs": ["P15", "P23"], "note": "[W16 / all; archive audit] Commands, hosts, tips, hashes and outcomes are recorded in runs and commands; no raw log, JUnit or exit-status archive is retained in the repository, and Codex- and record-supplied runs are labelled as such."},
+    "E08": {"status": "PARTIAL", "property_refs": ["P15", "P17", "P18", "P19", "P20", "P21", "P22", "P23"], "note": "[W00/W16 / all; closeout review] This reconciliation names every W item and remaining limit; the independent closeout review has not happened and the integrated closeout document was not rewritten by this edit, so it does not yet satisfy the row."},
+    "U01": {"status": "NOT_RUN", "property_refs": ["P38"], "note": "[W17 / G9; contract + shared intake integration] No defaults revision or draft configuration exists; Capture defaults rows all read Not reported."},
+    "U02": {"status": "NOT_RUN", "property_refs": [], "note": "[W17 / G3,G9; real queue persistence] Adjacent only: CaptureIntentV3 is a persisted immutable digest-bound intent with a frozen ProcessingProfileBinding; no defaults change step exists and OCR choices are not frozen with the item (see W17)."},
+    "U03": {"status": "NOT_RUN", "property_refs": [], "note": "[W17 / G9; admission/job/source owner] Adjacent only: queue tests named for replay refusal when descriptor, binding or payload differ; bodies not re-read."},
+    "U04": {"status": "NOT_RUN", "property_refs": [], "note": "[W17 / G2,G9; policy/resource integration] Not mapped. Adjacent: WP-15 gates for revoked or changed targets (P36)."},
+    "U05": {"status": "NOT_RUN", "property_refs": [], "note": "[W17 / G9; migration + unknown-outcome] No legacy-item reconciliation. Adjacent: unknown-outcome handling named in queue tests."},
+    "U06": {"status": "NOT_RUN", "property_refs": [], "note": "[W17 / G9; capture-to-admission integration] Not implemented as C-01."},
+    "U07": {"status": "NOT_RUN", "property_refs": ["P38"], "note": "[W15 / G9; prototype + preference migration] The General row Find in Core reads 'A global shortcut needs an owner that registers it with macOS and reports conflicts. This build has none.'; no Unassigned value or Record control."},
+    "U08": {"status": "NOT_RUN", "property_refs": [], "note": "[W15 / G9; native/Electron bridge] No shortcut owner."},
+    "U09": {"status": "NOT_RUN", "property_refs": [], "note": "[W15 / G9; fault-injected owner] No shortcut owner."},
+    "U10": {"status": "NOT_RUN", "property_refs": [], "note": "[W15 / G9; keyboard + client] No recorder."},
+    "U11": {"status": "NOT_RUN", "property_refs": [], "note": "[W15 / G9; multi-client owner] No shortcut owner."},
+    "U12": {"status": "NOT_RUN", "property_refs": [], "note": "[W15 / G7,G9; native-to-panel journey] No shortcut."},
+    "U13": {"status": "NOT_RUN", "property_refs": ["P38"], "note": "[W08/W15 / G9; defaults owner + client] Most spec defaults have no owner or control in this build; no render-time-write test."},
+    "U14": {"status": "NOT_RUN", "property_refs": [], "note": "[W08/W15 / G9; reviewed operations] No backfill and no update UI."},
+    "U15": {"status": "NOT_RUN", "property_refs": [], "note": "[W08/W15/W18 / G9,G10; native reader + scheduler] W18 is not implemented."},
+    "U16": {"status": "NOT_RUN", "property_refs": ["P38"], "note": "[W15/W17 / G9; migration/client + handoff review] Adjacent: route aliasing and v1 migration are record-stated unit-tested (P38); the shared source manager is not linked from Sources and no handoff review exists."},
+    "I01": {"status": "NOT_RUN", "property_refs": ["P37"], "note": "[W18 / G10; integration + two clients] No indexing snapshot or action owner."},
+    "I02": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; native reader + scheduler] No pause barrier."},
+    "I03": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; Core-session lifecycle] No manual pause."},
+    "I04": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; integration] No resume."},
+    "I05": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; concurrency] No pause command."},
+    "I06": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; native I/O trace] No battery policy."},
+    "I07": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; native watcher] No first-pass classification."},
+    "I08": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; persistent queue] No durable classification."},
+    "I09": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; native content-I/O trace] No hours policy."},
+    "I10": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; real retrieval integration] No holds exist to test against."},
+    "I11": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; watcher/restart] No dirty-hint journal."},
+    "I12": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; multi-source] Not mapped; adjacent WP-15 retention and tombstone gates (P36)."},
+    "I13": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; time-bound worker] No window."},
+    "I14": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; calendar contract + host] No schedule."},
+    "I15": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; native host] No schedule."},
+    "I16": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; integration] No Run now."},
+    "I17": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; native intake + C-01] No holds."},
+    "I18": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; multi-host] Not implemented."},
+    "I19": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; migration] No legacy bulk-policy migration."},
+    "I20": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; read-model + authorisation] No status read model."},
+    "I21": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; binding + audit] Nothing to audit."},
+    "I22": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; settings integration] No policy values."},
+    "I23": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; two-client] No scoped updates."},
+    "I24": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; evidence audit] No native I/O or scheduler logs."},
+    "I25": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; read-model contract] No snapshot."},
+    "I26": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; arithmetic contract + native UI] No progress arithmetic in code or tests."},
+    "I27": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; job events + client] No phases."},
+    "I28": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; producer fixtures] No units."},
+    "I29": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; native/UI matrix] No bar."},
+    "I30": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; retained extraction + projection] No coverage projection."},
+    "I31": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; vector/evidence integration] No semantic readiness."},
+    "I32": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; multi-principal] No coverage inventory."},
+    "I33": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; real code job + menu] No code-indexing progress; code.import is synchronous."},
+    "I34": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; scheduler] No concurrent classes."},
+    "I35": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; two-level refresh] Not implemented."},
+    "I36": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; macOS menu journey] No indexing menu row."},
+    "I37": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; Electron/native] The Settings Activity detail is placeholder text."},
+    "I38": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; menu route suite] No menu row."},
+    "I39": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; command logs] No Pause or Resume item."},
+    "I40": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; macOS accessibility inspection] No row to inspect."},
+    "I41": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; IPC/navigation] No deep link."},
+    "I42": {"status": "NOT_RUN", "property_refs": [], "note": "[W18 / G10; Runtime lifecycle] No manual pause to clear."},
+    "CS-R01": {"status": "NOT_RUN", "property_refs": ["P38"], "note": "[window-structure] UI scenario (prototype-run in the source matrix). Not run against the Swift window: build and route unit tests only (P38); no pane was rendered or walked."},
+    "CS-R02": {"status": "NOT_RUN", "property_refs": ["P38"], "note": "[window-structure] Adjacent only: v1-to-v2 route aliasing is record-stated unit-tested (P38); scenario not run."},
+    "CS-R03": {"status": "NOT_RUN", "property_refs": ["P38"], "note": "[window-structure] Adjacent only: Document processing stays a Processing detail mapped to the unchanged renderer (P38); scenario not run."},
+    "CS-R04": {"status": "NOT_RUN", "property_refs": [], "note": "[window-structure] Not run; Local Decisions detail is unbuilt in this window."},
+    "CS-R05": {"status": "NOT_RUN", "property_refs": ["P38"], "note": "[window-structure] Adjacent only: migration idempotence is record-stated unit-tested (P38); unknown-route and preserved-keys scenario not run."},
+    "CS-R06": {"status": "NOT_RUN", "property_refs": [], "note": "[window-structure] No viewport, theme or clipping test."},
+    "CS-R07": {"status": "NOT_RUN", "property_refs": [], "note": "[window-structure] No keyboard or text-zoom test."},
+    "CS-R08": {"status": "NOT_RUN", "property_refs": [], "note": "[shortcut] No recorder exists."},
+    "CS-R09": {"status": "NOT_RUN", "property_refs": [], "note": "[shortcut] No registration owner."},
+    "CS-R10": {"status": "NOT_RUN", "property_refs": [], "note": "[startup-editor] No login item in this build."},
+    "CS-R11": {"status": "NOT_RUN", "property_refs": [], "note": "[startup-editor] Open code in is unbuilt."},
+    "CS-R12": {"status": "NOT_RUN", "property_refs": [], "note": "[sources-intake] Sources lists nothing and says Core does not advertise a source manager; Add buttons disabled."},
+    "CS-R13": {"status": "NOT_RUN", "property_refs": [], "note": "[sources-intake] Files and folders manager is reachable only from the status-menu item, not linked from Sources."},
+    "CS-R14": {"status": "NOT_RUN", "property_refs": [], "note": "[sources-intake] Not run."},
+    "CS-R15": {"status": "NOT_RUN", "property_refs": [], "note": "[sources-intake] C-01 not implemented (W17)."},
+    "CS-R16": {"status": "NOT_RUN", "property_refs": [], "note": "[sources-intake] Not run in the Settings window."},
+    "CS-R17": {"status": "NOT_RUN", "property_refs": [], "note": "[sources-intake] Not run in the Settings window."},
+    "CS-R18": {"status": "NOT_RUN", "property_refs": [], "note": "[sources-intake] Not run."},
+    "CS-R19": {"status": "NOT_RUN", "property_refs": [], "note": "[models-semantic] Models and Search and embeddings details are unbuilt."},
+    "CS-R20": {"status": "NOT_RUN", "property_refs": [], "note": "[models-semantic] No model install or enablement."},
+    "CS-R21": {"status": "NOT_RUN", "property_refs": [], "note": "[models-semantic] No model verification."},
+    "CS-R22": {"status": "NOT_RUN", "property_refs": [], "note": "[models-semantic] No backfill."},
+    "CS-R23": {"status": "NOT_RUN", "property_refs": [], "note": "[models-semantic] No stage counters."},
+    "CS-R24": {"status": "NOT_RUN", "property_refs": [], "note": "[models-semantic] No per-document segments."},
+    "CS-R25": {"status": "NOT_RUN", "property_refs": [], "note": "[models-semantic] No rebuild."},
+    "CS-R26": {"status": "NOT_RUN", "property_refs": [], "note": "[models-semantic] No removal or disable."},
+    "CS-R27": {"status": "NOT_RUN", "property_refs": [], "note": "[models-semantic] No model states."},
+    "CS-R28": {"status": "NOT_RUN", "property_refs": ["P30"], "note": "[repository-analysis] Not run in the window (Code analysis detail unbuilt). Adjacent: Core refuses code.import with no registered policy (P30)."},
+    "CS-R29": {"status": "NOT_RUN", "property_refs": ["P30"], "note": "[repository-analysis] Not run in the window. Adjacent: analysis retains its analysed snapshot and states freshness (P30)."},
+    "CS-R30": {"status": "NOT_RUN", "property_refs": [], "note": "[repository-analysis] Not run."},
+    "CS-R31": {"status": "NOT_RUN", "property_refs": [], "note": "[local-decisions-ocr] Local Decisions detail is unbuilt in this window."},
+    "CS-R32": {"status": "NOT_RUN", "property_refs": [], "note": "[local-decisions-ocr] Unbuilt."},
+    "CS-R33": {"status": "NOT_RUN", "property_refs": [], "note": "[local-decisions-ocr] Unbuilt."},
+    "CS-R34": {"status": "NOT_RUN", "property_refs": [], "note": "[local-decisions-ocr] Unbuilt."},
+    "CS-R35": {"status": "NOT_RUN", "property_refs": [], "note": "[local-decisions-ocr] Not mapped to Document processing tests."},
+    "CS-R36": {"status": "NOT_RUN", "property_refs": [], "note": "[local-decisions-ocr] Not mapped."},
+    "CS-R37": {"status": "NOT_RUN", "property_refs": [], "note": "[local-decisions-ocr] Not mapped."},
+    "CS-R38": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R39": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R40": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R41": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R42": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R43": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R44": {"status": "NOT_RUN", "property_refs": [], "note": "[storage-access] Data and storage states the backup feature is not installed."},
+    "CS-R45": {"status": "NOT_RUN", "property_refs": [], "note": "[storage-access] Not run."},
+    "CS-R46": {"status": "NOT_RUN", "property_refs": [], "note": "[storage-access] Not run."},
+    "CS-R47": {"status": "NOT_RUN", "property_refs": [], "note": "[storage-access] Not run."},
+    "CS-R48": {"status": "NOT_RUN", "property_refs": [], "note": "[storage-access] Not run."},
+    "CS-R49": {"status": "NOT_RUN", "property_refs": ["P33"], "note": "[updates-maintenance-service] No Updates UI ('This build has none'); the CLI/client check surface is contract/component level only (P33)."},
+    "CS-R50": {"status": "NOT_RUN", "property_refs": [], "note": "[updates-maintenance-service] Not run."},
+    "CS-R51": {"status": "NOT_RUN", "property_refs": [], "note": "[updates-maintenance-service] Not run."},
+    "CS-R52": {"status": "NOT_RUN", "property_refs": [], "note": "[updates-maintenance-service] Not run."},
+    "CS-R53": {"status": "NOT_RUN", "property_refs": [], "note": "[updates-maintenance-service] Not run."},
+    "CS-R54": {"status": "NOT_RUN", "property_refs": [], "note": "[handoff-labelling] Prototype handoff scenario; no Core handoff review has occurred."},
+    "CS-R55": {"status": "NOT_RUN", "property_refs": [], "note": "[shortcut] Find in Core is a not-built row."},
+    "CS-R56": {"status": "NOT_RUN", "property_refs": [], "note": "[shortcut] No owner."},
+    "CS-R57": {"status": "NOT_RUN", "property_refs": [], "note": "[shortcut] No owner."},
+    "CS-R58": {"status": "NOT_RUN", "property_refs": [], "note": "[shortcut] No recorder."},
+    "CS-R59": {"status": "NOT_RUN", "property_refs": [], "note": "[shortcut] No owner."},
+    "CS-R60": {"status": "NOT_RUN", "property_refs": [], "note": "[shortcut] No owner."},
+    "CS-R61": {"status": "NOT_RUN", "property_refs": [], "note": "[shortcut] No owner."},
+    "CS-R62": {"status": "NOT_RUN", "property_refs": [], "note": "[shortcut] No shortcut."},
+    "CS-R63": {"status": "NOT_RUN", "property_refs": [], "note": "[capture-defaults-c01] C-01 not implemented (W17)."},
+    "CS-R64": {"status": "NOT_RUN", "property_refs": [], "note": "[capture-defaults-c01] C-01 not implemented (W17); adjacent immutable queue intent only."},
+    "CS-R65": {"status": "NOT_RUN", "property_refs": [], "note": "[capture-defaults-c01] C-01 not implemented (W17)."},
+    "CS-R66": {"status": "NOT_RUN", "property_refs": [], "note": "[capture-defaults-c01] C-01 not implemented (W17)."},
+    "CS-R67": {"status": "NOT_RUN", "property_refs": [], "note": "[capture-defaults-c01] C-01 not implemented (W17)."},
+    "CS-R68": {"status": "NOT_RUN", "property_refs": [], "note": "[defaults-fresh] Most defaults have no owner or control."},
+    "CS-R69": {"status": "NOT_RUN", "property_refs": [], "note": "[defaults-fresh] No backfill checkbox, schedule or update preference."},
+    "CS-R70": {"status": "NOT_RUN", "property_refs": [], "note": "[handoff-labelling] Prototype handoff scenario; not run."},
+    "CS-R71": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R72": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R73": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R74": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R75": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R76": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R77": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R78": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R79": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R80": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R81": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R82": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R83": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R84": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R85": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R86": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R87": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R88": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R89": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R90": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R91": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R92": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R93": {"status": "NOT_RUN", "property_refs": [], "note": "[indexing-controls] W18 not implemented."},
+    "CS-R94": {"status": "NOT_RUN", "property_refs": [], "note": "[handoff-labelling] Prototype handoff scenario; not run."},
+    "CS-R95": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No indexing card."},
+    "CS-R96": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No menu status row."},
+    "CS-R97": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No Activity route."},
+    "CS-R98": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No Activity route."},
+    "CS-R99": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No menu row."},
+    "CS-R100": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No menu row."},
+    "CS-R101": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No menu row."},
+    "CS-R102": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No progress arithmetic."},
+    "CS-R103": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No phases."},
+    "CS-R104": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No model progress."},
+    "CS-R105": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No long-file progress."},
+    "CS-R106": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No coverage line."},
+    "CS-R107": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No semantic readiness."},
+    "CS-R108": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No phases."},
+    "CS-R109": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No bar."},
+    "CS-R110": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No code-indexing progress."},
+    "CS-R111": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No mixed-work headline."},
+    "CS-R112": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No card or rows."},
+    "CS-R113": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No menu route."},
+    "CS-R114": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No menu route."},
+    "CS-R115": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No menu route."},
+    "CS-R116": {"status": "NOT_RUN", "property_refs": [], "note": "[menu-progress-activity] No manual pause."},
+    "UPD-01..UPD-10": {"status": "NOT_RUN", "property_refs": ["P33"], "note": "[W08/W15 / spec section 25.4] The specification names the range UPD-01 to UPD-10 and lists ten semicolon-separated clauses in one sentence, without per-ID numbering; no other archive document numbers them, so this ledger does not map clauses to ids. Clauses, in the source's order: fresh enabled default versus saved off; scheduled quiet current result; manual Check Now while automatic is off; known available version retained when auto is disabled; no false Up to date on failed or never checked; update notice synchronised between General and the menu; no duplicate concurrent checks; separate update-transfer percentage from indexing progress; rejected bad signature, version or architecture and failed install preserving prior usable state; unavailable in-place installer routes safely to a release download with no success claim. Group NOT_RUN: General shows 'Check for updates ... This build has none', there is no auto-check preference, scheduler, menu row or progress UI. Adjacent (P33, record-stated, L1/L3, not re-run): signature, channel, replay and downgrade refusal against test-only keys and staging/journal transitions; production verification refuses every envelope (PACKAGED_TRUSTED_KEYS is empty); no signed or notarised package was built, installed or activated. The clause on rejection and failed install would be the first candidate for PARTIAL once an installer exists."},
+    "SPEC-26.5-MODEL-PAGE-CHECKS": {"status": "NOT_RUN", "property_refs": ["P38"], "note": "[W01/W15 / spec section 26.5] Unnumbered checks: role filtering, all model stops, zero/one/many profiles, keyboard accessibility, catalogue reorder retaining selection id, size unavailable, installed versus selected, model operation failures, safe semantic migration, in-use Remove refusal, Local Decisions regression coverage, unchanged indexing locations. NOT_RUN: Models is an unbuilt detail ('Core advertises none of that'); no catalogue, install or remove operation exists."}
   }
 }
