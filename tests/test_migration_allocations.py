@@ -271,7 +271,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0069 is the Core Settings app-settings candidate. It was allocated 43 and
     # reallocated when main took that number with 0043_runtime_trigger_telemetry;
     # the SQL is byte-identical, so it stays pinned to its introducing commit.
-    69: "94c802d0c4226915eaf6650a8dd19ad6138bcbb0",
+    69: "703d0fdf96cea15d909ae56ededac1d79bfc7294",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
