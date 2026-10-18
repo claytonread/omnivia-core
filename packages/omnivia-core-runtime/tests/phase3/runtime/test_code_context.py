@@ -963,6 +963,66 @@ def test_a_hidden_code_endpoint_is_removed_before_the_walk_not_after_it(
     assert hidden_key not in json.dumps(after)
 
 
+def test_a_hidden_code_relation_between_visible_endpoints_is_never_walked_or_counted(
+    workspace: Any, blobs_root: Path, architecture: w13a.Imported, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D16 for the relation's own governed version, which the visibility of its two ends
+    does not decide.
+
+    `pkg -> pkg.models.Record` is the only relation `pkg` has, and the only one a depth-2
+    `code_context` of `make` follows past its first step. Its own `(record id, version)` is
+    given a label the caller does not hold, the way the test above labels a definition;
+    neither end is labelled. Both ends stay visible, and the relation is as absent as one
+    the import never accepted: it is no step, so `pkg`, reachable only through it, is no
+    neighbour and leaves no span; it takes no slot, so a limit of exactly the visible
+    relations truncates nothing; it is no frontier, so a walk with nothing past its last
+    step is not `depth_bounded`; and it is no degree, so `pkg` has none.
+
+    Falsifier: admit every relation whenever every definition is admitted. The bounded
+    answer then still succeeds -- the limit cuts the relation off, so the output
+    revalidation never sees it -- and says `truncated` and `depth_bounded` for a relation
+    the caller may not know exists; unbounded, or with either end as the subject, it is
+    `not_found`.
+    """
+    hidden = ("pkg", "code.imports", "pkg.models.Record")
+    body = payload(architecture.python, semantic_key="pkg.models.make", depth=2)
+    before = query(workspace, body, blobs_root=blobs_root, principal=READER)
+    identity = next(
+        (relation["record"]["record_id"], relation["record"]["version"])
+        for relation in before["relations"]
+        if (relation["source_key"], relation["relation_type"], relation["target_key"]) == hidden
+    )
+    expected = shape(before)
+    expected["relations"] = [edge for edge in expected["relations"] if edge[1:4] != hidden]
+    expected["symbols"] = [s for s in expected["symbols"] if s[0] != "pkg"]
+    expected["spans"] = [key for key in expected["spans"] if key != "pkg"]
+    # Without it the second step reaches nothing, so nothing is left past the last one.
+    expected["coverage"]["depth_bounded"] = False
+
+    real = code_handler.read_governed_record_labels
+
+    def with_one_restricted(connection: Any, **selectors: Any) -> Any:
+        return {**real(connection, **selectors), identity: (RESTRICTED,)}
+
+    monkeypatch.setattr(code_handler, "read_governed_record_labels", with_one_restricted)
+    # Room for exactly the visible relations first, then the limit `before` was answered
+    # under. `pkg.models.Record`, the other end, is still a neighbour in both.
+    for limit in (len(expected["relations"]), before["coverage"]["applied_limit"]):
+        expected["coverage"]["applied_limit"] = limit
+        after = query(workspace, body | {"limit": limit}, blobs_root=blobs_root, principal=READER)
+        assert shape(after) == expected
+        assert identity[0] not in json.dumps(after)
+
+    # `pkg` still resolves, and the hidden relation was its whole degree.
+    alone = query(
+        workspace, payload(architecture.python, semantic_key="pkg"),
+        blobs_root=blobs_root, principal=READER,
+    )
+    assert w13a.keys(alone["definitions"]) == ["pkg"]
+    assert alone["symbols"] == alone["relations"] == []
+    assert alone["coverage"]["depth_bounded"] is False
+
+
 def test_only_the_queried_imports_facts_are_ever_disclosed(
     workspace: Any, blobs_root: Path, runtime: TypeScriptRuntime, architecture: w13a.Imported
 ) -> None:

@@ -402,7 +402,8 @@ def _visible(
     endpoint cannot be a neighbour, cannot be a step on a path, cannot raise a degree,
     cannot consume a limit and cannot move `depth_bounded`. It is not *past* the depth; it
     is not in the answer's universe at all, which is the same thing `storage/graph.py`
-    says about an endpoint its own filters removed.
+    says about an endpoint its own filters removed. A relation's own version is checked
+    even when every definition is admitted: it can cite evidence neither of its ends does.
 
     Diagnostics are carried through unchanged. A diagnostic is the import's record of a
     candidate it refused and names only keys of this same import; it is anchored below to
@@ -414,8 +415,6 @@ def _visible(
         return grant.permits(labels.get((fact.record_id, fact.version_id), ()))
 
     symbols = {key: fact for key, fact in graph.symbols.items() if admits(fact)}
-    if len(symbols) == len(graph.symbols):
-        return graph
     return CodeGraph(
         scope=graph.scope,
         watermark_us=graph.watermark_us,

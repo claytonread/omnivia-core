@@ -1,6 +1,7 @@
 # TECH-CORE-RETRIEVAL-CODE-001: W13-B code-context assembly
 
-Recorded 2026-10-18.
+Recorded 2026-10-18. Revised the same day after Codex review; the repair and the evidence
+it corrected are in *Review repair* below.
 
 ## Scope
 
@@ -37,7 +38,7 @@ no new authorisation family, no second context authority and no second database.
 | `storage/memory.py`, `service/knowledge_sharing.py` | `engineering.code` excluded from the two independent folds W12's audit named. |
 | Test fixtures | `m3.link_row` and `gt.seal` take an `evidence_id` (and `normalized`), so two governed records can differ in visibility. |
 | Wire corpus, pins | `code.query/primary-success` gains `graph_expansion`; new `code.query/code-context` case (232 -> 233, digest re-pinned, traceability `case_count` and the 696 -> 699 adapter-evidence pin). |
-| `tests/phase3/runtime/test_code_context.py` | New, 21 tests. |
+| `tests/phase3/runtime/test_code_context.py` | New, 22 tests (21 in `df9a4892`, one from the review repair). |
 
 ## Design decisions
 
@@ -73,7 +74,8 @@ no new authorisation family, no second context authority and no second database.
    `EvidenceLabelGrant` is evaluated against the labels of the evidence each governed
    version cites, before the subject is resolved. A definition the grant refuses leaves
    the universe, and every relation touching it goes with it -- so it cannot be a
-   neighbour, a step, a degree, a limit it consumed or a `depth_bounded`. This is
+   neighbour, a step, a degree, a limit it consumed or a `depth_bounded`. A relation the
+   grant refuses is removed the same way even when both of its ends are visible. This is
    `engineering.expand`'s rule, applied to the code graph.
 6. **Revalidation at output is a refusal, not a redaction.** The labels are read a second
    time after the answer exists, over every governed version it names (definitions,
@@ -113,7 +115,7 @@ no new authorisation family, no second context authority and no second database.
     Nothing is lost: code analysis is read through `code.query`, which binds a repository,
     snapshot, producer and profile, and a memory or sharing read can bind none of those.
 
-## Evidence (`test_code_context.py`, 21 tests, real producers, real SQLite, production dispatcher)
+## Evidence (`test_code_context.py`, 22 tests, real producers, real SQLite, production dispatcher)
 
 | Requirement | Test |
 | --- | --- |
@@ -123,6 +125,7 @@ no new authorisation family, no second context authority and no second database.
 | D16: a hidden supported claim, a hidden supporting record or a hidden support relation moves no disclosed path, depth, count, truncation flag or coverage, and leaves the pack's manifest | `test_a_hidden_endpoint_or_support_moves_no_disclosed_path_degree_or_count[arch-support/arch-claim/arch-link]` |
 | D16: a hidden code definition is `not_found`, byte-identical to a subject that does not exist | `test_a_hidden_code_definition_is_not_found_and_is_never_a_neighbour` |
 | D16: a hidden code endpoint is removed before the walk, not after (subtraction only, degree drops by exactly one) | `test_a_hidden_code_endpoint_is_removed_before_the_walk_not_after_it` |
+| D16: a hidden code relation between two visible ends is no step, neighbour, span, limit slot, `truncated`, `depth_bounded` or degree (review repair) | `test_a_hidden_code_relation_between_visible_endpoints_is_never_walked_or_counted` |
 | D16: revocation between selection and output refuses, indistinguishably from absence, after two real ACL reads | `test_revocation_between_selection_and_output_refuses_and_discloses_nothing` |
 | D17: a seed of this analysis expands; the same seed against the next activated analysis does not | `test_a_seed_of_this_analysis_expands_and_an_older_one_never_does` |
 | A seed naming a definition this analysis does not hold is `not_found` whole | `test_a_seed_naming_a_definition_this_analysis_does_not_hold_is_not_found` |
@@ -151,25 +154,52 @@ everything.
 | `pytest tests/contracts tests/service_conformance` | **11990 passed, 19 skipped** |
 | `pytest qualification tests -k "traceability or architecture_gate or mcp"` | **1155 passed** |
 | `pytest packages/omnivia-core-cli/tests packages/omnivia-core-client/tests packages/omnivia-core-mcp/tests` | **3242 passed, 8 skipped, 5 failed** -- exactly W13-A's five known worktree-only MCP installed-setup tests, whose qualification child imports the main checkout. Rerun through a throwaway venv whose `.pth` lists this worktree's trees: **22 passed** |
-| Mutation probes on `test_code_context.py` (in place, `-B`, cache dropped, restored and re-verified, one at a time) | **8 killed, 0 survived**: the output revalidation removed; the pre-walk visibility filter removed; the seed binding never compared; the architecture admission dropping its support test; the architecture admission dropping its ACL test; the per-relationship deduplication removed; `storage/memory.py`'s domain exclusion neutralised; `service/knowledge_sharing.py`'s domain exclusion neutralised. The deduplication probe found a real defect while this packet was being written -- a bidirectional or multi-seed walk followed one relationship from both of its ends and returned it twice, at two depths, doubling the subject's degree -- which is fixed in `_walk` and pinned by the seed test |
+| Mutation probes on `test_code_context.py` (in place, `-B`, cache dropped, restored and re-verified, one at a time) | **8 killed, 0 survived**: the output revalidation removed; the pre-walk visibility filter removed; the seed binding never compared; the architecture admission dropping its support test; the architecture admission dropping its ACL test; the per-relationship deduplication removed; `storage/memory.py`'s domain exclusion neutralised; `service/knowledge_sharing.py`'s domain exclusion neutralised. The deduplication probe found a real defect while this packet was being written -- a bidirectional or multi-seed walk followed one relationship from both of its ends and returned it twice, at two depths, doubling the subject's degree -- which is fixed in `_walk` and pinned by the seed test. None of the eight probed a relation's own label with every definition admitted; that gap is the *Review repair* below |
 | `generate-application-contracts.py --check`, `check-application-contracts.py` | up to date; passed |
 | `check-package-boundaries.py`, `check-raise-discipline.py`, `check-migration-allocations.py` | passed |
 | `ruff check src packages baseline tests scripts` | all checks passed |
 | `mypy --strict packages/omnivia-core-runtime/src/omnivia_core_runtime src/omnivia_core` | no issues in 355 source files |
 | `git diff --check` | clean |
 
-The whole-repository suite was not run for this packet.
+The whole-repository suite was not run for this packet. These are `df9a4892`'s runs; the
+repair's own are under *Review repair*.
+
+## Review repair
+
+One repair after Codex review, inside `_visible` and the test file.
+
+| Defect | Repair | Proof |
+| --- | --- | --- |
+| `_visible` returned the graph unchanged whenever the grant admitted every definition, so a relation's own governed version was checked only when some definition was hidden. A relation citing evidence the caller may not see, between two visible ends, was walked. Unbounded, it reached the answer and the output revalidation refused the whole answer `not_found`, with either end as the subject too. Cut off by a limit, it passed revalidation and still set `truncated` and `depth_bounded`. | The shortcut is gone: every relation is filtered on both ends' admission and then on its own, whatever the definitions. Node-first order and the output revalidation are unchanged. | `test_a_hidden_code_relation_between_visible_endpoints_is_never_walked_or_counted` labels only the version of `pkg -> pkg.models.Record`. On `df9a4892` it fails: the depth-2 `code_context` of `make`, limited to the seven visible relations, returns those seven with `truncated: true` and `depth_bounded: true`. After: the unrestricted answer less that relation and `pkg` (reachable only through it), with `depth_bounded: false` and nothing truncated, at that limit and at the default one; and `pkg` resolves with no relation and no neighbour. |
+
+Mutation probes on `test_code_context.py` (in place, `-B`, cache dropped, restored under a
+SHA-256 check, one at a time): **3 killed, 0 survived**. The shortcut restored and the
+relation's own check dropped are each killed only by the new test, so both survived the 21
+tests above. Dropping the endpoint-membership check is killed by
+`test_a_hidden_code_endpoint_is_removed_before_the_walk_not_after_it`, so node-first
+filtering is still pinned.
+
+| Command | Outcome |
+| --- | --- |
+| `pytest tests/phase3/runtime/test_code_context.py tests/phase3/runtime/test_code_query.py` | **34 passed** |
+| `ruff check` on the two touched Python files, and on `src packages baseline tests scripts` | all checks passed |
+| `mypy --strict packages/omnivia-core-runtime/src/omnivia_core_runtime src/omnivia_core` | no issues in 355 source files |
+| `git diff --check` | clean |
+
+Not re-run for the repair: the broader groups, `tests/contracts`, `tests/service_conformance`
+and the CLI/client/MCP suites. `_visible` has one caller, `code.query`, and when every
+relation is admitted it returns the same edges as before.
 
 ## Limitations and concerns
 
 - **Code-fact visibility is import-granular under the current writer.** W12 links every
   accepted fact of one import to that snapshot's single sealed manifest evidence
   artifact, so in a real workspace the whole analysis is visible or none of it is. The
-  mechanism in this read is per record and is exercised per record -- one test supplies
-  the per-record label the writer cannot yet produce, and the production grant, filter
-  and walk do the rest -- but differentiated visibility *between* two code definitions is
-  not reachable from production data. Per-file evidence links are a W12 change, not a
-  W13 one.
+  mechanism in this read is per record and is exercised per record -- two tests supply
+  the per-record label the writer cannot yet produce, one on a definition and one on a
+  relation, and the production grant, filter and walk do the rest -- but differentiated
+  visibility *between* two code definitions is not reachable from production data.
+  Per-file evidence links are a W12 change, not a W13 one.
 - **`EVIDENCE-LABEL-GRANT-DEFERRED` still bounds the grant itself.** `storage/retrieval.py`
   gives every label to the configured local owner and none to anyone else, so the
   evidence here is "an owner sees everything, a second principal sees what is unlabelled",
