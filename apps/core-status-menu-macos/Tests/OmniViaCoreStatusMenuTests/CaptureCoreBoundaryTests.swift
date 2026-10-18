@@ -144,10 +144,19 @@ final class CaptureCoreBoundaryTests: XCTestCase {
         process.arguments = common + ["--endpoint", "unix://\(directory.appendingPathComponent("core.sock").path)"]
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
+        // `waitUntilExit` has no deadline and deadlocked teardown once; wait on the
+        // termination handler instead, and SIGKILL if SIGTERM is not honoured.
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
         addTeardownBlock {
+            defer { try? output.fileHandleForReading.close() }
+            guard process.isRunning else { return }
             process.terminate()
-            process.waitUntilExit()
+            if exited.wait(timeout: .now() + 5) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = exited.wait(timeout: .now() + 5)
+            }
         }
         // The service prints one readiness document; block on its pipe, no polling.
         var seen = Data()

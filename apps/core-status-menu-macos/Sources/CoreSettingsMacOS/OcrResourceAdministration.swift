@@ -475,6 +475,11 @@ public struct SystemOcrProcessRunner: OcrProcessRunning {
         let err = Pipe()
         process.standardOutput = out
         process.standardError = err
+        // `waitUntilExit` has no deadline and was seen stuck after the child had
+        // exited. The handler is set before `run`, so a child that exits at once
+        // still signals, and every wait below carries a deadline.
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
 
         do {
             try process.run()
@@ -505,24 +510,21 @@ public struct SystemOcrProcessRunner: OcrProcessRunning {
             errDrained.signal()
         }
 
-        let finished = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async { process.waitUntilExit(); finished.signal() }
-
         var overran = false
         if finished.wait(timeout: deadline) == .timedOut {
             overran = true
             send(SIGTERM, to: process)
             if finished.wait(timeout: .now() + Self.terminationGrace) == .timedOut {
-                // A child that ignores SIGTERM cannot ignore this one, so the
-                // wait below ends however stubborn it was.
+                // A child that ignores SIGTERM cannot ignore this one. The wait
+                // is still bounded; `overran` means status is never read.
                 send(SIGKILL, to: process)
-                finished.wait()
+                _ = finished.wait(timeout: .now() + Self.terminationGrace)
             }
         }
         // Join everything this call started before reading anything it wrote.
-        // The waiter has settled, so `terminationStatus` is the child's; the
-        // drains have settled, so the descriptors are nobody's to read and the
-        // handles can be closed here rather than left to a deinit.
+        // On normal completion the termination handler has fired before
+        // `terminationStatus` is read below; after a timeout no status is read.
+        // The drains settle before their handles are closed.
         outDrained.wait()
         errDrained.wait()
         try? out.fileHandleForReading.close()
