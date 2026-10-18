@@ -2,8 +2,8 @@
 
 This process owns and advertises one writable workspace and participates in the
 single fenced catalogue authority for its installation. The production
-application surface is the exact frozen 28-operation catalogue, composed from
-seven separate authority families. Health, readiness and discovery remain
+application surface is the exact frozen 30-operation catalogue, composed from
+eight separate authority families. Health, readiness and discovery remain
 distinct from product operations, per ADR-037, and stay on the probe dispatcher.
 
 **One console script, four kinds of process.** `--managed-start` (R004-08) does
@@ -42,6 +42,7 @@ from omnivia_core_runtime.service.application import (
     build_governance_application_dispatcher,
     build_job_application_dispatcher,
     build_memory_application_dispatcher,
+    build_settings_application_dispatcher,
     build_workflow_application_dispatcher,
     compose_production_application_surface,
     local_owner_session,
@@ -257,7 +258,7 @@ def _build_production_application_surface(
     """Compose the exact production route for one live service.
 
     The global installation catalogue supplies the installation id used by all
-    seven authority families. The workspace service instance keeps its own
+    eight authority families. The workspace service instance keeps its own
     service identity and fencing generation; those facts do not become
     installation authority merely because both authorities live in one process.
 
@@ -354,6 +355,14 @@ def _build_production_application_surface(
         ),
         wait_policy=workflow_wait_policy,
     )
+    settings = build_settings_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=workflow,
+        clock=started.clock,
+    )
     return compose_production_application_surface(
         installation=installation,
         reads=reads,
@@ -362,6 +371,7 @@ def _build_production_application_surface(
         governance=governance,
         chat=chat,
         workflow=workflow,
+        settings=settings,
         probe=probe,
     )
 

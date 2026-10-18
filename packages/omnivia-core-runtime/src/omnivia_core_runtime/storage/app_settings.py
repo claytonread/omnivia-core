@@ -41,6 +41,7 @@ __all__ = [
     "list_settings",
     "read_setting",
     "write_setting",
+    "write_setting_fenced",
 ]
 
 SCHEMA_VERSION = 1
@@ -173,6 +174,79 @@ def list_settings(
         yield _row(str(row[0]), tuple(row[1:]))
 
 
+def write_setting_fenced(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    key: str,
+    value: Any,
+    updated_at_us: int,
+    updated_by: str,
+    expected_version: int | None = None,
+) -> AppSetting:
+    """Store `value` under `key` inside a transaction the caller already fenced.
+
+    This is the entry point for a caller that holds its own fence -- the service
+    mutation foundation hands a handler an already-fenced connection, and
+    opening a second `fenced_transaction` inside that one would try to BEGIN
+    while a transaction is open. `write_setting` below is the same write for a
+    caller that holds no fence yet.
+
+    The caller is responsible for the fence, and therefore for the lease and
+    generation checks and for the rollback on failure. It does not have to widen
+    the connection's authority: `fenced_transaction` already holds
+    `authorised(mutations=True)` for the body it yields to.
+    """
+    checked = _checked_key(key)
+    writer = _checked_writer(updated_by)
+    encoded = _encoded(value)
+    if not isinstance(updated_at_us, int) or updated_at_us <= 0:
+        raise AppSettingsError("updated_at_us must be a positive integer")
+
+    current = connection.execute(
+        "SELECT version, updated_at_us FROM omnivia_app_settings "
+        "WHERE workspace_id = ? AND setting_key = ?",
+        (workspace_id, checked),
+    ).fetchone()
+    found = None if current is None else int(current[0])
+
+    if expected_version is not None and expected_version != (found or 0):
+        raise AppSettingsError(
+            f"setting {checked!r} changed since it was read "
+            f"(expected version {expected_version}, found {found or 0})"
+        )
+
+    if current is None:
+        connection.execute(
+            "INSERT INTO omnivia_app_settings "
+            "(workspace_id, setting_key, value_json, schema_version, "
+            " version, updated_at_us, updated_by) VALUES (?, ?, ?, ?, 1, ?, ?)",
+            (workspace_id, checked, encoded, SCHEMA_VERSION, updated_at_us, writer),
+        )
+        version = 1
+        stamped = updated_at_us
+    else:
+        # The trigger refuses a regressing timestamp, which a clock that
+        # stepped backwards would otherwise turn into a failed write for
+        # a user who only clicked a toggle. Hold the previous instant.
+        stamped = max(updated_at_us, int(current[1]))
+        version = found + 1  # type: ignore[operator]
+        connection.execute(
+            "UPDATE omnivia_app_settings SET value_json = ?, version = ?, "
+            "updated_at_us = ?, updated_by = ? "
+            "WHERE workspace_id = ? AND setting_key = ?",
+            (encoded, version, stamped, writer, workspace_id, checked),
+        )
+
+    return AppSetting(
+        key=checked,
+        value=json.loads(encoded),
+        version=version,
+        updated_at_us=stamped,
+        updated_by=writer,
+    )
+
+
 def write_setting(
     connection: sqlite3.Connection,
     identity: ServiceInstanceIdentity,
@@ -191,63 +265,21 @@ def write_setting(
     read to have a concurrent change refused rather than silently overwritten,
     or None for last-writer-wins. Pass 0 to require that nothing is stored yet.
     """
-    checked = _checked_key(key)
-    writer = _checked_writer(updated_by)
-    encoded = _encoded(value)
-    if not isinstance(updated_at_us, int) or updated_at_us <= 0:
-        raise AppSettingsError("updated_at_us must be a positive integer")
-
-    with (
-        fenced_transaction(
-            connection,
-            identity,
-            workspace_id=workspace_id,
-            fencing_generation=fencing_generation,
-        ),
-        authorised(connection, mutations=True),
+    with fenced_transaction(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ):
-        current = connection.execute(
-            "SELECT version, updated_at_us FROM omnivia_app_settings "
-            "WHERE workspace_id = ? AND setting_key = ?",
-            (workspace_id, checked),
-        ).fetchone()
-        found = None if current is None else int(current[0])
-
-        if expected_version is not None and expected_version != (found or 0):
-            raise AppSettingsError(
-                f"setting {checked!r} changed since it was read "
-                f"(expected version {expected_version}, found {found or 0})"
-            )
-
-        if current is None:
-            connection.execute(
-                "INSERT INTO omnivia_app_settings "
-                "(workspace_id, setting_key, value_json, schema_version, "
-                " version, updated_at_us, updated_by) VALUES (?, ?, ?, ?, 1, ?, ?)",
-                (workspace_id, checked, encoded, SCHEMA_VERSION, updated_at_us, writer),
-            )
-            version = 1
-            stamped = updated_at_us
-        else:
-            # The trigger refuses a regressing timestamp, which a clock that
-            # stepped backwards would otherwise turn into a failed write for
-            # a user who only clicked a toggle. Hold the previous instant.
-            stamped = max(updated_at_us, int(current[1]))
-            version = found + 1  # type: ignore[operator]
-            connection.execute(
-                "UPDATE omnivia_app_settings SET value_json = ?, version = ?, "
-                "updated_at_us = ?, updated_by = ? "
-                "WHERE workspace_id = ? AND setting_key = ?",
-                (encoded, version, stamped, writer, workspace_id, checked),
-            )
-
-    return AppSetting(
-        key=checked,
-        value=json.loads(encoded),
-        version=version,
-        updated_at_us=stamped,
-        updated_by=writer,
-    )
+        return write_setting_fenced(
+            connection,
+            workspace_id=workspace_id,
+            key=key,
+            value=value,
+            updated_at_us=updated_at_us,
+            updated_by=updated_by,
+            expected_version=expected_version,
+        )
 
 
 def delete_setting(

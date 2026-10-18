@@ -119,6 +119,12 @@ from omnivia_core_runtime.service.handlers.memory import (
     HmacContinuationTokenCodec,
     MemoryHandlers,
 )
+from omnivia_core_runtime.service.handlers.settings import (
+    SETTINGS_FAMILY_OPERATIONS,
+    SETTINGS_LIST_OPERATION,
+    SETTINGS_SET_OPERATION,
+    SettingsHandlers,
+)
 from omnivia_core_runtime.service.handlers.workflow import (
     WORKFLOW_CONTROL_OPERATION,
     WORKFLOW_FAMILY_OPERATIONS,
@@ -235,7 +241,7 @@ MEMORY_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 #: It is deliberately *not* in the read family. That family's session is built by
 #: `local_owner_session`, which refuses to grant any operation declaring a side effect,
 #: and a read-only local owner holding a mutation is precisely the failure that
-#: constructor exists to prevent. The seven authority families are unchanged.
+#: constructor exists to prevent. The existing authority families are unchanged.
 JOB_OBSERVATION_PURPOSE: Final = "job_observation"
 INGESTION_FAMILY_OPERATIONS: Final[frozenset[str]] = (
     JOB_FAMILY_OPERATIONS | {EVIDENCE_CAPTURE_OPERATION}
@@ -281,6 +287,25 @@ WORKFLOW_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         WORKFLOW_CONTROL_OPERATION: MUTATION_PURPOSES[WORKFLOW_CONTROL_OPERATION],
         WORKFLOW_INSPECT_OPERATION: WORKFLOW_OBSERVATION_PURPOSE,
         WORKFLOW_REVIEW_OPERATION: WORKFLOW_OBSERVATION_PURPOSE,
+    }
+)
+
+#: The persisted-settings family (decision of 2026-10-18, Option A). Two purposes on
+#: the split every mutating family here uses: reading what is stored is the same
+#: `workspace_inspection` the workspace read is served under, and storing a value is
+#: served under the one purpose `MUTATION_PURPOSES` declares for it.
+#:
+#: It is deliberately a family of its own rather than two additions to existing ones.
+#: `settings.list` cannot join the read family, because that family's session is built
+#: by `local_owner_session` and the pair would then be split across two authorities for
+#: no reason a reader could recover; and `settings.set` cannot join any existing
+#: mutating family, because none of them grants `workspace:write` -- `workspace.create`
+#: is installation-scoped, and memory, jobs, governance, Chat and Workflow each grant
+#: their own narrower scope. Configuring a workspace is its own authority.
+SETTINGS_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        SETTINGS_LIST_OPERATION: WORKSPACE_INSPECTION_PURPOSE,
+        SETTINGS_SET_OPERATION: MUTATION_PURPOSES[SETTINGS_SET_OPERATION],
     }
 )
 
@@ -746,6 +771,57 @@ def build_workflow_registry(handlers: WorkflowHandlers) -> ApplicationOperationR
     return registry
 
 
+def settings_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The S8 contributor grant for one workspace's stored settings.
+
+    Contributor rather than an administrator role because there is no
+    workspace-administrator role in this vocabulary: `MUTATION_ROLES` declares
+    `settings.set` as `workspace_contributor`, the installation role is refused at
+    issuance on this workspace lane, and the role a grant is checked against is
+    server-owned policy rather than anything this constructor may choose. The
+    purpose still says what the act is.
+    """
+    entries = tuple(
+        get_operation_metadata(name) for name in sorted(SETTINGS_FAMILY_OPERATIONS)
+    )
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset({workspace_id}),
+        operations=SETTINGS_FAMILY_OPERATIONS,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(SETTINGS_FAMILY_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def build_settings_registry(handlers: SettingsHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        SETTINGS_LIST_OPERATION, cast(OperationHandler, handlers.settings_list)
+    )
+    registry.register(
+        SETTINGS_SET_OPERATION, cast(OperationHandler, handlers.settings_set)
+    )
+    return registry
+
+
 def build_application_registry(
     *, additional: Mapping[str, OperationHandler] | None = None
 ) -> ApplicationOperationRegistry:
@@ -901,7 +977,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 28/28 complete.
+    is anything other than 30/30 complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -918,9 +994,9 @@ class ProductionApplicationSurface:
                 "the production application routes do not exactly match the registry"
             )
         distinct_routes = tuple({id(route): route for route in routes.values()}.values())
-        if len(distinct_routes) != 7:
+        if len(distinct_routes) != 8:
             raise ValueError(
-                "the production surface requires exactly seven authority families"
+                "the production surface requires exactly eight authority families"
             )
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError("every production application family must act as one principal")
@@ -976,11 +1052,21 @@ def compose_production_application_surface(
     governance: ApplicationDispatcher,
     chat: ApplicationDispatcher,
     workflow: ApplicationDispatcher,
+    settings: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
 ) -> ProductionApplicationSurface:
     """Compose all real family handlers into the exact frozen catalogue."""
-    families = (installation, reads, memory, jobs, governance, chat, workflow)
+    families = (
+        installation,
+        reads,
+        memory,
+        jobs,
+        governance,
+        chat,
+        workflow,
+        settings,
+    )
     registry = ApplicationOperationRegistry()
     routes: dict[str, ApplicationDispatcher] = {}
     for family in families:
@@ -1640,6 +1726,45 @@ def build_workflow_application_dispatcher(
     )
 
 
+def build_settings_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the exact two-operation persisted-settings family around the router."""
+    session = settings_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    handlers = SettingsHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+    )
+    registry = build_settings_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 __all__ = [
     "CHANNEL_TRUST",
     "CONTEXT_PACK_BUILD_OPERATION",
@@ -1658,6 +1783,7 @@ __all__ = [
     "MEMORY_SEARCH_OPERATION",
     "OPERATION_PURPOSES",
     "PRINCIPAL_SOURCE",
+    "SETTINGS_FAMILY_PURPOSES",
     "WORKSPACE_INSPECTION_PURPOSE",
     "WORKSPACE_INSPECT_OPERATION",
     "ApplicationCallRecord",
@@ -1673,6 +1799,8 @@ __all__ = [
     "build_job_registry",
     "build_memory_application_dispatcher",
     "build_memory_registry",
+    "build_settings_application_dispatcher",
+    "build_settings_registry",
     "build_workflow_application_dispatcher",
     "build_workflow_registry",
     "compose_production_application_surface",
@@ -1681,5 +1809,6 @@ __all__ = [
     "job_family_session",
     "local_owner_session",
     "memory_family_session",
+    "settings_family_session",
     "workflow_family_session",
 ]

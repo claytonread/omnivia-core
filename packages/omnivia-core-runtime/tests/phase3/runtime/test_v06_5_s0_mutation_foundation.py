@@ -744,12 +744,13 @@ def _grant_facts(grant: MutationGrant) -> tuple[Any, ...]:
     )
 
 
-# --- S0-04: all nine mutating operations declare a purpose --------------------
+# --- S0-04: every mutating operation declares a purpose -----------------------
 
 
 def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
-    """Exactly the thirteen, explicitly, with a mismatch failing closed for each."""
+    """Exactly the fourteen, explicitly, with a mismatch failing closed for each."""
     assert set(MUTATION_PURPOSES) == {
+        "settings.set",
         "workflow.start",
         "workflow.control",
         "workspace.create",
@@ -766,7 +767,7 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 13
+    assert len(MUTATION_PURPOSES) == 14
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -1542,9 +1543,9 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
     default = build_application_registry()
     assert default.operations == shipped
     assert len(shipped) == 6
-    # None of the seventeen unserved operations, mutating or not.
+    # None of the operations this registry does not ship, mutating or not.
     assert (APPLICATION_OPERATIONS - shipped) & default.operations == frozenset()
-    assert len(APPLICATION_OPERATIONS - shipped) == 22
+    assert len(APPLICATION_OPERATIONS - shipped) == 24
 
     def stub(_context: object) -> Mapping[str, Any]:
         return {}
@@ -1739,6 +1740,10 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "candidate.reject": "knowledge_reviewer",
         "record.supersede": "knowledge_reviewer",
         "chat.command": "workspace_contributor",
+        # Administration purpose, contributor role: there is no
+        # workspace-administrator role in this vocabulary, and the
+        # installation role is refused at issuance on a workspace lane.
+        "settings.set": "workspace_contributor",
     }
     assert set(MUTATION_ROLES) == MUTATING_OPERATIONS
 
