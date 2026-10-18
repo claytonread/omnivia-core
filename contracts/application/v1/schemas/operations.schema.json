@@ -1198,118 +1198,6 @@
       ]
     },
     {
-      "name": "settings.list",
-      "scope": {
-        "required_scopes": [
-          "workspace:read"
-        ],
-        "side_effect": "none",
-        "scope_kind": "workspace"
-      },
-      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsListInput",
-      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsListResult",
-      "required_capability": {
-        "id": "workspace.read",
-        "minimum_version": "1.0",
-        "required": true
-      },
-      "job": {
-        "completion_mode": "synchronous"
-      },
-      "pagination": {
-        "paginated": false
-      },
-      "idempotency": {
-        "supports_idempotency_key": false,
-        "required": false,
-        "safe_to_retry": true
-      },
-      "precondition": {
-        "supports_mutation_precondition": false,
-        "required": false
-      },
-      "audit": {
-        "audited": true,
-        "audit_category": "read"
-      },
-      "allowed_errors": [
-          "authentication_required",
-          "authorization_denied",
-          "cancelled",
-          "capability_not_granted",
-          "deadline_exceeded",
-          "dependency_unavailable",
-          "incompatible_version",
-          "internal_non_recoverable",
-          "internal_recoverable",
-          "invalid_purpose",
-          "invalid_request",
-          "rate_limited",
-          "upgrade_required",
-          "workspace_migration_required",
-          "workspace_not_granted"
-      ]
-    },
-    {
-      "name": "settings.set",
-      "scope": {
-        "required_scopes": [
-          "workspace:write"
-        ],
-        "side_effect": "update",
-        "scope_kind": "workspace"
-      },
-      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsSetInput",
-      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsSetResult",
-      "required_capability": {
-        "id": "workspace.write",
-        "minimum_version": "1.0",
-        "required": true
-      },
-      "job": {
-        "completion_mode": "synchronous"
-      },
-      "pagination": {
-        "paginated": false
-      },
-      "idempotency": {
-        "supports_idempotency_key": true,
-        "required": true,
-        "safe_to_retry": false
-      },
-      "precondition": {
-        "supports_mutation_precondition": false,
-        "required": false
-      },
-      "audit": {
-        "audited": true,
-        "audit_category": "mutation"
-      },
-      "allowed_errors": [
-          "authentication_required",
-          "authorization_denied",
-          "cancelled",
-          "capability_not_granted",
-          "conflict",
-          "deadline_exceeded",
-          "dependency_unavailable",
-          "idempotency_conflict",
-          "incompatible_version",
-          "internal_non_recoverable",
-          "internal_recoverable",
-          "invalid_purpose",
-          "invalid_request",
-          "mutation_precondition_failed",
-          "not_found",
-          "rate_limited",
-          "upgrade_required",
-          "workspace_busy",
-          "workspace_lease_unavailable",
-          "workspace_migration_required",
-          "workspace_not_granted"
-      ]
-    },
-    {
       "name": "workflow.control",
       "scope": {
         "required_scopes": [
@@ -4601,6 +4489,118 @@
         "workspace_lease_unavailable",
         "workspace_migration_required",
         "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "settings.list",
+      "scope": {
+        "required_scopes": [
+          "workspace:read"
+        ],
+        "side_effect": "none",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsListInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsListResult",
+      "required_capability": {
+        "id": "workspace.read",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": false,
+        "required": false,
+        "safe_to_retry": true
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "read"
+      },
+      "allowed_errors": [
+          "authentication_required",
+          "authorization_denied",
+          "cancelled",
+          "capability_not_granted",
+          "deadline_exceeded",
+          "dependency_unavailable",
+          "incompatible_version",
+          "internal_non_recoverable",
+          "internal_recoverable",
+          "invalid_purpose",
+          "invalid_request",
+          "rate_limited",
+          "upgrade_required",
+          "workspace_migration_required",
+          "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "settings.set",
+      "scope": {
+        "required_scopes": [
+          "workspace:write"
+        ],
+        "side_effect": "update",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsSetInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsSetResult",
+      "required_capability": {
+        "id": "workspace.write",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": true,
+        "required": true,
+        "safe_to_retry": false
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "mutation"
+      },
+      "allowed_errors": [
+          "authentication_required",
+          "authorization_denied",
+          "cancelled",
+          "capability_not_granted",
+          "conflict",
+          "deadline_exceeded",
+          "dependency_unavailable",
+          "idempotency_conflict",
+          "incompatible_version",
+          "internal_non_recoverable",
+          "internal_recoverable",
+          "invalid_purpose",
+          "invalid_request",
+          "mutation_precondition_failed",
+          "not_found",
+          "rate_limited",
+          "upgrade_required",
+          "workspace_busy",
+          "workspace_lease_unavailable",
+          "workspace_migration_required",
+          "workspace_not_granted"
       ]
     }
   ],

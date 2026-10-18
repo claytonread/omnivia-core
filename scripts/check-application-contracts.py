@@ -1509,14 +1509,6 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "workspace", ("memory:write",), "update", "knowledge.govern",
         "knowledge", "RecordSupersede", "GOV_MUT", False,
     ),
-    "settings.list": FrozenOperation(
-        "workspace", ("workspace:read",), "none", "workspace.read",
-        "settings", "SettingsList", "WORKSPACE_READ", False,
-    ),
-    "settings.set": FrozenOperation(
-        "workspace", ("workspace:write",), "update", "workspace.write",
-        "settings", "SettingsSet", "GOV_MUT", False,
-    ),
     "workflow.control": FrozenOperation(
         "workspace", ("workflow:control",), "update", "workflow.control",
         "runtime", "WorkflowControl", "WORKFLOW_CONTROL", False,
@@ -1774,6 +1766,14 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "project.context.switch": FrozenOperation(
         "workspace", ("project_context:switch",), "update", "project_context.switch",
         "knowledge", "ProjectContextSwitch", "TASK_CONTEXT_MUT", False,
+    ),
+    "settings.list": FrozenOperation(
+        "workspace", ("workspace:read",), "none", "workspace.read",
+        "settings", "SettingsList", "WORKSPACE_READ", False,
+    ),
+    "settings.set": FrozenOperation(
+        "workspace", ("workspace:write",), "update", "workspace.write",
+        "settings", "SettingsSet", "GOV_MUT", False,
     ),
 }
 

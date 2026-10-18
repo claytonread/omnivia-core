@@ -181,8 +181,6 @@
         "memory.list",
         "memory.search",
         "record.supersede",
-        "settings.list",
-        "settings.set",
         "workflow.control",
         "workflow.inspect",
         "workflow.review",
@@ -240,7 +238,9 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "settings.list",
+        "settings.set"
       ]
     },
     {
@@ -351,7 +351,6 @@
         "knowledge.propose",
         "memory.create",
         "record.supersede",
-        "settings.set",
         "workflow.control",
         "workflow.start",
         "workspace.create",
@@ -385,7 +384,8 @@
         "knowledge.share.decide",
         "task_context.export",
         "outcome.request.create",
-        "project.context.switch"
+        "project.context.switch",
+        "settings.set"
       ]
     },
     {
@@ -405,7 +405,6 @@
         "knowledge.propose",
         "memory.create",
         "record.supersede",
-        "settings.set",
         "workflow.control",
         "workflow.start",
         "workspace.create",
@@ -439,7 +438,8 @@
         "knowledge.share.decide",
         "task_context.export",
         "outcome.request.create",
-        "project.context.switch"
+        "project.context.switch",
+        "settings.set"
       ]
     },
     {
@@ -497,8 +497,6 @@
         "memory.list",
         "memory.search",
         "record.supersede",
-        "settings.list",
-        "settings.set",
         "workflow.control",
         "workflow.inspect",
         "workflow.review",
@@ -556,7 +554,9 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "settings.list",
+        "settings.set"
       ]
     },
     {
@@ -587,8 +587,6 @@
         "memory.list",
         "memory.search",
         "record.supersede",
-        "settings.list",
-        "settings.set",
         "workflow.control",
         "workflow.inspect",
         "workflow.review",
@@ -646,7 +644,9 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "settings.list",
+        "settings.set"
       ]
     },
     {
