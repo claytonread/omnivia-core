@@ -251,6 +251,7 @@ def test_exact_and_same_name_definitions_are_deterministic_and_qualified(
     assert exact["coverage"] == {
         "analysis": "static", "complete": True, "truncated": False, "depth_bounded": False,
         "unattributed_inbound": False, "applied_depth": 0, "applied_limit": 100,
+        "graph_expansion": "not_requested",
     }
 
     unique = query(workspace, payload(py, "definition", name="make"))

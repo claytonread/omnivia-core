@@ -381,15 +381,21 @@ def link_row(
     assembly_id: str,
     *,
     ordinal: int = 1,
+    evidence_id: str = "evd-0001",
+    normalized: bool = True,
 ) -> dict[str, object]:
+    """One evidence link. `evidence_id` is a parameter because a record's permission
+    labels are the labels of the artifacts it cites, so two records that must differ in
+    visibility have to cite different artifacts; `normalized` drops the M2 span ancestry
+    for an artifact seeded without one."""
     return {
         "workspace_id": WORKSPACE_ID,
         "assembly_id": assembly_id,
         "provenance_event_id": event_id,
         "link_ordinal": ordinal,
-        "evidence_id": "evd-0001",
-        "normalized_record_id": "nrc-0001",
-        "normalized_span_id": "nsp-0001",
+        "evidence_id": evidence_id,
+        "normalized_record_id": "nrc-0001" if normalized else None,
+        "normalized_span_id": "nsp-0001" if normalized else None,
         "recorded_at_us": BASE_US + ordinal + 10,
     }
 

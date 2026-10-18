@@ -498,12 +498,12 @@
         "P16",
         "P19"
       ],
-      "note": "Governed import, policy acceptance and atomic repository applicability are delivered as one storage seam (storage/code_analysis_import.py, migration 0074) with repository-local real-SQLite evidence over both real producers; see P8-W12-GOVERNED-IMPORT-2026-10-18.md. Still PARTIAL: no production caller (catalogue operation, handler or scheduler) invokes the seam, owner policy authorisation has no public intent (the seam takes the executor's MutationSettlementContext and authenticated principal, and 0074 binds the authoriser to that settlement's audit), and only resolver-routed reads apply code applicability. QP-04 and G8 are not claimed; W13 intents and QP-05 transport remain."
+      "note": "Governed import, policy acceptance and atomic repository applicability are delivered as one storage seam (storage/code_analysis_import.py, migration 0074) with repository-local real-SQLite evidence over both real producers; see P8-W12-GOVERNED-IMPORT-2026-10-18.md. W13-B closed the two reads that did not apply code applicability: storage/memory.py's own frontier fold and service/knowledge_sharing.py's current-version lookup now exclude the engineering.code domain outright, so a retired or other-scope code fact is unreachable through either (test_code_context.py). Still PARTIAL: no production caller (catalogue operation, handler or scheduler) invokes the seam, owner policy authorisation has no public intent (the seam takes the executor's MutationSettlementContext and authenticated principal, and 0074 binds the authoriser to that settlement's audit), and every accepted fact of one import cites that snapshot's single manifest evidence artifact, which bounds per-record code visibility to import granularity. QP-04 and G8 are not claimed; QP-05 transport remains."
     },
     "W13": {
       "status": "PARTIAL",
       "property_refs": [],
-      "note": "W13-A delivered: one read-only application operation, code.query (catalogue entry 89, graph:read, knowledge_retrieval purpose, local-owner read family), with closed intents definition/references/callers/callees/dependencies bound to one repository, snapshot, producer and profile and checked against the 0074 active import at the query instant; missing or no-longer-applicable analysis is refused as projection_unavailable with details.readiness=not_ready. Repository-local real-SQLite evidence over both real producers, the W12 import seam and the production dispatcher, with in-process/local-IPC/HTTP parity; see P8-W13A-CODE-QUERY-2026-10-18.md. Still PARTIAL: W13-B code-context assembly and D16/D17 multi-principal confidentiality are not implemented or claimed, no operation lists applicable bindings, and W12 imports still have no production caller."
+      "note": "W13-A and W13-B delivered: one read-only application operation, code.query (catalogue entry 89, graph:read, knowledge_retrieval purpose, local-owner read family), with the six closed intents definition/references/callers/callees/dependencies/code_context bound to one repository, snapshot, producer and profile and checked against the 0074 active import at the query instant; missing or no-longer-applicable analysis is refused as projection_unavailable with details.readiness=not_ready. code_context assembles content-addressed captured spans, same-analysis neighbours in both directions, and a separately labelled architecture component that is a real Context Pack produced by the one existing context authority (handlers/context_pack.build_task_context) over independently accepted knowledge carrying accepted reconciliation.supports, gated on the caller independently holding the context_pack.build grant. Principal visibility is enforced before traversal and revalidated at output; a seed carries the binding it was selected against and a mismatch disables graph expansion explicitly. Repository-local real-SQLite evidence over both real producers, the W12 import seam and the production dispatcher, with in-process/local-IPC/HTTP parity; see P8-W13A-CODE-QUERY-2026-10-18.md and P8-W13B-CODE-CONTEXT-2026-10-18.md. Still PARTIAL: code-fact visibility is import-granular because W12 links every fact of one import to that snapshot's single manifest evidence artifact, so differentiated visibility between two code definitions is not reachable from production data; no operation lists applicable bindings; and W12 imports still have no production caller."
     },
     "W14": {
       "status": "NOT_RUN",
@@ -931,19 +931,19 @@
       "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
     },
     "D16": {
-      "status": "NOT_RUN",
+      "status": "PARTIAL",
       "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+      "note": "PARTIAL at repository_local_integration_real_sqlite_fixture_embedder. A hidden supported claim, a hidden supporting record and a hidden support relation each leave every disclosed path, depth, count, truncation flag and coverage field of the code answer byte-identical and drop the claim from the Context Pack's manifest as well as its content; a hidden code definition is not_found, byte-identical to a subject that does not exist; a hidden code endpoint is removed before the walk, so degree drops by exactly the edges that touched it; and a revocation committed between the two ACL reads refuses the whole answer rather than recomputing or counting. Not complete: W12 links every fact of one import to one manifest evidence artifact, so the per-record case is exercised by supplying the per-record label the writer cannot yet produce, and EVIDENCE-LABEL-GRANT-DEFERRED still bounds the grant model itself. See P8-W13B-CODE-CONTEXT-2026-10-18.md."
     },
     "D17": {
-      "status": "NOT_RUN",
+      "status": "PARTIAL",
       "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+      "note": "PARTIAL at repository_local_integration_real_sqlite_fixture_embedder. A seed carries the repository, snapshot, producer and profile it was selected against; a seed of the applicable analysis expands, and the same seed against the next activated analysis answers resolution=seed_not_applicable with graph_expansion=unavailable, expansion_reason=seed_binding_mismatch and nothing disclosed. graph_expansion is required on every answer, so unavailability is never inferred from an empty list. Not complete: no production writer emits seeds yet, so the seed is a caller-supplied selection rather than one this repository produces. See P8-W13B-CODE-CONTEXT-2026-10-18.md."
     },
     "D18": {
-      "status": "NOT_RUN",
+      "status": "PARTIAL",
       "property_refs": [],
-      "note": "The complete acceptance scenario and its required evidence level were not run in this P1 slice."
+      "note": "PARTIAL at repository_local_integration_real_sqlite_fixture_embedder. A real call out of a real test module is an ordinary static code.calls fact and the answer states analysis=static and claims no run; supported prose stays in the architecture component and never becomes code.calls/code.imports/code.references, and no code fact enters the component; an assertion with no accepted, visible reconciliation.supports is not disclosed as architecture knowledge at all. Not complete: no similarity source reaches this read, so 'similarity is not calls/depends_on' is held by construction rather than exercised against a real similarity producer. See P8-W13B-CODE-CONTEXT-2026-10-18.md."
     },
     "D19": {
       "status": "NOT_RUN",

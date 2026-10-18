@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contracts.omnivia.dev/application/v1/code.schema.json",
   "title": "OmniVia Core Application Contract v1 - static code queries",
-  "description": "Provider-neutral wire shapes for the `code.query` operation payloads. `code.query` is a read over the governed code-analysis graph a code-analysis import made applicable: one repository, one analysed snapshot, one producer and one profile, bound by the request and checked against the import that is active for that scope at the query instant. Every fact it returns is a static-analysis fact from that one import -- never runtime behaviour, never test coverage, never similarity and never architecture prose -- and the result says so. Workspace-scoped through the request envelope; no payload carries a second, independent workspace identifier or a principal. This document declares no root type; it is a definition container only.",
+  "description": "Provider-neutral wire shapes for the `code.query` operation payloads. `code.query` is a read over the governed code-analysis graph a code-analysis import made applicable: one repository, one analysed snapshot, one producer and one profile, bound by the request and checked against the import that is active for that scope at the query instant. Every code fact it returns is a static-analysis fact from that one import -- never runtime behaviour, never test coverage, never similarity and never architecture prose -- and the result says so. Its `code_context` intent assembles captured source, those same-analysis neighbours and a separately labelled architecture component the workspace's own Context Pack authority produces under the caller's own authorisation; the two never merge, in either direction. Workspace-scoped through the request envelope; no payload carries a second, independent workspace identifier or a principal. This document declares no root type; it is a definition container only.",
   "$defs": {
     "CodeSemanticKey": {
       "title": "CodeSemanticKey",
@@ -103,53 +103,110 @@
     },
     "CodeQueryCoverage": {
       "title": "CodeQueryCoverage",
-      "description": "What the answer does and does not cover. `analysis` is always `static`: these are facts a static analyser read from source, not runtime behaviour and not test coverage. `complete` is false when anything bounded the answer: a limit, the depth, or diagnostics that bear on the subject. `unattributed_inbound` is true for inbound intents, because an unresolved or dynamic occurrence elsewhere cannot be attributed to this subject by static analysis.",
+      "description": "What the answer does and does not cover. `analysis` is always `static`: these are facts a static analyser read from source, not runtime behaviour and not test coverage -- a reference an accepted fact reads out of a test file is a static reference like any other and is never a statement that the subject is exercised at run time. `complete` is false when anything bounded the answer: a limit, the depth, diagnostics that bear on the subject, or graph expansion that did not run. `unattributed_inbound` is true for inbound intents, because an unresolved or dynamic occurrence elsewhere cannot be attributed to this subject by static analysis.",
       "type": "object",
       "properties": {
         "analysis": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Always `static`."},
-        "complete": {"type": "boolean", "description": "True only when no limit, depth or diagnostic bounded the answer."},
+        "complete": {"type": "boolean", "description": "True only when no limit, depth, diagnostic or unavailable expansion bounded the answer."},
         "truncated": {"type": "boolean", "description": "True when a list was cut at `applied_limit`."},
         "depth_bounded": {"type": "boolean", "description": "True when the traversal reached relations past `applied_depth` that it did not follow."},
         "unattributed_inbound": {"type": "boolean", "description": "True when callers or references may exist that static analysis could not attribute to the subject."},
         "applied_depth": {"type": "integer", "minimum": 0, "maximum": 8, "description": "The traversal depth applied; 0 for `definition`."},
-        "applied_limit": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageLimit", "description": "The per-list limit applied."}
+        "applied_limit": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageLimit", "description": "The per-list limit applied."},
+        "graph_expansion": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Whether relations were walked at all: `applied`, `not_requested` for an intent that walks nothing, or `unavailable` when the request named a seed this graph cannot expand. An answer never expands a stale seed silently; `unavailable` is always stated, never implied by an empty list."},
+        "expansion_reason": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Why expansion was unavailable, such as `seed_binding_mismatch`. Present only with `graph_expansion` = `unavailable`."}
       },
-      "required": ["analysis", "complete", "truncated", "depth_bounded", "unattributed_inbound", "applied_depth", "applied_limit"],
+      "required": ["analysis", "complete", "truncated", "depth_bounded", "unattributed_inbound", "applied_depth", "applied_limit", "graph_expansion"],
+      "unevaluatedProperties": false
+    },
+    "CodeContextSeed": {
+      "title": "CodeContextSeed",
+      "description": "A subject selection a lexical or semantic search produced, carrying the analysis it was produced against. A seed is identity only -- keys, and the exact repository, analysed snapshot, producer and profile they were selected from. The read compares that binding with the analysis applicable at the query instant and refuses to expand a seed taken from any other one: an old seed spliced onto a newer graph would walk edges the search never saw.",
+      "type": "object",
+      "properties": {
+        "origin": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "How the seed was selected: `lexical` or `semantic`. Wire-open by shape; semantic validation fails closed on any other value."},
+        "repository_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Repository the seed was selected from."},
+        "snapshot_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Analysed snapshot the seed was selected from."},
+        "producer_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Static analyser whose facts the seed names."},
+        "profile_digest": {"$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum", "description": "Analyser profile the seed was selected under."},
+        "semantic_keys": {"type": "array", "items": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSemanticKey"}, "minItems": 1, "maxItems": 64, "description": "The definitions the search selected, in the caller's own order."}
+      },
+      "required": ["origin", "repository_id", "snapshot_id", "producer_id", "profile_digest", "semantic_keys"],
+      "unevaluatedProperties": false
+    },
+    "CodeSpanContent": {
+      "title": "CodeSpanContent",
+      "description": "The captured source of one disclosed definition, read by content address. The bytes come from the blob the span's `content_digest` names and are verified against that address before they are decoded; the working tree is never read and no absolute path is ever returned. `byte_length` is the span's full length in the captured file, so a `truncated` span states how much of itself it is.",
+      "type": "object",
+      "properties": {
+        "semantic_key": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSemanticKey", "description": "The definition this span was read for."},
+        "source": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSourceSpan", "description": "The span read, exactly as the import retained it."},
+        "byte_length": {"type": "integer", "minimum": 0, "maximum": 1000000000, "description": "Length of the whole span in the captured file, in bytes."},
+        "truncated": {"type": "boolean", "description": "True when `text` carries a prefix of the span rather than all of it."},
+        "text": {"type": "string", "maxLength": 4096, "description": "The captured bytes of the span, decoded as UTF-8."}
+      },
+      "required": ["semantic_key", "source", "byte_length", "truncated", "text"],
+      "unevaluatedProperties": false
+    },
+    "CodeArchitectureContext": {
+      "title": "CodeArchitectureContext",
+      "description": "The task-context and architecture knowledge component of a code context, kept apart from every code fact in the same answer. It is produced by the workspace's own Context Pack authority over independently accepted governed knowledge that carries accepted support, under the caller's own authorisation -- never by reading code facts as prose and never by reading prose as code. A caller that does not independently hold the context authority, or a workspace whose context projection cannot serve one, gets `availability` = `unavailable` with a reason and no members; it never gets a quietly empty component.",
+      "type": "object",
+      "properties": {
+        "availability": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "`available` when `pack` is present, `unavailable` otherwise."},
+        "reason": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "Why no component was produced, such as `subject_not_resolved`, `not_authorised`, `projection_unavailable`, `stale_projection`, `frontier_too_large` or `token_budget_exhausted`. Present only when `availability` is `unavailable`."},
+        "pack": {"$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackBuildResult", "description": "The content-addressed Context Pack this component is, built and judged by the same authority `context_pack.build` uses. Present only when `availability` is `available`."}
+      },
+      "required": ["availability"],
+      "unevaluatedProperties": false
+    },
+    "CodeContext": {
+      "title": "CodeContext",
+      "description": "The `code_context` answer's assembled material: the captured source of the definitions the answer discloses, and the separately labelled architecture component. The graph neighbours are the result's own `symbols` and `relations`, which are accepted static relationships of the one applicable analysis and of no other; nothing in `architecture` is ever a code relationship, and no code fact is ever presented as architecture knowledge.",
+      "type": "object",
+      "properties": {
+        "spans": {"type": "array", "items": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSpanContent"}, "maxItems": 1000, "description": "Captured source for the subject and the neighbours the answer discloses, in the order those definitions appear."},
+        "architecture": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeArchitectureContext", "description": "The independently authorised task-context and architecture component."}
+      },
+      "required": ["spans", "architecture"],
       "unevaluatedProperties": false
     },
     "CodeQueryInput": {
       "title": "CodeQueryInput",
-      "description": "Input for `code.query`. Names one closed intent -- `definition`, `references`, `callers`, `callees` or `dependencies` -- and binds it to exactly one repository, analysed snapshot, producer and profile. The subject is an exact `semantic_key`, a `name` matched exactly against display names, or both (which must then name the same definition). Workspace, principal and authority come from the envelope's authorized context only.",
+      "description": "Input for `code.query`. Names one closed intent -- `definition`, `references`, `callers`, `callees`, `dependencies` or `code_context` -- and binds it to exactly one repository, analysed snapshot, producer and profile. The subject is an exact `semantic_key`, a `name` matched exactly against display names, both (which must then name the same definition), or, for `code_context` only, a `seed` carrying its own binding. Workspace, principal and authority come from the envelope's authorized context only.",
       "type": "object",
       "properties": {
-        "intent": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "One of `definition`, `references`, `callers`, `callees`, `dependencies`. Wire-open by shape; semantic validation fails closed on any other value."},
+        "intent": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "One of `definition`, `references`, `callers`, `callees`, `dependencies`, `code_context`. Wire-open by shape; semantic validation fails closed on any other value."},
         "repository_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Repository to query."},
         "snapshot_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Analysed snapshot the caller expects to be applicable."},
         "producer_id": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier", "description": "Static analyser whose facts to read."},
         "profile_digest": {"$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum", "description": "Analyser profile whose facts to read."},
         "semantic_key": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSemanticKey", "description": "Exact producer key of the subject."},
         "name": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Display name of the subject, matched exactly. Several definitions sharing it are returned as choices, never resolved arbitrarily."},
-        "depth": {"$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphDepthLimit", "description": "Traversal depth for `callers`, `callees` and `dependencies`, 1 (direct) to 8. Absent means 1. Not accepted for `definition` or `references`."},
+        "depth": {"$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphDepthLimit", "description": "Traversal depth for `callers`, `callees`, `dependencies` and `code_context`, 1 (direct) to 8. Absent means 1. Not accepted for `definition` or `references`."},
         "runtime_only": {"type": "boolean", "description": "For `dependencies` only: when true, type-only imports and references are neither returned nor followed. Absent means false."},
-        "limit": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageLimit", "description": "Maximum entries in each returned list. Absent means 100."}
+        "limit": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageLimit", "description": "Maximum entries in each returned list. Absent means 100."},
+        "seed": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeContextSeed", "description": "For `code_context` only: the subject as a lexical or semantic search selected it, with the binding it was selected against."},
+        "context": {"$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackBuildInput", "description": "For `code_context` only, and required by it: the task-context request the architecture component is built from, in the Context Pack authority's own input shape."}
       },
       "required": ["intent", "repository_id", "snapshot_id", "producer_id", "profile_digest"],
       "unevaluatedProperties": false
     },
     "CodeQueryResult": {
       "title": "CodeQueryResult",
-      "description": "Result of `code.query`. `resolution` says how the subject was found: `semantic_key`, `unique_name`, or `ambiguous` -- in which case `definitions` lists every qualified choice in key order and nothing was traversed. Otherwise `definitions` holds the one subject, `symbols` the definitions the intent reached (by depth, then key), `relations` the accepted static relationships followed (by depth, source, type, target, edge key) and `diagnostics` the unaccepted candidates that bear on the answer (by edge key). An analysis that is missing or not the applicable one is refused, never answered empty.",
+      "description": "Result of `code.query`. `resolution` says how the subject was found: `semantic_key`, `unique_name`, `ambiguous` -- in which case `definitions` lists every qualified choice in key order and nothing was traversed -- or `seed_not_applicable`, when a seed named another analysis than the applicable one and nothing was traversed or disclosed. Otherwise `definitions` holds the one subject, `symbols` the definitions the intent reached (by depth, then key), `relations` the accepted static relationships followed (by depth, source, type, target, edge key) and `diagnostics` the unaccepted candidates that bear on the answer (by edge key). An analysis that is missing or not the applicable one is refused, never answered empty, and so is an answer whose disclosed members stopped being visible to the caller while it was being assembled.",
       "type": "object",
       "properties": {
         "intent": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "The intent answered."},
         "binding": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeAnalysisBinding", "description": "The one import the answer was read from."},
-        "resolution": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "`semantic_key`, `unique_name` or `ambiguous`."},
+        "resolution": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode", "description": "`semantic_key`, `unique_name`, `ambiguous` or `seed_not_applicable`."},
         "definitions": {"type": "array", "items": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSymbol"}, "maxItems": 1000, "description": "The subject, or every ambiguous choice."},
         "symbols": {"type": "array", "items": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSymbol"}, "maxItems": 1000, "description": "Definitions the intent reached."},
         "relations": {"type": "array", "items": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeRelation"}, "maxItems": 1000, "description": "Accepted static relationships followed."},
         "diagnostics": {"type": "array", "items": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeDiagnostic"}, "maxItems": 1000, "description": "Unaccepted candidates bearing on the answer; coverage only."},
         "coverage": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryCoverage", "description": "What the answer covers."},
-        "freshness": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionFreshness", "description": "The read point: the query instant and the watermark of the facts read."}
+        "freshness": {"$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionFreshness", "description": "The read point: the query instant and the watermark of the facts read."},
+        "context": {"$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeContext", "description": "The assembled code context. Present only for the `code_context` intent."}
       },
       "required": ["intent", "binding", "resolution", "definitions", "symbols", "relations", "diagnostics", "coverage", "freshness"],
       "unevaluatedProperties": false

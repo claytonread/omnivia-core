@@ -1728,6 +1728,12 @@ def test_e3_the_retrieval_version_has_a_non_circular_source_at_last(
     the context -- read off the handler's own syntax -- and it is not the determinism
     file's fixture label, which is what a value taken from a caller would still have been.
 
+    Since W13-B the shared authority takes the version as a parameter, because
+    `code.query`'s `code_context` intent composes a pack over a retrieval of its own; the
+    syntax walked below follows that, from `context_pack_build`'s own call through to the
+    builder's context. Both hops are checked, because a constant published here and then
+    dropped on the way is the same defect as one read off a request.
+
     Falsifier: make `retrieval_version` a field of the request payload or of
     `OperationContext` and the AST assertion fails while every value-level assertion here
     still passes.
@@ -1740,20 +1746,30 @@ def test_e3_the_retrieval_version_has_a_non_circular_source_at_last(
     )
     assert CONTEXT_PACK_RETRIEVAL_VERSION != "retrieval-1"
 
-    call = next(
-        node
-        for node in ast.walk(ast.parse(inspect.getsource(handler_module)))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "ContextPackBuildContext"
-    )
-    supplied = next(
-        keyword.value
-        for keyword in call.keywords
-        if keyword.arg == "retrieval_version"
-    )
-    assert isinstance(supplied, ast.Name)
-    assert supplied.id == "CONTEXT_PACK_RETRIEVAL_VERSION"
+    syntax = ast.parse(inspect.getsource(handler_module))
+
+    def supplied(callee: str) -> ast.expr:
+        call = next(
+            node
+            for node in ast.walk(syntax)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == callee
+        )
+        return next(
+            keyword.value
+            for keyword in call.keywords
+            if keyword.arg == "retrieval_version"
+        )
+
+    # The operation names its own constant; the authority passes that parameter on.
+    for callee, name in (
+        ("build_task_context", "CONTEXT_PACK_RETRIEVAL_VERSION"),
+        ("ContextPackBuildContext", "retrieval_version"),
+    ):
+        value = supplied(callee)
+        assert isinstance(value, ast.Name)
+        assert value.id == name
 
 
 def test_e4_the_frontier_the_selection_and_the_omissions_balance_by_identity(

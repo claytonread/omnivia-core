@@ -1501,6 +1501,18 @@
     "CodeQueryCoverage": {
       "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryCoverage"
     },
+    "CodeContextSeed": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeContextSeed"
+    },
+    "CodeSpanContent": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSpanContent"
+    },
+    "CodeArchitectureContext": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeArchitectureContext"
+    },
+    "CodeContext": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeContext"
+    },
     "CodeQueryInput": {
       "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryInput"
     },

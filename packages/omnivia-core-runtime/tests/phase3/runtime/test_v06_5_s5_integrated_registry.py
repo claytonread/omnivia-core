@@ -50,7 +50,7 @@ ARCHITECTURE_TRACEABILITY = (
     REPO_ROOT
     / "tests/fixtures/service_conformance/architecture-gate-traceability-v1.json"
 )
-CORPUS_SHA256 = "f31de80f04100aff08128639d8b47209aa1ae796f517230ed38b85c764ba5af7"
+CORPUS_SHA256 = "91a91f36b956f74a51f1d7551e7c1b450901822973beb22709468a2a3229f3f0"
 ADAPTERS = ("in_process", "ipc", "http")
 
 
@@ -224,7 +224,7 @@ def test_v06_5_s5_operation_traceability_complete() -> None:
     corpus = _document(CORPUS)
     case_names = {case["operation"] for case in corpus["cases"]}
     assert case_names == APPLICATION_OPERATIONS
-    assert len(corpus["cases"]) == 232
+    assert len(corpus["cases"]) == 233
 
 
 def test_v06_5_s5_architecture_gate_traceability_complete() -> None:
@@ -246,7 +246,7 @@ def test_v06_5_s5_candidate_head_tree_and_corpus_digest() -> None:
     assert hashlib.sha256(CORPUS.read_bytes()).hexdigest() == CORPUS_SHA256
     operation = _document(OPERATION_TRACEABILITY)
     architecture = _document(ARCHITECTURE_TRACEABILITY)
-    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 696
+    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 699
     assert architecture["operation_traceability"]["file"] == (
         "tests/fixtures/service_conformance/operation-traceability-v1.json"
     )

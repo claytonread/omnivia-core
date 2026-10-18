@@ -214,6 +214,8 @@ def seal(
     endpoint_recorded_at_us: int | None = None,
     seal_governed: bool = True,
     candidate_layer: bool = True,
+    evidence_id: str = "evd-0001",
+    normalized: bool = True,
 ) -> None:
     """One record's whole accepted lineage: a sealed candidate, then the sealed, accepted,
     canonical governed version promoted from it.
@@ -298,7 +300,11 @@ def seal(
                     correlation_id=audit_ref,
                 ),
             )
-            m3.insert(holder.connection, m3.LINKS, m3.link_row(proposed, candidate_assembly))
+            m3.insert(
+                holder.connection,
+                m3.LINKS,
+                m3.link_row(proposed, candidate_assembly, evidence_id=evidence_id, normalized=normalized),
+            )
             if endpoint is not None:
                 asserted = f"ev-{candidate_assembly}-asserted"
                 m3.insert(
@@ -314,7 +320,11 @@ def seal(
                         correlation_id=audit_ref,
                     ),
                 )
-                m3.insert(holder.connection, m3.LINKS, m3.link_row(asserted, candidate_assembly))
+                m3.insert(
+                    holder.connection,
+                    m3.LINKS,
+                    m3.link_row(asserted, candidate_assembly, evidence_id=evidence_id, normalized=normalized),
+                )
                 write_endpoint(candidate_assembly, asserted)
             m3.insert(
                 holder.connection,
@@ -366,7 +376,11 @@ def seal(
                 predecessor_version_id=candidate_version,
             ),
         )
-        m3.insert(holder.connection, m3.LINKS, m3.link_row(accepted, governed_assembly))
+        m3.insert(
+            holder.connection,
+            m3.LINKS,
+            m3.link_row(accepted, governed_assembly, evidence_id=evidence_id, normalized=normalized),
+        )
         if endpoint is not None:
             asserted = f"ev-{governed_assembly}-asserted"
             m3.insert(
@@ -385,7 +399,11 @@ def seal(
                     actor_role="reviewer",
                 ),
             )
-            m3.insert(holder.connection, m3.LINKS, m3.link_row(asserted, governed_assembly))
+            m3.insert(
+                holder.connection,
+                m3.LINKS,
+                m3.link_row(asserted, governed_assembly, evidence_id=evidence_id, normalized=normalized),
+            )
             write_endpoint(governed_assembly, asserted)
         if seal_governed:
             seal_row = m3.seal_row(

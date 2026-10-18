@@ -3986,10 +3986,12 @@ export interface CodeAnalysisBinding {
 
 /**
  * What the answer does and does not cover. `analysis` is always `static`: these are facts a
- * static analyser read from source, not runtime behaviour and not test coverage. `complete` is
- * false when anything bounded the answer: a limit, the depth, or diagnostics that bear on the
- * subject. `unattributed_inbound` is true for inbound intents, because an unresolved or dynamic
- * occurrence elsewhere cannot be attributed to this subject by static analysis.
+ * static analyser read from source, not runtime behaviour and not test coverage -- a reference
+ * an accepted fact reads out of a test file is a static reference like any other and is never a
+ * statement that the subject is exercised at run time. `complete` is false when anything bounded
+ * the answer: a limit, the depth, diagnostics that bear on the subject, or graph expansion that
+ * did not run. `unattributed_inbound` is true for inbound intents, because an unresolved or
+ * dynamic occurrence elsewhere cannot be attributed to this subject by static analysis.
  */
 export interface CodeQueryCoverage {
   /**
@@ -3997,7 +3999,7 @@ export interface CodeQueryCoverage {
    */
   readonly analysis: OpenCode;
   /**
-   * True only when no limit, depth or diagnostic bounded the answer.
+   * True only when no limit, depth, diagnostic or unavailable expansion bounded the answer.
    */
   readonly complete: boolean;
   /**
@@ -4021,60 +4023,53 @@ export interface CodeQueryCoverage {
    * The per-list limit applied.
    */
   readonly applied_limit: PageLimit;
+  /**
+   * Whether relations were walked at all: `applied`, `not_requested` for an intent that walks
+   * nothing, or `unavailable` when the request named a seed this graph cannot expand. An
+   * answer never expands a stale seed silently; `unavailable` is always stated, never implied
+   * by an empty list.
+   */
+  readonly graph_expansion: OpenCode;
+  /**
+   * Why expansion was unavailable, such as `seed_binding_mismatch`. Present only with
+   * `graph_expansion` = `unavailable`.
+   */
+  readonly expansion_reason?: OpenCode;
 }
 
 /**
- * Input for `code.query`. Names one closed intent -- `definition`, `references`, `callers`,
- * `callees` or `dependencies` -- and binds it to exactly one repository, analysed snapshot,
- * producer and profile. The subject is an exact `semantic_key`, a `name` matched exactly against
- * display names, or both (which must then name the same definition). Workspace, principal and
- * authority come from the envelope's authorized context only.
+ * A subject selection a lexical or semantic search produced, carrying the analysis it was
+ * produced against. A seed is identity only -- keys, and the exact repository, analysed
+ * snapshot, producer and profile they were selected from. The read compares that binding with
+ * the analysis applicable at the query instant and refuses to expand a seed taken from any other
+ * one: an old seed spliced onto a newer graph would walk edges the search never saw.
  */
-export interface CodeQueryInput {
+export interface CodeContextSeed {
   /**
-   * One of `definition`, `references`, `callers`, `callees`, `dependencies`. Wire-open by
-   * shape; semantic validation fails closed on any other value.
+   * How the seed was selected: `lexical` or `semantic`. Wire-open by shape; semantic
+   * validation fails closed on any other value.
    */
-  readonly intent: OpenCode;
+  readonly origin: OpenCode;
   /**
-   * Repository to query.
+   * Repository the seed was selected from.
    */
   readonly repository_id: Identifier;
   /**
-   * Analysed snapshot the caller expects to be applicable.
+   * Analysed snapshot the seed was selected from.
    */
   readonly snapshot_id: Identifier;
   /**
-   * Static analyser whose facts to read.
+   * Static analyser whose facts the seed names.
    */
   readonly producer_id: Identifier;
   /**
-   * Analyser profile whose facts to read.
+   * Analyser profile the seed was selected under.
    */
   readonly profile_digest: ContentChecksum;
   /**
-   * Exact producer key of the subject.
+   * The definitions the search selected, in the caller's own order.
    */
-  readonly semantic_key?: CodeSemanticKey;
-  /**
-   * Display name of the subject, matched exactly. Several definitions sharing it are returned
-   * as choices, never resolved arbitrarily.
-   */
-  readonly name?: string;
-  /**
-   * Traversal depth for `callers`, `callees` and `dependencies`, 1 (direct) to 8. Absent means
-   * 1. Not accepted for `definition` or `references`.
-   */
-  readonly depth?: GraphDepthLimit;
-  /**
-   * For `dependencies` only: when true, type-only imports and references are neither returned
-   * nor followed. Absent means false.
-   */
-  readonly runtime_only?: boolean;
-  /**
-   * Maximum entries in each returned list. Absent means 100.
-   */
-  readonly limit?: PageLimit;
+  readonly semantic_keys: readonly CodeSemanticKey[];
 }
 
 /**
@@ -8988,6 +8983,101 @@ export interface CodeDiagnostic {
 }
 
 /**
+ * The captured source of one disclosed definition, read by content address. The bytes come from
+ * the blob the span's `content_digest` names and are verified against that address before they
+ * are decoded; the working tree is never read and no absolute path is ever returned.
+ * `byte_length` is the span's full length in the captured file, so a `truncated` span states how
+ * much of itself it is.
+ */
+export interface CodeSpanContent {
+  /**
+   * The definition this span was read for.
+   */
+  readonly semantic_key: CodeSemanticKey;
+  /**
+   * The span read, exactly as the import retained it.
+   */
+  readonly source: CodeSourceSpan;
+  /**
+   * Length of the whole span in the captured file, in bytes.
+   */
+  readonly byte_length: number;
+  /**
+   * True when `text` carries a prefix of the span rather than all of it.
+   */
+  readonly truncated: boolean;
+  /**
+   * The captured bytes of the span, decoded as UTF-8.
+   */
+  readonly text: string;
+}
+
+/**
+ * Input for `code.query`. Names one closed intent -- `definition`, `references`, `callers`,
+ * `callees`, `dependencies` or `code_context` -- and binds it to exactly one repository,
+ * analysed snapshot, producer and profile. The subject is an exact `semantic_key`, a `name`
+ * matched exactly against display names, both (which must then name the same definition), or,
+ * for `code_context` only, a `seed` carrying its own binding. Workspace, principal and authority
+ * come from the envelope's authorized context only.
+ */
+export interface CodeQueryInput {
+  /**
+   * One of `definition`, `references`, `callers`, `callees`, `dependencies`, `code_context`.
+   * Wire-open by shape; semantic validation fails closed on any other value.
+   */
+  readonly intent: OpenCode;
+  /**
+   * Repository to query.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * Analysed snapshot the caller expects to be applicable.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Static analyser whose facts to read.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * Analyser profile whose facts to read.
+   */
+  readonly profile_digest: ContentChecksum;
+  /**
+   * Exact producer key of the subject.
+   */
+  readonly semantic_key?: CodeSemanticKey;
+  /**
+   * Display name of the subject, matched exactly. Several definitions sharing it are returned
+   * as choices, never resolved arbitrarily.
+   */
+  readonly name?: string;
+  /**
+   * Traversal depth for `callers`, `callees`, `dependencies` and `code_context`, 1 (direct) to
+   * 8. Absent means 1. Not accepted for `definition` or `references`.
+   */
+  readonly depth?: GraphDepthLimit;
+  /**
+   * For `dependencies` only: when true, type-only imports and references are neither returned
+   * nor followed. Absent means false.
+   */
+  readonly runtime_only?: boolean;
+  /**
+   * Maximum entries in each returned list. Absent means 100.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * For `code_context` only: the subject as a lexical or semantic search selected it, with the
+   * binding it was selected against.
+   */
+  readonly seed?: CodeContextSeed;
+  /**
+   * For `code_context` only, and required by it: the task-context request the architecture
+   * component is built from, in the Context Pack authority's own input shape.
+   */
+  readonly context?: ContextPackBuildInput;
+}
+
+/**
  * Server-produced, validated authority actually applied to a request. This is the only authority
  * statement a client may trust.
  */
@@ -11897,54 +11987,6 @@ export interface AnalysisStartInput {
 }
 
 /**
- * Result of `code.query`. `resolution` says how the subject was found: `semantic_key`,
- * `unique_name`, or `ambiguous` -- in which case `definitions` lists every qualified choice in
- * key order and nothing was traversed. Otherwise `definitions` holds the one subject, `symbols`
- * the definitions the intent reached (by depth, then key), `relations` the accepted static
- * relationships followed (by depth, source, type, target, edge key) and `diagnostics` the
- * unaccepted candidates that bear on the answer (by edge key). An analysis that is missing or
- * not the applicable one is refused, never answered empty.
- */
-export interface CodeQueryResult {
-  /**
-   * The intent answered.
-   */
-  readonly intent: OpenCode;
-  /**
-   * The one import the answer was read from.
-   */
-  readonly binding: CodeAnalysisBinding;
-  /**
-   * `semantic_key`, `unique_name` or `ambiguous`.
-   */
-  readonly resolution: OpenCode;
-  /**
-   * The subject, or every ambiguous choice.
-   */
-  readonly definitions: readonly CodeSymbol[];
-  /**
-   * Definitions the intent reached.
-   */
-  readonly symbols: readonly CodeSymbol[];
-  /**
-   * Accepted static relationships followed.
-   */
-  readonly relations: readonly CodeRelation[];
-  /**
-   * Unaccepted candidates bearing on the answer; coverage only.
-   */
-  readonly diagnostics: readonly CodeDiagnostic[];
-  /**
-   * What the answer covers.
-   */
-  readonly coverage: CodeQueryCoverage;
-  /**
-   * The read point: the query instant and the watermark of the facts read.
-   */
-  readonly freshness: ProjectionFreshness;
-}
-
-/**
  * Everything a caller needs to reason about what this server accepted and what it can do.
  * Returned on every response, success or error.
  */
@@ -14357,6 +14399,33 @@ export interface MemorySearchResult {
 }
 
 /**
+ * The task-context and architecture knowledge component of a code context, kept apart from every
+ * code fact in the same answer. It is produced by the workspace's own Context Pack authority
+ * over independently accepted governed knowledge that carries accepted support, under the
+ * caller's own authorisation -- never by reading code facts as prose and never by reading prose
+ * as code. A caller that does not independently hold the context authority, or a workspace whose
+ * context projection cannot serve one, gets `availability` = `unavailable` with a reason and no
+ * members; it never gets a quietly empty component.
+ */
+export interface CodeArchitectureContext {
+  /**
+   * `available` when `pack` is present, `unavailable` otherwise.
+   */
+  readonly availability: OpenCode;
+  /**
+   * Why no component was produced, such as `subject_not_resolved`, `not_authorised`,
+   * `projection_unavailable`, `stale_projection`, `frontier_too_large` or
+   * `token_budget_exhausted`. Present only when `availability` is `unavailable`.
+   */
+  readonly reason?: OpenCode;
+  /**
+   * The content-addressed Context Pack this component is, built and judged by the same
+   * authority `context_pack.build` uses. Present only when `availability` is `available`.
+   */
+  readonly pack?: ContextPackBuildResult;
+}
+
+/**
  * Result of `graph.traverse`: the traversed nodes and edges, the traversal limits actually
  * applied (which may be tighter than requested but never looser), the projection
  * metadata/watermark this traversal was served from, and deterministic ordering evidence.
@@ -14413,6 +14482,80 @@ export interface GraphTraversalResult {
    * so a caller reads the same shape here as on every other paginated result in this contract.
    */
   readonly page: PageMetadata;
+}
+
+/**
+ * The `code_context` answer's assembled material: the captured source of the definitions the
+ * answer discloses, and the separately labelled architecture component. The graph neighbours are
+ * the result's own `symbols` and `relations`, which are accepted static relationships of the one
+ * applicable analysis and of no other; nothing in `architecture` is ever a code relationship,
+ * and no code fact is ever presented as architecture knowledge.
+ */
+export interface CodeContext {
+  /**
+   * Captured source for the subject and the neighbours the answer discloses, in the order
+   * those definitions appear.
+   */
+  readonly spans: readonly CodeSpanContent[];
+  /**
+   * The independently authorised task-context and architecture component.
+   */
+  readonly architecture: CodeArchitectureContext;
+}
+
+/**
+ * Result of `code.query`. `resolution` says how the subject was found: `semantic_key`,
+ * `unique_name`, `ambiguous` -- in which case `definitions` lists every qualified choice in key
+ * order and nothing was traversed -- or `seed_not_applicable`, when a seed named another
+ * analysis than the applicable one and nothing was traversed or disclosed. Otherwise
+ * `definitions` holds the one subject, `symbols` the definitions the intent reached (by depth,
+ * then key), `relations` the accepted static relationships followed (by depth, source, type,
+ * target, edge key) and `diagnostics` the unaccepted candidates that bear on the answer (by edge
+ * key). An analysis that is missing or not the applicable one is refused, never answered empty,
+ * and so is an answer whose disclosed members stopped being visible to the caller while it was
+ * being assembled.
+ */
+export interface CodeQueryResult {
+  /**
+   * The intent answered.
+   */
+  readonly intent: OpenCode;
+  /**
+   * The one import the answer was read from.
+   */
+  readonly binding: CodeAnalysisBinding;
+  /**
+   * `semantic_key`, `unique_name`, `ambiguous` or `seed_not_applicable`.
+   */
+  readonly resolution: OpenCode;
+  /**
+   * The subject, or every ambiguous choice.
+   */
+  readonly definitions: readonly CodeSymbol[];
+  /**
+   * Definitions the intent reached.
+   */
+  readonly symbols: readonly CodeSymbol[];
+  /**
+   * Accepted static relationships followed.
+   */
+  readonly relations: readonly CodeRelation[];
+  /**
+   * Unaccepted candidates bearing on the answer; coverage only.
+   */
+  readonly diagnostics: readonly CodeDiagnostic[];
+  /**
+   * What the answer covers.
+   */
+  readonly coverage: CodeQueryCoverage;
+  /**
+   * The read point: the query instant and the watermark of the facts read.
+   */
+  readonly freshness: ProjectionFreshness;
+  /**
+   * The assembled code context. Present only for the `code_context` intent.
+   */
+  readonly context?: CodeContext;
 }
 
 /**

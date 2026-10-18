@@ -1,4 +1,4 @@
-"""One applicable code-analysis import, read as a value for `code.query` (W13-A).
+"""One applicable code-analysis import, read as a value for `code.query` (W13-A/W13-B).
 
 `code_analysis_import.py` writes accepted code facts as ordinary 0009 governed entities and
 relations and 0074 decides, at read time, which import is applicable for a repository,
@@ -26,6 +26,13 @@ Everything is read inside one transaction -- the activation, the resolved versio
 members, the endpoints and the diagnostics -- so a cutover committed mid-read is wholly
 visible or wholly invisible. Every statement runs under `authorised(..., mutations=False,
 ddl=False)`; there is no writer here.
+
+:class:`CapturedSource` is the second read this module owns, and it touches no database
+at all: given a fact's own `source` document it returns that span's captured bytes, from
+the blob its `content_digest` names and verified against that address. It is here rather
+than in the handler because it is the same content-addressed read the producers and the
+import seam perform, and because "a code span is bytes the snapshot captured, never the
+working tree" is a storage rule.
 """
 
 from __future__ import annotations
@@ -34,13 +41,19 @@ import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
 
+from omnivia_core_runtime.storage.code_analysis_candidates import (
+    CodeAnalysisCandidateError,
+)
 from omnivia_core_runtime.storage.code_analysis_import import (
     CODE_RELATION_TYPES,
     DOMAIN_SCOPE,
+    MAX_FILE_BYTES,
 )
+from omnivia_core_runtime.storage.code_analysis_python import _captured_bytes
 from omnivia_core_runtime.storage.connection import authorised
 from omnivia_core_runtime.storage.governed import resolve_governed_versions
 
@@ -236,9 +249,102 @@ def read_code_graph(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class CapturedSpan:
+    """One span's captured bytes, and how long the whole span is."""
+
+    text: str
+    byte_length: int
+    truncated: bool
+
+
+class CapturedSource:
+    """The captured source of one analysis, read by content address and verified.
+
+    The only input is the `sha256:` address an accepted fact retained. The working tree is
+    never opened, no caller-supplied path is ever resolved, and :func:`_captured_bytes`
+    -- the same reader the producers and the W12 import seam use -- opens the object with
+    `O_NOFOLLOW`, re-checks it through the descriptor and refuses bytes that do not hash
+    to the address they were read from. A fact whose captured object is gone, replaced or
+    oversize yields no span rather than a span of something else.
+
+    One instance per query, holding one file's bytes at a time per address, because a
+    context discloses several definitions of the same file and verification is a
+    whole-file hash either way.
+
+    **The producers disagree about byte offsets, and this is where that is absorbed.** A
+    locator that carries a half-open `[start_byte, end_byte)` range slices exactly that;
+    one that does not -- the Python producer records none -- is read as the whole lines
+    `start_line` through `end_line`. Columns are deliberately not used for slicing: the
+    contract says they are in *the producer's stated column basis*, and a basis this
+    module would have to guess is a basis it would sometimes guess wrong.
+    """
+
+    def __init__(self, blobs_root: Path) -> None:
+        self._root = blobs_root
+        self._files: dict[str, bytes | None] = {}
+
+    def _content(self, digest: str) -> bytes | None:
+        if digest not in self._files:
+            try:
+                self._files[digest] = _captured_bytes(
+                    self._root, digest, max_bytes=MAX_FILE_BYTES
+                )
+            except CodeAnalysisCandidateError:
+                self._files[digest] = None
+        return self._files[digest]
+
+    def span(self, source: Mapping[str, Any], *, max_bytes: int) -> CapturedSpan | None:
+        """The captured text of one fact's `source` document, or None if unreadable."""
+        content = self._content(str(source["content_digest"]))
+        if content is None:
+            return None
+        locator = source["locator"]
+        start, end = locator.get("start_byte"), locator.get("end_byte")
+        if start is None or end is None:
+            bounds = _line_bounds(content, locator["start_line"], locator["end_line"])
+            if bounds is None:
+                return None
+            start, end = bounds
+        if not 0 <= start <= end <= len(content):
+            return None
+        text = _decoded(content[start : min(end, start + max_bytes)])
+        if text is None:
+            return None
+        return CapturedSpan(
+            text=text, byte_length=end - start, truncated=end - start > max_bytes
+        )
+
+
+def _line_bounds(content: bytes, start_line: int, end_line: int) -> tuple[int, int] | None:
+    """Byte offsets of whole lines `start_line`..`end_line`, both one-based inclusive."""
+    lines = content.split(b"\n")
+    if not 1 <= start_line <= end_line <= len(lines):
+        return None
+    start = sum(len(line) + 1 for line in lines[: start_line - 1])
+    return start, sum(len(line) + 1 for line in lines[:end_line]) - 1
+
+
+def _decoded(chunk: bytes) -> str | None:
+    """`chunk` as UTF-8, stepping back off a character the byte ceiling cut in half.
+
+    At most three steps, because that is the longest UTF-8 sequence a cut can land
+    inside. A chunk still undecodable after them is not a truncation artefact -- it is
+    not UTF-8 source -- and yields no span at all.
+    """
+    for trimmed in range(4):
+        try:
+            return chunk[: len(chunk) - trimmed].decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
 __all__ = [
     "NOT_READY_NO_ACTIVE_IMPORT",
     "NOT_READY_SNAPSHOT_NOT_ACTIVE",
+    "CapturedSource",
+    "CapturedSpan",
     "CodeAnalysisNotReady",
     "CodeEdge",
     "CodeFact",

@@ -204,6 +204,67 @@ def read_evidence_candidates(
     )
 
 
+def read_evidence_labels(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> dict[str, tuple[str, ...]]:
+    """Each evidence artifact's effective permission labels, by evidence id.
+
+    The ACL input of :func:`read_evidence_candidates` without the artifacts: the same
+    stream, the same sequence-ordered fold, and nothing hydrated. A revalidation that
+    only has to re-ask *"may this principal still see these artifacts?"* reads this
+    rather than rebuilding every candidate DTO to look at one tuple on each.
+    """
+    with authorised(connection, mutations=False, ddl=False) as fenced:
+        rows = fenced.execute(
+            "SELECT evidence_id, label_sequence, label_action, permission_label "
+            "FROM omnivia_evidence_permission_labels WHERE workspace_id = ? "
+            "ORDER BY evidence_id ASC, label_sequence ASC",
+            (workspace_id,),
+        ).fetchall()
+    return _fold_labels(rows)
+
+
+def read_governed_record_labels(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    """Each governed version's effective evidence labels, by `(record id, version)`.
+
+    The L2 half of the ACL input :func:`read_evidence_candidates` reads for L0, and the
+    same fold: 0009 links every assembly to the evidence its provenance event cites, and
+    0008 records the label events on those artifacts. This returns the *union* of the
+    labels of every artifact a version cites, because a grant admits that version only if
+    it holds every label every one of those artifacts carries -- and over a grant that is
+    a label set, `all(permits(labels_i))` and `permits(union)` are the same test. Writing
+    it as the union keeps the result one tuple per version rather than one per citation.
+
+    A version with no linked evidence, or whose evidence carries no label, is absent from
+    the mapping. That is not a gap: `EvidenceLabelGrant.permits(())` admits it, which is
+    the right answer for a version carrying no restriction at all.
+
+    Like `read_evidence_candidates`, this decides nothing. It returns the labels; the
+    caller holds the grant and evaluates it, so the ACL stage stays in one place.
+    """
+    labels = read_evidence_labels(connection, workspace_id=workspace_id)
+    with authorised(connection, mutations=False, ddl=False) as fenced:
+        link_rows = fenced.execute(
+            "SELECT a.governed_record_id, a.governed_record_version_id, l.evidence_id "
+            "FROM omnivia_governed_version_assemblies a "
+            "JOIN omnivia_governed_version_evidence_links l "
+            "  ON l.workspace_id = a.workspace_id AND l.assembly_id = a.assembly_id "
+            "WHERE a.workspace_id = ? "
+            "ORDER BY a.governed_record_id ASC, a.governed_record_version_id ASC, "
+            "         l.evidence_id ASC",
+            (workspace_id,),
+        ).fetchall()
+
+    held: dict[tuple[str, str], set[str]] = {}
+    for record_id, version_id, evidence_id in link_rows:
+        carried = labels.get(str(evidence_id))
+        if carried:
+            held.setdefault((str(record_id), str(version_id)), set()).update(carried)
+    return {key: tuple(sorted(value)) for key, value in held.items()}
+
+
 def _fold_labels(rows: list[Any]) -> dict[str, tuple[str, ...]]:
     """Reduce the label event stream to each artifact's effective label set.
 
@@ -373,4 +434,6 @@ __all__ = [
     "authoritative_checkpoint",
     "projection_readiness",
     "read_evidence_candidates",
+    "read_evidence_labels",
+    "read_governed_record_labels",
 ]

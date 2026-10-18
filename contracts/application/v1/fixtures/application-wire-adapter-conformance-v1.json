@@ -1090,7 +1090,9 @@
     },
     {
       "description": "document.capture admits one immutable transferred snapshot.",
-      "expect": {"branch": "success"},
+      "expect": {
+        "branch": "success"
+      },
       "id": "document.capture/primary-success",
       "operation": "document.capture",
       "request": {
@@ -1100,23 +1102,43 @@
           "media_type": "text/plain",
           "requested_source_identity": "source-1",
           "intent_kind": "new_capture",
-          "base": {"kind": "creation"},
+          "base": {
+            "kind": "creation"
+          },
           "target_binding_revision": "target-binding-1",
-          "processing_profile": {"profile_ref": "profile-1", "revision": "revision-1"},
-          "original_binding": {"owner_ref": "access-1", "generation": 1, "route_kind": "direct_file"},
+          "processing_profile": {
+            "profile_ref": "profile-1",
+            "revision": "revision-1"
+          },
+          "original_binding": {
+            "owner_ref": "access-1",
+            "generation": 1,
+            "route_kind": "direct_file"
+          },
           "display_name": "hello.txt"
         },
         "metadata": {
           "idempotency_key": "idem-document.capture",
           "request_id": "req-document.capture-success",
-          "required_capabilities": [{"id": "evidence.write", "minimum_version": "1.0", "required": true}],
-          "scopes": ["memory:write"],
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
           "workspace_id": "ws-1"
         },
         "operation": "document.capture"
       },
       "response": {
-        "metadata": {"audit_reference": "audit-document.capture", "request_id": "req-document.capture-success"},
+        "metadata": {
+          "audit_reference": "audit-document.capture",
+          "request_id": "req-document.capture-success"
+        },
         "result": {
           "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "document_id": "doc-1",
@@ -1130,27 +1152,43 @@
     },
     {
       "description": "document.reprocess creates one terminal extraction over retained capture bytes.",
-      "expect": {"branch": "success"},
+      "expect": {
+        "branch": "success"
+      },
       "id": "document.reprocess/primary-success",
       "operation": "document.reprocess",
       "request": {
         "input": {
           "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "processing_profile": {"profile_ref": "profile-2", "revision": "revision-1",
-                                 "expected_profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+          "processing_profile": {
+            "profile_ref": "profile-2",
+            "revision": "revision-1",
+            "expected_profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
           "expected_base": {}
         },
         "metadata": {
           "idempotency_key": "idem-document.reprocess",
           "request_id": "req-document.reprocess-success",
-          "required_capabilities": [{"id": "evidence.write", "minimum_version": "1.0", "required": true}],
-          "scopes": ["memory:write"],
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
           "workspace_id": "ws-1"
         },
         "operation": "document.reprocess"
       },
       "response": {
-        "metadata": {"audit_reference": "audit-document.reprocess", "request_id": "req-document.reprocess-success"},
+        "metadata": {
+          "audit_reference": "audit-document.reprocess",
+          "request_id": "req-document.reprocess-success"
+        },
         "result": {
           "extraction_revision_id": "dext-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "document_id": "doc-1",
@@ -1165,21 +1203,37 @@
     },
     {
       "description": "document.history reads one page of a document's two separate histories: one immutable source capture, which is the current source head and offers reprocessing, and one extraction revision, which is the current extraction head. A continuation token is issued because at least one history has more to read.",
-      "expect": {"branch": "success"},
+      "expect": {
+        "branch": "success"
+      },
       "id": "document.history/primary-success",
       "operation": "document.history",
       "request": {
-        "input": {"document_id": "doc-1", "limit": 1},
+        "input": {
+          "document_id": "doc-1",
+          "limit": 1
+        },
         "metadata": {
           "request_id": "req-document.history-success",
-          "required_capabilities": [{"id": "evidence.read", "minimum_version": "1.0", "required": true}],
-          "scopes": ["memory:read"],
+          "required_capabilities": [
+            {
+              "id": "evidence.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:read"
+          ],
           "workspace_id": "ws-1"
         },
         "operation": "document.history"
       },
       "response": {
-        "metadata": {"audit_reference": "audit-document.history", "request_id": "req-document.history-success"},
+        "metadata": {
+          "audit_reference": "audit-document.history",
+          "request_id": "req-document.history-success"
+        },
         "result": {
           "document_id": "doc-1",
           "created_at": "2026-10-05T09:00:00Z",
@@ -1214,11 +1268,19 @@
               "retention_state": "retained",
               "capture_retention_generation": 1,
               "source_removal_generation": 1,
-              "requested_profile": {"profile_ref": "document-default", "revision": "1"},
+              "requested_profile": {
+                "profile_ref": "document-default",
+                "revision": "1"
+              },
               "processing_state": "settled",
               "captured_at": "2026-10-05T09:00:30Z",
               "retention_changed_at": "2026-10-05T09:00:30Z",
-              "actions": [{"action": "reprocess_captured_copy", "available": true}],
+              "actions": [
+                {
+                  "action": "reprocess_captured_copy",
+                  "available": true
+                }
+              ],
               "reprocess_profiles": [
                 {
                   "profile_ref": "document-default",
@@ -1254,8 +1316,15 @@
             }
           ],
           "extraction_count": 2,
-          "actions": [{"action": "refresh_original", "available": true}],
-          "page": {"continuation_token": "cursor-document.history-1"}
+          "actions": [
+            {
+              "action": "refresh_original",
+              "available": true
+            }
+          ],
+          "page": {
+            "continuation_token": "cursor-document.history-1"
+          }
         }
       }
     },
@@ -3719,112 +3788,230 @@
     },
     {
       "description": "document.capture exact replay returns the stored canonical receipt.",
-      "expect": {"branch": "success", "idempotency": "replay", "replay_of": "document.capture/primary-success"},
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "document.capture/primary-success"
+      },
       "id": "document.capture/honest-replay",
       "operation": "document.capture",
       "request": {
         "input": {
-          "document_id": "doc-1", "content_base64": "aGVsbG8=", "media_type": "text/plain",
-          "requested_source_identity": "source-1", "intent_kind": "new_capture",
-          "base": {"kind": "creation"}, "target_binding_revision": "target-binding-1",
-          "processing_profile": {"profile_ref": "profile-1", "revision": "revision-1"},
-          "original_binding": {"owner_ref": "access-1", "generation": 1, "route_kind": "direct_file"},
+          "document_id": "doc-1",
+          "content_base64": "aGVsbG8=",
+          "media_type": "text/plain",
+          "requested_source_identity": "source-1",
+          "intent_kind": "new_capture",
+          "base": {
+            "kind": "creation"
+          },
+          "target_binding_revision": "target-binding-1",
+          "processing_profile": {
+            "profile_ref": "profile-1",
+            "revision": "revision-1"
+          },
+          "original_binding": {
+            "owner_ref": "access-1",
+            "generation": 1,
+            "route_kind": "direct_file"
+          },
           "display_name": "hello.txt"
         },
         "metadata": {
-          "idempotency_key": "idem-document.capture", "request_id": "req-document.capture-replay",
-          "required_capabilities": [{"id": "evidence.write", "minimum_version": "1.0", "required": true}],
-          "scopes": ["memory:write"], "workspace_id": "ws-1"
+          "idempotency_key": "idem-document.capture",
+          "request_id": "req-document.capture-replay",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1"
         },
         "operation": "document.capture"
       },
       "response": {
-        "metadata": {"audit_reference": "audit-document.capture", "request_id": "req-document.capture-replay"},
+        "metadata": {
+          "audit_reference": "audit-document.capture",
+          "request_id": "req-document.capture-replay"
+        },
         "result": {
           "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "document_id": "doc-1", "evidence_id": "ev-document-1",
+          "document_id": "doc-1",
+          "evidence_id": "ev-document-1",
           "source_digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
-          "source_length_bytes": 5, "capture_disposition": "head_eligible", "became_head": true
+          "source_length_bytes": 5,
+          "capture_disposition": "head_eligible",
+          "became_head": true
         }
       }
     },
     {
       "description": "document.capture refuses reuse of its operation key for different bytes.",
-      "expect": {"branch": "error", "error_code": "idempotency_conflict", "idempotency": "idempotency_conflict", "replay_of": "document.capture/primary-success", "retry_class": "non_retryable"},
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "document.capture/primary-success",
+        "retry_class": "non_retryable"
+      },
       "id": "document.capture/idempotency-conflict",
       "operation": "document.capture",
       "request": {
         "input": {
-          "document_id": "doc-1", "content_base64": "d29ybGQ=", "media_type": "text/plain",
-          "requested_source_identity": "source-1", "intent_kind": "new_capture",
-          "base": {"kind": "creation"}, "target_binding_revision": "target-binding-1",
-          "processing_profile": {"profile_ref": "profile-1", "revision": "revision-1"},
-          "original_binding": {"owner_ref": "access-1", "generation": 1, "route_kind": "direct_file"}
+          "document_id": "doc-1",
+          "content_base64": "d29ybGQ=",
+          "media_type": "text/plain",
+          "requested_source_identity": "source-1",
+          "intent_kind": "new_capture",
+          "base": {
+            "kind": "creation"
+          },
+          "target_binding_revision": "target-binding-1",
+          "processing_profile": {
+            "profile_ref": "profile-1",
+            "revision": "revision-1"
+          },
+          "original_binding": {
+            "owner_ref": "access-1",
+            "generation": 1,
+            "route_kind": "direct_file"
+          }
         },
         "metadata": {
-          "idempotency_key": "idem-document.capture", "request_id": "req-document.capture-conflict",
-          "required_capabilities": [{"id": "evidence.write", "minimum_version": "1.0", "required": true}],
-          "scopes": ["memory:write"], "workspace_id": "ws-1"
+          "idempotency_key": "idem-document.capture",
+          "request_id": "req-document.capture-conflict",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1"
         },
         "operation": "document.capture"
       },
       "response": {
-        "error": {"code": "idempotency_conflict", "message": "This idempotency key was already used for a different request.", "retry_class": "non_retryable"},
-        "metadata": {"audit_reference": "audit-document.capture", "request_id": "req-document.capture-conflict"}
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "audit_reference": "audit-document.capture",
+          "request_id": "req-document.capture-conflict"
+        }
       }
     },
     {
       "description": "document.reprocess exact replay returns the stored canonical terminal receipt.",
-      "expect": {"branch": "success", "idempotency": "replay", "replay_of": "document.reprocess/primary-success"},
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "document.reprocess/primary-success"
+      },
       "id": "document.reprocess/honest-replay",
       "operation": "document.reprocess",
       "request": {
         "input": {
           "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "processing_profile": {"profile_ref": "profile-2", "revision": "revision-1",
-                                 "expected_profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+          "processing_profile": {
+            "profile_ref": "profile-2",
+            "revision": "revision-1",
+            "expected_profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
           "expected_base": {}
         },
         "metadata": {
-          "idempotency_key": "idem-document.reprocess", "request_id": "req-document.reprocess-replay",
-          "required_capabilities": [{"id": "evidence.write", "minimum_version": "1.0", "required": true}],
-          "scopes": ["memory:write"], "workspace_id": "ws-1"
+          "idempotency_key": "idem-document.reprocess",
+          "request_id": "req-document.reprocess-replay",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1"
         },
         "operation": "document.reprocess"
       },
       "response": {
-        "metadata": {"audit_reference": "audit-document.reprocess", "request_id": "req-document.reprocess-replay"},
+        "metadata": {
+          "audit_reference": "audit-document.reprocess",
+          "request_id": "req-document.reprocess-replay"
+        },
         "result": {
           "extraction_revision_id": "dext-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "document_id": "doc-1", "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "document_id": "doc-1",
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "result_state": "succeeded", "publication_disposition": "promoted", "became_head": true,
+          "result_state": "succeeded",
+          "publication_disposition": "promoted",
+          "became_head": true,
           "output_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         }
       }
     },
     {
       "description": "document.reprocess refuses reuse of its operation key for a different profile revision.",
-      "expect": {"branch": "error", "error_code": "idempotency_conflict", "idempotency": "idempotency_conflict", "replay_of": "document.reprocess/primary-success", "retry_class": "non_retryable"},
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "document.reprocess/primary-success",
+        "retry_class": "non_retryable"
+      },
       "id": "document.reprocess/idempotency-conflict",
       "operation": "document.reprocess",
       "request": {
         "input": {
           "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "processing_profile": {"profile_ref": "profile-2", "revision": "revision-2",
-                                 "expected_profile_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+          "processing_profile": {
+            "profile_ref": "profile-2",
+            "revision": "revision-2",
+            "expected_profile_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
           "expected_base": {}
         },
         "metadata": {
-          "idempotency_key": "idem-document.reprocess", "request_id": "req-document.reprocess-conflict",
-          "required_capabilities": [{"id": "evidence.write", "minimum_version": "1.0", "required": true}],
-          "scopes": ["memory:write"], "workspace_id": "ws-1"
+          "idempotency_key": "idem-document.reprocess",
+          "request_id": "req-document.reprocess-conflict",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1"
         },
         "operation": "document.reprocess"
       },
       "response": {
-        "error": {"code": "idempotency_conflict", "message": "This idempotency key was already used for a different request.", "retry_class": "non_retryable"},
-        "metadata": {"audit_reference": "audit-document.reprocess", "request_id": "req-document.reprocess-conflict"}
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "audit_reference": "audit-document.reprocess",
+          "request_id": "req-document.reprocess-conflict"
+        }
       }
     },
     {
@@ -5289,17 +5476,34 @@
       "id": "document.history/page-2",
       "operation": "document.history",
       "request": {
-        "input": {"document_id": "doc-1", "limit": 1, "page": {"continuation_token": "cursor-document.history-1"}},
+        "input": {
+          "document_id": "doc-1",
+          "limit": 1,
+          "page": {
+            "continuation_token": "cursor-document.history-1"
+          }
+        },
         "metadata": {
           "request_id": "req-document.history-page2",
-          "required_capabilities": [{"id": "evidence.read", "minimum_version": "1.0", "required": true}],
-          "scopes": ["memory:read"],
+          "required_capabilities": [
+            {
+              "id": "evidence.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:read"
+          ],
           "workspace_id": "ws-1"
         },
         "operation": "document.history"
       },
       "response": {
-        "metadata": {"audit_reference": "audit-document.history-page2", "request_id": "req-document.history-page2"},
+        "metadata": {
+          "audit_reference": "audit-document.history-page2",
+          "request_id": "req-document.history-page2"
+        },
         "result": {
           "document_id": "doc-1",
           "created_at": "2026-10-05T09:00:00Z",
@@ -5334,13 +5538,20 @@
               "retention_state": "expired",
               "capture_retention_generation": 2,
               "source_removal_generation": 1,
-              "requested_profile": {"profile_ref": "document-default", "revision": "1"},
+              "requested_profile": {
+                "profile_ref": "document-default",
+                "revision": "1"
+              },
               "processing_state": "settled",
               "expected_base_capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "captured_at": "2026-10-05T09:03:00Z",
               "retention_changed_at": "2026-10-05T09:05:00Z",
               "actions": [
-                {"action": "reprocess_captured_copy", "available": false, "unavailable_reason": "source_not_retained"}
+                {
+                  "action": "reprocess_captured_copy",
+                  "available": false,
+                  "unavailable_reason": "source_not_retained"
+                }
               ],
               "reprocess_profiles": []
             }
@@ -5370,7 +5581,12 @@
             }
           ],
           "extraction_count": 2,
-          "actions": [{"action": "refresh_original", "available": true}],
+          "actions": [
+            {
+              "action": "refresh_original",
+              "available": true
+            }
+          ],
           "page": {}
         }
       }
@@ -14647,7 +14863,8 @@
             "depth_bounded": false,
             "unattributed_inbound": false,
             "applied_depth": 0,
-            "applied_limit": 100
+            "applied_limit": 100,
+            "graph_expansion": "not_requested"
           },
           "freshness": {
             "as_of": "2024-01-01T00:00:01Z",
@@ -14658,6 +14875,187 @@
               "code.analysis": "1704067200000000"
             },
             "stale": false
+          }
+        }
+      }
+    },
+    {
+      "description": "code.query assembles a code context: captured spans, same-analysis neighbours and the separately labelled architecture component.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "code.query/code-context",
+      "operation": "code.query",
+      "request": {
+        "input": {
+          "intent": "code_context",
+          "repository_id": "repo-code",
+          "snapshot_id": "snap-1",
+          "producer_id": "analyzer.python.stdlib",
+          "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "semantic_key": "pkg.models.make",
+          "context": {
+            "query": "service boundaries",
+            "mode": "deterministic_view",
+            "token_budget": 4000
+          }
+        },
+        "metadata": {
+          "request_id": "req-code.query-context",
+          "required_capabilities": [
+            {
+              "id": "graph.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "graph:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "code.query"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.query-context"
+        },
+        "result": {
+          "intent": "code_context",
+          "binding": {
+            "repository_id": "repo-code",
+            "snapshot_id": "snap-1",
+            "producer_id": "analyzer.python.stdlib",
+            "producer_version": "1.0.0",
+            "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "import_id": "cai-1",
+            "batch_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "policy_id": "owner.code-import",
+            "policy_version": "1",
+            "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "manifest_evidence_id": "ev-manifest-1",
+            "activated_at": "2024-01-01T00:00:00Z"
+          },
+          "resolution": "semantic_key",
+          "definitions": [
+            {
+              "semantic_key": "pkg.models.make",
+              "node_kind": "function",
+              "display_name": "make",
+              "source": {
+                "relative_path": "pkg/models.py",
+                "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "start_line": 14,
+                "start_column": 1,
+                "end_line": 15,
+                "end_column": 23
+              },
+              "record": {
+                "record_id": "rec-make",
+                "version": "ver-make"
+              }
+            }
+          ],
+          "symbols": [
+            {
+              "semantic_key": "pkg.service.run",
+              "node_kind": "function",
+              "display_name": "run",
+              "source": {
+                "relative_path": "pkg/service.py",
+                "content_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "start_line": 5,
+                "start_column": 1,
+                "end_line": 8,
+                "end_column": 24
+              },
+              "record": {
+                "record_id": "rec-run",
+                "version": "ver-run"
+              },
+              "depth": 1
+            }
+          ],
+          "relations": [
+            {
+              "edge_key": "pkg.service.run->pkg.models.make",
+              "relation_type": "code.calls",
+              "producer_relationship": "calls",
+              "type_only": false,
+              "evidence_strength": "resolved_static",
+              "source_key": "pkg.service.run",
+              "target_key": "pkg.models.make",
+              "depth": 1,
+              "source": {
+                "relative_path": "pkg/service.py",
+                "content_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "start_line": 6,
+                "start_column": 14,
+                "end_line": 6,
+                "end_column": 23
+              },
+              "record": {
+                "record_id": "rec-run-calls-make",
+                "version": "ver-run-calls-make"
+              }
+            }
+          ],
+          "diagnostics": [],
+          "coverage": {
+            "analysis": "static",
+            "complete": false,
+            "truncated": false,
+            "depth_bounded": false,
+            "unattributed_inbound": true,
+            "applied_depth": 1,
+            "applied_limit": 100,
+            "graph_expansion": "applied"
+          },
+          "freshness": {
+            "as_of": "2024-01-01T00:00:01Z",
+            "projection_versions": {
+              "code.analysis": "1"
+            },
+            "projection_watermarks": {
+              "code.analysis": "1704067200000000"
+            },
+            "stale": false
+          },
+          "context": {
+            "spans": [
+              {
+                "semantic_key": "pkg.models.make",
+                "source": {
+                  "relative_path": "pkg/models.py",
+                  "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "start_line": 14,
+                  "start_column": 1,
+                  "end_line": 15,
+                  "end_column": 23
+                },
+                "byte_length": 52,
+                "truncated": false,
+                "text": "def make(key: str) -> Record:\n    return Record(key)"
+              },
+              {
+                "semantic_key": "pkg.service.run",
+                "source": {
+                  "relative_path": "pkg/service.py",
+                  "content_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                  "start_line": 5,
+                  "start_column": 1,
+                  "end_line": 8,
+                  "end_column": 24
+                },
+                "byte_length": 70,
+                "truncated": false,
+                "text": "def run(table: dict[str, object], key: str) -> object:\n    return make(key)"
+              }
+            ],
+            "architecture": {
+              "availability": "unavailable",
+              "reason": "not_authorised"
+            }
           }
         }
       }
