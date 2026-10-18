@@ -200,6 +200,12 @@ EXPECTED_ALLOCATION = (
         "Evidence Runtime",
         "candidate",
     ),
+    (
+        74,
+        "0074_code_analysis_applicability.sql",
+        "Evidence Runtime",
+        "candidate",
+    ),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -310,6 +316,9 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # is renumbered to the next free number and pinned to the commit that carries
     # its SQL on this branch.
     73: "bfe7166520e00c7cf4c3463e7b1430c0fd35f3d5",
+    # 0074 is governed code-analysis import and repository applicability (W12),
+    # pinned to the commit that carries its SQL.
+    74: "68c20da67de76e5f16fc011228aeb2f85a481d09",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

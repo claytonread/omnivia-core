@@ -623,6 +623,17 @@
       "sha256": "a21aea920167818128015e7592c8df354959da9aefc0504774897a9df0a6ab52",
       "introduced_commit": "bfe7166520e00c7cf4c3463e7b1430c0fd35f3d5",
       "accepted_commit": null
+    },
+    {
+      "number": 74,
+      "filename": "0074_code_analysis_applicability.sql",
+      "owner": "Evidence Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 73,
+      "sha256": "62c2bfc2acbaecff7e341e274d36d1ba1cb1c332b3b9ea52172150669ebd0997",
+      "introduced_commit": "68c20da67de76e5f16fc011228aeb2f85a481d09",
+      "accepted_commit": null
     }
   ]
 }
