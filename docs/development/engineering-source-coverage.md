@@ -662,7 +662,8 @@ Allocations 69 (`0069_engineering_handoff_grants.sql`, predecessor 68) and 70
 Engineering Memory. Their normalized SHA-256 values are
 `e6f89df9b913b40bdf4d49e142c0f2ff625ff8fc53b98064d82d7046d66eaae5` and
 `00a6cee0288bcdb13ab9ba330a25d9b90f725c16f48e371d19f49458ac46f3a9`. Both were
-introduced by commit `8efab26e83d137736f229f84745c2e535390980e`, which is pinned in the
+introduced at their final migration paths by merge commit
+`75d526210a55c8ef64122da2a94082021d43c790`, which is pinned in the
 allocation ledger and conformance test. They were first numbered 0064 and 0065; main
 landed its own 0064-0068 first, so merging main renumbered them, and the introducing
 commit must be re-pinned to the commit that carries the renumbered files.

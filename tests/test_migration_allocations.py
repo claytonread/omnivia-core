@@ -279,11 +279,10 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0068 is the governed task-context outcomes candidate. It was introduced by c42e41d1 and
     # repinned to its current-content repair 9807ce91, which is where its current content lives.
     68: "9807ce91bcfe25db29d09757364105378fd58bda",
-    # 0069 and 0070 were introduced together by the follow-on implementation commit
-    # (as 0064 and 0065) and renumbered when main's 0064-0068 landed first. The pin
-    # moves to the commit that carries the renumbered files at the next pin commit.
-    69: "8efab26e83d137736f229f84745c2e535390980e",
-    70: "8efab26e83d137736f229f84745c2e535390980e",
+    # 0069 and 0070 were initially authored as 0064 and 0065, then renumbered when
+    # main's 0064-0068 landed first. This merge commit introduced the final paths.
+    69: "75d526210a55c8ef64122da2a94082021d43c790",
+    70: "75d526210a55c8ef64122da2a94082021d43c790",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
