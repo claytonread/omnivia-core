@@ -3181,13 +3181,34 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_rtf_ast_mapping.py",
           "symbol": "test_repeated_extraction_has_identical_segments_and_order",
           "covers": "Locators are stable across repeated extraction."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc06_onlyoffice_nested_rtf.py",
+          "symbol": "test_receipt_binds_both_fixtures_the_converter_and_the_reader",
+          "covers": "The committed receipt binds the source DOCX, the ONLYOFFICE-produced RTF, the converter, the pinned reader and the text-only profile by SHA-256."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc06_onlyoffice_nested_rtf.py",
+          "symbol": "test_the_rtf_holds_real_nested_table_control_markers",
+          "covers": "The ONLYOFFICE-produced RTF carries real nesttableprops, nestrow and itap2 markers."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc06_onlyoffice_nested_rtf.py",
+          "symbol": "test_pinned_reader_extracts_the_nested_tables_deterministically",
+          "covers": "The production extract_rtf path with an absolute pinned Pandoc 3.12.1 reads that RTF repeatably, with nested cell values, Unicode body text and the receipt's block, segment and inventory counts. Skips only without a host Pandoc 3.12.1."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc06_onlyoffice_nested_rtf.py",
+          "symbol": "test_canonical_result_hash_matches_the_receipt",
+          "covers": "The canonical extraction result hashes to the value the receipt records."
         }
       ],
       "status": "blocked_external",
-      "missing_condition": "CI now installs and SHA-verifies the official Pandoc 3.12.1 release and runs the real-reader tests, but this external-fixture gate still has no application-authored RTF corpus or committed qualification receipt binding fixture, reader, profile and result hashes. Nested tables are also covered only through an injected Pandoc AST rather than a real application-authored RTF read by the pinned executable.",
-      "limitations": "The bounded scanner, inventories, real pinned-reader path and locator stability are covered directly. What remains is the external application-authored corpus and its qualification receipt, not CI installation of the reader.",
+      "missing_condition": "One application-produced nested-table RTF (ONLYOFFICE Desktop Editors 9.4.0, converted from a generated DOCX) is now read by the pinned Pandoc 3.12.1 and bound by a committed receipt. This external-fixture gate still needs an RTF corpus from further applications, such as Microsoft Word, Apple TextEdit and LibreOffice, and RTF sources exercising notes, revisions and object links as those applications write them.",
+      "limitations": "The ONLYOFFICE fixture is a single application's conversion of a generated DOCX, not an RTF the application authored from scratch. The pinned reader flattens nested tables into separate AST tables (8 AST tables against 12 nested-table markers in the scanner inventory), so nested structure is evidenced by cell text and counts rather than by a nesting tree. Reader-dependent tests skip on a host without Pandoc 3.12.1; CI installs it. The bounded scanner, inventories, real pinned-reader path and locator stability remain covered directly.",
       "source_bindings": [
-        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/rtf_extractor.py"
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/rtf_extractor.py",
+        "qualification/wp15/fixtures/doc06-onlyoffice-nested-receipt.json"
       ]
     },
     {
