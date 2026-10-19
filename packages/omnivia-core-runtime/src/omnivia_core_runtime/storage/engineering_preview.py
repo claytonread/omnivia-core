@@ -46,13 +46,23 @@ folding reduce to `lower`) and conservative for the rest: a row with any other
 character is always kept for the Python check. It is also skipped, in favour of the
 full authorised read, whenever any version in the domain lacks a current projection
 row, so absent and stale projections fail closed exactly as before.
+
+**The narrowed ids are authorised a page at a time.** `read_authorized_previews` cuts the
+narrowed (or, unnarrowed, the whole domain's) record ids into pages of
+`AUTHORIZED_FRONTIER_PAGE_SIZE`, the page `engineering.context.build` already uses, and
+authorises and projects each page on its own, so no statement carries more ids than one
+page. Every rule a frontier applies is per record, so the pages together admit exactly the
+versions one frontier would, in the same order; a single page keeps its own digest and
+several are bound by one digest over the page digests, in page order. A candidate's
+normalised text is computed once and kept on the candidate for the request.
 """
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass, field
 from typing import Final, NamedTuple
 
 from omnivia_core.contracts.v1 import (
@@ -60,9 +70,11 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core_runtime.storage.connection import StorageError
 from omnivia_core_runtime.storage.memory import (
+    AUTHORIZED_FRONTIER_PAGE_SIZE,
     AuthorizedMemoryFrontier,
     AuthorizedVersion,
     read_authorized_memory_frontier,
+    read_memory_record_id_page,
     read_snapshot,
 )
 from omnivia_core_runtime.storage.retrieval import EvidenceLabelGrant, normalize_query
@@ -133,6 +145,9 @@ class PreviewCandidate:
     topic_key: str | None
     repository_id: str | None
     snapshot_id: str | None
+    #: `preview_search_text`, filled on first use so a request normalises each
+    #: candidate once however many rules (match, cap, rank, selection) ask for it.
+    _search_text: str | None = field(default=None, init=False, repr=False, compare=False)
 
 
 class _Row(NamedTuple):
@@ -173,28 +188,88 @@ def read_authorized_previews(
     versions, to be ranked by `rank_previews`.
     """
     with read_snapshot(connection):
-        if record_ids is None and query is not None:
-            record_ids = narrow_record_ids(
+        pages: Iterable[Sequence[str]]
+        if record_ids is not None:
+            # A caller's own page (the durable processors') is one frontier, as ever.
+            pages = (record_ids,)
+        else:
+            if query is not None:
+                record_ids = narrow_record_ids(
+                    connection,
+                    workspace_id=workspace_id,
+                    resolution_instant_us=resolution_instant_us,
+                    query=query,
+                )
+            pages = _record_id_pages(
                 connection,
                 workspace_id=workspace_id,
                 resolution_instant_us=resolution_instant_us,
-                query=query,
+                record_ids=record_ids,
             )
-        frontier = read_authorized_memory_frontier(
+        candidates: list[PreviewCandidate] = []
+        digests: list[str] = []
+        for page in pages:
+            frontier = read_authorized_memory_frontier(
+                connection,
+                workspace_id=workspace_id,
+                resolution_instant_us=resolution_instant_us,
+                view=view,
+                label_grant=label_grant,
+                domain_scope=OBSERVATION_DOMAIN,
+                record_ids=page,
+            )
+            candidates.extend(
+                read_previews_for_frontier(
+                    connection, workspace_id=workspace_id, frontier=frontier
+                )
+            )
+            digests.append(frontier.digest)
+        return tuple(candidates), _combined_digest(digests)
+
+
+def _record_id_pages(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+    record_ids: Sequence[str] | None,
+) -> Iterator[Sequence[str]]:
+    """The domain's record ids in stable, bounded pages, narrowed or not.
+
+    A narrowed list is cut in order, an unnarrowed one is walked by cursor over the
+    metadata, the way `engineering.context.build` pages its frontier. Each page is read
+    and authorised on its own, so no statement carries more than one page of ids and a
+    page's rows are released before the next. Always yields at least one page (an empty
+    one for an empty domain), so an empty read still has a frontier digest.
+    """
+    if record_ids is not None:
+        for start in range(0, max(len(record_ids), 1), AUTHORIZED_FRONTIER_PAGE_SIZE):
+            yield record_ids[start : start + AUTHORIZED_FRONTIER_PAGE_SIZE]
+        return
+    after: str | None = None
+    first = True
+    while True:
+        page = read_memory_record_id_page(
             connection,
             workspace_id=workspace_id,
             resolution_instant_us=resolution_instant_us,
-            view=view,
-            label_grant=label_grant,
             domain_scope=OBSERVATION_DOMAIN,
-            record_ids=record_ids,
+            after_record_id=after,
         )
-        return (
-            read_previews_for_frontier(
-                connection, workspace_id=workspace_id, frontier=frontier
-            ),
-            frontier.digest,
-        )
+        if page or first:
+            yield page
+        first = False
+        if len(page) < AUTHORIZED_FRONTIER_PAGE_SIZE:
+            return
+        after = page[-1]
+
+
+def _combined_digest(digests: list[str]) -> str:
+    """One frontier's own digest, or one digest binding every page's, in page order."""
+    if len(digests) == 1:
+        return digests[0]
+    joined = "\n".join(digests).encode("utf-8")
+    return f"sha256:{hashlib.sha256(joined).hexdigest()}"
 
 
 def narrow_record_ids(
@@ -231,25 +306,33 @@ def narrow_record_ids(
     ).fetchone()
     if unhealthy is not None:
         return None
+    # Drive from the projection, not the metadata: the match is decided on the narrow
+    # projection rows and only the matches (and the non-ASCII rows kept for Python) look
+    # up their assembly's identity, instead of every assembly of the domain being read
+    # (a version's body sits between its identity columns, so reading one assembly row
+    # walks its body pages). The inner SELECT's LIMIT keeps SQLite from flattening it, so
+    # the joined text is built once per row and not once per use.
     return tuple(
         str(row[0])
         for row in connection.execute(
             "SELECT DISTINCT m.governed_record_id "
-            "FROM omnivia_authoritative_governed_version_metadata m "
-            "WHERE m.workspace_id = ? AND m.domain_scope = ? AND m.recorded_at_us <= ? "
-            "AND m.assembly_id IN (SELECT assembly_id "
+            "FROM (SELECT assembly_id FROM ("
+            f"SELECT assembly_id, {_SEARCH_TEXT_SQL} AS search_text "
             "FROM omnivia_engineering_preview_projection "
-            "WHERE workspace_id = ? AND projection_version = ? "
-            f"AND (instr(lower({_SEARCH_TEXT_SQL}), ?) > 0 "
-            f"OR length(CAST({_SEARCH_TEXT_SQL} AS BLOB)) != length({_SEARCH_TEXT_SQL}))) "
+            "WHERE workspace_id = ? AND projection_version = ? LIMIT -1) "
+            "WHERE instr(lower(search_text), ?) > 0 "
+            "OR length(CAST(search_text AS BLOB)) != length(search_text)) p "
+            "CROSS JOIN omnivia_authoritative_governed_version_metadata m "
+            "ON m.workspace_id = ? AND m.assembly_id = p.assembly_id "
+            "WHERE m.domain_scope = ? AND m.recorded_at_us <= ? "
             "ORDER BY m.governed_record_id",
             (
                 workspace_id,
-                OBSERVATION_DOMAIN,
-                resolution_instant_us,
-                workspace_id,
                 PROJECTION_VERSION,
                 needle,
+                workspace_id,
+                OBSERVATION_DOMAIN,
+                resolution_instant_us,
             ),
         )
     )
@@ -348,20 +431,25 @@ def preview_search_text(candidate: PreviewCandidate) -> str:
 
     Title, preview text, observation kind and topic key, one per line, with the same
     NFKC and case folding the query gets. Identifiers and the assertion basis are
-    metadata a caller filters on, not text it searches.
+    metadata a caller filters on, not text it searches. Computed once per candidate:
+    a candidate is immutable, so the cached text is always the text it would derive.
     """
-    return normalize_query(
-        "\n".join(
-            part
-            for part in (
-                candidate.title,
-                candidate.preview,
-                candidate.observation_kind,
-                candidate.topic_key,
+    text = candidate._search_text
+    if text is None:
+        text = normalize_query(
+            "\n".join(
+                part
+                for part in (
+                    candidate.title,
+                    candidate.preview,
+                    candidate.observation_kind,
+                    candidate.topic_key,
+                )
+                if part
             )
-            if part
         )
-    )
+        object.__setattr__(candidate, "_search_text", text)
+    return text
 
 
 def rank_previews(

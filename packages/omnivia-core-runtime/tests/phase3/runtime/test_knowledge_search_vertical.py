@@ -1948,6 +1948,8 @@ def test_lc_b13_the_shipped_operations_are_exactly_the_catalogue_handlers() -> N
         "engineering.search",
         "engineering.expand",
         "engineering.context.build",
+        # A read-class advisory under the trusted source producer's own purpose.
+        "engineering.source.capture.hint",
         # The trigger family's health read is a workspace read under its own session,
         # and its purpose comes from the same table (C21).
         "trigger.health",

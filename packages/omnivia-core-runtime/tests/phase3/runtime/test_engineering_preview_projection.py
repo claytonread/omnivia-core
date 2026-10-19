@@ -114,7 +114,7 @@ class Trace:
             for index, statement in enumerate(self.statements)
             if PROJECTION in statement
             and statement.lstrip().upper().startswith("SELECT")
-            and (f"FROM {METADATA_VIEW} m " in statement) is narrowing
+            and (f"{METADATA_VIEW} m " in statement) is narrowing
         ]
 
     def projection_reads(self) -> list[int]:

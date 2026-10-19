@@ -475,6 +475,10 @@ def test_the_codex_config_and_commands_have_the_native_shape() -> None:
         "--skip-git-repo-check",
         "--sandbox",
         "read-only",
+        "--model",
+        "gpt-5.6-sol",
+        "--config",
+        'model_reasoning_effort="medium"',
         "--config",
         'approval_policy="never"',
         "--json",
@@ -2579,7 +2583,7 @@ def test_the_excluded_sets_are_the_complete_normative_remainder(profile: str, to
     authoring_only = set(q.AUTHORING_TOOLS) - set(q.RESTRICTED_TOOLS)
     assert (authoring_only <= set(excluded)) is (profile == "restricted")
     # Every catalogue operation outside the manifest, and every section 7 category, is probed.
-    assert len(q.UNEXPOSED_TOOLS) == 79 - q.AUTHORING_TOOL_COUNT
+    assert len(q.UNEXPOSED_TOOLS) == 83 - q.AUTHORING_TOOL_COUNT
     assert set(q.UNEXPOSED_TOOLS) <= set(excluded)
     assert set(q.SECTION7_TOOLS) <= set(excluded)
     assert set(q.SECTION7_SENTINELS) == {
@@ -2594,7 +2598,7 @@ def test_the_excluded_sets_are_the_complete_normative_remainder(profile: str, to
         "connector_mutation",
     }
     assert len(q.SECTION7_TOOLS) == 18
-    assert len(excluded) == (83 if profile == "restricted" else 62)
+    assert len(excluded) == (87 if profile == "restricted" else 66)
     assert "job_cancel" in excluded and "job_retry" in excluded
 
 
@@ -3409,13 +3413,13 @@ _REFUSED = q.canonical_result_digest(None)
     ("mode", "progress"),
     [
         ("exact", None),
-        ("not_called", "host_refusal_mismatch"),
-        ("other_tool", "host_refusal_mismatch"),
-        ("extra_request", "host_refusal_mismatch"),
-        ("wrong_arguments", "host_refusal_mismatch"),
-        ("succeeded", "host_refusal_mismatch"),
-        ("generic_error", "host_refusal_mismatch"),
-        ("initialized_after_pause", "host_refusal_mismatch"),
+        ("not_called", "host_refusal_pause_unobserved"),
+        ("other_tool", "host_refusal_request_shape_mismatch"),
+        ("extra_request", "host_refusal_request_shape_mismatch"),
+        ("wrong_arguments", "host_refusal_request_shape_mismatch"),
+        ("succeeded", "host_refusal_unexpected_success"),
+        ("generic_error", "host_refusal_class_mismatch"),
+        ("initialized_after_pause", "host_refusal_initialized_after_pause"),
         ("timed_out", "host_completion_mismatch"),
     ],
 )
@@ -3468,7 +3472,9 @@ def test_refuse_revoked_requires_the_one_exact_request_refused_as_credential_mis
         driver.refuse_revoked(_REVOKED_TOOL, _REVOKED_ARGUMENTS, on_paused=lambda: revoked.append(True))
     expected = Reason.HOST_OUTPUT_AMBIGUOUS if progress == "host_completion_mismatch" else Reason.GATE_FAILED
     assert _code(error) is expected
-    assert log == [progress]
+    # The predicate-specific label comes first; the general label stays terminal.
+    general = [] if progress == "host_completion_mismatch" else ["host_refusal_mismatch"]
+    assert log == [progress, *general]
 
 
 @pytest.mark.parametrize("drift", [None, "configuration", "principal"])
@@ -3686,6 +3692,9 @@ def test_each_owner_page_is_read_by_its_own_fresh_session_with_the_token_its_hos
     for index, prompt in enumerate(prompts):
         payload = json.dumps(_page_request(index), sort_keys=True, separators=(",", ":"))
         assert "Call exactly one tool named job_events" in prompt
+        assert "Invoke it exactly once." in prompt
+        assert "never retry or repeat the same call" in prompt
+        assert "succeeds or returns an error" in prompt
         assert prompt.endswith(f"JSON:{payload}")
     # Page two carries page one's host token: distinct from the owner's ``t0``.
     assert _page_request(1)["page"]["continuation_token"] == "h0"
@@ -4686,18 +4695,18 @@ def test_a_journey_that_violates_one_observation_is_refused(
     ("tamper", "progress"),
     [
         # The paused session never reaches its request, so nothing can be revoked under it.
-        ("target_not_called", "host_refusal_mismatch"),
+        ("target_not_called", "host_refusal_pause_unobserved"),
         # The session serves a different tool, or the target plus an extra request.
-        ("other_tool_called", "host_refusal_mismatch"),
-        ("extra_request", "host_refusal_mismatch"),
+        ("other_tool_called", "host_refusal_request_shape_mismatch"),
+        ("extra_request", "host_refusal_request_shape_mismatch"),
         # The request is served with arguments other than the exact planned ones.
-        ("changed_arguments", "host_refusal_mismatch"),
+        ("changed_arguments", "host_refusal_request_shape_mismatch"),
         # The refusal is a different class than credential_missing.
-        ("wrong_refusal", "host_refusal_mismatch"),
+        ("wrong_refusal", "host_refusal_class_mismatch"),
         # A second initialize after the pause means the process was substituted.
-        ("initialized_after_pause", "host_refusal_mismatch"),
+        ("initialized_after_pause", "host_refusal_initialized_after_pause"),
         # An accepted replay or read after revocation is a failure, not a pass.
-        ("revocation_ignored", "host_refusal_mismatch"),
+        ("revocation_ignored", "host_refusal_unexpected_success"),
         # The paused session never completes; that is a completion failure, not a retry.
         ("times_out", "host_completion_mismatch"),
     ],
@@ -4711,6 +4720,8 @@ def test_a_post_revocation_session_that_deviates_is_refused_at_its_own_gate(
     expected = Reason.HOST_OUTPUT_AMBIGUOUS if progress == "host_completion_mismatch" else Reason.GATE_FAILED
     assert _code(error) is expected
     assert progress in log
+    if progress != "host_completion_mismatch":
+        assert log[log.index(progress) + 1] == "host_refusal_mismatch"
     # The first paused session is the one that fails: no regrant, no later session.
     tail = log[log.index("host:evidence_capture:pause") :]
     assert [entry for entry in tail if entry.endswith(":pause")] == ["host:evidence_capture:pause"]
@@ -5714,7 +5725,7 @@ def test_the_unexposed_tools_are_exactly_the_catalogue_outside_the_manifest() ->
     catalogue = [entry["name"] for entry in entries]
     exposed = {entry.operation for entry in manifest.AUTHORING_MANIFEST}
     outside = sorted(set(catalogue) - exposed)
-    assert len(catalogue) == 79 and len(outside) == 44
+    assert len(catalogue) == 83 and len(outside) == 48
     assert sorted(name.replace(".", "_") for name in outside) == sorted(q.UNEXPOSED_TOOLS)
     assert {entry.tool_name for entry in manifest.AUTHORING_MANIFEST} == set(q.AUTHORING_TOOLS)
 
@@ -6198,3 +6209,23 @@ def test_removing_an_existing_login_run_never_touches_the_real_profile(tmp_path:
     q.remove_runtime(root)
     assert not root.exists()
     assert (profile / ".credentials.json").read_text(encoding="utf-8") == "host"
+
+
+def test_tool_prompt_is_host_aware() -> None:
+    args = {"b": 2, "a": "x"}
+    payload = '{"a":"x","b":2}'
+    claude = q._tool_prompt("claude-code", "workspace_inspect", args, "MARK")
+    assert "mcp__omnivia-core__workspace_inspect" in claude
+    assert "tools.mcp__" not in claude and "try {" not in claude
+    codex = q._tool_prompt("codex-cli", "workspace_inspect", args, "MARK")
+    call = f"try {{ await tools.mcp__omnivia_core__workspace_inspect({payload}); }} catch (error) {{}}"
+    pragma = f'// @exec: {{"yield_time_ms": {q.CODEX_EXEC_YIELD_MS}}}'
+    assert f"{pragma}\n{call}\n" in codex
+    assert q.CODEX_EXEC_YIELD_MS == int(q.HOST_TIMEOUT * 1000)
+    assert "// @exec" not in claude
+    assert "mcp__omnivia-core__" not in codex
+    assert codex.endswith(f"\nJSON:{payload}")
+    for prompt in (claude, codex):
+        assert "Invoke it exactly once" in prompt
+        assert "never retry or repeat the same call" in prompt
+        assert "output exactly MARK and nothing else" in prompt

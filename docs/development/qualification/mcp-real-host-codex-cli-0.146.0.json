@@ -1,11 +1,11 @@
 {
   "bindings": {
-    "harness_sha256": "2529d9c27eaa17397de6820ec4f112c979856cbba2b83678742f6b4afd1d37b8",
-    "schema_sha256": "5ece526fe9655c2f7f8569929e0b6f9b80e3099846686e63783827676f5a4e26",
-    "wheel_closure_count": 35,
-    "wheel_closure_sha256": "0ad954b79e8152f705c4b9941b2231dbc09d2ce4bd3c10baf094d2698f752c93"
+    "harness_sha256": "b75714d81c1be6403c150326e9994b628dbbea97f318d15dd329afc93f2d1864",
+    "schema_sha256": "e0d8c6458787f163abddef50cb93a982aa4f1873ddcf94abed9bf669a8107381",
+    "wheel_closure_count": 36,
+    "wheel_closure_sha256": "9bf82d3aad5e38e7aa748164b45f3c1834382bb5e68ad4bfa05810299561529f"
   },
-  "finished_at": "2026-10-04T03:11:30Z",
+  "finished_at": "2026-10-19T06:33:10Z",
   "format": "omnivia.mcp-real-host-qualification.v1",
   "gates": {
     "i1": {
@@ -80,7 +80,7 @@
   },
   "profiles": {
     "authoring": {
-      "tool_count": 18,
+      "tool_count": 35,
       "tools": [
         "workspace_inspect",
         "evidence_search",
@@ -95,15 +95,32 @@
         "decision_record_get",
         "decision_record_list",
         "decision_status",
+        "trigger_health",
         "memory_create",
         "evidence_capture",
         "import_start",
+        "trigger_declare",
+        "trigger_lifecycle",
+        "trigger_ingest",
         "job_get",
-        "job_events"
+        "job_events",
+        "skills_draft_create",
+        "skills_draft_update",
+        "skills_proposal_submit",
+        "knowledge_share_propose",
+        "knowledge_share_decide",
+        "knowledge_share_read",
+        "knowledge_share_lineage",
+        "task_context_export",
+        "task_context_export_read",
+        "outcome_request_create",
+        "outcome_request_read",
+        "project_context_read",
+        "project_context_switch"
       ]
     },
     "restricted": {
-      "tool_count": 13,
+      "tool_count": 14,
       "tools": [
         "workspace_inspect",
         "evidence_search",
@@ -117,7 +134,8 @@
         "decision_evaluate",
         "decision_record_get",
         "decision_record_list",
-        "decision_status"
+        "decision_status",
+        "trigger_health"
       ]
     }
   },
@@ -128,15 +146,15 @@
   },
   "source": {
     "clean": true,
-    "revision": "0d8cf362d15b43077a744542974b6160c283e1dc"
+    "revision": "fcfff2822800e6f32166ab91c7fd46b3ecb8514a"
   },
-  "started_at": "2026-10-04T03:01:16Z",
+  "started_at": "2026-10-19T06:21:37Z",
   "verdict": "pass",
   "wheels": {
-    "omnivia-core": "37797e6078405bf6ecfaf125e231542260c59d0d7977dea996b0b06130585c89",
-    "omnivia-core-cli": "1a161a78276a56ee06f54a3e7028d9ca9d7c327f75e22cf41bb0de70136159e4",
-    "omnivia-core-client": "f79f343808c82280583321145c4f66251f2464eef7eeb3c5469f29df776c2286",
-    "omnivia-core-mcp": "fb6ce8f2e08986cee51488f4cdf1d81ac5d83cad2ea55f062385342b627a1b50",
-    "omnivia-core-runtime": "465a63ec570864463f523e6fa5cc139672a7dfdaa33f8f4eee96a17c6ab77594"
+    "omnivia-core": "f390834f2696d80b775e4868dc63ee770d3af4839e1f79cc77012cd8985073db",
+    "omnivia-core-cli": "f519882b60f73ba064bc59653bd1071dd264eca52c2b922992f2513166989549",
+    "omnivia-core-client": "5dd142bb4273b3c9d155af9de21031768722e23b04e376937d25447e571a12f5",
+    "omnivia-core-mcp": "19a5d18c867bdf44b477d446e7162dd3e91cb374e47886a3c5e25dca4bb04baf",
+    "omnivia-core-runtime": "94e93006493ee120b9880439b7c9a3248afb25a5cc30261af6b26528f9451e94"
   }
 }

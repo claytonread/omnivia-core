@@ -180,6 +180,18 @@ EXPECTED_ALLOCATION = (
     (66, "0066_completion_decisions.sql", "Agent Runtime", "candidate"),
     (67, "0067_knowledge_shares.sql", "Agent Runtime", "candidate"),
     (68, "0068_task_context_outcomes.sql", "Agent Runtime", "candidate"),
+    (
+        69,
+        "0069_engineering_handoff_grants.sql",
+        "Engineering Memory",
+        "candidate",
+    ),
+    (
+        70,
+        "0070_engineering_selector_attestations.sql",
+        "Engineering Memory",
+        "candidate",
+    ),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -267,6 +279,10 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0068 is the governed task-context outcomes candidate. It was introduced by c42e41d1 and
     # repinned to its current-content repair 9807ce91, which is where its current content lives.
     68: "9807ce91bcfe25db29d09757364105378fd58bda",
+    # 0069 and 0070 were initially authored as 0064 and 0065, then renumbered when
+    # main's 0064-0068 landed first. This merge commit introduced the final paths.
+    69: "75d526210a55c8ef64122da2a94082021d43c790",
+    70: "75d526210a55c8ef64122da2a94082021d43c790",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

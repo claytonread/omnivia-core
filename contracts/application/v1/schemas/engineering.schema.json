@@ -686,6 +686,128 @@
         "handoff"
       ]
     },
+    "ContinuityHandoffGrantInput": {
+      "title": "ContinuityHandoffGrantInput",
+      "description": "Input for `continuity.handoff.grant`: the owner of one existing continuity checkpoint lets exactly one other existing principal read that checkpoint's redacted `continuity_handoff.v1` view, by exact checkpoint identity, for a bounded time. The grant is pinned to the checkpoint's own content digest, so it can name only the checkpoint the owner actually holds and stops applying if the digest ever differs. The grantor is the authenticated principal and must own the checkpoint's session; the workspace and installation are the authenticated caller's own and can never be supplied by the payload. A grantee cannot grant or regrant: the grant is not delegable. Closing the owning session does not revoke a grant; `continuity.handoff.revoke` does. Unknown keys are refused.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "checkpoint_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Exact identity of the checkpoint to share."
+        },
+        "checkpoint_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The checkpoint's own content digest, as returned by its append or close receipt. The grant applies only while the stored checkpoint still carries exactly this digest."
+        },
+        "grantee_principal_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The existing authenticated principal that may read the handoff. It must read through its own continuity binding."
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "description": "How long the grant stays valid, counted from the server's settlement instant: at least one minute, at most seven days.",
+          "minimum": 60,
+          "maximum": 604800
+        }
+      },
+      "required": [
+        "checkpoint_id",
+        "checkpoint_digest",
+        "grantee_principal_id",
+        "ttl_seconds"
+      ]
+    },
+    "ContinuityHandoffGrant": {
+      "title": "ContinuityHandoffGrant",
+      "description": "One recorded handoff grant. It names the checkpoint, the pinned digest and the grantee, and states when it was granted and when it expires. It carries no workspace, installation, session or capability field.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "grant_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Service-issued identity of this grant, used to revoke it."
+        },
+        "checkpoint_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one checkpoint this grant covers."
+        },
+        "checkpoint_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The checkpoint digest the grant is pinned to."
+        },
+        "grantee_principal_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that may read the handoff."
+        },
+        "granted_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "The server instant the grant settled."
+        },
+        "expires_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "The instant after which the grant no longer applies."
+        }
+      },
+      "required": [
+        "grant_id",
+        "checkpoint_id",
+        "checkpoint_digest",
+        "grantee_principal_id",
+        "granted_at",
+        "expires_at"
+      ]
+    },
+    "ContinuityHandoffGrantResult": {
+      "title": "ContinuityHandoffGrantResult",
+      "description": "Result of `continuity.handoff.grant`.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "grant": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/engineering.schema.json#/$defs/ContinuityHandoffGrant",
+          "description": "The recorded grant."
+        }
+      },
+      "required": [
+        "grant"
+      ]
+    },
+    "ContinuityHandoffRevokeInput": {
+      "title": "ContinuityHandoffRevokeInput",
+      "description": "Input for `continuity.handoff.revoke`: the grantor ends one handoff grant. Revocation applies on the grantee's next read. Revoking an already revoked or expired grant is a no-op that reports the same result; a grant that is not the caller's own reads as `not_found`. Unknown keys are refused.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "grant_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The grant to revoke."
+        }
+      },
+      "required": [
+        "grant_id"
+      ]
+    },
+    "ContinuityHandoffRevokeResult": {
+      "title": "ContinuityHandoffRevokeResult",
+      "description": "Result of `continuity.handoff.revoke`: the grant is revoked as of `revoked_at`, which is the first revocation's instant when the grant was already revoked.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "grant_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The revoked grant."
+        },
+        "revoked_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the grant was revoked."
+        }
+      },
+      "required": [
+        "grant_id",
+        "revoked_at"
+      ]
+    },
     "EngineeringSearchView": {
       "title": "EngineeringSearchView",
       "description": "Open, bounded code naming which knowledge partition a search reads, such as `accepted` (the default), `candidates`, `working_context` or `history`. Other views are explicit opt-ins behind their capabilities; a multi-view response partitions results rather than interleaving them without labels.",
@@ -2191,6 +2313,154 @@
         "coverage",
         "recorded_at",
         "audit_reference"
+      ]
+    },
+    "EngineeringSourceCaptureHintInput": {
+      "title": "EngineeringSourceCaptureHintInput",
+      "description": "Input for `engineering.source.capture.hint`: a trusted local watcher tells Core that one registered checkout may have changed. It names the checkout only by its two stable registered identities. It never accepts a checkout path, a repository path, a file path, a manifest body, raw bytes, a command, an `installation_id`, a workspace, principal, purpose, scope, role or capability field, or any other payload. The hint is advisory and carries no content: Core's periodic capture poll remains the durable source of truth, so a lost, refused or unregistered hint changes no stored state. Unknown keys are refused.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "repository_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Stable logical repository identity the checkout was registered under."
+        },
+        "checkout_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Stable checkout identity returned by `engineering.repository.register`."
+        }
+      },
+      "required": [
+        "repository_id",
+        "checkout_id"
+      ]
+    },
+    "EngineeringSourceCaptureHintResult": {
+      "title": "EngineeringSourceCaptureHintResult",
+      "description": "Result of `engineering.source.capture.hint`: a redacted acknowledgement that the hint was received. It is identical whether or not the named checkout is registered, and it exposes no local path, checkout contents, queue state or timing: a hint can be coalesced, deferred or dropped, and polling recovers it.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "acknowledged": {
+          "type": "boolean",
+          "description": "Always true: the hint was received. It is not a statement that a capture was scheduled or has run."
+        }
+      },
+      "required": [
+        "acknowledged"
+      ]
+    },
+    "EngineeringSelectorAttestInput": {
+      "title": "EngineeringSelectorAttestInput",
+      "description": "Input for `engineering.selector.attest`: an installed Dev adapter, running as the authenticated source stream owner, states what one `symbol` or `source_span` selector resolved to in one sealed snapshot of that stream. Core never parses source and never reads the file: it stores the adapter's statement as bound evidence and compares selector digests later. Every field is exact. `path` is the normalized repository-relative path as the snapshot's file index spells it, and `file_digest` must equal that index's whole-file digest for the path in the named snapshot. The selector digest is the adapter's own evidence and counts only after the repository, stream, snapshot, path and whole-file digest all validate against Core's records. The request carries no raw source, no local path, no `installation_id`, workspace, principal, purpose, scope, role or capability field; the workspace, installation and stream owner are the authenticated caller's own. Only `symbol` and `source_span` are accepted. Unknown keys are refused.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "repository_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Repository the stream belongs to."
+        },
+        "stream_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The source stream the snapshot was recorded in. The caller must own it."
+        },
+        "snapshot_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The sealed snapshot the adapter analysed."
+        },
+        "path": {
+          "type": "string",
+          "description": "Normalized repository-relative `/`-separated path of the analysed file, preserved exactly.",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "file_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "Whole-file digest of `path` as captured in the snapshot."
+        },
+        "selector_type": {
+          "type": "string",
+          "description": "The selector type: `symbol` or `source_span`.",
+          "enum": [
+            "symbol",
+            "source_span"
+          ]
+        },
+        "selector": {
+          "type": "string",
+          "description": "The selector value exactly as a dependency names it. It must identify one selector within the snapshot: a second attestation for the same selector in one snapshot is refused.",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "file_coverage": {
+          "type": "string",
+          "description": "Whether the adapter fully analysed the file (`complete`) or only part of it (`partial`). Partial coverage never supports a verdict.",
+          "enum": [
+            "complete",
+            "partial"
+          ]
+        },
+        "selector_state": {
+          "type": "string",
+          "description": "Whether the selector resolved in the file (`present`) or the adapter explicitly found it absent (`absent`).",
+          "enum": [
+            "present",
+            "absent"
+          ]
+        },
+        "selector_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The adapter's digest of what the selector resolved to. Required when `selector_state` is `present` and refused when it is `absent`."
+        },
+        "adapter_id": {
+          "type": "string",
+          "description": "Stable identity of the installed Dev adapter that produced the statement.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "adapter_version": {
+          "type": "string",
+          "description": "The adapter's version. Digests from different adapter versions are never compared.",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "repository_id",
+        "stream_id",
+        "snapshot_id",
+        "path",
+        "file_digest",
+        "selector_type",
+        "selector",
+        "file_coverage",
+        "selector_state",
+        "adapter_id",
+        "adapter_version"
+      ]
+    },
+    "EngineeringSelectorAttestResult": {
+      "title": "EngineeringSelectorAttestResult",
+      "description": "Result of `engineering.selector.attest`: the stored attestation's identity, and whether this call stored it or an identical attestation already existed. A different statement for a selector already attested in the snapshot is a `conflict`, never an overwrite.",
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "attestation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Service-issued identity of the stored attestation."
+        },
+        "disposition": {
+          "type": "string",
+          "description": "`recorded` for a new attestation, `already_recorded` for an identical one stored earlier.",
+          "enum": [
+            "recorded",
+            "already_recorded"
+          ]
+        }
+      },
+      "required": [
+        "attestation_id",
+        "disposition"
       ]
     },
     "EngineeringRepositoryRegisterInput": {

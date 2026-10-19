@@ -238,7 +238,11 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "engineering.source.capture.hint",
+        "continuity.handoff.grant",
+        "continuity.handoff.revoke",
+        "engineering.selector.attest"
       ]
     },
     {
@@ -382,7 +386,10 @@
         "knowledge.share.decide",
         "task_context.export",
         "outcome.request.create",
-        "project.context.switch"
+        "project.context.switch",
+        "continuity.handoff.grant",
+        "continuity.handoff.revoke",
+        "engineering.selector.attest"
       ]
     },
     {
@@ -435,7 +442,10 @@
         "knowledge.share.decide",
         "task_context.export",
         "outcome.request.create",
-        "project.context.switch"
+        "project.context.switch",
+        "continuity.handoff.grant",
+        "continuity.handoff.revoke",
+        "engineering.selector.attest"
       ]
     },
     {
@@ -550,7 +560,11 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "engineering.source.capture.hint",
+        "continuity.handoff.grant",
+        "continuity.handoff.revoke",
+        "engineering.selector.attest"
       ]
     },
     {
@@ -638,7 +652,11 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "engineering.source.capture.hint",
+        "continuity.handoff.grant",
+        "continuity.handoff.revoke",
+        "engineering.selector.attest"
       ]
     },
     {

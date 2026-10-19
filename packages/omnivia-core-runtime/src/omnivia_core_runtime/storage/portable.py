@@ -27,6 +27,9 @@ Excluded, from the artifact itself rather than at restore:
   artifact has no foreign-key violation, and no placeholder checkout is left behind;
 - host correlation and checkout hints of continuity sessions, and every association
   key in the lifecycle history;
+- cross-principal authority and installation-bound evidence: handoff grants and their
+  revocations (a restored workspace never carries live read authority granted to another
+  principal) and selector attestations (each names the attesting installation);
 - the association authority, workspace lease, mutation guard and open events --
   `acquire_lease` mints the restoring owner's own;
 - the legacy baseline's `workspaces` and `sources` path columns, blanked.
@@ -129,6 +132,9 @@ _EXCLUDED_TABLES: Final = (
     ("omnivia_engineering_snapshot_captures", "a snapshot capture header"),
     ("omnivia_engineering_checkouts", "an installation checkout"),
     ("omnivia_engineering_session_authority", "association authority"),
+    ("omnivia_engineering_selector_attestations", "a selector attestation"),
+    ("omnivia_engineering_handoff_grant_revocations", "a handoff grant revocation"),
+    ("omnivia_engineering_handoff_grants", "a handoff grant"),
     ("omnivia_workspace_lease", "a workspace lease"),
     ("omnivia_mutation_guard", "a mutation guard"),
     ("omnivia_workspace_open_events", "a workspace open event"),

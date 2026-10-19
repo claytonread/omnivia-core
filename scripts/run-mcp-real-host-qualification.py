@@ -70,6 +70,16 @@ MEMORY_KEY: Final = f"{QUALIFICATION_TOKEN}-memory-1"
 IMPORT_KEY: Final = f"{QUALIFICATION_TOKEN}-import-1"
 INTERRUPTED_KEY: Final = f"{QUALIFICATION_TOKEN}-interrupted-1"
 HOST_TIMEOUT: Final = 300.0
+#: Codex's isolated home has no ambient model configuration. Pin both values so
+#: qualification behavior does not drift with CLI defaults between fresh sessions.
+CODEX_MODEL: Final = "gpt-5.6-sol"
+CODEX_REASONING_EFFORT: Final = "medium"
+#: Codex's ``exec`` tool yields after 10 s by default, returning "Script running with
+#: cell ID ..." while a nested MCP call is still in flight.  The model then prints the
+#: marker, Codex exits before the response and the proxy records a call with no answer.
+#: A first-line ``// @exec`` pragma holds ``exec`` until the call returns, bounded by the
+#: host timeout.
+CODEX_EXEC_YIELD_MS: Final = int(HOST_TIMEOUT * 1000)
 CORE_TIMEOUT: Final = 60.0
 SYSTEM_PATH: Final = "/usr/bin:/bin:/usr/sbin:/sbin"
 MCP_PROTOCOL_VERSION: Final = "2025-06-18"
@@ -203,7 +213,7 @@ PROFILE_TOOLS: Final = {"restricted": RESTRICTED_TOOLS, "authoring": AUTHORING_T
 SAFE_AUXILIARY_TOOLS: Final = frozenset(
     {"workspace_inspect", "evidence_search", "knowledge_search", "memory_search"}
 )
-#: The forty-four of the seventy-nine catalogue operations that the exposure
+#: The forty-eight of the eighty-three catalogue operations that the exposure
 #: manifest does not admit (the other thirty-five are the authoring inventory),
 #: under their MCP-facing names.  The manifest
 #: stays the authority; ``test_the_unexposed_tools_are_exactly_the_catalogue_outside_the_manifest``
@@ -214,7 +224,8 @@ UNEXPOSED_TOOLS: Final = tuple(
     for operation in (
         "analysis.start", "candidate.approve", "candidate.reject", "chat.command",
         "chat.events", "chat.snapshot", "context.priority.set",
-        "continuity.checkpoint.append", "continuity.handoff.read",
+        "continuity.checkpoint.append", "continuity.handoff.grant",
+        "continuity.handoff.read", "continuity.handoff.revoke",
         "continuity.session.close", "continuity.session.register",
         "decision.definition.disable", "decision.definition.get",
         "decision.definition.list", "decision.definition.publish",
@@ -222,7 +233,8 @@ UNEXPOSED_TOOLS: Final = tuple(
         "decision.model.remove", "decision.outcome.submit",
         "decision.result_use.evaluate", "decision.settings.get",
         "decision.settings.update", "engineering.repository.register",
-        "engineering.review.record", "engineering.source.capture.commit",
+        "engineering.review.record", "engineering.selector.attest",
+        "engineering.source.capture.commit", "engineering.source.capture.hint",
         "engineering.source.record", "job.cancel", "job.retry", "knowledge.propose",
         "memory.get", "memory.list", "record.supersede", "skills.install",
         "skills.remove", "skills.resolve", "skills.version.deprecate",
@@ -570,6 +582,10 @@ def codex_command(
         "--skip-git-repo-check",
         "--sandbox",
         "read-only",
+        "--model",
+        CODEX_MODEL,
+        "--config",
+        f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"',
         "--config",
         'approval_policy="never"',
         "--json",
@@ -3186,15 +3202,33 @@ def inspect_settled_import_job(
 # --- deterministic real-host journey --------------------------------------
 
 
-def _tool_prompt(tool: str, arguments: Mapping[str, Any], marker: str) -> str:
+def _tool_prompt(host: str, tool: str, arguments: Mapping[str, Any], marker: str) -> str:
     payload = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+    if host == "codex-cli":
+        identifier = f"tools.mcp__{SERVER_KEY.replace('-', '_')}__{tool}"
+        call = (
+            f"Call exactly one tool named {tool} by running JavaScript that makes a "
+            f"single awaited call to {identifier} with exactly the JSON arguments "
+            "below, inside try/catch, so an MCP error is caught and consumed and the "
+            "call is never repeated. Pass exactly these two lines, including the "
+            "first-line pragma, as the whole exec input:\n"
+            f'// @exec: {{"yield_time_ms": {CODEX_EXEC_YIELD_MS}}}\n'
+            f"try {{ await {identifier}({payload}); }} catch (error) {{}}\n"
+        )
+    else:
+        call = (
+            f"Call exactly one tool named {tool}; it may be displayed as "
+            f"{claude_tool_name(tool)}. Use it now with exactly the JSON arguments "
+            "below; "
+        )
     return (
         "This is an isolated MCP qualification step. Use only the configured "
-        f"{SERVER_KEY} MCP server. Call exactly one tool named {tool}; it may be "
-        f"displayed as {claude_tool_name(tool)}. Use it now with exactly the JSON "
-        "arguments below; do not add, remove, rewrite or infer values. "
-        "Do not call another tool. Whether the tool succeeds or returns an error, "
-        f"after it finishes output exactly {marker} and nothing else.\nJSON:{payload}"
+        f"{SERVER_KEY} MCP server. {call}"
+        "do not add, remove, rewrite or infer values. "
+        "Invoke it exactly once. Do not call another tool, and never retry or "
+        "repeat the same call, whether it succeeds or returns an error. "
+        f"After the single call output exactly {marker} and nothing else."
+        f"\nJSON:{payload}"
     )
 
 
@@ -3357,7 +3391,7 @@ class HostDriver:
             installed=self.installed,
             core_config=self.core_config,
             auth=self.auth,
-            prompt=_tool_prompt(tool, arguments, marker),
+            prompt=_tool_prompt(self.host, tool, arguments, marker),
             marker=marker,
             tools=(tool,),
             timeout=HOST_TIMEOUT,
@@ -3496,16 +3530,30 @@ class HostDriver:
         result = self._run(tool, arguments, pause_before=True, on_paused=on_paused)
         summary = result.summary
         digest = arguments_digest(arguments)
-        if (
-            not result.paused
-            or not summary.paused
-            or summary.initialized_after_pause
-            or tuple(summary.requests) != ((tool, digest),)
-            or tuple(summary.called) != (tool,)
-            or [(name, refusal) for name, refusal, _ in summary.outcomes]
-            != [(tool, "credential_missing")]
-            or summary.succeeded
-        ):
+        # Diagnostic only: the first failing predicate is named before the general label.
+        failed = next(
+            (
+                label
+                for label, bad in (
+                    ("host_refusal_pause_unobserved", not result.paused or not summary.paused),
+                    ("host_refusal_initialized_after_pause", summary.initialized_after_pause),
+                    (
+                        "host_refusal_request_shape_mismatch",
+                        tuple(summary.requests) != ((tool, digest),) or tuple(summary.called) != (tool,),
+                    ),
+                    ("host_refusal_unexpected_success", bool(summary.succeeded)),
+                    (
+                        "host_refusal_class_mismatch",
+                        [(name, refusal) for name, refusal, _ in summary.outcomes]
+                        != [(tool, "credential_missing")],
+                    ),
+                )
+                if bad
+            ),
+            None,
+        )
+        if failed is not None:
+            self.progress(failed)
             self.progress("host_refusal_mismatch")
             raise QualificationError(ReasonCode.GATE_FAILED)
         if (
