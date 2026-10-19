@@ -43,6 +43,7 @@ from omnivia_core.contracts.v1 import (
 from omnivia_core.contracts.v1.generated import (
     ChatCommandInput,
     ChatCommandResult,
+    ChatDraftReadInput,
     ChatEventsInput,
     ChatEventsResult,
     ChatGenerationEvent,
@@ -61,8 +62,10 @@ from omnivia_core_runtime.service.chat_command import (
     is_governed_command_result,
 )
 from omnivia_core_runtime.service.chat_generation import replay_generation_events
-from omnivia_core.contracts.v1.generated import ChatDraftReadInput
-from omnivia_core_runtime.service.chat_snapshot import resolve_chat_draft, resolve_chat_snapshot
+from omnivia_core_runtime.service.chat_snapshot import (
+    resolve_chat_draft,
+    resolve_chat_snapshot,
+)
 from omnivia_core_runtime.service.chat_submit import (
     RETRY_GENERATION_COMMAND,
     SUBMIT_MESSAGE_COMMAND,
