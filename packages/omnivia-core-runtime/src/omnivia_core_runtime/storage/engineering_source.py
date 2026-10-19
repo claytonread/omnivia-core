@@ -36,7 +36,7 @@ Rules enforced here:
   anything unqualified is `unknown`. Reviews, labels, base commits and recency
   play no part;
 - `symbol` and `source_span` selectors are evaluated only through immutable,
-  trusted selector attestations (migration 0065) that an installed Dev adapter
+  trusted selector attestations (migration 0070) that an installed Dev adapter
   states as the stream owner. Core never parses source: it compares the
   adapter's selector digests between the baseline and the target, and every
   attestation must still bind its stream owner, repository, snapshot, path and
@@ -91,7 +91,7 @@ SELECTOR_TYPES: Final = frozenset(
         "external_evidence",
     }
 )
-#: The selector types a trusted Dev adapter may attest (migration 0065).
+#: The selector types a trusted Dev adapter may attest (migration 0070).
 ATTESTED_SELECTOR_TYPES: Final = frozenset({"symbol", "source_span"})
 FILE_COVERAGES: Final = frozenset({"complete", "partial"})
 SELECTOR_STATES: Final = frozenset({"present", "absent"})
@@ -581,7 +581,7 @@ def record_selector_attestation(
     adapter's selector digest is evidence only after all of that holds. An
     identical statement already stored is `already_recorded`; a different one for
     the same selector in the same snapshot is a conflict, never an overwrite.
-    Migration 0065's insert trigger decides all of this a second time.
+    Migration 0070's insert trigger decides all of this a second time.
     """
     stream = _stream(connection, workspace_id, request.stream_id)
     if stream is None:

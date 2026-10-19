@@ -1,4 +1,4 @@
-"""Trusted `symbol` and `source_span` selector attestations (migration 0065).
+"""Trusted `symbol` and `source_span` selector attestations (migration 0070).
 
 Core never parses source.  An installed Dev adapter, running as the authenticated
 stream owner, states what one selector resolved to in one sealed snapshot, and the

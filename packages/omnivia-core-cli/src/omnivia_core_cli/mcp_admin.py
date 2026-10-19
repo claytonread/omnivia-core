@@ -161,6 +161,7 @@ _RESTRICTED_PURPOSES: Final[tuple[str, ...]] = (
     "engineering_expand",
     "engineering_context",
     "workspace_inspection",
+    "trigger_observation",
 )
 PROFILE_PURPOSES: Final[Mapping[str, tuple[str, ...]]] = {
     "restricted": _RESTRICTED_PURPOSES,
@@ -170,7 +171,16 @@ PROFILE_PURPOSES: Final[Mapping[str, tuple[str, ...]]] = {
             + (
                 "content_ingestion",
                 "job_observation",
+                "knowledge_share_observation",
+                "knowledge_sharing",
                 "memory_authoring",
+                "outcome_request",
+                "project_context",
+                "skill_authoring",
+                "task_context_export",
+                "task_context_observation",
+                "trigger_configuration",
+                "trigger_ingestion",
             )
         )
     ),

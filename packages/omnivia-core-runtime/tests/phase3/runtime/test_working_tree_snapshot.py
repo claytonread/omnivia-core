@@ -2407,7 +2407,20 @@ def test_0059_upgrade_seeds_a_preexisting_0058_capture(
             fencing_generation=old.holder.generation,
             workspace_id=captured_schema.WORKSPACE_ID,
         )
-        assert [item.version for item in applied] == [59, 60, 61, 62, 63, 64, 65]
+        assert [item.version for item in applied] == [
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+        ]
         assert old.holder.connection.execute(
             "SELECT COUNT(*) FROM omnivia_engineering_source_producer_queue"
         ).fetchone() == (0,)

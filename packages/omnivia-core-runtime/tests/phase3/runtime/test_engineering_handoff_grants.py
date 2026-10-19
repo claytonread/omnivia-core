@@ -1,4 +1,4 @@
-"""Cross-principal continuity handoff grants (migration 0064), end to end.
+"""Cross-principal continuity handoff grants (migration 0069), end to end.
 
 Driven through the production application surface with three authenticated
 contributors: an owner, a grantee and a bystander.  A grant is the single exception

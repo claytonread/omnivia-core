@@ -293,7 +293,7 @@ covered target. It reads only and writes nothing.
 - **Reverts:** a revert matches again because its digests are equal, and the
   intervening stale snapshot stays stale.
 
-## Selector attestations: `symbol` and `source_span` (migration 0065)
+## Selector attestations: `symbol` and `source_span` (migration 0070)
 
 Core never parses source. `engineering.selector.attest` ingests what an installed Dev
 adapter, running as the authenticated source stream owner, states about one selector in
@@ -320,7 +320,7 @@ the workspace, installation and stream owner are the authenticated caller's own.
   adapter's selector digest is evidence only after all of these hold.
 - **Immutable:** one statement per (snapshot, selector type, selector). An identical
   redelivery returns `already_recorded`; a different statement is a `conflict`, never an
-  overwrite. The row is never updated or deleted, and migration 0065's triggers hold every
+  overwrite. The row is never updated or deleted, and migration 0070's triggers hold every
   binding, the audit, and append-only a second time. Because digests from different adapter
   versions are never compared, an adapter upgrade cannot re-attest an old snapshot: a
   dependency whose baseline and target were attested by different adapters stays `unknown`.
@@ -345,7 +345,7 @@ the workspace, installation and stream owner are the authenticated caller's own.
   from a portable export like capture headers and stream origins; the snapshot, its file
   index and the source events stay.
 
-## Continuity handoff grants (migration 0064)
+## Continuity handoff grants (migration 0069)
 
 Continuity stays owner-only: another principal's checkpoint is `not_found`, exactly like a
 missing one. A handoff grant is the one narrow exception, added by two trusted, non-MCP
@@ -655,15 +655,18 @@ migration file's own content has to exist at a real commit before that
 commit's hash can be recorded. `accepted_commit` stays null until the normal
 acceptance process records a landing.
 
-## Migration pins (0064 and 0065)
+## Migration pins (0069 and 0070)
 
-Allocations 64 (`0064_engineering_handoff_grants.sql`, predecessor 63) and 65
-(`0065_engineering_selector_attestations.sql`, predecessor 64) are candidates owned by
+Allocations 69 (`0069_engineering_handoff_grants.sql`, predecessor 68) and 70
+(`0070_engineering_selector_attestations.sql`, predecessor 69) are candidates owned by
 Engineering Memory. Their normalized SHA-256 values are
 `e6f89df9b913b40bdf4d49e142c0f2ff625ff8fc53b98064d82d7046d66eaae5` and
 `00a6cee0288bcdb13ab9ba330a25d9b90f725c16f48e371d19f49458ac46f3a9`. Both were
 introduced by commit `8efab26e83d137736f229f84745c2e535390980e`, which is pinned in the
-allocation ledger and conformance test. `accepted_commit` stays null until landing.
+allocation ledger and conformance test. They were first numbered 0064 and 0065; main
+landed its own 0064-0068 first, so merging main renumbered them, and the introducing
+commit must be re-pinned to the commit that carries the renumbered files.
+`accepted_commit` stays null until landing.
 
 ## Producer → consumer map
 

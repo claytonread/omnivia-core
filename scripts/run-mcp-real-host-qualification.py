@@ -59,8 +59,8 @@ FIRST_PARTY: Final = (
 SDK_PINS: Final = {"mcp": "2.0.0", "mcp-types": "2.0.0"}
 HOST_VERSIONS: Final = {"claude-code": "2.1.289", "codex-cli": "0.146.0"}
 SCRIPT_PATH: Final = Path(__file__).resolve()
-RESTRICTED_TOOL_COUNT: Final = 13
-AUTHORING_TOOL_COUNT: Final = 18
+RESTRICTED_TOOL_COUNT: Final = 14
+AUTHORING_TOOL_COUNT: Final = 35
 QUALIFICATION_TOKEN: Final = "omnivia-real-host-qualification-v1"
 DIRECT_SOURCE_ID: Final = f"{QUALIFICATION_TOKEN}-direct-source"
 INTERRUPTED_SOURCE_ID: Final = f"{QUALIFICATION_TOKEN}-interrupted-source"
@@ -200,16 +200,16 @@ def _authoring_tools() -> tuple[str, ...]:
 
 
 AUTHORING_TOOLS: Final = _authoring_tools()
-#: The authoring profile is the restricted profile plus five additions, in the
+#: The authoring profile is the restricted profile plus twenty-one additions, in the
 #: manifest's exposure order.
 RESTRICTED_TOOLS: Final = AUTHORING_TOOLS[:RESTRICTED_TOOL_COUNT]
 PROFILE_TOOLS: Final = {"restricted": RESTRICTED_TOOLS, "authoring": AUTHORING_TOOLS}
 SAFE_AUXILIARY_TOOLS: Final = frozenset(
     {"workspace_inspect", "evidence_search", "knowledge_search", "memory_search"}
 )
-#: The forty-three of the sixty-one catalogue operations that the exposure
-#: manifest does not admit (v1.4 addendum, sections 1 and 5; the other eighteen
-#: are the authoring inventory), under their MCP-facing names.  The manifest
+#: The forty-eight of the eighty-three catalogue operations that the exposure
+#: manifest does not admit (the other thirty-five are the authoring inventory),
+#: under their MCP-facing names.  The manifest
 #: stays the authority; ``test_the_unexposed_tools_are_exactly_the_catalogue_outside_the_manifest``
 #: in ``tests/package_qualification/test_mcp_real_host_qualification.py`` checks
 #: this tuple against the catalogue and the manifest, so it cannot drift silently.
@@ -230,7 +230,9 @@ UNEXPOSED_TOOLS: Final = tuple(
         "engineering.review.record", "engineering.selector.attest",
         "engineering.source.capture.commit", "engineering.source.capture.hint",
         "engineering.source.record", "job.cancel", "job.retry", "knowledge.propose",
-        "memory.get", "memory.list", "record.supersede", "workflow.control",
+        "memory.get", "memory.list", "record.supersede", "skills.install",
+        "skills.remove", "skills.resolve", "skills.version.deprecate",
+        "skills.version.publish", "workflow.control",
         "workflow.inspect", "workflow.review", "workflow.start", "workspace.create",
         "workspace.list",
     )
@@ -257,7 +259,7 @@ SECTION7_TOOLS: Final = tuple(
     tool for sentinels in SECTION7_SENTINELS.values() for tool in sentinels
 )
 #: Every excluded name each profile must prove undispatchable.  The restricted
-#: profile also excludes the five authoring additions it does not expose.
+#: profile also excludes the fifteen authoring additions it does not expose.
 EXCLUDED_TOOLS: Final = {
     "restricted": (*AUTHORING_TOOLS[RESTRICTED_TOOL_COUNT:], *UNEXPOSED_TOOLS, *SECTION7_TOOLS),
     "authoring": (*UNEXPOSED_TOOLS, *SECTION7_TOOLS),

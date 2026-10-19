@@ -373,6 +373,7 @@ _TOOLS = [
     "graph_traverse",
     "knowledge_search",
     "memory_search",
+    "trigger_health",
     "workspace_inspect",
 ]
 _FORMATS = {
@@ -394,7 +395,7 @@ def _accepted_result() -> dict[str, object]:
                     "config_format": config_format,
                     "connected": True,
                     "session_completed": True,
-                    "tool_count": 13,
+                    "tool_count": 14,
                     "tool_calls": 6,
                     "tools": list(_TOOLS),
                     "result_counts": dict.fromkeys(
@@ -490,7 +491,7 @@ def test_the_candidate_gate_refuses_an_unnamed_extra_family() -> None:
         ("config_format", "claude_code_json"),
         ("config_format", "codex_toml_v2"),
         ("config_format", None),
-        # A manifest that is not the stable six, in any of its wrong shapes.
+        # A manifest that is not the stable fourteen, in any of its wrong shapes.
         ("tools", _TOOLS[:5]),
         ("tools", [*_TOOLS, "context_pack_write"]),
         ("tools", [*_TOOLS[:-1], "context_pack_write"]),
@@ -594,7 +595,7 @@ def test_the_builder_gate_requires_the_same_evidence_the_journey_retains() -> No
     assert module.HOST_EVIDENCE == {
         "connected": True,
         "session_completed": True,
-        "tool_count": 13,
+        "tool_count": 14,
         "tool_calls": 6,
         "verdict": "pass",
     }
@@ -799,7 +800,7 @@ def test_architecture_gate_clean_install_mcp_without_desktop(
     Claude Code configuration forms included. This test holds the two gates that
     make a pass mean that: the install is refused unless its first-party set is
     exactly the five Standard distributions, and the journey is refused unless
-    every host profile connected and called all thirteen tools.
+    every host profile connected and called all fourteen tools.
 
     `_offline_qualification` is driven for real, with only process launches
     stubbed, so the ordering is proven rather than read: a freeze carrying a

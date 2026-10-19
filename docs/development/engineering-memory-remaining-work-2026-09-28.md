@@ -27,9 +27,9 @@ filenames previously named here do not exist in this checkout and are not eviden
 
 Implemented in Core, with details in `engineering-source-coverage.md`:
 
-- cross-principal continuity handoff grants, migration 0064 (`continuity.handoff.grant`,
+- cross-principal continuity handoff grants, migration 0069 (`continuity.handoff.grant`,
   `continuity.handoff.revoke`; read by exact checkpoint id for the named grantee only);
-- trusted `symbol` and `source_span` selector attestations, migration 0065
+- trusted `symbol` and `source_span` selector attestations, migration 0070
   (`engineering.selector.attest`, plus evaluator support); and
 - search/context narrowing performance work, with no migration.
 

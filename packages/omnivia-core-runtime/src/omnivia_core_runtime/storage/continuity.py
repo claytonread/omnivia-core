@@ -18,7 +18,7 @@ A session belongs to the principal that registered it. Every read here names
 that principal in its SQL, and append and close re-read the session that way
 inside their fenced transaction before writing. Another principal's session or
 checkpoint is indistinguishable from a missing one: `SessionNotFound` or `None`,
-never a payload, id, count or position. The single exception is migration 0064's
+never a payload, id, count or position. The single exception is migration 0069's
 handoff grant: the owner of one exact checkpoint may name one other existing
 principal who can then read that checkpoint's redacted handoff by checkpoint id,
 while the grant is unexpired, unrevoked and pinned to the checkpoint's unchanged
@@ -51,7 +51,7 @@ _AUTHORITY_TABLE: Final = "omnivia_engineering_session_authority"
 _GRANTS_TABLE: Final = "omnivia_engineering_handoff_grants"
 _REVOCATIONS_TABLE: Final = "omnivia_engineering_handoff_grant_revocations"
 
-#: A grant lives at least a minute and at most a week; migration 0064 holds the same bounds.
+#: A grant lives at least a minute and at most a week; migration 0069 holds the same bounds.
 HANDOFF_GRANT_MIN_TTL_SECONDS: Final = 60
 HANDOFF_GRANT_MAX_TTL_SECONDS: Final = 604800
 
@@ -1397,7 +1397,7 @@ def grant_handoff(
     checkpoint, a missing one and a stale digest are all `HandoffGrantNotFound`.
     The grantee must already be a continuity principal in this workspace. A live
     grant for the same checkpoint and grantee is a `HandoffGrantConflict`, so a
-    revocation always ends everything the grantee could read. Migration 0064's
+    revocation always ends everything the grantee could read. Migration 0069's
     insert trigger decides all of this a second time.
     """
     row = connection.execute(

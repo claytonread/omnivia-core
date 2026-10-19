@@ -489,7 +489,7 @@ def test_a_workspace_held_at_0062_is_judged_by_the_guards_it_has_applied(
     _migrated_through(path, 62)
     connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
     try:
-        # The guards that 0064 and 0065 add later are absent here, and that is not drift.
+        # The guards that 0069 and 0070 add later are absent here, and that is not drift.
         assert "omnivia_guard_engineering_handoff_grants_insert" not in trigger_names(
             connection
         )

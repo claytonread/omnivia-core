@@ -299,13 +299,18 @@ def fenced_transaction(
         with authorised(connection, mutations=True):
             yield connection
         _validate(connection, identity, workspace_id, fencing_generation, "before commit")
+        # Inside the guard: a commit that the database refuses (a deferred foreign key, for one)
+        # leaves its transaction open, and that transaction must be rolled back, not kept.
+        connection.execute("COMMIT")
     except BaseException:
-        try:
-            connection.execute("ROLLBACK")
-        except sqlite3.OperationalError:  # pragma: no cover - no active transaction
-            pass
+        # A body that ended its own transaction has nothing left to roll back, and a ROLLBACK
+        # issued then would replace the error that is actually propagating.
+        if connection.in_transaction:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.OperationalError:  # pragma: no cover - ended between check and call
+                pass
         raise
-    connection.execute("COMMIT")
 
 
 def trigger_names(connection: sqlite3.Connection) -> tuple[str, ...]:
@@ -367,7 +372,7 @@ def assert_guards_intact(connection: sqlite3.Connection) -> None:
     """Every guard trigger declared by an applied migration must be present, by exact name.
 
     The expectation is the database's own ledger, not the whole catalogue. A workspace
-    upgraded only through 0062 has not earned the guards that 0064 and 0065 add later,
+    upgraded only through 0062 has not earned the guards that 0069 and 0070 add later,
     and a fully migrated one is still held to every current guard. Two states are
     refused rather than passed: no migration recorded, which would make the check
     vacuous, and a recorded migration this catalogue does not hold, whose guards

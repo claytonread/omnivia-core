@@ -30,7 +30,7 @@ The security shape is the one the decision family established:
    issued for), in the precondition read and again inside the fenced write.
    Another principal's session or checkpoint is `not_found` exactly as a
    missing one, before any stated version is compared.
-8. the one exception is a handoff grant (migration 0064).  The checkpoint's owner
+8. the one exception is a handoff grant (migration 0069).  The checkpoint's owner
    names one other existing principal for one exact checkpoint, pinned by its
    digest, and the grantee reads only the redacted handoff, by checkpoint id,
    through its own binding while the grant is unexpired and unrevoked.  A wrong
