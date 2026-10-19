@@ -65,9 +65,11 @@ from __future__ import annotations
 import bisect
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import subprocess
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -183,6 +185,27 @@ _ECMASCRIPT_BREAK: Final = re.compile("\r\n|[\r\n\u2028\u2029]")
 
 class TypeScriptAnalysisRefused(RuntimeError):
     """The snapshot cannot be analysed inside the bounds this profile declares."""
+
+
+#: Why a runtime cannot run the analyser, as `code.status` and `code.import` report it.
+NODE_EXECUTABLE_INVALID: Final = "node_executable_invalid"
+NODE_EXECUTABLE_UNUSABLE: Final = "node_executable_unusable"
+COMPILER_UNVERIFIED: Final = "compiler_unverified"
+ANALYSER_UNVERIFIED: Final = "analyser_unverified"
+#: How often a running analyser hands control back to the caller's `heartbeat`.
+HEARTBEAT_INTERVAL_SECONDS: Final = 0.1
+
+
+class TypeScriptRuntimeUnavailable(TypeScriptAnalysisRefused):
+    """The runtime itself -- Node, the compiler or the analyser file -- cannot be used.
+
+    Distinct from a snapshot that is too large: nothing about the request is wrong, so
+    the caller reports a missing dependency, with `reason`, instead of a size refusal.
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 def compiler_digest(typescript_root: Path) -> str:
@@ -350,21 +373,80 @@ class TypeScriptRuntime:
         node = Path(self.node_executable)
         root = Path(self.typescript_root)
         if not node.is_absolute() or not root.is_absolute():
-            raise TypeScriptAnalysisRefused("the analyser runtime paths must be absolute")
+            reason = NODE_EXECUTABLE_INVALID if not node.is_absolute() else COMPILER_UNVERIFIED
+            raise TypeScriptRuntimeUnavailable(reason, "the analyser runtime paths must be absolute")
         node, root = node.resolve(), root.resolve()
+        if not node.is_file() or not os.access(node, os.X_OK):
+            raise TypeScriptRuntimeUnavailable(
+                NODE_EXECUTABLE_INVALID, "the Node executable is not an executable file"
+            )
+        _probe_node(node)
         try:
             package = json.loads((root / "package.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             package = None
         if not isinstance(package, dict) or package.get("name") != "typescript":
-            raise TypeScriptAnalysisRefused("the compiler root is not a TypeScript package")
+            raise TypeScriptRuntimeUnavailable(
+                COMPILER_UNVERIFIED, "the compiler root is not a TypeScript package"
+            )
         if package.get("version") != profile.typescript_version:
-            raise TypeScriptAnalysisRefused("the compiler is not the profile's pinned version")
-        if not node.is_file() or not (root / "lib" / "typescript.js").is_file():
-            raise TypeScriptAnalysisRefused("the analyser runtime is incomplete")
+            raise TypeScriptRuntimeUnavailable(
+                COMPILER_UNVERIFIED, "the compiler is not the profile's pinned version"
+            )
+        if not (root / "lib" / "typescript.js").is_file():
+            raise TypeScriptRuntimeUnavailable(COMPILER_UNVERIFIED, "the analyser runtime is incomplete")
         if compiler_digest(root) != profile.typescript_digest:
-            raise TypeScriptAnalysisRefused("the compiler files are not the profile's pinned build")
+            raise TypeScriptRuntimeUnavailable(
+                COMPILER_UNVERIFIED, "the compiler files are not the profile's pinned build"
+            )
+        _pinned_analyser(profile)
         return node, root
+
+
+#: The options every analyser run starts Node with, so a probe with `--version` proves the
+#: executable understands the permission model and each hardening flag before it is trusted.
+_NODE_HARDENING: Final = (
+    "--permission",
+    "--disallow-code-generation-from-strings",
+    "--no-addons",
+    "--no-experimental-fetch",
+    "--no-experimental-websocket",
+)
+_NODE_VERSION: Final = re.compile(rb"v\d+\.\d+\.\d+\r?\n")
+
+
+def _probe_node(node: Path) -> None:
+    """Refuse an executable that is not a Node able to run the hardened analyser."""
+    try:
+        completed = subprocess.run(
+            [str(node), *_NODE_HARDENING, "--version"],
+            capture_output=True,
+            timeout=30,
+            env={},
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise TypeScriptRuntimeUnavailable(
+            NODE_EXECUTABLE_UNUSABLE, "the Node executable could not be started"
+        ) from exc
+    if completed.returncode != 0 or not _NODE_VERSION.fullmatch(completed.stdout):
+        raise TypeScriptRuntimeUnavailable(
+            NODE_EXECUTABLE_UNUSABLE, "the executable is not a Node that supports the analyser's options"
+        )
+
+
+def _pinned_analyser(profile: TypeScriptAnalyserProfile) -> Path:
+    """The packaged analyser file, once its bytes hash to the profile's pinned build."""
+    analyser = ANALYSER_PATH.resolve()
+    try:
+        build = analyser.read_bytes()
+    except OSError:
+        build = b""
+    if "sha256:" + hashlib.sha256(build).hexdigest() != profile.analyser_digest:
+        raise TypeScriptRuntimeUnavailable(
+            ANALYSER_UNVERIFIED, "the analyser file is not the profile's pinned build"
+        )
+    return analyser
 
 
 @dataclass(frozen=True, slots=True)
@@ -519,54 +601,75 @@ def _sealed_snapshot_kind(
 
 
 def _run_analyser(
-    node: Path, typescript_root: Path, payload: bytes, profile: TypeScriptAnalyserProfile
+    node: Path,
+    typescript_root: Path,
+    payload: bytes,
+    profile: TypeScriptAnalyserProfile,
+    heartbeat: Callable[[], object] | None = None,
 ) -> dict[str, object]:
-    """Run the pinned analyser once, confined, and return its decoded answer."""
-    analyser = ANALYSER_PATH.resolve()
-    try:
-        build = analyser.read_bytes()
-    except OSError:
-        build = b""
-    if "sha256:" + hashlib.sha256(build).hexdigest() != profile.analyser_digest:
-        raise TypeScriptAnalysisRefused("the analyser file is not the profile's pinned build")
+    """Run the pinned analyser once, confined, and return its decoded answer.
+
+    The caller's `heartbeat` runs every :data:`HEARTBEAT_INTERVAL_SECONDS` while the
+    analyser works, so a lease stays current and a passed request deadline ends the run:
+    a `heartbeat` that raises kills the analyser and propagates.
+    """
+    analyser = _pinned_analyser(profile)
     command = [
         str(node),
-        "--permission",
+        *_NODE_HARDENING,
         f"--allow-fs-read={analyser}",
         f"--allow-fs-read={typescript_root}",
-        "--disallow-code-generation-from-strings",
-        "--no-addons",
-        "--no-experimental-fetch",
-        "--no-experimental-websocket",
         f"--max-old-space-size={profile.max_heap_megabytes}",
         str(analyser),
         str(typescript_root),
     ]
-    timed_out = False
-    completed: subprocess.CompletedProcess[bytes] | None = None
+    give_up = time.monotonic() + profile.timeout_seconds
+    pending: bytes | None = payload
+    stdout = b""
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
-            input=payload,
-            capture_output=True,
-            timeout=profile.timeout_seconds,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env={},
             cwd=analyser.parent,
-            check=False,
         )
-    except subprocess.TimeoutExpired:
-        timed_out = True
-    if timed_out or completed is None:
-        raise TypeScriptAnalysisRefused("the analyser exceeded the profile's time budget")
-    if len(completed.stdout) > profile.max_response_bytes:
+    except OSError as exc:
+        raise TypeScriptRuntimeUnavailable(
+            NODE_EXECUTABLE_UNUSABLE, "the Node executable could not be started"
+        ) from exc
+    with process:
+        try:
+            while True:
+                if heartbeat is not None:
+                    heartbeat()
+                if time.monotonic() >= give_up:
+                    raise TypeScriptAnalysisRefused("the analyser exceeded the profile's time budget")
+                try:
+                    # The payload goes on the first call only; later calls resume.
+                    stdout, _ = process.communicate(pending, timeout=HEARTBEAT_INTERVAL_SECONDS)
+                    break
+                except subprocess.TimeoutExpired:
+                    pending = None
+        except BaseException:
+            process.kill()
+            raise
+    if len(stdout) > profile.max_response_bytes:
         raise TypeScriptAnalysisRefused("the analyser answer exceeds the profile's size budget")
     answer: object = None
     try:
-        answer = json.loads(completed.stdout)
+        answer = json.loads(stdout)
     except ValueError:
         answer = None
-    if completed.returncode != 0 or not isinstance(answer, dict):
-        raise TypeScriptAnalysisRefused("the analyser did not complete")
+    if process.returncode != 0 or not isinstance(answer, dict):
+        # A signal (an out-of-memory abort) is the analysis outgrowing its bounds; any
+        # other exit, or output that is not an answer, is not the analyser at all.
+        if process.returncode is not None and process.returncode < 0:
+            raise TypeScriptAnalysisRefused("the analyser did not complete")
+        raise TypeScriptRuntimeUnavailable(
+            NODE_EXECUTABLE_UNUSABLE, "the Node executable did not run the analyser"
+        )
     return answer
 
 
@@ -586,7 +689,8 @@ def analyse_typescript_snapshot(
 
     `heartbeat` is called once per admitted file before its blob is opened and once
     before the analyser starts; a `heartbeat` that raises aborts with nothing written.
-    The analyser itself is bounded by the profile's `timeout_seconds`, not by heartbeats.
+    While the analyser runs, `heartbeat` is called every :data:`HEARTBEAT_INTERVAL_SECONDS`;
+    the analyser is also bounded by the profile's `timeout_seconds`.
     """
     if expected_profile_digest is not None and expected_profile_digest != profile.digest:
         raise CodeAnalysisBindingError("analyser profile digest is not the expected profile")
@@ -679,7 +783,7 @@ def analyse_typescript_snapshot(
         if heartbeat is not None:
             heartbeat()
         payload = json.dumps(request, ensure_ascii=True, separators=(",", ":")).encode("ascii")
-        answer = _run_analyser(node, typescript_root, payload, profile)
+        answer = _run_analyser(node, typescript_root, payload, profile, heartbeat)
     if answer.get("format") != RESPONSE_FORMAT or answer.get("request_digest") != request_digest:
         raise TypeScriptAnalysisRefused("the analyser answered a different request")
     refused = answer.get("refused")

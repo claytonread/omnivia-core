@@ -17,9 +17,11 @@ decode, to make a request deadline pass mid-analysis.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Iterator, Mapping
@@ -1057,3 +1059,220 @@ def test_a_dependency_change_re_resolves_an_unchanged_caller(captured: Vertical)
         ("pkg.service.run", "unresolved", "unresolved-in-snapshot:pkg.models.make"),
     ]
     assert second["coverage"]["complete"] is False
+
+
+# --- the TypeScript producer's runtime, through the same production route ---------------
+
+TS_REPO = "repo-ts"
+TS_SNAPSHOT = "snap-ts"
+TS_FILES: dict[str, bytes] = {
+    "src/lib.ts": b"export function greet(name: string): string {\n  return name;\n}\n",
+    "src/main.ts": (
+        b'import { greet } from "./lib";\n\n'
+        b'export function run(): string {\n  return greet("x");\n}\n'
+    ),
+}
+#: The pinned compiler as a source checkout carries it (`npm ci`); a built wheel packages
+#: the same files at `PACKAGED_TYPESCRIPT_ROOT`, which does not exist beside the sources.
+COMPILER = Path(__file__).resolve().parents[5] / "node_modules" / "typescript"
+TS_POLICY: dict[str, Any] = {
+    "policy_id": "owner.code-import-ts",
+    "policy_version": "1",
+    "producers": [{"producer_id": TS, "producer_version": "1.0.0", "profile_digest": TS_PROFILE}],
+    "accepted_node_kinds": [
+        {"producer_id": TS, "node_kind": kind} for kind in sorted(code_analysis_typescript.NODE_KINDS)
+    ],
+    "accepted_relationships": [
+        {"producer_id": TS, "relationship": relationship, "evidence_strength": strength}
+        for relationship in sorted(code_analysis_typescript.RELATIONSHIP_TYPES)
+        for strength in ("resolved_static", "syntactic")
+    ],
+    "allow_reduced_coverage": False,
+}
+
+
+@pytest.fixture
+def typescript(vertical: Vertical, monkeypatch: pytest.MonkeyPatch) -> Vertical:
+    """A captured TypeScript repository, its policy, and the compiler a wheel would package."""
+    assert (COMPILER / "package.json").is_file(), "run npm ci so the pinned compiler is available"
+    monkeypatch.setattr(code_analysis_typescript, "PACKAGED_TYPESCRIPT_ROOT", COMPILER)
+    vertical.register(TS_REPO, TS_FILES)
+    vertical.capture(TS_REPO, TS_SNAPSHOT)
+    vertical.ok("code.policy.register", TS_POLICY, key="policy-ts")
+    return vertical
+
+
+def real_node() -> Path:
+    found = shutil.which("node")
+    assert found is not None, "node is required for the TypeScript producer"
+    return Path(found).resolve()
+
+
+def provision(vertical: Vertical, node: Path | None) -> None:
+    """What the installation does: put the trusted Node path in the service's settings."""
+    vertical.runner.settings = dataclasses.replace(
+        vertical.runner.settings, typescript_node_executable=node
+    )
+
+
+def script(path: Path, body: str, *, mode: int = 0o755) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(mode)
+    return path
+
+
+def ts_import_request(**overrides: Any) -> dict[str, Any]:
+    return {
+        "repository_id": TS_REPO, "snapshot_id": TS_SNAPSHOT, "producer_id": TS,
+        "profile_digest": TS_PROFILE, "policy_id": "owner.code-import-ts", "policy_version": "1",
+        **overrides,
+    }
+
+
+def ts_status(vertical: Vertical) -> dict[str, Any]:
+    status = vertical.ok("code.status", {"repository_id": TS_REPO, "snapshot_id": TS_SNAPSHOT})
+    (entry,) = [item for item in status["analyses"] if item["producer_id"] == TS]
+    return entry
+
+
+def assert_unavailable(vertical: Vertical, reason: str, **extra: Any) -> None:
+    """`code.status` and `code.import` name the same reason, and the import writes nothing."""
+    before = vertical.rows()
+    status = ts_status(vertical)
+    assert (status["availability"], status["availability_reason"]) == ("unavailable", reason)
+    error = vertical.refused("code.import", ts_import_request(), key="ts-1", precondition="0", **extra)
+    assert error.code == "dependency_unavailable"
+    assert dict(error.details or {}) == {"reason": reason}
+    assert vertical.rows() == before
+
+
+def test_an_absent_relative_or_unusable_node_is_a_precise_refusal(
+    typescript: Vertical, tmp_path: Path
+) -> None:
+    refusing = {
+        "absent": (None, "runtime_not_configured"),
+        "relative": (Path("node"), "node_executable_invalid"),
+        "missing": (tmp_path / "no-such-node", "node_executable_invalid"),
+        "directory": (tmp_path, "node_executable_invalid"),
+        "not_executable": (script(tmp_path / "plain", "exit 0\n", mode=0o644), "node_executable_invalid"),
+        "not_node": (script(tmp_path / "other", "exit 3\n"), "node_executable_unusable"),
+        "no_version": (script(tmp_path / "mute", "echo hello\n"), "node_executable_unusable"),
+        # Passes the `--version` probe and then answers the analyser with something else.
+        "mute_analyser": (
+            script(tmp_path / "fake", 'case "$*" in *--version) echo v22.0.0;; *) echo not-json;; esac\n'),
+            "node_executable_unusable",
+        ),
+    }
+    fake, _ = refusing.pop("mute_analyser")
+    for node, reason in refusing.values():
+        provision(typescript, node)
+        assert_unavailable(typescript, reason)
+    # The probe cannot see that: status says available, and the import still refuses whole.
+    provision(typescript, fake)
+    assert ts_status(typescript)["availability"] == "available"
+    before = typescript.rows()
+    error = typescript.refused("code.import", ts_import_request(), key="ts-2", precondition="0")
+    assert error.code == "dependency_unavailable"
+    assert dict(error.details or {}) == {"reason": "node_executable_unusable"}
+    assert typescript.rows() == before
+
+
+def test_path_and_project_node_modules_are_never_consulted(
+    typescript: Vertical, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "ran"
+    trap = f"/usr/bin/touch {marker}\necho v22.0.0\n"
+    on_path = script(tmp_path / "bin" / "node", trap)
+    project = tmp_path / "project"
+    script(project / "node_modules" / ".bin" / "node", trap)
+    monkeypatch.setenv("PATH", f"{on_path.parent}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.chdir(project)
+    # Not configured: neither the PATH `node` nor the project's `node_modules/.bin/node` runs.
+    provision(typescript, None)
+    assert_unavailable(typescript, "runtime_not_configured")
+    # A bare name is not a path to search for either.
+    provision(typescript, Path("node"))
+    assert_unavailable(typescript, "node_executable_invalid")
+    provision(typescript, Path("node_modules/.bin/node"))
+    assert_unavailable(typescript, "node_executable_invalid")
+    assert not marker.exists()
+
+
+def test_a_provisioned_node_and_the_pinned_compiler_import_and_query_end_to_end(
+    typescript: Vertical,
+) -> None:
+    provision(typescript, real_node())
+    assert ts_status(typescript)["availability"] == "available"
+    receipt = typescript.ok("code.import", ts_import_request(), key="ts-1", precondition="0")
+    binding = receipt["binding"]
+    assert (binding["repository_id"], binding["snapshot_id"], binding["producer_id"]) == (
+        TS_REPO, TS_SNAPSHOT, TS,
+    )
+    assert binding["profile_digest"] == TS_PROFILE
+    assert receipt["file_count"] == 2 and receipt["entity_count"] > 0 and receipt["relation_count"] > 0
+
+    status = ts_status(typescript)
+    assert (status["availability"], status["readiness"]) == ("available", "ready")
+    assert "availability_reason" not in status and status["binding"] == binding
+    definition = typescript.ok("code.query", query(binding, "definition", semantic_key="src/lib.ts:greet"))
+    assert keys_of(definition["definitions"]) == ["src/lib.ts:greet"]
+    callers = typescript.ok("code.query", query(binding, "callers", semantic_key="src/lib.ts:greet"))
+    assert [(r["source_key"], r["relation_type"]) for r in callers["relations"]] == [
+        ("src/main.ts:run", "code.calls"),
+    ]
+    # The facts are the import's own, and a replay is answered from its receipt.
+    assert records_of(callers) <= members(typescript, binding["import_id"])
+    assert typescript.ok("code.import", ts_import_request(), key="ts-1", precondition="0") == receipt
+
+
+def test_a_tampered_compiler_or_analyser_fails_closed_on_every_call(
+    typescript: Vertical, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    compiler = tmp_path / "typescript"
+    (compiler / "lib").mkdir(parents=True)
+    shutil.copy(COMPILER / "package.json", compiler / "package.json")
+    for lib in (COMPILER / "lib").iterdir():
+        if lib.suffix in {".js", ".ts"}:
+            shutil.copy(lib, compiler / "lib" / lib.name)
+    monkeypatch.setattr(code_analysis_typescript, "PACKAGED_TYPESCRIPT_ROOT", compiler)
+    provision(typescript, real_node())
+    assert ts_status(typescript)["availability"] == "available"
+    # One byte changed after the service was running: the next status and import both see it.
+    with (compiler / "lib" / "typescript.js").open("ab") as changed:
+        changed.write(b"\n// tampered\n")
+    assert_unavailable(typescript, "compiler_unverified")
+
+    monkeypatch.setattr(code_analysis_typescript, "PACKAGED_TYPESCRIPT_ROOT", COMPILER)
+    assert ts_status(typescript)["availability"] == "available"
+    analyser = tmp_path / "analyser.cjs"
+    analyser.write_bytes(code_analysis_typescript.ANALYSER_PATH.read_bytes() + b"\n// tampered\n")
+    monkeypatch.setattr(code_analysis_typescript, "ANALYSER_PATH", analyser)
+    assert_unavailable(typescript, "analyser_unverified")
+
+
+def test_a_passed_deadline_kills_the_analyser_and_leaves_no_partial_import(
+    typescript: Vertical, tmp_path: Path
+) -> None:
+    pid_file = tmp_path / "pid"
+    hang = script(
+        tmp_path / "hang",
+        f'case "$*" in *--version) echo v22.0.0; exit 0;; esac\necho $$ > {pid_file}\nexec /bin/sleep 60\n',
+    )
+    provision(typescript, hang)
+    before = typescript.rows()
+    started = time.monotonic()
+    cancelled = typescript.refused(
+        "code.import", ts_import_request(), key="ts-1", precondition="0", deadline_ms=1500
+    )
+    assert cancelled.code == "deadline_exceeded"
+    assert time.monotonic() - started < 30
+    assert typescript.rows() == before
+    # The heartbeat ended a running analyser: it started, and it is gone and reaped.
+    pid = int(pid_file.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+    # Nothing was claimed: the same key, unhurried and on a real Node, is a fresh attempt.
+    provision(typescript, real_node())
+    receipt = typescript.ok("code.import", ts_import_request(), key="ts-1", precondition="0")
+    assert receipt["activation_sequence"] == 1 and receipt["file_count"] == 2

@@ -132,6 +132,10 @@ class ServiceSettings:
     probe_filesystem: bool = True
     expected_manifest_digest: str | None = None
     required_absent_manifest: Path | None = None
+    #: The absolute Node executable the TypeScript code-analysis producer runs on. Trusted
+    #: installation configuration only: no request, `PATH` search, project file or project
+    #: `node_modules` supplies it, and `None` leaves the producer unavailable.
+    typescript_node_executable: Path | None = None
 
 
 @dataclass(frozen=True)

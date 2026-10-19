@@ -764,6 +764,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--typescript-node",
+        default=None,
+        type=Path,
+        metavar="ABSOLUTE_PATH",
+        help=(
+            "the Node executable the TypeScript/JavaScript code-analysis producer "
+            "runs on. Trusted installation configuration: it is never taken from a "
+            "request, PATH, a project file or a project's node_modules. Without it "
+            "(or when it is relative, missing or unusable) the producer is reported "
+            "unavailable and code.import refuses it as dependency_unavailable. The "
+            "analyser and compiler are the ones packaged with this distribution"
+        ),
+    )
+    parser.add_argument(
         "--managed-start-log",
         default=None,
         type=Path,
@@ -1393,6 +1407,7 @@ def main(
         endpoint=args.endpoint,
         expected_manifest_digest=args.expected_manifest_digest,
         required_absent_manifest=args.required_absent_manifest,
+        typescript_node_executable=args.typescript_node,
     )
     runner = ServiceRunner(settings)
     endpoint = None if args.check_only else _endpoint_to_serve(settings.endpoint)
