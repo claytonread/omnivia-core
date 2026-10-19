@@ -93,9 +93,9 @@ AUTHORITY = ProjectAuthority.of(
 SOURCE = "project-source"
 RECIPIENT = "project-recipient"
 
-#: The first sixty-nine entries of the catalogue as they stood before the sharing family was added,
+#: The first seventy entries of the catalogue as they stood before the sharing family was added,
 #: as canonical JSON of each entry's wire form. Appending operations must not change them.
-PRIOR_CATALOGUE_DIGEST = "sha256:2fcf6d30e7f5d3b02e1630a8b8371f1701bf26e5e2ffc66b4ed127cad031b1de"
+PRIOR_CATALOGUE_DIGEST = "sha256:8d049c243082db1c2cd1aa9c32f44880cec52f3f925ebfc9c2d8789e8a87c262"
 
 
 class _InstallationService:
@@ -266,22 +266,22 @@ def harness(owned: m1.Owned) -> Harness:
 def test_the_four_operations_sit_at_their_frozen_positions_and_are_distinct() -> None:
     names = [entry.name for entry in OPERATION_CATALOGUE]
     # The task-context family was appended after this one, so the sharing family is no longer last.
-    assert tuple(names[69:73]) == (
+    assert tuple(names[70:74]) == (
         "knowledge.share.propose",
         "knowledge.share.decide",
         "knowledge.share.read",
         "knowledge.share.lineage",
     )
-    assert SHARING_OPERATIONS == tuple(names[69:73])
-    assert len(names) == len(set(names)) == 92
+    assert SHARING_OPERATIONS == tuple(names[70:74])
+    assert len(names) == len(set(names)) == 93
 
 
 def test_appending_the_family_changed_no_earlier_operation_contract() -> None:
-    prior = [entry.to_wire() for entry in OPERATION_CATALOGUE[:69]]
+    prior = [entry.to_wire() for entry in OPERATION_CATALOGUE[:70]]
     digest = hashlib.sha256(
         json.dumps(prior, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    assert len(prior) == 69
+    assert len(prior) == 70
     assert f"sha256:{digest}" == PRIOR_CATALOGUE_DIGEST
 
 
@@ -290,7 +290,7 @@ def test_the_production_registry_holds_the_four_operations_under_one_family(
 ) -> None:
     surface = harness.surface
     surface.registry.assert_complete()
-    assert len(surface.registry.operations) == 92
+    assert len(surface.registry.operations) == 93
     assert set(SHARING_OPERATIONS) <= surface.registry.operations
     families = {id(surface._routes[name]) for name in SHARING_OPERATIONS}
     assert len(families) == 1
