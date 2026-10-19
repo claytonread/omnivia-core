@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-03
 
-**Status:** Historical Gate E closeout for PR #167; Gate C and Gate D evidence exists for the 13/18 snapshot at `0d8cf362` and is superseded for the live candidate; the live 14/35 candidate is not qualified
+**Status:** Real-host and installed-wheel qualification passed for the live 14/35 candidate (manifest 2.8) at clean source `fcfff282` on 2026-10-19, with Claude Code 2.1.289 and Codex CLI 0.146.0; the 13/18 records at `0d8cf362` are historical and superseded; exact-head preflight, hosted checks and merge authorization are outside this record
 
 **Active branch:** `codex/core-mcp-authoring-phase8-closeout`
 
@@ -98,9 +98,10 @@ Completed on the branch:
   restricted and eighteen-tool authoring inventories that were live then; the
   live inventories are now fourteen and thirty-five under manifest 2.8;
 - installed-wheel restricted and authoring journeys, a closed redacted record
-  schema, and deterministic conformance tests exist locally. The retained-record
-  gate is not current frozen-candidate evidence, so B-12 and H-5 through H-7
-  stay partial;
+  schema, and deterministic conformance tests exist locally. H-7 is green on
+  the current host records' closure and SDK-pin bindings; H-5, H-6 and B-12 stay
+  partial because the live candidate's installed-wheel results are held outside
+  this tree and none is retained here (see the live candidate evidence below);
 - the real-host harness installs release-form artifacts in isolation and checks
   exact inventories. A historical Codex CLI run at clean tip `4ec9fa17` is
   diagnostic only: its record is unauditable under the current closed schema,
@@ -141,18 +142,31 @@ Remaining before completion, as the `0d8cf362` closeout stated them (historical)
 7. merge only with explicit user authorization, record the release decision,
    and archive temporary worktrees only after separate cleanup authorization.
 
-Live residuals for the manifest 2.8 candidate (fourteen restricted, thirty-five
-authoring, fifteen admitted mutations, 79 catalogue operations). None of the
-`0d8cf362` records qualifies it, so all of the following remain open:
+Live candidate evidence for the manifest 2.8 candidate (fourteen restricted,
+thirty-five authoring, fifteen admitted mutations, 83 catalogue operations),
+recorded 2026-10-19. The `0d8cf362` records were for the 13/18 snapshot; this
+evidence replaces them for the live candidate:
 
-- freeze a clean exact tip that carries the live manifest, and record its
-  candidate key and wheel closure;
-- build release-form wheels from that tip and run the restricted (14-tool) and
-  authoring (35-tool) installed-wheel journeys against them;
-- run Claude Code 2.1.289 and Codex CLI 0.146.0 against that candidate and retain
-  new records whose harness and schema digests are the current bytes;
-- update traceability and status only from those records, then run exact-head
-  preflight and require fresh hosted checks; merge needs explicit authorization.
+- clean source `fcfff2822800e6f32166ab91c7fd46b3ecb8514a`, both records `clean: true`;
+- candidate key `00679377a0e485cd966b5460cde212c0fc9937fa14de158d70f3f40a3613d7f0`, built into a 36-wheel closure with SHA-256
+  `9bf82d3aad5e38e7aa748164b45f3c1834382bb5e68ad4bfa05810299561529f` that includes `mcp==2.0.0` and `mcp-types==2.0.0`;
+- candidate qualification-result SHA-256 `9452ddca90aa5f4f8fdc051f8cdc06a02682b5d700d8dfa8243275f9f15069fd` and installed authoring
+  record SHA-256 `17b8a34d9843ed09f66debf52e6c1c9a95ed1f713ff6fa1aef1a188c9de5e1a6`; both are held outside this tree;
+- Claude Code 2.1.289 record
+  `docs/development/qualification/mcp-real-host-claude-code-2.1.289.json`, SHA-256
+  `53730d171050c39fcf7502b0faeb1f0413c316fa075c52453c9d30cdc5bb6ff1`, and Codex CLI 0.146.0 record
+  `docs/development/qualification/mcp-real-host-codex-cli-0.146.0.json`, SHA-256
+  `7116d30c292085b67d0bad342d1de2562757e49c623886b3dc59337edc5ec10d`. Both are `pass` with every I-1 through I-8 field `true`, list the
+  14-tool restricted and 35-tool authoring inventories, bind harness SHA-256
+  `b75714d81c1be6403c150326e9994b628dbbea97f318d15dd329afc93f2d1864` and schema SHA-256 `e0d8c6458787f163abddef50cb93a982aa4f1873ddcf94abed9bf669a8107381` (the current bytes), and validate
+  against the current closed schema with `--validate-record`.
+
+Residuals:
+
+- B-12, H-5 and H-6 stay `partial`: the installed-wheel results for the live
+  candidate are cited by digest but not retained in this tree;
+- run exact-head preflight and require fresh hosted checks on the pushed head;
+  merge needs explicit authorization.
 
 ### 2.3 Critical path
 
@@ -161,9 +175,9 @@ authoring, fifteen admitted mutations, 79 catalogue operations). None of the
 | 1 | Stabilize current branch | historical: complete at qualified runtime `0d8cf362` (13/18 snapshot) | Final hardening passed independent review and is committed |
 | 2 | Close planning evidence | historical: complete | This plan and the complete 121-path PR #108 file-disposition map are tracked |
 | 3 | Complete harness coverage | historical: complete for the 13/18 inventories | Automated tests prove every section 8 case and reject incomplete evidence |
-| 4 | Freeze candidate | historical: complete at `0d8cf362`; not the live candidate | Clean runtime tip `0d8cf362`, release wheels, SDK pins and host versions are immutable; the live manifest 2.8 candidate needs its own freeze |
-| 5 | Run real hosts | historical: Claude Code 2.1.289 and Codex CLI 0.146.0 each produced passing records for the 13/18 candidate | Those records are bound to superseded digests and cannot be validated as current; the live candidate needs new records |
-| 6 | Reconcile records | in this evidence-only diff: historical records labelled, live residuals listed | Traceability and docs cite the exact qualified source tree without overstating historical evidence |
+| 4 | Freeze candidate | complete for the live candidate at `fcfff282`, candidate key `00679377a0e485cd966b5460cde212c0fc9937fa14de158d70f3f40a3613d7f0`; the `0d8cf362` freeze (13/18) is historical | Clean source tip, release wheels, SDK pins and host versions are immutable |
+| 5 | Run real hosts | complete: Claude Code 2.1.289 and Codex CLI 0.146.0 each produced a passing record for the live 14/35 candidate at `fcfff282`; the 13/18 records at `0d8cf362` are historical | Both records validate against the current closed schema and bind the current harness and schema bytes |
+| 6 | Reconcile records | in this evidence-only diff: the current pair replaces the 13/18 records, historical records labelled, residuals listed | Traceability and docs cite the exact qualified source tree without overstating historical evidence |
 | 7 | Accept exact tip (live 14/35 candidate) | pending | Independent review, focused suites, full preflight, and hosted checks are green at the live tip |
 | 8 | Integrate and retire | authorization required | Authorized merge, explicit release decision, and separately authorized cleanup are complete |
 
@@ -536,16 +550,21 @@ branch state, complete the work in the following order. Do not skip ahead from a
 failed gate, and do not treat a reported Claude check as Codex-accepted evidence
 until Codex has rerun it.
 
-Local status after Gate D, as of 2026-10-04. These states are historical for the
-13/18 candidate; the live 14/35 candidate is not qualified:
+Local status after Gate D. The rows marked historical are the 2026-10-04 state
+for the 13/18 candidate; the rows marked current are the 2026-10-19 state for the
+live 14/35 candidate:
 
 | Area | State | Evidence or next action |
 |---|---|---|
+| Qualified source (live candidate) | current | `fcfff2822800e6f32166ab91c7fd46b3ecb8514a`; both real-host records are `clean: true` at this revision |
+| Standard candidate (live candidate) | current | candidate key `00679377a0e485cd966b5460cde212c0fc9937fa14de158d70f3f40a3613d7f0`; 36-wheel closure SHA-256 `9bf82d3aad5e38e7aa748164b45f3c1834382bb5e68ad4bfa05810299561529f`; qualification-result SHA-256 `9452ddca90aa5f4f8fdc051f8cdc06a02682b5d700d8dfa8243275f9f15069fd`; installed authoring record SHA-256 `17b8a34d9843ed09f66debf52e6c1c9a95ed1f713ff6fa1aef1a188c9de5e1a6` |
 | Qualified runtime commit | historical | `0d8cf362d15b43077a744542974b6160c283e1dc`; all executable, harness, schema, test and substantive documentation changes are frozen there |
 | Standard candidate | historical | candidate key `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b`; restricted, authoring and lifecycle journeys passed from the installed 35-wheel closure, on the 13/18 inventories |
-| Claude Code real-host record | historical | Claude Code 2.1.289, pass with every I-1 through I-8 field true when recorded; bound to harness `2529d9…` and schema `5ece52…`; committed redacted record SHA-256 `02cf61ac10059ec3c1ffe66c8cf6880b8bec4427ea97476213d9972ab4407794` |
-| Codex CLI real-host record | historical | Codex CLI 0.146.0, pass with every I-1 through I-8 field true when recorded; bound to the same superseded digests; committed redacted record SHA-256 `c74c813e5c20f4d1e1f4643fc1fa41a5bb3630f72d6b895b9349e62df1e14d08` |
-| Evidence-only closeout | in progress | This diff adds only the two closed records and status/traceability reconciliation; it must contain no executable or acceptance-rule change |
+| Claude Code real-host record (live candidate) | current | Claude Code 2.1.289, `pass`, every I-1 through I-8 field `true`; bound to harness `b75714d81c1be6403c150326e9994b628dbbea97f318d15dd329afc93f2d1864` and schema `e0d8c6458787f163abddef50cb93a982aa4f1873ddcf94abed9bf669a8107381`; committed redacted record SHA-256 `53730d171050c39fcf7502b0faeb1f0413c316fa075c52453c9d30cdc5bb6ff1` |
+| Codex CLI real-host record (live candidate) | current | Codex CLI 0.146.0, `pass`, every I-1 through I-8 field `true`; same bindings; committed redacted record SHA-256 `7116d30c292085b67d0bad342d1de2562757e49c623886b3dc59337edc5ec10d` |
+| Claude Code real-host record (13/18) | historical | Claude Code 2.1.289, pass with every I-1 through I-8 field true when recorded; bound to harness `2529d9…` and schema `5ece52…`; committed redacted record SHA-256 `02cf61ac10059ec3c1ffe66c8cf6880b8bec4427ea97476213d9972ab4407794` |
+| Codex CLI real-host record (13/18) | historical | Codex CLI 0.146.0, pass with every I-1 through I-8 field true when recorded; bound to the same superseded digests; committed redacted record SHA-256 `c74c813e5c20f4d1e1f4643fc1fa41a5bb3630f72d6b895b9349e62df1e14d08` |
+| Evidence-only closeout | in progress | This diff replaces the two closed records with the current pair and reconciles status and traceability; it contains no production, harness, schema or manifest change |
 | Exact-head preflight and hosted checks | pending | Run after the evidence-only closeout commit, then push and require fresh PR #167 checks |
 | Merge and cleanup | not authorized | Request each authorization only at Gate G |
 
@@ -621,9 +640,11 @@ candidate and restarting Gate C.
 
 #### Gate D — qualify both real hosts
 
-Status: historical. Complete for the 13/18 candidate at qualified runtime commit
-`0d8cf362d15b43077a744542974b6160c283e1dc`; this is not qualification of the live
-14/35 candidate. The I-8 revocation harness remains
+Status: complete for the live 14/35 candidate at clean source `fcfff2822800e6f32166ab91c7fd46b3ecb8514a`
+(2026-10-19): both hosts produced passing records, retained as the current pair
+(see the exit evidence below). The 13/18 run at qualified runtime commit
+`0d8cf362d15b43077a744542974b6160c283e1dc` is historical and superseded. The I-8
+revocation harness remains
 provider- and model-agnostic. Each
 post-revocation request (the evidence capture mutation and its replay, the
 memory replay, `job_get`, `job_events` and the import start replay) runs in its
@@ -647,10 +668,11 @@ A wrong token or argument, extra call, tool error, wrong page digest, incomplete
 host completion, Core-health failure or mutation is refused at once.
 The user authorized the external data flow: fixed qualification prompts and
 bounded, service-derived results were sent through both the Codex and Claude
-providers. At that closeout, both retained records validated against the closed
+providers. At the 13/18 closeout, both records validated against the closed
 schema of the time, named the same qualified runtime revision and wheel closure,
-and had every I-1 through I-8 field set to `true`. The current schema bytes cannot
-validate them, so the retained pair is now guarded by exact file digest.
+and had every I-1 through I-8 field set to `true`; those files were replaced in
+place by the current pair. The current pair validates against the current schema
+bytes and is guarded by exact file digest.
 
 1. Before either run, obtain explicit user authorization for the external data
    flow. Each real host sends fixed qualification prompts and bounded,
@@ -701,11 +723,30 @@ validate them, so the retained pair is now guarded by exact file digest.
 5. Confirm temporary profiles, credentials, processes, roots and workspaces were
    removed. A cleanup failure is a failed qualification.
 
-Exit condition (met at the 13/18 `0d8cf362` closeout): two passing records
-identified the same qualified runtime commit, candidate digest set, SDK pins and
-accepted host versions. The live candidate needs its own pair.
+Exit condition (met for the live 14/35 candidate at `fcfff282`, and earlier
+for the 13/18 candidate at `0d8cf362`): two passing records identified the same
+qualified source commit, candidate digest set, SDK pins and accepted host
+versions.
 
-Exit evidence (historical, 13/18 candidate at `0d8cf362`):
+Exit evidence (current, live 14/35 candidate at `fcfff2822800e6f32166ab91c7fd46b3ecb8514a`):
+
+- clean source revision `fcfff2822800e6f32166ab91c7fd46b3ecb8514a`;
+- candidate key `00679377a0e485cd966b5460cde212c0fc9937fa14de158d70f3f40a3613d7f0`;
+- wheel closure: 36 wheels, SHA-256 `9bf82d3aad5e38e7aa748164b45f3c1834382bb5e68ad4bfa05810299561529f`;
+- Claude Code 2.1.289 record:
+  `docs/development/qualification/mcp-real-host-claude-code-2.1.289.json`,
+  SHA-256 `53730d171050c39fcf7502b0faeb1f0413c316fa075c52453c9d30cdc5bb6ff1`;
+- Codex CLI 0.146.0 record:
+  `docs/development/qualification/mcp-real-host-codex-cli-0.146.0.json`,
+  SHA-256 `7116d30c292085b67d0bad342d1de2562757e49c623886b3dc59337edc5ec10d`;
+- both records are `pass` with every gate field `true`, list 14 restricted and 35
+  authoring tools, bind harness SHA-256 `b75714d81c1be6403c150326e9994b628dbbea97f318d15dd329afc93f2d1864` and schema SHA-256
+  `e0d8c6458787f163abddef50cb93a982aa4f1873ddcf94abed9bf669a8107381`, and validate against the current closed schema;
+- candidate qualification-result SHA-256: `9452ddca90aa5f4f8fdc051f8cdc06a02682b5d700d8dfa8243275f9f15069fd`;
+- installed authoring record SHA-256: `17b8a34d9843ed09f66debf52e6c1c9a95ed1f713ff6fa1aef1a188c9de5e1a6`.
+
+Exit evidence (historical, 13/18 candidate at `0d8cf362`; these record files were
+replaced by the current pair and remain in git history):
 
 - qualified runtime commit:
   `0d8cf362d15b43077a744542974b6160c283e1dc`;
@@ -721,8 +762,8 @@ Exit evidence (historical, 13/18 candidate at `0d8cf362`):
   `docs/development/qualification/mcp-real-host-codex-cli-0.146.0.json`,
   SHA-256
   `c74c813e5c20f4d1e1f4643fc1fa41a5bb3630f72d6b895b9349e62df1e14d08`;
-- both records were passing with every gate field `true` when recorded; they are
-  not valid against the current schema bytes;
+- both records were passing with every gate field `true` when recorded; they
+  bound the superseded harness `2529d9…` and schema `5ece52…` digests;
 - candidate qualification-result SHA-256:
   `e7725a1b12c995a0cf462734fde6a29137d5455664daaccd8844097f4774bb46`;
 - installed authoring record SHA-256:
@@ -776,8 +817,8 @@ recorded; no implicit release or worktree deletion has occurred.
 |---|---|---|
 | Claude Code qualification credential | completed 2026-10-04 with the selected existing logged-in Claude CLI profile (`--use-existing-host-auth`); the host authentication preflight passed and no token file was used | No further credential action for this candidate |
 | Real-host external data flow | authorized and completed 2026-10-04 for fixed qualification prompts and bounded Core-derived results through the Claude and Codex accounts | No further provider call is required unless executable qualification behavior changes |
-| Qualified runtime and Standard candidate | historical at `0d8cf362d15b43077a744542974b6160c283e1dc`; candidate key `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b` | Preserve the runtime commit; any executable or acceptance-rule change requires returning to Gate C; the live 14/35 candidate needs its own qualification |
-| Real-host records | historical for Claude Code 2.1.289 and Codex CLI 0.146.0 on the 13/18 snapshot, bound to superseded harness and schema digests; they do not qualify the live 14/35 candidate | Preserve the committed redacted records and their digests; a current-candidate credentialed run is an external residual |
+| Qualified source and Standard candidate | current: clean source `fcfff2822800e6f32166ab91c7fd46b3ecb8514a`; candidate key `00679377a0e485cd966b5460cde212c0fc9937fa14de158d70f3f40a3613d7f0`; historical (13/18): `0d8cf362d15b43077a744542974b6160c283e1dc`, candidate key `857a914d1f98f4111019bed2de1a5a4ed0325f19152a847f1d3968897f98009b` | Preserve the qualified source; any executable, harness, schema or acceptance-rule change requires returning to Gate C and requalifying both hosts |
+| Real-host records | current for Claude Code 2.1.289 and Codex CLI 0.146.0 on the live 14/35 candidate, bound to the current harness and schema digests; the 13/18 records they replaced are historical | Preserve the committed redacted records and their digests; no further credentialed run is required unless the harness, schema or candidate changes |
 | PR #167 hosted checks | final evidence-head checks pending | Run full local preflight, push the evidence-only head and require fresh checks |
 | Merge | not authorized | Request explicit authorization only after Gate F |
 | Release publication | not authorized and out of scope | Record publication as deferred unless separately authorized |

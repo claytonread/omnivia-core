@@ -20,11 +20,12 @@ offline from the source tree:
   type is ``HOST`` -- a session driven by an installed Claude Code or Codex
   binary -- may be green only when a committed pair for the live candidate exists and
   passes the host-pair guard: exact directory, both approved hosts, one clean
-  candidate, every gate true, and the bindings' ``harness_sha256`` and
-  ``schema_sha256`` equal the digests of the current qualification script and
-  record schema. The retained 13/18 pair is historical: it is pinned by file digest
-  and never satisfies that guard. The SDK-driven journeys are not such a session and
-  never count.
+  candidate, every gate true, the bindings' ``harness_sha256`` and ``schema_sha256``
+  equal to the digests of the current qualification script and record schema, and the
+  profiles equal to the live manifest inventories. The pair is pinned by file digest.
+  The superseded 13/18 pair (``0d8cf362``) no longer satisfies that guard and survives
+  only as labelled history. The SDK-driven journeys are not such a session and never
+  count.
 
 Standard library only, like its two neighbours here: nothing in this module may
 import a Runtime, Client, MCP or CLI package, and a green row's own evidence is
@@ -379,16 +380,15 @@ _HARNESS = REPO_ROOT / "scripts" / "run-mcp-real-host-qualification.py"
 _RECORD_SCHEMA_PATH = (
     REPO_ROOT / "docs" / "distribution" / "schemas" / "mcp-real-host-qualification-record-v1.schema.json"
 )
-#: The two approved installed hosts, and where each one's retained record lives.
+#: The two approved installed hosts, and where each one's committed record lives.
 HOST_RECORDS = {
     ("claude-code", "2.1.289"): _QUALIFICATION / "mcp-real-host-claude-code-2.1.289.json",
     ("codex-cli", "0.146.0"): _QUALIFICATION / "mcp-real-host-codex-cli-0.146.0.json",
 }
 _BOUND_FIELDS = ("wheels", "bindings")  # identical across hosts: one candidate, one closure
 HOST_GATES = tuple(f"I-{number}" for number in range(1, 9))
-#: The top-level keys the retained records were written with. Checked by name, not against the
-#: live schema: the records predate the schema bytes that are committed now.
-RETAINED_KEYS = frozenset(
+#: The top-level keys of a record. ``test_the_record_keys_are_the_live_schemas`` ties them to the schema.
+RECORD_KEYS = frozenset(
     {
         "bindings",
         "finished_at",
@@ -405,30 +405,46 @@ RETAINED_KEYS = frozenset(
         "wheels",
     }
 )
-#: The one qualified runtime commit both retained records were produced from.
-RETAINED_REVISION = "0d8cf362d15b43077a744542974b6160c283e1dc"
-#: The SHA-256 of each retained record file, as the standalone completion plan documents it.
-#: The files are immutable evidence, so any byte change fails here even where the content
-#: checks above would still pass: nested redaction, timestamp, SDK, OS or profile fields.
-RETAINED_DIGESTS = {
-    ("claude-code", "2.1.289"): "02cf61ac10059ec3c1ffe66c8cf6880b8bec4427ea97476213d9972ab4407794",
-    ("codex-cli", "0.146.0"): "c74c813e5c20f4d1e1f4643fc1fa41a5bb3630f72d6b895b9349e62df1e14d08",
+#: The one clean source commit both current records were produced from.
+CURRENT_REVISION = "fcfff2822800e6f32166ab91c7fd46b3ecb8514a"
+#: The 36-wheel closure and the candidate it was built into, as the records and the docs state them.
+CURRENT_CLOSURE_COUNT = 36
+CURRENT_CLOSURE_SHA256 = "9bf82d3aad5e38e7aa748164b45f3c1834382bb5e68ad4bfa05810299561529f"
+CURRENT_CANDIDATE_KEY = "00679377a0e485cd966b5460cde212c0fc9937fa14de158d70f3f40a3613d7f0"
+#: The installed-wheel results for that candidate. They are held outside this tree, so the docs
+#: cite them by digest and this module checks only that the docs do.
+CURRENT_CANDIDATE_QUALIFICATION_SHA256 = "9452ddca90aa5f4f8fdc051f8cdc06a02682b5d700d8dfa8243275f9f15069fd"
+CURRENT_AUTHORING_RECORD_SHA256 = "17b8a34d9843ed09f66debf52e6c1c9a95ed1f713ff6fa1aef1a188c9de5e1a6"
+#: The SHA-256 of each committed record file. Any byte change fails here even where the content
+#: checks below would still pass: nested redaction, timestamp, OS or per-gate fields.
+CURRENT_DIGESTS = {
+    ("claude-code", "2.1.289"): "53730d171050c39fcf7502b0faeb1f0413c316fa075c52453c9d30cdc5bb6ff1",
+    ("codex-cli", "0.146.0"): "7116d30c292085b67d0bad342d1de2562757e49c623886b3dc59337edc5ec10d",
 }
+#: The superseded 13/18 pair's file digests (``0d8cf362``). Those files were replaced in place.
+SUPERSEDED_DIGESTS = (
+    "02cf61ac10059ec3c1ffe66c8cf6880b8bec4427ea97476213d9972ab4407794",
+    "c74c813e5c20f4d1e1f4643fc1fa41a5bb3630f72d6b895b9349e62df1e14d08",
+)
 
 
-def _require_historical_pair(records: dict[tuple[str, str], dict[str, Any]]) -> None:
-    """Assert ``records`` is exactly the complete, agreeing, passing retained pair.
+def _require_current_pair(records: dict[tuple[str, str], dict[str, Any]]) -> None:
+    """Assert ``records`` is exactly the complete, agreeing, passing pair for the current source.
 
-    Identity, shape, verdict, gates and agreement are checked here. The live schema is
-    not: ``_require_expired_for_current`` records that the pair is stale for the candidate.
+    Identity, shape, verdict, gates, source, wheel closure, SDK pins and agreement are checked
+    here. ``_require_bound_to_live_candidate`` holds the pair to the live bytes and inventories.
     """
     assert set(records) == set(HOST_RECORDS), sorted(records)
     for identity, record in records.items():
-        assert set(record) == RETAINED_KEYS, (identity, sorted(set(record) ^ RETAINED_KEYS))
+        assert set(record) == RECORD_KEYS, (identity, sorted(set(record) ^ RECORD_KEYS))
         assert (record["host"].get("name"), record["host"].get("version")) == identity, identity
         assert record["verdict"] == "pass" and record["reason_code"] == "none", identity
         source = record["source"]
-        assert source["clean"] is True and source["revision"] == RETAINED_REVISION, identity
+        assert source["clean"] is True and source["revision"] == CURRENT_REVISION, identity
+        bindings = record["bindings"]
+        assert bindings["wheel_closure_count"] == CURRENT_CLOSURE_COUNT, identity
+        assert bindings["wheel_closure_sha256"] == CURRENT_CLOSURE_SHA256, identity
+        assert record["sdk_versions"] == {"mcp": "2.0.0", "mcp-types": "2.0.0"}, identity
         gates = record["gates"]
         assert set(gates) == {f"i{n}" for n in range(1, 9)}, identity
         for name, gate in gates.items():
@@ -439,39 +455,41 @@ def _require_historical_pair(records: dict[tuple[str, str], dict[str, Any]]) -> 
         assert first[field] == second[field], field
 
 
-def _require_expired_for_current(records: dict[tuple[str, str], dict[str, Any]]) -> None:
-    """Assert every retained record is stale for the live candidate and claims no current bytes.
+def _require_bound_to_live_candidate(records: dict[tuple[str, str], dict[str, Any]]) -> None:
+    """Assert every record binds the current harness and schema bytes and the live inventories.
 
-    The live candidate is manifest 2.8 with 14 restricted and 35 authoring tools, bound to the
-    current harness and schema digests. A retained record must match none of those.
+    The live candidate is manifest 2.8 with 14 restricted and 35 authoring tools. A record that
+    predates the current script or schema, or lists any other inventory, is stale.
     """
     harness, schema = _sha256(_HARNESS), _sha256(_RECORD_SCHEMA_PATH)
     live_restricted = [entry["tool_name"] for entry in RESTRICTED]
     live_authoring = [entry["tool_name"] for entry in AUTHORING]
     for identity, record in records.items():
         bindings = record["bindings"]
-        assert bindings["harness_sha256"] != harness, f"harness_sha256 is current for {identity}"
-        assert bindings["schema_sha256"] != schema, f"schema_sha256 is current for {identity}"
+        assert bindings["harness_sha256"] == harness, f"harness_sha256 is stale for {identity}"
+        assert bindings["schema_sha256"] == schema, f"schema_sha256 is stale for {identity}"
         restricted = record["profiles"]["restricted"]
         authoring = record["profiles"]["authoring"]
-        assert restricted["tool_count"] == 13 and authoring["tool_count"] == 18, identity
-        assert restricted["tools"] == [tool for tool, _ in RESTRICTED_INVENTORY], identity
-        assert authoring["tools"] == [tool for tool, _ in ADDENDUM_AUTHORING], identity
-        assert restricted["tools"] != live_restricted and authoring["tools"] != live_authoring, identity
+        assert restricted["tool_count"] == len(live_restricted) == 14, identity
+        assert authoring["tool_count"] == len(live_authoring) == 35, identity
+        assert restricted["tools"] == live_restricted, identity
+        assert authoring["tools"] == live_authoring, identity
+        for name, version in record["sdk_versions"].items():
+            assert f"{name}=={version}" in WHEELHOUSE.splitlines(), (identity, name)
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _require_retained_bytes(identity: tuple[str, str], data: bytes) -> None:
-    """Assert ``data`` are the retained record's exact bytes, by SHA-256."""
-    assert hashlib.sha256(data).hexdigest() == RETAINED_DIGESTS[identity], identity
+def _require_record_bytes(identity: tuple[str, str], data: bytes) -> None:
+    """Assert ``data`` are the committed record's exact bytes, by SHA-256."""
+    assert hashlib.sha256(data).hexdigest() == CURRENT_DIGESTS[identity], identity
 
 
-def _require_retained_files() -> None:
+def _require_record_files() -> None:
     for identity, path in HOST_RECORDS.items():
-        _require_retained_bytes(identity, path.read_bytes())
+        _require_record_bytes(identity, path.read_bytes())
 
 
 def _require_exact_directory(names: list[str]) -> None:
@@ -488,19 +506,18 @@ def _load_host_records() -> dict[tuple[str, str], dict[str, Any]]:
     }
 
 
-def _host_rows_may_be_green() -> bool:
-    """Whether a current-candidate host pair is committed. Today none is, so this is False.
+def _current_pair_is_valid() -> bool:
+    """Whether a current-candidate host pair is committed. It is, or this raises.
 
-    The only committed pair is the retained 13/18 pair, which is complete and historical but
-    expired for the live candidate. A current pair would need its own record name and a new
-    check here; until then ``_require_exact_directory`` rejects any extra record.
+    Directory, file digests, pair shape and the live bytes and inventories are all required, so
+    a missing, stale, extra or edited record fails the calling test instead of returning False.
     """
     _require_exact_directory([path.name for path in _QUALIFICATION.glob("mcp-real-host-*.json")])
-    _require_retained_files()
+    _require_record_files()
     records = _load_host_records()
-    _require_historical_pair(records)
-    _require_expired_for_current(records)
-    return False
+    _require_current_pair(records)
+    _require_bound_to_live_candidate(records)
+    return True
 
 
 def _gate_statuses(rows: list[list[str]]) -> list[str]:
@@ -510,77 +527,128 @@ def _gate_statuses(rows: list[list[str]]) -> list[str]:
 
 
 def _require_host_rows_follow_evidence(complete: bool, statuses: list[str], host_rows: list[str]) -> None:
-    """All of I-1..I-8 green with the complete pair; no HOST row green without it."""
+    """All of I-1..I-8 and every HOST row green with the complete pair; none green without it."""
     if complete:
         assert set(statuses) == {GREEN}, statuses
+        assert host_rows and set(host_rows) == {GREEN}, host_rows
     else:
         assert GREEN not in statuses, statuses
         assert GREEN not in host_rows, host_rows
 
 
-def test_the_retained_host_pair_is_complete_historical_and_expired() -> None:
-    """The retained pair is complete and agrees, and it is stale for the live candidate.
+def test_the_record_keys_are_the_live_schemas() -> None:
+    schema = json.loads(_RECORD_SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert set(schema["properties"]) == RECORD_KEYS
+
+
+def test_the_current_host_pair_is_complete_current_and_bound_to_the_live_candidate() -> None:
+    """The pair is complete, agrees, and binds the live harness, schema and 14/35 inventories.
 
     ``HOST`` is an installed Claude Code or Codex binary driving the server. The SDK journeys
     drive a child process with ``stdio_client``, which is a client, not a host, so they never
-    qualify a ``HOST`` row. The retained pair is the only host evidence, and it is historical.
+    qualify a ``HOST`` row. This pair is the only host evidence.
     """
-    _require_exact_directory([path.name for path in _QUALIFICATION.glob("mcp-real-host-*.json")])
-    _require_retained_files()
-    records = _load_host_records()
-    _require_historical_pair(records)
-    _require_expired_for_current(records)
+    assert _current_pair_is_valid()
 
 
-def test_any_retained_record_byte_change_fails_the_digest_guard() -> None:
+def test_the_superseded_13_18_records_no_longer_occupy_the_record_paths() -> None:
+    """The 13/18 files were replaced in place; a restored copy must not pass for the current pair."""
+    for identity, path in HOST_RECORDS.items():
+        assert hashlib.sha256(path.read_bytes()).hexdigest() not in SUPERSEDED_DIGESTS, identity
+    stale = _load_host_records()
+    for record in stale.values():
+        record["source"]["revision"] = "0d8cf362d15b43077a744542974b6160c283e1dc"
+        record["profiles"]["restricted"]["tool_count"] = 13
+        record["profiles"]["authoring"]["tool_count"] = 18
+        record["bindings"].update(wheel_closure_count=35)
+    with pytest.raises(AssertionError):
+        _require_current_pair(stale)
+    with pytest.raises(AssertionError):
+        _require_bound_to_live_candidate(stale)
+
+
+def test_any_record_byte_change_fails_the_digest_guard() -> None:
     """Anti-vacuous: content checks pass a byte-level edit that keeps the JSON valid, so the digest must refuse it."""
     for identity, path in HOST_RECORDS.items():
         original = path.read_bytes()
-        _require_retained_bytes(identity, original)
+        _require_record_bytes(identity, original)
         middle = bytearray(original)
         middle[len(middle) // 2] ^= 0x01
         for mutated in (original + b"\n", original[:-1], bytes(middle), original.replace(b'"', b"'", 1)):
             with pytest.raises(AssertionError):
-                _require_retained_bytes(identity, mutated)
+                _require_record_bytes(identity, mutated)
 
 
 def _break(mutate: Callable[[dict[tuple[str, str], dict[str, Any]]], object]) -> None:
     records = _load_host_records()
     mutate(records)
     with pytest.raises(AssertionError):
-        _require_historical_pair(records)
+        _require_current_pair(records)
 
 
-def test_the_retained_pair_guard_rejects_a_missing_extra_failed_or_mismatched_record() -> None:
+def test_the_current_pair_guard_rejects_a_missing_extra_failed_or_mismatched_record() -> None:
     claude, codex = list(HOST_RECORDS)
     canonical_names = [path.name for path in HOST_RECORDS.values()]
     _require_exact_directory(canonical_names)
     with pytest.raises(AssertionError):
         _require_exact_directory([*canonical_names, "mcp-real-host-unapproved-1.0.0.json"])
-    _require_historical_pair(_load_host_records())
+    _require_current_pair(_load_host_records())
     _break(lambda records: records.pop(codex))
     _break(lambda records: records.update({("gemini", "1"): records[claude]}))
     _break(lambda records: records[claude].update(unknown=1))
     _break(lambda records: records[claude].pop("sdk_versions"))
     _break(lambda records: records[claude].update(verdict="fail"))
+    _break(lambda records: records[claude].update(reason_code="host_initialize_missing"))
     _break(lambda records: records[claude].update(host={"name": "codex-cli", "version": "0.146.0"}))
     _break(lambda records: records[codex].update(host={"name": "codex-cli", "version": "0.145.0"}))
     _break(lambda records: records[codex]["source"].update(revision="0" * 40))
     _break(lambda records: records[codex]["source"].update(clean=False))
     _break(lambda records: records[codex]["wheels"].update({"omnivia-core": "0" * 64}))
     _break(lambda records: records[codex]["bindings"].update(schema_sha256="0" * 64))
+    _break(lambda records: records[codex]["bindings"].update(wheel_closure_count=35))
+    _break(lambda records: records[codex]["bindings"].update(wheel_closure_sha256="0" * 64))
+    _break(lambda records: records[codex]["sdk_versions"].update({"mcp": "2.3.0"}))
     _break(lambda records: records[codex]["gates"]["i3"].update(initialize_verified=False))
+    _break(lambda records: records[codex]["gates"].pop("i8"))
     _break(lambda records: records[codex].pop("gates"))
+
+
+def test_a_record_that_is_stale_for_the_live_bytes_or_inventory_is_refused() -> None:
+    _require_bound_to_live_candidate(_load_host_records())
+    for field in ("harness_sha256", "schema_sha256"):
+        records = _load_host_records()
+        for record in records.values():
+            record["bindings"][field] = "0" * 64
+        with pytest.raises(AssertionError, match=field):
+            _require_bound_to_live_candidate(records)
+    for profile, tools in (("restricted", RESTRICTED), ("authoring", AUTHORING)):
+        for mutate in (
+            lambda listed, tools=tools: listed.pop(),
+            lambda listed, tools=tools: listed.reverse(),
+            lambda listed, tools=tools: listed.append("job_cancel"),
+        ):
+            records = _load_host_records()
+            for record in records.values():
+                mutate(record["profiles"][profile]["tools"])
+            with pytest.raises(AssertionError):
+                _require_bound_to_live_candidate(records)
+        records = _load_host_records()
+        for record in records.values():
+            record["profiles"][profile]["tool_count"] = len(tools) - 1
+        with pytest.raises(AssertionError):
+            _require_bound_to_live_candidate(records)
 
 
 def test_the_host_row_guard_rejects_partial_green_and_green_without_evidence() -> None:
     all_green = [GREEN] * 8
     none_green = ["pending-phase-8"] * 8
-    _require_host_rows_follow_evidence(True, all_green, [GREEN])
+    _require_host_rows_follow_evidence(True, all_green, [GREEN] * 8)
     _require_host_rows_follow_evidence(False, none_green, ["partial"])
     for complete, statuses, host_rows in (
-        (True, [GREEN] * 7 + ["partial"], [GREEN]),
+        (True, [GREEN] * 7 + ["partial"], [GREEN] * 8),
         (True, none_green, ["partial"]),
+        (True, all_green, [GREEN] * 7 + ["partial"]),
+        (True, all_green, []),
         (False, all_green, [GREEN]),
         (False, none_green, [GREEN]),
     ):
@@ -588,30 +656,34 @@ def test_the_host_row_guard_rejects_partial_green_and_green_without_evidence() -
             _require_host_rows_follow_evidence(complete, statuses, host_rows)
 
 
-def test_a_retained_record_claiming_current_bytes_or_the_live_inventory_is_refused() -> None:
-    for field, current in (("harness_sha256", _sha256(_HARNESS)), ("schema_sha256", _sha256(_RECORD_SCHEMA_PATH))):
-        records = _load_host_records()
-        for record in records.values():
-            record["bindings"][field] = current
-        with pytest.raises(AssertionError, match=field):
-            _require_expired_for_current(records)
-    records = _load_host_records()
-    for record in records.values():
-        record["profiles"]["restricted"]["tools"] = [entry["tool_name"] for entry in RESTRICTED]
-    with pytest.raises(AssertionError):
-        _require_expired_for_current(records)
-
-
-def test_host_rows_stay_non_green_while_only_the_expired_pair_exists() -> None:
+def test_host_rows_are_green_while_the_current_pair_is_valid() -> None:
     host_rows = [status for status, types, _ in STATED_ROWS if "HOST" in types]
-    _require_host_rows_follow_evidence(_host_rows_may_be_green(), _gate_statuses(TABLE_ROWS), host_rows)
-    assert set(_gate_statuses(TABLE_ROWS)) == {"partial"}
+    _require_host_rows_follow_evidence(_current_pair_is_valid(), _gate_statuses(TABLE_ROWS), host_rows)
+    assert set(_gate_statuses(TABLE_ROWS)) == {GREEN}
+    assert len(host_rows) == 8
+    for number in range(1, 9):
+        (row,) = [text for _, _, text in STATED_ROWS if text.startswith(f"I-{number} ")]
+        assert f"gate `i{number}`" in row and CURRENT_REVISION[:8] in row, row
 
 
-def test_the_wheel_rows_the_retained_records_cannot_qualify_stay_partial() -> None:
-    for prefix in ("B-12 ", "H-5 ", "H-6 ", "H-7 "):
-        statuses = [status for status, _, row in STATED_ROWS if row.startswith(prefix)]
-        assert statuses == ["partial"], prefix
+def test_the_wheel_rows_follow_what_this_tree_holds_of_the_current_candidate() -> None:
+    """H-7 is green on the validated records' own closure and SDK pin bindings.
+
+    H-5, H-6 and B-12 rest on installed-wheel results held outside this tree, so they stay
+    ``partial`` while citing the current candidate's digests; the status vocabulary reserves
+    ``green`` for evidence that exists in this tree.
+    """
+    expected = {
+        "H-5 ": ("partial", CURRENT_CANDIDATE_KEY, CURRENT_CANDIDATE_QUALIFICATION_SHA256),
+        "H-6 ": ("partial", CURRENT_CANDIDATE_KEY, CURRENT_AUTHORING_RECORD_SHA256),
+        "H-7 ": (GREEN, CURRENT_CLOSURE_SHA256, "mcp==2.0.0", "mcp-types==2.0.0"),
+        "B-12 ": ("partial", CURRENT_AUTHORING_RECORD_SHA256),
+    }
+    for prefix, (status, *facts) in expected.items():
+        (row,) = [(found, text) for found, _, text in STATED_ROWS if text.startswith(prefix)]
+        assert row[0] == status, prefix
+        for fact in facts:
+            assert fact in row[1], (prefix, fact)
 
 
 def test_every_stated_row_names_at_least_one_evidence_type() -> None:
@@ -1020,20 +1092,82 @@ def _status_line(text: str) -> str:
     return status.group(1)
 
 
-def test_the_plans_declare_no_completion_while_no_current_host_pair_exists() -> None:
-    for text in COMPLETION_PLANS:
-        claimed = bool(_completion_claims(_status_line(text)))
-        assert claimed == _host_rows_may_be_green(), _status_line(text)
+def _require_current_status(status: str) -> None:
+    """The status line claims the current pair's pass, and names its source and the live inventories."""
+    assert _completion_claims(status), status
+    for fact in (CURRENT_REVISION[:8], "14/35", "0d8cf362", "historical"):
+        assert fact in status.lower(), (fact, status)
+    assert not re.search(r"not qualified|no current|pending", status.lower()), status
 
 
-# The name keeps its original figures because the dated traceability ledger cites it.
-def test_both_completion_plans_state_the_13_18_history_and_an_unqualified_live_14_25() -> None:
-    """Each status line names the 13/18 ``0d8cf362`` evidence as historical and the live 14/35 candidate as unqualified."""
-    for index, text in enumerate(COMPLETION_PLANS):
-        status = _status_line(text)
-        for fact in ("historical", "0d8cf362", "13/18", "14/35", "not qualified"):
-            assert fact in status.lower(), (index, fact)
-        assert not _completion_claims(status), (index, status)
+def test_the_current_status_guard_rejects_a_stale_or_unqualified_status() -> None:
+    """Anti-vacuous: the 13/18-era status lines must not satisfy the check that replaced them."""
+    stale = (
+        (
+            "Historical Gate E closeout; Gate C and Gate D evidence exists for the 13/18 snapshot at "
+            "`0d8cf362` and is superseded for the live candidate; the live 14/35 candidate is not qualified"
+        ),
+        (
+            "Historical 13/18 closeout evidence at `0d8cf362`; the live 14/35 candidate is not qualified; "
+            "exact-head acceptance pending"
+        ),
+        "The live 14/35 candidate passed at `fcfff282`; no current evidence for the 13/18 `0d8cf362` history",
+    )
+    for status in stale:
+        with pytest.raises(AssertionError):
+            _require_current_status(status)
+    _require_current_status(_status_line(STANDALONE_COMPLETION_PLAN))
+
+
+def test_the_standalone_plan_declares_the_current_pair_and_the_phase_8_plan_stays_historical() -> None:
+    assert _current_pair_is_valid()
+    _require_current_status(_status_line(STANDALONE_COMPLETION_PLAN))
+    # The Phase 8 plan is the dated 13/18 closeout; it is held only to its own history labels.
+    status = _status_line(COMPLETION_PLAN).lower()
+    for fact in ("historical", "0d8cf362", "13/18"):
+        assert fact in status, fact
+    assert not _completion_claims(status), status
+
+
+#: Claims that were true of the 13/18 pair alone and are false now that a current pair is committed.
+STALE_CLAIMS = (
+    "no current-candidate record",
+    "no current 14/35 configuration record",
+    "no current-candidate wheel result",
+    "no current-candidate installed-wheel result",
+    "no installed-wheel result",
+    "do not qualify the live",
+    "cannot qualify the live",
+    "does not qualify the live",
+    "none of the `0d8cf362` records qualifies",
+    "the live 14/35 candidate is not qualified",
+    "needs a fresh credentialed run",
+    "cannot validate them",
+    "not validated against the current schema",
+)
+
+
+def test_the_traceability_record_and_the_standalone_plan_state_the_current_evidence() -> None:
+    records = _load_host_records()
+    facts = (
+        CURRENT_REVISION,
+        CURRENT_CLOSURE_SHA256,
+        CURRENT_CANDIDATE_KEY,
+        CURRENT_CANDIDATE_QUALIFICATION_SHA256,
+        CURRENT_AUTHORING_RECORD_SHA256,
+        *CURRENT_DIGESTS.values(),
+        *(records[identity]["bindings"]["harness_sha256"] for identity in records),
+        *(records[identity]["bindings"]["schema_sha256"] for identity in records),
+        "36-wheel",
+    )
+    for name, text in (("traceability", DOCUMENT), ("standalone plan", STANDALONE_COMPLETION_PLAN)):
+        folded = " ".join(text.split())
+        for fact in facts:
+            assert fact in folded, (name, fact)
+        for claim in STALE_CLAIMS:
+            assert claim not in folded.lower(), (name, claim)
+    for digest in SUPERSEDED_DIGESTS:  # the replaced pair stays named, as history
+        assert digest in DOCUMENT and digest in STANDALONE_COMPLETION_PLAN, digest
 
 
 def test_the_matrix_is_the_frozen_baseline_and_every_host_gate_is_pending() -> None:
