@@ -67,6 +67,7 @@ from omnivia_core_runtime.service.runner import ServiceRunner
 from omnivia_core_runtime.storage import document_intake as store
 from omnivia_core_runtime.storage.governed import read_governed_records
 from test_document_intake import count
+from test_document_worker_isolation import needs_confinement
 
 pytest_plugins = ("test_document_intake",)
 
@@ -371,6 +372,7 @@ def module_closure(entry: Path) -> set[str]:
 # -- the junction ---------------------------------------------------------------
 
 
+@needs_confinement
 def test_a_captured_document_derives_source_evidence_and_one_proposed_candidate(
     runner: ServiceRunner,
 ) -> None:
@@ -460,6 +462,7 @@ def test_a_failed_extraction_derives_nothing_from_the_processing_pass(
     assert pending(runner) == 0
 
 
+@needs_confinement
 def test_a_superseded_extraction_keeps_its_candidate_and_the_new_one_derives(
     runner: ServiceRunner,
 ) -> None:
@@ -496,6 +499,7 @@ def test_a_superseded_extraction_keeps_its_candidate_and_the_new_one_derives(
     ) == (second_capture.evidence_id, second_capture.source_digest)
 
 
+@needs_confinement
 def test_the_candidate_content_carries_the_segment_verbatim_and_its_attribution(
     runner: ServiceRunner,
 ) -> None:
@@ -531,6 +535,7 @@ def test_the_candidate_content_carries_the_segment_verbatim_and_its_attribution(
     }
 
 
+@needs_confinement
 def test_the_attribution_chain_is_retrievable_through_the_production_reader(
     runner: ServiceRunner,
 ) -> None:
@@ -571,6 +576,7 @@ def test_the_attribution_chain_is_retrievable_through_the_production_reader(
     assert reference.source.source_id == capture.capture_id
 
 
+@needs_confinement
 def test_the_extraction_lineage_names_the_revision_and_forbids_a_model(
     runner: ServiceRunner,
 ) -> None:
@@ -646,6 +652,7 @@ def test_the_derivation_cannot_reach_a_workflow_provider_tool_or_agent_module(
     )
 
 
+@needs_confinement
 def test_a_hostile_document_is_derived_without_running_anything(
     runner: ServiceRunner,
 ) -> None:
@@ -657,6 +664,7 @@ def test_a_hostile_document_is_derived_without_running_anything(
     )
 
 
+@needs_confinement
 def test_a_derived_candidate_is_neither_approved_nor_admitted(
     runner: ServiceRunner,
 ) -> None:
@@ -766,6 +774,7 @@ def test_a_failed_extraction_is_refused_without_a_write(
     assert derived_counts(runner) == (0, 0, 0, 0)
 
 
+@needs_confinement
 def test_a_superseded_extraction_is_refused_without_a_write(
     runner: ServiceRunner,
 ) -> None:
@@ -806,6 +815,7 @@ def test_an_unknown_semantic_role_is_refused_rather_than_deriving_nothing(
     assert str(refusal.value) == "the requested semantic roles are not known"
 
 
+@needs_confinement
 def test_an_extraction_with_no_segment_in_the_requested_roles_is_refused(
     runner: ServiceRunner,
 ) -> None:
@@ -824,6 +834,7 @@ def test_an_extraction_with_no_segment_in_the_requested_roles_is_refused(
     )
 
 
+@needs_confinement
 def test_an_exact_replay_writes_nothing_and_returns_the_same_identities(
     runner: ServiceRunner,
 ) -> None:
@@ -925,6 +936,7 @@ def extraction_counts(runner: ServiceRunner) -> tuple[int, int, int]:
     )
 
 
+@needs_confinement
 def test_a_crash_before_the_derivation_leaves_the_obligation_to_be_replayed(
     runner: ServiceRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -954,6 +966,7 @@ def test_a_crash_before_the_derivation_leaves_the_obligation_to_be_replayed(
     )
 
 
+@needs_confinement
 def test_a_crash_after_the_derivation_replays_it_without_duplicating_a_row(
     runner: ServiceRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1039,6 +1052,7 @@ def planner(
     return plan
 
 
+@needs_confinement
 def test_a_segment_with_no_source_locator_is_refused(
     planner: Callable[[tuple[store.StoredSegment, ...]], None],
 ) -> None:
@@ -1048,6 +1062,7 @@ def test_a_segment_with_no_source_locator_is_refused(
     assert str(refusal.value) == "a segment carries no source locator"
 
 
+@needs_confinement
 def test_a_segment_whose_locator_names_another_capture_is_refused(
     planner: Callable[[tuple[store.StoredSegment, ...]], None],
 ) -> None:
@@ -1061,6 +1076,7 @@ def test_a_segment_whose_locator_names_another_capture_is_refused(
     )
 
 
+@needs_confinement
 def test_two_segments_sharing_one_locator_are_refused(
     planner: Callable[[tuple[store.StoredSegment, ...]], None],
 ) -> None:
@@ -1076,6 +1092,7 @@ def test_two_segments_sharing_one_locator_are_refused(
     assert str(refusal.value) == "two qualifying segments share one source locator"
 
 
+@needs_confinement
 def test_a_locator_too_large_to_address_is_refused(
     planner: Callable[[tuple[store.StoredSegment, ...]], None],
 ) -> None:

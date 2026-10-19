@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
-from _trusted_ocr import catalogue_over, host_models, reader_settings
+from _trusted_ocr import HOST_PANDOC, catalogue_over, host_models, reader_settings
 from omnivia_core_runtime.service import rtf_extractor
 from omnivia_core_runtime.service.document_extractors import (
     DOCX_MEDIA_TYPE,
@@ -823,6 +823,12 @@ def test_png_runs_local_ocr_with_geometry_and_confidence(
     assert all("box" in item.source_locator for item in result.segments)
 
 
+needs_rtf_reader = pytest.mark.skipif(
+    HOST_PANDOC is None, reason="no host RTF reader to bind"
+)
+
+
+@needs_rtf_reader
 def test_rtf_uses_fixed_local_reader_and_records_ast_locators() -> None:
     content = (
         rb"{\rtf1\ansi\deff0 {\fonttbl {\f0 Arial;}}\fs24 Hello \b OmniVia\b0\par}"
@@ -894,6 +900,7 @@ EXTERNAL_FIELDS: Final = (
 )
 
 
+@needs_rtf_reader
 def test_rtf_scan_reads_escaped_syntax_unicode_and_declared_code_pages() -> None:
     escaped = rtf(
         rb"{\rtf1\ansi\ansicpg1252 A \{brace\} a \\ backslash"
@@ -917,6 +924,7 @@ def test_rtf_scan_reads_escaped_syntax_unicode_and_declared_code_pages() -> None
     assert legacy.limitations["declaredCodePages"] == [10000]
 
 
+@needs_rtf_reader
 def test_rtf_scan_skips_binary_payloads_holding_structural_bytes() -> None:
     result = rtf(BINARY_OBJECT)
 
@@ -940,6 +948,7 @@ def test_rtf_scan_skips_binary_payloads_holding_structural_bytes() -> None:
     )
 
 
+@needs_rtf_reader
 def test_rtf_scan_inventories_notes_revisions_and_unknown_destinations() -> None:
     result = rtf(FEATURE_RICH)
 
@@ -988,12 +997,14 @@ def test_rtf_scan_inventories_notes_revisions_and_unknown_destinations() -> None
     assert "cmt" not in extracted
 
 
+@needs_rtf_reader
 def test_rtf_scan_inventories_nested_table_markers() -> None:
     result = rtf(rb"{\rtf1\ansi\trowd\itap2 inner\nestcell{\*\nesttableprops\nestrow}}")
 
     assert result.limitations["inventory"] == {"nested_table": 4}
 
 
+@needs_rtf_reader
 def test_rtf_scan_names_field_risks_without_resolving_or_executing_them() -> None:
     result = rtf(EXTERNAL_FIELDS)
 
@@ -1030,6 +1041,7 @@ def test_rtf_scan_names_field_risks_without_resolving_or_executing_them() -> Non
     ] == [("object_inventory", "relative", False)]
 
 
+@needs_rtf_reader
 def test_rtf_scan_inventory_is_deterministic_and_canonical() -> None:
     first = rtf(FEATURE_RICH).limitations
     second = rtf(FEATURE_RICH).limitations
@@ -1043,6 +1055,7 @@ def test_rtf_scan_inventory_is_deterministic_and_canonical() -> None:
         assert names == sorted(names)
 
 
+@needs_rtf_reader
 def test_rtf_scan_output_stays_bounded_when_the_source_names_more() -> None:
     names = rtf_extractor.MAX_INVENTORY_NAMES
     # A control word carries no digits in its name, so the destinations are

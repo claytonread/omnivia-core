@@ -32,6 +32,7 @@ from test_document_history_vertical import (
     refusal,
     service_view,
 )
+from test_document_worker_isolation import needs_confinement
 from test_evidence_capture_vertical import Served, _metadata
 
 from omnivia_core.contracts.v1 import (
@@ -101,6 +102,7 @@ def without_currentness(entry: Any) -> Any:
 # --- AT-32 ----------------------------------------------------------------------
 
 
+@needs_confinement
 def test_a_refresh_whose_processing_fails_leaves_the_prior_capture_retrievable_and_is_its_own_history_entry(
     owned: Served,
 ) -> None:
@@ -159,6 +161,7 @@ def test_a_refresh_whose_processing_fails_leaves_the_prior_capture_retrievable_a
     assert after.source.current_capture_id == refresh.capture_id
 
 
+@needs_confinement
 def test_a_failed_refresh_outcome_and_the_prior_head_survive_a_restart(
     paths: tuple[Any, Any],
 ) -> None:
@@ -243,6 +246,7 @@ def test_a_failed_refresh_outcome_and_the_prior_head_survive_a_restart(
         assert not failed_entry.is_current_extraction
 
 
+@needs_confinement
 def test_a_refresh_core_refuses_writes_no_outcome_and_leaves_the_head(owned: Served) -> None:
     dispatcher = build_dispatcher(owned, tag="at32-refused")
     settled_first_capture(owned, dispatcher)
@@ -280,6 +284,7 @@ def test_a_refresh_core_refuses_writes_no_outcome_and_leaves_the_head(owned: Ser
 # --- AT-33 ----------------------------------------------------------------------
 
 
+@needs_confinement
 def test_identical_bytes_after_expiry_are_not_up_to_date_and_automatic_intents_cannot_reintroduce_them(
     owned: Served,
 ) -> None:
@@ -326,6 +331,7 @@ def test_identical_bytes_after_expiry_are_not_up_to_date_and_automatic_intents_c
     assert after.extractions[0] == expired.extractions[0]
 
 
+@needs_confinement
 def test_identical_bytes_after_the_source_is_removed_do_not_become_the_head(
     owned: Served,
 ) -> None:

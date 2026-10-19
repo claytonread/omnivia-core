@@ -487,7 +487,15 @@ def test_the_metadata_grant_is_the_ancestors_in_scope_and_not_the_filesystem(
     )
     # Literals only: a subpath here would hand back the whole subtree.
     assert "(subpath" not in rule
-    assert '(literal "/var")' in rule or '(literal "/private")' in rule
+    # The ancestors are the host's own, in both spellings: `/var` and
+    # `/private` behind a macOS symlink, `/tmp` and its parents on Linux.
+    # The work directory sits inside the scratch root, so the root's are the ones.
+    for spelling in (
+        os.path.abspath(attempt["scratch"]),
+        os.path.realpath(attempt["scratch"]),
+    ):
+        for ancestor in Path(spelling).parents:
+            assert f'(literal "{ancestor}")' in rule, ancestor
     # And every literal really is an ancestor of something in scope, rather
     # than an unrelated directory that happened to be listed.
     in_scope = (

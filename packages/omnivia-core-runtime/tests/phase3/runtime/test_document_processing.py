@@ -95,6 +95,7 @@ from omnivia_core_runtime.service.runner import ServiceRunner
 from omnivia_core_runtime.service.versions import SERVER_VERSION
 from omnivia_core_runtime.storage import document_intake as store
 from PIL import Image, ImageDraw, ImageFont
+from test_document_worker_isolation import needs_confinement
 
 pytest_plugins = ("test_document_intake",)
 
@@ -311,6 +312,7 @@ def executed_profile(runner: ServiceRunner, result: store.StoredResult) -> dict[
     return dict(profile)
 
 
+@needs_confinement
 def test_pending_text_capture_becomes_a_searchable_projection(
     runner: ServiceRunner,
 ) -> None:
@@ -428,6 +430,7 @@ def test_the_production_extraction_seam_is_the_confined_worker() -> None:
     assert processing.extract_document is document_worker.extract_document_isolated
 
 
+@needs_confinement
 def test_service_executor_processes_a_bounded_capture_pass(
     runner: ServiceRunner,
 ) -> None:
@@ -452,6 +455,7 @@ def test_service_executor_processes_a_bounded_capture_pass(
     ]
 
 
+@needs_confinement
 def test_service_executor_processes_a_retained_docx_package(
     runner: ServiceRunner,
 ) -> None:
@@ -484,6 +488,7 @@ def test_service_executor_processes_a_retained_docx_package(
     assert [segment.text for segment in projected] == ["DOCX in Core"]
 
 
+@needs_confinement
 def test_service_executor_publishes_local_image_ocr(
     runner: ServiceRunner, tmp_path: Path, host_catalogue: TrustedOcrCatalogue
 ) -> None:
@@ -531,6 +536,7 @@ def test_service_executor_publishes_local_image_ocr(
     )
 
 
+@needs_confinement
 def test_a_missing_ocr_language_settles_as_needs_ocr_language(
     runner: ServiceRunner, tmp_path: Path
 ) -> None:
@@ -1015,6 +1021,7 @@ def docx_carrying_image(label: str) -> bytes:
     return buffer.getvalue()
 
 
+@needs_confinement
 def test_embedded_image_recognition_reaches_a_source_that_carries_images(
     runner: ServiceRunner, tmp_path: Path, host_catalogue: TrustedOcrCatalogue
 ) -> None:
@@ -1106,6 +1113,7 @@ def legible_png(label: str) -> bytes:
         ),
     ],
 )
+@needs_confinement
 def test_embedded_image_recognition_reaches_an_rtf_or_markup_source(
     runner: ServiceRunner,
     tmp_path: Path,
@@ -1181,6 +1189,7 @@ def legacy_admission(
     )
 
 
+@needs_confinement
 def test_a_capture_that_recorded_no_selection_runs_the_behaviour_it_was_admitted_under(
     runner: ServiceRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1312,6 +1321,7 @@ def test_a_malformed_resource_snapshot_is_its_own_terminal_fact(
     resources.remove(installed["deu"])
 
 
+@needs_confinement
 def test_a_missing_language_is_never_substituted_with_an_installed_one(
     runner: ServiceRunner, tmp_path: Path
 ) -> None:
@@ -1356,6 +1366,7 @@ def test_a_missing_language_is_never_substituted_with_an_installed_one(
     assert read_extraction_projection(runner, document_id="doc-no-substitute") == []
 
 
+@needs_confinement
 def test_service_executor_processes_rtf_through_the_retained_copy(
     runner: ServiceRunner, tmp_path: Path
 ) -> None:
@@ -1383,6 +1394,7 @@ def test_service_executor_processes_rtf_through_the_retained_copy(
     assert "Core RTF content" in " ".join(segment.text or "" for segment in projected)
 
 
+@needs_confinement
 def test_service_executor_processes_xhtml_through_the_retained_copy(
     runner: ServiceRunner,
 ) -> None:
@@ -1460,6 +1472,7 @@ def observing(
     monkeypatch.setattr(module, "extract_document", wrapped)
 
 
+@needs_confinement
 def test_the_resolved_selection_is_held_for_the_whole_extraction(
     runner: ServiceRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1537,6 +1550,7 @@ def test_the_hold_is_released_after_a_failed_extraction(
     resources.remove(installed["deu"])
 
 
+@needs_confinement
 def test_a_text_only_capture_holds_nothing(
     runner: ServiceRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1755,6 +1769,7 @@ def test_a_settings_change_and_a_model_change_leave_the_admitted_digest_alone(
     assert profile["embeddedImageOcr"] is False
 
 
+@needs_confinement
 def test_frozen_bytes_that_went_missing_are_a_condition_not_a_substitution(
     runner: ServiceRunner, tmp_path: Path
 ) -> None:
@@ -1799,6 +1814,7 @@ def test_frozen_bytes_that_went_missing_are_a_condition_not_a_substitution(
     assert read_extraction_projection(runner, document_id="doc-missing") == []
 
 
+@needs_confinement
 def test_frozen_bytes_that_no_longer_verify_are_reported_as_unverified(
     runner: ServiceRunner, tmp_path: Path
 ) -> None:

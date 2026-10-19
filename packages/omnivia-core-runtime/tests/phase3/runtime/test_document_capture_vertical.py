@@ -34,6 +34,7 @@ from omnivia_core_runtime.service.ocr_resources import TESSERACT_REVISION
 from omnivia_core_runtime.service.processing_settings import LanguageStorageFull
 from omnivia_core_runtime.storage import document_intake as store
 from omnivia_core_runtime.workspace.blob_publication import BlobPublicationRefused
+from test_document_worker_isolation import needs_confinement
 from test_evidence_capture_vertical import (
     Served,
     _metadata,
@@ -367,6 +368,7 @@ def test_a_capture_deferred_for_language_storage_is_its_own_retryable_state(
     assert count(owned, "omnivia_document_capture_outbox") == 0
 
 
+@needs_confinement
 def test_document_reprocess_publishes_retained_bytes_and_exact_replay(
     owned: Served, monkeypatch: Any
 ) -> None:
@@ -507,6 +509,7 @@ def test_document_reprocess_refuses_a_selection_it_never_approved(owned: Served)
     assert count(owned, "omnivia_extraction_revisions") == 0
 
 
+@needs_confinement
 def test_document_reprocess_stale_expected_head_is_historical(owned: Served) -> None:
     dispatcher = build_dispatcher(owned, tag="document-reprocess-stale")
     source = captured(dispatcher)

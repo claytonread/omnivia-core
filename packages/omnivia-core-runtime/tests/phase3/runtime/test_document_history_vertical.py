@@ -63,6 +63,7 @@ from omnivia_core_runtime.service.processing_settings import (
     write_settings,
 )
 from omnivia_core_runtime.storage import document_intake as store
+from test_document_worker_isolation import needs_confinement
 from test_evidence_capture_vertical import (
     Served,
     _metadata,
@@ -548,6 +549,7 @@ def test_a_history_page_limit_is_clamped_rather_than_honoured_unbounded(
 # --- independent heads ----------------------------------------------------------
 
 
+@needs_confinement
 def test_a_reverse_order_completion_is_historical_only_and_never_reads_as_current(
     owned: Served,
 ) -> None:
@@ -589,6 +591,7 @@ def test_a_reverse_order_completion_is_historical_only_and_never_reads_as_curren
     assert result.extraction.retrieval_state == "retrievable"
 
 
+@needs_confinement
 def test_an_extraction_over_an_older_capture_does_not_move_the_source_head(
     owned: Served,
 ) -> None:
@@ -731,6 +734,7 @@ def test_a_snapshot_only_document_reports_no_original_binding(owned: Served) -> 
 # --- failed extraction ----------------------------------------------------------
 
 
+@needs_confinement
 def test_a_failed_extraction_is_reported_without_destroying_the_previous_retrieval(
     owned: Served, monkeypatch: Any
 ) -> None:
@@ -781,6 +785,7 @@ def test_a_failed_extraction_is_reported_without_destroying_the_previous_retriev
 # --- the reprocess the history enables ------------------------------------------
 
 
+@needs_confinement
 def test_reprocess_is_built_only_from_what_the_history_reported(owned: Served) -> None:
     """The exact loop the UI walks, with no value invented between the read and the write."""
     dispatcher = build_dispatcher(owned, tag="history-loop")
@@ -997,6 +1002,7 @@ def test_an_unqualified_format_is_offered_no_profile_and_says_why(owned: Served)
     assert history_entry.actions[0].unavailable_reason == "format_not_qualified"
 
 
+@needs_confinement
 def test_reprocess_against_a_stale_reported_base_is_historical_not_success(
     owned: Served,
 ) -> None:

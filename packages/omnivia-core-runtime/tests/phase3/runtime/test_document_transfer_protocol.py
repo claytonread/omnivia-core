@@ -49,7 +49,7 @@ def server(callback: Any) -> LocalSocketServer:
     # No endpoint is opened in this unit test; path only satisfies construction.
     return LocalSocketServer(
         dispatcher=cast(Any, object()),
-        path=Path("/private/tmp/unused-document-transfer.sock"),
+        path=Path("/tmp/unused-document-transfer.sock"),
         binary_stage=callback,
     )
 
@@ -94,7 +94,7 @@ def test_binary_stage_refuses_a_digest_mismatch_without_calling_service() -> Non
 
 
 def test_client_and_server_exchange_a_real_binary_stage() -> None:
-    directory = Path(tempfile.mkdtemp(prefix="ovb-", dir="/private/tmp"))
+    directory = Path(tempfile.mkdtemp(prefix="ovb-", dir="/tmp"))
     path = directory / "s.sock"
     observed: list[bytes] = []
 
