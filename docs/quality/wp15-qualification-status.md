@@ -14,7 +14,7 @@ This document is generated from
 `qualification/wp15/qualification-ledger.v1.json` and is verified against it
 by `scripts/check-wp15-qualification.py`. It records what this checkout can
 show and what it cannot. **It is not a claim that the release is qualified.**
-78 of 130 gates have direct production-path coverage
+79 of 130 gates have direct production-path coverage
 of every condition they name; the rest carry the exact condition still
 missing.
 
@@ -22,9 +22,9 @@ missing.
 
 | Status | Gates | Meaning |
 |---|---|---|
-| passed | 78 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
+| passed | 79 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
 | failed | 0 | Evidence exists and shows the required result is not met. |
-| blocked_external | 50 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
+| blocked_external | 49 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
 | not_executed | 1 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
 | not_implemented | 1 | The production path the gate names does not exist in this checkout. |
 
@@ -34,10 +34,10 @@ missing.
 |---|---|---|---|---|---|---|---|
 | AT | 20 | 50 | 31 | 0 | 19 | 0 | 0 |
 | NAT | 20.1 | 17 | 0 | 0 | 17 | 0 | 0 |
-| DOC | 20.2 | 19 | 15 | 0 | 3 | 0 | 1 |
+| DOC | 20.2 | 19 | 16 | 0 | 2 | 0 | 1 |
 | MON | 20.3 | 38 | 28 | 0 | 10 | 0 | 0 |
 | END | 20.4 | 6 | 4 | 0 | 1 | 1 | 0 |
-| **total** | | **130** | 78 | 0 | 50 | 1 | 1 |
+| **total** | | **130** | 79 | 0 | 49 | 1 | 1 |
 
 ## Counts by required evidence class
 
@@ -48,12 +48,12 @@ refuses that combination.
 
 | Evidence class | Gates | Producible here |
 |---|---|---|
-| automated_repository_test | 80 | yes |
+| automated_repository_test | 81 | yes |
 | repository_checker | 1 | yes |
 | installed_signed_build | 39 | no |
 | real_host_measurement | 2 | no |
 | accessibility_review | 6 | no |
-| external_fixture_corpus | 2 | no |
+| external_fixture_corpus | 1 | no |
 
 ## Gates with direct coverage
 
@@ -94,6 +94,7 @@ each one's scope limits.
 | AT-48 | A descriptor expires with a known-no-effect outcome, versus an ambiguous admission. |
 | AT-49 | An external access-owner call against a candidate or a provisional binding. |
 | AT-50 | Evidence is retrievable while the requested linkage is pending. |
+| DOC-01 | Office variants. |
 | DOC-02 | DOCX body and annotations. |
 | DOC-03 | XLSX formulas. |
 | DOC-04 | XLSX sparse and hidden content. |
@@ -155,7 +156,7 @@ not contain:
 - **Performance.** No p95 measurement exists for popover opening, publication, extraction or folder scanning. The DOC-05/09 receipt records extraction CPU, wall time and process peak RSS, but no installed UI CPU, memory, wakeup or disk peak has been measured.
 - **Intel and older macOS.** The package declares macOS 13, but nothing has run below the CI runner's version, and the build targets `arm64` only.
 - **Real providers and volumes.** There is no iCloud, File Provider, network or removable-volume fixture, and CI mounts none.
-- **Fixtures.** The repository now holds a Keynote-authored PPTX, three Microsoft Office Strict-namespace OOXML packages (Word, Excel, PowerPoint), an ONLYOFFICE-produced nested-table RTF with a digest-bound receipt, a macOS Image I/O HEIC and digest-bound qualification receipts. DOC-01 still requires Transitional Word, Excel, PowerPoint and compatible-application fixtures and a before-and-after comparison, and DOC-06 still requires RTF fixtures from further applications.
+- **Fixtures.** The repository now holds a Keynote-authored PPTX, three Microsoft Office Strict-namespace and three Transitional-namespace OOXML packages (Word, Excel, PowerPoint) with the ONLYOFFICE x2t rewrite of each in both families and hash-pair conversion receipts, an ONLYOFFICE-produced nested-table RTF with a digest-bound receipt, a macOS Image I/O HEIC and digest-bound qualification receipts. DOC-01 is closed on those; DOC-06 still requires RTF fixtures from further applications.
 - **The pinned external binaries.** RTF extraction needs `pandoc 3.12.1` and OCR needs `tesseract` with the bundled English and orientation models. Both are now packaged: `scripts/build-core-companion-app.py` stages them, their relocated native library closure and their licence notices into the candidate and digest-pins every byte in the component-set manifest, and production resolves them from the verified installation payload by absolute path. CI now installs Tesseract and a SHA-verified official Pandoc 3.12.1 build, and a real macOS Tesseract run is committed. The repository still does not redistribute either engine, so `scripts/preflight` cannot assemble a signed candidate without separately supplied runtime payloads.
 - **Cross-platform worker isolation.** The production document worker has a deny-by-default macOS seatbelt adapter. Linux and Windows deliberately fail closed because no equivalent production isolation adapter is implemented; DOC-16 cannot pass on every supported OS until those adapters exist or those operating systems leave the support set.
 - **Production model-manifest authority.** END-02's cache and pinning mechanisms are implemented and tested with the explicit development anchor, but no product-owned production trust anchor has been published. The repository cannot invent that release authority.

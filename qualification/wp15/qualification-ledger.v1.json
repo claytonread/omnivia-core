@@ -2839,7 +2839,7 @@
       "design_section": "20.2",
       "normative_summary": "Office variants. Word, Excel and PowerPoint fixtures plus common compatible-app fixtures for both qualified namespace families, with the same source bytes before and after.",
       "applicability": "Every qualified OOXML format on every OS the Core runtime supports. The extractors are platform-agnostic Python.",
-      "evidence_type": "external_fixture_corpus",
+      "evidence_type": "automated_repository_test",
       "evidence": [
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_xlsx_temporal_extraction.py",
@@ -2865,15 +2865,57 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc01_strict_ooxml_corpus.py",
           "symbol": "test_extraction_is_stable_and_leaves_the_source_bytes_identical",
           "covers": "Each Strict package extracts successfully and repeatably through the production extractor, and its source bytes keep their pinned SHA-256 before and after."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc01_transitional_ooxml_corpus.py",
+          "symbol": "test_package_is_transitional_ooxml",
+          "covers": "Three Microsoft Office-authored Transitional packages (Word, Excel, PowerPoint, Open XML SDK revision 431ab05c, MIT) and the three ONLYOFFICE x2t outputs rewritten from them carry Transitional relationships and main-part namespaces and no Strict namespace."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc01_transitional_ooxml_corpus.py",
+          "symbol": "test_converter_preserved_the_microsoft_metadata_so_it_proves_nothing",
+          "covers": "The converter kept the Microsoft app.xml byte for byte, so that metadata is asserted only on the inputs and is not offered as proof of the outputs' authorship; provenance is the hash-pair conversion receipt."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc01_transitional_ooxml_corpus.py",
+          "symbol": "test_extraction_is_exactly_equal_before_and_after_conversion",
+          "covers": "For each Transitional Word, Excel and PowerPoint input and its differing-bytes ONLYOFFICE output, production extraction is exactly equal (DOCX 1 segment, XLSX 103, PPTX 2 with texts abc and def) with the source bytes unchanged around extraction."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc01_strict_onlyoffice_roundtrip.py",
+          "symbol": "test_package_is_strict_ooxml",
+          "covers": "The three committed Microsoft Office Strict inputs and the three ONLYOFFICE x2t outputs rewritten from them carry Strict package relationships and main-part namespaces and no Transitional main-vocabulary namespace."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc01_strict_onlyoffice_roundtrip.py",
+          "symbol": "test_converter_preserved_the_microsoft_metadata_so_it_proves_nothing",
+          "covers": "The converter kept the Microsoft app.xml byte for byte, so that metadata is not offered as proof of the Strict outputs' authorship; provenance is the hash-pair conversion receipt."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc01_strict_onlyoffice_roundtrip.py",
+          "symbol": "test_extraction_is_exactly_equal_before_and_after_conversion",
+          "covers": "For each Strict Word, Excel and PowerPoint input and its differing-bytes ONLYOFFICE output, production extraction is exactly equal (DOCX 6 segments with body and comment, XLSX 212 segments over 3 sheets, PPTX 1 segment Strikethrough)."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc01_strict_onlyoffice_roundtrip.py",
+          "symbol": "test_extraction_is_deterministic_and_leaves_the_bytes_identical",
+          "covers": "Every Strict input and output keeps its receipt-pinned SHA-256 before, during and after two identical extractions."
+        },
+        {
+          "path": "tests/test_doc05_doc09_qualification.py",
+          "symbol": "test_doc05_doc09_record_binds_real_fixtures_engines_profiles_and_results",
+          "covers": "The Keynote-authored Transitional PPTX is a second compatible application whose digest-bound fixture extracts successfully."
         }
       ],
-      "status": "blocked_external",
-      "missing_condition": "The Microsoft Office Strict-family slice is closed for Word, Excel and PowerPoint by three upstream Open XML SDK fixtures. The gate also requires Transitional-namespace fixtures from Word, Excel, PowerPoint and common compatible applications, and a before-and-after source-byte comparison across that corpus. Only the Keynote-authored PPTX covers a compatible application, and no Transitional Microsoft Office fixture is committed.",
-      "limitations": "The Strict fixtures are small upstream test assets, one per format, and were not authored for this repository; the byte comparison is of the fixture file around extraction, not a round trip through an authoring application. Strict and Transitional agreement is still shown only for the XLSX temporal path. No compatible-application Strict fixture exists, so the cross-application matrix this gate asks for is incomplete.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Microsoft Office Strict and Transitional Word, Excel and PowerPoint are six unmodified upstream Open XML SDK test assets, one per format, so each format is a small sample rather than a broad corpus. The ONLYOFFICE outputs (Strict and Transitional) are x2t rewrites of those Microsoft inputs on macOS, not files authored in its GUI, and still carry the Microsoft app.xml; the hash-pair receipts, not that metadata, are the conversion proof. The second compatible application is the Keynote-authored Transitional PPTX only. Strict and Transitional agreement beyond the per-family fixtures is shown only for the XLSX temporal path.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ooxml_extractors.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py",
-        "qualification/wp15/fixtures/doc01-strict-ooxml-provenance.json"
+        "qualification/wp15/fixtures/doc01-strict-ooxml-provenance.json",
+        "qualification/wp15/fixtures/doc01-transitional-ooxml-receipt.json",
+        "qualification/wp15/fixtures/doc01-strict-onlyoffice-receipt.json"
       ]
     },
     {

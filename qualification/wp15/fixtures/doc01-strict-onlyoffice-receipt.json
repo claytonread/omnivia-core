@@ -1,0 +1,67 @@
+{
+  "gate": "DOC-01",
+  "scope": "Strict-namespace compatible-application slice: the output of a compatible-application converter run on each committed Microsoft Office Strict package (Word, Excel, PowerPoint), compared before and after through the production OOXML extractors. Upstream revision, licence and input provenance are in doc01-strict-ooxml-provenance.json; the Transitional slice is doc01-transitional-ooxml-receipt.json.",
+  "strict_provenance": "doc01-strict-ooxml-provenance.json",
+  "converter": {
+    "application": "ONLYOFFICE Desktop Editors",
+    "version": "9.4.0",
+    "build": "563",
+    "platform": "macOS",
+    "converter": "x2t",
+    "converter_sha256": "52e8752a9989fcb7c6dbbb481d217f893cf4985569f72ff66f72f0eaca1d9d60",
+    "command_shape": "x2t <input.ext> <output.ext>, run separately for each same-extension pair",
+    "operation": "Each output was rewritten by the converter from the committed Microsoft Office Strict input. It was not authored from scratch in the ONLYOFFICE GUI."
+  },
+  "metadata_caveat": "x2t preserved the Microsoft docProps/app.xml byte for byte, so each output still names Microsoft Word, Excel or PowerPoint. That metadata is not evidence of ONLYOFFICE authorship. The conversion receipt is this file: the exact input and output hashes, the installed application version and build, the converter hash and the command shape.",
+  "pairs": [
+    {
+      "format": "docx",
+      "input": {
+        "file": "doc01-strict-word.docx",
+        "sha256": "a6aa3203a42e2095294e107687bb2c392b3a8cb6bc6cc1b20946960a8e8026d3"
+      },
+      "output": {
+        "file": "doc01-strict-onlyoffice-word.docx",
+        "sha256": "54beb49a0f4a0989e87629efad0c1cc444b1b7ae539477da90e3d017eb1e0385"
+      },
+      "main_part": "word/document.xml",
+      "expected": {
+        "unit_type": "document_block",
+        "segments": 6,
+        "first_body_text": "This is some text.",
+        "comment_text": "some test comment"
+      }
+    },
+    {
+      "format": "xlsx",
+      "input": {
+        "file": "doc01-strict-excel.xlsx",
+        "sha256": "9e32e6f06bcec398a6b1d89d5564b8b2ff7c3ef93c61ec0ab3da6497e46bf4b1"
+      },
+      "output": {
+        "file": "doc01-strict-onlyoffice-excel.xlsx",
+        "sha256": "d498e705f88b7ff7f4ad09fe45dbb5b366db2a42af0bd725298a970ec56a99fb"
+      },
+      "main_part": "xl/workbook.xml",
+      "expected": {"unit_type": "workbook_cell", "segments": 212, "sheets": 3}
+    },
+    {
+      "format": "pptx",
+      "input": {
+        "file": "doc01-strict-powerpoint.pptx",
+        "sha256": "21d950c030fca5ee04a8dcd1c2fd7ebaffbb2e4fe03c301bd34aa77ac2a5b847"
+      },
+      "output": {
+        "file": "doc01-strict-onlyoffice-powerpoint.pptx",
+        "sha256": "3dfd85a9101c99e96f0e48b0842f7ae50d380d91c76332da04f7446a34188d57"
+      },
+      "main_part": "ppt/presentation.xml",
+      "expected": {"unit_type": "slide", "segments": 1, "texts": ["Strikethrough"]}
+    }
+  ],
+  "comparison": {
+    "bytes": "Each output differs byte for byte from its paired input.",
+    "namespaces": "Each output keeps Strict package relationships and a Strict main-part namespace and carries no Transitional main-vocabulary namespace.",
+    "extraction": "Production extract_docx, extract_xlsx and extract_pptx with capture_id doc01 return exactly equal results for input and output, with zero failed units and no limit breach."
+  }
+}
