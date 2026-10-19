@@ -70,6 +70,10 @@ MEMORY_KEY: Final = f"{QUALIFICATION_TOKEN}-memory-1"
 IMPORT_KEY: Final = f"{QUALIFICATION_TOKEN}-import-1"
 INTERRUPTED_KEY: Final = f"{QUALIFICATION_TOKEN}-interrupted-1"
 HOST_TIMEOUT: Final = 300.0
+#: Codex's isolated home has no ambient model configuration. Pin both values so
+#: qualification behavior does not drift with CLI defaults between fresh sessions.
+CODEX_MODEL: Final = "gpt-5.6-sol"
+CODEX_REASONING_EFFORT: Final = "medium"
 CORE_TIMEOUT: Final = 60.0
 SYSTEM_PATH: Final = "/usr/bin:/bin:/usr/sbin:/sbin"
 MCP_PROTOCOL_VERSION: Final = "2025-06-18"
@@ -570,6 +574,10 @@ def codex_command(
         "--skip-git-repo-check",
         "--sandbox",
         "read-only",
+        "--model",
+        CODEX_MODEL,
+        "--config",
+        f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"',
         "--config",
         'approval_policy="never"',
         "--json",
