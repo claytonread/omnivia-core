@@ -121,6 +121,10 @@ from omnivia_core_runtime.service.handlers.knowledge import (
     knowledge_search,
     memory_search,
 )
+from omnivia_core_runtime.service.handlers.knowledge_sharing import (
+    KNOWLEDGE_SHARING_FAMILY_OPERATIONS,
+    KnowledgeSharingHandlers,
+)
 from omnivia_core_runtime.service.handlers.memory import (
     MEMORY_CREATE_OPERATION,
     MEMORY_FAMILY_OPERATIONS,
@@ -129,6 +133,48 @@ from omnivia_core_runtime.service.handlers.memory import (
     ContinuationTokenCodec,
     HmacContinuationTokenCodec,
     MemoryHandlers,
+)
+from omnivia_core_runtime.service.handlers.skills import (
+    SKILL_DRAFT_CREATE_OPERATION,
+    SKILL_DRAFT_UPDATE_OPERATION,
+    SKILL_INSTALL_OPERATION,
+    SKILL_MUTATION_OPERATIONS,
+    SKILL_PROPOSAL_SUBMIT_OPERATION,
+    SKILL_REMOVE_OPERATION,
+    SKILL_RESOLVE_OPERATION,
+    SKILL_VERSION_DEPRECATE_OPERATION,
+    SKILL_VERSION_PUBLISH_OPERATION,
+    SkillHandlers,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_EXPORT as TASK_CONTEXT_EXPORT_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_EXPORT_READ as TASK_CONTEXT_EXPORT_READ_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_OUTCOME_CREATE as OUTCOME_CREATE_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_OUTCOME_READ as OUTCOME_READ_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_PROJECT_CONTEXT_READ as PROJECT_CONTEXT_READ_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    OPERATION_PROJECT_CONTEXT_SWITCH as PROJECT_CONTEXT_SWITCH_OPERATION,
+)
+from omnivia_core_runtime.service.handlers.task_context import (
+    TASK_CONTEXT_FAMILY_OPERATIONS,
+    TaskContextHandlers,
+)
+from omnivia_core_runtime.service.handlers.trigger import (
+    TRIGGER_DECLARE_OPERATION,
+    TRIGGER_FAMILY_OPERATIONS,
+    TRIGGER_HEALTH_OPERATION,
+    TRIGGER_INGEST_OPERATION,
+    TRIGGER_LIFECYCLE_OPERATION,
+    TriggerHandlers,
 )
 from omnivia_core_runtime.service.handlers.workflow import (
     WORKFLOW_CONTROL_OPERATION,
@@ -150,11 +196,31 @@ from omnivia_core_runtime.service.installation import (
     InstallationApplicationService,
     InstallationOperationContext,
 )
+from omnivia_core_runtime.service.knowledge_sharing import (
+    NO_PROJECTS,
+    ProjectAuthority,
+)
+from omnivia_core_runtime.service.knowledge_sharing import (
+    OPERATION_DECIDE as KNOWLEDGE_SHARE_DECIDE_OPERATION,
+)
+from omnivia_core_runtime.service.knowledge_sharing import (
+    OPERATION_LINEAGE as KNOWLEDGE_SHARE_LINEAGE_OPERATION,
+)
+from omnivia_core_runtime.service.knowledge_sharing import (
+    OPERATION_PROPOSE as KNOWLEDGE_SHARE_PROPOSE_OPERATION,
+)
+from omnivia_core_runtime.service.knowledge_sharing import (
+    OPERATION_READ as KNOWLEDGE_SHARE_READ_OPERATION,
+)
 from omnivia_core_runtime.service.mutation import (
     INSTALLATION_ADMINISTRATOR_ROLE,
     KNOWLEDGE_REVIEWER_ROLE,
     MUTATION_PURPOSES,
+    SKILL_PUBLISHER_ROLE,
+    TRIGGER_CONFIGURATION_PURPOSE,
+    TRIGGER_INGESTION_PURPOSE,
     WORKSPACE_CONTRIBUTOR_ROLE,
+    WORKSPACE_OPERATOR_ROLE,
 )
 from omnivia_core_runtime.service.operations import (
     ApplicationOperationRegistry,
@@ -165,6 +231,10 @@ from omnivia_core_runtime.service.operations import (
     failure,
     server_capability_snapshot,
     success,
+)
+from omnivia_core_runtime.service.outcome_admission import (
+    NO_OUTCOME_ADMISSIONS,
+    OutcomeAdmissionAuthority,
 )
 from omnivia_core_runtime.service.runtime_waits import WaitResolutionPolicy
 from omnivia_core_runtime.storage import continuity as continuity_storage
@@ -223,6 +293,9 @@ ENGINEERING_CONTEXT_PURPOSE: Final = "engineering_context"
 #: the analysis grant is negotiated separately from the knowledge surface.
 ANALYSIS_REQUEST_PURPOSE: Final = "insights_analysis_request"
 DECISION_RESULT_USE_PURPOSE: Final = "decision_result_use"
+#: Reading trigger telemetry is an observation, which no trigger configuration or delivery
+#: grant carries.
+TRIGGER_OBSERVATION_PURPOSE: Final = "trigger_observation"
 
 OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -245,6 +318,7 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "engineering.context.build": ENGINEERING_CONTEXT_PURPOSE,
         ANALYSIS_START_OPERATION: ANALYSIS_REQUEST_PURPOSE,
         "decision.result_use.evaluate": DECISION_RESULT_USE_PURPOSE,
+        TRIGGER_HEALTH_OPERATION: TRIGGER_OBSERVATION_PURPOSE,
     }
 )
 
@@ -319,6 +393,28 @@ CHAT_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 #: authority -- and inspecting or reviewing a Run is an observation, which is not what
 #: a caller starts one under.
 WORKFLOW_OBSERVATION_PURPOSE: Final = "workflow_observation"
+TRIGGER_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        TRIGGER_DECLARE_OPERATION: TRIGGER_CONFIGURATION_PURPOSE,
+        TRIGGER_LIFECYCLE_OPERATION: TRIGGER_CONFIGURATION_PURPOSE,
+        TRIGGER_INGEST_OPERATION: TRIGGER_INGESTION_PURPOSE,
+        TRIGGER_HEALTH_OPERATION: TRIGGER_OBSERVATION_PURPOSE,
+    }
+)
+#: The C17 Managed Skills families. The seven mutations are served under the purpose and role
+#: `MUTATION_PURPOSES` and `MUTATION_ROLES` declare for each, so the one skill family holds three
+#: roles and no grant it does not need. Resolution is the one restricted read: it holds no role,
+#: binds nothing, and carries its own purpose, so no mutation grant can reach it.
+SKILL_RESOLUTION_PURPOSE: Final = "skill_resolution"
+SKILL_FAMILY_ROLES: Final[frozenset[str]] = frozenset(
+    {WORKSPACE_CONTRIBUTOR_ROLE, SKILL_PUBLISHER_ROLE, WORKSPACE_OPERATOR_ROLE}
+)
+SKILL_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {name: MUTATION_PURPOSES[name] for name in sorted(SKILL_MUTATION_OPERATIONS)}
+)
+SKILL_RESOLUTION_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {SKILL_RESOLVE_OPERATION: SKILL_RESOLUTION_PURPOSE}
+)
 WORKFLOW_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         WORKFLOW_START_OPERATION: MUTATION_PURPOSES[WORKFLOW_START_OPERATION],
@@ -888,6 +984,153 @@ def build_decision_registry(
     return registry
 
 
+def build_trigger_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    resolve_release: WorkflowReleaseResolver | None = None,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the trigger family: declaration, lifecycle, admission and health.
+
+    `resolve_release` is the Workflow release authority a declaration confirms against, the
+    same seam `workflow.start` uses. Absent, a declaration refuses rather than binding a
+    trigger to a version nobody can confirm. Every other trigger operation runs without it.
+    """
+    session = trigger_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    handlers = TriggerHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+        resolve_release=resolve_release,
+    )
+    registry = build_trigger_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
+def _skill_dispatcher(
+    *,
+    service: Any,
+    session: AuthenticatedSession,
+    binding: ServiceBinding,
+    registry: ApplicationOperationRegistry,
+    fallback: ApplicationFallback,
+    record: ApplicationCallSink | None,
+    transport: str,
+) -> ApplicationDispatcher:
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
+def build_skill_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    roles: frozenset[str] = SKILL_FAMILY_ROLES,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the seven skill mutations: authoring, publication, installation and removal.
+
+    `roles` is the set the grant holds. The local owner holds all of them; any other principal
+    is given only the roles its operations need, and a mutation it lacks a role for is refused.
+    """
+    session = skill_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+        roles=roles,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    handlers = SkillHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+    )
+    return _skill_dispatcher(
+        service=service,
+        session=session,
+        binding=binding,
+        registry=build_skill_registry(handlers),
+        fallback=fallback,
+        record=record,
+        transport=transport,
+    )
+
+
+def build_skill_resolution_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the restricted read `skills.resolve`: a read-only grant that binds nothing."""
+    session = skill_resolution_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    handlers = SkillHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=random_identifier,
+    )
+    return _skill_dispatcher(
+        service=service,
+        session=session,
+        binding=binding,
+        registry=build_skill_resolution_registry(handlers),
+        fallback=fallback,
+        record=record,
+        transport=transport,
+    )
+
+
 def build_decision_application_dispatcher(
     *,
     service: Any,
@@ -1195,23 +1438,27 @@ def build_chat_registry(handlers: ChatHandlers) -> ApplicationOperationRegistry:
     return registry
 
 
-def workflow_family_session(
-    *, principal_id: str, installation_id: str, workspace_id: str
+def _contributor_family_session(
+    *,
+    operations: frozenset[str],
+    purposes: Mapping[str, str],
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    roles: frozenset[str] = frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
 ) -> AuthenticatedSession:
-    """The T-0693 contributor grant for one workspace's Workflow surface."""
-    entries = tuple(
-        get_operation_metadata(name) for name in sorted(WORKFLOW_FAMILY_OPERATIONS)
-    )
+    """A grant over one family's catalogue entries, each at its own minimum, holding `roles`."""
+    entries = tuple(get_operation_metadata(name) for name in sorted(operations))
     return AuthenticatedSession(
         principal_id=principal_id,
-        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
+        roles=roles,
         installations=frozenset({installation_id}),
         workspaces=frozenset({workspace_id}),
-        operations=WORKFLOW_FAMILY_OPERATIONS,
+        operations=operations,
         scopes=frozenset(
             scope for entry in entries for scope in entry.scope.required_scopes
         ),
-        purposes=frozenset(WORKFLOW_FAMILY_PURPOSES.values()),
+        purposes=frozenset(purposes.values()),
         capabilities=tuple(
             sorted(
                 {
@@ -1225,6 +1472,96 @@ def workflow_family_session(
             )
         ),
     )
+
+
+def workflow_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The T-0693 contributor grant for one workspace's Workflow surface."""
+    return _contributor_family_session(
+        operations=WORKFLOW_FAMILY_OPERATIONS,
+        purposes=WORKFLOW_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+
+
+def trigger_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The contributor grant for one workspace's trigger surface.
+
+    Configuration, delivery and observation are three purposes in one family, so a grant to
+    configure a trigger is not thereby a grant to deliver a stimulus to one.
+    """
+    return _contributor_family_session(
+        operations=TRIGGER_FAMILY_OPERATIONS,
+        purposes=TRIGGER_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+
+
+def skill_family_session(
+    *,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    roles: frozenset[str] = SKILL_FAMILY_ROLES,
+) -> AuthenticatedSession:
+    """The grant for one workspace's skill mutations, holding exactly the `roles` it is given.
+
+    Authoring, publication and installation are separate authorities. A session without
+    `skill_publisher` is refused publication and one without `workspace_operator` is refused
+    installation, whatever scopes it holds: the grant checks the role each mutation names.
+    """
+    return _contributor_family_session(
+        operations=SKILL_MUTATION_OPERATIONS,
+        purposes=SKILL_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+        roles=roles,
+    )
+
+
+def skill_resolution_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The restricted read grant for `skills.resolve`: no role, no mutation, its own purpose."""
+    return _contributor_family_session(
+        operations=frozenset({SKILL_RESOLVE_OPERATION}),
+        purposes=SKILL_RESOLUTION_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+        roles=frozenset(),
+    )
+
+
+def build_skill_registry(handlers: SkillHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    for operation, handler in (
+        (SKILL_DRAFT_CREATE_OPERATION, handlers.skills_draft_create),
+        (SKILL_DRAFT_UPDATE_OPERATION, handlers.skills_draft_update),
+        (SKILL_PROPOSAL_SUBMIT_OPERATION, handlers.skills_proposal_submit),
+        (SKILL_VERSION_PUBLISH_OPERATION, handlers.skills_version_publish),
+        (SKILL_VERSION_DEPRECATE_OPERATION, handlers.skills_version_deprecate),
+        (SKILL_INSTALL_OPERATION, handlers.skills_install),
+        (SKILL_REMOVE_OPERATION, handlers.skills_remove),
+    ):
+        registry.register(operation, cast(OperationHandler, handler))
+    return registry
+
+
+def build_skill_resolution_registry(handlers: SkillHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        SKILL_RESOLVE_OPERATION, cast(OperationHandler, handlers.skills_resolve)
+    )
+    return registry
 
 
 def build_workflow_registry(handlers: WorkflowHandlers) -> ApplicationOperationRegistry:
@@ -1242,6 +1579,215 @@ def build_workflow_registry(handlers: WorkflowHandlers) -> ApplicationOperationR
         WORKFLOW_REVIEW_OPERATION, cast(OperationHandler, handlers.workflow_review)
     )
     return registry
+
+
+def build_trigger_registry(handlers: TriggerHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        TRIGGER_DECLARE_OPERATION, cast(OperationHandler, handlers.trigger_declare)
+    )
+    registry.register(
+        TRIGGER_LIFECYCLE_OPERATION, cast(OperationHandler, handlers.trigger_lifecycle)
+    )
+    registry.register(
+        TRIGGER_INGEST_OPERATION, cast(OperationHandler, handlers.trigger_ingest)
+    )
+    registry.register(
+        TRIGGER_HEALTH_OPERATION, cast(OperationHandler, handlers.trigger_health)
+    )
+    return registry
+
+
+#: Cross-Project knowledge sharing (DEV-REQ-081): the four `knowledge.share.*` operations, one
+#: session and one binding. Proposing and deciding are served under the mutation table's
+#: `knowledge_sharing` purpose; the recipient read and the owner's lineage read are observations,
+#: which no sharing grant carries. This table is deliberately not part of `OPERATION_PURPOSES`: that
+#: map feeds the read-only local-owner session, which must never be able to grant a share.
+KNOWLEDGE_SHARE_OBSERVATION_PURPOSE: Final = "knowledge_share_observation"
+KNOWLEDGE_SHARING_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        KNOWLEDGE_SHARE_PROPOSE_OPERATION: MUTATION_PURPOSES[
+            KNOWLEDGE_SHARE_PROPOSE_OPERATION
+        ],
+        KNOWLEDGE_SHARE_DECIDE_OPERATION: MUTATION_PURPOSES[
+            KNOWLEDGE_SHARE_DECIDE_OPERATION
+        ],
+        KNOWLEDGE_SHARE_READ_OPERATION: KNOWLEDGE_SHARE_OBSERVATION_PURPOSE,
+        KNOWLEDGE_SHARE_LINEAGE_OPERATION: KNOWLEDGE_SHARE_OBSERVATION_PURPOSE,
+    }
+)
+
+
+def knowledge_sharing_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The ceiling for one workspace's sharing surface.
+
+    Holding these four operations says only that a session may ask. Whether it may share or read a
+    given record is the `ProjectAuthority` the family is composed with, decided for the principal the
+    authorization seam returns.
+    """
+    return _contributor_family_session(
+        operations=KNOWLEDGE_SHARING_FAMILY_OPERATIONS,
+        purposes=KNOWLEDGE_SHARING_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+
+
+#: Task-context exports and outcome requests (DEV-REQ-159, DEV-REQ-008): the export and the outcome
+#: request are the two writes, each under its own mutation purpose. Their reads are observations that no
+#: writing grant carries, so the family's read purpose is one observation purpose of its own.
+TASK_CONTEXT_OBSERVATION_PURPOSE: Final = "task_context_observation"
+TASK_CONTEXT_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        TASK_CONTEXT_EXPORT_OPERATION: MUTATION_PURPOSES[TASK_CONTEXT_EXPORT_OPERATION],
+        TASK_CONTEXT_EXPORT_READ_OPERATION: TASK_CONTEXT_OBSERVATION_PURPOSE,
+        OUTCOME_CREATE_OPERATION: MUTATION_PURPOSES[OUTCOME_CREATE_OPERATION],
+        OUTCOME_READ_OPERATION: TASK_CONTEXT_OBSERVATION_PURPOSE,
+        # Reading the active Project is an observation. Choosing one is a contributor's act with its own purpose.
+        PROJECT_CONTEXT_READ_OPERATION: TASK_CONTEXT_OBSERVATION_PURPOSE,
+        PROJECT_CONTEXT_SWITCH_OPERATION: MUTATION_PURPOSES[PROJECT_CONTEXT_SWITCH_OPERATION],
+    }
+)
+
+
+def task_context_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The contributor ceiling for one workspace's export and outcome surface.
+
+    Holding these four operations says only that a session may ask. The workspace is the one the
+    session names, and the principal is the authenticated caller's; neither is a request field.
+    """
+    return _contributor_family_session(
+        operations=TASK_CONTEXT_FAMILY_OPERATIONS,
+        purposes=TASK_CONTEXT_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+
+
+def build_task_context_registry(handlers: TaskContextHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    for operation, handler in (
+        (TASK_CONTEXT_EXPORT_OPERATION, handlers.task_context_export),
+        (TASK_CONTEXT_EXPORT_READ_OPERATION, handlers.task_context_export_read),
+        (OUTCOME_CREATE_OPERATION, handlers.outcome_request_create),
+        (OUTCOME_READ_OPERATION, handlers.outcome_request_read),
+        (PROJECT_CONTEXT_READ_OPERATION, handlers.project_context_read),
+        (PROJECT_CONTEXT_SWITCH_OPERATION, handlers.project_context_switch),
+    ):
+        registry.register(operation, cast(OperationHandler, handler))
+    return registry
+
+
+def build_task_context_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    admission: OutcomeAdmissionAuthority = NO_OUTCOME_ADMISSIONS,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the six task-context operations around the existing router.
+
+    `admission` is the server's outcome-admission authority for this Workspace. It has no default other than empty,
+    which admits nothing, and no request, session or grant can add to it.
+    """
+    session = task_context_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    registry = build_task_context_registry(
+        TaskContextHandlers(
+            service=service,
+            session=session,
+            binding=binding,
+            clock=SystemClock() if clock is None else clock,
+            allocate_identifier=allocate_identifier,
+            admission=admission,
+        )
+    )
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
+def build_knowledge_sharing_registry(
+    handlers: KnowledgeSharingHandlers,
+) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    for operation, handler in (
+        (KNOWLEDGE_SHARE_PROPOSE_OPERATION, handlers.knowledge_share_propose),
+        (KNOWLEDGE_SHARE_DECIDE_OPERATION, handlers.knowledge_share_decide),
+        (KNOWLEDGE_SHARE_READ_OPERATION, handlers.knowledge_share_read),
+        (KNOWLEDGE_SHARE_LINEAGE_OPERATION, handlers.knowledge_share_lineage),
+    ):
+        registry.register(operation, cast(OperationHandler, handler))
+    return registry
+
+
+def build_knowledge_sharing_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    projects: ProjectAuthority = NO_PROJECTS,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the four sharing operations around the existing router.
+
+    `projects` is the server's own Project binding. It has no default other than empty, which
+    refuses every sharing operation, and no request, session or grant can add to it.
+    """
+    session = knowledge_sharing_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    registry = build_knowledge_sharing_registry(
+        KnowledgeSharingHandlers(
+            service=service,
+            session=session,
+            binding=binding,
+            clock=SystemClock() if clock is None else clock,
+            allocate_identifier=allocate_identifier,
+            projects=projects,
+        )
+    )
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
 
 
 def build_application_registry(
@@ -1404,7 +1950,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 28/28 complete.
+    is anything other than 77/77 complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -1423,9 +1969,9 @@ class ProductionApplicationSurface:
         distinct_routes = tuple(
             {id(route): route for route in routes.values()}.values()
         )
-        if len(distinct_routes) != 9:
+        if len(distinct_routes) != 14:
             raise ValueError(
-                "the production surface requires exactly nine authority families"
+                "the production surface requires exactly fourteen authority families"
             )
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError(
@@ -1489,8 +2035,13 @@ def compose_production_application_surface(
     governance: ApplicationDispatcher,
     chat: ApplicationDispatcher,
     workflow: ApplicationDispatcher,
+    trigger: ApplicationDispatcher,
     decision: ApplicationDispatcher,
+    skill: ApplicationDispatcher,
+    skill_resolution: ApplicationDispatcher,
     engineering: ApplicationDispatcher,
+    knowledge_sharing: ApplicationDispatcher,
+    task_context: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
 ) -> ProductionApplicationSurface:
@@ -1503,8 +2054,13 @@ def compose_production_application_surface(
         governance,
         chat,
         workflow,
+        trigger,
         decision,
+        skill,
+        skill_resolution,
         engineering,
+        knowledge_sharing,
+        task_context,
     )
     registry = ApplicationOperationRegistry()
     routes: dict[str, ApplicationDispatcher] = {}
@@ -2205,6 +2761,10 @@ __all__ = [
     "MEMORY_SEARCH_OPERATION",
     "OPERATION_PURPOSES",
     "PRINCIPAL_SOURCE",
+    "SKILL_FAMILY_ROLES",
+    "SKILL_RESOLUTION_PURPOSE",
+    "TRIGGER_FAMILY_PURPOSES",
+    "TRIGGER_OBSERVATION_PURPOSE",
     "WORKSPACE_INSPECTION_PURPOSE",
     "WORKSPACE_INSPECT_OPERATION",
     "ApplicationCallRecord",
@@ -2224,6 +2784,11 @@ __all__ = [
     "build_job_registry",
     "build_memory_application_dispatcher",
     "build_memory_registry",
+    "build_skill_application_dispatcher",
+    "build_skill_resolution_application_dispatcher",
+    "build_task_context_application_dispatcher",
+    "build_trigger_application_dispatcher",
+    "build_trigger_registry",
     "build_workflow_application_dispatcher",
     "build_workflow_registry",
     "compose_production_application_surface",
@@ -2232,5 +2797,7 @@ __all__ = [
     "job_family_session",
     "local_owner_session",
     "memory_family_session",
+    "task_context_family_session",
+    "trigger_family_session",
     "workflow_family_session",
 ]

@@ -219,6 +219,1059 @@
       },
       "required": ["previous_record", "updated_record"],
       "unevaluatedProperties": false
+    },
+    "KnowledgeShareDecision": {
+      "title": "KnowledgeShareDecision",
+      "description": "The two owner decisions a knowledge share can carry: `accepted` makes the share eligible for its recipient Project, and `revoked` withdraws that eligibility for every later read. Closed: no third decision exists, and a revocation is only recorded against a share that was accepted.",
+      "type": "string",
+      "enum": [
+        "accepted",
+        "revoked"
+      ]
+    },
+    "KnowledgeShareState": {
+      "title": "KnowledgeShareState",
+      "description": "Where one knowledge share stands, derived from its decisions on every read and never stored as a flag. `proposed` has no decision and grants its recipient nothing, `accepted` is eligible, and `revoked` was accepted and is no longer eligible.",
+      "type": "string",
+      "enum": [
+        "proposed",
+        "accepted",
+        "revoked"
+      ]
+    },
+    "KnowledgeShareDecisionRecord": {
+      "title": "KnowledgeShareDecisionRecord",
+      "description": "One decision recorded against a share, kept after a later revocation so a source owner can still read how the share was authorised.",
+      "type": "object",
+      "properties": {
+        "decision": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecision",
+          "description": "The decision recorded."
+        },
+        "decided_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that recorded the decision, as the server authenticated it."
+        },
+        "decided_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded the decision."
+        }
+      },
+      "required": [
+        "decision",
+        "decided_by",
+        "decided_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareProposeInput": {
+      "title": "KnowledgeShareProposeInput",
+      "description": "Input for `knowledge.share.propose`. An owner of the Project that holds a governed record proposes sharing that record's current sealed, canonical version with one other Project. The source Project is never stated here: the server derives it from the record's own domain scope and the Project bindings it holds, and refuses a caller that is not a bound owner of that Project. Naming a recipient grants nothing; the share is eligible only after a different owner accepts it. Workspace-scoped through the request envelope's selected workspace.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The caller-chosen identity of this share. Proposing the same share again under the same identity is an honest replay; a different proposal under it is a conflict."
+        },
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "The governed record whose current canonical version is proposed for sharing."
+        },
+        "recipient_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Project the share is addressed to. It must be a Project the server binds, and it must not be the source Project."
+        }
+      },
+      "required": [
+        "share_id",
+        "record_id",
+        "recipient_project_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareProposeResult": {
+      "title": "KnowledgeShareProposeResult",
+      "description": "Result of `knowledge.share.propose`: the share as recorded, still `proposed`. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share this result describes."
+        },
+        "source_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Project that owns the shared record, as the server's Project binding states it."
+        },
+        "recipient_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one Project the share is addressed to."
+        },
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "The governed record shared."
+        },
+        "governed_record_version_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one sealed, canonical, accepted governed version the share is bound to."
+        },
+        "content_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The digest of that version's content, which a recipient read must still find unchanged."
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareState",
+          "description": "Always `proposed` on this result: proposing grants the recipient nothing."
+        },
+        "proposed_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded the proposal."
+        }
+      },
+      "required": [
+        "share_id",
+        "source_project_id",
+        "recipient_project_id",
+        "record_id",
+        "governed_record_version_id",
+        "content_digest",
+        "state",
+        "proposed_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareDecideInput": {
+      "title": "KnowledgeShareDecideInput",
+      "description": "Input for `knowledge.share.decide`. An owner of the share's source Project accepts it or revokes it. An acceptance must come from an owner other than the proposer and only while the shared version is still sealed, canonical, accepted and unsuperseded; a revocation is only recorded against an accepted share. The source Project is read from the share, never from this payload. Workspace-scoped through the request envelope's selected workspace.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share to decide."
+        },
+        "decision": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecision",
+          "description": "Whether to accept or revoke the share."
+        }
+      },
+      "required": [
+        "share_id",
+        "decision"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareDecideResult": {
+      "title": "KnowledgeShareDecideResult",
+      "description": "Result of `knowledge.share.decide`: the decision as recorded and the state the share now holds. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share decided."
+        },
+        "decision": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecision",
+          "description": "The decision recorded."
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareState",
+          "description": "The state the share holds after the decision."
+        },
+        "decided_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When Core recorded the decision."
+        }
+      },
+      "required": [
+        "share_id",
+        "decision",
+        "state",
+        "decided_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareReadInput": {
+      "title": "KnowledgeShareReadInput",
+      "description": "Input for `knowledge.share.read`. A member of the recipient Project reads the one governed version a share makes eligible. The recipient Project is never stated here: the server reads it from the share and requires the caller to be bound to it. Possessing a share identifier, holding a broad knowledge-read grant, belonging to the workspace, or having read the share before confers nothing: eligibility is re-derived from the accepted and revoked decisions and the shared version's currentness on every call. Workspace-scoped through the request envelope's selected workspace.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share to read."
+        }
+      },
+      "required": [
+        "share_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareReadResult": {
+      "title": "KnowledgeShareReadResult",
+      "description": "Result of `knowledge.share.read`: the shared version's identity, its digest and its content, served only while the share is accepted, unrevoked and still points at the sealed version it was proposed under.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share this result describes."
+        },
+        "source_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Project that owns the shared record, as the server's Project binding states it."
+        },
+        "recipient_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one Project the share is addressed to."
+        },
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "The governed record shared."
+        },
+        "governed_record_version_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one sealed, canonical, accepted governed version the share is bound to."
+        },
+        "content_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The digest of that version's content, which a recipient read must still find unchanged."
+        },
+        "domain_scope": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/RecordDomainScope",
+          "description": "The domain scope the shared record was created in, which the source Project's binding must still own."
+        },
+        "content": {
+          "type": "object",
+          "description": "The sealed version's content, exactly as the governed record holds it; `content_digest` is the digest of this content."
+        }
+      },
+      "required": [
+        "share_id",
+        "source_project_id",
+        "recipient_project_id",
+        "record_id",
+        "governed_record_version_id",
+        "content_digest",
+        "domain_scope",
+        "content"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareLineageInput": {
+      "title": "KnowledgeShareLineageInput",
+      "description": "Input for `knowledge.share.lineage`. An owner of the share's source Project reads the share and every decision recorded against it, revoked ones included. Historical lineage stays readable after revocation. A recipient is not a source owner and cannot read it. Workspace-scoped through the request envelope's selected workspace.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share whose lineage is read."
+        }
+      },
+      "required": [
+        "share_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeShareLineageResult": {
+      "title": "KnowledgeShareLineageResult",
+      "description": "Result of `knowledge.share.lineage`: the share, the state its decisions currently derive, and every decision in the order it was recorded.",
+      "type": "object",
+      "properties": {
+        "share_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The share this result describes."
+        },
+        "source_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Project that owns the shared record, as the server's Project binding states it."
+        },
+        "recipient_project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one Project the share is addressed to."
+        },
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "The governed record shared."
+        },
+        "governed_record_version_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one sealed, canonical, accepted governed version the share is bound to."
+        },
+        "content_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The digest of that version's content, which a recipient read must still find unchanged."
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareState",
+          "description": "The state the recorded decisions derive."
+        },
+        "proposed_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that proposed the share."
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeShareDecisionRecord"
+          },
+          "description": "Every decision recorded against the share, accepted and revoked, in the order recorded."
+        }
+      },
+      "required": [
+        "share_id",
+        "source_project_id",
+        "recipient_project_id",
+        "record_id",
+        "governed_record_version_id",
+        "content_digest",
+        "state",
+        "proposed_by",
+        "decisions"
+      ],
+      "unevaluatedProperties": false
+    },
+    "TaskContextExportInput": {
+      "title": "TaskContextExportInput",
+      "description": "Input for `task_context.export`. The caller hands over one assembled task-context handoff and the explicit budgets the export must fit. The handoff is data: Core verifies its recorded identity against its content and projects one fixed set of content sections under Core's redaction patterns. The workspace, the exporting principal, the fencing generation and the policy are the server's own and are never stated here. An export is never truncated: a handoff that does not fit its budgets is refused.",
+      "type": "object",
+      "properties": {
+        "handoff": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The assembled task-context handoff, carried verbatim as data. It must be in the closed handoff shape and recompute to its own recorded content identity."
+        },
+        "token_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000,
+          "description": "The explicit token budget the export must fit, under the `utf8-ceil4-v1` estimator."
+        },
+        "byte_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576,
+          "description": "The explicit byte budget the canonical export document must fit."
+        }
+      },
+      "required": [
+        "handoff",
+        "token_budget",
+        "byte_budget"
+      ],
+      "unevaluatedProperties": false
+    },
+    "TaskContextExportResult": {
+      "title": "TaskContextExportResult",
+      "description": "Result of `task_context.export`: one immutable export as recorded. `export_id` names exactly the canonical document carried in `document`, so the identity can be checked by any holder of the result. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "export_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The export's identity: the prefix `tcx-` and the SHA-256 of its canonical document."
+        },
+        "source_handoff_identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The content identity of the handoff this export projects, as the handoff recorded and Core recomputed it."
+        },
+        "exported_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that made the export, as the authenticated caller."
+        },
+        "policy_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The digest of the one export policy this build serves."
+        },
+        "fencing_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The workspace fencing generation the export was recorded under."
+        },
+        "token_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The token budget the export was checked against."
+        },
+        "byte_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The byte budget the export was checked against."
+        },
+        "token_estimate": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The token estimate of the canonical document, under `utf8-ceil4-v1`."
+        },
+        "byte_estimate": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The byte length of the canonical document."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the export settled."
+        },
+        "document": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The canonical export document: the allowlisted content sections after redaction, the withheld field names and the redaction counts."
+        }
+      },
+      "required": [
+        "export_id",
+        "source_handoff_identity",
+        "exported_by",
+        "policy_digest",
+        "fencing_generation",
+        "token_budget",
+        "byte_budget",
+        "token_estimate",
+        "byte_estimate",
+        "created_at",
+        "document"
+      ],
+      "unevaluatedProperties": false
+    },
+    "TaskContextExportReadInput": {
+      "title": "TaskContextExportReadInput",
+      "description": "Input for `task_context.export.read`. The caller names one export by its identifier and nothing else. The workspace is the request envelope's selected workspace, and an export recorded in another workspace reads as not found.",
+      "type": "object",
+      "properties": {
+        "export_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The export to read."
+        }
+      },
+      "required": [
+        "export_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "OutcomeRequestCreateInput": {
+      "title": "OutcomeRequestCreateInput",
+      "description": "Input for `outcome.request.create`. The caller asks for an outcome against one stored task-context export, carrying a bounded natural-language objective verbatim. The export is named by identifier only. The workspace and the requesting principal are the authenticated caller's, and the export must be in this workspace, recorded under the current fencing generation and produced under the policy this build serves.",
+      "type": "object",
+      "properties": {
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The objective, kept verbatim. It must not be empty and must fit the Core byte bound."
+        },
+        "export_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The export this request is made against."
+        },
+        "admission": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeAdmission",
+          "description": "Optional structured admission. Absent for a legacy request. When present, it is one closed reviewed summary and its claimed identity, and Core admits the request only if every declared fact holds at the time of the request."
+        }
+      },
+      "required": [
+        "objective",
+        "export_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "OutcomeRequestReadInput": {
+      "title": "OutcomeRequestReadInput",
+      "description": "Input for `outcome.request.read`. The caller names one outcome request by its identifier and nothing else. A request recorded in another workspace reads as not found.",
+      "type": "object",
+      "properties": {
+        "outcome_request_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The outcome request to read."
+        }
+      },
+      "required": [
+        "outcome_request_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "TaskContextExportReadResult": {
+      "title": "TaskContextExportReadResult",
+      "description": "Result of `task_context.export.read`: one immutable export as recorded, read back by its identifier. Its identity is re-derived from the stored document before it is served.",
+      "type": "object",
+      "properties": {
+        "export_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The export's identity: the prefix `tcx-` and the SHA-256 of its canonical document."
+        },
+        "source_handoff_identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The content identity of the handoff this export projects, as the handoff recorded and Core recomputed it."
+        },
+        "exported_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that made the export, as the authenticated caller."
+        },
+        "policy_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The digest of the one export policy this build serves."
+        },
+        "fencing_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The workspace fencing generation the export was recorded under."
+        },
+        "token_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The token budget the export was checked against."
+        },
+        "byte_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The byte budget the export was checked against."
+        },
+        "token_estimate": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The token estimate of the canonical document, under `utf8-ceil4-v1`."
+        },
+        "byte_estimate": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The byte length of the canonical document."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the export settled."
+        },
+        "document": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The canonical export document: the allowlisted content sections after redaction, the withheld field names and the redaction counts."
+        }
+      },
+      "required": [
+        "export_id",
+        "source_handoff_identity",
+        "exported_by",
+        "policy_digest",
+        "fencing_generation",
+        "token_budget",
+        "byte_budget",
+        "token_estimate",
+        "byte_estimate",
+        "created_at",
+        "document"
+      ],
+      "unevaluatedProperties": false
+    },
+    "OutcomeRequestCreateResult": {
+      "title": "OutcomeRequestCreateResult",
+      "description": "Result of `outcome.request.create`: one received outcome request as recorded. A replay under the same idempotency key returns this result without a second write.",
+      "type": "object",
+      "properties": {
+        "outcome_request_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The request's identity: the prefix `outreq-` and the SHA-256 of its canonical body."
+        },
+        "export_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The export the request names."
+        },
+        "source_handoff_identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The source handoff identity the named export records."
+        },
+        "requested_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that made the request, as the authenticated caller."
+        },
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The objective, verbatim."
+        },
+        "status": {
+          "type": "string",
+          "description": "Where the request stands. `received` is the only value this build records."
+        },
+        "fencing_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The workspace fencing generation the request was recorded under."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the request settled."
+        },
+        "admission": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeAdmission",
+          "description": "The admission this request was accepted under. Absent for a legacy request."
+        },
+        "context_generation": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextToken",
+          "description": "The active Project context generation the admission was accepted under. Absent for a legacy request."
+        }
+      },
+      "required": [
+        "outcome_request_id",
+        "export_id",
+        "source_handoff_identity",
+        "requested_by",
+        "objective",
+        "status",
+        "fencing_generation",
+        "created_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "OutcomeRequestReadResult": {
+      "title": "OutcomeRequestReadResult",
+      "description": "Result of `outcome.request.read`: one received outcome request as recorded, re-derived from its stored fields before it is served.",
+      "type": "object",
+      "properties": {
+        "outcome_request_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The request's identity: the prefix `outreq-` and the SHA-256 of its canonical body."
+        },
+        "export_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The export the request names."
+        },
+        "source_handoff_identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The source handoff identity the named export records."
+        },
+        "requested_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal that made the request, as the authenticated caller."
+        },
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The objective, verbatim."
+        },
+        "status": {
+          "type": "string",
+          "description": "Where the request stands. `received` is the only value this build records."
+        },
+        "fencing_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The workspace fencing generation the request was recorded under."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the request settled."
+        },
+        "admission": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeAdmission",
+          "description": "The admission this request was accepted under. Absent for a legacy request."
+        },
+        "context_generation": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextToken",
+          "description": "The active Project context generation the admission was accepted under. Absent for a legacy request."
+        }
+      },
+      "required": [
+        "outcome_request_id",
+        "export_id",
+        "source_handoff_identity",
+        "requested_by",
+        "objective",
+        "status",
+        "fencing_generation",
+        "created_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ProjectContextToken": {
+      "title": "ProjectContextToken",
+      "description": "The opaque token naming one Workspace's active Project context generation: the prefix `ctxgen-` and a positive integer. Callers compare it for equality and never derive meaning from it.",
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 26
+    },
+    "ProjectContextStateKind": {
+      "title": "ProjectContextStateKind",
+      "description": "The closed state of a Workspace's active Project context: `none` when no Project is active, `active` when one is.",
+      "type": "string",
+      "enum": [
+        "none",
+        "active"
+      ]
+    },
+    "ProjectContextReadResult": {
+      "title": "ProjectContextReadResult",
+      "description": "Result of `project.context.read` and `project.context.switch`: the Workspace's active Core Project and its opaque context generation, or the typed empty state `none` when no Project is active. `project_id` and `context_generation` are present only with state `active`.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextStateKind",
+          "description": "Whether a Project is active in this Workspace."
+        },
+        "project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The active Core Project. Present only when a Project is active."
+        },
+        "context_generation": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextToken",
+          "description": "The opaque generation of the active Project context. Present only when a Project is active."
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ProjectContextSwitchResult": {
+      "title": "ProjectContextSwitchResult",
+      "description": "Result of `project.context.read` and `project.context.switch`: the Workspace's active Core Project and its opaque context generation, or the typed empty state `none` when no Project is active. `project_id` and `context_generation` are present only with state `active`.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextStateKind",
+          "description": "Whether a Project is active in this Workspace."
+        },
+        "project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The active Core Project. Present only when a Project is active."
+        },
+        "context_generation": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextToken",
+          "description": "The opaque generation of the active Project context. Present only when a Project is active."
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ProjectContextReadInput": {
+      "title": "ProjectContextReadInput",
+      "description": "Input for `project.context.read`. The caller names nothing: the Workspace and the principal are the authenticated caller's, and the read observes the active Project context without changing it.",
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "unevaluatedProperties": false
+    },
+    "ProjectContextSwitchInput": {
+      "title": "ProjectContextSwitchInput",
+      "description": "Input for `project.context.switch`. The caller names the Core Project to make active in the authenticated Workspace and nothing else. The Project must be bound for this Workspace and the authenticated principal must be one of its owners or members.",
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Core Project to make active."
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "unevaluatedProperties": false
+    },
+      "AdmissionRevision": {
+      "title": "AdmissionRevision",
+      "description": "The revision of the reviewed admission summary. It is the positive integer that identity covers. Any integer below 1 is refused.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "AdmissionScope": {
+      "title": "AdmissionScope",
+      "description": "One requested scope of an admitted outcome, from the closed vocabulary Core defines.",
+      "type": "string",
+      "enum": [
+        "read",
+        "prepare",
+        "execute"
+      ]
+    },
+    "AdmissionAdapter": {
+      "title": "AdmissionAdapter",
+      "description": "The adapter that produced the summary. Only `dev-task-admission` is accepted.",
+      "type": "string",
+      "enum": [
+        "dev-task-admission"
+      ]
+    },
+    "AdmissionDisposition": {
+      "title": "AdmissionDisposition",
+      "description": "The disposition of a summary: it is a draft for review, never an accepted outcome.",
+      "type": "string",
+      "enum": [
+        "draft-for-review"
+      ]
+    },
+    "AdmissionExecutionState": {
+      "title": "AdmissionExecutionState",
+      "description": "The execution state of a summary. A summary never authorizes execution.",
+      "type": "string",
+      "enum": [
+        "not-authorized"
+      ]
+    },
+    "AdmissionBindingStatus": {
+      "title": "AdmissionBindingStatus",
+      "description": "The status of the declared bindings. Dev declares them and does not verify them; Core checks them itself.",
+      "type": "string",
+      "enum": [
+        "declared-not-verified"
+      ]
+    },
+    "AdmissionScopeStatus": {
+      "title": "AdmissionScopeStatus",
+      "description": "The status of the requested scopes. A summary requests scopes and grants none.",
+      "type": "string",
+      "enum": [
+        "requested-not-granted"
+      ]
+    },
+    "AdmissionRoleStatus": {
+      "title": "AdmissionRoleStatus",
+      "description": "The status of the declared roles. They are claims and never authenticate the caller.",
+      "type": "string",
+      "enum": [
+        "declared-not-authenticated"
+      ]
+    },
+    "AdmissionTokenEstimator": {
+      "title": "AdmissionTokenEstimator",
+      "description": "The token estimator the budgets are sized with: ceil(UTF-8 bytes / 4).",
+      "type": "string",
+      "enum": [
+        "utf8-ceil4-v1"
+      ]
+    },
+    "AdmissionAppContext": {
+      "title": "AdmissionAppContext",
+      "description": "The typed initiating App context of an admission: which App asked for the outcome, and from which surface.",
+      "type": "object",
+      "properties": {
+        "appId": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The initiating App."
+        },
+        "surfaceId": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The App surface the outcome was requested from."
+        }
+      },
+      "required": [
+        "appId",
+        "surfaceId"
+      ],
+      "unevaluatedProperties": false
+    },
+    "AdmissionDeclaredBindings": {
+      "title": "AdmissionDeclaredBindings",
+      "description": "The Project, Workspace, Work and source facts a summary declares. Declared, not verified: Core checks each one against its own bindings before it admits anything.",
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Core Project the outcome is made for."
+        },
+        "workspaceId": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "The Workspace the outcome belongs to. It must be the authenticated caller's Workspace."
+        },
+        "workId": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Work within the Project."
+        },
+        "sourceTarget": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "The source target the Work reads from. Opaque to Core, and bound by the Project's admission bindings."
+        },
+        "sourceRevision": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The immutable revision of the source target the Work reads."
+        },
+        "expectedContextGeneration": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextToken",
+          "description": "The Project context generation the summary was reviewed against. It must equal the active generation."
+        }
+      },
+      "required": [
+        "projectId",
+        "workspaceId",
+        "workId",
+        "sourceTarget",
+        "sourceRevision",
+        "expectedContextGeneration"
+      ],
+      "unevaluatedProperties": false
+    },
+    "AdmissionRoles": {
+      "title": "AdmissionRoles",
+      "description": "The three accountable principals a summary declares. Each is a claim that Core checks against the Project's bindings. None is an identity for the caller.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The accountable owner declared for the outcome."
+        },
+        "executor": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The accountable executor declared for the outcome."
+        },
+        "reviewer": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The accountable reviewer declared for the outcome."
+        }
+      },
+      "required": [
+        "owner",
+        "executor",
+        "reviewer"
+      ],
+      "unevaluatedProperties": false
+    },
+    "AdmissionBudgets": {
+      "title": "AdmissionBudgets",
+      "description": "The explicit budgets of an admission and the estimator they are sized with. The serialized summary must fit both.",
+      "type": "object",
+      "properties": {
+        "tokenBudget": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000,
+          "description": "The token budget for the outcome."
+        },
+        "byteBudget": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216,
+          "description": "The byte budget for the outcome."
+        },
+        "tokenEstimator": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionTokenEstimator",
+          "description": "The estimator the budgets use."
+        }
+      },
+      "required": [
+        "tokenBudget",
+        "byteBudget",
+        "tokenEstimator"
+      ],
+      "unevaluatedProperties": false
+    },
+    "AdmissionIdentity": {
+      "title": "AdmissionIdentity",
+      "description": "The canonical identity of an admission summary: the lowercase hexadecimal SHA-256 of the summary's canonical JSON.",
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "OutcomeAdmissionSummary": {
+      "title": "OutcomeAdmissionSummary",
+      "description": "One reviewed, canonical summary of an outcome admission, in the closed shape Dev produces: the revision, the fixed status labels, the objective, the initiating App, the declared bindings and roles, the assumptions, constraints, requested scopes (in ascending order) and budgets. Dev grants no authority; Core admits it only against its own bindings.",
+      "type": "object",
+      "properties": {
+        "revision": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionRevision",
+          "description": "The summary revision, a positive integer."
+        },
+        "adapter": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionAdapter",
+          "description": "The producing adapter."
+        },
+        "disposition": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionDisposition",
+          "description": "Always a draft for review."
+        },
+        "executionState": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionExecutionState",
+          "description": "Always not authorized."
+        },
+        "bindingStatus": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionBindingStatus",
+          "description": "Always declared, not verified."
+        },
+        "scopeStatus": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionScopeStatus",
+          "description": "Always requested, not granted."
+        },
+        "roleStatus": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionRoleStatus",
+          "description": "Always declared, not authenticated."
+        },
+        "outcomeObjective": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The objective, which must equal the request's top-level objective."
+        },
+        "appContext": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionAppContext",
+          "description": "The App that initiated the outcome, and its surface."
+        },
+        "declaredBindings": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionDeclaredBindings",
+          "description": "The declared Project, Workspace, Work and source facts."
+        },
+        "declaredRoles": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionRoles",
+          "description": "The declared owner, executor and reviewer."
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "maxItems": 16,
+          "description": "The assumptions the summary rests on, in the order given. Items are non-blank, and their total UTF-8 size with the constraints is bounded."
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "maxItems": 16,
+          "description": "The constraints the outcome must respect, in the order given. Items are non-blank, and their total UTF-8 size with the assumptions is bounded."
+        },
+        "requestedScopes": {
+          "type": "array",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionScope"
+          },
+          "minItems": 1,
+          "maxItems": 3,
+          "description": "The requested scopes, distinct and in ascending order."
+        },
+        "budgets": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionBudgets",
+          "description": "The explicit budgets and their estimator."
+        }
+      },
+      "required": [
+        "revision",
+        "adapter",
+        "disposition",
+        "executionState",
+        "bindingStatus",
+        "scopeStatus",
+        "roleStatus",
+        "outcomeObjective",
+        "appContext",
+        "declaredBindings",
+        "declaredRoles",
+        "assumptions",
+        "constraints",
+        "requestedScopes",
+        "budgets"
+      ],
+      "unevaluatedProperties": false
+    },
+    "OutcomeAdmission": {
+      "title": "OutcomeAdmission",
+      "description": "A structured outcome admission: one closed reviewed summary and the identity the caller claims for it. Core recomputes the identity from the summary and refuses a mismatch.",
+      "type": "object",
+      "properties": {
+        "summary": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/OutcomeAdmissionSummary",
+          "description": "The reviewed canonical summary."
+        },
+        "identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/AdmissionIdentity",
+          "description": "The claimed canonical identity of the summary."
+        }
+      },
+      "required": [
+        "summary",
+        "identity"
+      ],
+      "unevaluatedProperties": false
     }
   }
 }

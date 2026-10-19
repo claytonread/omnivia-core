@@ -299,13 +299,18 @@ def fenced_transaction(
         with authorised(connection, mutations=True):
             yield connection
         _validate(connection, identity, workspace_id, fencing_generation, "before commit")
+        # Inside the guard: a commit that the database refuses (a deferred foreign key, for one)
+        # leaves its transaction open, and that transaction must be rolled back, not kept.
+        connection.execute("COMMIT")
     except BaseException:
-        try:
-            connection.execute("ROLLBACK")
-        except sqlite3.OperationalError:  # pragma: no cover - no active transaction
-            pass
+        # A body that ended its own transaction has nothing left to roll back, and a ROLLBACK
+        # issued then would replace the error that is actually propagating.
+        if connection.in_transaction:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.OperationalError:  # pragma: no cover - ended between check and call
+                pass
         raise
-    connection.execute("COMMIT")
 
 
 def trigger_names(connection: sqlite3.Connection) -> tuple[str, ...]:
