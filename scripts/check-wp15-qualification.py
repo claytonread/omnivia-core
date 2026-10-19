@@ -451,11 +451,12 @@ OUT_OF_REACH: Final[tuple[tuple[str, str], ...]] = (
     ),
     (
         "Fixtures",
-        ("The repository now holds a Keynote-authored PPTX, a macOS Image I/O HEIC "
-        "and digest-bound qualification receipts. DOC-01 still requires the broader "
-        "Word, Excel, PowerPoint and compatible-application corpus across both OOXML "
-        "namespace families, and DOC-06 still requires an application-authored RTF "
-        "corpus with a real nested table."),
+        ("The repository now holds a Keynote-authored PPTX, three Microsoft Office "
+        "Strict-namespace OOXML packages (Word, Excel, PowerPoint), a macOS Image "
+        "I/O HEIC and digest-bound qualification receipts. DOC-01 still requires "
+        "Transitional Word, Excel, PowerPoint and compatible-application fixtures "
+        "and a before-and-after comparison, and DOC-06 still requires an "
+        "application-authored RTF corpus with a real nested table."),
     ),
     (
         "The pinned external binaries",

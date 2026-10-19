@@ -2855,14 +2855,25 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_extractors.py",
           "symbol": "test_docx_extracts_body_and_keeps_comments_separate",
           "covers": "A DOCX package is extracted with its comments kept separate from prose."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc01_strict_ooxml_corpus.py",
+          "symbol": "test_fixture_is_strict_namespace_ooxml",
+          "covers": "Three unmodified Microsoft Office Strict-namespace packages (Word, Excel, PowerPoint, Open XML SDK revision 431ab05c, MIT) carry only Strict vocabulary namespaces."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc01_strict_ooxml_corpus.py",
+          "symbol": "test_extraction_is_stable_and_leaves_the_source_bytes_identical",
+          "covers": "Each Strict package extracts successfully and repeatably through the production extractor, and its source bytes keep their pinned SHA-256 before and after."
         }
       ],
       "status": "blocked_external",
-      "missing_condition": "The committed Keynote-authored PPTX proves one real application path, but the gate requires a broader corpus from Word, Excel, PowerPoint and compatible applications across both OOXML namespace families. That corpus and its before-and-after byte comparison do not exist.",
-      "limitations": "Namespace-family agreement is demonstrated for one XLSX path only, not across the three formats. The digest-bound Keynote fixture and synthetic packages exercise the readers, but they cannot establish the cross-application compatibility matrix this gate asks for.",
+      "missing_condition": "The Microsoft Office Strict-family slice is closed for Word, Excel and PowerPoint by three upstream Open XML SDK fixtures. The gate also requires Transitional-namespace fixtures from Word, Excel, PowerPoint and common compatible applications, and a before-and-after source-byte comparison across that corpus. Only the Keynote-authored PPTX covers a compatible application, and no Transitional Microsoft Office fixture is committed.",
+      "limitations": "The Strict fixtures are small upstream test assets, one per format, and were not authored for this repository; the byte comparison is of the fixture file around extraction, not a round trip through an authoring application. Strict and Transitional agreement is still shown only for the XLSX temporal path. No compatible-application Strict fixture exists, so the cross-application matrix this gate asks for is incomplete.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ooxml_extractors.py",
-        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py"
+        "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py",
+        "qualification/wp15/fixtures/doc01-strict-ooxml-provenance.json"
       ]
     },
     {

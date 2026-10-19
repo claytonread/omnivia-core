@@ -1,0 +1,40 @@
+{
+  "gate": "DOC-01",
+  "scope": "Microsoft Office Strict-family slice only. Transitional multi-application and compatible-application corpus and before/after round-trip evidence are not covered.",
+  "upstream": {
+    "name": "Open XML SDK",
+    "repository": "https://github.com/dotnet/Open-XML-SDK",
+    "revision": "431ab05cf160248cc3885a4a766026d4f8243792",
+    "licence": "MIT, Copyright (c) .NET Foundation and Contributors",
+    "licence_file": "doc01-openxml-sdk-LICENSE.txt",
+    "licence_git_blob_sha1": "12bd8f3f79693e49ff70d4ce182ff8d2e7baa390",
+    "licence_source": "https://github.com/dotnet/Open-XML-SDK/blob/431ab05cf160248cc3885a4a766026d4f8243792/LICENSE"
+  },
+  "authorship": "Test assets from the upstream O14ISOStrict set, saved as ISO/IEC 29500 Strict by Microsoft Office; the package metadata (docProps/app.xml) names Microsoft Office Word, Microsoft Excel and Microsoft Office PowerPoint as the producing application. They are redistributed unmodified under the upstream MIT licence.",
+  "fixtures": [
+    {
+      "file": "doc01-strict-word.docx",
+      "format": "docx",
+      "sha256": "a6aa3203a42e2095294e107687bb2c392b3a8cb6bc6cc1b20946960a8e8026d3",
+      "upstream_path": "test/DocumentFormat.OpenXml.Tests.Assets/assets/TestDataStorage/O14ISOStrict/Word/CommentRangeStart.docx",
+      "upstream_url": "https://github.com/dotnet/Open-XML-SDK/blob/431ab05cf160248cc3885a4a766026d4f8243792/test/DocumentFormat.OpenXml.Tests.Assets/assets/TestDataStorage/O14ISOStrict/Word/CommentRangeStart.docx",
+      "upstream_git_blob_sha1": "acb56596d4a05c1e8bd6f935d6dc42cbbe1ed4d0"
+    },
+    {
+      "file": "doc01-strict-excel.xlsx",
+      "format": "xlsx",
+      "sha256": "9e32e6f06bcec398a6b1d89d5564b8b2ff7c3ef93c61ec0ab3da6497e46bf4b1",
+      "upstream_path": "test/DocumentFormat.OpenXml.Tests.Assets/assets/TestDataStorage/O14ISOStrict/Excel/filter_type.xlsx",
+      "upstream_url": "https://github.com/dotnet/Open-XML-SDK/blob/431ab05cf160248cc3885a4a766026d4f8243792/test/DocumentFormat.OpenXml.Tests.Assets/assets/TestDataStorage/O14ISOStrict/Excel/filter_type.xlsx",
+      "upstream_git_blob_sha1": "c20fb29c59329169f2a18b2b9b0c6e99cbc76087"
+    },
+    {
+      "file": "doc01-strict-powerpoint.pptx",
+      "format": "pptx",
+      "sha256": "21d950c030fca5ee04a8dcd1c2fd7ebaffbb2e4fe03c301bd34aa77ac2a5b847",
+      "upstream_path": "test/DocumentFormat.OpenXml.Tests.Assets/assets/TestDataStorage/O14ISOStrict/PowerPoint/main_rpr_strike_dblstrike.pptx",
+      "upstream_url": "https://github.com/dotnet/Open-XML-SDK/blob/431ab05cf160248cc3885a4a766026d4f8243792/test/DocumentFormat.OpenXml.Tests.Assets/assets/TestDataStorage/O14ISOStrict/PowerPoint/main_rpr_strike_dblstrike.pptx",
+      "upstream_git_blob_sha1": "8f1208e4ccdd25685766f0310d595e6a84e9f721"
+    }
+  ]
+}
