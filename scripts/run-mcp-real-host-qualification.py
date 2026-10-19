@@ -74,6 +74,12 @@ HOST_TIMEOUT: Final = 300.0
 #: qualification behavior does not drift with CLI defaults between fresh sessions.
 CODEX_MODEL: Final = "gpt-5.6-sol"
 CODEX_REASONING_EFFORT: Final = "medium"
+#: Codex's ``exec`` tool yields after 10 s by default, returning "Script running with
+#: cell ID ..." while a nested MCP call is still in flight.  The model then prints the
+#: marker, Codex exits before the response and the proxy records a call with no answer.
+#: A first-line ``// @exec`` pragma holds ``exec`` until the call returns, bounded by the
+#: host timeout.
+CODEX_EXEC_YIELD_MS: Final = int(HOST_TIMEOUT * 1000)
 CORE_TIMEOUT: Final = 60.0
 SYSTEM_PATH: Final = "/usr/bin:/bin:/usr/sbin:/sbin"
 MCP_PROTOCOL_VERSION: Final = "2025-06-18"
@@ -3203,9 +3209,11 @@ def _tool_prompt(host: str, tool: str, arguments: Mapping[str, Any], marker: str
         call = (
             f"Call exactly one tool named {tool} by running JavaScript that makes a "
             f"single awaited call to {identifier} with exactly the JSON arguments "
-            "below, inside try/catch: "
-            f"try {{ await {identifier}({payload}); }} catch (error) {{}} "
-            "so an MCP error is caught and consumed and the call is never repeated. "
+            "below, inside try/catch, so an MCP error is caught and consumed and the "
+            "call is never repeated. Pass exactly these two lines, including the "
+            "first-line pragma, as the whole exec input:\n"
+            f'// @exec: {{"yield_time_ms": {CODEX_EXEC_YIELD_MS}}}\n'
+            f"try {{ await {identifier}({payload}); }} catch (error) {{}}\n"
         )
     else:
         call = (

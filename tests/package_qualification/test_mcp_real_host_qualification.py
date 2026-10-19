@@ -6215,7 +6215,10 @@ def test_tool_prompt_is_host_aware() -> None:
     assert "tools.mcp__" not in claude and "try {" not in claude
     codex = q._tool_prompt("codex-cli", "workspace_inspect", args, "MARK")
     call = f"try {{ await tools.mcp__omnivia_core__workspace_inspect({payload}); }} catch (error) {{}}"
-    assert call in codex
+    pragma = f'// @exec: {{"yield_time_ms": {q.CODEX_EXEC_YIELD_MS}}}'
+    assert f"{pragma}\n{call}\n" in codex
+    assert q.CODEX_EXEC_YIELD_MS == int(q.HOST_TIMEOUT * 1000)
+    assert "// @exec" not in claude
     assert "mcp__omnivia-core__" not in codex
     assert codex.endswith(f"\nJSON:{payload}")
     for prompt in (claude, codex):
