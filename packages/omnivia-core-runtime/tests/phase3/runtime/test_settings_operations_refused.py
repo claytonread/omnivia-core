@@ -161,7 +161,7 @@ def test_the_production_surface_is_complete_with_both_operations_in_one_family(
 ) -> None:
     surface = harness.surface
     surface.registry.assert_complete()
-    assert len(surface.registry.operations) == 92
+    assert len(surface.registry.operations) == 93
     families = {id(surface._routes[name]) for name in SETTINGS}
     assert len(families) == 1
     for name, handler in zip(SETTINGS, (settings_handlers.settings_list, settings_handlers.settings_set)):
