@@ -6189,3 +6189,20 @@ def test_removing_an_existing_login_run_never_touches_the_real_profile(tmp_path:
     q.remove_runtime(root)
     assert not root.exists()
     assert (profile / ".credentials.json").read_text(encoding="utf-8") == "host"
+
+
+def test_tool_prompt_is_host_aware() -> None:
+    args = {"b": 2, "a": "x"}
+    payload = '{"a":"x","b":2}'
+    claude = q._tool_prompt("claude-code", "workspace_inspect", args, "MARK")
+    assert "mcp__omnivia-core__workspace_inspect" in claude
+    assert "tools.mcp__" not in claude and "try {" not in claude
+    codex = q._tool_prompt("codex-cli", "workspace_inspect", args, "MARK")
+    call = f"try {{ await tools.mcp__omnivia_core__workspace_inspect({payload}); }} catch (error) {{}}"
+    assert call in codex
+    assert "mcp__omnivia-core__" not in codex
+    assert codex.endswith(f"\nJSON:{payload}")
+    for prompt in (claude, codex):
+        assert "Invoke it exactly once" in prompt
+        assert "never retry or repeat the same call" in prompt
+        assert "output exactly MARK and nothing else" in prompt

@@ -3194,13 +3194,27 @@ def inspect_settled_import_job(
 # --- deterministic real-host journey --------------------------------------
 
 
-def _tool_prompt(tool: str, arguments: Mapping[str, Any], marker: str) -> str:
+def _tool_prompt(host: str, tool: str, arguments: Mapping[str, Any], marker: str) -> str:
     payload = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+    if host == "codex-cli":
+        identifier = f"tools.mcp__{SERVER_KEY.replace('-', '_')}__{tool}"
+        call = (
+            f"Call exactly one tool named {tool} by running JavaScript that makes a "
+            f"single awaited call to {identifier} with exactly the JSON arguments "
+            "below, inside try/catch: "
+            f"try {{ await {identifier}({payload}); }} catch (error) {{}} "
+            "so an MCP error is caught and consumed and the call is never repeated. "
+        )
+    else:
+        call = (
+            f"Call exactly one tool named {tool}; it may be displayed as "
+            f"{claude_tool_name(tool)}. Use it now with exactly the JSON arguments "
+            "below; "
+        )
     return (
         "This is an isolated MCP qualification step. Use only the configured "
-        f"{SERVER_KEY} MCP server. Call exactly one tool named {tool}; it may be "
-        f"displayed as {claude_tool_name(tool)}. Use it now with exactly the JSON "
-        "arguments below; do not add, remove, rewrite or infer values. "
+        f"{SERVER_KEY} MCP server. {call}"
+        "do not add, remove, rewrite or infer values. "
         "Invoke it exactly once. Do not call another tool, and never retry or "
         "repeat the same call, whether it succeeds or returns an error. "
         f"After the single call output exactly {marker} and nothing else."
@@ -3367,7 +3381,7 @@ class HostDriver:
             installed=self.installed,
             core_config=self.core_config,
             auth=self.auth,
-            prompt=_tool_prompt(tool, arguments, marker),
+            prompt=_tool_prompt(self.host, tool, arguments, marker),
             marker=marker,
             tools=(tool,),
             timeout=HOST_TIMEOUT,
