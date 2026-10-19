@@ -59,7 +59,11 @@ SHIM="$(mktemp -d)"
 trap 'rm -rf "$SHIM"' EXIT
 printf '#!/bin/sh\nexec %s "$@"\n' "$PYTHON" >"$SHIM/python"
 chmod +x "$SHIM/python"
-export PATH="$SHIM:$PATH"
+# Console scripts spawned by tests must come from the same environment as
+# `python`.  Otherwise an unrelated user-level `omnivia-core-service` earlier
+# on PATH can be selected even though this preflight is running the checkout's
+# virtual environment.
+export PATH="$SHIM:$(dirname "$PYTHON"):$PATH"
 
 if [ -z "${OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT:-}" ]; then
   command -v gh >/dev/null 2>&1 || {

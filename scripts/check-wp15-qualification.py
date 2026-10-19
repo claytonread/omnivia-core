@@ -435,7 +435,9 @@ OUT_OF_REACH: Final[tuple[tuple[str, str], ...]] = (
     (
         "Performance",
         ("No p95 measurement exists for popover opening, publication, extraction or "
-        "folder scanning, and no CPU, memory, wakeup or disk peak is recorded."),
+        "folder scanning. The DOC-05/09 receipt records extraction CPU, wall time "
+        "and process peak RSS, but no installed UI CPU, memory, wakeup or disk peak "
+        "has been measured."),
     ),
     (
         "Intel and older macOS",
@@ -449,10 +451,11 @@ OUT_OF_REACH: Final[tuple[tuple[str, str], ...]] = (
     ),
     (
         "Fixtures",
-        ("Every Office package is built in memory with `zipfile` and every image with "
-        "PIL. No application-authored document and no HEIC file exists in the "
-        "repository, and there is no fixture-hash manifest, which sections 11.15 and "
-        "22 require alongside results."),
+        ("The repository now holds a Keynote-authored PPTX, a macOS Image I/O HEIC "
+        "and digest-bound qualification receipts. DOC-01 still requires the broader "
+        "Word, Excel, PowerPoint and compatible-application corpus across both OOXML "
+        "namespace families, and DOC-06 still requires an application-authored RTF "
+        "corpus with a real nested table."),
     ),
     (
         "The pinned external binaries",
@@ -461,12 +464,24 @@ OUT_OF_REACH: Final[tuple[tuple[str, str], ...]] = (
         "`scripts/build-core-companion-app.py` stages them, their relocated native "
         "library closure and their licence notices into the candidate and "
         "digest-pins every byte in the component-set manifest, and production "
-        "resolves them from the verified installation payload by absolute path. What "
-        "the repository still cannot do is make those bytes: neither engine is "
-        "redistributed here, so neither CI workflow nor `scripts/preflight` can "
-        "assemble a candidate, the real-engine cases skip where the host has no "
-        "engine, and the one real offline run is the committed record behind "
-        "`scripts/check-doc13-packaged-runtime.py`."),
+        "resolves them from the verified installation payload by absolute path. CI "
+        "now installs Tesseract and a SHA-verified official Pandoc 3.12.1 build, "
+        "and a real macOS Tesseract run is committed. The repository still does not "
+        "redistribute either engine, so `scripts/preflight` cannot assemble a signed "
+        "candidate without separately supplied runtime payloads."),
+    ),
+    (
+        "Cross-platform worker isolation",
+        ("The production document worker has a deny-by-default macOS seatbelt adapter. "
+        "Linux and Windows deliberately fail closed because no equivalent production "
+        "isolation adapter is implemented; DOC-16 cannot pass on every supported OS "
+        "until those adapters exist or those operating systems leave the support set."),
+    ),
+    (
+        "Production model-manifest authority",
+        ("END-02's cache and pinning mechanisms are implemented and tested with the "
+        "explicit development anchor, but no product-owned production trust anchor "
+        "has been published. The repository cannot invent that release authority."),
     ),
     (
         "Companion to Core, end to end",

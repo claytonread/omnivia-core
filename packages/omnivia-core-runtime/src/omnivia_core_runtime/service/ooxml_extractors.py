@@ -56,6 +56,15 @@ _ARCHIVE_MAGIC: Final = (
     b"Rar!\x1a\x07",
 )
 _MAGIC_BYTES: Final = max(len(magic) for magic in _ARCHIVE_MAGIC)
+# OOXML permits an Office package to carry another Office package as an inert
+# embedded object.  A PPTX chart exported by Keynote, for example, carries its
+# source values in ``ppt/embeddings/*.xlsx``.  Those members are never opened as
+# archives by this reader, but they still have to survive the outer package's
+# bounded streaming validation or an ordinary chart presentation is rejected.
+_INERT_EMBEDDING_ROOTS: Final = frozenset(
+    {"word/embeddings/", "ppt/embeddings/", "xl/embeddings/"}
+)
+_INERT_ZIP_PACKAGE_SUFFIXES: Final = (".docx", ".pptx", ".xlsx")
 _FORBIDDEN_XML: Final = (b"<!DOCTYPE", b"<!ENTITY", b"<!NOTATION")
 _RELATIONSHIP_MODES: Final = frozenset({"Internal", "External"})
 _MAX_DOCX_DEPTH: Final = 64
@@ -2380,7 +2389,8 @@ class _Package:
     directory, then each member as it streams, then the inertness of the
     content-types and relationship parts. Nothing here resolves a target on the
     filesystem or the network, and no member is ever expanded as an archive of
-    its own.
+    its own.  A bounded Office package in an ``embeddings`` directory remains
+    opaque and may be inventoried, but is never recursively opened.
     """
 
     def __init__(self, content: bytes) -> None:
@@ -2544,7 +2554,13 @@ class _Package:
             raise OOXMLInvalid("OOXML member could not be validated") from error
         if actual != info.file_size:
             raise OOXMLInvalid("OOXML member length does not match its directory entry")
-        if head.startswith(_ARCHIVE_MAGIC):
+        name = info.filename.casefold()
+        inert_office_embedding = (
+            head.startswith(b"PK\x03\x04")
+            and any(name.startswith(root) for root in _INERT_EMBEDDING_ROOTS)
+            and name.endswith(_INERT_ZIP_PACKAGE_SUFFIXES)
+        )
+        if head.startswith(_ARCHIVE_MAGIC) and not inert_office_embedding:
             raise OOXMLInvalid("OOXML package member is itself an archive")
         return actual
 

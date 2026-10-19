@@ -14,7 +14,7 @@ This document is generated from
 `qualification/wp15/qualification-ledger.v1.json` and is verified against it
 by `scripts/check-wp15-qualification.py`. It records what this checkout can
 show and what it cannot. **It is not a claim that the release is qualified.**
-74 of 130 gates have direct production-path coverage
+78 of 130 gates have direct production-path coverage
 of every condition they name; the rest carry the exact condition still
 missing.
 
@@ -22,11 +22,11 @@ missing.
 
 | Status | Gates | Meaning |
 |---|---|---|
-| passed | 74 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
+| passed | 78 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
 | failed | 0 | Evidence exists and shows the required result is not met. |
-| blocked_external | 47 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
-| not_executed | 9 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
-| not_implemented | 0 | The production path the gate names does not exist in this checkout. |
+| blocked_external | 50 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
+| not_executed | 1 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
+| not_implemented | 1 | The production path the gate names does not exist in this checkout. |
 
 ## Counts by family and status
 
@@ -34,10 +34,10 @@ missing.
 |---|---|---|---|---|---|---|---|
 | AT | 20 | 50 | 31 | 0 | 19 | 0 | 0 |
 | NAT | 20.1 | 17 | 0 | 0 | 17 | 0 | 0 |
-| DOC | 20.2 | 19 | 11 | 0 | 1 | 7 | 0 |
+| DOC | 20.2 | 19 | 15 | 0 | 3 | 0 | 1 |
 | MON | 20.3 | 38 | 28 | 0 | 10 | 0 | 0 |
-| END | 20.4 | 6 | 4 | 0 | 0 | 2 | 0 |
-| **total** | | **130** | 74 | 0 | 47 | 9 | 0 |
+| END | 20.4 | 6 | 4 | 0 | 1 | 1 | 0 |
+| **total** | | **130** | 78 | 0 | 50 | 1 | 1 |
 
 ## Counts by required evidence class
 
@@ -97,7 +97,11 @@ each one's scope limits.
 | DOC-02 | DOCX body and annotations. |
 | DOC-03 | XLSX formulas. |
 | DOC-04 | XLSX sparse and hidden content. |
+| DOC-05 | PPTX. |
 | DOC-07 | HTML. |
+| DOC-08 | Delimited text. |
+| DOC-09 | Raster formats. |
+| DOC-10 | PDF mixed page. |
 | DOC-11 | PDF OCR conflicts. |
 | DOC-12 | OCR confidence. |
 | DOC-14 | Embedded document image profile. |
@@ -148,11 +152,13 @@ not contain:
 - **Peer code-signing verification.** Only the input-validation path is covered. Verifying a genuinely signed peer, and rejecting a forged claim, needs signing identities.
 - **The two extensions.** `Extensions/` is outside the Swift test target, has no tests, and CI does not even typecheck it.
 - **Accessibility, appearance and displays.** There is no VoiceOver, keyboard-reachability, snapshot, text-scaling or multi-display test anywhere.
-- **Performance.** No p95 measurement exists for popover opening, publication, extraction or folder scanning, and no CPU, memory, wakeup or disk peak is recorded.
+- **Performance.** No p95 measurement exists for popover opening, publication, extraction or folder scanning. The DOC-05/09 receipt records extraction CPU, wall time and process peak RSS, but no installed UI CPU, memory, wakeup or disk peak has been measured.
 - **Intel and older macOS.** The package declares macOS 13, but nothing has run below the CI runner's version, and the build targets `arm64` only.
 - **Real providers and volumes.** There is no iCloud, File Provider, network or removable-volume fixture, and CI mounts none.
-- **Fixtures.** Every Office package is built in memory with `zipfile` and every image with PIL. No application-authored document and no HEIC file exists in the repository, and there is no fixture-hash manifest, which sections 11.15 and 22 require alongside results.
-- **The pinned external binaries.** RTF extraction needs `pandoc 3.12.1` and OCR needs `tesseract` with the bundled English and orientation models. Both are now packaged: `scripts/build-core-companion-app.py` stages them, their relocated native library closure and their licence notices into the candidate and digest-pins every byte in the component-set manifest, and production resolves them from the verified installation payload by absolute path. What the repository still cannot do is make those bytes: neither engine is redistributed here, so neither CI workflow nor `scripts/preflight` can assemble a candidate, the real-engine cases skip where the host has no engine, and the one real offline run is the committed record behind `scripts/check-doc13-packaged-runtime.py`.
+- **Fixtures.** The repository now holds a Keynote-authored PPTX, a macOS Image I/O HEIC and digest-bound qualification receipts. DOC-01 still requires the broader Word, Excel, PowerPoint and compatible-application corpus across both OOXML namespace families, and DOC-06 still requires an application-authored RTF corpus with a real nested table.
+- **The pinned external binaries.** RTF extraction needs `pandoc 3.12.1` and OCR needs `tesseract` with the bundled English and orientation models. Both are now packaged: `scripts/build-core-companion-app.py` stages them, their relocated native library closure and their licence notices into the candidate and digest-pins every byte in the component-set manifest, and production resolves them from the verified installation payload by absolute path. CI now installs Tesseract and a SHA-verified official Pandoc 3.12.1 build, and a real macOS Tesseract run is committed. The repository still does not redistribute either engine, so `scripts/preflight` cannot assemble a signed candidate without separately supplied runtime payloads.
+- **Cross-platform worker isolation.** The production document worker has a deny-by-default macOS seatbelt adapter. Linux and Windows deliberately fail closed because no equivalent production isolation adapter is implemented; DOC-16 cannot pass on every supported OS until those adapters exist or those operating systems leave the support set.
+- **Production model-manifest authority.** END-02's cache and pinning mechanisms are implemented and tested with the explicit development anchor, but no product-owned production trust anchor has been published. The repository cannot invent that release authority.
 - **Companion to Core, end to end.** No test has a real companion talking to a real Core service. Swift tests stop at a fake delivery client; Python tests call the service directly.
 - **Platform coexistence.** Platform does not exist in this repository, so its four states cannot be produced.
 

@@ -2857,9 +2857,9 @@
           "covers": "A DOCX package is extracted with its comments kept separate from prose."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "There are no application-authored fixtures. Every Office package in the suite is built in memory with zipfile, so no file produced by Word, Excel, PowerPoint or a compatible application has ever been read. The before-and-after byte comparison is also absent, and no fixture hash manifest exists.",
-      "limitations": "Namespace-family agreement is demonstrated for one XLSX path only, not across the three formats. Synthetic packages exercise the readers but cannot show tolerance of real authoring quirks, which is precisely what this gate asks for.",
+      "status": "blocked_external",
+      "missing_condition": "The committed Keynote-authored PPTX proves one real application path, but the gate requires a broader corpus from Word, Excel, PowerPoint and compatible applications across both OOXML namespace families. That corpus and its before-and-after byte comparison do not exist.",
+      "limitations": "Namespace-family agreement is demonstrated for one XLSX path only, not across the three formats. The digest-bound Keynote fixture and synthetic packages exercise the readers, but they cannot establish the cross-application compatibility matrix this gate asks for.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ooxml_extractors.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py"
@@ -3106,11 +3106,25 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_pptx_modern_comments.py",
           "symbol": "test_a_modern_comment_carries_its_whole_source_claim",
           "covers": "A threaded comment carries its whole source claim as an annotation."
+        },
+        {
+          "path": "tests/test_doc05_doc09_qualification.py",
+          "symbol": "test_doc05_doc09_record_binds_real_fixtures_engines_profiles_and_results",
+          "covers": "The committed receipt binds a Keynote-authored PPTX, production parser source, exact profile, resource peak and successful extracted body, chart, comment and note results."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_ooxml_package_validation.py",
+          "symbol": "test_an_embedded_ooxml_package_is_bounded_but_left_inert",
+          "covers": "A chart's embedded Office workbook remains bounded and inert instead of causing a valid presentation to be rejected or recursively opened."
+        },
+        {
+          "path": "docs/development/qualification/doc05-doc09-document-qualification-macos-2026-10-19.json",
+          "covers": "The real-format qualification receipt records fixture, engine and profile digests, resource peaks and exact result hashes."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Every named condition has coverage, but the fixtures are synthesised packages and no engine, profile or fixture digest is recorded for them. Section 11.15 requires the exact engine, profile, resource and fixture hashes and the resource peaks be recorded with the result, and no such record exists for any document gate.",
-      "limitations": "Behavioural coverage of this gate is the broadest of the DOC family and reaches every clause including the two negative ones. The gap is the qualification record, not the behaviour.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The edge-condition fixtures remain deterministic minimal OOXML packages, while the qualification fixture is a real Keynote export containing body text, a table, a chart with an inert embedded workbook, presenter notes and a classic comment. The Keynote comment author was privacy-normalised after export without changing document content.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ooxml_extractors.py"
       ]
@@ -3158,9 +3172,9 @@
           "covers": "Locators are stable across repeated extraction."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "The RTF path depends on a pinned external reader, pandoc 3.12.1, which neither CI workflow nor scripts/preflight installs. The tests that call the real reader run only where pandoc happens to be present and fail rather than skip where it is not, so no recorded run demonstrates this gate, and the reader build digest the design requires is not recorded anywhere. Nested tables are also covered only through a monkeypatched AST, not through the real reader.",
-      "limitations": "The bounded scanner, the inventories and the locator stability are covered directly and well. The structural mapping half is covered against an injected AST, and the pinned reader is an unmanaged host dependency.",
+      "status": "blocked_external",
+      "missing_condition": "CI now installs and SHA-verifies the official Pandoc 3.12.1 release and runs the real-reader tests, but this external-fixture gate still has no application-authored RTF corpus or committed qualification receipt binding fixture, reader, profile and result hashes. Nested tables are also covered only through an injected Pandoc AST rather than a real application-authored RTF read by the pinned executable.",
+      "limitations": "The bounded scanner, inventories, real pinned-reader path and locator stability are covered directly. What remains is the external application-authored corpus and its qualification receipt, not CI installation of the reader.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/rtf_extractor.py"
       ]
@@ -3303,9 +3317,9 @@
           "covers": "Repeated and empty labels in the first record keep their source text and their ordinals, recorded as preserved_as_record rather than interpreted as headers."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Undeclared UTF-16 is refused rather than read. The reader recognises UTF-16 only from a byte-order mark; BOM-less UTF-16 reaches the NUL guard and is refused as malformed, so the UTF-16 half of the gate is unmet by the implementation and needs a design decision before a test could assert the gate's own wording.",
-      "limitations": "Quoted newlines, escaped delimiters, BOM-declared UTF-16, ragged rows, formula-like strings, leading zeroes and exact fields and locators are each asserted against the production delimited reader. Duplicate headers are covered only as far as this reader can go: it has no header concept at all, so the first non-blank record is data and repeated labels are preserved verbatim with their ordinals. Whether that satisfies the gate's duplicate-headers condition cannot be settled here, because the design document is not in this repository. Fixtures are byte literals with no recorded digest.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "UTF-16 is accepted when declared by its byte-order mark; BOM-less UTF-16 is deliberately refused rather than guessed. The reader has no header mode, so repeated labels in the first record are preserved verbatim as data with distinct ordinals rather than collapsed into a mapping. Fixtures are byte literals rather than separately hashed files.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_extractors.py"
       ]
@@ -3346,11 +3360,20 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
           "symbol": "test_declared_media_type_must_agree_with_the_detected_container",
           "covers": "A declared media type must agree with the detected container, so a format cannot be mislabelled into another's path."
+        },
+        {
+          "path": "tests/test_doc05_doc09_qualification.py",
+          "symbol": "test_doc05_doc09_record_binds_real_fixtures_engines_profiles_and_results",
+          "covers": "The committed receipt binds a macOS Image I/O-authored HEIC, the exact Pillow, pillow-heif and libheif decoder build, extraction profile, resource peak and successful primary-frame result."
+        },
+        {
+          "path": "docs/development/qualification/doc05-doc09-document-qualification-macos-2026-10-19.json",
+          "covers": "The real-format qualification receipt records fixture, decoder and profile digests, resource peaks and exact result hashes."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "Both negative requirements and every frame contract have a direct test, but every image is generated with PIL in-test and there is no HEIC file anywhere in the repository, so no camera-produced or application-produced raster has been decoded. No decoder build digest or fixture hash is recorded, which section 11.15 requires.",
-      "limitations": "This is strong behavioural coverage of the frame, orientation and container contracts. Synthetic images cannot exercise the real-world EXIF and HEIF metadata variety the gate's auxiliary-frame and double-rotation risks come from.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The frame, orientation and animation edge cases remain generated deterministically in tests. They are complemented by a committed HEIC encoded by macOS Image I/O and a receipt binding its exact bytes to the production Pillow, pillow-heif and libheif decoder build. A broader camera-vendor metadata corpus would increase compatibility confidence but is not a condition named by this gate.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/raster_extractors.py"
       ]
@@ -3381,11 +3404,20 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_raster_extractors.py",
           "symbol": "test_reliable_embedded_text_stays_searchable_when_ocr_is_empty",
           "covers": "Reliable embedded text stays searchable when OCR accepts no words."
+        },
+        {
+          "path": "tests/test_at34_36_pdf_qualification.py",
+          "symbol": "test_at34_at36_record_binds_the_exact_fixtures_profile_and_result",
+          "covers": "The committed macOS qualification receipt binds the ten-page mixed native-and-scanned PDF, extraction profile, Tesseract 5.5.3 binary, eng and osd model resources, and successful result digests."
+        },
+        {
+          "path": "docs/development/qualification/at34-at36-pdf-qualification-macos-2026-10-18.json",
+          "covers": "The real-engine qualification receipt records exact fixture, engine, language-model, profile and result hashes for the mixed-page PDF run."
         }
       ],
-      "status": "not_executed",
-      "missing_condition": "No fixture digest, engine build or resource digest is recorded for this gate, which section 11.15 requires. The recognition engine is injected in every one of these cases, and the single real-engine integration case is skipped on CI because tesseract is not installed by any workflow or by scripts/preflight.",
-      "limitations": "Every clause of the required result has a precise test against the production raster extractor, and the deduplication and geometry contracts are genuinely well covered. What is absent is any run with the pinned engine and a recorded receipt.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The focused mixed-page behavior tests use an injected recognition engine so that geometry, deduplication and empty-OCR cases remain deterministic. They are complemented by a committed macOS receipt from the production extractor with Tesseract 5.5.3 and pinned eng and osd model hashes over a ten-page mixed native-and-scanned fixture.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/raster_extractors.py"
       ]
@@ -3823,7 +3855,7 @@
           "covers": "A relationship target outside the package is rejected."
         }
       ],
-      "status": "not_executed",
+      "status": "not_implemented",
       "missing_condition": "The boundary exists and is enforced on macOS only. Production extraction runs in a child whose whole environment is seven fixed variables, under a bounded versioned JSON protocol, and the parent accounts that child's whole session group against the 1 GiB resident ceiling of 17.1 and one cumulative CPU budget per job. On macOS the child seals itself with a deny-by-default seatbelt profile before reading a source byte, and a real child-process test proves the seal denies the network and every read, write and stat outside the admitted source, the packaged code, the models, the packaged runtime root and the private scratch. The packaged-engine scope is now closed: 11.2's Pandoc and Tesseract, their relocated library closure and the bundled models are staged into the candidate, digest-pinned in the manifest and reached by absolute path, so the child's search path names no package-manager prefix. What remains is the platform: Linux and Windows have neither adapter and fail closed under worker_supervision_unavailable, so nothing is processed there -- a product gap, not evidence -- while the applicability above is every OS Core supports.",
       "limitations": "Containment is proven by a probe inside the sealed process making the reads, stats, executions and connections itself, unsealed then sealed, so refusals are anchored against this host's unconfined behaviour. That is the worker's own authority, which a hostile parser holds too, but that path is not driven to one. mach-lookup stays open: dyld needs it and no bounded service list is qualified; the network denial closes what a looked-up service could offer. file-read-metadata is granted on the ancestors of in-scope paths, which macOS needs to resolve the /var symlink every scratch sits behind. The packaged payload is unsigned beyond an ad-hoc seal, which is what makes a relocated Mach-O runnable on Apple silicon and is not a release identity. Resident size is sampled every tenth of a second, which is the resolution of that ceiling and not a kernel-hard cap, and shared pages count once per mapping process, erring towards refusal. Cumulative CPU is charged in full for any descendant reaped inside the group, but one orphaned to launchd takes its unsampled tail with it.",
       "source_bindings": [
@@ -5708,7 +5740,7 @@
           "covers": "The installation half of the same reservation through the owner-local administrative CLI: a full cache refuses the install with language_storage_full and the required and available byte figures as fields of the result document."
         }
       ],
-      "status": "not_executed",
+      "status": "blocked_external",
       "missing_condition": "One condition remains, and it is the trusted source rather than the mechanism. Deferring a new-profile admission for capacity needs the declared byte_size of the managed resource sets the profile names and this cache has not got, and the only authority this build accepts for one is a model manifest verified by distribution.model_manifest_trust. No production trust anchor for that manifest is published (WP-00 binding ledger row 13; gates G-3a and G-3b), so installation_catalogue composes an empty installable catalogue, a production admission establishes no capacity requirement, and the deferral cannot arise on a production installation. The cited admission evidence reaches it with a manifest signed and verified under the dev/test anchor its own environment flag unlocks, which proves the path carries declared sizes end to end but is not the owner's authority.",
       "limitations": "Eviction, its exclusions -- pinned, leased and unverified -- the shortest-prefix victim order, the deferral and the intactness of the pins and the cap are covered against the production lifecycle, across two processes. The admission reservation is sized against the requested sets' declared byte_size, excludes already-installed members from both the requirement and the candidates, and runs inside the same coordination block as the inventory read it decides on. Further tests beyond those cited cover the inclusive boundary, the lease and divergence exclusions, the free-capacity shortcut, an absent cache, retry after a pin is released and the identity usage fault. The in-flight half runs over a real capture runner through production admission, outbox, replay, settlement and a real restart. Three limits remain. The 512 MiB cap is reached by declaring a large byte_size rather than writing it, and that filler has no bytes, so it is never a victim. Model payloads are stand-in bytes pinned by real digests, not Tesseract data. And the native surface that would display the required capacity is not in this repository, so what is covered is the contract it reads and not its display.",
       "source_bindings": [
