@@ -180,31 +180,31 @@ EXPECTED_ALLOCATION = (
     (66, "0066_completion_decisions.sql", "Agent Runtime", "candidate"),
     (67, "0067_knowledge_shares.sql", "Agent Runtime", "candidate"),
     (68, "0068_task_context_outcomes.sql", "Agent Runtime", "candidate"),
-    (69, "0069_document_intake.sql", "Evidence Runtime", "candidate"),
-    (70, "0070_app_settings.sql", "Core Settings", "candidate"),
+    (69, "0069_document_intake.sql", "Evidence Runtime", "accepted"),
+    (70, "0070_app_settings.sql", "Core Settings", "accepted"),
     (
         71,
         "0071_capture_processing_settings.sql",
         "Evidence Runtime",
-        "candidate",
+        "accepted",
     ),
     (
         72,
         "0072_capture_processing_resources.sql",
         "Evidence Runtime",
-        "candidate",
+        "accepted",
     ),
     (
         73,
         "0073_semantic_vector_projection.sql",
         "Evidence Runtime",
-        "candidate",
+        "accepted",
     ),
     (
         74,
         "0074_code_analysis_applicability.sql",
         "Evidence Runtime",
-        "candidate",
+        "accepted",
     ),
     (
         75,
@@ -219,6 +219,9 @@ ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
 # accepts 0018-0020 against.
 FROZEN_SOURCE_HEAD = "23c6a82dc8128ceec202fc6202b65abf4e2b2aa3"
 ACCEPTED_COMMIT = FROZEN_SOURCE_HEAD
+# The exact clean commit a plain ./scripts/preflight passed against; 0069-0074 are
+# accepted here, not at the historical 0018-0020 landing.
+RELEASE_ACCEPTANCE_ANCHOR = "9aca3aea8ba1b7a1ba0f5b1f6e2bb5ad4669af10"
 DECISION = (
     "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / "
     "SPEC-CORE-SEM-001 v0.2 / Clayton Read"
@@ -231,7 +234,8 @@ DECISION = (
 # first written by 1326b10, repinned to the T-0688 release repair 8873985, and
 # repinned again to the T-0691 quarantine-write repair 5177d67, and repinned to
 # the T-0692 retry-idempotency repair 0ca4ddf, which is where its bb268eb7…
-# content lives. None are accepted, so none carries an accepted_commit.
+# content lives. None are accepted, so none carries an accepted_commit. 0069-0074
+# moved to RELEASE_INTRODUCED_COMMITS when they were accepted.
 CANDIDATE_INTRODUCED_COMMITS = {
     21: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
     22: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
@@ -299,6 +303,22 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0068 is the governed task-context outcomes candidate. It was introduced by c42e41d1 and
     # repinned to its current-content repair 9807ce91, which is where its current content lives.
     68: "9807ce91bcfe25db29d09757364105378fd58bda",
+    # 0075 is physical erasure of direct-captured evidence (LEX-01), pinned to
+    # the commit that introduced its SQL.
+    75: "b8777c16f0f1ee58a2ec89bd7e3754a1aca7e0e6",
+}
+
+# The Agent Runtime lane's three introducing commits, each preserved as a
+# the commit that first introduced the migration file in ACCEPTED_COMMIT.
+INTRODUCED_COMMITS = {
+    18: "a2da96a8fee541b9e18475f2753060f7e5bf6ff5",
+    19: "b1c5b43a5e5adbe578f9379d134d6d7c6baefa70",
+    20: "29ab1c4da90a8ac80f6711474c171fb0883d7381",
+}
+
+# 0069-0074 were candidates until the release acceptance anchor; each keeps its
+# exact introducing commit (see the notes on repinned content below).
+RELEASE_INTRODUCED_COMMITS = {
     # 0069 was introduced by 986da0b4, repinned to its canonical-admission
     # hardening 8742d1fc, its located-segment publication 484ef1c1, then to
     # governed capture persistence f495200b, which is where its current content lives.
@@ -325,17 +345,6 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0074 is governed code-analysis import and repository applicability (W12),
     # pinned to the commit that carries its SQL.
     74: "68c20da67de76e5f16fc011228aeb2f85a481d09",
-    # 0075 is physical erasure of direct-captured evidence (LEX-01), pinned to
-    # the commit that introduced its SQL.
-    75: "b8777c16f0f1ee58a2ec89bd7e3754a1aca7e0e6",
-}
-
-# The Agent Runtime lane's three introducing commits, each preserved as a
-# the commit that first introduced the migration file in ACCEPTED_COMMIT.
-INTRODUCED_COMMITS = {
-    18: "a2da96a8fee541b9e18475f2753060f7e5bf6ff5",
-    19: "b1c5b43a5e5adbe578f9379d134d6d7c6baefa70",
-    20: "29ab1c4da90a8ac80f6711474c171fb0883d7381",
 }
 
 GUARD_COMMAND = "python scripts/check-migration-allocations.py"
@@ -401,13 +410,20 @@ def test_every_allocation_belongs_to_this_repository() -> None:
 
 
 def test_agent_runtime_migrations_are_accepted_at_the_frozen_landing() -> None:
-    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0036 are
-    candidates pinned to their introducing commits but not accepted."""
+    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0069-0074 are
+    accepted at the release acceptance anchor; every other allocation stays a
+    candidate pinned to its introducing commit, or reserved, with no accepted commit."""
     document = _document()
     for entry in document["allocations"]:
-        if entry["number"] in INTRODUCED_COMMITS:
+        number = entry["number"]
+        if number in INTRODUCED_COMMITS:
+            assert entry["state"] == "accepted"
             assert entry["accepted_commit"] == ACCEPTED_COMMIT
-            assert entry["introduced_commit"] == INTRODUCED_COMMITS[entry["number"]]
+            assert entry["introduced_commit"] == INTRODUCED_COMMITS[number]
+        elif number in RELEASE_INTRODUCED_COMMITS:
+            assert entry["state"] == "accepted"
+            assert entry["accepted_commit"] == RELEASE_ACCEPTANCE_ANCHOR
+            assert entry["introduced_commit"] == RELEASE_INTRODUCED_COMMITS[number]
         else:
             assert entry["accepted_commit"] is None
 
@@ -977,10 +993,13 @@ def test_the_checked_head_must_descend_from_the_accepted_commit() -> None:
     head_before_acceptance = _rev_parse(f"{ACCEPTED_COMMIT}^1")
     document["frozen_source_head"] = head_before_acceptance
     findings = guard.check_history(json.dumps(document), head=head_before_acceptance)
-    assert len(findings) == 3, findings
+    assert len(findings) == 9, findings
     assert all(
         "does not descend from the accepted lineage" in finding for finding in findings
     )
+    # 0018-0020 at the historical landing, 0069-0074 at the release anchor.
+    assert sum(ACCEPTED_COMMIT in finding for finding in findings) == 3
+    assert sum(RELEASE_ACCEPTANCE_ANCHOR in finding for finding in findings) == 6
 
 
 def test_the_accepted_commit_must_contain_the_migration_blob(
