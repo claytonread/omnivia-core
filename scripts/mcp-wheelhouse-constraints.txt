@@ -46,6 +46,20 @@ cffi==2.1.1
 click==8.4.2
 colorama==0.4.6; platform_system == "Windows"
 cryptography==50.0.0
+# Qualified offline document parser/decoder closure. Native PDFium, Pillow and
+# HEIF wheels remain platform-specific and are hash-inventoried by the build gate.
+defusedxml==0.7.1
+et-xmlfile==2.0.0
+lxml==6.1.3
+openpyxl==3.1.5
+packaging==26.3
+pillow==12.3.0
+pillow-heif==1.8.1
+pypdfium2==5.14.0
+pytesseract==0.3.13
+python-docx==1.2.0
+python-pptx==1.0.2
+xlsxwriter==3.2.9
 # D04 conditional admission (owner acceptance 2026-10-01; D-0029): the two
 # qualified analytical-dependency candidates, exact pins. duckdb resolves a
 # platform-specific binary wheel per target; sqlglot is pure Python.

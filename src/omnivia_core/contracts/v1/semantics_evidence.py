@@ -35,12 +35,23 @@ from omnivia_core.contracts.v1.generated import (
     OPEN_CODE_PATTERN,
     TIMESTAMP_PATTERN,
     WORKSPACE_ID_PATTERN,
+    DocumentCaptureHistoryEntry,
+    DocumentExtractionHeadState,
+    DocumentExtractionHistoryEntry,
+    DocumentExtractionProfileSummary,
+    DocumentHistoryAction,
+    DocumentHistoryInput,
+    DocumentHistoryResult,
+    DocumentProcessingProfileInput,
+    DocumentReprocessProfileOption,
+    DocumentSourceHeadState,
     EvidenceArtifact,
     EvidenceCaptureInput,
     EvidenceCaptureResult,
     EvidenceReference,
     EvidenceSearchInput,
     EvidenceSearchResult,
+    PageMetadata,
     ProvenanceEntry,
     SourceReference,
     SourceSpan,
@@ -51,14 +62,33 @@ from omnivia_core.contracts.v1.semantics import (
 )
 
 __all__ = [
+    "DOCUMENT_BINDING_STATES",
+    "DOCUMENT_CAPTURE_ASSOCIATION_KINDS",
+    "DOCUMENT_CAPTURE_DISPOSITIONS",
+    "DOCUMENT_CAPTURE_DISPOSITION_REASONS",
+    "DOCUMENT_CAPTURE_INTENT_KINDS",
+    "DOCUMENT_CAPTURE_PROCESSING_STATES",
+    "DOCUMENT_CAPTURE_RETENTION_STATES",
+    "DOCUMENT_EXTRACTION_PUBLISHABLE_STATES",
+    "DOCUMENT_EXTRACTION_RESULT_STATES",
+    "DOCUMENT_HISTORY_ACTIONS",
+    "DOCUMENT_HISTORY_MAX_PAGE",
+    "DOCUMENT_HISTORY_UNAVAILABLE_REASONS",
+    "DOCUMENT_PROCESSING_MODES",
+    "DOCUMENT_PUBLICATION_DISPOSITIONS",
+    "DOCUMENT_RETRIEVAL_STATES",
+    "DOCUMENT_SOURCE_STATES",
     "EVIDENCE_CAPTURE_ALLOWED_MEDIA_TYPES",
     "EVIDENCE_CAPTURE_MAX_CONTENT_BYTES",
     "EVIDENCE_CAPTURE_SOURCE_KIND",
     "EVIDENCE_TOMBSTONE_ACTION",
     "EvidenceCaptureSizeLimitError",
     "canonical_timestamp_nanoseconds",
+    "decode_document_history_input",
     "decode_evidence_capture_input",
     "decode_evidence_search_input",
+    "validate_document_history_input",
+    "validate_document_history_result",
     "validate_evidence_artifact",
     "validate_evidence_capture_input",
     "validate_evidence_capture_result",
@@ -835,3 +865,596 @@ def validate_evidence_capture_result(result: object) -> None:
             f"capture_disposition {disposition!r} is not one of "
             f"{sorted(_EVIDENCE_CAPTURE_DISPOSITIONS)!r}"
         )
+
+
+# --------------------------------------------------------------------------
+# `document.history`
+# --------------------------------------------------------------------------
+#
+# The wire shape types every one of this read's state fields as `OpenCode`, because the
+# envelope must survive a newer peer adding vocabulary. The closed sets below are this
+# build's own reading of its own v1 result: a value outside them is a state this build
+# cannot describe, and describing it anyway -- as a default, or as a near-miss -- is the
+# dishonest outcome this module exists to prevent. The validators also hold the result to
+# its request and to itself, because the properties that matter here are relational: which
+# member of a history is current is stated by the head and nowhere else, an action's
+# unavailability must carry its reason, and a page may never claim more than it holds.
+
+#: `intent_kind`: why the capture was admitted.
+DOCUMENT_CAPTURE_INTENT_KINDS: Final = frozenset(
+    {"new_capture", "refresh", "automatic_capture", "folder_capture"}
+)
+#: `association_kind`: what original lineage the capture was admitted under.
+DOCUMENT_CAPTURE_ASSOCIATION_KINDS: Final = frozenset(
+    {"snapshot_only", "active_binding", "historical_binding"}
+)
+#: `capture_disposition`: whether admission left the capture able to become the head.
+DOCUMENT_CAPTURE_DISPOSITIONS: Final = frozenset({"head_eligible", "historical_only"})
+#: `disposition_reason`: why that disposition was assigned.
+DOCUMENT_CAPTURE_DISPOSITION_REASONS: Final = frozenset(
+    {
+        "eligible",
+        "removed_source",
+        "superseded_generation",
+        "disconnected_generation",
+        "creation_conflict",
+        "stale_base",
+    }
+)
+#: `retention_state`: whether the captured bytes are still held.
+DOCUMENT_CAPTURE_RETENTION_STATES: Final = frozenset({"retained", "expired", "deleted"})
+#: `processing_state`: the capture's processing obligation, never a retrieval claim.
+DOCUMENT_CAPTURE_PROCESSING_STATES: Final = frozenset(
+    {"pending", "settled", "not_queued"}
+)
+#: `result_state`: one extraction's terminal outcome.
+DOCUMENT_EXTRACTION_RESULT_STATES: Final = frozenset(
+    {"succeeded", "partial", "unsupported", "failed"}
+)
+#: The two terminal states that produce a qualified output and may therefore be published.
+DOCUMENT_EXTRACTION_PUBLISHABLE_STATES: Final = frozenset({"succeeded", "partial"})
+#: `publication_disposition`: what the terminal result did to retrieval.
+DOCUMENT_PUBLICATION_DISPOSITIONS: Final = frozenset(
+    {
+        "promoted",
+        "superseded",
+        "historical_only",
+        "fenced_removal",
+        "fenced_retention",
+        "not_published",
+    }
+)
+#: `source_state`: the logical source's own disposition.
+DOCUMENT_SOURCE_STATES: Final = frozenset({"active", "removed"})
+#: `original_binding_state`: an aggregate over the opaque routes, never one route.
+DOCUMENT_BINDING_STATES: Final = frozenset({"none", "connected", "disconnected"})
+#: `retrieval_state`: whether retrieval rows are published for the document now.
+DOCUMENT_RETRIEVAL_STATES: Final = frozenset({"retrievable", "none"})
+#: `processing_mode`: the two modes a profile may select.
+DOCUMENT_PROCESSING_MODES: Final = frozenset({"text_only", "text_and_local_ocr"})
+#: The actions this build reports, and the reasons it reports them unavailable for.
+DOCUMENT_HISTORY_ACTIONS: Final = frozenset(
+    {"reprocess_captured_copy", "refresh_original"}
+)
+DOCUMENT_HISTORY_UNAVAILABLE_REASONS: Final = frozenset(
+    {
+        "source_removed",
+        "source_not_retained",
+        "format_not_qualified",
+        "no_original_binding",
+        "original_disconnected",
+    }
+)
+#: The largest page `document.history` serves, for each of its two histories.
+DOCUMENT_HISTORY_MAX_PAGE: Final = 200
+_DOCUMENT_HISTORY_MAX_ACTIONS: Final = 8
+_DECODER_BUILD_MAX_LENGTH: Final = 512
+_WORKER_BUILD_MAX_LENGTH: Final = 128
+#: The normative maximum a recognition-language selection may hold. A summary naming a
+#: fourth describes a selection the installation would itself have refused, so it is not a
+#: profile this build will report.
+_OCR_LANGUAGE_MAX_COUNT: Final = 3
+_DOCUMENT_HISTORY_MAX_SOURCE_BYTES: Final = 52428800
+_INT64_MAX: Final = 9223372036854775807
+
+
+def _validate_closed_code(value: object, label: str, allowed: frozenset[str]) -> str:
+    """Validate one wire-open code against the closed set this build can describe."""
+    text = _validate_open_code(value, label)
+    if text not in allowed:
+        raise ContractSemanticError(
+            f"{label}: {text!r} is not one of {sorted(allowed)!r}"
+        )
+    return text
+
+
+def _validate_bounded_int(value: object, label: str, *, minimum: int) -> int:
+    number = _require_int(value, label)
+    if not (minimum <= number <= _INT64_MAX):
+        raise ContractSemanticError(
+            f"{label}: {number} is outside the bounded range [{minimum}, {_INT64_MAX}]"
+        )
+    return number
+
+
+def _validate_history_request_page(page: object, label: str) -> None:
+    """A request's `page` is the position it continues from, so it must name one.
+
+    Rejecting a present-but-empty `page` is the same rule the other paginated reads apply:
+    "start at the beginning" is stated by omitting the field, so an empty one is a third
+    spelling a validator could only honour by guessing.
+    """
+    _require_type(page, PageMetadata, label)
+    assert isinstance(page, PageMetadata)
+    if page.continuation_token is None:
+        raise ContractSemanticError(
+            f"{label} is present but names no continuation_token; an absent page is how "
+            "'start at the first page' is stated"
+        )
+    _validate_opaque_token(page.continuation_token, f"{label}.continuation_token")
+
+
+def _validate_history_result_page(page: object, label: str) -> None:
+    """A result's `page` is always present; `{}` is the statement that the read is exhausted."""
+    _require_type(page, PageMetadata, label)
+    assert isinstance(page, PageMetadata)
+    if page.continuation_token is not None:
+        _validate_opaque_token(page.continuation_token, f"{label}.continuation_token")
+
+
+def _validated_history_input(input_: object, label: str) -> DocumentHistoryInput:
+    """Validate the complete input and return it, for the result check to bind against."""
+    _require_type(input_, DocumentHistoryInput, label)
+    assert isinstance(input_, DocumentHistoryInput)
+    _validate_identifier(input_.document_id, f"{label}.document_id")
+    if input_.limit is not None:
+        validate_page_limit(_require_int(input_.limit, f"{label}.limit"))
+    if input_.page is not None:
+        _validate_history_request_page(input_.page, f"{label}.page")
+    return input_
+
+
+def validate_document_history_input(input_: object) -> None:
+    """Raise unless `input_` is a semantically valid `document.history` input.
+
+    One document, a bounded page size, and a continuation that actually names a position.
+    Nothing else: this read has no filter, no selector and no second workspace, so there is
+    nothing else that could widen it.
+    """
+    _validated_history_input(input_, "input_")
+
+
+def decode_document_history_input(
+    payload: object, path: str = "DocumentHistoryInput"
+) -> DocumentHistoryInput:
+    """Decode and fully validate `payload` into a semantically valid `DocumentHistoryInput`."""
+    return _validated_history_input(DocumentHistoryInput.from_wire(payload, path), path)
+
+
+def _validate_history_action(action: object, label: str) -> tuple[str, bool]:
+    _require_type(action, DocumentHistoryAction, label)
+    assert isinstance(action, DocumentHistoryAction)
+    name = _validate_closed_code(action.action, f"{label}.action", DOCUMENT_HISTORY_ACTIONS)
+    available = _require_bool(action.available, f"{label}.available")
+    if available and action.unavailable_reason is not None:
+        raise ContractSemanticError(
+            f"{label}: an available action carries no unavailable_reason"
+        )
+    if not available:
+        if action.unavailable_reason is None:
+            raise ContractSemanticError(
+                f"{label}: an unavailable action must state why, so a caller shows the "
+                "reason rather than a control that cannot work"
+            )
+        _validate_closed_code(
+            action.unavailable_reason,
+            f"{label}.unavailable_reason",
+            DOCUMENT_HISTORY_UNAVAILABLE_REASONS,
+        )
+    return name, available
+
+
+def _validate_reprocess_profile_option(option: object, label: str) -> None:
+    _require_type(option, DocumentReprocessProfileOption, label)
+    assert isinstance(option, DocumentReprocessProfileOption)
+    _validate_identifier(option.profile_ref, f"{label}.profile_ref")
+    _validate_identifier(option.revision, f"{label}.revision")
+    _validate_closed_code(
+        option.processing_mode, f"{label}.processing_mode", DOCUMENT_PROCESSING_MODES
+    )
+    _validate_evidence_checksum(option.profile_digest, f"{label}.profile_digest")
+
+
+def _validate_capture_history_entry(
+    entry: object, label: str, *, current_capture_id: str | None
+) -> None:
+    _require_type(entry, DocumentCaptureHistoryEntry, label)
+    assert isinstance(entry, DocumentCaptureHistoryEntry)
+    _validate_identifier(entry.capture_id, f"{label}.capture_id")
+    _validate_bounded_int(entry.capture_sequence, f"{label}.capture_sequence", minimum=1)
+    _validate_evidence_id(entry.evidence_id, f"{label}.evidence_id")
+    _validate_evidence_checksum(entry.source_digest, f"{label}.source_digest")
+    length = _require_int(entry.source_length_bytes, f"{label}.source_length_bytes")
+    if not (0 <= length <= _DOCUMENT_HISTORY_MAX_SOURCE_BYTES):
+        raise ContractSemanticError(
+            f"{label}.source_length_bytes: {length} is outside the bounded range "
+            f"[0, {_DOCUMENT_HISTORY_MAX_SOURCE_BYTES}]"
+        )
+    _validate_media_type(entry.media_type, f"{label}.media_type")
+    _validate_identifier(
+        entry.requested_source_identity, f"{label}.requested_source_identity"
+    )
+    _validate_closed_code(
+        entry.intent_kind, f"{label}.intent_kind", DOCUMENT_CAPTURE_INTENT_KINDS
+    )
+    _validate_closed_code(
+        entry.association_kind, f"{label}.association_kind", DOCUMENT_CAPTURE_ASSOCIATION_KINDS
+    )
+    disposition = _validate_closed_code(
+        entry.capture_disposition, f"{label}.capture_disposition", DOCUMENT_CAPTURE_DISPOSITIONS
+    )
+    reason = _validate_closed_code(
+        entry.disposition_reason, f"{label}.disposition_reason", DOCUMENT_CAPTURE_DISPOSITION_REASONS
+    )
+    if (disposition == "head_eligible") != (reason == "eligible"):
+        raise ContractSemanticError(
+            f"{label}: a head-eligible capture is exactly an eligible one, and a "
+            "historical-only capture must say which other reason applies"
+        )
+    current = _require_bool(entry.is_current_source, f"{label}.is_current_source")
+    if current != (entry.capture_id == current_capture_id):
+        raise ContractSemanticError(
+            f"{label}.is_current_source disagrees with source.current_capture_id; which "
+            "capture is current is the head's statement and never the sequence's"
+        )
+    if current and disposition != "head_eligible":
+        raise ContractSemanticError(
+            f"{label}: a historical-only capture is never the current source"
+        )
+    _validate_closed_code(
+        entry.retention_state, f"{label}.retention_state", DOCUMENT_CAPTURE_RETENTION_STATES
+    )
+    _validate_bounded_int(
+        entry.capture_retention_generation, f"{label}.capture_retention_generation", minimum=1
+    )
+    _validate_bounded_int(
+        entry.source_removal_generation, f"{label}.source_removal_generation", minimum=1
+    )
+    _require_type(
+        entry.requested_profile, DocumentProcessingProfileInput, f"{label}.requested_profile"
+    )
+    _validate_identifier(
+        entry.requested_profile.profile_ref, f"{label}.requested_profile.profile_ref"
+    )
+    _validate_identifier(
+        entry.requested_profile.revision, f"{label}.requested_profile.revision"
+    )
+    _validate_closed_code(
+        entry.processing_state, f"{label}.processing_state", DOCUMENT_CAPTURE_PROCESSING_STATES
+    )
+    if entry.expected_base_capture_id is not None:
+        _validate_identifier(
+            entry.expected_base_capture_id, f"{label}.expected_base_capture_id"
+        )
+        if entry.expected_base_capture_id == entry.capture_id:
+            raise ContractSemanticError(
+                f"{label}: a capture is never its own frozen base"
+            )
+    if entry.intent_kind == "new_capture" and entry.expected_base_capture_id is not None:
+        raise ContractSemanticError(
+            f"{label}: an initial capture froze a creation precondition, not a base"
+        )
+    _parse_timestamp(entry.captured_at, f"{label}.captured_at")
+    if entry.retention_changed_at is not None:
+        _parse_timestamp(entry.retention_changed_at, f"{label}.retention_changed_at")
+    actions = _require_sequence(entry.actions, f"{label}.actions")
+    if len(actions) > _DOCUMENT_HISTORY_MAX_ACTIONS:
+        raise ContractSemanticError(
+            f"{label}.actions holds {len(actions)} entries, exceeding "
+            f"{_DOCUMENT_HISTORY_MAX_ACTIONS}"
+        )
+    reprocess_available = False
+    seen: set[str] = set()
+    for index, action in enumerate(actions):
+        name, available = _validate_history_action(action, f"{label}.actions[{index}]")
+        if name in seen:
+            raise ContractSemanticError(f"{label}.actions names {name!r} twice")
+        seen.add(name)
+        if name == "refresh_original":
+            raise ContractSemanticError(
+                f"{label}.actions: refresh_original reads the original and is a "
+                "document-level action, never a capture-level one"
+            )
+        if name == "reprocess_captured_copy":
+            reprocess_available = available
+    options = _require_sequence(entry.reprocess_profiles, f"{label}.reprocess_profiles")
+    if len(options) > _DOCUMENT_HISTORY_MAX_ACTIONS:
+        raise ContractSemanticError(
+            f"{label}.reprocess_profiles holds {len(options)} entries, exceeding "
+            f"{_DOCUMENT_HISTORY_MAX_ACTIONS}"
+        )
+    if options and not reprocess_available:
+        raise ContractSemanticError(
+            f"{label}.reprocess_profiles offers a selection for an action this result "
+            "reports unavailable"
+        )
+    if reprocess_available and not options:
+        raise ContractSemanticError(
+            f"{label}.reprocess_profiles is empty while reprocess_captured_copy is "
+            "reported available, which would leave a caller no approved profile to name"
+        )
+    for index, option in enumerate(options):
+        _validate_reprocess_profile_option(option, f"{label}.reprocess_profiles[{index}]")
+
+
+def _validate_extraction_profile_summary(profile: object, label: str) -> None:
+    _require_type(profile, DocumentExtractionProfileSummary, label)
+    assert isinstance(profile, DocumentExtractionProfileSummary)
+    _validate_evidence_checksum(profile.digest, f"{label}.digest")
+    build = _require_str(profile.decoder_build, f"{label}.decoder_build")
+    if not (1 <= len(build) <= _DECODER_BUILD_MAX_LENGTH):
+        raise ContractSemanticError(
+            f"{label}.decoder_build length is outside the bounded range "
+            f"[1, {_DECODER_BUILD_MAX_LENGTH}]"
+        )
+    mode = _validate_closed_code(
+        profile.processing_mode, f"{label}.processing_mode", DOCUMENT_PROCESSING_MODES
+    )
+    _require_bool(profile.embedded_image_ocr, f"{label}.embedded_image_ocr")
+    languages = _require_sequence(profile.ocr_languages, f"{label}.ocr_languages")
+    if len(languages) > _OCR_LANGUAGE_MAX_COUNT:
+        raise ContractSemanticError(
+            f"{label}.ocr_languages holds {len(languages)} entries, exceeding "
+            f"{_OCR_LANGUAGE_MAX_COUNT}"
+        )
+    for index, language in enumerate(languages):
+        _validate_open_code(language, f"{label}.ocr_languages[{index}]")
+    if mode == "text_only" and languages:
+        raise ContractSemanticError(
+            f"{label}: a text-only profile selected no recognition language, so naming "
+            "one would claim recognition that never ran"
+        )
+
+
+def _validate_extraction_history_entry(
+    entry: object, label: str, *, current_extraction_id: str | None
+) -> None:
+    _require_type(entry, DocumentExtractionHistoryEntry, label)
+    assert isinstance(entry, DocumentExtractionHistoryEntry)
+    _validate_identifier(entry.extraction_revision_id, f"{label}.extraction_revision_id")
+    _validate_identifier(entry.capture_id, f"{label}.capture_id")
+    _validate_bounded_int(entry.document_ordinal, f"{label}.document_ordinal", minimum=1)
+    _validate_bounded_int(entry.extraction_sequence, f"{label}.extraction_sequence", minimum=1)
+    _validate_extraction_profile_summary(entry.profile, f"{label}.profile")
+    if entry.expected_base_extraction_id is not None:
+        _validate_identifier(
+            entry.expected_base_extraction_id, f"{label}.expected_base_extraction_id"
+        )
+        if entry.expected_base_extraction_id == entry.extraction_revision_id:
+            raise ContractSemanticError(
+                f"{label}: an extraction is never its own frozen base"
+            )
+    eligible = _require_bool(entry.head_eligible, f"{label}.head_eligible")
+    current = _require_bool(entry.is_current_extraction, f"{label}.is_current_extraction")
+    if current != (entry.extraction_revision_id == current_extraction_id):
+        raise ContractSemanticError(
+            f"{label}.is_current_extraction disagrees with "
+            "extraction.current_extraction_id; which extraction is current is the head's "
+            "statement and never the ordinal's"
+        )
+    if current and not eligible:
+        raise ContractSemanticError(
+            f"{label}: a revision admitted against a stale base is never promoted, so it "
+            "cannot be the current extraction"
+        )
+    _parse_timestamp(entry.admitted_at, f"{label}.admitted_at")
+    terminal = entry.result_state is not None
+    if terminal != (entry.publication_disposition is not None):
+        raise ContractSemanticError(
+            f"{label}: a terminal result states both its outcome and what that outcome "
+            "did to retrieval, and a pending one states neither"
+        )
+    if not terminal:
+        for name in ("output_digest", "worker_build", "completed_at"):
+            if getattr(entry, name) is not None:
+                raise ContractSemanticError(
+                    f"{label}.{name} is present while the revision has no terminal result"
+                )
+        if current:
+            raise ContractSemanticError(
+                f"{label}: a revision with no terminal result is never the current extraction"
+            )
+        return
+    state = _validate_closed_code(
+        entry.result_state, f"{label}.result_state", DOCUMENT_EXTRACTION_RESULT_STATES
+    )
+    disposition = _validate_closed_code(
+        entry.publication_disposition,
+        f"{label}.publication_disposition",
+        DOCUMENT_PUBLICATION_DISPOSITIONS,
+    )
+    publishable = state in DOCUMENT_EXTRACTION_PUBLISHABLE_STATES
+    if publishable == (disposition == "not_published"):
+        raise ContractSemanticError(
+            f"{label}: only a succeeded or partial extraction produces something to "
+            "publish, and an unsupported or failed one publishes nothing"
+        )
+    if publishable != (entry.output_digest is not None):
+        raise ContractSemanticError(
+            f"{label}: a qualified output has a digest and an unqualified one has none"
+        )
+    if entry.output_digest is not None:
+        _validate_evidence_checksum(entry.output_digest, f"{label}.output_digest")
+    if current and disposition != "promoted":
+        raise ContractSemanticError(
+            f"{label}: the current extraction is the promoted one; any other disposition "
+            "is historical-only and must not read as current"
+        )
+    build = _require_str(entry.worker_build, f"{label}.worker_build")
+    if not (1 <= len(build) <= _WORKER_BUILD_MAX_LENGTH):
+        raise ContractSemanticError(
+            f"{label}.worker_build length is outside the bounded range "
+            f"[1, {_WORKER_BUILD_MAX_LENGTH}]"
+        )
+    _parse_timestamp(entry.completed_at, f"{label}.completed_at")
+
+
+def _validate_source_head_state(source: object, label: str) -> str | None:
+    _require_type(source, DocumentSourceHeadState, label)
+    assert isinstance(source, DocumentSourceHeadState)
+    _validate_closed_code(source.source_state, f"{label}.source_state", DOCUMENT_SOURCE_STATES)
+    _validate_bounded_int(
+        source.source_removal_generation, f"{label}.source_removal_generation", minimum=1
+    )
+    sequence = _validate_bounded_int(
+        source.capture_head_sequence, f"{label}.capture_head_sequence", minimum=0
+    )
+    if (source.current_capture_id is None) != (sequence == 0):
+        raise ContractSemanticError(
+            f"{label}: a document with no successful capture states sequence zero, and one "
+            "with a successful capture states that capture's own sequence"
+        )
+    if source.current_capture_id is not None:
+        _validate_identifier(source.current_capture_id, f"{label}.current_capture_id")
+    _validate_closed_code(
+        source.original_binding_state, f"{label}.original_binding_state", DOCUMENT_BINDING_STATES
+    )
+    _parse_timestamp(source.updated_at, f"{label}.updated_at")
+    return source.current_capture_id
+
+
+def _validate_extraction_head_state(extraction: object, label: str) -> str | None:
+    _require_type(extraction, DocumentExtractionHeadState, label)
+    assert isinstance(extraction, DocumentExtractionHeadState)
+    ordinal = _validate_bounded_int(
+        extraction.extraction_head_ordinal, f"{label}.extraction_head_ordinal", minimum=0
+    )
+    if (extraction.current_extraction_id is None) != (ordinal == 0):
+        raise ContractSemanticError(
+            f"{label}: a document with no successful extraction states ordinal zero, and "
+            "one with a successful extraction states that revision's own ordinal"
+        )
+    if extraction.current_extraction_id is not None:
+        _validate_identifier(
+            extraction.current_extraction_id, f"{label}.current_extraction_id"
+        )
+    state = _validate_closed_code(
+        extraction.retrieval_state, f"{label}.retrieval_state", DOCUMENT_RETRIEVAL_STATES
+    )
+    if (state == "retrievable") != (extraction.published_at is not None):
+        raise ContractSemanticError(
+            f"{label}: retrievable means rows are published and states when; `none` means "
+            "nothing is published and states no instant"
+        )
+    if extraction.published_at is not None:
+        _parse_timestamp(extraction.published_at, f"{label}.published_at")
+    if state == "retrievable" and extraction.current_extraction_id is None:
+        raise ContractSemanticError(
+            f"{label}: published retrieval rows belong to a promoted extraction, so a "
+            "retrievable document names its current extraction"
+        )
+    return extraction.current_extraction_id
+
+
+def validate_document_history_result(
+    result: object, request: object, expected_document_id: object
+) -> None:
+    """Raise unless `result` is a truthful `document.history` answer to `request`.
+
+    Three classes of check, and the second two are the ones worth reading. The first is the
+    ordinary one: every scalar is in its domain and every page is within the limit the
+    request asked for. The second holds the result to the *heads*: a capture or an
+    extraction reads as current exactly when the corresponding head names it, so a page
+    cannot imply currentness from its own order. The third holds it to itself: an
+    unavailable action carries its reason, an offered profile exists only for an available
+    action, a pending extraction claims no outcome, and a promoted one is the only kind the
+    extraction head may name.
+    """
+    _require_type(result, DocumentHistoryResult, "result")
+    assert isinstance(result, DocumentHistoryResult)
+    validated = _validated_history_input(request, "request")
+    _validate_identifier(expected_document_id, "expected_document_id")
+    _validate_identifier(result.document_id, "result.document_id")
+    if result.document_id != expected_document_id:
+        raise ContractSemanticError(
+            f"result.document_id {result.document_id!r} is not the requested document "
+            f"{expected_document_id!r}"
+        )
+    if result.document_id != validated.document_id:
+        raise ContractSemanticError(
+            "result.document_id does not name the document the request selected"
+        )
+    _parse_timestamp(result.created_at, "result.created_at")
+    current_capture_id = _validate_source_head_state(result.source, "result.source")
+    current_extraction_id = _validate_extraction_head_state(
+        result.extraction, "result.extraction"
+    )
+
+    limit = (
+        validated.limit
+        if validated.limit is not None
+        else DOCUMENT_HISTORY_MAX_PAGE
+    )
+    captures = _require_sequence(result.captures, "result.captures")
+    extractions = _require_sequence(result.extractions, "result.extractions")
+    for name, page in (("captures", captures), ("extractions", extractions)):
+        if len(page) > limit:
+            raise ContractSemanticError(
+                f"result.{name} has {len(page)} entries, exceeding the applicable limit "
+                f"of {limit}"
+            )
+    capture_count = _validate_bounded_int(
+        result.capture_count, "result.capture_count", minimum=0
+    )
+    extraction_count = _validate_bounded_int(
+        result.extraction_count, "result.extraction_count", minimum=0
+    )
+    if len(captures) > capture_count or len(extractions) > extraction_count:
+        raise ContractSemanticError(
+            "a page may never hold more members than the total it reports"
+        )
+
+    sequences: list[int] = []
+    for index, entry in enumerate(captures):
+        _validate_capture_history_entry(
+            entry, f"result.captures[{index}]", current_capture_id=current_capture_id
+        )
+        assert isinstance(entry, DocumentCaptureHistoryEntry)
+        sequences.append(entry.capture_sequence)
+    if sequences != sorted(set(sequences)):
+        raise ContractSemanticError(
+            "result.captures must be a duplicate-free ascending run of capture sequences"
+        )
+
+    ordinals: list[int] = []
+    for index, entry in enumerate(extractions):
+        _validate_extraction_history_entry(
+            entry,
+            f"result.extractions[{index}]",
+            current_extraction_id=current_extraction_id,
+        )
+        assert isinstance(entry, DocumentExtractionHistoryEntry)
+        ordinals.append(entry.document_ordinal)
+    if ordinals != sorted(set(ordinals)):
+        raise ContractSemanticError(
+            "result.extractions must be a duplicate-free ascending run of document ordinals"
+        )
+
+    actions = _require_sequence(result.actions, "result.actions")
+    if len(actions) > _DOCUMENT_HISTORY_MAX_ACTIONS:
+        raise ContractSemanticError(
+            f"result.actions holds {len(actions)} entries, exceeding "
+            f"{_DOCUMENT_HISTORY_MAX_ACTIONS}"
+        )
+    seen: set[str] = set()
+    for index, action in enumerate(actions):
+        name, _ = _validate_history_action(action, f"result.actions[{index}]")
+        if name in seen:
+            raise ContractSemanticError(f"result.actions names {name!r} twice")
+        seen.add(name)
+        if name == "reprocess_captured_copy":
+            raise ContractSemanticError(
+                "result.actions: reprocess_captured_copy names one retained capture and "
+                "is reported against that capture, never against the document"
+            )
+    _validate_history_result_page(result.page, "result.page")

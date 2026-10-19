@@ -1,0 +1,9 @@
+# The TypeScript code-analysis analyser is pinned by digest (`ANALYSER_DIGEST` in
+# `code_analysis_typescript.py`). A checkout that rewrote its line endings -- Git's
+# default on a Windows runner -- would hold, and package, a build the adapter refuses.
+packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/code_analysis_typescript.cjs -text
+
+# The AT-09 fixture is deliberately a UTF-8 BOM, mixed CRLF/CR/LF source with no
+# terminator; its bytes are pinned by a recorded SHA-256. Neither Git's EOL
+# conversion nor `git diff --check` may treat it as ordinary text.
+packages/omnivia-core-runtime/tests/phase3/runtime/fixtures/at09/utf8-bom-mixed-eol.txt -text -whitespace

@@ -51,6 +51,20 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Set up Node
+        # The runtime wheel ships the pinned TypeScript compiler its code-analysis
+        # producer runs on, copied from the `npm ci` install when the wheel is
+        # built (`packages/omnivia-core-runtime/hatch_build.py`), and the wheel
+        # build refuses without it. Both wheel-building steps below need it.
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Node dependencies
+        run: npm ci
+
       - name: Install Python tooling and local packages
         # Order is the whole content of this step. `omnivia-core` is unpublished,
         # so the only thing that can satisfy the `omnivia-core>=0.1.0,<0.2.0`
@@ -150,4 +164,32 @@ jobs:
             swift test --package-path apps/core-status-menu-macos
           else
             echo "skipped: the status menu companion requires macOS AppKit"
+          fi
+
+      - name: Typecheck the macOS native extension sources
+        # The extension sources are not Swift Package targets, so the step above
+        # does not cover them. These are the commands in the companion README
+        # with `-typecheck` in place of linking.
+        shell: bash
+        run: |
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            xcrun swiftc -typecheck -target arm64-apple-macos13.0 -application-extension \
+              -parse-as-library \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeHandoffMailbox.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerRequirement.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerSocket.swift \
+              apps/core-status-menu-macos/Extensions/Shared/ExtensionSupport.swift \
+              apps/core-status-menu-macos/Extensions/FinderAction/FinderActionViewController.swift
+            xcrun swiftc -typecheck -target arm64-apple-macos13.0 -application-extension \
+              -parse-as-library \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativeHandoffMailbox.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerRequirement.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/NativePeerSocket.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/OwnedSnapshotStore.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareRepresentationPolicy.swift \
+              apps/core-status-menu-macos/Sources/DocumentIntakeMacOS/ShareInboxStore.swift \
+              apps/core-status-menu-macos/Extensions/Shared/ExtensionSupport.swift \
+              apps/core-status-menu-macos/Extensions/Share/ShareViewController.swift
+          else
+            echo "skipped: the native extensions require macOS AppKit"
           fi

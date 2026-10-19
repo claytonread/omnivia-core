@@ -11,6 +11,12 @@ distribution depends on the public ``omnivia-core`` contracts and on nothing
 else -- not the runtime, not the CLI, not the MCP surface, and no third-party
 library.
 
+One **extra** is declared and is deliberately outside that edge:
+``update-trust`` adds ``cryptography`` for Ed25519 verification of the signed
+update channel envelope, confined by name to
+:mod:`~omnivia_core_client.update_trust`, imported lazily, and refused rather
+than skipped when absent.
+
 **What is here (Phase 3 P1b)**
 
 - :mod:`~omnivia_core_client.framing` -- pure OVC1 frame encode and decode

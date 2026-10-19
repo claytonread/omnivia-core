@@ -1,0 +1,81 @@
+{
+  "approved": {
+    "bundle_sha256": "sha256:5cc9496b8ce7890fc01101ec3c469921bbe120fe118eed61854964559e870858",
+    "packages": {
+      "omnivia-core": "0.7.0",
+      "omnivia-core-cli": "0.7.0",
+      "omnivia-core-client": "0.7.0",
+      "omnivia-core-mcp": "0.7.0",
+      "omnivia-core-runtime": "0.7.0"
+    },
+    "release_url": "https://github.com/claytonread/omnivia-core/releases/tag/core-v0.7.0",
+    "version": "0.7.0"
+  },
+  "bounds": {
+    "max_expanded_bytes": 402653184,
+    "max_members": 1024
+  },
+  "case_id": "archive-missing-wheel",
+  "case_kind": "archive",
+  "case_version": "1.0",
+  "description": "An internally consistent bundle -- every inventory row matches and nothing is uncovered -- that is simply missing one of the five. Nothing about the archive is wrong; it is not the release the channel recommended.",
+  "expected": {
+    "outcome": "refused",
+    "owner_only_staging": true,
+    "refusal": "wheel_missing"
+  },
+  "members": [
+    {
+      "kind": "directory",
+      "name": "wheels/",
+      "unix_mode": "0755"
+    },
+    {
+      "kind": "directory",
+      "name": "metadata/",
+      "unix_mode": "0755"
+    },
+    {
+      "content_base64": "dGVzdC1vbmx5IGxpY2VuY2UgdGV4dAo=",
+      "kind": "file",
+      "name": "licenses/omnivia-core-suite/LICENSE",
+      "unix_mode": "0644"
+    },
+    {
+      "content_base64": "eyJmb3JtYXQiOiJvbW5pdmlhLnN0YW5kYXJkLXJlbGVhc2UtbWFuaWZlc3QudjEifQo=",
+      "kind": "file",
+      "name": "metadata/release-manifest.json",
+      "unix_mode": "0644"
+    },
+    {
+      "content_base64": "dGVzdC1vbmx5IHdoZWVsIG9tbml2aWEtY29yZSAwLjcuMAo=",
+      "kind": "file",
+      "name": "wheels/omnivia_core-0.7.0-py3-none-any.whl",
+      "unix_mode": "0644"
+    },
+    {
+      "content_base64": "dGVzdC1vbmx5IHdoZWVsIG9tbml2aWEtY29yZS1jbGkgMC43LjAK",
+      "kind": "file",
+      "name": "wheels/omnivia_core_cli-0.7.0-py3-none-any.whl",
+      "unix_mode": "0644"
+    },
+    {
+      "content_base64": "dGVzdC1vbmx5IHdoZWVsIG9tbml2aWEtY29yZS1jbGllbnQgMC43LjAK",
+      "kind": "file",
+      "name": "wheels/omnivia_core_client-0.7.0-py3-none-any.whl",
+      "unix_mode": "0644"
+    },
+    {
+      "content_base64": "dGVzdC1vbmx5IHdoZWVsIG9tbml2aWEtY29yZS1ydW50aW1lIDAuNy4wCg==",
+      "kind": "file",
+      "name": "wheels/omnivia_core_runtime-0.7.0-py3-none-any.whl",
+      "unix_mode": "0644"
+    },
+    {
+      "content_base64": "N2E5N2YyYjhhOTg3YTE1MjE5MmIwM2NmMDJjOTk5Y2Y4MDI4N2FjYzNmMTc5OWQyNGYyNmRhZjUxNjBkY2RkMSAgbGljZW5zZXMvb21uaXZpYS1jb3JlLXN1aXRlL0xJQ0VOU0UKYTRmOTkxZTRlY2E0YzFjYjlmYTkyMjVjZmVmNTcwOWRmZmM1ZTViNzQ5YTRkMjc0NzI2OTc3YmJmZjFjMTJkZCAgbWV0YWRhdGEvcmVsZWFzZS1tYW5pZmVzdC5qc29uCjlhODExOTZiY2M1ZDEwMGM0YmZkYTk1YTA2OGJjNjRhZTNmYWI0MWMxYjFkYmMzYjlhYjM0MGVmNzM3ZTA4ZjIgIHdoZWVscy9vbW5pdmlhX2NvcmUtMC43LjAtcHkzLW5vbmUtYW55LndobApjZjU1YTUyMjU1MGUwMGU4MTMyMmI0MDE1MzVlZTFiOWMyMWM3MjQxOTRlMmI1NWM3YzZhMTY5OGM3MTg2ODFkICB3aGVlbHMvb21uaXZpYV9jb3JlX2NsaS0wLjcuMC1weTMtbm9uZS1hbnkud2hsCmVhY2U0MDU5MTNhMWYyODgyYTg1ODgxYmFhNmY2MGY1ZjgwZTM4ODlmOGY4MDUyYTEyOTMyMGQ5MGY4NTkxZGEgIHdoZWVscy9vbW5pdmlhX2NvcmVfY2xpZW50LTAuNy4wLXB5My1ub25lLWFueS53aGwKOGUwZDc0NGVlODNjMWEzMTVhNDZiNTRmODRhOThjN2QxYjc3MjVmNDVjZmEwOTg2MzQ1MTdhMzBjNjBjNmJiMiAgd2hlZWxzL29tbml2aWFfY29yZV9ydW50aW1lLTAuNy4wLXB5My1ub25lLWFueS53aGwK",
+      "kind": "file",
+      "name": "checksums-sha256.txt",
+      "unix_mode": "0644"
+    }
+  ]
+}

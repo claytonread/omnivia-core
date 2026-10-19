@@ -81,7 +81,7 @@ from omnivia_core_runtime.service.mutation import (
     execute_mutation,
     issue_mutation_grant,
 )
-from omnivia_core_runtime.service.operations import APPLICATION_OPERATIONS
+from omnivia_core_runtime.service.operations import APPLICATION_OPERATIONS, failure
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
     StorageError,
@@ -749,7 +749,7 @@ def _grant_facts(grant: MutationGrant) -> tuple[Any, ...]:
 
 
 def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
-    """Exactly the forty-three, explicitly, with a mismatch failing closed for each."""
+    """Exactly the fifty, explicitly, with a mismatch failing closed for each."""
     assert set(MUTATION_PURPOSES) == {
         "workflow.start",
         "workflow.control",
@@ -757,6 +757,11 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
         "memory.create",
         "import.start",
         "evidence.capture",
+        "document.capture",
+        "document.reprocess",
+        "document.original.disconnect",
+        "document.original.relink",
+        "document.settings.update",
         "job.cancel",
         "job.retry",
         "knowledge.propose",
@@ -795,10 +800,13 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
         "task_context.export",
         "outcome.request.create",
         "project.context.switch",
+        "settings.set",
+        "code.policy.register",
+        "code.import",
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 44
+    assert len(MUTATION_PURPOSES) == 52
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -830,7 +838,11 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
     # a stimulus holds alone, so a configuration grant never delivers one.
     # Knowledge sharing adds one more: proposing a share and deciding one are both
     # held under `knowledge_sharing`, distinct from the governance family's purpose.
-    assert len(set(MUTATION_PURPOSES.values())) == 25
+    # Document processing adds one of its own: writing the workspace's processing
+    # preferences is `document_configuration`, deliberately not the ingestion purpose
+    # capture and reprocess share, so a grant to submit a document never changes how
+    # every future document is read.
+    assert len(set(MUTATION_PURPOSES.values())) == 28
 
     # Every operation is exercised: the declared purpose is what the grant carries, and
     # any other purpose the session may act for is refused.
@@ -1185,8 +1197,21 @@ def test_v06_5_s2_idempotency_conflict_carries_original_audit_reference(
         )
     assert conflict.value.code == ERROR_CODE_IDEMPOTENCY_CONFLICT
     assert conflict.value.audit_reference == first.audit_ref
+    assert conflict.value.details is None
     assert conflict_spy.calls == 0
     assert counts(owned.connection) == settled
+
+
+def test_unestablished_outcome_detail_survives_the_contract_wire() -> None:
+    """The native client can distinguish an unknown effect from an ordinary refusal."""
+    response = failure(
+        envelope_for(ENTRY),
+        ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+        "the committed answer cannot be served",
+        details={"outcome_established": False},
+    )
+
+    assert response.to_wire()["error"]["details"] == {"outcome_established": False}
 
 
 # --- S0-06: precondition before the mutation, fencing around all of it --------
@@ -1578,6 +1603,8 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
             "graph.traverse",
             "context_pack.build",
             "analysis.start",
+            "code.query",
+            "code.status",
         }
     )
     # The decision family's own registry carries the fifteen decision handlers;
@@ -1781,6 +1808,11 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "memory.create": "workspace_contributor",
         "import.start": "workspace_contributor",
         "evidence.capture": "workspace_contributor",
+        "document.capture": "workspace_contributor",
+        "document.reprocess": "workspace_contributor",
+        "document.original.disconnect": "workspace_contributor",
+        "document.original.relink": "workspace_contributor",
+        "document.settings.update": "workspace_contributor",
         "job.cancel": "workspace_contributor",
         "job.retry": "workspace_contributor",
         "knowledge.propose": "workspace_contributor",
@@ -1819,6 +1851,9 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "task_context.export": "workspace_contributor",
         "outcome.request.create": "workspace_contributor",
         "project.context.switch": "workspace_contributor",
+        "settings.set": "workspace_contributor",
+        "code.policy.register": "knowledge_reviewer",
+        "code.import": "workspace_contributor",
     }
     assert set(MUTATION_ROLES) == MUTATING_OPERATIONS
 
@@ -2018,6 +2053,7 @@ def test_v06_5_s0_replay_verifies_digest_and_ijson(owned: m1.Owned) -> None:
                 equivalence=equivalence,
             )
         assert fault.value.code == ERROR_CODE_INTERNAL_NON_RECOVERABLE, case
+        assert fault.value.details == {"outcome_established": False}, case
         # No domain code ran, and the refusal rolled back -- so the fresh grant the
         # replay was offered is not spent either.
         assert spy.calls == 0, case
@@ -2044,7 +2080,7 @@ def test_v06_5_s0_replay_verifies_digest_and_ijson(owned: m1.Owned) -> None:
     # And the validator is consulted on the way out, not only on the way in: a stored
     # answer this build will no longer serve is refused rather than re-served.
     rejecting_spy = DomainMutationSpy()
-    with pytest.raises(MutationSeamFault):
+    with pytest.raises(MutationSeamFault) as rejected:
         run(
             owned,
             grant=issue(owned, authorize()),
@@ -2053,6 +2089,7 @@ def test_v06_5_s0_replay_verifies_digest_and_ijson(owned: m1.Owned) -> None:
             validate_result=lambda _result: False,
         )
     assert rejecting_spy.calls == 0
+    assert rejected.value.details == {"outcome_established": False}
 
 
 def seed_settled_claim(

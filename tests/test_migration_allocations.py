@@ -180,6 +180,32 @@ EXPECTED_ALLOCATION = (
     (66, "0066_completion_decisions.sql", "Agent Runtime", "candidate"),
     (67, "0067_knowledge_shares.sql", "Agent Runtime", "candidate"),
     (68, "0068_task_context_outcomes.sql", "Agent Runtime", "candidate"),
+    (69, "0069_document_intake.sql", "Evidence Runtime", "candidate"),
+    (70, "0070_app_settings.sql", "Core Settings", "candidate"),
+    (
+        71,
+        "0071_capture_processing_settings.sql",
+        "Evidence Runtime",
+        "candidate",
+    ),
+    (
+        72,
+        "0072_capture_processing_resources.sql",
+        "Evidence Runtime",
+        "candidate",
+    ),
+    (
+        73,
+        "0073_semantic_vector_projection.sql",
+        "Evidence Runtime",
+        "candidate",
+    ),
+    (
+        74,
+        "0074_code_analysis_applicability.sql",
+        "Evidence Runtime",
+        "candidate",
+    ),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -267,6 +293,32 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0068 is the governed task-context outcomes candidate. It was introduced by c42e41d1 and
     # repinned to its current-content repair 9807ce91, which is where its current content lives.
     68: "9807ce91bcfe25db29d09757364105378fd58bda",
+    # 0069 was introduced by 986da0b4, repinned to its canonical-admission
+    # hardening 8742d1fc, its located-segment publication 484ef1c1, then to
+    # governed capture persistence f495200b, which is where its current content lives.
+    69: "f495200b0178a38a7b597d526d2bfb0989e45075",
+    # 0070 is the Core Settings app-settings candidate. The settings branch
+    # authored it as 0043; it is pinned to the commit that ported it onto this
+    # branch's head, which is where its content lives here.
+    70: "429cc4ef1d75ccd58691b5dedb0e818830ce3ad0",
+    # 0071 freezes the processing preferences one capture was admitted under onto
+    # the capture row, pinned to the commit that introduced its SQL.
+    71: "6aba714a1772b468d607a7bc205f7363cb6fbca6",
+    # 0072 freezes the exact OCR resource identities one capture was admitted
+    # *against* beside them, and the profile digest the two resolved to, pinned to
+    # the commit that carries its SQL -- repinned as the candidate grew rather than
+    # gaining a migration: first the follow-up that added the second column
+    # (c40da7eb), then the repair that paired the two columns in one CHECK
+    # (2674bfc5), which is where its current content lives.
+    72: "2674bfc584b1c3fb4f421139ee6cb943e5017ba0",
+    # 0073 is the model-neutral semantic vector projection. Its lane authored it
+    # as 0069 against an older head; 0069-0072 were already allocated here, so it
+    # is renumbered to the next free number and pinned to the commit that carries
+    # its SQL on this branch.
+    73: "bfe7166520e00c7cf4c3463e7b1430c0fd35f3d5",
+    # 0074 is governed code-analysis import and repository applicability (W12),
+    # pinned to the commit that carries its SQL.
+    74: "68c20da67de76e5f16fc011228aeb2f85a481d09",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

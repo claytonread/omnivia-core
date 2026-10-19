@@ -1,0 +1,1059 @@
+import CryptoKit
+import Foundation
+
+public struct FileMonitoringReport: Equatable, Sendable {
+    public let subscriptionID: String
+    public let state: FolderSubscriptionState
+    public let queued: Bool
+}
+
+public actor FileMonitoringCoordinator {
+    /// An individual watch has exactly one scope: the original it was registered for.
+    static let individualFileScopeKey = "individual-file"
+
+    private let accessStore: NativeAccessStore
+    private let preparation: CapturePreparationCoordinator
+    private let queue: CaptureIntentQueue
+    private let subscriptions: FileSubscriptionStore
+    private let reader: any CoordinatedOriginalReading
+    private let scheduling: AutomaticSchedulingStateMachine
+    private let routeElection: AutomaticSourceRouteElection
+    private let suppressions: AutomaticCaptureSuppressionStore
+    private let processingProfile: ProcessingProfileBinding
+    /// The same gate the queue, the subscription stores and the scheduling machine were built with,
+    /// so this owner can hold one critical section across all three. See `PublicationGate`.
+    private let publicationGate: PublicationGate
+    /// Asks Core whether the capture this watch last succeeded with can stand behind "nothing
+    /// changed". Absent, nothing can: same bytes alone never establish that (design §8.5).
+    private let currentCapture: (any CurrentCaptureVerifying)?
+    /// Process-monotonic milliseconds, which is what the scheduling machine's periods are measured
+    /// in. See `DocumentIntakeEnvironment.processUptimeMilliseconds`.
+    private let clock: @Sendable () -> Int64
+    /// Test seam: makes the next check's scheduling publication write throw instead of running, so
+    /// the split publication `repairableEntry` repairs can be reached deterministically. Production
+    /// never sets it.
+    private var failNextSchedulingPublication = false
+
+    init(
+        accessStore: NativeAccessStore,
+        preparation: CapturePreparationCoordinator,
+        queue: CaptureIntentQueue,
+        subscriptions: FileSubscriptionStore,
+        reader: any CoordinatedOriginalReading,
+        scheduling: AutomaticSchedulingStateMachine,
+        routeElection: AutomaticSourceRouteElection,
+        suppressions: AutomaticCaptureSuppressionStore,
+        processingProfile: ProcessingProfileBinding,
+        publicationGate: PublicationGate,
+        currentCapture: (any CurrentCaptureVerifying)? = nil,
+        clock: @escaping @Sendable () -> Int64
+    ) {
+        self.accessStore = accessStore
+        self.preparation = preparation
+        self.queue = queue
+        self.subscriptions = subscriptions
+        self.reader = reader
+        self.scheduling = scheduling
+        self.routeElection = routeElection
+        self.suppressions = suppressions
+        self.processingProfile = processingProfile
+        self.publicationGate = publicationGate
+        self.currentCapture = currentCapture
+        self.clock = clock
+    }
+
+    /// The scheduling unit an individual watch signals under: the workspace and the verified
+    /// original's own opaque source identity, both fixed when the subscription was registered and
+    /// neither a path nor a bookmark. Every event for one original therefore coalesces into that
+    /// scope's single dirty record however many events arrive, and a relink that bumps the binding
+    /// generation or re-resolves the bookmark keeps the same key.
+    public static func schedulingKey(for subscription: FileSubscription) -> AutomaticSchedulingKey {
+        AutomaticSchedulingKey(
+            source: AutomaticSchedulingSource(
+                workspaceRef: subscription.workspaceRef,
+                sourceRef: subscription.requestedSourceIdentity
+            ),
+            scopeKey: individualFileScopeKey
+        )
+    }
+
+    /// See `failNextSchedulingPublication`.
+    func failNextSchedulingPublicationForTesting() {
+        failNextSchedulingPublication = true
+    }
+
+    @discardableResult
+    public func reconcileAll() async -> [FileMonitoringReport] {
+        await reconcile(subscriptionIDs: nil)
+    }
+
+    @discardableResult
+    public func reconcile(subscriptionIDs: Set<String>) async -> [FileMonitoringReport] {
+        await reconcile(subscriptionIDs: Optional(subscriptionIDs))
+    }
+
+    public func markDirty(subscriptionIDs: Set<String>) {
+        for id in subscriptionIDs {
+            guard let value = try? subscriptions.update(id: id, { value in
+                guard value.state == .active else { return }
+                value.needsReconciliation = true
+            }), value.state == .active else { continue }
+            // One generation per call, whatever shape the event had. The scope's dirty record
+            // keeps its first-signal time, so the maximum wait is measured from the first of a
+            // burst, and tracks this latest one, so the quiet period is measured from the last.
+            _ = try? scheduling.signal(
+                Self.schedulingKey(for: value),
+                priority: .background,
+                at: clock()
+            )
+        }
+    }
+
+    public func activeObservationRoots() -> [FolderObservationRoot] {
+        subscriptions.all().compactMap { value in
+            guard value.state == .active else { return nil }
+            return try? accessStore.withReadAccess(
+                accessRef: value.accessRef,
+                expectedGeneration: value.bindingGeneration
+            ) { url in
+                // FSEvents may report either the file or its containing directory. Watching the
+                // parent makes both forms an advisory reconciliation hint for this subscription.
+                FolderObservationRoot(
+                    subscriptionID: value.subscriptionID,
+                    url: url.deletingLastPathComponent()
+                )
+            }
+        }
+    }
+
+    /// Revalidates every in-scope subscription, then reads and publishes for exactly the scopes the
+    /// scheduler says are due.
+    ///
+    /// Nothing outside a claim touches a source: a file whose quiet period has not elapsed, or
+    /// whose candidate is already in flight, is reported as it stands and left alone. Consent,
+    /// config and binding revalidation, receipt reconciliation and the manual entry points are
+    /// unchanged — only the decision of *when* to read moved to the scheduler.
+    private func reconcile(subscriptionIDs: Set<String>?) async -> [FileMonitoringReport] {
+        var reports: [FileMonitoringReport] = []
+        var checkable: [AutomaticSchedulingKey: (value: FileSubscription, report: Int)] = [:]
+        for persisted in subscriptions.all() {
+            if let subscriptionIDs, !subscriptionIDs.contains(persisted.subscriptionID) { continue }
+            // The receipts, the identity of whatever this scope published, and the scheduler
+            // completion a terminal receipt allows are one critical section on the shared gate, so
+            // no relink, pause, reconfigure or publication interleaves between reading that
+            // evidence and acting on it.
+            guard let resolved = publicationGate.withLock({ applyReceipts(persisted) }) else {
+                continue
+            }
+            reports.append(FileMonitoringReport(
+                subscriptionID: resolved.value.subscriptionID,
+                state: resolved.value.state,
+                queued: false
+            ))
+            guard resolved.value.state == .active, resolved.evidence == .clear else { continue }
+            guard routeElection.isElected(
+                .direct(subscriptionID: resolved.value.subscriptionID),
+                workspaceRef: resolved.value.workspaceRef,
+                sourceIdentity: resolved.value.requestedSourceIdentity
+            ) else { continue }
+            checkable[Self.schedulingKey(for: resolved.value)] = (resolved.value, reports.count - 1)
+        }
+        for claim in claimDueWork(among: Set(checkable.keys)) {
+            guard let candidate = checkable[claim.key] else { continue }
+            reports[candidate.report] = await check(candidate.value, claim: claim)
+        }
+        return reports
+    }
+
+    /// What this scope's publication record says about whether another check may run.
+    private enum PublicationEvidence: Equatable {
+        /// The published intent has not reached a terminal outcome, so the scope's one candidate
+        /// still stands and nothing new is read for it.
+        case unresolved
+        /// The record does not identify exactly one intent that belongs to this subscription, so
+        /// this owner cannot tell a duplicate publication from a legitimate one.
+        case unverifiable
+        /// The queue reported this scope's published intent's outcome, so the generation that
+        /// published it is finished as soon as that receipt is applied.
+        case resolved(generation: UInt64)
+        case clear
+    }
+
+    /// Applies the queue's receipts to one subscription and resolves whatever its scope published:
+    /// the review transition unaccountable evidence forces, and the scheduler completion a terminal
+    /// receipt allows. Returns nil when the subscription could not be updated at all.
+    ///
+    /// Called under `publicationGate`, so the receipt effects and the completion that depends on
+    /// them are one transition as far as every other publication owner is concerned.
+    ///
+    /// The published intent is identified from the subscription as it stands *before* any receipt is
+    /// applied, because a terminal receipt clears `lastQueuedItemID` — the only ref a legacy
+    /// publication has to be found by. Nothing the receipts change takes part in the identity check.
+    ///
+    /// Replay-safe across the two durable writes: the receipt is recorded first, and if the process
+    /// stops before the completion, the next call resolves the same still-published ref against the
+    /// same terminal entry, finds the receipt effects already applied, and completes it then.
+    private func applyReceipts(
+        _ persisted: FileSubscription
+    ) -> (value: FileSubscription, evidence: PublicationEvidence)? {
+        let evidence = publicationEvidence(for: persisted)
+        guard var value = try? reconcileReceipts(persisted) else { return nil }
+        switch evidence {
+        case let .resolved(generation):
+            // Releasing the scheduler's in-flight slot is what exposes any later dirty generation
+            // for the next claim, so the completion is what makes this scope checkable again —
+            // only a completion that actually happened. A refused one (the durable write failed,
+            // say) rolls back whole, leaving the scope published; reporting that as clear would let
+            // the next claim publish a second intent for the generation this one still holds. So a
+            // refusal keeps the scope unresolved and the completion stays owed: the next call
+            // resolves the same still-published ref against the same terminal entry, finds the
+            // receipt effects already applied, and completes it then.
+            do {
+                try scheduling.markCompleted(
+                    Self.schedulingKey(for: value),
+                    generation: generation,
+                    at: clock()
+                )
+            } catch {
+                return (value, .unresolved)
+            }
+            return (value, .clear)
+        case .unverifiable:
+            if value.state == .active,
+               let reviewed = try? subscriptions.update(
+                   id: value.subscriptionID, { $0.state = .reviewRequired }
+               )
+            {
+                value = reviewed
+            }
+            return (value, .unverifiable)
+        case .unresolved, .clear:
+            return (value, evidence)
+        }
+    }
+
+    /// Resolves the scope's published intent, if it has one, and checks it really is this
+    /// subscription's automatic capture before anything is allowed to replace it.
+    ///
+    /// The scheduling machine's ref names that intent exactly, which is what makes the check an
+    /// identity check rather than a search for anything that looks close enough. Missing, duplicated
+    /// or mismatched evidence is never resolved by guessing: the subscription goes to review, the
+    /// scheduler's publication is left exactly as it stands, and no replacement is published.
+    ///
+    /// A ref that does resolve to exactly this subscription's own automatic capture, and whose
+    /// entry the queue has reported a terminal outcome for, names the generation that is now
+    /// finished — see `.resolved`, which `applyReceipts` completes once the receipt is applied.
+    private func publicationEvidence(for value: FileSubscription) -> PublicationEvidence {
+        let entries = queue.allEntries()
+        let scheduled = scheduling.state(of: Self.schedulingKey(for: value))
+        guard let scheduled, scheduled.published else {
+            // No publication is on record, so an unresolved intent naming this subscription is one
+            // the record cannot account for — a publication whose scheduling write did not survive,
+            // say — and it still holds this scope's one candidate.
+            // Only a candidate a restart recovered can be reconciled against the queue. Anything
+            // else in flight belongs to a caller that is still carrying it, so an intent the
+            // record cannot account for is held exactly as it was before.
+            guard scheduled?.restoredCandidate == true else {
+                let unresolved = entries.filter { entry in
+                    entry.intent.consent?.subscriptionId == value.subscriptionID
+                        && [.pending, .staging, .unknownOutcome].contains(entry.state)
+                }
+                return unresolved.isEmpty ? .clear : .unresolved
+            }
+            // A recovered candidate is reconciled against everything the queue holds for this
+            // subscription, in flight or not: a terminal entry is evidence too, and one that
+            // reached an outcome a candidate still claimed to be about to publish is exactly the
+            // kind of thing this owner must not resolve by itself.
+            let mine = entries.filter { $0.intent.consent?.subscriptionId == value.subscriptionID }
+            switch mine.count {
+            // The candidate committed no intent, so the work it was claimed for is still owed and
+            // is handed back: see `releaseRestoredCandidate`.
+            case 0: return releaseRestoredCandidate(of: value, restored: scheduled)
+            // Exactly one still-unresolved intent, against exactly the candidate that was about to
+            // publish it, is the one shape that can be accounted for: see
+            // `adoptRestoredPublication`, which refuses anything that is not this candidate's own.
+            case 1 where [.pending, .staging, .unknownOutcome].contains(mine[0].state):
+                return adoptRestoredPublication(mine[0], of: value, restored: scheduled)
+            // A terminal entry, a second entry, or one intent that is not this candidate's own: the
+            // scheduler and the queue are left exactly as they stand and the subscription goes to
+            // review, because which of them the candidate published is not a guess to make here.
+            default: return .unverifiable
+            }
+        }
+        // A publication recovered from a document written before refs existed carries none, so the
+        // subscription's own last queued item is the only evidence there is. Nothing else falls
+        // back to it: a publication that should name its intent and does not is unverifiable.
+        guard let ref = scheduled.intentRef
+            ?? (scheduled.legacyUnresolvedIntent ? value.lastQueuedItemID : nil)
+        else { return .unverifiable }
+        let matches = entries.filter { $0.intent.itemId == ref }
+        guard matches.count == 1, Self.isAutomaticCapture(matches[0].intent, of: value) else {
+            return .unverifiable
+        }
+        if [.pending, .staging, .unknownOutcome].contains(matches[0].state) { return .unresolved }
+        // Published, so the machine's own validation guarantees the generation that published it.
+        guard let generation = scheduled.activeGeneration else { return .unverifiable }
+        return .resolved(generation: generation)
+    }
+
+    /// Accounts for the one unresolved intent a restart found without a publication on record, by
+    /// attaching it to the recovered candidate that committed it.
+    ///
+    /// This is the other half of the window `check`'s own repair covers: there the queue commit
+    /// survived inside one process and only this owner's writes were missing, here the process
+    /// itself stopped between the commit and those writes, so the candidate came back as this
+    /// scope's active, unpublished claim with its intent still sitting in the queue. Reading and
+    /// publishing that generation again would put a second intent in the queue for it, so the one
+    /// that committed is adopted instead — nothing is read, nothing is republished, and no
+    /// identifier is minted.
+    ///
+    /// The subscription's own observation goes first and the scheduler's publication second, in the
+    /// order and on the gate `check`'s repair already uses, and both are absolute values derived
+    /// from that intent: a crash between them leaves the next call replaying exactly this.
+    ///
+    /// Evidence that is not exactly this candidate's own intent is never adopted by guessing — it
+    /// is unverifiable, and the subscription goes to review. A repair that was refused rather than
+    /// mismatched is simply still owed, and stays this scope's one unresolved candidate until a
+    /// later call attaches it.
+    private func adoptRestoredPublication(
+        _ entry: CaptureQueueEntry,
+        of value: FileSubscription,
+        restored: AutomaticSchedulingState?
+    ) -> PublicationEvidence {
+        guard let restored, restored.restoredCandidate,
+              let generation = restored.activeGeneration,
+              let epoch = entry.intent.consent?.dirtyEpoch,
+              Self.isAdoptableCapture(entry, of: value)
+        else { return .unverifiable }
+        var observed = value
+        observed.dirtyEpoch = epoch
+        do {
+            try recordPublication(entry, of: observed, checkedAt: entry.intent.createdAt)
+            // Refuses every scheduling state that is not the recovered candidate this intent was
+            // proved against, including one a signal has since moved the generation on.
+            try scheduling.attachRestoredPublication(
+                Self.schedulingKey(for: value),
+                generation: generation,
+                intentRef: entry.intent.itemId,
+                at: clock()
+            )
+        } catch {
+            return .unresolved
+        }
+        return .unresolved
+    }
+
+    /// Hands a recovered candidate back as dirty work because the queue holds no intent for it at
+    /// all, which is what proves it never published.
+    ///
+    /// The counterpart to `adoptRestoredPublication` on the same evidence. The candidate blocks a
+    /// duplicate claim, so without this the generation a stopped process was reading for would
+    /// stay in flight for a check that is never going to finish; handing it back makes the scope
+    /// checkable again, and the work is immediately due.
+    ///
+    /// The scheduler's own guard is what keeps this to exactly that shape: an ordinary claim this
+    /// process made itself is refused rather than cancelled, because its owner is still carrying
+    /// it. A release that was refused is still owed and keeps this scope unresolved, so a later
+    /// call releases it then rather than this one reporting a scope as checkable that is not.
+    private func releaseRestoredCandidate(
+        of value: FileSubscription,
+        restored: AutomaticSchedulingState?
+    ) -> PublicationEvidence {
+        guard let restored, restored.restoredCandidate,
+              let generation = restored.activeGeneration
+        else { return .unresolved }
+        do {
+            try scheduling.releaseRestoredCandidateWithoutPublication(
+                Self.schedulingKey(for: value),
+                generation: generation,
+                at: clock()
+            )
+        } catch {
+            return .unresolved
+        }
+        return .clear
+    }
+
+    /// Whether this unresolved intent is the automatic capture the scope's recovered candidate was
+    /// about to publish, in one of exactly the two states a stop between the queue commit and this
+    /// owner's two writes can leave behind:
+    ///
+    /// - neither write survived, so the subscription still stands at the epoch the intent was
+    ///   prepared *from* and the intent carries exactly the next one;
+    /// - the observation survived and the scheduling publication did not, so the subscription
+    ///   already records this very item at this intent's own epoch, and adopting it is a replay.
+    ///
+    /// Every other epoch is a mismatch: one this subscription has since moved past, or one further
+    /// ahead than a single check could have produced, did not come from this candidate. Apart from
+    /// the epoch the identity check is `isAutomaticCapture`'s, unchanged.
+    private static func isAdoptableCapture(
+        _ entry: CaptureQueueEntry,
+        of value: FileSubscription
+    ) -> Bool {
+        guard let epoch = entry.intent.consent?.dirtyEpoch else { return false }
+        let replay = epoch == value.dirtyEpoch && value.lastQueuedItemID == entry.intent.itemId
+        // A subscription already at the maximum epoch has no next one, so there is nothing for an
+        // intent to match rather than an addition to wrap around.
+        let prepared = value.dirtyEpoch < .max && epoch == value.dirtyEpoch + 1
+        guard replay || prepared else { return false }
+        var observed = value
+        observed.dirtyEpoch = epoch
+        return isAutomaticCapture(entry.intent, of: observed)
+    }
+
+    /// Whether this intent is the automatic capture this subscription would itself have published:
+    /// the same surface and kind, the same delivery binding, the same original, and the same consent
+    /// binding down to the dirty epoch it was prepared for.
+    private static func isAutomaticCapture(_ intent: CaptureIntentV3, of value: FileSubscription) -> Bool {
+        intent.surface == .automaticFile
+            && intent.intentKind == .automaticCapture
+            && intent.workspaceRef == value.workspaceRef
+            && intent.targetRef == value.targetRef
+            && intent.targetBindingRevision == value.targetBindingRevision
+            && intent.requestedSourceIdentity == value.requestedSourceIdentity
+            && intent.callerContextBinding == value.callerContextBinding
+            && intent.consent == ConsentBinding(
+                subscriptionId: value.subscriptionID,
+                consentGeneration: value.consentGeneration,
+                configGeneration: value.configGeneration,
+                dirtyEpoch: value.dirtyEpoch
+            )
+    }
+
+    /// Claims the due scopes this call will check, and only those. A scope this call is not
+    /// checking — paused, filtered out of this call, or not an individual file at all — is never
+    /// selected, so its due work is neither claimed nor handed back: it keeps its one dirty
+    /// obligation, its turn in the rotation and its place among this call's claims for whoever
+    /// owns it. A claim stays in flight for the rest of the call, so no scope is selected twice.
+    private func claimDueWork(among allowed: Set<AutomaticSchedulingKey>) -> [AutomaticSchedulingClaim] {
+        var claims: [AutomaticSchedulingClaim] = []
+        while claims.count < allowed.count,
+              let claim = try? scheduling.claim(at: clock(), among: allowed) {
+            claims.append(claim)
+        }
+        return claims
+    }
+
+    /// Carries out one claimed check: read the original, then either finish the generation because
+    /// nothing changed or publish the changed bytes as this scope's one unresolved intent.
+    private func check(
+        _ subscription: FileSubscription,
+        claim: AutomaticSchedulingClaim
+    ) async -> FileMonitoringReport {
+        var value = subscription
+        do {
+            let bytes = try accessStore.withReadAccess(
+                accessRef: value.accessRef,
+                expectedGeneration: value.bindingGeneration
+            ) { url in
+                try reader.readStableBytes(from: url, maximumBytes: CaptureIntentV3.maximumPayloadBytes)
+            }
+            let digest = Self.digest(bytes)
+            let checkedAt = ISO8601DateFormatter().string(from: Date())
+            if let suppression = suppressions.suppression(
+                workspaceRef: value.workspaceRef,
+                requestedSourceIdentity: value.requestedSourceIdentity,
+                observedDigest: digest
+            ) {
+                let verdict = await currentCaptureVerdict(for: value, observedDigest: digest)
+                switch verdict {
+                case .current:
+                    do {
+                        try suppressions.clear(
+                            workspaceRef: value.workspaceRef,
+                            requestedSourceIdentity: value.requestedSourceIdentity,
+                            observedDigest: digest
+                        )
+                    } catch {
+                        return unchanged(
+                            value,
+                            claim: claim,
+                            checkedAt: checkedAt,
+                            verdict: .unconfirmed(.unreadable)
+                        )
+                    }
+                    return unchanged(
+                        value,
+                        claim: claim,
+                        checkedAt: checkedAt,
+                        verdict: .current
+                    )
+                case .unconfirmed:
+                    return unchanged(
+                        value,
+                        claim: claim,
+                        checkedAt: checkedAt,
+                        verdict: verdict
+                    )
+                case .notCurrent:
+                    return suppressed(
+                        value,
+                        claim: claim,
+                        digest: digest,
+                        byteLength: UInt64(bytes.count),
+                        checkedAt: checkedAt,
+                        suppression: suppression
+                    )
+                }
+            }
+            guard digest != value.lastObservedDigest else {
+                // Same bytes are not yet "nothing to do": that needs Core's own statement that
+                // the capture behind them still stands. The call is a process round trip, so it
+                // runs off this actor and before the gate is taken.
+                let verdict = await currentCaptureVerdict(for: value, observedDigest: digest)
+                if case let .notCurrent(reason) = verdict,
+                   reason == .sourceRemoved || reason == .captureNotRetained
+                {
+                    guard (try? suppressions.record(
+                        workspaceRef: value.workspaceRef,
+                        requestedSourceIdentity: value.requestedSourceIdentity,
+                        observedDigest: digest,
+                        reason: reason,
+                        recordedAt: checkedAt
+                    )) != nil else {
+                        if scheduling.state(of: claim.key)?.published != true {
+                            _ = try? scheduling.cancel(
+                                claim.key,
+                                generation: claim.generation,
+                                at: clock()
+                            )
+                        }
+                        let dirty = try? subscriptions.update(id: value.subscriptionID) {
+                            $0.needsReconciliation = true
+                        }
+                        return FileMonitoringReport(
+                            subscriptionID: value.subscriptionID,
+                            state: dirty?.state ?? value.state,
+                            queued: false
+                        )
+                    }
+                }
+                return unchanged(value, claim: claim, checkedAt: checkedAt, verdict: verdict)
+            }
+            let observedDirtyEpoch = value.dirtyEpoch
+            value.dirtyEpoch += 1
+            let itemID = Self.identifier(prefix: "item")
+            let seed = CaptureIntentSeed(
+                submissionId: Self.identifier(prefix: "submission"),
+                itemId: itemID,
+                targetRef: value.targetRef,
+                workspaceRef: value.workspaceRef,
+                targetBindingRevision: value.targetBindingRevision,
+                callerContextBinding: value.callerContextBinding,
+                surface: .automaticFile,
+                contentKind: value.contentKind,
+                payloadRef: Self.identifier(prefix: "payload"),
+                requestedSourceIdentity: value.requestedSourceIdentity,
+                operationKey: Self.identifier(prefix: "capture"),
+                intentKind: .automaticCapture,
+                basePrecondition: .expected(value.currentSuccessfulCaptureID),
+                processingProfile: processingProfile,
+                originalBinding: OriginalBindingIntent(
+                    accessRecordId: value.accessRef,
+                    bindingGeneration: value.bindingGeneration,
+                    linkedDocumentId: value.linkedDocumentID
+                ),
+                consent: ConsentBinding(
+                    subscriptionId: value.subscriptionID,
+                    consentGeneration: value.consentGeneration,
+                    configGeneration: value.configGeneration,
+                    dirtyEpoch: value.dirtyEpoch
+                ),
+                createdAt: checkedAt,
+                displayName: value.displayName
+            )
+            let scheduling = self.scheduling
+            let clock = self.clock
+            let key = claim.key
+            let generation = claim.generation
+            let injectedPublicationFailure = failNextSchedulingPublication
+            failNextSchedulingPublication = false
+            var entries: [CaptureQueueEntry]
+            // Another route over this same canonical source may already have
+            // queued exactly this version against exactly this head — an
+            // overlapping watched folder reading the same file. This watch then
+            // binds to that capture rather than racing a second revision of it.
+            let coalesced = CoalescedItems()
+            let route = AutomaticSourceRoute.direct(subscriptionID: value.subscriptionID)
+            let electionWorkspaceRef = value.workspaceRef
+            let electionSourceIdentity = value.requestedSourceIdentity
+            do {
+                entries = try await preparation.prepareAndPublish(
+                    [
+                        CapturePreparationItem(
+                            access: NativeAccessExpectation(
+                                accessRef: value.accessRef,
+                                generation: value.bindingGeneration
+                            ),
+                            seed: seed,
+                            observedDirtyEpoch: observedDirtyEpoch
+                        ),
+                    ],
+                    binding: CaptureDeliveryBinding(value),
+                    validateBeforePublication: { [routeElection] in
+                        guard routeElection.isElected(
+                            route,
+                            workspaceRef: electionWorkspaceRef,
+                            sourceIdentity: electionSourceIdentity
+                        ) else { throw CapturePreparationError.automaticRouteChanged }
+                    },
+                    onCoalesced: coalesced.record,
+                    onPublished: { published in
+                        // Inside the publication critical section, under the gate the queue
+                        // commit was taken on: the scope's candidate reached an intent, named
+                        // by the item ID the queue published it under — or, when it coalesced,
+                        // by the capture that now serves it, which is just as published and is
+                        // what this scope's obligation is discharged against. This batch is
+                        // always exactly one item.
+                        guard let itemID = (published + coalesced.entries())
+                            .first?.intent.itemId
+                        else { return }
+                        if injectedPublicationFailure {
+                            throw AutomaticSchedulingError.stateUnavailable
+                        }
+                        try scheduling.markPublished(
+                            key,
+                            generation: generation,
+                            intentRef: itemID,
+                            at: clock()
+                        )
+                    }
+                )
+            } catch let failure as CapturePublicationIncomplete {
+                // The queue rename is the commit point, so the candidate did reach an intent and
+                // only this owner's own record of it is missing. Nothing is read, published or
+                // cancelled: the entry that committed is checked to be exactly this subscription's
+                // automatic capture for the epoch just prepared, then recorded — the observation
+                // first and the scheduler's publication second, as one critical section on the same
+                // gate the queue commit was taken on. A throw from any of it leaves the repair owed
+                // and falls to the error path below, which resolves the claim from the publication
+                // record as it stands rather than guessing at the intent.
+                return try publicationGate.withLock {
+                    let entry = try Self.repairableEntry(failure, of: value, in: queue)
+                    try recordPublication(entry, of: value, checkedAt: checkedAt)
+                    try scheduling.markPublished(
+                        key,
+                        generation: generation,
+                        intentRef: entry.intent.itemId,
+                        at: clock()
+                    )
+                    return FileMonitoringReport(
+                        subscriptionID: value.subscriptionID,
+                        state: value.state,
+                        queued: true
+                    )
+                }
+            }
+            // A coalesced refresh queued nothing of its own, but it did reach a
+            // capture of exactly this version, so it is recorded against that
+            // one rather than reported as nothing having happened.
+            entries += coalesced.entries()
+            guard let entry = entries.first else {
+                return FileMonitoringReport(
+                    subscriptionID: value.subscriptionID,
+                    state: value.state,
+                    queued: false
+                )
+            }
+            try recordPublication(entry, of: value, checkedAt: checkedAt)
+            return FileMonitoringReport(
+                subscriptionID: value.subscriptionID,
+                state: value.state,
+                queued: true
+            )
+        } catch CapturePreparationError.automaticRouteChanged {
+            // Another eligible route won before this candidate committed. The
+            // source remains dirty and this route remains healthy; it is not an
+            // access failure. The winner will freeze its own intent through its
+            // own authority.
+            if scheduling.state(of: claim.key)?.published != true {
+                _ = try? scheduling.cancel(claim.key, generation: claim.generation, at: clock())
+            }
+            return FileMonitoringReport(
+                subscriptionID: value.subscriptionID,
+                state: value.state,
+                queued: false
+            )
+        } catch {
+            // The read or the preparation failed, so nothing was published and the generation is
+            // owed again: it returns to the scope's one dirty obligation, keeping its signal times
+            // so it stays as due as it already was. This call does not claim it again.
+            if scheduling.state(of: claim.key)?.published != true {
+                _ = try? scheduling.cancel(claim.key, generation: claim.generation, at: clock())
+            }
+            // A watch that was paused while this read was in flight (a Locate pauses it) stays
+            // paused: the refusal is the pause working, not a loss of access.
+            let updated = try? subscriptions.update(id: value.subscriptionID) {
+                if $0.state == .active { $0.state = .needsAccess }
+                $0.needsReconciliation = true
+            }
+            return FileMonitoringReport(
+                subscriptionID: value.subscriptionID,
+                state: updated?.state ?? .needsAccess,
+                queued: false
+            )
+        }
+    }
+
+    /// Core's statement about the capture behind bytes this scope already has.
+    private func currentCaptureVerdict(
+        for value: FileSubscription,
+        observedDigest: String
+    ) async -> CurrentCaptureVerdict {
+        guard let verifier = currentCapture else { return .unconfirmed(.unavailable) }
+        let documentID = value.linkedDocumentID
+        let captureID = value.currentSuccessfulCaptureID
+        return await Task.detached {
+            verifier.verify(
+                documentID: documentID,
+                captureID: captureID,
+                observedDigest: observedDigest
+            )
+        }.value
+    }
+
+    /// Finishes a check whose read returned the bytes this scope already has.
+    ///
+    /// Same bytes is only "nothing to do" while the evidence that authorised the read still
+    /// stands, and while Core's copy behind those bytes still stands (`currentCaptureVerdict`).
+    /// The read is the slow part of a check, and a disconnect, a pause, a reconfigure or a
+    /// withdrawal of consent can all land inside it — after which this scope was never checked
+    /// under authority it still holds, and recording it as checked would report expired or
+    /// revoked evidence as up to date. So the same facts the publication path revalidates before
+    /// it commits are revalidated here before anything is recorded, on the same gate, so none of
+    /// them can land between the recheck and the writes that follow it.
+    ///
+    /// Evidence that no longer stands records nothing at all: no completion, no checked time.
+    /// The generation returns to the scope's one dirty obligation, exactly as a failed read
+    /// leaves it, so the next check runs under evidence that does stand. The subscription's own
+    /// state is left to whoever moved it — a pause stays a pause. Core not being able to answer
+    /// is the same: nothing is established, so nothing is recorded.
+    ///
+    /// When Core answers that its copy does not stand (expired, deleted, removed, never
+    /// published), the read still finished the generation, but it is recorded as exactly that
+    /// and not as a check: no checked time, an attention record naming the shortfall, and the
+    /// retained capture untouched. Nothing is published — an automatic watch does not re-add
+    /// what a retention or removal decision took out (design §13.5); a changed file still
+    /// publishes and Core's policy decides.
+    private func unchanged(
+        _ value: FileSubscription,
+        claim: AutomaticSchedulingClaim,
+        checkedAt: String,
+        verdict: CurrentCaptureVerdict
+    ) -> FileMonitoringReport {
+        var settled: FileSubscription?
+        if case .unconfirmed = verdict {
+            settled = nil
+        } else {
+            settled = try? accessStore.withValidatedGenerations([
+                NativeAccessExpectation(accessRef: value.accessRef, generation: value.bindingGeneration),
+            ]) { () -> FileSubscription in
+                guard routeElection.isElected(
+                    .direct(subscriptionID: value.subscriptionID),
+                    workspaceRef: value.workspaceRef,
+                    sourceIdentity: value.requestedSourceIdentity
+                ) else { throw CapturePreparationError.automaticRouteChanged }
+                guard let current = subscriptions.all().first(where: {
+                    $0.subscriptionID == value.subscriptionID
+                }),
+                    current.state == .active,
+                    current.consentGeneration == value.consentGeneration,
+                    current.configGeneration == value.configGeneration,
+                    current.dirtyEpoch == value.dirtyEpoch
+                else { throw CapturePreparationError.consentChanged }
+                // The read happened and is what established there is nothing new, so this
+                // generation is finished rather than returned to dirty for another attempt.
+                try scheduling.markCompletedWithoutPublication(
+                    claim.key,
+                    generation: claim.generation,
+                    at: clock()
+                )
+                return try subscriptions.update(id: value.subscriptionID) {
+                    switch verdict {
+                    case .current:
+                        $0.lastCheckedAt = checkedAt
+                        $0.attention = nil
+                    case let .notCurrent(shortfall):
+                        $0.attention = FileAttention(
+                            kind: .copyNotCurrent,
+                            code: shortfall.rawValue,
+                            recordedAt: checkedAt,
+                            priorCaptureID: $0.currentSuccessfulCaptureID
+                        )
+                    case .unconfirmed:
+                        break
+                    }
+                    $0.needsReconciliation = false
+                }
+            }
+        }
+        guard let settled else {
+            if scheduling.state(of: claim.key)?.published != true {
+                _ = try? scheduling.cancel(claim.key, generation: claim.generation, at: clock())
+            }
+            let dirty = try? subscriptions.update(id: value.subscriptionID) {
+                // Core refusing this Mac's credential is the same loss of access a failed read
+                // reports, and is shown as such; any other failure to ask changes nothing.
+                if case let .unconfirmed(.refused(code)) = verdict,
+                   Self.accessRefusals.contains(code), $0.state == .active
+                {
+                    $0.state = .needsAccess
+                }
+                $0.needsReconciliation = true
+            }
+            return FileMonitoringReport(
+                subscriptionID: value.subscriptionID,
+                state: dirty?.state ?? value.state,
+                queued: false
+            )
+        }
+        return FileMonitoringReport(
+            subscriptionID: settled.subscriptionID,
+            state: settled.state,
+            queued: false
+        )
+    }
+
+    private static let accessRefusals: Set<String> = [
+        "workspace_not_granted", "authorization_denied", "authentication_required",
+        "capability_not_granted",
+    ]
+
+    /// Completes a check without publication when another route or an earlier
+    /// process already learned that Core removed these exact source bytes.
+    private func suppressed(
+        _ value: FileSubscription,
+        claim: AutomaticSchedulingClaim,
+        digest: String,
+        byteLength: UInt64,
+        checkedAt: String,
+        suppression: AutomaticCaptureSuppression
+    ) -> FileMonitoringReport {
+        let settled = try? accessStore.withValidatedGenerations([
+            NativeAccessExpectation(accessRef: value.accessRef, generation: value.bindingGeneration),
+        ]) { () -> FileSubscription in
+            guard routeElection.isElected(
+                .direct(subscriptionID: value.subscriptionID),
+                workspaceRef: value.workspaceRef,
+                sourceIdentity: value.requestedSourceIdentity
+            ) else { throw CapturePreparationError.automaticRouteChanged }
+            guard let current = subscriptions.all().first(where: {
+                $0.subscriptionID == value.subscriptionID
+            }),
+                current.state == .active,
+                current.consentGeneration == value.consentGeneration,
+                current.configGeneration == value.configGeneration,
+                current.dirtyEpoch == value.dirtyEpoch
+            else { throw CapturePreparationError.consentChanged }
+            try scheduling.markCompletedWithoutPublication(
+                claim.key,
+                generation: claim.generation,
+                at: clock()
+            )
+            return try subscriptions.update(id: value.subscriptionID) {
+                $0.lastObservedDigest = digest
+                $0.lastObservedByteLength = byteLength
+                $0.lastObservedAt = checkedAt
+                $0.attention = FileAttention(
+                    kind: .copyNotCurrent,
+                    code: suppression.reason.rawValue,
+                    recordedAt: checkedAt,
+                    priorCaptureID: $0.currentSuccessfulCaptureID
+                )
+                $0.needsReconciliation = false
+            }
+        }
+        guard let settled else {
+            if scheduling.state(of: claim.key)?.published != true {
+                _ = try? scheduling.cancel(claim.key, generation: claim.generation, at: clock())
+            }
+            return FileMonitoringReport(
+                subscriptionID: value.subscriptionID,
+                state: value.state,
+                queued: false
+            )
+        }
+        return FileMonitoringReport(
+            subscriptionID: settled.subscriptionID,
+            state: settled.state,
+            queued: false
+        )
+    }
+
+    /// Records what this scope's published intent observed. Every field is set to an absolute value
+    /// derived from that intent, so applying it twice is applying it once.
+    private func recordPublication(
+        _ entry: CaptureQueueEntry,
+        of value: FileSubscription,
+        checkedAt: String
+    ) throws {
+        _ = try subscriptions.update(id: value.subscriptionID) {
+            $0.dirtyEpoch = value.dirtyEpoch
+            $0.lastObservedDigest = entry.intent.localIntegrityDigest
+            $0.lastObservedByteLength = entry.intent.byteLength
+            $0.lastObservedAt = checkedAt
+            $0.lastCheckedAt = checkedAt
+            $0.lastQueuedItemID = entry.intent.itemId
+            $0.needsReconciliation = false
+        }
+    }
+
+    /// The single entry a split publication committed, or a throw when the evidence does not say
+    /// exactly that.
+    ///
+    /// It has to be one entry, still the one intent that committed, still unresolved, and still this
+    /// subscription's own automatic capture down to the dirty epoch it was prepared for — the same
+    /// identity check `publicationEvidence` applies to a ref on record. Anything else is left to the
+    /// error path: a terminal outcome is the receipt path's to resolve, and missing, duplicated or
+    /// mismatched evidence is never repaired by guessing which intent was meant.
+    private static func repairableEntry(
+        _ failure: CapturePublicationIncomplete,
+        of value: FileSubscription,
+        in queue: CaptureIntentQueue
+    ) throws -> CaptureQueueEntry {
+        guard failure.published.count == 1 else { throw failure }
+        let entry = failure.published[0]
+        let current = queue.allEntries().filter { $0.intent.itemId == entry.intent.itemId }
+        guard current.count == 1,
+              current[0].intent == entry.intent,
+              [.pending, .staging, .unknownOutcome].contains(current[0].state),
+              Self.isAutomaticCapture(entry.intent, of: value)
+        else { throw failure }
+        return entry
+    }
+
+    /// Applies the queue's receipts to every subscription without checking anything.
+    ///
+    /// The same gated flow `reconcile` runs, so a caller that only reconciles receipts still
+    /// finishes the scheduler generation a terminal receipt resolves: the terminal outcome is the
+    /// whole of what completes a published generation, and which entry point observed it is not
+    /// part of that. It claims nothing and reads no source, so nothing is published from here.
+    @discardableResult
+    public func reconcileReceipts() -> [FileSubscription] {
+        subscriptions.all().compactMap { persisted in
+            publicationGate.withLock { applyReceipts(persisted)?.value }
+        }
+    }
+
+    @discardableResult
+    public func pause(subscriptionID: String) throws -> FileSubscription {
+        try subscriptions.update(id: subscriptionID) {
+            guard $0.state == .active || $0.state == .needsAccess else {
+                throw FolderMonitoringError.subscriptionNotActive
+            }
+            $0.state = .paused
+            $0.needsReconciliation = true
+        }
+    }
+
+    @discardableResult
+    public func resume(subscriptionID: String) throws -> FileSubscription {
+        let resumed = try subscriptions.update(id: subscriptionID) {
+            let subscriptionAccessRef = $0.accessRef
+            guard $0.state == .paused || $0.state == .needsAccess else {
+                throw FolderMonitoringError.subscriptionNotActive
+            }
+            // A Locate Core has not confirmed (or refused) leaves nothing to read, and
+            // resuming is the person's decision to start reading the new file (design
+            // §9.5), which cannot be made before it exists.
+            guard accessStore.descriptors().first(where: { $0.accessRef == subscriptionAccessRef })?
+                .state != .relinking
+            else { throw NativeAccessError.relinkPending }
+            $0.state = .active
+            $0.needsReconciliation = true
+        }
+        // The reconciliation it just recorded as owed is the scheduler's dirty obligation
+        // too. A change this watch could not signal while it was paused (events for a paused
+        // watch are dropped) or a file it was moved to (design §9.5) is read at the next
+        // check rather than waiting for an event that may never come.
+        _ = try? scheduling.signal(Self.schedulingKey(for: resumed), priority: .background, at: clock())
+        return resumed
+    }
+
+    @discardableResult
+    public func stop(subscriptionID: String) throws -> FileSubscription {
+        try subscriptions.update(id: subscriptionID) {
+            $0.state = .stopped
+            $0.needsReconciliation = false
+        }
+    }
+
+    private func reconcileReceipts(_ persisted: FileSubscription) throws -> FileSubscription {
+        // An item ID resolves only when exactly one entry carries it, which is the same rule
+        // `publicationEvidence` applies to the published ref: an ID this owner cannot tell apart
+        // names nothing, so a receipt is left unreconciled rather than read off an arbitrary one.
+        // `CaptureIntentQueue` keys its entries by item ID and refuses a batch whose items repeat
+        // one, so a duplicate is unreachable through its API — this is a trap removed, not a case
+        // reached today, and it is why the branch has no test of its own.
+        let entries = Dictionary(grouping: queue.allEntries(), by: \.intent.itemId)
+            .compactMapValues { $0.count == 1 ? $0[0] : nil }
+        return try subscriptions.update(id: persisted.subscriptionID) { value in
+            // Stopping is a one-way door. A receipt that lands after a local stop is an answer to
+            // work the watch no longer wants: it neither activates a watch that was waiting nor
+            // sends one to `.paused`, which `resume` accepts and so is the same reactivation by
+            // another name. Re-adding the file is the only way back.
+            guard value.state != .stopped else { return }
+            if let baseline = entries[value.baselineItemID] {
+                if baseline.state == .admitted, let captureID = baseline.admittedCaptureID {
+                    if value.state == .waitingForCore || value.currentSuccessfulCaptureID == nil {
+                        value.currentSuccessfulCaptureID = captureID
+                    }
+                    if value.state == .waitingForCore || value.lastObservedDigest == nil {
+                        value.lastObservedDigest = baseline.intent.localIntegrityDigest
+                        value.lastObservedByteLength = baseline.intent.byteLength
+                        value.lastObservedAt = baseline.intent.createdAt
+                    }
+                    if value.state == .waitingForCore { value.state = .active }
+                } else if baseline.state == .failed, value.state == .waitingForCore {
+                    value.state = .reviewRequired
+                }
+            }
+            if let queuedID = value.lastQueuedItemID,
+               let queued = entries[queuedID]
+            {
+                if queued.state == .admitted, let captureID = queued.admittedCaptureID {
+                    // A capture published under an older generation of the route (before a
+                    // Locate moved it) is history in Core once the relink lands: it is not
+                    // the base the next refresh may name. The relink's own confirmation
+                    // carries Core's head, which is what this watch is re-based on.
+                    if (queued.intent.originalBinding?.bindingGeneration ?? value.bindingGeneration)
+                        >= value.bindingGeneration
+                    {
+                        value.currentSuccessfulCaptureID = captureID
+                    }
+                    value.lastQueuedItemID = nil
+                    // A refresh Core admitted supersedes whatever the one before it left.
+                    value.attention = nil
+                } else if queued.state == .failed {
+                    // The source digest was recorded when this version was durably queued. Clear
+                    // it after a terminal refusal so Resume can deliberately prepare a new intent
+                    // instead of silently treating the rejected version as synchronized.
+                    value.lastQueuedItemID = nil
+                    value.lastObservedDigest = nil
+                    value.lastObservedByteLength = nil
+                    value.lastObservedAt = nil
+                    value.needsReconciliation = true
+                    value.state = .paused
+                    // The refusal is its own record beside the capture that was already
+                    // there: `currentSuccessfulCaptureID` is not touched, and the queue entry
+                    // `itemID` names keeps the full failure for as long as the person can see it.
+                    value.attention = FileAttention(
+                        kind: .refreshFailed,
+                        code: queued.failureCode ?? "unknown",
+                        recordedAt: ISO8601DateFormatter().string(from: Date()),
+                        itemID: queuedID,
+                        priorCaptureID: value.currentSuccessfulCaptureID
+                    )
+                }
+            }
+        }
+    }
+
+    private static func digest(_ data: Data) -> String {
+        "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func identifier(prefix: String) -> String {
+        "\(prefix)-\(UUID().uuidString.lowercased())"
+    }
+}

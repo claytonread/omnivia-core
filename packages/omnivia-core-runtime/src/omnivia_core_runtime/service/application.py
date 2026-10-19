@@ -80,6 +80,7 @@ from omnivia_core_runtime.service.authorization import (
     authorize_application_request,
 )
 from omnivia_core_runtime.service.chat_submit import resolve_chat_command
+from omnivia_core_runtime.service.document_processing import CatalogueSource
 from omnivia_core_runtime.service.handlers.analysis import analysis_start
 from omnivia_core_runtime.service.handlers.chat import (
     CHAT_COMMAND_OPERATION,
@@ -90,11 +91,30 @@ from omnivia_core_runtime.service.handlers.chat import (
     ChatGenerationExecution,
     ChatHandlers,
 )
+from omnivia_core_runtime.service.handlers.code import code_query
+from omnivia_core_runtime.service.handlers.code_analysis import (
+    CODE_STATUS_OPERATION,
+    CodeAnalysisHandlers,
+    code_status,
+)
 from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
 from omnivia_core_runtime.service.handlers.continuity import ContinuityHandlers
 from omnivia_core_runtime.service.handlers.decisions import (
     DECISION_EVALUATE_OPERATION,
     DecisionHandlers,
+)
+from omnivia_core_runtime.service.handlers.document_capture import (
+    DOCUMENT_CAPTURE_OPERATION,
+    DOCUMENT_HISTORY_OPERATION,
+    DOCUMENT_ORIGINAL_DISCONNECT_OPERATION,
+    DOCUMENT_ORIGINAL_RELINK_OPERATION,
+    DOCUMENT_REPROCESS_OPERATION,
+    DocumentCaptureHandlers,
+)
+from omnivia_core_runtime.service.handlers.document_settings import (
+    DOCUMENT_SETTINGS_GET_OPERATION,
+    DOCUMENT_SETTINGS_UPDATE_OPERATION,
+    DocumentSettingsHandlers,
 )
 from omnivia_core_runtime.service.handlers.engineering import EngineeringHandlers
 from omnivia_core_runtime.service.handlers.evidence import (
@@ -133,6 +153,13 @@ from omnivia_core_runtime.service.handlers.memory import (
     ContinuationTokenCodec,
     HmacContinuationTokenCodec,
     MemoryHandlers,
+)
+from omnivia_core_runtime.service.handlers.settings import (
+    SETTINGS_FAMILY_OPERATIONS,
+    SETTINGS_LIST_OPERATION,
+    SETTINGS_SET_OPERATION,
+    settings_list,
+    settings_set,
 )
 from omnivia_core_runtime.service.handlers.skills import (
     SKILL_DRAFT_CREATE_OPERATION,
@@ -250,6 +277,9 @@ KNOWLEDGE_SEARCH_OPERATION: Final = "knowledge.search"
 MEMORY_SEARCH_OPERATION: Final = "memory.search"
 GRAPH_TRAVERSE_OPERATION: Final = "graph.traverse"
 CONTEXT_PACK_BUILD_OPERATION: Final = "context_pack.build"
+#: W13-A: static code facts from the applicable code-analysis import, read beside
+#: `graph.traverse` under the same purpose, scope and capability.
+CODE_QUERY_OPERATION: Final = "code.query"
 ANALYSIS_START_OPERATION: Final = "analysis.start"
 
 #: The purpose each granted operation is served under. There is no purpose registry in
@@ -305,6 +335,8 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         MEMORY_SEARCH_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         GRAPH_TRAVERSE_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         CONTEXT_PACK_BUILD_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+        CODE_QUERY_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+        CODE_STATUS_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         "decision.status": DECISION_STATUS_PURPOSE,
         "decision.record.get": DECISION_RECORD_PURPOSE,
         "decision.record.list": DECISION_RECORD_PURPOSE,
@@ -355,13 +387,43 @@ MEMORY_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 #: and a read-only local owner holding a mutation is precisely the failure that
 #: constructor exists to prevent. The seven authority families are unchanged.
 JOB_OBSERVATION_PURPOSE: Final = "job_observation"
+#: Reading a document's canonical capture and extraction history is an observation, which
+#: is not what a caller authors a capture or authorises a reprocess under. It is its own
+#: purpose rather than `job_observation`, because a document's intake history outlives every
+#: job that contributed to it and is read long after the last one settled.
+DOCUMENT_OBSERVATION_PURPOSE: Final = "document_observation"
+#: Reading this workspace's durable document-processing preferences. Its own purpose, and
+#: not `document_observation`: a document's intake history and the settings a future
+#: capture will be admitted under are different facts, and a grant to read one is not a
+#: grant to read the other.
+DOCUMENT_SETTINGS_PURPOSE: Final = "document_settings"
 INGESTION_FAMILY_OPERATIONS: Final[frozenset[str]] = JOB_FAMILY_OPERATIONS | {
-    EVIDENCE_CAPTURE_OPERATION
+    EVIDENCE_CAPTURE_OPERATION,
+    DOCUMENT_CAPTURE_OPERATION,
+    DOCUMENT_HISTORY_OPERATION,
+    DOCUMENT_ORIGINAL_DISCONNECT_OPERATION,
+    DOCUMENT_ORIGINAL_RELINK_OPERATION,
+    DOCUMENT_REPROCESS_OPERATION,
+    DOCUMENT_SETTINGS_GET_OPERATION,
+    DOCUMENT_SETTINGS_UPDATE_OPERATION,
 }
 JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         IMPORT_START_OPERATION: MUTATION_PURPOSES[IMPORT_START_OPERATION],
         EVIDENCE_CAPTURE_OPERATION: MUTATION_PURPOSES[EVIDENCE_CAPTURE_OPERATION],
+        DOCUMENT_CAPTURE_OPERATION: MUTATION_PURPOSES[DOCUMENT_CAPTURE_OPERATION],
+        DOCUMENT_REPROCESS_OPERATION: MUTATION_PURPOSES[DOCUMENT_REPROCESS_OPERATION],
+        DOCUMENT_ORIGINAL_DISCONNECT_OPERATION: MUTATION_PURPOSES[
+            DOCUMENT_ORIGINAL_DISCONNECT_OPERATION
+        ],
+        DOCUMENT_ORIGINAL_RELINK_OPERATION: MUTATION_PURPOSES[
+            DOCUMENT_ORIGINAL_RELINK_OPERATION
+        ],
+        DOCUMENT_HISTORY_OPERATION: DOCUMENT_OBSERVATION_PURPOSE,
+        DOCUMENT_SETTINGS_GET_OPERATION: DOCUMENT_SETTINGS_PURPOSE,
+        DOCUMENT_SETTINGS_UPDATE_OPERATION: MUTATION_PURPOSES[
+            DOCUMENT_SETTINGS_UPDATE_OPERATION
+        ],
         JOB_GET_OPERATION: JOB_OBSERVATION_PURPOSE,
         JOB_CANCEL_OPERATION: MUTATION_PURPOSES[JOB_CANCEL_OPERATION],
         JOB_RETRY_OPERATION: MUTATION_PURPOSES[JOB_RETRY_OPERATION],
@@ -829,15 +891,20 @@ def job_family_session(
 
 
 def build_job_registry(
-    handlers: JobHandlers, evidence: EvidenceHandlers
+    handlers: JobHandlers,
+    evidence: EvidenceHandlers,
+    documents: DocumentCaptureHandlers,
+    settings: DocumentSettingsHandlers,
 ) -> ApplicationOperationRegistry:
-    """The content-ingestion family's six handlers, from their two owning modules.
+    """The content-ingestion family's eleven handlers, from their three owning modules.
 
-    Two handler objects rather than one: `evidence.capture` is written in the evidence
+    Three handler objects rather than one: `evidence.capture` is written in the evidence
     handler family beside `evidence.search`, which is where a reader looks for it and
-    where the projection barrier the two share belongs. What this registry states is the
-    *authority* boundary -- the six operations one session and one binding cover -- and
-    that is a different question from which module implements each of them.
+    where the projection barrier the two share belongs, and the two processing-settings
+    operations are written beside the store they read rather than beside the captures
+    they will later govern. What this registry states is the *authority* boundary -- the
+    eleven operations one session and one binding cover -- and that is a different
+    question from which module implements each of them.
     """
     registry = ApplicationOperationRegistry()
     registry.register(
@@ -845,6 +912,34 @@ def build_job_registry(
     )
     registry.register(
         EVIDENCE_CAPTURE_OPERATION, cast(OperationHandler, evidence.evidence_capture)
+    )
+    registry.register(
+        DOCUMENT_CAPTURE_OPERATION,
+        cast(OperationHandler, documents.document_capture),
+    )
+    registry.register(
+        DOCUMENT_REPROCESS_OPERATION,
+        cast(OperationHandler, documents.document_reprocess),
+    )
+    registry.register(
+        DOCUMENT_ORIGINAL_DISCONNECT_OPERATION,
+        cast(OperationHandler, documents.document_original_disconnect),
+    )
+    registry.register(
+        DOCUMENT_ORIGINAL_RELINK_OPERATION,
+        cast(OperationHandler, documents.document_original_relink),
+    )
+    registry.register(
+        DOCUMENT_HISTORY_OPERATION,
+        cast(OperationHandler, documents.document_history),
+    )
+    registry.register(
+        DOCUMENT_SETTINGS_GET_OPERATION,
+        cast(OperationHandler, settings.document_settings_get),
+    )
+    registry.register(
+        DOCUMENT_SETTINGS_UPDATE_OPERATION,
+        cast(OperationHandler, settings.document_settings_update),
     )
     registry.register(JOB_GET_OPERATION, cast(OperationHandler, handlers.job_get))
     registry.register(JOB_CANCEL_OPERATION, cast(OperationHandler, handlers.job_cancel))
@@ -1176,10 +1271,15 @@ def build_decision_application_dispatcher(
 #: and one binding. Purposes are the local-owner policy table's own, exactly as the
 #: decision family's are. The local owner is its own source producer here; the
 #: source record's distinct scope and capability reach no other family's session.
+#: The two code-analysis writes (W13-C) join it: authorising an acceptance policy is a
+#: curation act under `engineering:curate`, and importing an analysis of a captured
+#: snapshot is source processing under `engineering:source`. `code.query` and
+#: `code.status` are graph reads and stay in the read family.
 ENGINEERING_FAMILY_OPERATIONS: Final[frozenset[str]] = frozenset(
     name
     for name in (*OPERATION_PURPOSES, *MUTATION_PURPOSES)
     if name.startswith(("engineering.", "continuity.", "context.priority."))
+    or name in {"code.policy.register", "code.import"}
 )
 
 ENGINEERING_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
@@ -1238,13 +1338,14 @@ def engineering_family_session(
 def build_engineering_registry(
     refusals: EngineeringHandlers,
     continuity: ContinuityHandlers,
+    code: CodeAnalysisHandlers,
 ) -> ApplicationOperationRegistry:
-    """The twelve engineering-memory operations, one registry, catalogue-complete.
+    """The fourteen engineering-family operations, one registry, catalogue-complete.
 
     The continuity vertical (session register/append/close, handoff read) is the
     plan's PR-B producer; retrieval, the pack builder, priorities, reviews, the
     trusted source record and repository/checkout registration are served by
-    `EngineeringHandlers`.
+    `EngineeringHandlers`; code-analysis policy and import by `CodeAnalysisHandlers`.
     """
     registry = ApplicationOperationRegistry()
     registry.register(
@@ -1292,6 +1393,10 @@ def build_engineering_registry(
         "engineering.repository.register",
         cast(OperationHandler, refusals.engineering_repository_register),
     )
+    registry.register(
+        "code.policy.register", cast(OperationHandler, code.code_policy_register)
+    )
+    registry.register("code.import", cast(OperationHandler, code.code_import))
     return registry
 
 
@@ -1307,7 +1412,7 @@ def build_engineering_application_dispatcher(
     record: ApplicationCallSink | None = None,
     local_continuity_association: TrustedContinuityAssociation | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the twelve-operation S-engineering family around the existing router."""
+    """Compose the fourteen-operation S-engineering family around the existing router."""
     session = engineering_family_session(
         principal_id=principal_id,
         installation_id=installation_id,
@@ -1326,6 +1431,9 @@ def build_engineering_application_dispatcher(
             session=session,
             binding=binding,
             clock=server_clock,
+        ),
+        CodeAnalysisHandlers(
+            service=service, session=session, binding=binding, clock=server_clock
         ),
     )
     return ApplicationDispatcher(
@@ -1730,6 +1838,75 @@ def build_task_context_application_dispatcher(
     )
 
 
+#: Stored application settings (Core Settings v2): the two `settings.*` operations, one session and
+#: one binding. The read is served under the purpose its CLI command declares and the change under
+#: the mutation table's `workspace_administration` purpose. This build recognises and refuses both
+#: (`handlers/settings.py`), so holding them says only that a session may ask. Like the sharing and
+#: task-context tables, this one is deliberately not part of `OPERATION_PURPOSES`: that map feeds
+#: the read-only local-owner session, which must never be able to name a mutation.
+SETTINGS_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        SETTINGS_LIST_OPERATION: WORKSPACE_INSPECTION_PURPOSE,
+        SETTINGS_SET_OPERATION: MUTATION_PURPOSES[SETTINGS_SET_OPERATION],
+    }
+)
+
+
+def settings_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The contributor ceiling for one workspace's stored-settings surface.
+
+    A setting belongs to the one workspace the session names, so the role is the workspace
+    contributor and never the installation administrator. The workspace and the principal are
+    the authenticated caller's; neither is a request field.
+    """
+    return _contributor_family_session(
+        operations=SETTINGS_FAMILY_OPERATIONS,
+        purposes=SETTINGS_FAMILY_PURPOSES,
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+
+
+def build_settings_registry() -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(SETTINGS_LIST_OPERATION, settings_list)
+    registry.register(SETTINGS_SET_OPERATION, settings_set)
+    return registry
+
+
+def build_settings_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the two stored-settings operations around the existing router."""
+    session = settings_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    registry = build_settings_registry()
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 def build_knowledge_sharing_registry(
     handlers: KnowledgeSharingHandlers,
 ) -> ApplicationOperationRegistry:
@@ -1795,7 +1972,7 @@ def build_application_registry(
 ) -> ApplicationOperationRegistry:
     """The application handlers this build ships.
 
-    Six entries -- the six original reads. The fifteen decision operations are
+    The six original reads, `analysis.start` and `code.query`. The fifteen decision operations are
     the decision family's own registry (`build_decision_registry`), which is a
     separate session and binding rather than a stub family living here. `ApplicationOperationRegistry` is bounded by the frozen catalogue and
     fails closed on anything else, so this cannot register a name A2 did not freeze,
@@ -1826,6 +2003,8 @@ def build_application_registry(
     registry.register(MEMORY_SEARCH_OPERATION, memory_search)
     registry.register(GRAPH_TRAVERSE_OPERATION, graph_traverse)
     registry.register(CONTEXT_PACK_BUILD_OPERATION, context_pack_build)
+    registry.register(CODE_QUERY_OPERATION, code_query)
+    registry.register(CODE_STATUS_OPERATION, code_status)
     registry.register(ANALYSIS_START_OPERATION, cast(OperationHandler, analysis_start))
     for operation, handler in (additional or {}).items():
         registry.register(operation, handler)
@@ -1950,7 +2129,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 77/77 complete.
+    is anything other than complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -1969,9 +2148,9 @@ class ProductionApplicationSurface:
         distinct_routes = tuple(
             {id(route): route for route in routes.values()}.values()
         )
-        if len(distinct_routes) != 14:
+        if len(distinct_routes) != 15:
             raise ValueError(
-                "the production surface requires exactly fourteen authority families"
+                "the production surface requires exactly fifteen authority families"
             )
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError(
@@ -2042,6 +2221,7 @@ def compose_production_application_surface(
     engineering: ApplicationDispatcher,
     knowledge_sharing: ApplicationDispatcher,
     task_context: ApplicationDispatcher,
+    settings: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
 ) -> ProductionApplicationSurface:
@@ -2061,6 +2241,7 @@ def compose_production_application_surface(
         engineering,
         knowledge_sharing,
         task_context,
+        settings,
     )
     registry = ApplicationOperationRegistry()
     routes: dict[str, ApplicationDispatcher] = {}
@@ -2345,6 +2526,7 @@ class ApplicationDispatcher:
                 principal=context.principal_id,
                 audit_reference=error.audit_reference,
                 job_reference=error.job_reference,
+                details=error.details,
             )
 
         audit_reference: str | None = None
@@ -2546,8 +2728,19 @@ def build_job_application_dispatcher(
     token_codec: ContinuationTokenCodec | None = None,
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
+    catalogue_for: CatalogueSource | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the exact six-operation S3 content-ingestion family around the router."""
+    """Compose the exact nine-operation S3 content-ingestion family around the router.
+
+    `catalogue_for` is this installation's managed OCR cache -- the same authority the
+    document-processing executor resolves against, and the one join between an
+    installation root and a frozen selection. `document.history` and
+    `document.reprocess` resolve approved profiles against installed resources, so an
+    installation that is not supplied here reports every one of them unavailable and a
+    reprocess naming installed languages cannot execute with them. Left out, the
+    packaged fail-closed catalogue serves nothing, which is the right answer for a
+    composition with no installation to ask.
+    """
     session = job_family_session(
         principal_id=principal_id,
         installation_id=installation_id,
@@ -2572,7 +2765,25 @@ def build_job_application_dispatcher(
         clock=resolved_clock,
         allocate_identifier=allocate_identifier,
     )
-    registry = build_job_registry(handlers, evidence)
+    documents = DocumentCaptureHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=resolved_clock,
+        allocate_identifier=allocate_identifier,
+        token_codec=(
+            HmacContinuationTokenCodec.secure() if token_codec is None else token_codec
+        ),
+        catalogue_for=catalogue_for,
+    )
+    document_settings = DocumentSettingsHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=resolved_clock,
+        allocate_identifier=allocate_identifier,
+    )
+    registry = build_job_registry(handlers, evidence, documents, document_settings)
     return ApplicationDispatcher(
         registry=registry,
         session=session,
@@ -2739,8 +2950,11 @@ def build_workflow_application_dispatcher(
 
 __all__ = [
     "CHANNEL_TRUST",
+    "CODE_QUERY_OPERATION",
     "CONTEXT_PACK_BUILD_OPERATION",
     "CONTINUITY_HANDOFF_PURPOSE",
+    "DOCUMENT_OBSERVATION_PURPOSE",
+    "DOCUMENT_SETTINGS_PURPOSE",
     "ENGINEERING_CONTEXT_PURPOSE",
     "ENGINEERING_EXPAND_PURPOSE",
     "ENGINEERING_FAMILY_OPERATIONS",
@@ -2761,6 +2975,7 @@ __all__ = [
     "MEMORY_SEARCH_OPERATION",
     "OPERATION_PURPOSES",
     "PRINCIPAL_SOURCE",
+    "SETTINGS_FAMILY_PURPOSES",
     "SKILL_FAMILY_ROLES",
     "SKILL_RESOLUTION_PURPOSE",
     "TRIGGER_FAMILY_PURPOSES",
@@ -2784,6 +2999,7 @@ __all__ = [
     "build_job_registry",
     "build_memory_application_dispatcher",
     "build_memory_registry",
+    "build_settings_application_dispatcher",
     "build_skill_application_dispatcher",
     "build_skill_resolution_application_dispatcher",
     "build_task_context_application_dispatcher",
@@ -2797,6 +3013,7 @@ __all__ = [
     "job_family_session",
     "local_owner_session",
     "memory_family_session",
+    "settings_family_session",
     "task_context_family_session",
     "trigger_family_session",
     "workflow_family_session",

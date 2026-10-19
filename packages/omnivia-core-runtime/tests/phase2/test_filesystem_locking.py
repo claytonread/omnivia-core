@@ -484,10 +484,35 @@ def test_fl08_lifetime_lock_is_held_for_the_whole_ownership_lifetime(
 
 
 def test_lock_roles_state_what_they_grant() -> None:
-    """The bootstrap mutex must not be mistakable for write authority."""
+    """Exactly one role grants write authority, and the enum is enumerated whole.
+
+    Iterating the enum rather than naming three roles: a later role added without
+    a decision about what it grants is the defect this guards, and a test that
+    listed the roles it knew about would pass while saying nothing about it.
+    """
+    granting = {role for role in LockRole if role.grants_write_authority}
+    assert granting == {LockRole.LIFETIME_STORAGE}, (
+        "only the lifetime storage lock constitutes storage ownership"
+    )
     assert not LockRole.BOOTSTRAP_MUTEX.grants_write_authority
     assert not LockRole.TAKEOVER_COORDINATION.grants_write_authority
-    assert LockRole.LIFETIME_STORAGE.grants_write_authority
+    assert not LockRole.RESOURCE_COORDINATION.grants_write_authority
+
+
+def test_resource_coordination_is_its_own_role() -> None:
+    """Serialising managed-resource operations is not storage ownership.
+
+    Reusing the lifetime storage lock for it would have been fewer lines and would
+    have claimed write authority over a workspace that this administration neither
+    holds nor needs; reusing the bootstrap mutex would have let a launcher and a
+    resource installation exclude each other for no reason.
+    """
+    assert LockRole.RESOURCE_COORDINATION.value == "resource_coordination"
+    assert LockRole.RESOURCE_COORDINATION is not LockRole.LIFETIME_STORAGE
+    assert LockRole.RESOURCE_COORDINATION is not LockRole.BOOTSTRAP_MUTEX
+    lock = create_lock(Path("/tmp/x.lock"), LockRole.RESOURCE_COORDINATION)
+    assert lock.role is LockRole.RESOURCE_COORDINATION
+    assert not lock.role.grants_write_authority
 
 
 def test_lock_context_manager_raises_when_unavailable(tmp_path: Path) -> None:

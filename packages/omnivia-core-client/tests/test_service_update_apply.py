@@ -32,6 +32,7 @@ from omnivia_core_client.updates_apply import (
     BUNDLE_ASSET_NAME,
     InstallationLock,
     OperationRecord,
+    UpdateApplyError,
     affected_services,
     bundle_url,
     coordinate_update,
@@ -50,41 +51,42 @@ INSTALLED = {
 }
 
 
-def _channel(release_url: str, version: str, bundle_sha256: str | None = None) -> dict[str, Any]:
-    release: dict[str, Any] = {
-        "version": version,
-        "release_url": release_url,
-        "packages": {name: version for name in INSTALLED},
-    }
-    if bundle_sha256 is not None:
-        release["bundle_sha256"] = bundle_sha256
-    return {
-        "schema_version": "omnivia-core-update.v1",
-        "channel": "stable",
-        "release": release,
-    }
+RELEASE_TAG = "https://github.com/claytonread/omnivia-core/releases/tag/core-v"
 
 
-def _bundle(tmp_path: Path, version: str) -> tuple[bytes, str]:
-    """One minimal candidate bundle: five wheels + the checksum inventory."""
-    wheels = tmp_path / "wheels"
-    wheels.mkdir()
-    lines = ["# checksums-sha256.txt"]
-    for name in INSTALLED:
-        wheel_name = name.replace("-", "_")
-        content = f"wheel bytes for {wheel_name} {version}".encode()
-        (wheels / f"{wheel_name}-{version}-py3-none-any.whl").write_bytes(content)
-        import hashlib
+def _bundle(
+    tmp_path: Path, version: str, **overrides: str
+) -> tuple[bytes, str, dict[str, str]]:
+    """One minimal candidate bundle: five wheels plus its checksum inventory.
 
-        lines.append(f"{hashlib.sha256(content).hexdigest()}  {wheel_name}-{version}-py3-none-any.whl")
-    checksums = tmp_path / "checksums-sha256.txt"
-    checksums.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    **The inventory rows are paths relative to the candidate root**, which is
+    what ``build-standard-candidate.py`` writes -- ``wheels/omnivia_core-…whl``,
+    not a bare filename. This fixture used to write bare filenames with a ``#``
+    comment header, so it was the only bundle shape the staging path could read
+    and a real candidate would have failed every row.
+
+    ``overrides`` sets one package's wheel version, so a release where the five
+    do not move in lockstep can be built.
+    """
+    import hashlib
+
+    versions = {name: overrides.get(name, version) for name in INSTALLED}
+    files: dict[str, bytes] = {}
+    for name, wheel_version in versions.items():
+        distribution = name.replace("-", "_")
+        files[f"wheels/{distribution}-{wheel_version}-py3-none-any.whl"] = (
+            f"wheel bytes for {distribution} {wheel_version}".encode()
+        )
+    inventory = "".join(
+        f"{hashlib.sha256(content).hexdigest()}  {path}\n"
+        for path, content in sorted(files.items())
+    ).encode("ascii")
     zip_path = tmp_path / BUNDLE_ASSET_NAME
     with zipfile.ZipFile(zip_path, "w") as archive:
-        archive.write(checksums, "checksums-sha256.txt")
-        for wheel in wheels.iterdir():
-            archive.write(wheel, f"wheels/{wheel.name}")
-    return zip_path.read_bytes(), bundle_url("https://github.com/claytonread/omnivia-core/releases/tag/core-v" + version)
+        archive.writestr("checksums-sha256.txt", inventory)
+        for path, content in sorted(files.items()):
+            archive.writestr(path, content)
+    return zip_path.read_bytes(), bundle_url(RELEASE_TAG + version), versions
 
 
 def _instruction() -> dict[str, Any]:
@@ -249,7 +251,9 @@ def test_the_instruction_carries_the_exact_approved_versions(tmp_path: Path) -> 
 
 
 def test_a_checksum_mismatch_refuses_before_any_stop(tmp_path: Path) -> None:
-    bundle, url = _bundle(tmp_path, "0.2.0")
+    import hashlib
+
+    bundle, url, versions = _bundle(tmp_path, "0.2.0")
     corrupted = bytearray(bundle)
     corrupted[100] ^= 0xFF
 
@@ -257,17 +261,96 @@ def test_a_checksum_mismatch_refuses_before_any_stop(tmp_path: Path) -> None:
         assert address == url
         return bytes(corrupted)
 
-    bundle_digest = "sha256:" + __import__("hashlib").sha256(bundle).hexdigest()
-    with pytest.raises(Exception) as failure:
+    bundle_digest = "sha256:" + hashlib.sha256(bundle).hexdigest()
+    with pytest.raises(UpdateApplyError) as failure:
         stage_candidate(
-            "https://github.com/claytonread/omnivia-core/releases/tag/core-v0.2.0",
+            RELEASE_TAG + "0.2.0",
             bundle_sha256=bundle_digest,
             fetch_bytes=fetch,
             installation_state=tmp_path / "installation",
             operation_id="op-1",
-            expected_version="0.2.0",
+            expected_packages=versions,
         )
-    assert "bundle_checksum_mismatch" in str(failure.value) or "digest" in str(failure.value)
+    assert failure.value.code == "bundle_checksum_mismatch"
+
+
+def test_a_channel_that_states_no_digest_cannot_reach_the_archive(
+    tmp_path: Path,
+) -> None:
+    """The digest is required, so there is no path that unpacks an unidentified
+    archive. It used to be skipped when the channel omitted it, and the prompt
+    said so out loud -- 'bundle digest: not stated in the channel'."""
+    with pytest.raises(UpdateApplyError) as failure:
+        stage_candidate(
+            RELEASE_TAG + "0.2.0",
+            bundle_sha256=None,
+            fetch_bytes=lambda address: pytest.fail("never fetches"),
+            installation_state=tmp_path / "installation",
+            operation_id="op-1",
+            expected_packages={name: "0.2.0" for name in INSTALLED},
+        )
+    assert failure.value.code == "bundle_digest_missing"
+
+
+def test_staging_leaves_an_owner_only_tree(tmp_path: Path) -> None:
+    """The wheels pip is about to install are not readable by anyone else.
+
+    Staging sits between verification and installation, so a staging directory
+    another principal can write is a window in which a verified wheel becomes an
+    unverified one after the digest check has already passed.
+    """
+    import hashlib
+    import os
+
+    bundle, _url, versions = _bundle(tmp_path, "0.2.0")
+    staging = stage_candidate(
+        RELEASE_TAG + "0.2.0",
+        bundle_sha256="sha256:" + hashlib.sha256(bundle).hexdigest(),
+        fetch_bytes=lambda address: bundle,
+        installation_state=tmp_path / "installation",
+        operation_id="op-1",
+        expected_packages=versions,
+    )
+    assert (staging / "bundle" / "wheels").is_dir()
+    if os.name != "nt":
+        for entry in [staging, *(staging / "bundle").rglob("*")]:
+            assert entry.stat().st_mode & 0o077 == 0, entry
+
+
+def test_staging_verifies_each_wheel_against_its_own_recommended_version(
+    tmp_path: Path,
+) -> None:
+    """Per package, not one release number repeated five times.
+
+    A release where only the MCP distribution moved is a legitimate
+    recommendation, and verifying all five against ``release.version`` would
+    refuse it.
+    """
+    import hashlib
+
+    bundle, _url, versions = _bundle(tmp_path, "0.2.0", **{"omnivia-core-mcp": "0.3.0"})
+    assert versions["omnivia-core-mcp"] == "0.3.0"
+    staging = stage_candidate(
+        RELEASE_TAG + "0.2.0",
+        bundle_sha256="sha256:" + hashlib.sha256(bundle).hexdigest(),
+        fetch_bytes=lambda address: bundle,
+        installation_state=tmp_path / "installation",
+        operation_id="op-1",
+        expected_packages=versions,
+    )
+    assert staging.is_dir()
+
+    # The same bundle against the synthesised map the coordinator used to build.
+    with pytest.raises(UpdateApplyError) as failure:
+        stage_candidate(
+            RELEASE_TAG + "0.2.0",
+            bundle_sha256="sha256:" + hashlib.sha256(bundle).hexdigest(),
+            fetch_bytes=lambda address: bundle,
+            installation_state=tmp_path / "installation",
+            operation_id="op-2",
+            expected_packages={name: "0.2.0" for name in INSTALLED},
+        )
+    assert failure.value.code == "wheel_version_mismatch"
 
 
 def test_the_bundle_address_derives_from_the_release_url() -> None:
@@ -281,23 +364,25 @@ def test_the_bundle_address_derives_from_the_release_url() -> None:
 
 
 def test_staging_verifies_wheel_versions_against_the_approval(tmp_path: Path) -> None:
-    bundle, _url = _bundle(tmp_path, "0.1.9")
     import hashlib
+
+    bundle, _url, _versions = _bundle(tmp_path, "0.1.9")
 
     def fetch(address: str) -> bytes:
         assert address.endswith("core-v0.2.0/" + BUNDLE_ASSET_NAME)
         return bundle
 
-    with pytest.raises(Exception) as failure:
+    with pytest.raises(UpdateApplyError) as failure:
         stage_candidate(
-            "https://github.com/claytonread/omnivia-core/releases/tag/core-v0.2.0",
+            RELEASE_TAG + "0.2.0",
             bundle_sha256="sha256:" + hashlib.sha256(bundle).hexdigest(),
             fetch_bytes=fetch,
             installation_state=tmp_path / "installation",
             operation_id="op-1",
-            expected_version="0.2.0",
+            expected_packages={name: "0.2.0" for name in INSTALLED},
         )
-    assert "wheel_version_mismatch" in str(failure.value) or "0.1.9" in str(failure.value)
+    assert failure.value.code == "wheel_version_mismatch"
+    assert "0.1.9" in failure.value.reason
 
 
 # --- A05: one owner per installation --------------------------------------------------
@@ -323,6 +408,193 @@ def test_a_second_coordinator_receives_update_already_running(tmp_path: Path) ->
         assert outcome.returncode == 1
     finally:
         lock.release()
+
+
+def _signed_channel(version: str, bundle_digest: str, **overrides: str) -> bytes:
+    """One signed envelope v2 recommending ``version``, for the coordinator."""
+    from test_service_update_check import POLICY, _body, _sign
+
+    assert POLICY.trusted_keys
+    body = _body(version)
+    assert body["release"] is not None
+    body["release"]["bundle_sha256"] = bundle_digest
+    body["release"]["packages"] = {
+        name: overrides.get(name, version) for name in INSTALLED
+    }
+    return _sign(body)
+
+
+def _coordinate(
+    tmp_path: Path,
+    *,
+    channel: bytes,
+    bundle: bytes,
+    confirm: Any = lambda summary: True,
+    runner: Any = None,
+) -> Any:
+    """One full coordination with every seam injected and no real process."""
+    import omnivia_core_client.updates_apply as apply_module
+    from test_service_update_check import POLICY
+
+    state = tmp_path / "installation"
+    state.mkdir(parents=True, exist_ok=True)
+    recorded: dict[str, Any] = {}
+
+    class Spawned:
+        """A worker that runs in-process, the way the real one would out of it."""
+
+        def wait(self) -> int:
+            instruction = json.loads(
+                Path(recorded["instruction"]).read_text(encoding="utf-8")
+            )
+            recorded["approved"] = instruction["approved"]
+            if runner is not None:
+                run_worker(instruction, runner=runner)
+            return 0
+
+    def spawn(command: list[str], pass_fds: Any = ()) -> Any:
+        recorded["instruction"] = command[-1]
+        return Spawned()
+
+    outcome = coordinate_update(
+        installation_state=state,
+        installed=INSTALLED,
+        fetch_channel=lambda url: channel,
+        fetch_bytes=lambda address: bundle,
+        probe_running=lambda workspace_id: False,
+        confirm=confirm,
+        spawn_worker=spawn,
+        python_executable="/venv/bin/python",
+        cli_executable="/venv/bin/omnivia",
+        checked_at="2026-09-30T00:00:00Z",
+        policy=POLICY,
+    )
+    assert apply_module.PRODUCT_ID == "omnivia-core"
+    return outcome, recorded, state
+
+
+def test_the_coordinator_hands_the_worker_the_channels_own_package_map(
+    tmp_path: Path,
+) -> None:
+    """A03, closed properly: the instruction carries the channel's versions.
+
+    The coordinator used to write five copies of ``candidate_version`` here. A
+    release where one distribution did not move would have been staged against
+    the versions the channel recommended and then installed-and-verified against
+    versions it never recommended. The pin that was supposed to catch that wrote
+    a fixture to a file and read it back without calling production code at all.
+    """
+    import hashlib
+
+    bundle, _url, versions = _bundle(tmp_path, "0.2.0", **{"omnivia-core-mcp": "0.3.0"})
+    digest = "sha256:" + hashlib.sha256(bundle).hexdigest()
+
+    def installed_after(command: list[str]) -> Any:
+        """The host reports the uneven versions the instruction approved."""
+        stdout = ""
+        if "import importlib.metadata" in " ".join(command):
+            stdout = json.dumps(versions)
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    outcome, recorded, state = _coordinate(
+        tmp_path,
+        channel=_signed_channel("0.2.0", digest, **{"omnivia-core-mcp": "0.3.0"}),
+        bundle=bundle,
+        runner=Recorder(installed_after),
+    )
+    assert recorded["approved"]["packages"] == versions
+    assert recorded["approved"]["packages"]["omnivia-core-mcp"] == "0.3.0"
+    assert recorded["approved"]["bundle_sha256"] == digest
+    assert outcome.status == "updated"
+    assert outcome.returncode == 0
+    assert read_operation_record(state)["outcome"] == "updated"  # type: ignore[index]
+
+
+def test_a_refusal_after_staging_is_a_no_change_exit(tmp_path: Path) -> None:
+    """Cancellation before mutation leaves no record claiming anything."""
+    import hashlib
+
+    bundle, _url, _versions = _bundle(tmp_path, "0.2.0")
+    digest = "sha256:" + hashlib.sha256(bundle).hexdigest()
+    outcome, _recorded, state = _coordinate(
+        tmp_path,
+        channel=_signed_channel("0.2.0", digest),
+        bundle=bundle,
+        confirm=lambda summary: False,
+    )
+    assert outcome.status == "cancelled"
+    assert outcome.returncode == 0
+    assert read_operation_record(state) is None
+
+
+def test_an_unreachable_bundle_is_blocked_rather_than_left_in_flight(
+    tmp_path: Path,
+) -> None:
+    """A04: the journal never reads ``preparing`` for ever.
+
+    A ``TransportError`` or an ``OSError`` during the download used to propagate
+    out of the coordinator with the record still at ``phase: "preparing"`` -- an
+    operation that looks in flight and is not, which is the one state a crash
+    reader cannot act on.
+    """
+    import omnivia_core_client.updates_apply as apply_module
+    from omnivia_core_client.errors import TransportError
+
+    state = tmp_path / "installation"
+    state.mkdir(parents=True)
+
+    def fetch_bytes(address: str) -> bytes:
+        raise TransportError("the endpoint could not be reached")
+
+    from test_service_update_check import POLICY
+
+    outcome = apply_module.coordinate_update(
+        installation_state=state,
+        installed=INSTALLED,
+        fetch_channel=lambda url: _signed_channel("0.2.0", "sha256:" + "a" * 64),
+        fetch_bytes=fetch_bytes,
+        probe_running=lambda workspace_id: False,
+        confirm=lambda summary: pytest.fail("never confirms"),
+        spawn_worker=lambda command, pass_fds: pytest.fail("never spawns"),
+        python_executable="/venv/bin/python",
+        cli_executable="/venv/bin/omnivia",
+        checked_at="2026-09-30T00:00:00Z",
+        policy=POLICY,
+    )
+    assert outcome.status == "blocked"
+    assert outcome.returncode == 1
+    record = read_operation_record(state)
+    assert record is not None
+    assert record["phase"] == "blocked"
+    assert record["outcome"] == "blocked"
+    assert record["failure_code"] == "bundle_unavailable"
+
+
+def test_a_channel_the_production_policy_refuses_never_reaches_the_bundle(
+    tmp_path: Path,
+) -> None:
+    """The trust decision is upstream of every mutation, including the download."""
+    import omnivia_core_client.updates_apply as apply_module
+    from omnivia_core_client.update_trust import PRODUCTION_TRUST_POLICY
+
+    state = tmp_path / "installation"
+    state.mkdir(parents=True)
+    outcome = apply_module.coordinate_update(
+        installation_state=state,
+        installed=INSTALLED,
+        fetch_channel=lambda url: _signed_channel("0.2.0", "sha256:" + "a" * 64),
+        fetch_bytes=lambda address: pytest.fail("never fetches"),
+        probe_running=lambda workspace_id: False,
+        confirm=lambda summary: pytest.fail("never confirms"),
+        spawn_worker=lambda command, pass_fds: pytest.fail("never spawns"),
+        python_executable="/venv/bin/python",
+        cli_executable="/venv/bin/omnivia",
+        checked_at="2026-09-30T00:00:00Z",
+        policy=PRODUCTION_TRUST_POLICY,
+    )
+    assert outcome.status == "check_failed"
+    assert outcome.returncode == 1
+    assert read_operation_record(state) is None
 
 
 def test_a_released_lock_is_acquirable_again(tmp_path: Path) -> None:

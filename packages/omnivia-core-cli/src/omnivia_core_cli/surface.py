@@ -7,8 +7,8 @@ maps to. It dispatches nothing and calls nothing.
 
 Three properties are held here rather than left to a reader:
 
-*Bijection with the catalogue.* The seventy-nine application commands map onto the
-seventy-nine operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
+*Bijection with the catalogue.* The ninety-two application commands map onto the
+ninety-two operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
 command reaching an operation the contract does not publish -- or an operation
 published with no command reaching it -- is an import-time refusal, not a
 runtime surprise. That also closes the door on the legacy `core.*` operation names,
@@ -100,12 +100,49 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ApplicationCommand(("memory", "list"), "memory.list", "knowledge_retrieval"),
     ApplicationCommand(("memory", "search"), "memory.search", "knowledge_retrieval"),
     ApplicationCommand(("import", "start"), "import.start", "content_ingestion"),
+    ApplicationCommand(("settings", "list"), "settings.list", "workspace_inspection"),
+    ApplicationCommand(
+        ("settings", "set"), "settings.set", "workspace_administration"
+    ),
     ApplicationCommand(("job", "get"), "job.get", "job_observation"),
     ApplicationCommand(("job", "cancel"), "job.cancel", "job_control"),
     ApplicationCommand(("job", "retry"), "job.retry", "job_control"),
     ApplicationCommand(("job", "events"), "job.events", "job_observation"),
     ApplicationCommand(
         ("evidence", "capture"), "evidence.capture", "content_ingestion"
+    ),
+    ApplicationCommand(
+        ("document", "capture"), "document.capture", "content_ingestion"
+    ),
+    ApplicationCommand(
+        ("document", "reprocess"), "document.reprocess", "content_ingestion"
+    ),
+    ApplicationCommand(
+        ("document", "history"), "document.history", "document_observation"
+    ),
+    # This workspace's durable document-processing preferences. Reading them and
+    # changing them are separate acts under separate purposes, as the decision family's
+    # settings pair is, so a grant to read what a future capture will do is never a
+    # grant to change it.
+    ApplicationCommand(
+        ("document", "settings"), "document.settings.get", "document_settings"
+    ),
+    ApplicationCommand(
+        ("document", "configure"),
+        "document.settings.update",
+        "document_configuration",
+    ),
+    # Source-level Disconnect: tombstones one owner route of a document's original.
+    ApplicationCommand(
+        ("document", "disconnect"),
+        "document.original.disconnect",
+        "content_ingestion",
+    ),
+    # Source-level Relink: moves one direct-file owner route to a newer generation.
+    ApplicationCommand(
+        ("document", "relink"),
+        "document.original.relink",
+        "content_ingestion",
     ),
     ApplicationCommand(
         ("evidence", "search"), "evidence.search", "knowledge_retrieval"
@@ -129,6 +166,15 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ApplicationCommand(
         ("context-pack", "build"), "context_pack.build", "knowledge_retrieval"
     ),
+    ApplicationCommand(("code", "query"), "code.query", "knowledge_retrieval"),
+    # Code analysis (W13-C): discovering applicable analyses is a read like the query;
+    # authorising an acceptance policy and running an import are two separate acts
+    # under two separate purposes, so a grant for one never carries the other.
+    ApplicationCommand(("code", "status"), "code.status", "knowledge_retrieval"),
+    ApplicationCommand(
+        ("code", "policy"), "code.policy.register", "code_analysis_policy"
+    ),
+    ApplicationCommand(("code", "import"), "code.import", "code_analysis_import"),
     ApplicationCommand(("chat", "command"), "chat.command", "chat_authoring"),
     ApplicationCommand(("chat", "events"), "chat.events", "chat_observation"),
     ApplicationCommand(("chat", "snapshot"), "chat.snapshot", "chat_observation"),

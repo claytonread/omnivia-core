@@ -21,6 +21,8 @@
 #   contracts/application/v1/schemas/chat.schema.json
 #   contracts/application/v1/schemas/decision.schema.json
 #   contracts/application/v1/schemas/engineering.schema.json
+#   contracts/application/v1/schemas/settings.schema.json
+#   contracts/application/v1/schemas/code.schema.json
 # Generator:
 #   scripts/generate-application-contracts.py
 #
@@ -209,6 +211,34 @@ __all__ = [
     "CleanupOutcome",
     "CleanupReceipt",
     "ClientIdentity",
+    "CodeAnalysisBinding",
+    "CodeAnalysisCoverage",
+    "CodeAnalysisStatus",
+    "CodeArchitectureContext",
+    "CodeContext",
+    "CodeContextSeed",
+    "CodeDiagnostic",
+    "CodeImportInput",
+    "CodeImportResult",
+    "CodePolicyNodeKind",
+    "CodePolicyReference",
+    "CodePolicyRegisterInput",
+    "CodePolicyRegisterResult",
+    "CodePolicyRelationship",
+    "CodeProducerLock",
+    "CodeQueryCoverage",
+    "CodeQueryInput",
+    "CodeQueryResult",
+    "CodeRelation",
+    "CodeSemanticKey",
+    "CodeSnapshotFreshness",
+    "CodeSnapshotStatus",
+    "CodeSourceSpan",
+    "CodeSpanContent",
+    "CodeStatusInput",
+    "CodeStatusResult",
+    "CodeSymbol",
+    "CodeUnsupportedFiles",
     "CompatibilityMatrix",
     "CompatibilityMetadata",
     "ComponentKind",
@@ -307,6 +337,35 @@ __all__ = [
     "DecisionStatusResult",
     "DecisionSubjectRef",
     "Deprecation",
+    "DocumentBulkOriginInput",
+    "DocumentCaptureBase",
+    "DocumentCaptureHistoryEntry",
+    "DocumentCaptureInput",
+    "DocumentCaptureResult",
+    "DocumentConsentInput",
+    "DocumentExtractionBase",
+    "DocumentExtractionHeadState",
+    "DocumentExtractionHistoryEntry",
+    "DocumentExtractionProfileSummary",
+    "DocumentHistoryAction",
+    "DocumentHistoryInput",
+    "DocumentHistoryResult",
+    "DocumentOriginalBindingInput",
+    "DocumentOriginalDisconnectInput",
+    "DocumentOriginalDisconnectResult",
+    "DocumentOriginalRelinkInput",
+    "DocumentOriginalRelinkResult",
+    "DocumentProcessingProfileInput",
+    "DocumentProcessingSettings",
+    "DocumentProcessingSettingsGetInput",
+    "DocumentProcessingSettingsGetResult",
+    "DocumentProcessingSettingsUpdateInput",
+    "DocumentProcessingSettingsUpdateResult",
+    "DocumentReprocessInput",
+    "DocumentReprocessProfileOption",
+    "DocumentReprocessProfileSelection",
+    "DocumentReprocessResult",
+    "DocumentSourceHeadState",
     "DurationMs",
     "EffectIntent",
     "EffectOutcome",
@@ -530,6 +589,12 @@ __all__ = [
     "ServiceProbeRequest",
     "ServiceProbeResult",
     "ServiceProcessEvidence",
+    "SettingRecord",
+    "SettingValueJson",
+    "SettingsListInput",
+    "SettingsListResult",
+    "SettingsSetInput",
+    "SettingsSetResult",
     "SkillDependency",
     "SkillDraftCreateInput",
     "SkillDraftCreateResult",
@@ -2120,6 +2185,53 @@ class AnalysisStartResult:
         )
 
 
+CodeSemanticKey: TypeAlias = str
+"""A producer's own key for one definition or one relationship candidate, such as `pkg.models.make`
+or `src/lib.ts:Base.run`. Bounded by length here; its grammar (a word character, `$` or `#`, then
+word characters and `._:/@+$#-`) is enforced by semantic validation, because ECMAScript and
+Python disagree on what a word character is.
+"""
+
+@dataclass(frozen=True, slots=True)
+class CodeUnsupportedFiles:
+    """Files of the assessed snapshot that no declared producer reads, grouped by file suffix.
+    They stay eligible for evidence and document retrieval; they are never structurally
+    analysed, and their absence from the code graph says nothing about what they contain.
+    """
+
+    suffix: str
+    file_count: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["suffix"] = self.suffix
+        wire["file_count"] = self.file_count
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeUnsupportedFiles") -> CodeUnsupportedFiles:
+        """Decode a wire payload into a CodeUnsupportedFiles.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_suffix = _decode_str(_require_field(mapping, "suffix", path), f"{path}.suffix")
+        field_file_count = _decode_int(
+            _require_field(mapping, "file_count", path),
+            f"{path}.file_count",
+        )
+        return cls(
+            suffix=field_suffix,
+            file_count=field_file_count,
+        )
+
+
 ContractVersion: TypeAlias = str
 """A `major.minor` contract version. Major changes are breaking; minor changes are additive and
 forward compatible.
@@ -3596,6 +3708,38 @@ mandate a specific algorithm.
 MediaType: TypeAlias = str
 """An IANA-style `type/subtype` media type string, such as `text/plain` or `application/json`."""
 
+@dataclass(frozen=True, slots=True)
+class DocumentProcessingSettingsGetInput:
+    """Input for `document.settings.get`. The caller names nothing: the settings read are those
+    of the request envelope's selected workspace, and this payload carries no second
+    workspace identifier, no principal and no selector of any kind. Passive -- it reads no
+    document, opens no capture and changes nothing.
+    """
+
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentProcessingSettingsGetInput"
+    ) -> DocumentProcessingSettingsGetInput:
+        """Decode a wire payload into a DocumentProcessingSettingsGetInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        _require_mapping(payload, path)
+        return cls(
+        )
+
+
 GraphDirection: TypeAlias = str
 """Open, dot-namespaced code naming which direction a traversal follows relations in: `outbound`,
 `inbound`, or `both`. Wire-open by shape, but trust-sensitive: only the known values are accepted
@@ -4432,6 +4576,12 @@ actions and must only be offered for a `locally_managed` `local` target (see
 `CoreSafeStatusV1.permitted_actions`); `reconnect` and `open` are safe to offer for any target.
 """
 
+SettingValueJson: TypeAlias = str
+"""The setting's value, JSON-encoded. A string rather than an open JSON value because a setting may
+hold a boolean, a number, a string or an object, and the wire type says which only by carrying
+the encoding. The bound is the stored column's own.
+"""
+
 WorkspaceStatus: TypeAlias = str
 """Open, dot-namespaced code naming a workspace's lifecycle status, such as `active` or
 `provisioning` or `archived`. Open by design so a compatible minor release can add statuses
@@ -4893,6 +5043,802 @@ class ChatSnapshotResult:
         return cls(
             conversation_id=field_conversation_id,
             snapshot=field_snapshot,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeSourceSpan:
+    """Where one fact was read, exactly as the import retained it: a repository-relative path,
+    the content digest of the captured bytes and the producer's locator. With the result's
+    repository and snapshot this opens the captured revision; it never names an absolute
+    path. `start_byte`/`end_byte` are a half-open range over the captured bytes, present
+    together or not at all.
+    """
+
+    relative_path: str
+    content_digest: ContentChecksum
+    start_line: int
+    start_column: int
+    end_line: int
+    end_column: int
+    start_byte: int | None = None
+    end_byte: int | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["relative_path"] = self.relative_path
+        wire["content_digest"] = self.content_digest
+        wire["start_line"] = self.start_line
+        wire["start_column"] = self.start_column
+        wire["end_line"] = self.end_line
+        wire["end_column"] = self.end_column
+        if self.start_byte is not None:
+            wire["start_byte"] = self.start_byte
+        if self.end_byte is not None:
+            wire["end_byte"] = self.end_byte
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeSourceSpan") -> CodeSourceSpan:
+        """Decode a wire payload into a CodeSourceSpan.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_relative_path = _decode_str(
+            _require_field(mapping, "relative_path", path),
+            f"{path}.relative_path",
+        )
+        field_content_digest = _decode_str(
+            _require_field(mapping, "content_digest", path),
+            f"{path}.content_digest",
+        )
+        field_start_line = _decode_int(
+            _require_field(mapping, "start_line", path),
+            f"{path}.start_line",
+        )
+        field_start_column = _decode_int(
+            _require_field(mapping, "start_column", path),
+            f"{path}.start_column",
+        )
+        field_end_line = _decode_int(_require_field(mapping, "end_line", path), f"{path}.end_line")
+        field_end_column = _decode_int(
+            _require_field(mapping, "end_column", path),
+            f"{path}.end_column",
+        )
+        field_start_byte: int | None = None
+        if "start_byte" in mapping:
+            raw_start_byte = mapping["start_byte"]
+            if raw_start_byte is None:
+                raise ContractDecodeError(
+                    f"{path}.start_byte: null is not a valid value"
+                )
+            field_start_byte = _decode_int(raw_start_byte, f"{path}.start_byte")
+        field_end_byte: int | None = None
+        if "end_byte" in mapping:
+            raw_end_byte = mapping["end_byte"]
+            if raw_end_byte is None:
+                raise ContractDecodeError(
+                    f"{path}.end_byte: null is not a valid value"
+                )
+            field_end_byte = _decode_int(raw_end_byte, f"{path}.end_byte")
+        return cls(
+            relative_path=field_relative_path,
+            content_digest=field_content_digest,
+            start_line=field_start_line,
+            start_column=field_start_column,
+            end_line=field_end_line,
+            end_column=field_end_column,
+            start_byte=field_start_byte,
+            end_byte=field_end_byte,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeAnalysisBinding:
+    """The one code-analysis import a `code.query` answer was read from: the scope the request
+    bound, the producer build, the batch, the acceptance policy and the activation that made
+    it applicable. Every fact in the result comes from this import and from no other.
+    """
+
+    repository_id: Identifier
+    snapshot_id: Identifier
+    producer_id: Identifier
+    producer_version: Identifier
+    profile_digest: ContentChecksum
+    import_id: Identifier
+    batch_digest: ContentChecksum
+    policy_id: Identifier
+    policy_version: Identifier
+    policy_digest: ContentChecksum
+    manifest_evidence_id: EvidenceId
+    activated_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["repository_id"] = self.repository_id
+        wire["snapshot_id"] = self.snapshot_id
+        wire["producer_id"] = self.producer_id
+        wire["producer_version"] = self.producer_version
+        wire["profile_digest"] = self.profile_digest
+        wire["import_id"] = self.import_id
+        wire["batch_digest"] = self.batch_digest
+        wire["policy_id"] = self.policy_id
+        wire["policy_version"] = self.policy_version
+        wire["policy_digest"] = self.policy_digest
+        wire["manifest_evidence_id"] = self.manifest_evidence_id
+        wire["activated_at"] = self.activated_at
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeAnalysisBinding") -> CodeAnalysisBinding:
+        """Decode a wire payload into a CodeAnalysisBinding.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_snapshot_id = _decode_str(
+            _require_field(mapping, "snapshot_id", path),
+            f"{path}.snapshot_id",
+        )
+        field_producer_id = _decode_str(
+            _require_field(mapping, "producer_id", path),
+            f"{path}.producer_id",
+        )
+        field_producer_version = _decode_str(
+            _require_field(mapping, "producer_version", path),
+            f"{path}.producer_version",
+        )
+        field_profile_digest = _decode_str(
+            _require_field(mapping, "profile_digest", path),
+            f"{path}.profile_digest",
+        )
+        field_import_id = _decode_str(
+            _require_field(mapping, "import_id", path),
+            f"{path}.import_id",
+        )
+        field_batch_digest = _decode_str(
+            _require_field(mapping, "batch_digest", path),
+            f"{path}.batch_digest",
+        )
+        field_policy_id = _decode_str(
+            _require_field(mapping, "policy_id", path),
+            f"{path}.policy_id",
+        )
+        field_policy_version = _decode_str(
+            _require_field(mapping, "policy_version", path),
+            f"{path}.policy_version",
+        )
+        field_policy_digest = _decode_str(
+            _require_field(mapping, "policy_digest", path),
+            f"{path}.policy_digest",
+        )
+        field_manifest_evidence_id = _decode_str(
+            _require_field(mapping, "manifest_evidence_id", path),
+            f"{path}.manifest_evidence_id",
+        )
+        field_activated_at = _decode_str(
+            _require_field(mapping, "activated_at", path),
+            f"{path}.activated_at",
+        )
+        return cls(
+            repository_id=field_repository_id,
+            snapshot_id=field_snapshot_id,
+            producer_id=field_producer_id,
+            producer_version=field_producer_version,
+            profile_digest=field_profile_digest,
+            import_id=field_import_id,
+            batch_digest=field_batch_digest,
+            policy_id=field_policy_id,
+            policy_version=field_policy_version,
+            policy_digest=field_policy_digest,
+            manifest_evidence_id=field_manifest_evidence_id,
+            activated_at=field_activated_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeQueryCoverage:
+    """What the answer does and does not cover. `analysis` is always `static`: these are facts a
+    static analyser read from source, not runtime behaviour and not test coverage -- a
+    reference an accepted fact reads out of a test file is a static reference like any other
+    and is never a statement that the subject is exercised at run time. `complete` is false
+    when anything bounded the answer: a limit, the depth, diagnostics that bear on the
+    subject, or graph expansion that did not run. `unattributed_inbound` is true for inbound
+    intents, because an unresolved or dynamic occurrence elsewhere cannot be attributed to
+    this subject by static analysis.
+    """
+
+    analysis: OpenCode
+    complete: bool
+    truncated: bool
+    depth_bounded: bool
+    unattributed_inbound: bool
+    applied_depth: int
+    applied_limit: PageLimit
+    graph_expansion: OpenCode
+    expansion_reason: OpenCode | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["analysis"] = self.analysis
+        wire["complete"] = self.complete
+        wire["truncated"] = self.truncated
+        wire["depth_bounded"] = self.depth_bounded
+        wire["unattributed_inbound"] = self.unattributed_inbound
+        wire["applied_depth"] = self.applied_depth
+        wire["applied_limit"] = self.applied_limit
+        wire["graph_expansion"] = self.graph_expansion
+        if self.expansion_reason is not None:
+            wire["expansion_reason"] = self.expansion_reason
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeQueryCoverage") -> CodeQueryCoverage:
+        """Decode a wire payload into a CodeQueryCoverage.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_analysis = _decode_str(_require_field(mapping, "analysis", path), f"{path}.analysis")
+        field_complete = _decode_bool(_require_field(mapping, "complete", path), f"{path}.complete")
+        field_truncated = _decode_bool(
+            _require_field(mapping, "truncated", path),
+            f"{path}.truncated",
+        )
+        field_depth_bounded = _decode_bool(
+            _require_field(mapping, "depth_bounded", path),
+            f"{path}.depth_bounded",
+        )
+        field_unattributed_inbound = _decode_bool(
+            _require_field(mapping, "unattributed_inbound", path),
+            f"{path}.unattributed_inbound",
+        )
+        field_applied_depth = _decode_int(
+            _require_field(mapping, "applied_depth", path),
+            f"{path}.applied_depth",
+        )
+        field_applied_limit = _decode_int(
+            _require_field(mapping, "applied_limit", path),
+            f"{path}.applied_limit",
+        )
+        field_graph_expansion = _decode_str(
+            _require_field(mapping, "graph_expansion", path),
+            f"{path}.graph_expansion",
+        )
+        field_expansion_reason: OpenCode | None = None
+        if "expansion_reason" in mapping:
+            raw_expansion_reason = mapping["expansion_reason"]
+            if raw_expansion_reason is None:
+                raise ContractDecodeError(
+                    f"{path}.expansion_reason: null is not a valid value"
+                )
+            field_expansion_reason = _decode_str(raw_expansion_reason, f"{path}.expansion_reason")
+        return cls(
+            analysis=field_analysis,
+            complete=field_complete,
+            truncated=field_truncated,
+            depth_bounded=field_depth_bounded,
+            unattributed_inbound=field_unattributed_inbound,
+            applied_depth=field_applied_depth,
+            applied_limit=field_applied_limit,
+            graph_expansion=field_graph_expansion,
+            expansion_reason=field_expansion_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeContextSeed:
+    """A subject selection a lexical or semantic search produced, carrying the analysis it was
+    produced against. A seed is identity only -- keys, and the exact repository, analysed
+    snapshot, producer and profile they were selected from. The read compares that binding
+    with the analysis applicable at the query instant and refuses to expand a seed taken from
+    any other one: an old seed spliced onto a newer graph would walk edges the search never
+    saw.
+    """
+
+    origin: OpenCode
+    repository_id: Identifier
+    snapshot_id: Identifier
+    producer_id: Identifier
+    profile_digest: ContentChecksum
+    semantic_keys: tuple[CodeSemanticKey, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["origin"] = self.origin
+        wire["repository_id"] = self.repository_id
+        wire["snapshot_id"] = self.snapshot_id
+        wire["producer_id"] = self.producer_id
+        wire["profile_digest"] = self.profile_digest
+        wire["semantic_keys"] = list(self.semantic_keys)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeContextSeed") -> CodeContextSeed:
+        """Decode a wire payload into a CodeContextSeed.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_origin = _decode_str(_require_field(mapping, "origin", path), f"{path}.origin")
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_snapshot_id = _decode_str(
+            _require_field(mapping, "snapshot_id", path),
+            f"{path}.snapshot_id",
+        )
+        field_producer_id = _decode_str(
+            _require_field(mapping, "producer_id", path),
+            f"{path}.producer_id",
+        )
+        field_profile_digest = _decode_str(
+            _require_field(mapping, "profile_digest", path),
+            f"{path}.profile_digest",
+        )
+        field_semantic_keys_items = _decode_sequence(
+            _require_field(mapping, "semantic_keys", path),
+            f"{path}.semantic_keys",
+        )
+        field_semantic_keys = tuple(
+            _decode_str(item, f"{path}.semantic_keys[{index}]")
+            for index, item in enumerate(field_semantic_keys_items)
+        )
+        return cls(
+            origin=field_origin,
+            repository_id=field_repository_id,
+            snapshot_id=field_snapshot_id,
+            producer_id=field_producer_id,
+            profile_digest=field_profile_digest,
+            semantic_keys=field_semantic_keys,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeProducerLock:
+    """One producer build and analyser profile an acceptance policy admits batches from. A batch
+    from any other build or profile is refused whole, never partly accepted.
+    """
+
+    producer_id: Identifier
+    producer_version: Identifier
+    profile_digest: ContentChecksum
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["producer_id"] = self.producer_id
+        wire["producer_version"] = self.producer_version
+        wire["profile_digest"] = self.profile_digest
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeProducerLock") -> CodeProducerLock:
+        """Decode a wire payload into a CodeProducerLock.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_producer_id = _decode_str(
+            _require_field(mapping, "producer_id", path),
+            f"{path}.producer_id",
+        )
+        field_producer_version = _decode_str(
+            _require_field(mapping, "producer_version", path),
+            f"{path}.producer_version",
+        )
+        field_profile_digest = _decode_str(
+            _require_field(mapping, "profile_digest", path),
+            f"{path}.profile_digest",
+        )
+        return cls(
+            producer_id=field_producer_id,
+            producer_version=field_producer_version,
+            profile_digest=field_profile_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodePolicyNodeKind:
+    """One producer's node kind an acceptance policy accepts as a governed definition."""
+
+    producer_id: Identifier
+    node_kind: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["producer_id"] = self.producer_id
+        wire["node_kind"] = self.node_kind
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodePolicyNodeKind") -> CodePolicyNodeKind:
+        """Decode a wire payload into a CodePolicyNodeKind.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_producer_id = _decode_str(
+            _require_field(mapping, "producer_id", path),
+            f"{path}.producer_id",
+        )
+        field_node_kind = _decode_str(
+            _require_field(mapping, "node_kind", path),
+            f"{path}.node_kind",
+        )
+        return cls(
+            producer_id=field_producer_id,
+            node_kind=field_node_kind,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodePolicyRelationship:
+    """One producer relationship, at one evidence strength, an acceptance policy accepts as a
+    governed relation. Only `syntactic` and `resolved_static` can be accepted; unresolved,
+    ambiguous, external and dynamically inferred candidates stay diagnostics under every
+    policy.
+    """
+
+    producer_id: Identifier
+    relationship: OpenCode
+    evidence_strength: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["producer_id"] = self.producer_id
+        wire["relationship"] = self.relationship
+        wire["evidence_strength"] = self.evidence_strength
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CodePolicyRelationship"
+    ) -> CodePolicyRelationship:
+        """Decode a wire payload into a CodePolicyRelationship.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_producer_id = _decode_str(
+            _require_field(mapping, "producer_id", path),
+            f"{path}.producer_id",
+        )
+        field_relationship = _decode_str(
+            _require_field(mapping, "relationship", path),
+            f"{path}.relationship",
+        )
+        field_evidence_strength = _decode_str(
+            _require_field(mapping, "evidence_strength", path),
+            f"{path}.evidence_strength",
+        )
+        return cls(
+            producer_id=field_producer_id,
+            relationship=field_relationship,
+            evidence_strength=field_evidence_strength,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodePolicyReference:
+    """One registered acceptance policy, by id, version and the digest of its exact rules."""
+
+    policy_id: Identifier
+    policy_version: Identifier
+    policy_digest: ContentChecksum
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["policy_id"] = self.policy_id
+        wire["policy_version"] = self.policy_version
+        wire["policy_digest"] = self.policy_digest
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodePolicyReference") -> CodePolicyReference:
+        """Decode a wire payload into a CodePolicyReference.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_policy_id = _decode_str(
+            _require_field(mapping, "policy_id", path),
+            f"{path}.policy_id",
+        )
+        field_policy_version = _decode_str(
+            _require_field(mapping, "policy_version", path),
+            f"{path}.policy_version",
+        )
+        field_policy_digest = _decode_str(
+            _require_field(mapping, "policy_digest", path),
+            f"{path}.policy_digest",
+        )
+        return cls(
+            policy_id=field_policy_id,
+            policy_version=field_policy_version,
+            policy_digest=field_policy_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeSnapshotFreshness:
+    """How one captured snapshot stands against the newest admitted capture of the same stream
+    -- the same checkout of the same repository on the same installation. `stale` means a
+    newer capture the caller may see was admitted after it. Core compares captures only:
+    `working_tree` is always `not_observed`, because the live checkout between captures is
+    never read, so an edit made after the newest capture is not reflected here either.
+    """
+
+    state: OpenCode
+    snapshot_id: Identifier
+    newest_snapshot_id: Identifier
+    working_tree: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["state"] = self.state
+        wire["snapshot_id"] = self.snapshot_id
+        wire["newest_snapshot_id"] = self.newest_snapshot_id
+        wire["working_tree"] = self.working_tree
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CodeSnapshotFreshness"
+    ) -> CodeSnapshotFreshness:
+        """Decode a wire payload into a CodeSnapshotFreshness.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_state = _decode_str(_require_field(mapping, "state", path), f"{path}.state")
+        field_snapshot_id = _decode_str(
+            _require_field(mapping, "snapshot_id", path),
+            f"{path}.snapshot_id",
+        )
+        field_newest_snapshot_id = _decode_str(
+            _require_field(mapping, "newest_snapshot_id", path),
+            f"{path}.newest_snapshot_id",
+        )
+        field_working_tree = _decode_str(
+            _require_field(mapping, "working_tree", path),
+            f"{path}.working_tree",
+        )
+        return cls(
+            state=field_state,
+            snapshot_id=field_snapshot_id,
+            newest_snapshot_id=field_newest_snapshot_id,
+            working_tree=field_working_tree,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeImportInput:
+    """Input for `code.import`: analyse one sealed, complete captured snapshot of one repository
+    with one producer under one profile this service declares, and make the facts one
+    registered acceptance policy accepts the applicable analysis for that repository,
+    producer and profile. Identity only: the request names no path, no executable code, no
+    profile body, no principal and no workspace. The scope's expected activation is the
+    envelope's `mutation_precondition`: the decimal activation sequence `code.status`
+    reported for the scope (`0` when none), so an import planned against an analysis another
+    import has since replaced is refused and writes nothing.
+    """
+
+    repository_id: Identifier
+    snapshot_id: Identifier
+    producer_id: Identifier
+    profile_digest: ContentChecksum
+    policy_id: Identifier
+    policy_version: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["repository_id"] = self.repository_id
+        wire["snapshot_id"] = self.snapshot_id
+        wire["producer_id"] = self.producer_id
+        wire["profile_digest"] = self.profile_digest
+        wire["policy_id"] = self.policy_id
+        wire["policy_version"] = self.policy_version
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeImportInput") -> CodeImportInput:
+        """Decode a wire payload into a CodeImportInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_snapshot_id = _decode_str(
+            _require_field(mapping, "snapshot_id", path),
+            f"{path}.snapshot_id",
+        )
+        field_producer_id = _decode_str(
+            _require_field(mapping, "producer_id", path),
+            f"{path}.producer_id",
+        )
+        field_profile_digest = _decode_str(
+            _require_field(mapping, "profile_digest", path),
+            f"{path}.profile_digest",
+        )
+        field_policy_id = _decode_str(
+            _require_field(mapping, "policy_id", path),
+            f"{path}.policy_id",
+        )
+        field_policy_version = _decode_str(
+            _require_field(mapping, "policy_version", path),
+            f"{path}.policy_version",
+        )
+        return cls(
+            repository_id=field_repository_id,
+            snapshot_id=field_snapshot_id,
+            producer_id=field_producer_id,
+            profile_digest=field_profile_digest,
+            policy_id=field_policy_id,
+            policy_version=field_policy_version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeStatusInput:
+    """Input for `code.status`: one repository, and optionally one of its sealed captured
+    snapshots to assess readiness against. Workspace and principal come from the envelope.
+    """
+
+    repository_id: Identifier
+    snapshot_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["repository_id"] = self.repository_id
+        if self.snapshot_id is not None:
+            wire["snapshot_id"] = self.snapshot_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeStatusInput") -> CodeStatusInput:
+        """Decode a wire payload into a CodeStatusInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_snapshot_id: Identifier | None = None
+        if "snapshot_id" in mapping:
+            raw_snapshot_id = mapping["snapshot_id"]
+            if raw_snapshot_id is None:
+                raise ContractDecodeError(
+                    f"{path}.snapshot_id: null is not a valid value"
+                )
+            field_snapshot_id = _decode_str(raw_snapshot_id, f"{path}.snapshot_id")
+        return cls(
+            repository_id=field_repository_id,
+            snapshot_id=field_snapshot_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeAnalysisCoverage:
+    """How much of the analysed snapshot's source the applicable analysis covers, counted over
+    files the caller may see. `partial` means at least one such file the producer's profile
+    admits contributed no fact -- it was oversize, undecodable, syntactically invalid or over
+    budget -- so its absence from every answer is not evidence that it has no definitions.
+    """
+
+    state: OpenCode
+    admitted_file_count: int
+    analysed_file_count: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["state"] = self.state
+        wire["admitted_file_count"] = self.admitted_file_count
+        wire["analysed_file_count"] = self.analysed_file_count
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeAnalysisCoverage") -> CodeAnalysisCoverage:
+        """Decode a wire payload into a CodeAnalysisCoverage.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_state = _decode_str(_require_field(mapping, "state", path), f"{path}.state")
+        field_admitted_file_count = _decode_int(
+            _require_field(mapping, "admitted_file_count", path),
+            f"{path}.admitted_file_count",
+        )
+        field_analysed_file_count = _decode_int(
+            _require_field(mapping, "analysed_file_count", path),
+            f"{path}.analysed_file_count",
+        )
+        return cls(
+            state=field_state,
+            admitted_file_count=field_admitted_file_count,
+            analysed_file_count=field_analysed_file_count,
         )
 
 
@@ -8257,6 +9203,1292 @@ class EvidenceCaptureInput:
             source_version=field_source_version,
             event_at=field_event_at,
             observed_at=field_observed_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentCaptureBase:
+    """Closed capture-head precondition. `creation` carries no capture id; `existing` carries
+    the observed successful capture id when one existed and omits it when the observed head
+    was explicitly empty.
+    """
+
+    kind: OpenCode
+    capture_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["kind"] = self.kind
+        if self.capture_id is not None:
+            wire["capture_id"] = self.capture_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "DocumentCaptureBase") -> DocumentCaptureBase:
+        """Decode a wire payload into a DocumentCaptureBase.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_kind = _decode_str(_require_field(mapping, "kind", path), f"{path}.kind")
+        field_capture_id: Identifier | None = None
+        if "capture_id" in mapping:
+            raw_capture_id = mapping["capture_id"]
+            if raw_capture_id is None:
+                raise ContractDecodeError(
+                    f"{path}.capture_id: null is not a valid value"
+                )
+            field_capture_id = _decode_str(raw_capture_id, f"{path}.capture_id")
+        return cls(
+            kind=field_kind,
+            capture_id=field_capture_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentOriginalBindingInput:
+    """Opaque native-owner lineage for the snapshot; it contains no path or bookmark bytes."""
+
+    owner_ref: Identifier
+    generation: int
+    route_kind: OpenCode
+    root_ref: Identifier | None = None
+    member_ref: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["owner_ref"] = self.owner_ref
+        wire["generation"] = self.generation
+        wire["route_kind"] = self.route_kind
+        if self.root_ref is not None:
+            wire["root_ref"] = self.root_ref
+        if self.member_ref is not None:
+            wire["member_ref"] = self.member_ref
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentOriginalBindingInput"
+    ) -> DocumentOriginalBindingInput:
+        """Decode a wire payload into a DocumentOriginalBindingInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_owner_ref = _decode_str(
+            _require_field(mapping, "owner_ref", path),
+            f"{path}.owner_ref",
+        )
+        field_generation = _decode_int(
+            _require_field(mapping, "generation", path),
+            f"{path}.generation",
+        )
+        field_route_kind = _decode_str(
+            _require_field(mapping, "route_kind", path),
+            f"{path}.route_kind",
+        )
+        field_root_ref: Identifier | None = None
+        if "root_ref" in mapping:
+            raw_root_ref = mapping["root_ref"]
+            if raw_root_ref is None:
+                raise ContractDecodeError(
+                    f"{path}.root_ref: null is not a valid value"
+                )
+            field_root_ref = _decode_str(raw_root_ref, f"{path}.root_ref")
+        field_member_ref: Identifier | None = None
+        if "member_ref" in mapping:
+            raw_member_ref = mapping["member_ref"]
+            if raw_member_ref is None:
+                raise ContractDecodeError(
+                    f"{path}.member_ref: null is not a valid value"
+                )
+            field_member_ref = _decode_str(raw_member_ref, f"{path}.member_ref")
+        return cls(
+            owner_ref=field_owner_ref,
+            generation=field_generation,
+            route_kind=field_route_kind,
+            root_ref=field_root_ref,
+            member_ref=field_member_ref,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentProcessingProfileInput:
+    """Exact immutable processing profile selection frozen by the native caller."""
+
+    profile_ref: Identifier
+    revision: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["profile_ref"] = self.profile_ref
+        wire["revision"] = self.revision
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentProcessingProfileInput"
+    ) -> DocumentProcessingProfileInput:
+        """Decode a wire payload into a DocumentProcessingProfileInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_profile_ref = _decode_str(
+            _require_field(mapping, "profile_ref", path),
+            f"{path}.profile_ref",
+        )
+        field_revision = _decode_str(_require_field(mapping, "revision", path), f"{path}.revision")
+        return cls(
+            profile_ref=field_profile_ref,
+            revision=field_revision,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentReprocessProfileSelection:
+    """One approved processing-profile selection a caller takes verbatim from `document.history`
+    and sends back in `document.reprocess`. It is a separate type from
+    `DocumentProcessingProfileInput` because it carries a third field that only a reprocess
+    can have: the exact immutable profile the selection was reported to resolve to. A capture
+    has no such digest to name -- its profile is resolved after admission -- so that input
+    keeps its two fields. `expected_profile_digest` is a precondition, not a preference: Core
+    recomputes the profile from the named reference, revision, the capture's media type and
+    the installation's resources, and refuses the request before any execution when the
+    recomputed identity differs, so a newer profile or newer resources are never substituted
+    beneath a request that named this one.
+    """
+
+    profile_ref: Identifier
+    revision: Identifier
+    expected_profile_digest: EvidenceChecksum
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["profile_ref"] = self.profile_ref
+        wire["revision"] = self.revision
+        wire["expected_profile_digest"] = self.expected_profile_digest
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentReprocessProfileSelection"
+    ) -> DocumentReprocessProfileSelection:
+        """Decode a wire payload into a DocumentReprocessProfileSelection.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_profile_ref = _decode_str(
+            _require_field(mapping, "profile_ref", path),
+            f"{path}.profile_ref",
+        )
+        field_revision = _decode_str(_require_field(mapping, "revision", path), f"{path}.revision")
+        field_expected_profile_digest = _decode_str(
+            _require_field(mapping, "expected_profile_digest", path),
+            f"{path}.expected_profile_digest",
+        )
+        return cls(
+            profile_ref=field_profile_ref,
+            revision=field_revision,
+            expected_profile_digest=field_expected_profile_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentConsentInput:
+    """Standing-consent lineage required for automatic capture."""
+
+    subscription_id: Identifier
+    consent_generation: int
+    config_generation: int
+    dirty_epoch: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["subscription_id"] = self.subscription_id
+        wire["consent_generation"] = self.consent_generation
+        wire["config_generation"] = self.config_generation
+        wire["dirty_epoch"] = self.dirty_epoch
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "DocumentConsentInput") -> DocumentConsentInput:
+        """Decode a wire payload into a DocumentConsentInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_subscription_id = _decode_str(
+            _require_field(mapping, "subscription_id", path),
+            f"{path}.subscription_id",
+        )
+        field_consent_generation = _decode_int(
+            _require_field(mapping, "consent_generation", path),
+            f"{path}.consent_generation",
+        )
+        field_config_generation = _decode_int(
+            _require_field(mapping, "config_generation", path),
+            f"{path}.config_generation",
+        )
+        field_dirty_epoch = _decode_int(
+            _require_field(mapping, "dirty_epoch", path),
+            f"{path}.dirty_epoch",
+        )
+        return cls(
+            subscription_id=field_subscription_id,
+            consent_generation=field_consent_generation,
+            config_generation=field_config_generation,
+            dirty_epoch=field_dirty_epoch,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentBulkOriginInput:
+    """Frozen one-off folder-run membership lineage."""
+
+    bulk_run_id: Identifier
+    manifest_revision: Identifier
+    member_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["bulk_run_id"] = self.bulk_run_id
+        wire["manifest_revision"] = self.manifest_revision
+        wire["member_id"] = self.member_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentBulkOriginInput"
+    ) -> DocumentBulkOriginInput:
+        """Decode a wire payload into a DocumentBulkOriginInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_bulk_run_id = _decode_str(
+            _require_field(mapping, "bulk_run_id", path),
+            f"{path}.bulk_run_id",
+        )
+        field_manifest_revision = _decode_str(
+            _require_field(mapping, "manifest_revision", path),
+            f"{path}.manifest_revision",
+        )
+        field_member_id = _decode_str(
+            _require_field(mapping, "member_id", path),
+            f"{path}.member_id",
+        )
+        return cls(
+            bulk_run_id=field_bulk_run_id,
+            manifest_revision=field_manifest_revision,
+            member_id=field_member_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentCaptureResult:
+    """Canonical receipt for one document capture admission or exact replay."""
+
+    capture_id: Identifier
+    document_id: Identifier
+    evidence_id: EvidenceId
+    source_digest: EvidenceChecksum
+    source_length_bytes: int
+    capture_disposition: OpenCode
+    became_head: bool
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["capture_id"] = self.capture_id
+        wire["document_id"] = self.document_id
+        wire["evidence_id"] = self.evidence_id
+        wire["source_digest"] = self.source_digest
+        wire["source_length_bytes"] = self.source_length_bytes
+        wire["capture_disposition"] = self.capture_disposition
+        wire["became_head"] = self.became_head
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentCaptureResult"
+    ) -> DocumentCaptureResult:
+        """Decode a wire payload into a DocumentCaptureResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_capture_id = _decode_str(
+            _require_field(mapping, "capture_id", path),
+            f"{path}.capture_id",
+        )
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_evidence_id = _decode_str(
+            _require_field(mapping, "evidence_id", path),
+            f"{path}.evidence_id",
+        )
+        field_source_digest = _decode_str(
+            _require_field(mapping, "source_digest", path),
+            f"{path}.source_digest",
+        )
+        field_source_length_bytes = _decode_int(
+            _require_field(mapping, "source_length_bytes", path),
+            f"{path}.source_length_bytes",
+        )
+        field_capture_disposition = _decode_str(
+            _require_field(mapping, "capture_disposition", path),
+            f"{path}.capture_disposition",
+        )
+        field_became_head = _decode_bool(
+            _require_field(mapping, "became_head", path),
+            f"{path}.became_head",
+        )
+        return cls(
+            capture_id=field_capture_id,
+            document_id=field_document_id,
+            evidence_id=field_evidence_id,
+            source_digest=field_source_digest,
+            source_length_bytes=field_source_length_bytes,
+            capture_disposition=field_capture_disposition,
+            became_head=field_became_head,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentExtractionBase:
+    """Closed successful-extraction-head precondition for reprocessing. The object is always
+    required; `extraction_id` is present when the caller observed a successful extraction
+    head and absent when it explicitly observed no successful extraction.
+    """
+
+    extraction_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        if self.extraction_id is not None:
+            wire["extraction_id"] = self.extraction_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentExtractionBase"
+    ) -> DocumentExtractionBase:
+        """Decode a wire payload into a DocumentExtractionBase.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_extraction_id: Identifier | None = None
+        if "extraction_id" in mapping:
+            raw_extraction_id = mapping["extraction_id"]
+            if raw_extraction_id is None:
+                raise ContractDecodeError(
+                    f"{path}.extraction_id: null is not a valid value"
+                )
+            field_extraction_id = _decode_str(raw_extraction_id, f"{path}.extraction_id")
+        return cls(
+            extraction_id=field_extraction_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentReprocessResult:
+    """Canonical terminal receipt for one retained-copy reprocess or exact replay."""
+
+    extraction_revision_id: Identifier
+    document_id: Identifier
+    capture_id: Identifier
+    profile_digest: EvidenceChecksum
+    result_state: OpenCode
+    publication_disposition: OpenCode
+    became_head: bool
+    output_digest: EvidenceChecksum | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["extraction_revision_id"] = self.extraction_revision_id
+        wire["document_id"] = self.document_id
+        wire["capture_id"] = self.capture_id
+        wire["profile_digest"] = self.profile_digest
+        wire["result_state"] = self.result_state
+        wire["publication_disposition"] = self.publication_disposition
+        wire["became_head"] = self.became_head
+        if self.output_digest is not None:
+            wire["output_digest"] = self.output_digest
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentReprocessResult"
+    ) -> DocumentReprocessResult:
+        """Decode a wire payload into a DocumentReprocessResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_extraction_revision_id = _decode_str(
+            _require_field(mapping, "extraction_revision_id", path),
+            f"{path}.extraction_revision_id",
+        )
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_capture_id = _decode_str(
+            _require_field(mapping, "capture_id", path),
+            f"{path}.capture_id",
+        )
+        field_profile_digest = _decode_str(
+            _require_field(mapping, "profile_digest", path),
+            f"{path}.profile_digest",
+        )
+        field_result_state = _decode_str(
+            _require_field(mapping, "result_state", path),
+            f"{path}.result_state",
+        )
+        field_publication_disposition = _decode_str(
+            _require_field(mapping, "publication_disposition", path),
+            f"{path}.publication_disposition",
+        )
+        field_became_head = _decode_bool(
+            _require_field(mapping, "became_head", path),
+            f"{path}.became_head",
+        )
+        field_output_digest: EvidenceChecksum | None = None
+        if "output_digest" in mapping:
+            raw_output_digest = mapping["output_digest"]
+            if raw_output_digest is None:
+                raise ContractDecodeError(
+                    f"{path}.output_digest: null is not a valid value"
+                )
+            field_output_digest = _decode_str(raw_output_digest, f"{path}.output_digest")
+        return cls(
+            extraction_revision_id=field_extraction_revision_id,
+            document_id=field_document_id,
+            capture_id=field_capture_id,
+            profile_digest=field_profile_digest,
+            result_state=field_result_state,
+            publication_disposition=field_publication_disposition,
+            became_head=field_became_head,
+            output_digest=field_output_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentHistoryAction:
+    """One action Core states the availability of, with the exact reason when it is unavailable.
+    A caller offers a control only for an action reported `available`, and otherwise shows
+    the stated reason rather than a control that cannot work. v1 reports
+    `reprocess_captured_copy` against one retained capture and `refresh_original` against the
+    document. An action code this build does not recognise is preserved and not offered.
+    """
+
+    action: OpenCode
+    available: bool
+    unavailable_reason: OpenCode | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["action"] = self.action
+        wire["available"] = self.available
+        if self.unavailable_reason is not None:
+            wire["unavailable_reason"] = self.unavailable_reason
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentHistoryAction"
+    ) -> DocumentHistoryAction:
+        """Decode a wire payload into a DocumentHistoryAction.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_action = _decode_str(_require_field(mapping, "action", path), f"{path}.action")
+        field_available = _decode_bool(
+            _require_field(mapping, "available", path),
+            f"{path}.available",
+        )
+        field_unavailable_reason: OpenCode | None = None
+        if "unavailable_reason" in mapping:
+            raw_unavailable_reason = mapping["unavailable_reason"]
+            if raw_unavailable_reason is None:
+                raise ContractDecodeError(
+                    f"{path}.unavailable_reason: null is not a valid value"
+                )
+            field_unavailable_reason = _decode_str(
+                raw_unavailable_reason,
+                f"{path}.unavailable_reason",
+            )
+        return cls(
+            action=field_action,
+            available=field_available,
+            unavailable_reason=field_unavailable_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentReprocessProfileOption:
+    """One processing-profile selection Core reports as approved and available for reprocessing
+    this exact retained capture, and will accept in a `document.reprocess` request naming
+    that capture. `profile_digest` is the immutable profile the selection resolves to for
+    this capture's media type now, so a caller can prove the revision it was offered is the
+    revision that ran, and a newer profile or newer resources are never substituted beneath a
+    request that named this one. A caller never synthesises a reference or revision of its
+    own.
+    """
+
+    profile_ref: Identifier
+    revision: Identifier
+    processing_mode: OpenCode
+    profile_digest: EvidenceChecksum
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["profile_ref"] = self.profile_ref
+        wire["revision"] = self.revision
+        wire["processing_mode"] = self.processing_mode
+        wire["profile_digest"] = self.profile_digest
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentReprocessProfileOption"
+    ) -> DocumentReprocessProfileOption:
+        """Decode a wire payload into a DocumentReprocessProfileOption.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_profile_ref = _decode_str(
+            _require_field(mapping, "profile_ref", path),
+            f"{path}.profile_ref",
+        )
+        field_revision = _decode_str(_require_field(mapping, "revision", path), f"{path}.revision")
+        field_processing_mode = _decode_str(
+            _require_field(mapping, "processing_mode", path),
+            f"{path}.processing_mode",
+        )
+        field_profile_digest = _decode_str(
+            _require_field(mapping, "profile_digest", path),
+            f"{path}.profile_digest",
+        )
+        return cls(
+            profile_ref=field_profile_ref,
+            revision=field_revision,
+            processing_mode=field_processing_mode,
+            profile_digest=field_profile_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentExtractionProfileSummary:
+    """The immutable processing profile one extraction revision was produced under. `digest` is
+    the profile's canonical identity and the only field a caller may compare for sameness.
+    `decoder_build` is the exact decoder-build string the profile records, which carries the
+    profile reference and revision the admitting request froze. The profile body itself --
+    its resource ceilings, pinned model hashes, parser feature list and unknown-feature rules
+    -- is not exposed.
+    """
+
+    digest: EvidenceChecksum
+    decoder_build: str
+    processing_mode: OpenCode
+    embedded_image_ocr: bool
+    ocr_languages: tuple[OpenCode, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["digest"] = self.digest
+        wire["decoder_build"] = self.decoder_build
+        wire["processing_mode"] = self.processing_mode
+        wire["embedded_image_ocr"] = self.embedded_image_ocr
+        wire["ocr_languages"] = list(self.ocr_languages)
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentExtractionProfileSummary"
+    ) -> DocumentExtractionProfileSummary:
+        """Decode a wire payload into a DocumentExtractionProfileSummary.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_digest = _decode_str(_require_field(mapping, "digest", path), f"{path}.digest")
+        field_decoder_build = _decode_str(
+            _require_field(mapping, "decoder_build", path),
+            f"{path}.decoder_build",
+        )
+        field_processing_mode = _decode_str(
+            _require_field(mapping, "processing_mode", path),
+            f"{path}.processing_mode",
+        )
+        field_embedded_image_ocr = _decode_bool(
+            _require_field(mapping, "embedded_image_ocr", path),
+            f"{path}.embedded_image_ocr",
+        )
+        field_ocr_languages_items = _decode_sequence(
+            _require_field(mapping, "ocr_languages", path),
+            f"{path}.ocr_languages",
+        )
+        field_ocr_languages = tuple(
+            _decode_str(item, f"{path}.ocr_languages[{index}]")
+            for index, item in enumerate(field_ocr_languages_items)
+        )
+        return cls(
+            digest=field_digest,
+            decoder_build=field_decoder_build,
+            processing_mode=field_processing_mode,
+            embedded_image_ocr=field_embedded_image_ocr,
+            ocr_languages=field_ocr_languages,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentSourceHeadState:
+    """The document's source side: its current successful capture when it has one, and the Core-
+    owned generation that governs removal and suppression. Independent of the extraction head
+    -- a new capture does not move the extraction head and a new extraction does not move
+    this one. `original_binding_state` is a route fact only; it carries no opaque owner
+    reference, no path and no bookmark material, and it is not a statement about whether any
+    capture is retrievable.
+    """
+
+    source_state: OpenCode
+    source_removal_generation: int
+    capture_head_sequence: int
+    original_binding_state: OpenCode
+    updated_at: Timestamp
+    current_capture_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["source_state"] = self.source_state
+        wire["source_removal_generation"] = self.source_removal_generation
+        if self.current_capture_id is not None:
+            wire["current_capture_id"] = self.current_capture_id
+        wire["capture_head_sequence"] = self.capture_head_sequence
+        wire["original_binding_state"] = self.original_binding_state
+        wire["updated_at"] = self.updated_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentSourceHeadState"
+    ) -> DocumentSourceHeadState:
+        """Decode a wire payload into a DocumentSourceHeadState.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_source_state = _decode_str(
+            _require_field(mapping, "source_state", path),
+            f"{path}.source_state",
+        )
+        field_source_removal_generation = _decode_int(
+            _require_field(mapping, "source_removal_generation", path),
+            f"{path}.source_removal_generation",
+        )
+        field_current_capture_id: Identifier | None = None
+        if "current_capture_id" in mapping:
+            raw_current_capture_id = mapping["current_capture_id"]
+            if raw_current_capture_id is None:
+                raise ContractDecodeError(
+                    f"{path}.current_capture_id: null is not a valid value"
+                )
+            field_current_capture_id = _decode_str(
+                raw_current_capture_id,
+                f"{path}.current_capture_id",
+            )
+        field_capture_head_sequence = _decode_int(
+            _require_field(mapping, "capture_head_sequence", path),
+            f"{path}.capture_head_sequence",
+        )
+        field_original_binding_state = _decode_str(
+            _require_field(mapping, "original_binding_state", path),
+            f"{path}.original_binding_state",
+        )
+        field_updated_at = _decode_str(
+            _require_field(mapping, "updated_at", path),
+            f"{path}.updated_at",
+        )
+        return cls(
+            source_state=field_source_state,
+            source_removal_generation=field_source_removal_generation,
+            current_capture_id=field_current_capture_id,
+            capture_head_sequence=field_capture_head_sequence,
+            original_binding_state=field_original_binding_state,
+            updated_at=field_updated_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentExtractionHeadState:
+    """The document's extraction side: its current retrieval head when it has one, and whether
+    retrieval rows are actually published for it. Independent of the source head.
+    `retrieval_state` is `retrievable` only when Core currently publishes retrieval rows for
+    this document; a pending, failed or historical-only extraction leaves whatever was
+    already published in place rather than replacing it.
+    """
+
+    extraction_head_ordinal: int
+    retrieval_state: OpenCode
+    current_extraction_id: Identifier | None = None
+    published_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        if self.current_extraction_id is not None:
+            wire["current_extraction_id"] = self.current_extraction_id
+        wire["extraction_head_ordinal"] = self.extraction_head_ordinal
+        wire["retrieval_state"] = self.retrieval_state
+        if self.published_at is not None:
+            wire["published_at"] = self.published_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentExtractionHeadState"
+    ) -> DocumentExtractionHeadState:
+        """Decode a wire payload into a DocumentExtractionHeadState.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_current_extraction_id: Identifier | None = None
+        if "current_extraction_id" in mapping:
+            raw_current_extraction_id = mapping["current_extraction_id"]
+            if raw_current_extraction_id is None:
+                raise ContractDecodeError(
+                    f"{path}.current_extraction_id: null is not a valid value"
+                )
+            field_current_extraction_id = _decode_str(
+                raw_current_extraction_id,
+                f"{path}.current_extraction_id",
+            )
+        field_extraction_head_ordinal = _decode_int(
+            _require_field(mapping, "extraction_head_ordinal", path),
+            f"{path}.extraction_head_ordinal",
+        )
+        field_retrieval_state = _decode_str(
+            _require_field(mapping, "retrieval_state", path),
+            f"{path}.retrieval_state",
+        )
+        field_published_at: Timestamp | None = None
+        if "published_at" in mapping:
+            raw_published_at = mapping["published_at"]
+            if raw_published_at is None:
+                raise ContractDecodeError(
+                    f"{path}.published_at: null is not a valid value"
+                )
+            field_published_at = _decode_str(raw_published_at, f"{path}.published_at")
+        return cls(
+            current_extraction_id=field_current_extraction_id,
+            extraction_head_ordinal=field_extraction_head_ordinal,
+            retrieval_state=field_retrieval_state,
+            published_at=field_published_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentProcessingSettings:
+    """This workspace's durable document-processing preferences, as Core currently holds them.
+    They decide what a *future* capture is admitted under and nothing else: a capture already
+    admitted carries the exact settings snapshot it was admitted with, and changing these
+    values never alters its queued work, its immutable profile or the identity that
+    `document.history` reports for it. An already captured retained source changes only
+    through the explicit `reprocess_captured_copy` action. `revision` is the compare-and-swap
+    token: it is what `document.settings.update` must name, and it advances by one on every
+    accepted change. Zero means nothing is stored and the reported values are the product
+    defaults.
+    """
+
+    mode: OpenCode
+    recognition_languages: tuple[OpenCode, ...]
+    embedded_image_ocr: bool
+    revision: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["mode"] = self.mode
+        wire["recognition_languages"] = list(self.recognition_languages)
+        wire["embedded_image_ocr"] = self.embedded_image_ocr
+        wire["revision"] = self.revision
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentProcessingSettings"
+    ) -> DocumentProcessingSettings:
+        """Decode a wire payload into a DocumentProcessingSettings.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_mode = _decode_str(_require_field(mapping, "mode", path), f"{path}.mode")
+        field_recognition_languages_items = _decode_sequence(
+            _require_field(mapping, "recognition_languages", path),
+            f"{path}.recognition_languages",
+        )
+        field_recognition_languages = tuple(
+            _decode_str(item, f"{path}.recognition_languages[{index}]")
+            for index, item in enumerate(field_recognition_languages_items)
+        )
+        field_embedded_image_ocr = _decode_bool(
+            _require_field(mapping, "embedded_image_ocr", path),
+            f"{path}.embedded_image_ocr",
+        )
+        field_revision = _decode_int(_require_field(mapping, "revision", path), f"{path}.revision")
+        return cls(
+            mode=field_mode,
+            recognition_languages=field_recognition_languages,
+            embedded_image_ocr=field_embedded_image_ocr,
+            revision=field_revision,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentProcessingSettingsUpdateInput:
+    """Closed input for `document.settings.update`: one compare-and-swap change to this
+    workspace's document-processing preferences. `revision` must equal the value the caller
+    last read, so a change made since that read is refused as a conflict rather than silently
+    overwritten; zero asserts that nothing is stored yet. Every other member is optional and
+    an absent member leaves that preference exactly as it stands -- this is a partial update,
+    not a replacement, so a caller cannot reset a preference it does not know about. The
+    change takes effect for captures admitted after it, and never for one already admitted.
+    """
+
+    revision: int
+    mode: OpenCode | None = None
+    recognition_languages: tuple[OpenCode, ...] | None = None
+    embedded_image_ocr: bool | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["revision"] = self.revision
+        if self.mode is not None:
+            wire["mode"] = self.mode
+        if self.recognition_languages is not None:
+            wire["recognition_languages"] = list(self.recognition_languages)
+        if self.embedded_image_ocr is not None:
+            wire["embedded_image_ocr"] = self.embedded_image_ocr
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentProcessingSettingsUpdateInput"
+    ) -> DocumentProcessingSettingsUpdateInput:
+        """Decode a wire payload into a DocumentProcessingSettingsUpdateInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_revision = _decode_int(_require_field(mapping, "revision", path), f"{path}.revision")
+        field_mode: OpenCode | None = None
+        if "mode" in mapping:
+            raw_mode = mapping["mode"]
+            if raw_mode is None:
+                raise ContractDecodeError(
+                    f"{path}.mode: null is not a valid value"
+                )
+            field_mode = _decode_str(raw_mode, f"{path}.mode")
+        field_recognition_languages: tuple[OpenCode, ...] | None = None
+        if "recognition_languages" in mapping:
+            raw_recognition_languages = mapping["recognition_languages"]
+            if raw_recognition_languages is None:
+                raise ContractDecodeError(
+                    f"{path}.recognition_languages: null is not a valid value"
+                )
+            field_recognition_languages_items = _decode_sequence(
+                raw_recognition_languages,
+                f"{path}.recognition_languages",
+            )
+            field_recognition_languages = tuple(
+                _decode_str(item, f"{path}.recognition_languages[{index}]")
+                for index, item in enumerate(field_recognition_languages_items)
+            )
+        field_embedded_image_ocr: bool | None = None
+        if "embedded_image_ocr" in mapping:
+            raw_embedded_image_ocr = mapping["embedded_image_ocr"]
+            if raw_embedded_image_ocr is None:
+                raise ContractDecodeError(
+                    f"{path}.embedded_image_ocr: null is not a valid value"
+                )
+            field_embedded_image_ocr = _decode_bool(
+                raw_embedded_image_ocr,
+                f"{path}.embedded_image_ocr",
+            )
+        return cls(
+            revision=field_revision,
+            mode=field_mode,
+            recognition_languages=field_recognition_languages,
+            embedded_image_ocr=field_embedded_image_ocr,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentOriginalDisconnectInput:
+    """Closed input for `document.original.disconnect`. Names one opaque owner/device route of
+    one document's original and asks Core to tombstone it at the generation Core currently
+    holds; it carries no generation, path, URL or bookmark. A disconnect that arrives before
+    any capture of the document records the tombstone anyway, so a stale later capture under
+    that owner can never reactivate the route. Disconnecting a route that is already
+    disconnected changes nothing.
+    """
+
+    document_id: Identifier
+    owner_ref: Identifier
+    route_kind: OpenCode
+    root_ref: Identifier | None = None
+    member_ref: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["document_id"] = self.document_id
+        wire["owner_ref"] = self.owner_ref
+        wire["route_kind"] = self.route_kind
+        if self.root_ref is not None:
+            wire["root_ref"] = self.root_ref
+        if self.member_ref is not None:
+            wire["member_ref"] = self.member_ref
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentOriginalDisconnectInput"
+    ) -> DocumentOriginalDisconnectInput:
+        """Decode a wire payload into a DocumentOriginalDisconnectInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_owner_ref = _decode_str(
+            _require_field(mapping, "owner_ref", path),
+            f"{path}.owner_ref",
+        )
+        field_route_kind = _decode_str(
+            _require_field(mapping, "route_kind", path),
+            f"{path}.route_kind",
+        )
+        field_root_ref: Identifier | None = None
+        if "root_ref" in mapping:
+            raw_root_ref = mapping["root_ref"]
+            if raw_root_ref is None:
+                raise ContractDecodeError(
+                    f"{path}.root_ref: null is not a valid value"
+                )
+            field_root_ref = _decode_str(raw_root_ref, f"{path}.root_ref")
+        field_member_ref: Identifier | None = None
+        if "member_ref" in mapping:
+            raw_member_ref = mapping["member_ref"]
+            if raw_member_ref is None:
+                raise ContractDecodeError(
+                    f"{path}.member_ref: null is not a valid value"
+                )
+            field_member_ref = _decode_str(raw_member_ref, f"{path}.member_ref")
+        return cls(
+            document_id=field_document_id,
+            owner_ref=field_owner_ref,
+            route_kind=field_route_kind,
+            root_ref=field_root_ref,
+            member_ref=field_member_ref,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentOriginalDisconnectResult:
+    """Canonical terminal receipt for one source-level disconnect or its exact replay: the route
+    as Core now holds it.
+    """
+
+    document_id: Identifier
+    owner_ref: Identifier
+    binding_generation: int
+    connection_state: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["document_id"] = self.document_id
+        wire["owner_ref"] = self.owner_ref
+        wire["binding_generation"] = self.binding_generation
+        wire["connection_state"] = self.connection_state
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentOriginalDisconnectResult"
+    ) -> DocumentOriginalDisconnectResult:
+        """Decode a wire payload into a DocumentOriginalDisconnectResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_owner_ref = _decode_str(
+            _require_field(mapping, "owner_ref", path),
+            f"{path}.owner_ref",
+        )
+        field_binding_generation = _decode_int(
+            _require_field(mapping, "binding_generation", path),
+            f"{path}.binding_generation",
+        )
+        field_connection_state = _decode_str(
+            _require_field(mapping, "connection_state", path),
+            f"{path}.connection_state",
+        )
+        return cls(
+            document_id=field_document_id,
+            owner_ref=field_owner_ref,
+            binding_generation=field_binding_generation,
+            connection_state=field_connection_state,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentOriginalRelinkInput:
+    """Closed input for `document.original.relink`. Names one opaque owner/device route of one
+    document's original (a direct file) and asks Core to move it to the new binding
+    generation the companion reserved locally before it read any byte of the newly chosen
+    file, connected. A capture claiming an older generation of that route is thereafter
+    historical only and can never reactivate or promote under the new one. A relink that
+    reaches Core before the first capture of the document is recorded anyway. It carries no
+    path, URL or bookmark.
+    """
+
+    document_id: Identifier
+    owner_ref: Identifier
+    binding_generation: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["document_id"] = self.document_id
+        wire["owner_ref"] = self.owner_ref
+        wire["binding_generation"] = self.binding_generation
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentOriginalRelinkInput"
+    ) -> DocumentOriginalRelinkInput:
+        """Decode a wire payload into a DocumentOriginalRelinkInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_owner_ref = _decode_str(
+            _require_field(mapping, "owner_ref", path),
+            f"{path}.owner_ref",
+        )
+        field_binding_generation = _decode_int(
+            _require_field(mapping, "binding_generation", path),
+            f"{path}.binding_generation",
+        )
+        return cls(
+            document_id=field_document_id,
+            owner_ref=field_owner_ref,
+            binding_generation=field_binding_generation,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentOriginalRelinkResult:
+    """Canonical terminal receipt for one source-level relink or its exact replay: the route as
+    Core now holds it, connected at the named generation.
+    """
+
+    document_id: Identifier
+    owner_ref: Identifier
+    binding_generation: int
+    connection_state: OpenCode
+    current_capture_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["document_id"] = self.document_id
+        wire["owner_ref"] = self.owner_ref
+        wire["binding_generation"] = self.binding_generation
+        wire["connection_state"] = self.connection_state
+        if self.current_capture_id is not None:
+            wire["current_capture_id"] = self.current_capture_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentOriginalRelinkResult"
+    ) -> DocumentOriginalRelinkResult:
+        """Decode a wire payload into a DocumentOriginalRelinkResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_owner_ref = _decode_str(
+            _require_field(mapping, "owner_ref", path),
+            f"{path}.owner_ref",
+        )
+        field_binding_generation = _decode_int(
+            _require_field(mapping, "binding_generation", path),
+            f"{path}.binding_generation",
+        )
+        field_connection_state = _decode_str(
+            _require_field(mapping, "connection_state", path),
+            f"{path}.connection_state",
+        )
+        field_current_capture_id: Identifier | None = None
+        if "current_capture_id" in mapping:
+            raw_current_capture_id = mapping["current_capture_id"]
+            if raw_current_capture_id is None:
+                raise ContractDecodeError(
+                    f"{path}.current_capture_id: null is not a valid value"
+                )
+            field_current_capture_id = _decode_str(
+                raw_current_capture_id,
+                f"{path}.current_capture_id",
+            )
+        return cls(
+            document_id=field_document_id,
+            owner_ref=field_owner_ref,
+            binding_generation=field_binding_generation,
+            connection_state=field_connection_state,
+            current_capture_id=field_current_capture_id,
         )
 
 
@@ -14083,6 +16315,148 @@ class CoreTargetV1:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class SettingRecord:
+    """One stored setting as it currently stands. `record_version` is opaque and round-tripped:
+    a caller that intends to replace this value passes it back as the envelope's
+    `MutationPrecondition.record_version`.
+    """
+
+    key: OpenCode
+    value_json: SettingValueJson
+    record_version: OpaqueToken
+    updated_at: Timestamp
+    updated_by: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["key"] = self.key
+        wire["value_json"] = self.value_json
+        wire["record_version"] = self.record_version
+        wire["updated_at"] = self.updated_at
+        wire["updated_by"] = self.updated_by
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SettingRecord") -> SettingRecord:
+        """Decode a wire payload into a SettingRecord.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_key = _decode_str(_require_field(mapping, "key", path), f"{path}.key")
+        field_value_json = _decode_str(
+            _require_field(mapping, "value_json", path),
+            f"{path}.value_json",
+        )
+        field_record_version = _decode_str(
+            _require_field(mapping, "record_version", path),
+            f"{path}.record_version",
+        )
+        field_updated_at = _decode_str(
+            _require_field(mapping, "updated_at", path),
+            f"{path}.updated_at",
+        )
+        field_updated_by = _decode_str(
+            _require_field(mapping, "updated_by", path),
+            f"{path}.updated_by",
+        )
+        return cls(
+            key=field_key,
+            value_json=field_value_json,
+            record_version=field_record_version,
+            updated_at=field_updated_at,
+            updated_by=field_updated_by,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SettingsListInput:
+    """Input for `settings.list`: every stored setting for the envelope-selected workspace, in
+    key order. `prefix` narrows to one namespace and is matched literally, never as a
+    pattern.
+    """
+
+    prefix: OpenCode | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        if self.prefix is not None:
+            wire["prefix"] = self.prefix
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SettingsListInput") -> SettingsListInput:
+        """Decode a wire payload into a SettingsListInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_prefix: OpenCode | None = None
+        if "prefix" in mapping:
+            raw_prefix = mapping["prefix"]
+            if raw_prefix is None:
+                raise ContractDecodeError(
+                    f"{path}.prefix: null is not a valid value"
+                )
+            field_prefix = _decode_str(raw_prefix, f"{path}.prefix")
+        return cls(
+            prefix=field_prefix,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SettingsSetInput:
+    """Input for `settings.set`: store `value_json` under `key` for the envelope-selected
+    workspace. Identifies its target by key only; it carries no mutation precondition and
+    replaces whatever is stored.
+    """
+
+    key: OpenCode
+    value_json: SettingValueJson
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["key"] = self.key
+        wire["value_json"] = self.value_json
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SettingsSetInput") -> SettingsSetInput:
+        """Decode a wire payload into a SettingsSetInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_key = _decode_str(_require_field(mapping, "key", path), f"{path}.key")
+        field_value_json = _decode_str(
+            _require_field(mapping, "value_json", path),
+            f"{path}.value_json",
+        )
+        return cls(
+            key=field_key,
+            value_json=field_value_json,
+        )
+
+
 AnalysisTarget: TypeAlias = GovernedMetricReference | GovernedDataViewReference
 """Exactly one governed analysis target: an exact metric revision or an exact Data View revision.
 The union is discriminated by the required `kind` member unique to each branch.
@@ -14341,6 +16715,973 @@ class ChatEventsResult:
             transport_events=field_transport_events,
             requires_resnapshot=field_requires_resnapshot,
             resnapshot_reason=field_resnapshot_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeSymbol:
+    """One accepted definition: its producer key, kind, display name, where it is written and
+    the governed record version that holds it.
+    """
+
+    semantic_key: CodeSemanticKey
+    node_kind: OpenCode
+    display_name: str
+    source: CodeSourceSpan
+    record: RecordVersionReference
+    depth: int | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["semantic_key"] = self.semantic_key
+        wire["node_kind"] = self.node_kind
+        wire["display_name"] = self.display_name
+        wire["source"] = self.source.to_wire()
+        wire["record"] = self.record.to_wire()
+        if self.depth is not None:
+            wire["depth"] = self.depth
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeSymbol") -> CodeSymbol:
+        """Decode a wire payload into a CodeSymbol.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_semantic_key = _decode_str(
+            _require_field(mapping, "semantic_key", path),
+            f"{path}.semantic_key",
+        )
+        field_node_kind = _decode_str(
+            _require_field(mapping, "node_kind", path),
+            f"{path}.node_kind",
+        )
+        field_display_name = _decode_str(
+            _require_field(mapping, "display_name", path),
+            f"{path}.display_name",
+        )
+        field_source = CodeSourceSpan.from_wire(
+            _require_field(mapping, "source", path),
+            f"{path}.source",
+        )
+        field_record = RecordVersionReference.from_wire(
+            _require_field(mapping, "record", path),
+            f"{path}.record",
+        )
+        field_depth: int | None = None
+        if "depth" in mapping:
+            raw_depth = mapping["depth"]
+            if raw_depth is None:
+                raise ContractDecodeError(
+                    f"{path}.depth: null is not a valid value"
+                )
+            field_depth = _decode_int(raw_depth, f"{path}.depth")
+        return cls(
+            semantic_key=field_semantic_key,
+            node_kind=field_node_kind,
+            display_name=field_display_name,
+            source=field_source,
+            record=field_record,
+            depth=field_depth,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeRelation:
+    """One accepted, resolved static relationship between two definitions of the same import,
+    with the source span of the occurrence that asserts it.
+    """
+
+    edge_key: CodeSemanticKey
+    relation_type: OpenCode
+    producer_relationship: OpenCode
+    type_only: bool
+    evidence_strength: OpenCode
+    source_key: CodeSemanticKey
+    target_key: CodeSemanticKey
+    depth: int
+    source: CodeSourceSpan
+    record: RecordVersionReference
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["edge_key"] = self.edge_key
+        wire["relation_type"] = self.relation_type
+        wire["producer_relationship"] = self.producer_relationship
+        wire["type_only"] = self.type_only
+        wire["evidence_strength"] = self.evidence_strength
+        wire["source_key"] = self.source_key
+        wire["target_key"] = self.target_key
+        wire["depth"] = self.depth
+        wire["source"] = self.source.to_wire()
+        wire["record"] = self.record.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeRelation") -> CodeRelation:
+        """Decode a wire payload into a CodeRelation.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_edge_key = _decode_str(_require_field(mapping, "edge_key", path), f"{path}.edge_key")
+        field_relation_type = _decode_str(
+            _require_field(mapping, "relation_type", path),
+            f"{path}.relation_type",
+        )
+        field_producer_relationship = _decode_str(
+            _require_field(mapping, "producer_relationship", path),
+            f"{path}.producer_relationship",
+        )
+        field_type_only = _decode_bool(
+            _require_field(mapping, "type_only", path),
+            f"{path}.type_only",
+        )
+        field_evidence_strength = _decode_str(
+            _require_field(mapping, "evidence_strength", path),
+            f"{path}.evidence_strength",
+        )
+        field_source_key = _decode_str(
+            _require_field(mapping, "source_key", path),
+            f"{path}.source_key",
+        )
+        field_target_key = _decode_str(
+            _require_field(mapping, "target_key", path),
+            f"{path}.target_key",
+        )
+        field_depth = _decode_int(_require_field(mapping, "depth", path), f"{path}.depth")
+        field_source = CodeSourceSpan.from_wire(
+            _require_field(mapping, "source", path),
+            f"{path}.source",
+        )
+        field_record = RecordVersionReference.from_wire(
+            _require_field(mapping, "record", path),
+            f"{path}.record",
+        )
+        return cls(
+            edge_key=field_edge_key,
+            relation_type=field_relation_type,
+            producer_relationship=field_producer_relationship,
+            type_only=field_type_only,
+            evidence_strength=field_evidence_strength,
+            source_key=field_source_key,
+            target_key=field_target_key,
+            depth=field_depth,
+            source=field_source,
+            record=field_record,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeDiagnostic:
+    """One relationship candidate the import did not accept -- unresolved, ambiguous, external,
+    inferred from dynamic dispatch, outside the policy, or a self-relation -- that bears on
+    the query's subject. Coverage information only: a diagnostic is never a relation and is
+    never traversed.
+    """
+
+    edge_key: CodeSemanticKey
+    reason: OpenCode
+    producer_relationship: OpenCode
+    evidence_strength: OpenCode
+    resolution_status: OpenCode
+    source_key: CodeSemanticKey
+    source: CodeSourceSpan
+    target_key: CodeSemanticKey | None = None
+    target_descriptor: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["edge_key"] = self.edge_key
+        wire["reason"] = self.reason
+        wire["producer_relationship"] = self.producer_relationship
+        wire["evidence_strength"] = self.evidence_strength
+        wire["resolution_status"] = self.resolution_status
+        wire["source_key"] = self.source_key
+        if self.target_key is not None:
+            wire["target_key"] = self.target_key
+        if self.target_descriptor is not None:
+            wire["target_descriptor"] = self.target_descriptor
+        wire["source"] = self.source.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeDiagnostic") -> CodeDiagnostic:
+        """Decode a wire payload into a CodeDiagnostic.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_edge_key = _decode_str(_require_field(mapping, "edge_key", path), f"{path}.edge_key")
+        field_reason = _decode_str(_require_field(mapping, "reason", path), f"{path}.reason")
+        field_producer_relationship = _decode_str(
+            _require_field(mapping, "producer_relationship", path),
+            f"{path}.producer_relationship",
+        )
+        field_evidence_strength = _decode_str(
+            _require_field(mapping, "evidence_strength", path),
+            f"{path}.evidence_strength",
+        )
+        field_resolution_status = _decode_str(
+            _require_field(mapping, "resolution_status", path),
+            f"{path}.resolution_status",
+        )
+        field_source_key = _decode_str(
+            _require_field(mapping, "source_key", path),
+            f"{path}.source_key",
+        )
+        field_target_key: CodeSemanticKey | None = None
+        if "target_key" in mapping:
+            raw_target_key = mapping["target_key"]
+            if raw_target_key is None:
+                raise ContractDecodeError(
+                    f"{path}.target_key: null is not a valid value"
+                )
+            field_target_key = _decode_str(raw_target_key, f"{path}.target_key")
+        field_target_descriptor: str | None = None
+        if "target_descriptor" in mapping:
+            raw_target_descriptor = mapping["target_descriptor"]
+            if raw_target_descriptor is None:
+                raise ContractDecodeError(
+                    f"{path}.target_descriptor: null is not a valid value"
+                )
+            field_target_descriptor = _decode_str(
+                raw_target_descriptor,
+                f"{path}.target_descriptor",
+            )
+        field_source = CodeSourceSpan.from_wire(
+            _require_field(mapping, "source", path),
+            f"{path}.source",
+        )
+        return cls(
+            edge_key=field_edge_key,
+            reason=field_reason,
+            producer_relationship=field_producer_relationship,
+            evidence_strength=field_evidence_strength,
+            resolution_status=field_resolution_status,
+            source_key=field_source_key,
+            target_key=field_target_key,
+            target_descriptor=field_target_descriptor,
+            source=field_source,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeSpanContent:
+    """The captured source of one disclosed definition, read by content address. The bytes come
+    from the blob the span's `content_digest` names and are verified against that address
+    before they are decoded; the working tree is never read and no absolute path is ever
+    returned. `byte_length` is the span's full length in the captured file, so a `truncated`
+    span states how much of itself it is.
+    """
+
+    semantic_key: CodeSemanticKey
+    source: CodeSourceSpan
+    byte_length: int
+    truncated: bool
+    text: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["semantic_key"] = self.semantic_key
+        wire["source"] = self.source.to_wire()
+        wire["byte_length"] = self.byte_length
+        wire["truncated"] = self.truncated
+        wire["text"] = self.text
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeSpanContent") -> CodeSpanContent:
+        """Decode a wire payload into a CodeSpanContent.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_semantic_key = _decode_str(
+            _require_field(mapping, "semantic_key", path),
+            f"{path}.semantic_key",
+        )
+        field_source = CodeSourceSpan.from_wire(
+            _require_field(mapping, "source", path),
+            f"{path}.source",
+        )
+        field_byte_length = _decode_int(
+            _require_field(mapping, "byte_length", path),
+            f"{path}.byte_length",
+        )
+        field_truncated = _decode_bool(
+            _require_field(mapping, "truncated", path),
+            f"{path}.truncated",
+        )
+        field_text = _decode_str(_require_field(mapping, "text", path), f"{path}.text")
+        return cls(
+            semantic_key=field_semantic_key,
+            source=field_source,
+            byte_length=field_byte_length,
+            truncated=field_truncated,
+            text=field_text,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeQueryInput:
+    """Input for `code.query`. Names one closed intent -- `definition`, `references`, `callers`,
+    `callees`, `dependencies` or `code_context` -- and binds it to exactly one repository,
+    analysed snapshot, producer and profile. The subject is an exact `semantic_key`, a `name`
+    matched exactly against display names, both (which must then name the same definition),
+    or, for `code_context` only, a `seed` carrying its own binding. Workspace, principal and
+    authority come from the envelope's authorized context only.
+    """
+
+    intent: OpenCode
+    repository_id: Identifier
+    snapshot_id: Identifier
+    producer_id: Identifier
+    profile_digest: ContentChecksum
+    semantic_key: CodeSemanticKey | None = None
+    name: str | None = None
+    depth: GraphDepthLimit | None = None
+    runtime_only: bool | None = None
+    limit: PageLimit | None = None
+    seed: CodeContextSeed | None = None
+    context: ContextPackBuildInput | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["intent"] = self.intent
+        wire["repository_id"] = self.repository_id
+        wire["snapshot_id"] = self.snapshot_id
+        wire["producer_id"] = self.producer_id
+        wire["profile_digest"] = self.profile_digest
+        if self.semantic_key is not None:
+            wire["semantic_key"] = self.semantic_key
+        if self.name is not None:
+            wire["name"] = self.name
+        if self.depth is not None:
+            wire["depth"] = self.depth
+        if self.runtime_only is not None:
+            wire["runtime_only"] = self.runtime_only
+        if self.limit is not None:
+            wire["limit"] = self.limit
+        if self.seed is not None:
+            wire["seed"] = self.seed.to_wire()
+        if self.context is not None:
+            wire["context"] = self.context.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeQueryInput") -> CodeQueryInput:
+        """Decode a wire payload into a CodeQueryInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_intent = _decode_str(_require_field(mapping, "intent", path), f"{path}.intent")
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_snapshot_id = _decode_str(
+            _require_field(mapping, "snapshot_id", path),
+            f"{path}.snapshot_id",
+        )
+        field_producer_id = _decode_str(
+            _require_field(mapping, "producer_id", path),
+            f"{path}.producer_id",
+        )
+        field_profile_digest = _decode_str(
+            _require_field(mapping, "profile_digest", path),
+            f"{path}.profile_digest",
+        )
+        field_semantic_key: CodeSemanticKey | None = None
+        if "semantic_key" in mapping:
+            raw_semantic_key = mapping["semantic_key"]
+            if raw_semantic_key is None:
+                raise ContractDecodeError(
+                    f"{path}.semantic_key: null is not a valid value"
+                )
+            field_semantic_key = _decode_str(raw_semantic_key, f"{path}.semantic_key")
+        field_name: str | None = None
+        if "name" in mapping:
+            raw_name = mapping["name"]
+            if raw_name is None:
+                raise ContractDecodeError(
+                    f"{path}.name: null is not a valid value"
+                )
+            field_name = _decode_str(raw_name, f"{path}.name")
+        field_depth: GraphDepthLimit | None = None
+        if "depth" in mapping:
+            raw_depth = mapping["depth"]
+            if raw_depth is None:
+                raise ContractDecodeError(
+                    f"{path}.depth: null is not a valid value"
+                )
+            field_depth = _decode_int(raw_depth, f"{path}.depth")
+        field_runtime_only: bool | None = None
+        if "runtime_only" in mapping:
+            raw_runtime_only = mapping["runtime_only"]
+            if raw_runtime_only is None:
+                raise ContractDecodeError(
+                    f"{path}.runtime_only: null is not a valid value"
+                )
+            field_runtime_only = _decode_bool(raw_runtime_only, f"{path}.runtime_only")
+        field_limit: PageLimit | None = None
+        if "limit" in mapping:
+            raw_limit = mapping["limit"]
+            if raw_limit is None:
+                raise ContractDecodeError(
+                    f"{path}.limit: null is not a valid value"
+                )
+            field_limit = _decode_int(raw_limit, f"{path}.limit")
+        field_seed: CodeContextSeed | None = None
+        if "seed" in mapping:
+            raw_seed = mapping["seed"]
+            if raw_seed is None:
+                raise ContractDecodeError(
+                    f"{path}.seed: null is not a valid value"
+                )
+            field_seed = CodeContextSeed.from_wire(raw_seed, f"{path}.seed")
+        field_context: ContextPackBuildInput | None = None
+        if "context" in mapping:
+            raw_context = mapping["context"]
+            if raw_context is None:
+                raise ContractDecodeError(
+                    f"{path}.context: null is not a valid value"
+                )
+            field_context = ContextPackBuildInput.from_wire(raw_context, f"{path}.context")
+        return cls(
+            intent=field_intent,
+            repository_id=field_repository_id,
+            snapshot_id=field_snapshot_id,
+            producer_id=field_producer_id,
+            profile_digest=field_profile_digest,
+            semantic_key=field_semantic_key,
+            name=field_name,
+            depth=field_depth,
+            runtime_only=field_runtime_only,
+            limit=field_limit,
+            seed=field_seed,
+            context=field_context,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodePolicyRegisterInput:
+    """Input for `code.policy.register`: one versioned, deterministic acceptance policy for
+    code-analysis imports, authorised by the authenticated caller. The document is the rules
+    only; who authorised it is the caller the envelope authenticated, never a field. A
+    version identifies one set of rules forever: registering the same id and version again
+    with the same rules is idempotent, and with different rules is a conflict. There is no
+    default policy, and enabling analysis registers none.
+    """
+
+    policy_id: Identifier
+    policy_version: Identifier
+    producers: tuple[CodeProducerLock, ...]
+    accepted_node_kinds: tuple[CodePolicyNodeKind, ...]
+    accepted_relationships: tuple[CodePolicyRelationship, ...]
+    allow_reduced_coverage: bool
+    max_candidates: int | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["policy_id"] = self.policy_id
+        wire["policy_version"] = self.policy_version
+        wire["producers"] = [item.to_wire() for item in self.producers]
+        wire["accepted_node_kinds"] = [item.to_wire() for item in self.accepted_node_kinds]
+        wire["accepted_relationships"] = [item.to_wire() for item in self.accepted_relationships]
+        wire["allow_reduced_coverage"] = self.allow_reduced_coverage
+        if self.max_candidates is not None:
+            wire["max_candidates"] = self.max_candidates
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CodePolicyRegisterInput"
+    ) -> CodePolicyRegisterInput:
+        """Decode a wire payload into a CodePolicyRegisterInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_policy_id = _decode_str(
+            _require_field(mapping, "policy_id", path),
+            f"{path}.policy_id",
+        )
+        field_policy_version = _decode_str(
+            _require_field(mapping, "policy_version", path),
+            f"{path}.policy_version",
+        )
+        field_producers_items = _decode_sequence(
+            _require_field(mapping, "producers", path),
+            f"{path}.producers",
+        )
+        field_producers = tuple(
+            CodeProducerLock.from_wire(item, f"{path}.producers[{index}]")
+            for index, item in enumerate(field_producers_items)
+        )
+        field_accepted_node_kinds_items = _decode_sequence(
+            _require_field(mapping, "accepted_node_kinds", path),
+            f"{path}.accepted_node_kinds",
+        )
+        field_accepted_node_kinds = tuple(
+            CodePolicyNodeKind.from_wire(item, f"{path}.accepted_node_kinds[{index}]")
+            for index, item in enumerate(field_accepted_node_kinds_items)
+        )
+        field_accepted_relationships_items = _decode_sequence(
+            _require_field(mapping, "accepted_relationships", path),
+            f"{path}.accepted_relationships",
+        )
+        field_accepted_relationships = tuple(
+            CodePolicyRelationship.from_wire(item, f"{path}.accepted_relationships[{index}]")
+            for index, item in enumerate(field_accepted_relationships_items)
+        )
+        field_allow_reduced_coverage = _decode_bool(
+            _require_field(mapping, "allow_reduced_coverage", path),
+            f"{path}.allow_reduced_coverage",
+        )
+        field_max_candidates: int | None = None
+        if "max_candidates" in mapping:
+            raw_max_candidates = mapping["max_candidates"]
+            if raw_max_candidates is None:
+                raise ContractDecodeError(
+                    f"{path}.max_candidates: null is not a valid value"
+                )
+            field_max_candidates = _decode_int(raw_max_candidates, f"{path}.max_candidates")
+        return cls(
+            policy_id=field_policy_id,
+            policy_version=field_policy_version,
+            producers=field_producers,
+            accepted_node_kinds=field_accepted_node_kinds,
+            accepted_relationships=field_accepted_relationships,
+            allow_reduced_coverage=field_allow_reduced_coverage,
+            max_candidates=field_max_candidates,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodePolicyRegisterResult:
+    """Result of `code.policy.register`: the policy as recorded, and whether this request
+    recorded it or found it already recorded with the same rules.
+    """
+
+    policy: CodePolicyReference
+    disposition: OpenCode
+    registered_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["policy"] = self.policy.to_wire()
+        wire["disposition"] = self.disposition
+        wire["registered_at"] = self.registered_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CodePolicyRegisterResult"
+    ) -> CodePolicyRegisterResult:
+        """Decode a wire payload into a CodePolicyRegisterResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_policy = CodePolicyReference.from_wire(
+            _require_field(mapping, "policy", path),
+            f"{path}.policy",
+        )
+        field_disposition = _decode_str(
+            _require_field(mapping, "disposition", path),
+            f"{path}.disposition",
+        )
+        field_registered_at = _decode_str(
+            _require_field(mapping, "registered_at", path),
+            f"{path}.registered_at",
+        )
+        return cls(
+            policy=field_policy,
+            disposition=field_disposition,
+            registered_at=field_registered_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeImportResult:
+    """Result of `code.import`: the activation receipt. The binding is the import now applicable
+    for its scope; the counts are the import's own -- accepted definitions and relations,
+    refused candidates and covered files -- and `coverage_decision` says whether the cutover
+    was the scope's first, kept every still-present file, or dropped coverage the policy
+    allowed it to drop. A replay of the same request returns this receipt unchanged.
+    """
+
+    binding: CodeAnalysisBinding
+    activation_sequence: int
+    coverage_decision: OpenCode
+    reduced_file_count: int
+    entity_count: int
+    relation_count: int
+    diagnostic_count: int
+    file_count: int
+    freshness: CodeSnapshotFreshness
+    previous_import_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["binding"] = self.binding.to_wire()
+        wire["activation_sequence"] = self.activation_sequence
+        if self.previous_import_id is not None:
+            wire["previous_import_id"] = self.previous_import_id
+        wire["coverage_decision"] = self.coverage_decision
+        wire["reduced_file_count"] = self.reduced_file_count
+        wire["entity_count"] = self.entity_count
+        wire["relation_count"] = self.relation_count
+        wire["diagnostic_count"] = self.diagnostic_count
+        wire["file_count"] = self.file_count
+        wire["freshness"] = self.freshness.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeImportResult") -> CodeImportResult:
+        """Decode a wire payload into a CodeImportResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_binding = CodeAnalysisBinding.from_wire(
+            _require_field(mapping, "binding", path),
+            f"{path}.binding",
+        )
+        field_activation_sequence = _decode_int(
+            _require_field(mapping, "activation_sequence", path),
+            f"{path}.activation_sequence",
+        )
+        field_previous_import_id: Identifier | None = None
+        if "previous_import_id" in mapping:
+            raw_previous_import_id = mapping["previous_import_id"]
+            if raw_previous_import_id is None:
+                raise ContractDecodeError(
+                    f"{path}.previous_import_id: null is not a valid value"
+                )
+            field_previous_import_id = _decode_str(
+                raw_previous_import_id,
+                f"{path}.previous_import_id",
+            )
+        field_coverage_decision = _decode_str(
+            _require_field(mapping, "coverage_decision", path),
+            f"{path}.coverage_decision",
+        )
+        field_reduced_file_count = _decode_int(
+            _require_field(mapping, "reduced_file_count", path),
+            f"{path}.reduced_file_count",
+        )
+        field_entity_count = _decode_int(
+            _require_field(mapping, "entity_count", path),
+            f"{path}.entity_count",
+        )
+        field_relation_count = _decode_int(
+            _require_field(mapping, "relation_count", path),
+            f"{path}.relation_count",
+        )
+        field_diagnostic_count = _decode_int(
+            _require_field(mapping, "diagnostic_count", path),
+            f"{path}.diagnostic_count",
+        )
+        field_file_count = _decode_int(
+            _require_field(mapping, "file_count", path),
+            f"{path}.file_count",
+        )
+        field_freshness = CodeSnapshotFreshness.from_wire(
+            _require_field(mapping, "freshness", path),
+            f"{path}.freshness",
+        )
+        return cls(
+            binding=field_binding,
+            activation_sequence=field_activation_sequence,
+            previous_import_id=field_previous_import_id,
+            coverage_decision=field_coverage_decision,
+            reduced_file_count=field_reduced_file_count,
+            entity_count=field_entity_count,
+            relation_count=field_relation_count,
+            diagnostic_count=field_diagnostic_count,
+            file_count=field_file_count,
+            freshness=field_freshness,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeAnalysisStatus:
+    """One declared producer profile's analysis of the repository. `availability` says whether
+    this service can run the producer at all; `readiness` whether an applicable analysis
+    answers `code.query` for the assessed snapshot, with the reason when not:
+    `no_active_import`, `snapshot_not_active` (the applicable analysis is of another
+    snapshot) or `no_admitted_source` (the assessed snapshot holds no file this producer
+    analyses). `activation_sequence` is the scope's current activation, the precondition of
+    the next `code.import`. An analysis the caller may not see is reported exactly as one
+    that does not exist.
+    """
+
+    producer_id: Identifier
+    producer_version: Identifier
+    profile_digest: ContentChecksum
+    languages: tuple[OpenCode, ...]
+    availability: OpenCode
+    readiness: OpenCode
+    activation_sequence: int
+    availability_reason: OpenCode | None = None
+    readiness_reason: OpenCode | None = None
+    policy: CodePolicyReference | None = None
+    binding: CodeAnalysisBinding | None = None
+    freshness: CodeSnapshotFreshness | None = None
+    coverage: CodeAnalysisCoverage | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["producer_id"] = self.producer_id
+        wire["producer_version"] = self.producer_version
+        wire["profile_digest"] = self.profile_digest
+        wire["languages"] = list(self.languages)
+        wire["availability"] = self.availability
+        if self.availability_reason is not None:
+            wire["availability_reason"] = self.availability_reason
+        wire["readiness"] = self.readiness
+        if self.readiness_reason is not None:
+            wire["readiness_reason"] = self.readiness_reason
+        wire["activation_sequence"] = self.activation_sequence
+        if self.policy is not None:
+            wire["policy"] = self.policy.to_wire()
+        if self.binding is not None:
+            wire["binding"] = self.binding.to_wire()
+        if self.freshness is not None:
+            wire["freshness"] = self.freshness.to_wire()
+        if self.coverage is not None:
+            wire["coverage"] = self.coverage.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeAnalysisStatus") -> CodeAnalysisStatus:
+        """Decode a wire payload into a CodeAnalysisStatus.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_producer_id = _decode_str(
+            _require_field(mapping, "producer_id", path),
+            f"{path}.producer_id",
+        )
+        field_producer_version = _decode_str(
+            _require_field(mapping, "producer_version", path),
+            f"{path}.producer_version",
+        )
+        field_profile_digest = _decode_str(
+            _require_field(mapping, "profile_digest", path),
+            f"{path}.profile_digest",
+        )
+        field_languages_items = _decode_sequence(
+            _require_field(mapping, "languages", path),
+            f"{path}.languages",
+        )
+        field_languages = tuple(
+            _decode_str(item, f"{path}.languages[{index}]")
+            for index, item in enumerate(field_languages_items)
+        )
+        field_availability = _decode_str(
+            _require_field(mapping, "availability", path),
+            f"{path}.availability",
+        )
+        field_availability_reason: OpenCode | None = None
+        if "availability_reason" in mapping:
+            raw_availability_reason = mapping["availability_reason"]
+            if raw_availability_reason is None:
+                raise ContractDecodeError(
+                    f"{path}.availability_reason: null is not a valid value"
+                )
+            field_availability_reason = _decode_str(
+                raw_availability_reason,
+                f"{path}.availability_reason",
+            )
+        field_readiness = _decode_str(
+            _require_field(mapping, "readiness", path),
+            f"{path}.readiness",
+        )
+        field_readiness_reason: OpenCode | None = None
+        if "readiness_reason" in mapping:
+            raw_readiness_reason = mapping["readiness_reason"]
+            if raw_readiness_reason is None:
+                raise ContractDecodeError(
+                    f"{path}.readiness_reason: null is not a valid value"
+                )
+            field_readiness_reason = _decode_str(raw_readiness_reason, f"{path}.readiness_reason")
+        field_activation_sequence = _decode_int(
+            _require_field(mapping, "activation_sequence", path),
+            f"{path}.activation_sequence",
+        )
+        field_policy: CodePolicyReference | None = None
+        if "policy" in mapping:
+            raw_policy = mapping["policy"]
+            if raw_policy is None:
+                raise ContractDecodeError(
+                    f"{path}.policy: null is not a valid value"
+                )
+            field_policy = CodePolicyReference.from_wire(raw_policy, f"{path}.policy")
+        field_binding: CodeAnalysisBinding | None = None
+        if "binding" in mapping:
+            raw_binding = mapping["binding"]
+            if raw_binding is None:
+                raise ContractDecodeError(
+                    f"{path}.binding: null is not a valid value"
+                )
+            field_binding = CodeAnalysisBinding.from_wire(raw_binding, f"{path}.binding")
+        field_freshness: CodeSnapshotFreshness | None = None
+        if "freshness" in mapping:
+            raw_freshness = mapping["freshness"]
+            if raw_freshness is None:
+                raise ContractDecodeError(
+                    f"{path}.freshness: null is not a valid value"
+                )
+            field_freshness = CodeSnapshotFreshness.from_wire(raw_freshness, f"{path}.freshness")
+        field_coverage: CodeAnalysisCoverage | None = None
+        if "coverage" in mapping:
+            raw_coverage = mapping["coverage"]
+            if raw_coverage is None:
+                raise ContractDecodeError(
+                    f"{path}.coverage: null is not a valid value"
+                )
+            field_coverage = CodeAnalysisCoverage.from_wire(raw_coverage, f"{path}.coverage")
+        return cls(
+            producer_id=field_producer_id,
+            producer_version=field_producer_version,
+            profile_digest=field_profile_digest,
+            languages=field_languages,
+            availability=field_availability,
+            availability_reason=field_availability_reason,
+            readiness=field_readiness,
+            readiness_reason=field_readiness_reason,
+            activation_sequence=field_activation_sequence,
+            policy=field_policy,
+            binding=field_binding,
+            freshness=field_freshness,
+            coverage=field_coverage,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeSnapshotStatus:
+    """The assessed snapshot: whether its capture was complete, how it stands against its
+    stream, and which of its files no declared producer analyses.
+    """
+
+    snapshot_id: Identifier
+    capture_status: OpenCode
+    freshness: CodeSnapshotFreshness
+    unsupported: tuple[CodeUnsupportedFiles, ...]
+    unsupported_truncated: bool
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["snapshot_id"] = self.snapshot_id
+        wire["capture_status"] = self.capture_status
+        wire["freshness"] = self.freshness.to_wire()
+        wire["unsupported"] = [item.to_wire() for item in self.unsupported]
+        wire["unsupported_truncated"] = self.unsupported_truncated
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeSnapshotStatus") -> CodeSnapshotStatus:
+        """Decode a wire payload into a CodeSnapshotStatus.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_snapshot_id = _decode_str(
+            _require_field(mapping, "snapshot_id", path),
+            f"{path}.snapshot_id",
+        )
+        field_capture_status = _decode_str(
+            _require_field(mapping, "capture_status", path),
+            f"{path}.capture_status",
+        )
+        field_freshness = CodeSnapshotFreshness.from_wire(
+            _require_field(mapping, "freshness", path),
+            f"{path}.freshness",
+        )
+        field_unsupported_items = _decode_sequence(
+            _require_field(mapping, "unsupported", path),
+            f"{path}.unsupported",
+        )
+        field_unsupported = tuple(
+            CodeUnsupportedFiles.from_wire(item, f"{path}.unsupported[{index}]")
+            for index, item in enumerate(field_unsupported_items)
+        )
+        field_unsupported_truncated = _decode_bool(
+            _require_field(mapping, "unsupported_truncated", path),
+            f"{path}.unsupported_truncated",
+        )
+        return cls(
+            snapshot_id=field_snapshot_id,
+            capture_status=field_capture_status,
+            freshness=field_freshness,
+            unsupported=field_unsupported,
+            unsupported_truncated=field_unsupported_truncated,
         )
 
 
@@ -17619,6 +20960,740 @@ class EvidenceCaptureResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentCaptureInput:
+    """Closed input for `document.capture`. Carries exactly one bounded inline snapshot or an
+    immutable server-issued staged-source descriptor plus opaque lineage; no original path,
+    bookmark, credential, parser name, arbitrary endpoint, principal, or workspace override
+    is accepted. Exact-one content selection is enforced semantically.
+    """
+
+    document_id: Identifier
+    media_type: MediaType
+    requested_source_identity: Identifier
+    intent_kind: OpenCode
+    base: DocumentCaptureBase
+    target_binding_revision: Identifier
+    processing_profile: DocumentProcessingProfileInput
+    content_base64: str | None = None
+    staged_source: ImportSourceDescriptor | None = None
+    original_binding: DocumentOriginalBindingInput | None = None
+    consent: DocumentConsentInput | None = None
+    bulk_origin: DocumentBulkOriginInput | None = None
+    display_name: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["document_id"] = self.document_id
+        if self.content_base64 is not None:
+            wire["content_base64"] = self.content_base64
+        if self.staged_source is not None:
+            wire["staged_source"] = self.staged_source.to_wire()
+        wire["media_type"] = self.media_type
+        wire["requested_source_identity"] = self.requested_source_identity
+        wire["intent_kind"] = self.intent_kind
+        wire["base"] = self.base.to_wire()
+        wire["target_binding_revision"] = self.target_binding_revision
+        wire["processing_profile"] = self.processing_profile.to_wire()
+        if self.original_binding is not None:
+            wire["original_binding"] = self.original_binding.to_wire()
+        if self.consent is not None:
+            wire["consent"] = self.consent.to_wire()
+        if self.bulk_origin is not None:
+            wire["bulk_origin"] = self.bulk_origin.to_wire()
+        if self.display_name is not None:
+            wire["display_name"] = self.display_name
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "DocumentCaptureInput") -> DocumentCaptureInput:
+        """Decode a wire payload into a DocumentCaptureInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_content_base64: str | None = None
+        if "content_base64" in mapping:
+            raw_content_base64 = mapping["content_base64"]
+            if raw_content_base64 is None:
+                raise ContractDecodeError(
+                    f"{path}.content_base64: null is not a valid value"
+                )
+            field_content_base64 = _decode_str(raw_content_base64, f"{path}.content_base64")
+        field_staged_source: ImportSourceDescriptor | None = None
+        if "staged_source" in mapping:
+            raw_staged_source = mapping["staged_source"]
+            if raw_staged_source is None:
+                raise ContractDecodeError(
+                    f"{path}.staged_source: null is not a valid value"
+                )
+            field_staged_source = ImportSourceDescriptor.from_wire(
+                raw_staged_source,
+                f"{path}.staged_source",
+            )
+        field_media_type = _decode_str(
+            _require_field(mapping, "media_type", path),
+            f"{path}.media_type",
+        )
+        field_requested_source_identity = _decode_str(
+            _require_field(mapping, "requested_source_identity", path),
+            f"{path}.requested_source_identity",
+        )
+        field_intent_kind = _decode_str(
+            _require_field(mapping, "intent_kind", path),
+            f"{path}.intent_kind",
+        )
+        field_base = DocumentCaptureBase.from_wire(
+            _require_field(mapping, "base", path),
+            f"{path}.base",
+        )
+        field_target_binding_revision = _decode_str(
+            _require_field(mapping, "target_binding_revision", path),
+            f"{path}.target_binding_revision",
+        )
+        field_processing_profile = DocumentProcessingProfileInput.from_wire(
+            _require_field(mapping, "processing_profile", path),
+            f"{path}.processing_profile",
+        )
+        field_original_binding: DocumentOriginalBindingInput | None = None
+        if "original_binding" in mapping:
+            raw_original_binding = mapping["original_binding"]
+            if raw_original_binding is None:
+                raise ContractDecodeError(
+                    f"{path}.original_binding: null is not a valid value"
+                )
+            field_original_binding = DocumentOriginalBindingInput.from_wire(
+                raw_original_binding,
+                f"{path}.original_binding",
+            )
+        field_consent: DocumentConsentInput | None = None
+        if "consent" in mapping:
+            raw_consent = mapping["consent"]
+            if raw_consent is None:
+                raise ContractDecodeError(
+                    f"{path}.consent: null is not a valid value"
+                )
+            field_consent = DocumentConsentInput.from_wire(raw_consent, f"{path}.consent")
+        field_bulk_origin: DocumentBulkOriginInput | None = None
+        if "bulk_origin" in mapping:
+            raw_bulk_origin = mapping["bulk_origin"]
+            if raw_bulk_origin is None:
+                raise ContractDecodeError(
+                    f"{path}.bulk_origin: null is not a valid value"
+                )
+            field_bulk_origin = DocumentBulkOriginInput.from_wire(
+                raw_bulk_origin,
+                f"{path}.bulk_origin",
+            )
+        field_display_name: str | None = None
+        if "display_name" in mapping:
+            raw_display_name = mapping["display_name"]
+            if raw_display_name is None:
+                raise ContractDecodeError(
+                    f"{path}.display_name: null is not a valid value"
+                )
+            field_display_name = _decode_str(raw_display_name, f"{path}.display_name")
+        return cls(
+            document_id=field_document_id,
+            content_base64=field_content_base64,
+            staged_source=field_staged_source,
+            media_type=field_media_type,
+            requested_source_identity=field_requested_source_identity,
+            intent_kind=field_intent_kind,
+            base=field_base,
+            target_binding_revision=field_target_binding_revision,
+            processing_profile=field_processing_profile,
+            original_binding=field_original_binding,
+            consent=field_consent,
+            bulk_origin=field_bulk_origin,
+            display_name=field_display_name,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentReprocessInput:
+    """Closed input for `document.reprocess`. Selects one already-retained immutable capture,
+    one exact approved processing-profile revision together with the immutable profile
+    identity that revision was reported to resolve to, and the observed successful extraction
+    head. It accepts no source bytes, original path, URL, bookmark, parser implementation,
+    arbitrary profile JSON, principal or workspace override.
+    """
+
+    capture_id: Identifier
+    processing_profile: DocumentReprocessProfileSelection
+    expected_base: DocumentExtractionBase
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["capture_id"] = self.capture_id
+        wire["processing_profile"] = self.processing_profile.to_wire()
+        wire["expected_base"] = self.expected_base.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentReprocessInput"
+    ) -> DocumentReprocessInput:
+        """Decode a wire payload into a DocumentReprocessInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_capture_id = _decode_str(
+            _require_field(mapping, "capture_id", path),
+            f"{path}.capture_id",
+        )
+        field_processing_profile = DocumentReprocessProfileSelection.from_wire(
+            _require_field(mapping, "processing_profile", path),
+            f"{path}.processing_profile",
+        )
+        field_expected_base = DocumentExtractionBase.from_wire(
+            _require_field(mapping, "expected_base", path),
+            f"{path}.expected_base",
+        )
+        return cls(
+            capture_id=field_capture_id,
+            processing_profile=field_processing_profile,
+            expected_base=field_expected_base,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentHistoryInput:
+    """Closed input for `document.history`. Selects exactly one logical document owned by the
+    request envelope's selected workspace; it carries no second workspace identifier and no
+    path, bookmark, credential, principal, parser name or workspace override, and no selector
+    that could widen the read past that one document. Pagination is deterministic: `limit`
+    bounds each of the two returned histories separately, and `page` resumes an earlier read
+    at the exact position it reached.
+    """
+
+    document_id: Identifier
+    limit: PageLimit | None = None
+    page: PageMetadata | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["document_id"] = self.document_id
+        if self.limit is not None:
+            wire["limit"] = self.limit
+        if self.page is not None:
+            wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "DocumentHistoryInput") -> DocumentHistoryInput:
+        """Decode a wire payload into a DocumentHistoryInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_limit: PageLimit | None = None
+        if "limit" in mapping:
+            raw_limit = mapping["limit"]
+            if raw_limit is None:
+                raise ContractDecodeError(
+                    f"{path}.limit: null is not a valid value"
+                )
+            field_limit = _decode_int(raw_limit, f"{path}.limit")
+        field_page: PageMetadata | None = None
+        if "page" in mapping:
+            raw_page = mapping["page"]
+            if raw_page is None:
+                raise ContractDecodeError(
+                    f"{path}.page: null is not a valid value"
+                )
+            field_page = PageMetadata.from_wire(raw_page, f"{path}.page")
+        return cls(
+            document_id=field_document_id,
+            limit=field_limit,
+            page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentCaptureHistoryEntry:
+    """One immutable source capture of this document, exactly as Core admitted it.
+    `is_current_source` is read from the document's own source head and is never inferred
+    from `capture_sequence`, from arrival order or from any timestamp. Retention is this
+    capture's own disposition and moves independently of the document's source state. A
+    capture that is not the current source keeps its full attribution rather than losing it.
+    No source bytes, original filesystem path, bookmark material, credential or caller-
+    supplied display claim appears here.
+    """
+
+    capture_id: Identifier
+    capture_sequence: int
+    evidence_id: EvidenceId
+    source_digest: EvidenceChecksum
+    source_length_bytes: int
+    media_type: MediaType
+    requested_source_identity: Identifier
+    intent_kind: OpenCode
+    association_kind: OpenCode
+    capture_disposition: OpenCode
+    disposition_reason: OpenCode
+    is_current_source: bool
+    retention_state: OpenCode
+    capture_retention_generation: int
+    source_removal_generation: int
+    requested_profile: DocumentProcessingProfileInput
+    processing_state: OpenCode
+    captured_at: Timestamp
+    actions: tuple[DocumentHistoryAction, ...]
+    reprocess_profiles: tuple[DocumentReprocessProfileOption, ...]
+    expected_base_capture_id: Identifier | None = None
+    retention_changed_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["capture_id"] = self.capture_id
+        wire["capture_sequence"] = self.capture_sequence
+        wire["evidence_id"] = self.evidence_id
+        wire["source_digest"] = self.source_digest
+        wire["source_length_bytes"] = self.source_length_bytes
+        wire["media_type"] = self.media_type
+        wire["requested_source_identity"] = self.requested_source_identity
+        wire["intent_kind"] = self.intent_kind
+        wire["association_kind"] = self.association_kind
+        wire["capture_disposition"] = self.capture_disposition
+        wire["disposition_reason"] = self.disposition_reason
+        wire["is_current_source"] = self.is_current_source
+        wire["retention_state"] = self.retention_state
+        wire["capture_retention_generation"] = self.capture_retention_generation
+        wire["source_removal_generation"] = self.source_removal_generation
+        wire["requested_profile"] = self.requested_profile.to_wire()
+        wire["processing_state"] = self.processing_state
+        if self.expected_base_capture_id is not None:
+            wire["expected_base_capture_id"] = self.expected_base_capture_id
+        wire["captured_at"] = self.captured_at
+        if self.retention_changed_at is not None:
+            wire["retention_changed_at"] = self.retention_changed_at
+        wire["actions"] = [item.to_wire() for item in self.actions]
+        wire["reprocess_profiles"] = [item.to_wire() for item in self.reprocess_profiles]
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentCaptureHistoryEntry"
+    ) -> DocumentCaptureHistoryEntry:
+        """Decode a wire payload into a DocumentCaptureHistoryEntry.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_capture_id = _decode_str(
+            _require_field(mapping, "capture_id", path),
+            f"{path}.capture_id",
+        )
+        field_capture_sequence = _decode_int(
+            _require_field(mapping, "capture_sequence", path),
+            f"{path}.capture_sequence",
+        )
+        field_evidence_id = _decode_str(
+            _require_field(mapping, "evidence_id", path),
+            f"{path}.evidence_id",
+        )
+        field_source_digest = _decode_str(
+            _require_field(mapping, "source_digest", path),
+            f"{path}.source_digest",
+        )
+        field_source_length_bytes = _decode_int(
+            _require_field(mapping, "source_length_bytes", path),
+            f"{path}.source_length_bytes",
+        )
+        field_media_type = _decode_str(
+            _require_field(mapping, "media_type", path),
+            f"{path}.media_type",
+        )
+        field_requested_source_identity = _decode_str(
+            _require_field(mapping, "requested_source_identity", path),
+            f"{path}.requested_source_identity",
+        )
+        field_intent_kind = _decode_str(
+            _require_field(mapping, "intent_kind", path),
+            f"{path}.intent_kind",
+        )
+        field_association_kind = _decode_str(
+            _require_field(mapping, "association_kind", path),
+            f"{path}.association_kind",
+        )
+        field_capture_disposition = _decode_str(
+            _require_field(mapping, "capture_disposition", path),
+            f"{path}.capture_disposition",
+        )
+        field_disposition_reason = _decode_str(
+            _require_field(mapping, "disposition_reason", path),
+            f"{path}.disposition_reason",
+        )
+        field_is_current_source = _decode_bool(
+            _require_field(mapping, "is_current_source", path),
+            f"{path}.is_current_source",
+        )
+        field_retention_state = _decode_str(
+            _require_field(mapping, "retention_state", path),
+            f"{path}.retention_state",
+        )
+        field_capture_retention_generation = _decode_int(
+            _require_field(mapping, "capture_retention_generation", path),
+            f"{path}.capture_retention_generation",
+        )
+        field_source_removal_generation = _decode_int(
+            _require_field(mapping, "source_removal_generation", path),
+            f"{path}.source_removal_generation",
+        )
+        field_requested_profile = DocumentProcessingProfileInput.from_wire(
+            _require_field(mapping, "requested_profile", path),
+            f"{path}.requested_profile",
+        )
+        field_processing_state = _decode_str(
+            _require_field(mapping, "processing_state", path),
+            f"{path}.processing_state",
+        )
+        field_expected_base_capture_id: Identifier | None = None
+        if "expected_base_capture_id" in mapping:
+            raw_expected_base_capture_id = mapping["expected_base_capture_id"]
+            if raw_expected_base_capture_id is None:
+                raise ContractDecodeError(
+                    f"{path}.expected_base_capture_id: null is not a valid value"
+                )
+            field_expected_base_capture_id = _decode_str(
+                raw_expected_base_capture_id,
+                f"{path}.expected_base_capture_id",
+            )
+        field_captured_at = _decode_str(
+            _require_field(mapping, "captured_at", path),
+            f"{path}.captured_at",
+        )
+        field_retention_changed_at: Timestamp | None = None
+        if "retention_changed_at" in mapping:
+            raw_retention_changed_at = mapping["retention_changed_at"]
+            if raw_retention_changed_at is None:
+                raise ContractDecodeError(
+                    f"{path}.retention_changed_at: null is not a valid value"
+                )
+            field_retention_changed_at = _decode_str(
+                raw_retention_changed_at,
+                f"{path}.retention_changed_at",
+            )
+        field_actions_items = _decode_sequence(
+            _require_field(mapping, "actions", path),
+            f"{path}.actions",
+        )
+        field_actions = tuple(
+            DocumentHistoryAction.from_wire(item, f"{path}.actions[{index}]")
+            for index, item in enumerate(field_actions_items)
+        )
+        field_reprocess_profiles_items = _decode_sequence(
+            _require_field(mapping, "reprocess_profiles", path),
+            f"{path}.reprocess_profiles",
+        )
+        field_reprocess_profiles = tuple(
+            DocumentReprocessProfileOption.from_wire(item, f"{path}.reprocess_profiles[{index}]")
+            for index, item in enumerate(field_reprocess_profiles_items)
+        )
+        return cls(
+            capture_id=field_capture_id,
+            capture_sequence=field_capture_sequence,
+            evidence_id=field_evidence_id,
+            source_digest=field_source_digest,
+            source_length_bytes=field_source_length_bytes,
+            media_type=field_media_type,
+            requested_source_identity=field_requested_source_identity,
+            intent_kind=field_intent_kind,
+            association_kind=field_association_kind,
+            capture_disposition=field_capture_disposition,
+            disposition_reason=field_disposition_reason,
+            is_current_source=field_is_current_source,
+            retention_state=field_retention_state,
+            capture_retention_generation=field_capture_retention_generation,
+            source_removal_generation=field_source_removal_generation,
+            requested_profile=field_requested_profile,
+            processing_state=field_processing_state,
+            expected_base_capture_id=field_expected_base_capture_id,
+            captured_at=field_captured_at,
+            retention_changed_at=field_retention_changed_at,
+            actions=field_actions,
+            reprocess_profiles=field_reprocess_profiles,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentExtractionHistoryEntry:
+    """One immutable extraction revision over one of this document's captures.
+    `is_current_extraction` is read from the document's own extraction head and is never
+    inferred from `document_ordinal`, from arrival order or from any timestamp. The
+    extraction head is independent of the source head: a revision over an older capture can
+    never make that capture the current source, and a revision that reaches a terminal state
+    without being promoted is historical-only rather than a success. `result_state` and
+    `publication_disposition` are absent while no terminal result exists, which is a pending
+    extraction and not a failed one.
+    """
+
+    extraction_revision_id: Identifier
+    capture_id: Identifier
+    document_ordinal: int
+    extraction_sequence: int
+    profile: DocumentExtractionProfileSummary
+    head_eligible: bool
+    is_current_extraction: bool
+    admitted_at: Timestamp
+    expected_base_extraction_id: Identifier | None = None
+    result_state: OpenCode | None = None
+    publication_disposition: OpenCode | None = None
+    output_digest: EvidenceChecksum | None = None
+    worker_build: str | None = None
+    completed_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["extraction_revision_id"] = self.extraction_revision_id
+        wire["capture_id"] = self.capture_id
+        wire["document_ordinal"] = self.document_ordinal
+        wire["extraction_sequence"] = self.extraction_sequence
+        wire["profile"] = self.profile.to_wire()
+        if self.expected_base_extraction_id is not None:
+            wire["expected_base_extraction_id"] = self.expected_base_extraction_id
+        wire["head_eligible"] = self.head_eligible
+        wire["is_current_extraction"] = self.is_current_extraction
+        if self.result_state is not None:
+            wire["result_state"] = self.result_state
+        if self.publication_disposition is not None:
+            wire["publication_disposition"] = self.publication_disposition
+        if self.output_digest is not None:
+            wire["output_digest"] = self.output_digest
+        if self.worker_build is not None:
+            wire["worker_build"] = self.worker_build
+        wire["admitted_at"] = self.admitted_at
+        if self.completed_at is not None:
+            wire["completed_at"] = self.completed_at
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentExtractionHistoryEntry"
+    ) -> DocumentExtractionHistoryEntry:
+        """Decode a wire payload into a DocumentExtractionHistoryEntry.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_extraction_revision_id = _decode_str(
+            _require_field(mapping, "extraction_revision_id", path),
+            f"{path}.extraction_revision_id",
+        )
+        field_capture_id = _decode_str(
+            _require_field(mapping, "capture_id", path),
+            f"{path}.capture_id",
+        )
+        field_document_ordinal = _decode_int(
+            _require_field(mapping, "document_ordinal", path),
+            f"{path}.document_ordinal",
+        )
+        field_extraction_sequence = _decode_int(
+            _require_field(mapping, "extraction_sequence", path),
+            f"{path}.extraction_sequence",
+        )
+        field_profile = DocumentExtractionProfileSummary.from_wire(
+            _require_field(mapping, "profile", path),
+            f"{path}.profile",
+        )
+        field_expected_base_extraction_id: Identifier | None = None
+        if "expected_base_extraction_id" in mapping:
+            raw_expected_base_extraction_id = mapping["expected_base_extraction_id"]
+            if raw_expected_base_extraction_id is None:
+                raise ContractDecodeError(
+                    f"{path}.expected_base_extraction_id: null is not a valid value"
+                )
+            field_expected_base_extraction_id = _decode_str(
+                raw_expected_base_extraction_id,
+                f"{path}.expected_base_extraction_id",
+            )
+        field_head_eligible = _decode_bool(
+            _require_field(mapping, "head_eligible", path),
+            f"{path}.head_eligible",
+        )
+        field_is_current_extraction = _decode_bool(
+            _require_field(mapping, "is_current_extraction", path),
+            f"{path}.is_current_extraction",
+        )
+        field_result_state: OpenCode | None = None
+        if "result_state" in mapping:
+            raw_result_state = mapping["result_state"]
+            if raw_result_state is None:
+                raise ContractDecodeError(
+                    f"{path}.result_state: null is not a valid value"
+                )
+            field_result_state = _decode_str(raw_result_state, f"{path}.result_state")
+        field_publication_disposition: OpenCode | None = None
+        if "publication_disposition" in mapping:
+            raw_publication_disposition = mapping["publication_disposition"]
+            if raw_publication_disposition is None:
+                raise ContractDecodeError(
+                    f"{path}.publication_disposition: null is not a valid value"
+                )
+            field_publication_disposition = _decode_str(
+                raw_publication_disposition,
+                f"{path}.publication_disposition",
+            )
+        field_output_digest: EvidenceChecksum | None = None
+        if "output_digest" in mapping:
+            raw_output_digest = mapping["output_digest"]
+            if raw_output_digest is None:
+                raise ContractDecodeError(
+                    f"{path}.output_digest: null is not a valid value"
+                )
+            field_output_digest = _decode_str(raw_output_digest, f"{path}.output_digest")
+        field_worker_build: str | None = None
+        if "worker_build" in mapping:
+            raw_worker_build = mapping["worker_build"]
+            if raw_worker_build is None:
+                raise ContractDecodeError(
+                    f"{path}.worker_build: null is not a valid value"
+                )
+            field_worker_build = _decode_str(raw_worker_build, f"{path}.worker_build")
+        field_admitted_at = _decode_str(
+            _require_field(mapping, "admitted_at", path),
+            f"{path}.admitted_at",
+        )
+        field_completed_at: Timestamp | None = None
+        if "completed_at" in mapping:
+            raw_completed_at = mapping["completed_at"]
+            if raw_completed_at is None:
+                raise ContractDecodeError(
+                    f"{path}.completed_at: null is not a valid value"
+                )
+            field_completed_at = _decode_str(raw_completed_at, f"{path}.completed_at")
+        return cls(
+            extraction_revision_id=field_extraction_revision_id,
+            capture_id=field_capture_id,
+            document_ordinal=field_document_ordinal,
+            extraction_sequence=field_extraction_sequence,
+            profile=field_profile,
+            expected_base_extraction_id=field_expected_base_extraction_id,
+            head_eligible=field_head_eligible,
+            is_current_extraction=field_is_current_extraction,
+            result_state=field_result_state,
+            publication_disposition=field_publication_disposition,
+            output_digest=field_output_digest,
+            worker_build=field_worker_build,
+            admitted_at=field_admitted_at,
+            completed_at=field_completed_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentProcessingSettingsGetResult:
+    """Wraps one DocumentProcessingSettings document. The `revision` it carries is the one a
+    subsequent `document.settings.update` must name.
+    """
+
+    settings: DocumentProcessingSettings
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["settings"] = self.settings.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentProcessingSettingsGetResult"
+    ) -> DocumentProcessingSettingsGetResult:
+        """Decode a wire payload into a DocumentProcessingSettingsGetResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_settings = DocumentProcessingSettings.from_wire(
+            _require_field(mapping, "settings", path),
+            f"{path}.settings",
+        )
+        return cls(
+            settings=field_settings,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentProcessingSettingsUpdateResult:
+    """Wraps one DocumentProcessingSettings document: the settings as they now stand, carrying
+    the advanced `revision` the next update must name.
+    """
+
+    settings: DocumentProcessingSettings
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["settings"] = self.settings.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentProcessingSettingsUpdateResult"
+    ) -> DocumentProcessingSettingsUpdateResult:
+        """Decode a wire payload into a DocumentProcessingSettingsUpdateResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_settings = DocumentProcessingSettings.from_wire(
+            _require_field(mapping, "settings", path),
+            f"{path}.settings",
+        )
+        return cls(
+            settings=field_settings,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class GraphTraversalInput:
     """Input for `graph.traverse`. Workspace-scoped: the workspace is the request envelope's
     selected workspace; this payload never carries a second, independent workspace
@@ -20191,6 +24266,81 @@ class CoreSafeStatusV1:
 
 
 @dataclass(frozen=True, slots=True)
+class SettingsListResult:
+    """Result of `settings.list`: the matching settings in key order. An empty list means the
+    workspace has stored none, which is not an error — a setting that has never been written
+    has no row, and the caller applies its own default.
+    """
+
+    settings: tuple[SettingRecord, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["settings"] = [item.to_wire() for item in self.settings]
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SettingsListResult") -> SettingsListResult:
+        """Decode a wire payload into a SettingsListResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_settings_items = _decode_sequence(
+            _require_field(mapping, "settings", path),
+            f"{path}.settings",
+        )
+        field_settings = tuple(
+            SettingRecord.from_wire(item, f"{path}.settings[{index}]")
+            for index, item in enumerate(field_settings_items)
+        )
+        return cls(
+            settings=field_settings,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SettingsSetResult:
+    """Result of `settings.set`: the setting as it now stands, including the version a
+    subsequent replacement must carry.
+    """
+
+    setting: SettingRecord
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["setting"] = self.setting.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "SettingsSetResult") -> SettingsSetResult:
+        """Decode a wire payload into a SettingsSetResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_setting = SettingRecord.from_wire(
+            _require_field(mapping, "setting", path),
+            f"{path}.setting",
+        )
+        return cls(
+            setting=field_setting,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class WorkspaceCompatibility:
     """The concrete workspace-format version a workspace is stored at, and the inclusive version
     window this server build can read and write. Reuses the same `VersionWindow` and
@@ -20421,6 +24571,71 @@ class AnalysisStartInput:
             parameters=field_parameters,
             output_bounds=field_output_bounds,
             purpose_reference=field_purpose_reference,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeStatusResult:
+    """Result of `code.status`: one entry per producer profile this service declares, in a fixed
+    order, so a caller discovers what is applicable, ready, partial, stale or unavailable
+    without already holding a receipt. No runtime path, database row, lock, lease or analyser
+    location is ever part of it, and nothing a caller may not see -- a hidden file, a hidden
+    analysis, a hidden newer capture -- moves any field.
+    """
+
+    repository_id: Identifier
+    analyses: tuple[CodeAnalysisStatus, ...]
+    as_of: Timestamp
+    snapshot: CodeSnapshotStatus | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["repository_id"] = self.repository_id
+        if self.snapshot is not None:
+            wire["snapshot"] = self.snapshot.to_wire()
+        wire["analyses"] = [item.to_wire() for item in self.analyses]
+        wire["as_of"] = self.as_of
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeStatusResult") -> CodeStatusResult:
+        """Decode a wire payload into a CodeStatusResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_repository_id = _decode_str(
+            _require_field(mapping, "repository_id", path),
+            f"{path}.repository_id",
+        )
+        field_snapshot: CodeSnapshotStatus | None = None
+        if "snapshot" in mapping:
+            raw_snapshot = mapping["snapshot"]
+            if raw_snapshot is None:
+                raise ContractDecodeError(
+                    f"{path}.snapshot: null is not a valid value"
+                )
+            field_snapshot = CodeSnapshotStatus.from_wire(raw_snapshot, f"{path}.snapshot")
+        field_analyses_items = _decode_sequence(
+            _require_field(mapping, "analyses", path),
+            f"{path}.analyses",
+        )
+        field_analyses = tuple(
+            CodeAnalysisStatus.from_wire(item, f"{path}.analyses[{index}]")
+            for index, item in enumerate(field_analyses_items)
+        )
+        field_as_of = _decode_str(_require_field(mapping, "as_of", path), f"{path}.as_of")
+        return cls(
+            repository_id=field_repository_id,
+            snapshot=field_snapshot,
+            analyses=field_analyses,
+            as_of=field_as_of,
         )
 
 
@@ -21378,6 +25593,122 @@ class RequestEnvelope:
             operation=field_operation,
             metadata=field_metadata,
             input=field_input,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentHistoryResult:
+    """Result of `document.history`: the authoritative Core intake history of one logical
+    document. Immutable source captures and extraction revisions are reported as two separate
+    histories with two separate heads, because they move independently; neither list's order
+    states which member is current, and the two head states are the only statements of
+    currentness. `capture_count` and `extraction_count` are the complete totals, so a caller
+    paging through the histories can say truthfully how much it has seen. Nothing here
+    carries source bytes, an original filesystem path, bookmark material, a credential, a raw
+    profile body or any locally held delivery receipt: local activity remains a separate,
+    non-canonical record.
+    """
+
+    document_id: Identifier
+    created_at: Timestamp
+    source: DocumentSourceHeadState
+    extraction: DocumentExtractionHeadState
+    captures: tuple[DocumentCaptureHistoryEntry, ...]
+    capture_count: int
+    extractions: tuple[DocumentExtractionHistoryEntry, ...]
+    extraction_count: int
+    actions: tuple[DocumentHistoryAction, ...]
+    page: PageMetadata
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["document_id"] = self.document_id
+        wire["created_at"] = self.created_at
+        wire["source"] = self.source.to_wire()
+        wire["extraction"] = self.extraction.to_wire()
+        wire["captures"] = [item.to_wire() for item in self.captures]
+        wire["capture_count"] = self.capture_count
+        wire["extractions"] = [item.to_wire() for item in self.extractions]
+        wire["extraction_count"] = self.extraction_count
+        wire["actions"] = [item.to_wire() for item in self.actions]
+        wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "DocumentHistoryResult"
+    ) -> DocumentHistoryResult:
+        """Decode a wire payload into a DocumentHistoryResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_document_id = _decode_str(
+            _require_field(mapping, "document_id", path),
+            f"{path}.document_id",
+        )
+        field_created_at = _decode_str(
+            _require_field(mapping, "created_at", path),
+            f"{path}.created_at",
+        )
+        field_source = DocumentSourceHeadState.from_wire(
+            _require_field(mapping, "source", path),
+            f"{path}.source",
+        )
+        field_extraction = DocumentExtractionHeadState.from_wire(
+            _require_field(mapping, "extraction", path),
+            f"{path}.extraction",
+        )
+        field_captures_items = _decode_sequence(
+            _require_field(mapping, "captures", path),
+            f"{path}.captures",
+        )
+        field_captures = tuple(
+            DocumentCaptureHistoryEntry.from_wire(item, f"{path}.captures[{index}]")
+            for index, item in enumerate(field_captures_items)
+        )
+        field_capture_count = _decode_int(
+            _require_field(mapping, "capture_count", path),
+            f"{path}.capture_count",
+        )
+        field_extractions_items = _decode_sequence(
+            _require_field(mapping, "extractions", path),
+            f"{path}.extractions",
+        )
+        field_extractions = tuple(
+            DocumentExtractionHistoryEntry.from_wire(item, f"{path}.extractions[{index}]")
+            for index, item in enumerate(field_extractions_items)
+        )
+        field_extraction_count = _decode_int(
+            _require_field(mapping, "extraction_count", path),
+            f"{path}.extraction_count",
+        )
+        field_actions_items = _decode_sequence(
+            _require_field(mapping, "actions", path),
+            f"{path}.actions",
+        )
+        field_actions = tuple(
+            DocumentHistoryAction.from_wire(item, f"{path}.actions[{index}]")
+            for index, item in enumerate(field_actions_items)
+        )
+        field_page = PageMetadata.from_wire(_require_field(mapping, "page", path), f"{path}.page")
+        return cls(
+            document_id=field_document_id,
+            created_at=field_created_at,
+            source=field_source,
+            extraction=field_extraction,
+            captures=field_captures,
+            capture_count=field_capture_count,
+            extractions=field_extractions,
+            extraction_count=field_extraction_count,
+            actions=field_actions,
+            page=field_page,
         )
 
 
@@ -25421,6 +29752,72 @@ class MemorySearchResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CodeArchitectureContext:
+    """The task-context and architecture knowledge component of a code context, kept apart from
+    every code fact in the same answer. It is produced by the workspace's own Context Pack
+    authority over independently accepted governed knowledge that carries accepted support,
+    under the caller's own authorisation -- never by reading code facts as prose and never by
+    reading prose as code. A caller that does not independently hold the context authority,
+    or a workspace whose context projection cannot serve one, gets `availability` =
+    `unavailable` with a reason and no members; it never gets a quietly empty component.
+    """
+
+    availability: OpenCode
+    reason: OpenCode | None = None
+    pack: ContextPackBuildResult | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["availability"] = self.availability
+        if self.reason is not None:
+            wire["reason"] = self.reason
+        if self.pack is not None:
+            wire["pack"] = self.pack.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CodeArchitectureContext"
+    ) -> CodeArchitectureContext:
+        """Decode a wire payload into a CodeArchitectureContext.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_availability = _decode_str(
+            _require_field(mapping, "availability", path),
+            f"{path}.availability",
+        )
+        field_reason: OpenCode | None = None
+        if "reason" in mapping:
+            raw_reason = mapping["reason"]
+            if raw_reason is None:
+                raise ContractDecodeError(
+                    f"{path}.reason: null is not a valid value"
+                )
+            field_reason = _decode_str(raw_reason, f"{path}.reason")
+        field_pack: ContextPackBuildResult | None = None
+        if "pack" in mapping:
+            raw_pack = mapping["pack"]
+            if raw_pack is None:
+                raise ContractDecodeError(
+                    f"{path}.pack: null is not a valid value"
+                )
+            field_pack = ContextPackBuildResult.from_wire(raw_pack, f"{path}.pack")
+        return cls(
+            availability=field_availability,
+            reason=field_reason,
+            pack=field_pack,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class GraphTraversalResult:
     """Result of `graph.traverse`: the traversed nodes and edges, the traversal limits actually
     applied (which may be tighter than requested but never looser), the projection
@@ -25513,6 +29910,180 @@ class GraphTraversalResult:
             freshness=field_freshness,
             ordering_basis=field_ordering_basis,
             page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeContext:
+    """The `code_context` answer's assembled material: the captured source of the definitions
+    the answer discloses, and the separately labelled architecture component. The graph
+    neighbours are the result's own `symbols` and `relations`, which are accepted static
+    relationships of the one applicable analysis and of no other; nothing in `architecture`
+    is ever a code relationship, and no code fact is ever presented as architecture
+    knowledge.
+    """
+
+    spans: tuple[CodeSpanContent, ...]
+    architecture: CodeArchitectureContext
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["spans"] = [item.to_wire() for item in self.spans]
+        wire["architecture"] = self.architecture.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeContext") -> CodeContext:
+        """Decode a wire payload into a CodeContext.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_spans_items = _decode_sequence(
+            _require_field(mapping, "spans", path),
+            f"{path}.spans",
+        )
+        field_spans = tuple(
+            CodeSpanContent.from_wire(item, f"{path}.spans[{index}]")
+            for index, item in enumerate(field_spans_items)
+        )
+        field_architecture = CodeArchitectureContext.from_wire(
+            _require_field(mapping, "architecture", path),
+            f"{path}.architecture",
+        )
+        return cls(
+            spans=field_spans,
+            architecture=field_architecture,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeQueryResult:
+    """Result of `code.query`. `resolution` says how the subject was found: `semantic_key`,
+    `unique_name`, `ambiguous` -- in which case `definitions` lists every qualified choice in
+    key order and nothing was traversed -- or `seed_not_applicable`, when a seed named
+    another analysis than the applicable one and nothing was traversed or disclosed.
+    Otherwise `definitions` holds the one subject, `symbols` the definitions the intent
+    reached (by depth, then key), `relations` the accepted static relationships followed (by
+    depth, source, type, target, edge key) and `diagnostics` the unaccepted candidates that
+    bear on the answer (by edge key). An analysis that is missing or not the applicable one
+    is refused, never answered empty, and so is an answer whose disclosed members stopped
+    being visible to the caller while it was being assembled.
+    """
+
+    intent: OpenCode
+    binding: CodeAnalysisBinding
+    resolution: OpenCode
+    definitions: tuple[CodeSymbol, ...]
+    symbols: tuple[CodeSymbol, ...]
+    relations: tuple[CodeRelation, ...]
+    diagnostics: tuple[CodeDiagnostic, ...]
+    coverage: CodeQueryCoverage
+    freshness: ProjectionFreshness
+    context: CodeContext | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["intent"] = self.intent
+        wire["binding"] = self.binding.to_wire()
+        wire["resolution"] = self.resolution
+        wire["definitions"] = [item.to_wire() for item in self.definitions]
+        wire["symbols"] = [item.to_wire() for item in self.symbols]
+        wire["relations"] = [item.to_wire() for item in self.relations]
+        wire["diagnostics"] = [item.to_wire() for item in self.diagnostics]
+        wire["coverage"] = self.coverage.to_wire()
+        wire["freshness"] = self.freshness.to_wire()
+        if self.context is not None:
+            wire["context"] = self.context.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CodeQueryResult") -> CodeQueryResult:
+        """Decode a wire payload into a CodeQueryResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_intent = _decode_str(_require_field(mapping, "intent", path), f"{path}.intent")
+        field_binding = CodeAnalysisBinding.from_wire(
+            _require_field(mapping, "binding", path),
+            f"{path}.binding",
+        )
+        field_resolution = _decode_str(
+            _require_field(mapping, "resolution", path),
+            f"{path}.resolution",
+        )
+        field_definitions_items = _decode_sequence(
+            _require_field(mapping, "definitions", path),
+            f"{path}.definitions",
+        )
+        field_definitions = tuple(
+            CodeSymbol.from_wire(item, f"{path}.definitions[{index}]")
+            for index, item in enumerate(field_definitions_items)
+        )
+        field_symbols_items = _decode_sequence(
+            _require_field(mapping, "symbols", path),
+            f"{path}.symbols",
+        )
+        field_symbols = tuple(
+            CodeSymbol.from_wire(item, f"{path}.symbols[{index}]")
+            for index, item in enumerate(field_symbols_items)
+        )
+        field_relations_items = _decode_sequence(
+            _require_field(mapping, "relations", path),
+            f"{path}.relations",
+        )
+        field_relations = tuple(
+            CodeRelation.from_wire(item, f"{path}.relations[{index}]")
+            for index, item in enumerate(field_relations_items)
+        )
+        field_diagnostics_items = _decode_sequence(
+            _require_field(mapping, "diagnostics", path),
+            f"{path}.diagnostics",
+        )
+        field_diagnostics = tuple(
+            CodeDiagnostic.from_wire(item, f"{path}.diagnostics[{index}]")
+            for index, item in enumerate(field_diagnostics_items)
+        )
+        field_coverage = CodeQueryCoverage.from_wire(
+            _require_field(mapping, "coverage", path),
+            f"{path}.coverage",
+        )
+        field_freshness = ProjectionFreshness.from_wire(
+            _require_field(mapping, "freshness", path),
+            f"{path}.freshness",
+        )
+        field_context: CodeContext | None = None
+        if "context" in mapping:
+            raw_context = mapping["context"]
+            if raw_context is None:
+                raise ContractDecodeError(
+                    f"{path}.context: null is not a valid value"
+                )
+            field_context = CodeContext.from_wire(raw_context, f"{path}.context")
+        return cls(
+            intent=field_intent,
+            binding=field_binding,
+            resolution=field_resolution,
+            definitions=field_definitions,
+            symbols=field_symbols,
+            relations=field_relations,
+            diagnostics=field_diagnostics,
+            coverage=field_coverage,
+            freshness=field_freshness,
+            context=field_context,
         )
 
 
@@ -29780,6 +34351,701 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "upgrade_required",
             "workspace_busy",
             "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="document.capture",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentCaptureInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentCaptureResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "size_limit_exceeded",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="document.history",
+        scope=OperationScope(
+            required_scopes=("memory:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentHistoryInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentHistoryResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=True, max_page_size=1000),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="document.reprocess",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentReprocessInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentReprocessResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="document.settings.get",
+        scope=OperationScope(
+            required_scopes=("memory:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentProcessingSettingsGetInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentProcessingSettingsGetResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="document.settings.update",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentProcessingSettingsUpdateInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentProcessingSettingsUpdateResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="document.original.disconnect",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentOriginalDisconnectInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentOriginalDisconnectResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="document.original.relink",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentOriginalRelinkInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/DocumentOriginalRelinkResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="settings.list",
+        scope=OperationScope(
+            required_scopes=("workspace:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/settings.schema.json"
+            "#/$defs/SettingsListInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/settings.schema.json"
+            "#/$defs/SettingsListResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="workspace.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="settings.set",
+        scope=OperationScope(
+            required_scopes=("workspace:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/settings.schema.json"
+            "#/$defs/SettingsSetInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/settings.schema.json"
+            "#/$defs/SettingsSetResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="workspace.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "mutation_precondition_failed",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="code.query",
+        scope=OperationScope(
+            required_scopes=("graph:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/code.schema.json"
+            "#/$defs/CodeQueryInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/code.schema.json"
+            "#/$defs/CodeQueryResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="graph.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "projection_unavailable",
+            "rate_limited",
+            "size_limit_exceeded",
+            "stale_projection",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="code.policy.register",
+        scope=OperationScope(
+            required_scopes=("engineering:curate",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/code.schema.json"
+            "#/$defs/CodePolicyRegisterInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/code.schema.json"
+            "#/$defs/CodePolicyRegisterResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="engineering.curate",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="code.import",
+        scope=OperationScope(
+            required_scopes=("engineering:source",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/code.schema.json"
+            "#/$defs/CodeImportInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/code.schema.json"
+            "#/$defs/CodeImportResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="engineering.source",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=True,
+            required=True,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "mutation_precondition_failed",
+            "not_found",
+            "rate_limited",
+            "size_limit_exceeded",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="code.status",
+        scope=OperationScope(
+            required_scopes=("graph:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/code.schema.json"
+            "#/$defs/CodeStatusInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/code.schema.json"
+            "#/$defs/CodeStatusResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="graph.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
             "workspace_migration_required",
             "workspace_not_granted",
         ),

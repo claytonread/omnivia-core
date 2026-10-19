@@ -45,11 +45,16 @@ jobs:
     # at 09:31, 73% at 09:41, 80% at 10:01, 87% at 10:15, 89% at 10:24 -- and
     # was still short of the remaining benchmarks/Ruff/mypy/diff steps when
     # the 60-minute ceiling cancelled it at 10:24:39, even though a preceding
-    # accepted run on this gate had finished in 33m39s. 120 restores the same
-    # kind of margin over a legitimately slow run that 60 restored over the
-    # 40m05s run above, without weakening the gate: every command below is
-    # unchanged, and a run that hangs still gets cancelled, just later.
-    timeout-minutes: 120
+    # accepted run on this gate had finished in 33m39s. 120 then hit the
+    # same ceiling: run 39187307084 attempt 1 was cancelled by the
+    # 120-minute ceiling at 2026-10-19T03:52:37Z with setup and every gate
+    # through Verify Phase 0 baseline succeeded; the full repository pytest
+    # step ran from 01:58:28Z until cancellation (~114 minutes) without
+    # reporting a test failure, leaving no time for the benchmark/Ruff/mypy/diff
+    # steps after it. 180 restores margin over that slower run without
+    # weakening the gate: every command below is unchanged, and a run that
+    # hangs still gets cancelled, just later.
+    timeout-minutes: 180
     permissions:
       contents: read
 
@@ -165,6 +170,14 @@ jobs:
       # keeps the committed corpus equal to what the generator emits.
       - name: Check generated trusted-runtime fixtures
         run: python scripts/generate-runtime-contract.py --check
+
+      # Same arrangement for the update seam. Every canonical document, SHA-256
+      # and Ed25519 signature under `contracts/update/v1/fixtures` is derived
+      # from the envelopes and bundles the generator builds, so a hand-edited
+      # fixture whose signature no longer matches its document does not fail --
+      # it quietly stops testing the refusal it is named for.
+      - name: Check generated update contract fixtures
+        run: python scripts/generate-update-contract.py --check
 
       # The MCP exposure manifest advertises self-contained JSON Schemas
       # generated from the canonical Application Contract v1 documents. They are

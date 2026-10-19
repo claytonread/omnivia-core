@@ -416,12 +416,13 @@ def test_core_declares_no_runtime_dependencies_at_all() -> None:
 
 def test_core_wheel_force_includes_exactly_the_canonical_contract_resources() -> None:
     """The wheel's packaged resource set is exact because the force-include maps exactly
-    the eight canonical directories onto their importable resource paths: the two
+    the ten canonical directories onto their importable resource paths: the two
     Application Contract v1 directories (ADR-038), the two Host Contract v1
     directories (DOC-004 section AA), the two Chat Runtime Contract v1 directories
-    (approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001), and the two trusted-runtime
+    (approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001), the two trusted-runtime
     v1 directories a consumer verifies a Core payload against without importing any
-    implementation.
+    implementation, and the two update v1 directories a consumer decides a channel
+    document and a candidate bundle against on the same terms.
     """
     manifest = boundaries.load_manifest(boundaries.CORE.manifest_path)
     force_include = manifest["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
@@ -437,6 +438,12 @@ def test_core_wheel_force_includes_exactly_the_canonical_contract_resources() ->
         ),
         "contracts/runtime/v1/fixtures": (
             "omnivia_core/runtime_contract/v1/resources/fixtures"
+        ),
+        "contracts/update/v1/schemas": (
+            "omnivia_core/update_contract/v1/resources/schemas"
+        ),
+        "contracts/update/v1/fixtures": (
+            "omnivia_core/update_contract/v1/resources/fixtures"
         ),
     }
     for source in force_include:
@@ -497,6 +504,41 @@ def test_core_wheel_packages_the_trusted_runtime_corpus_in_its_categories() -> N
         "canonicalisation-and-signatures.json"
     ]
     assert len(list(fixtures.rglob("*.json"))) >= 20
+
+
+def test_core_wheel_packages_the_update_corpus_in_its_subject_directories() -> None:
+    """One schema, and a corpus whose directories are *subjects* not verdicts.
+
+    The trusted-runtime corpus splits on `valid`/`invalid` because it has one
+    subject and the verdict is the only axis left. This contract has three --
+    the channel document, the operation journal, the candidate bundle -- and
+    each case states its own verdict, so splitting on the verdict as well would
+    put the one archive acceptance case in a different directory from the
+    refusals it is the control for.
+
+    `vectors` holds the one canonicalisation, base64url and signature document,
+    which is not a case and carries no expected verdict.
+    `scripts/generate-update-contract.py --check` is what keeps the files equal
+    to what the generator emits; this keeps the *shape* of the tree pinned, so a
+    fourth subject or a stray directory is a deliberate change here.
+    """
+    schemas = REPO_ROOT / "contracts" / "update" / "v1" / "schemas"
+    fixtures = REPO_ROOT / "contracts" / "update" / "v1" / "fixtures"
+    assert sorted(path.name for path in schemas.rglob("*.json")) == [
+        "core-update-v1.schema.json"
+    ]
+    assert sorted(path.name for path in fixtures.iterdir() if path.is_dir()) == [
+        "archives",
+        "envelopes",
+        "states",
+        "vectors",
+    ]
+    assert sorted(path.name for path in (fixtures / "vectors").iterdir()) == [
+        "canonicalisation-and-signatures.json"
+    ]
+    for subject in ("archives", "envelopes", "states"):
+        assert len(list((fixtures / subject).glob("*.json"))) >= 8, subject
+    assert len(list(fixtures.rglob("*.json"))) >= 40
 
 
 # --------------------------------------------------------------------------

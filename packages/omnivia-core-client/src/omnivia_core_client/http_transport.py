@@ -84,6 +84,7 @@ import http.client
 import ipaddress
 import re
 import ssl
+import urllib.request
 from dataclasses import dataclass
 from typing import Any, Final, NoReturn
 from urllib.parse import urlsplit
@@ -716,17 +717,55 @@ class HttpTransport:
         return result
 
 
-def fetch_https_bytes(url: str, *, timeout_seconds: float, max_bytes: int) -> bytes:
-    """One bounded HTTPS GET of a static document, for the update channel.
+class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """A handler that declines every redirect instead of following it.
 
-    The one public-HTTPS reader in this distribution: TLS-verified by the
-    default context, no redirects followed (a static channel URL has nothing
-    to redirect), and size-capped before any caller parses what came back.
+    ``urllib.request``'s default opener follows 3xx, including ``https`` to
+    ``http``, and it chooses the next URL from a header the peer wrote. For a
+    *static* first-party document there is nothing legitimate to redirect, so
+    declining is both safe and the stricter answer: returning ``None`` here makes
+    the chain fall through to ``HTTPDefaultErrorHandler``, which raises
+    ``HTTPError`` -- an ``OSError``, so a caller already handling an unreachable
+    channel handles this without a new branch.
+
+    This used to be a claim in the docstring below and nothing else.
     """
-    import urllib.request
 
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        return None
+
+
+def fetch_https_bytes(url: str, *, timeout_seconds: float, max_bytes: int) -> bytes:
+    """One bounded HTTPS GET of a static first-party document or release asset.
+
+    The one public-HTTPS reader in this distribution, and the only approved one:
+    ``https`` only, TLS-verified by :func:`ssl.create_default_context`, no
+    redirect followed, and size-capped **before** any caller parses or digests
+    what came back.
+
+    The scheme is checked here as well as by each caller. A caller's check keeps
+    its own refusal vocabulary; this one is what makes the property true of the
+    function rather than of its call sites, so a later third caller cannot
+    reintroduce a cleartext fetch by forgetting.
+
+    The cap is applied by reading one byte past it and refusing a body that
+    reaches that byte, so an oversized asset is refused rather than truncated
+    into something that might still parse.
+    """
+    if not url.startswith("https://"):
+        raise TransportError("this reader fetches https addresses only")
+    opener = urllib.request.build_opener(
+        _RefuseRedirect, urllib.request.HTTPSHandler(context=ssl.create_default_context())
+    )
+    with opener.open(url, timeout=timeout_seconds) as response:
         data: bytes = response.read(max_bytes + 1)
     if len(data) > max_bytes:
         raise TransportError("the fetched document exceeds its size limit")

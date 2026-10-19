@@ -37,11 +37,20 @@ EXPECTED_COMMANDS = (
     (("memory", "list"), "memory.list", "knowledge_retrieval"),
     (("memory", "search"), "memory.search", "knowledge_retrieval"),
     (("import", "start"), "import.start", "content_ingestion"),
+    (("settings", "list"), "settings.list", "workspace_inspection"),
+    (("settings", "set"), "settings.set", "workspace_administration"),
     (("job", "get"), "job.get", "job_observation"),
     (("job", "cancel"), "job.cancel", "job_control"),
     (("job", "retry"), "job.retry", "job_control"),
     (("job", "events"), "job.events", "job_observation"),
     (("evidence", "capture"), "evidence.capture", "content_ingestion"),
+    (("document", "capture"), "document.capture", "content_ingestion"),
+    (("document", "reprocess"), "document.reprocess", "content_ingestion"),
+    (("document", "history"), "document.history", "document_observation"),
+    (("document", "settings"), "document.settings.get", "document_settings"),
+    (("document", "configure"), "document.settings.update", "document_configuration"),
+    (("document", "disconnect"), "document.original.disconnect", "content_ingestion"),
+    (("document", "relink"), "document.original.relink", "content_ingestion"),
     (("evidence", "search"), "evidence.search", "knowledge_retrieval"),
     (("knowledge", "search"), "knowledge.search", "knowledge_retrieval"),
     (("governance", "propose"), "knowledge.propose", "knowledge_governance"),
@@ -50,6 +59,10 @@ EXPECTED_COMMANDS = (
     (("governance", "supersede"), "record.supersede", "knowledge_governance"),
     (("graph", "traverse"), "graph.traverse", "knowledge_retrieval"),
     (("context-pack", "build"), "context_pack.build", "knowledge_retrieval"),
+    (("code", "query"), "code.query", "knowledge_retrieval"),
+    (("code", "status"), "code.status", "knowledge_retrieval"),
+    (("code", "policy"), "code.policy.register", "code_analysis_policy"),
+    (("code", "import"), "code.import", "code_analysis_import"),
     (("chat", "command"), "chat.command", "chat_authoring"),
     (("chat", "events"), "chat.events", "chat_observation"),
     (("chat", "snapshot"), "chat.snapshot", "chat_observation"),
@@ -177,14 +190,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_seventy_nine_application_commands_are_declared_in_order() -> None:
+def test_the_ninety_two_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 79
+    assert len(APPLICATION_COMMANDS) == 92
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

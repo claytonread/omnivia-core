@@ -226,8 +226,67 @@ def context_pack_build(context: OperationContext) -> Mapping[str, Any]:
     if connection is None:
         raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
 
-    workspace_id = context.workspace_id
     resolved_at_us, resolution = _instant()
+    return build_task_context(
+        connection,
+        workspace_id=context.workspace_id,
+        principal=context.principal,
+        authority=authority,
+        scopes=scopes,
+        purpose=purpose,
+        request=request_input,
+        resolved_at_us=resolved_at_us,
+        resolution=resolution,
+        retrieval_version=CONTEXT_PACK_RETRIEVAL_VERSION,
+        policy_versions=CONTEXT_PACK_POLICY_VERSIONS,
+    ).to_wire()
+
+
+def build_task_context(
+    connection: Any,
+    *,
+    workspace_id: str,
+    principal: str,
+    authority: GrantedAuthority,
+    scopes: tuple[Scope, ...],
+    purpose: Purpose,
+    request: ContextPackBuildInput,
+    resolved_at_us: int,
+    resolution: str,
+    retrieval_version: str,
+    policy_versions: Mapping[str, str],
+    admit: Callable[[tuple[GovernedRecordValue, ...]], tuple[GovernedRecordValue, ...]]
+    | None = None,
+) -> ContextPackBuildResult:
+    """Steps 3-10 above, as one callable: the whole Context Pack authority, once.
+
+    `context_pack.build` is the operation this authority was written for, and it is the
+    first caller. It is not the only possible one: `code.query`'s `code_context` intent
+    composes a task-context component into a code answer, and the whole point of that
+    composition is that it must not be a *second* authority. So the six-read snapshot, the
+    L0 grant and frontier, the freeze, the build and the contract's own judge live here,
+    behind one entry point, and a composing handler supplies what is genuinely its own
+    rather than reimplementing what is not.
+
+    Exactly four things are the caller's, and each is a statement the pure slice cannot
+    check or this module cannot know:
+
+    * `resolved_at_us` / `resolution` -- the one instant, read once by whoever owns the
+      request. A composing handler resolves its own material at that same instant, and
+      passing the value is what makes the two reads one as-of read rather than two;
+    * `retrieval_version` -- the retrieval that produced the candidates, which §
+      `CONTEXT_PACK_RETRIEVAL_VERSION` explains only this layer can name truthfully;
+    * `policy_versions` -- the policies actually in force over *this* build. A caller
+      that narrows further than this function does applies a policy this module's own
+      constant does not name, and must say so;
+    * `admit` -- that extra narrowing, over both governed partitions, applied before the
+      request's own selectors and therefore before the freeze. A filter applied after the
+      freeze would narrow what a pack *shows* without narrowing what it *attests*, which
+      is the one shape the manifest exists to make impossible.
+
+    Everything else -- the authorization chain, the ordering, the ceiling, the manifest
+    and the judge -- is fixed here and cannot be passed in.
+    """
     snapshot = _snapshot(
         connection, workspace_id=workspace_id, resolution_instant_us=resolved_at_us
     )
@@ -259,7 +318,7 @@ def context_pack_build(context: OperationContext) -> Mapping[str, Any]:
     # `storage/retrieval.py` rather than passed from this context: comparing the session's
     # own principal with itself is not a check, and it would admit every principal.
     grant = local_owner_label_grant(
-        principal_id=context.principal,
+        principal_id=principal,
         workspace_id=workspace_id,
         granted_workspace=workspace_id,
     )
@@ -283,8 +342,9 @@ def context_pack_build(context: OperationContext) -> Mapping[str, Any]:
         frontier_candidates=frontier,
         snapshot=snapshot,
         build=build,
-        request=request_input,
+        request=request,
         workspace_id=workspace_id,
+        admit=admit,
     )
 
     freshness = ProjectionFreshness(
@@ -302,22 +362,22 @@ def context_pack_build(context: OperationContext) -> Mapping[str, Any]:
     result = _build(
         frozen,
         ContextPackBuildContext(
-            request=request_input,
+            request=request,
             workspace_id=workspace_id,
             # Verbatim, all three, exactly as the seam produced them.
             authority=authority,
             scopes=scopes,
             purpose=purpose,
-            policy_versions=CONTEXT_PACK_POLICY_VERSIONS,
+            policy_versions=policy_versions,
             canonical_resolution_time=resolution,
             # This module's own normalization of the request's query, through the same
             # NFKC-then-casefold `retrieval.py` applies. The builder recomputes it and
             # refuses any other value, so the form that is ranked and the form that is
             # attested cannot become two.
-            normalized_query=normalize_query(request_input.query),
+            normalized_query=normalize_query(request.query),
             normalization_version=CONTEXT_PACK_NORMALIZATION_VERSION,
             builder_version=CONTEXT_PACK_BUILDER_VERSION,
-            retrieval_version=CONTEXT_PACK_RETRIEVAL_VERSION,
+            retrieval_version=retrieval_version,
             ranking_version=CONTEXT_PACK_RANKING_VERSION,
             reranking_version=CONTEXT_PACK_RERANKER_DISABLED,
             selection_version=CONTEXT_PACK_SELECTION_VERSION,
@@ -336,7 +396,7 @@ def context_pack_build(context: OperationContext) -> Mapping[str, Any]:
         raise OperationError(ERROR_CODE_TOKEN_LIMIT_EXCEEDED, _MESSAGE_TOKEN_LIMIT)
     _judge(
         result,
-        request_input,
+        request,
         frozen,
         workspace_id=workspace_id,
         authority=authority,
@@ -344,8 +404,10 @@ def context_pack_build(context: OperationContext) -> Mapping[str, Any]:
         purpose=purpose,
         resolution=resolution,
         freshness=freshness,
+        retrieval_version=retrieval_version,
+        policy_versions=policy_versions,
     )
-    return result.to_wire()
+    return result
 
 
 def _effective(
@@ -498,6 +560,8 @@ def _freeze(
     build: ActiveBuild,
     request: ContextPackBuildInput,
     workspace_id: str,
+    admit: Callable[[tuple[GovernedRecordValue, ...]], tuple[GovernedRecordValue, ...]]
+    | None = None,
 ) -> ContextPackFreeze:
     """Freeze the authorized frontier, and produce the manifest that vouches for it.
 
@@ -521,7 +585,15 @@ def _freeze(
     the more important of the two: the ceiling that refuses an over-wide frontier is
     enforced *here*, not in `build_context_pack`, so a handler that guarded only the
     builder would let `ContextPackFrontierTooLarge` escape the dispatcher entirely.
+
+    A composing caller's `admit` runs first, over both governed partitions and ahead of
+    the request's own two selectors, because it is the narrower kind of statement: it
+    decides what this *principal* may be shown at all, while the selectors decide only
+    what this *request* asked about. Running it here rather than after the freeze is the
+    same rule the paragraph above states -- a stage applied later would narrow what the
+    pack shows without narrowing what its manifest attests.
     """
+    narrowed = (lambda values: values) if admit is None else admit
     return _mapped(
         lambda: freeze_context_pack_frontier(
             workspace_id=workspace_id,
@@ -531,8 +603,8 @@ def _freeze(
                 )
                 for candidate in frontier_candidates.candidates
             ),
-            records=_selected(snapshot.records, request),
-            history=_selected(snapshot.history, request),
+            records=_selected(narrowed(snapshot.records), request),
+            history=_selected(narrowed(snapshot.history), request),
             filters_applied=CONTEXT_PACK_FRONTIER_FILTERS,
             projection_versions={
                 CONTEXT_PACK_FRESHNESS_PROJECTION_ID: build.build_digest
@@ -615,6 +687,8 @@ def _judge(
     purpose: Purpose,
     resolution: str,
     freshness: ProjectionFreshness,
+    retrieval_version: str,
+    policy_versions: Mapping[str, str],
 ) -> None:
     """Run the contract's own judge before this pack goes to wire, or refuse.
 
@@ -645,14 +719,14 @@ def _judge(
             expected_authority=authority,
             expected_scopes=frozenset(scopes),
             expected_purpose=purpose,
-            expected_policy_versions=CONTEXT_PACK_POLICY_VERSIONS,
+            expected_policy_versions=policy_versions,
             expected_authorized_candidate_set=frozen.manifest,
             canonical_resolution_time=resolution,
             response_freshness=freshness,
             expected_normalized_query=normalize_query(request.query),
             expected_normalization_version=CONTEXT_PACK_NORMALIZATION_VERSION,
             expected_builder_version=CONTEXT_PACK_BUILDER_VERSION,
-            expected_retrieval_version=CONTEXT_PACK_RETRIEVAL_VERSION,
+            expected_retrieval_version=retrieval_version,
             expected_ranking_version=CONTEXT_PACK_RANKING_VERSION,
             expected_reranking_version=CONTEXT_PACK_RERANKER_DISABLED,
             expected_selection_version=CONTEXT_PACK_SELECTION_VERSION,
@@ -703,5 +777,6 @@ __all__ = [
     "CONTEXT_PACK_POLICY_VERSIONS",
     "CONTEXT_PACK_RETRIEVAL_VERSION",
     "HISTORY_VIEW",
+    "build_task_context",
     "context_pack_build",
 ]

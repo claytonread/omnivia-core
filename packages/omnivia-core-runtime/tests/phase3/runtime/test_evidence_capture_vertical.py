@@ -240,8 +240,14 @@ def build_dispatcher(
     tag: str = "cap",
     principal: str = LOCAL_PRINCIPAL,
     workspace_id: str = WORKSPACE_ID,
+    catalogue_for: Any = None,
 ) -> ApplicationDispatcher:
     """Capture and search behind one router, composed as `service.main.serve` does it.
+
+    `catalogue_for` is this installation's managed OCR cache, which `main` composes
+    from the installation being served. Left out, the family is composed with none --
+    which is production's answer for a process with no installation root -- and the
+    approved profiles it offers report every recognition resource unavailable.
 
     The reads dispatcher is the fallback of the ingestion one, which is the same
     chaining production uses, so a single `dispatch` call answers both operations and
@@ -287,6 +293,7 @@ def build_dispatcher(
         fallback=reads,
         clock=FakeClock(),
         allocate_identifier=_allocator(tag),
+        catalogue_for=catalogue_for,
     )
 
 

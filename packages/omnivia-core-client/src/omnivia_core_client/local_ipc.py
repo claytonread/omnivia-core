@@ -23,10 +23,12 @@ connect, a bounded read, and the mapping from an operating-system failure onto t
 package's declared error types.
 
 The connection model matches the server's, which is strictly unary: one
-connection carries one frame out and one frame back, and is then closed. The
-server actively refuses a connection that carries trailing bytes after its
-request frame, so this transport writes exactly once and then only reads. No
-pooling, no reuse, no second frame -- a fresh connection per call.
+connection carries one request out and one frame back, and is then closed. An
+application call uses the frozen OVC1 frame. A local binary document stage uses
+the distinct bounded OVB1 request and receives an OVC1 descriptor document. The
+server actively refuses trailing bytes, so this transport writes exactly once and
+then only reads. No pooling, no reuse, no second frame -- a fresh connection per
+call.
 
 **What reaching the endpoint does and does not establish.** The endpoint is
 protected by operating-system filesystem permissions. Connecting to it proves
@@ -44,9 +46,11 @@ than platform-specific glue.
 
 from __future__ import annotations
 
+import hashlib
 import socket
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from omnivia_core.contracts.v1 import (
     ContractDecodeError,
@@ -67,6 +71,7 @@ from omnivia_core_client.framing import (
     HEADER_BYTES,
     MAGIC,
     MAXIMUM_JSON_BYTES,
+    canonical_json_bytes,
     decode_frame,
     encode_frame,
 )
@@ -93,6 +98,9 @@ _READ_CHUNK = 64 * 1024
 #: ``ensure_unary_boundary`` uses, because it is the same invariant seen from the
 #: other end of the connection.
 _UNARY_BOUNDARY_SECONDS = 0.05
+
+_BINARY_TRANSFER_MAGIC = b"OVB1"
+_BINARY_TRANSFER_MAX_BYTES = 50 * 1024 * 1024
 
 
 def socket_path_for(endpoint_uri: str) -> str:
@@ -290,6 +298,71 @@ class LocalIpcTransport:
     """
 
     endpoint_uri: str
+
+    def stage_document(
+        self,
+        content: bytes,
+        *,
+        media_type: str,
+        transfer_key: str,
+        deadline: Deadline,
+        cancellation: CancellationToken | None = None,
+    ) -> Mapping[str, Any]:
+        """Stage one binary snapshot over OVB1 and return its immutable descriptor.
+
+        OVB1 is intentionally separate from the frozen OVC1 JSON frame.  The
+        server recomputes the digest and derives a stable handle from
+        ``transfer_key``, so retrying after a lost acknowledgement is safe.
+        """
+        remaining = enforce_send_preconditions(
+            deadline=deadline, cancellation=cancellation, operation="document.transfer"
+        )
+        if (
+            not isinstance(content, bytes)
+            or not 1 <= len(content) <= _BINARY_TRANSFER_MAX_BYTES
+            or not isinstance(media_type, str)
+            or not isinstance(transfer_key, str)
+        ):
+            raise ValueError("document transfer input is invalid")
+        if self.endpoint_uri.startswith(PIPE_SCHEME):
+            raise TransportError("binary document transfer is not supported by this endpoint")
+        checksum = "sha256:" + hashlib.sha256(content).hexdigest()
+        header = canonical_json_bytes(
+            {
+                "version": "1.0",
+                "media_type": media_type,
+                "transfer_key": transfer_key,
+                "content_checksum": checksum,
+            }
+        )
+        frame = (
+            _BINARY_TRANSFER_MAGIC
+            + len(header).to_bytes(4, "big")
+            + len(content).to_bytes(8, "big")
+            + header
+            + content
+        )
+        connection = _connect(socket_path_for(self.endpoint_uri), remaining)
+        try:
+            connection.settimeout(deadline.assert_not_expired(operation="document.transfer"))
+            failure = ""
+            try:
+                connection.sendall(frame)
+            except TimeoutError:
+                failure = "deadline"
+            except OSError:
+                failure = "dropped"
+            if failure == "deadline":
+                _raise_send_deadline()
+            if failure == "dropped":
+                _raise_dropped_before_send()
+            answer = _read_frame(connection, deadline)
+        finally:
+            connection.close()
+        source = answer.get("source")
+        if answer.get("ok") is not True or not isinstance(source, dict):
+            raise TransportError("the local endpoint refused the document transfer")
+        return source
 
     def exchange(
         self,

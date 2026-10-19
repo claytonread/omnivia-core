@@ -254,6 +254,7 @@ with zipfile.ZipFile(wheel_path) as archive:
 FAMILIES = (
     ("application contract", ("application",), "omnivia_core/contracts/v1/resources/"),
     ("trusted runtime", ("runtime",), "omnivia_core/runtime_contract/v1/resources/"),
+    ("core update", ("update",), "omnivia_core/update_contract/v1/resources/"),
 )
 
 # The packaged resource set must be exact in both directions: a missing file breaks a
@@ -365,6 +366,57 @@ install_and_import "venv-runtime" "omnivia-core-runtime" "omnivia_core_runtime" 
   "omnivia_core_runtime.service.main" \
   "omnivia_core_runtime.service.runner" \
   "omnivia_core_runtime.service.transport"
+
+# --- the TypeScript code-analysis producer runs on what the wheel carries -------
+#
+# The runtime wheel ships the compiled analyser and the pinned TypeScript compiler
+# beside it (`packages/omnivia-core-runtime/hatch_build.py`). Listing the members
+# would pass while the adapter refused them, so the installed adapter is asked to
+# verify its own packaged compiler against its pins and to run one analysis on it,
+# from a temporary cwd with PYTHONPATH unset -- this repository's `node_modules`
+# is not reachable from there, and nothing names it.
+echo "--- venv-runtime: the packaged TypeScript analyser runs on its packaged compiler ---"
+NODE_EXECUTABLE="$(command -v node || true)"
+if [[ -z "${NODE_EXECUTABLE}" ]]; then
+  echo "node is required to qualify the packaged TypeScript analyser" >&2
+  exit 1
+fi
+(cd "${WORKDIR}" && env -u PYTHONPATH "${WORKDIR}/venv-runtime/bin/python" - "${NODE_EXECUTABLE}" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+from omnivia_core_runtime.storage import code_analysis_typescript as subject
+
+profile = subject.DEFAULT_TYPESCRIPT_PROFILE
+packaged = subject.PACKAGED_TYPESCRIPT_ROOT
+assert "site-packages" in packaged.parts, packaged
+assert subject.ANALYSER_PATH.parent == packaged.parent, subject.ANALYSER_PATH
+node, compiler = subject.TypeScriptRuntime(node_executable=Path(sys.argv[1])).resolved(profile)
+assert compiler == packaged.resolve(), compiler
+request = {
+    "format": subject.REQUEST_FORMAT,
+    "request_digest": "sha256:" + "0" * 64,
+    "typescript_version": profile.typescript_version,
+    "limits": {
+        "max_programs": 1,
+        "max_extends_depth": 1,
+        "max_references": 1,
+        "max_ast_nodes_per_file": 1000,
+        "max_candidates": 100,
+        "max_reports": 10,
+    },
+    "sources": [{"path": "a.ts", "text": "export function f(): number { return 1; }\nf();\n"}],
+    "aux": [],
+}
+answer = subject._run_analyser(node, compiler, json.dumps(request).encode("ascii"), profile)
+assert answer.get("refused") is None, answer
+assert "a.ts:f" in {item["key"] for item in answer["nodes"]}, answer
+assert answer["lib_files"], answer
+print(f"packaged analyser OK on TypeScript {answer['typescript_version']}: {len(answer['nodes'])} node(s)")
+PYEOF
+)
+echo
 # The MCP distribution is no longer a skeleton: owner resolution 004 Packet C
 # gave it a curated exposure manifest and a stdio server. Both are named because
 # each exercises a different declared edge, and the
@@ -454,6 +506,12 @@ install_and_import "venv-cli" "omnivia-core-cli" "omnivia_core_cli" \
 # The client's whole surface is operational: every module below is imported by a
 # caller on the first call it makes, so each one has to resolve from the wheel
 # plus its single declared `omnivia-core` dependency and nothing else.
+#
+# `update_trust` and `updates` are in this list for a sharper reason than the
+# others: the venv installs the client *without* its `update-trust` extra, so
+# importing them here is the proof that the extra is genuinely optional. A
+# module-level `cryptography` import would resolve in a developer's environment
+# and fail exactly here, which is where it should.
 install_and_import "venv-client" "omnivia-core-client" "omnivia_core_client" \
   "omnivia_core_client.compatibility" \
   "omnivia_core_client.deadline" \
@@ -463,7 +521,9 @@ install_and_import "venv-client" "omnivia-core-client" "omnivia_core_client" \
   "omnivia_core_client.local_ipc" \
   "omnivia_core_client.managed_local" \
   "omnivia_core_client.service_client" \
-  "omnivia_core_client.transport"
+  "omnivia_core_client.transport" \
+  "omnivia_core_client.update_trust" \
+  "omnivia_core_client.updates"
 
 echo "--- venv-core: documented public API and packaged resources (isolated cwd, PYTHONPATH unset) ---"
 CORE_RESOURCE_CWD="${WORKDIR}/core-resource-check-cwd"
@@ -576,10 +636,40 @@ for bad_case in ('..', 'valid/../../../etc/passwd', '/etc/passwd', 'valid/no-suc
         continue
     raise AssertionError(f'read_case_text accepted {bad_case!r}')
 
+# The update corpus, on the same terms and for the same reason: its categories are
+# subjects rather than verdicts, and reading it must never require the ability to
+# verify a signature -- so this import must succeed with no cryptography library
+# reachable from Core at all.
+from omnivia_core.update_contract.v1 import resources as update_resources
+
+assert update_resources.list_schema_names() == ('core-update-v1',)
+update_schema = update_resources.read_schema('core-update-v1')
+assert update_schema['$id'].startswith('https://'), update_schema['$id']
+
+update_paths = update_resources.list_case_paths()
+assert {path.split('/', 1)[0] for path in update_paths} == {
+    'envelopes', 'states', 'archives', 'vectors'
+}
+for case_path in update_paths:
+    assert update_resources.read_case_text(case_path), case_path
+assert update_resources.read_vectors()['vectors_version'], 'update vectors carry no version'
+for category in update_resources.CASE_CATEGORIES:
+    scoped = update_resources.list_case_paths(category)
+    assert scoped, category
+    assert all(path.startswith(f'{category}/') for path in scoped), category
+
+for bad_case in ('..', 'envelopes/../../../etc/passwd', '/etc/passwd', 'vectors'):
+    try:
+        update_resources.read_case_text(bad_case)
+    except ValueError:
+        continue
+    raise AssertionError(f'update read_case_text accepted {bad_case!r}')
+
 print(
     f'public API OK; read and parsed {len(schema_names)} schema(s) and '
     f'{len(fixture_files)} fixture file(s), plus the trusted-runtime schema and '
-    f'{len(case_paths)} corpus document(s)'
+    f'{len(case_paths)} corpus document(s), plus the core-update schema and '
+    f'{len(update_paths)} corpus document(s)'
 )
 PYEOF
 )

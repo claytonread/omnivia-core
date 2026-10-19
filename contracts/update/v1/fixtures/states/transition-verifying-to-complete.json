@@ -1,0 +1,11 @@
+{
+  "case_id": "transition-verifying-to-complete",
+  "case_kind": "state",
+  "case_version": "1.0",
+  "description": "The only way to reach complete: readiness, not an installer exit code.",
+  "expected": {
+    "outcome": "transition_legal"
+  },
+  "proposed_phase": "complete",
+  "record_text": "{\n  \"approved_release_ref\": {\n    \"bundle_sha256\": \"sha256:5cc9496b8ce7890fc01101ec3c469921bbe120fe118eed61854964559e870858\",\n    \"version\": \"0.7.0\"\n  },\n  \"installation_ref\": \"/installations/test-only\",\n  \"operation_id\": \"upd-00000000-0000-4000-8000-000000000001\",\n  \"phase\": \"verifying\",\n  \"product_id\": \"omnivia-core\",\n  \"started_at\": \"2026-10-16T12:00:00Z\"\n}\n"
+}

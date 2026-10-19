@@ -21,7 +21,10 @@ Checks performed:
   ``omnivia_core_runtime``, or each other;
 - ``omnivia-core-client`` declares exactly one dependency -- the accepted
   ``omnivia-core`` range -- and imports no runtime, MCP, CLI, or legacy
-  package;
+  package. Its one declared *extra*, ``update-trust``, is outside
+  ``project.dependencies`` and therefore outside this check by design: an extra
+  is not an edge, and ``tests/test_package_isolation.py`` is what pins the extra
+  itself and confines its import to one named module;
 - every package's Hatchling wheel target selects its own ``src`` package;
 - every package has a ``py.typed`` marker;
 - every package's build backend is ``hatchling.build`` and its build

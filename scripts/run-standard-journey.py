@@ -1037,6 +1037,91 @@ def _replacement_pid(descriptor: Path) -> int:
     raise JourneyError("managed-local recovery did not publish a replacement service")
 
 
+def _require_seeded_retrieval(
+    cli: Path,
+    installation: Path,
+    workspace_id: str,
+    *,
+    record_id: str,
+    record_version: str,
+    evidence_id: str,
+) -> None:
+    """The one seeded record and its captured evidence rank first and are cited.
+
+    The journey seeds a single lexical record and a single captured source, so
+    this proves position and citation, not discrimination between competing
+    candidates; that is the focused retrieval tests' job.  The pack is built
+    twice and compared on its cited content only: `pack_id` covers the build
+    instant, so it is not expected to repeat.
+    """
+
+    def _read(path: Sequence[str], payload: Mapping[str, Any], label: str):
+        return _success(
+            _cli(cli, installation, workspace_id, path, payload=payload), label
+        )
+
+    def _identity_of(record: object) -> object:
+        identity = (
+            record.get("provenance", {}).get("identity")
+            if isinstance(record, dict)
+            else None
+        )
+        return (
+            (identity.get("record_id"), identity.get("version"))
+            if isinstance(identity, dict)
+            else None
+        )
+
+    seeded = (record_id, record_version)
+    found = _read(("evidence", "search"), {"query": QUERY_TOKEN}, "CLI evidence search")
+    hits = found.get("evidence")
+    if (
+        not isinstance(hits, list)
+        or not hits
+        or hits[0].get("evidence_id") != evidence_id
+    ):
+        raise JourneyError("CLI evidence search did not rank the captured source first")
+
+    records = _read(
+        ("knowledge", "search"), {"query": QUERY_TOKEN}, "CLI knowledge search"
+    )
+    ranked = records.get("records")
+    if not isinstance(ranked, list) or not ranked or _identity_of(ranked[0]) != seeded:
+        raise JourneyError("CLI knowledge search did not rank the seeded record first")
+
+    request = {"query": QUERY_TOKEN, "mode": "deterministic_view", "token_budget": 4000}
+    pack = _read(("context-pack", "build"), request, "CLI context pack build")
+    again = _read(("context-pack", "build"), request, "CLI context pack rebuild")
+    content = ("citations", "sections", "records", "evidence")
+    if any(pack.get(key) != again.get(key) for key in content):
+        raise JourneyError("the deterministic context pack changed between builds")
+    cited = [
+        citation.get("citation_id")
+        for citation in pack.get("citations", [])
+        if isinstance(citation, dict)
+        and (citation.get("record_reference") or {}).get("record_id") == record_id
+        and citation["record_reference"].get("version") == record_version
+    ]
+    sections = [
+        section
+        for section in pack.get("sections", [])
+        if isinstance(section, dict)
+        and section.get("kind") == "governed_record"
+        and set(cited) & set(section.get("citation_ids", []))
+    ]
+    packed = pack.get("records")
+    if (
+        not cited
+        or not sections
+        or not isinstance(packed, list)
+        or not packed
+        or _identity_of(packed[0]) != seeded
+    ):
+        raise JourneyError(
+            "the context pack did not cite the seeded record and section"
+        )
+
+
 def run(output: Path) -> dict[str, Any]:
     service = _console("omnivia-core-service")
     cli = _console("omnivia")
@@ -1254,6 +1339,15 @@ def run(output: Path) -> dict[str, Any]:
                     "CLI knowledge search did not find the approved record"
                 )
 
+            _require_seeded_retrieval(
+                cli,
+                installation,
+                workspace_id,
+                record_id=record_id,
+                record_version=approved_version,
+                evidence_id=capture_result["evidence_id"],
+            )
+
             config = _provisioned_configuration(cli, installation, workspace_id)
             _await_knowledge_search_visibility(str(mcp), ["--config", str(config)])
             hosts = root / "host-configurations"
@@ -1332,6 +1426,8 @@ def run(output: Path) -> dict[str, Any]:
                     "record_proposed": proposed_id == record_id,
                     "record_reviewed_and_approved": True,
                     "authorized_search_records": len(records),
+                    "seeded_record_ranked_first": True,
+                    "context_pack_cites_seeded_record": True,
                 },
                 "mcp": mcp_result,
                 "secrets_recorded": False,

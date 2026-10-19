@@ -111,6 +111,10 @@ WORKFLOW_EXECUTION_PURPOSE: Final = "workflow_execution"
 WORKFLOW_CONTROL_PURPOSE: Final = "workflow_control"
 DECISION_EVALUATION_PURPOSE: Final = "decision_evaluation"
 DECISION_CONFIGURATION_PURPOSE: Final = "decision_configuration"
+#: Changing this workspace's durable document-processing preferences. Deliberately not
+#: `CONTENT_INGESTION_PURPOSE`: a grant to bring one document in is not a grant to change
+#: what every future document is read under, and the two are issued for different acts.
+DOCUMENT_CONFIGURATION_PURPOSE: Final = "document_configuration"
 #: Engineering memory (SPEC-CORE-ENGMEM-001). Continuity bindings and their final
 #: close are one session-level act; checkpoint appends are their own purpose because
 #: they write durable L0 evidence, not session bookkeeping.
@@ -125,6 +129,12 @@ ENGINEERING_SOURCE_PURPOSE: Final = "engineering_source"
 #: identity. Its own purpose, like its own scope and capability, so neither a
 #: contributed observation nor a trusted source stream carries this authority.
 ENGINEERING_REPOSITORY_PURPOSE: Final = "engineering_repository"
+#: Code analysis (W13-C). Authorising a deterministic acceptance policy is an owner's
+#: governance act; running a declared producer and activating what that policy accepts is
+#: applying one. Two purposes, so a grant to import never carries the authority to decide
+#: what an import may accept, and a grant to author policy never runs an analysis.
+CODE_ANALYSIS_POLICY_PURPOSE: Final = "code_analysis_policy"
+CODE_ANALYSIS_IMPORT_PURPOSE: Final = "code_analysis_import"
 #: Declaring a trigger and moving its subscription are one configuration act, as the decision
 #: definition and model acts share one purpose: a grant to configure a trigger is the same
 #: authority whichever of the two it performs.
@@ -160,6 +170,11 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         # the bytes, so they are served under the one ingestion purpose rather than a
         # purpose that would merely restate the operation name.
         "evidence.capture": CONTENT_INGESTION_PURPOSE,
+        "document.capture": CONTENT_INGESTION_PURPOSE,
+        "document.reprocess": CONTENT_INGESTION_PURPOSE,
+        "document.original.disconnect": CONTENT_INGESTION_PURPOSE,
+        "document.original.relink": CONTENT_INGESTION_PURPOSE,
+        "document.settings.update": DOCUMENT_CONFIGURATION_PURPOSE,
         "job.cancel": JOB_CONTROL_PURPOSE,
         "job.retry": JOB_CONTROL_PURPOSE,
         "chat.command": CHAT_AUTHORING_PURPOSE,
@@ -200,6 +215,12 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "task_context.export": TASK_CONTEXT_EXPORT_PURPOSE,
         "outcome.request.create": OUTCOME_REQUEST_PURPOSE,
         "project.context.switch": PROJECT_CONTEXT_PURPOSE,
+        # Storing one workspace setting. Served under the administration purpose
+        # the CLI command declares, because the grant's purpose is checked against
+        # the declared one and the two must agree.
+        "settings.set": WORKSPACE_ADMINISTRATION_PURPOSE,
+        "code.policy.register": CODE_ANALYSIS_POLICY_PURPOSE,
+        "code.import": CODE_ANALYSIS_IMPORT_PURPOSE,
     }
 )
 
@@ -227,6 +248,13 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # Contributing content to one workspace: it reviews nothing, administers
         # nothing, and reaches outside no workspace it does not name.
         "evidence.capture": WORKSPACE_CONTRIBUTOR_ROLE,
+        "document.capture": WORKSPACE_CONTRIBUTOR_ROLE,
+        "document.reprocess": WORKSPACE_CONTRIBUTOR_ROLE,
+        "document.original.disconnect": WORKSPACE_CONTRIBUTOR_ROLE,
+        "document.original.relink": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Choosing how this workspace reads future documents is contributor work: it
+        # reviews nothing, administers nothing and reaches no other workspace.
+        "document.settings.update": WORKSPACE_CONTRIBUTOR_ROLE,
         "job.cancel": WORKSPACE_CONTRIBUTOR_ROLE,
         "job.retry": WORKSPACE_CONTRIBUTOR_ROLE,
         # A chat command authors conversation content in one workspace; it reviews
@@ -294,6 +322,16 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # Choosing the active Project is contributor work in one workspace: it writes no record and
         # reaches nothing outside it. Membership of the chosen Project is checked by the handler.
         "project.context.switch": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Contributor, not installation administrator: this lane refuses the
+        # installation role at issuance, and a setting belongs to the one
+        # workspace the grant already names.
+        "settings.set": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Authorising which code facts an import may accept in bulk is the existing
+        # governance owner's act, the same reviewer role a candidate approval takes.
+        # Running an import under an authorised policy accepts nothing the policy did not
+        # already, so it is contributor work like any source processing.
+        "code.policy.register": KNOWLEDGE_REVIEWER_ROLE,
+        "code.import": WORKSPACE_CONTRIBUTOR_ROLE,
     }
 )
 
@@ -386,6 +424,24 @@ _MESSAGE_OUTCOME_AUDIT_CROSSLINKED: Final = (
 )
 _MESSAGE_RESULT_REJECTED: Final = (
     "this mutation produced a result the server will not serve for this operation"
+)
+
+#: `ApiError.details` on a refusal that does not establish what the admission under
+#: this idempotency key did.
+#:
+#: Every other refusal this seam raises is decided before the domain mutation runs or
+#: rolls it back with the claim, so it is proof the effect did not happen; a caller may
+#: settle its work on one. A refusal raised while serving an *existing* claim is not:
+#: the claim is only visible because its transaction committed, so the effect stands and
+#: only its answer is missing. A caller must then keep the same request, key and
+#: attempt and reconcile, rather than settling a failure or allocating a new key.
+#:
+#: The error code says what went wrong and stays frozen to its own retry class. This
+#: says what the refusal proves about the effect, which no code in the v1 vocabulary
+#: distinguishes -- `internal_non_recoverable` is raised for both a rolled-back
+#: mutation and an unservable committed one.
+ADMISSION_OUTCOME_UNESTABLISHED: Final[Mapping[str, Any]] = MappingProxyType(
+    {"outcome_established": False}
 )
 
 
@@ -933,29 +989,46 @@ def execute_mutation(
         if existing is not None:
             claim_id, stored_digest, original_audit_ref = existing
             if stored_digest not in accepted_fingerprints:
+                # One key, two requests. This says something definite about *this*
+                # request: the key is bound to a different one, so this request was
+                # never the claim and never committed. It is marked below as a
+                # refusal that does establish the outcome, and a caller may settle it.
                 raise MutationIdempotencyConflict(audit_reference=original_audit_ref)
-            if replay_authority is not None:
-                replay_authority(fenced)
-            # An honest replay runs no domain code, but it does spend the fresh grant it
-            # was presented with: the row below is what makes that durable, so the grant
-            # cannot later authorize a mutation that would actually write something.
-            replayed = _replay(fenced, claim_id)
-            # Validated on the way out as well as on the way in. A stored answer that
-            # this build no longer considers servable is refused rather than re-served
-            # from the claim for as long as the claim exists.
-            if not validate_result(replayed.result):
-                raise MutationSeamFault(_MESSAGE_RESULT_REJECTED)
-            settled_monotonic_us = _require_current(grant, clock)
-            _record_execution(
-                fenced,
-                grant,
-                kind="replayed",
-                claim_id=claim_id,
-                audit_ref=replayed.audit_ref,
-                settled_at_us=_wall_us(clock),
-                settled_monotonic_us=settled_monotonic_us,
-            )
-            _require_current(grant, clock)
+            # Past this point the claim is this exact request's own, and a claim is
+            # visible only because the transaction that inserted it -- and the domain
+            # rows written beside it -- committed. So the effect already happened, and
+            # every refusal below withholds its answer rather than preventing it. That
+            # is not the same fact as an ordinary refusal, and a caller recovering an
+            # in-flight mutation has to tell them apart: one is settled work, the other
+            # is work whose outcome this answer cannot establish. See
+            # `ADMISSION_OUTCOME_UNESTABLISHED`.
+            try:
+                if replay_authority is not None:
+                    replay_authority(fenced)
+                # An honest replay runs no domain code, but it does spend the fresh
+                # grant it was presented with: the row below is what makes that durable,
+                # so the grant cannot later authorize a mutation that would actually
+                # write something.
+                replayed = _replay(fenced, claim_id)
+                # Validated on the way out as well as on the way in. A stored answer
+                # that this build no longer considers servable is refused rather than
+                # re-served from the claim for as long as the claim exists.
+                if not validate_result(replayed.result):
+                    raise MutationSeamFault(_MESSAGE_RESULT_REJECTED)
+                settled_monotonic_us = _require_current(grant, clock)
+                _record_execution(
+                    fenced,
+                    grant,
+                    kind="replayed",
+                    claim_id=claim_id,
+                    audit_ref=replayed.audit_ref,
+                    settled_at_us=_wall_us(clock),
+                    settled_monotonic_us=settled_monotonic_us,
+                )
+                _require_current(grant, clock)
+            except OperationError as unserved:
+                unserved.details = ADMISSION_OUTCOME_UNESTABLISHED
+                raise
             return replayed
 
         if precondition is not None:
@@ -1314,6 +1387,7 @@ def _digest(canonical: str) -> str:
 
 
 __all__ = [
+    "ADMISSION_OUTCOME_UNESTABLISHED",
     "CHAT_AUTHORING_PURPOSE",
     "CONTENT_INGESTION_PURPOSE",
     "DEFAULT_GRANT_LIFETIME_US",

@@ -57,6 +57,13 @@ REFUSED_NOT_ELIGIBLE: Final = "not_eligible"
 REFUSED_STALE_SOURCE: Final = "stale_source"
 REFUSED_WRONG_STATE: Final = "wrong_state"
 
+#: The one governed domain `_authoritative_version` never returns, so no share can be
+#: proposed from, accepted for or read out of an imported code-analysis fact. See that
+#: function for why supersession is the wrong currency rule for this domain. Spelled here
+#: rather than imported from `storage/code_analysis_import.py`, which pulls both producers
+#: in behind it; `test_code_context.py` pins the two strings equal.
+_CODE_ANALYSIS_DOMAIN: Final = "engineering.code"
+
 STATE_PROPOSED: Final = "proposed"
 STATE_ACCEPTED: Final = "accepted"
 STATE_REVOKED: Final = "revoked"
@@ -386,7 +393,18 @@ def _authoritative_version(
     record_id: str | None = None,
     assembly_id: str | None = None,
 ) -> _Version | None:
-    """The sealed, canonical, accepted and unsuperseded version of a record or assembly, or `None`."""
+    """The sealed, canonical, accepted and unsuperseded shareable version, or `None`.
+
+    `_CODE_ANALYSIS_DOMAIN` is never shareable, and the exclusion is in the one query
+    rather than at each of the three call sites. Supersession is this lookup's whole
+    notion of currency -- it is what `_require_current` re-checks a share against -- and
+    an imported code-analysis fact does not become stale by being superseded. It becomes
+    stale when migration 0074 activates another import for its repository, producer and
+    profile, which retires it while its version id and its content digest stay exactly
+    what the share recorded. A share of one would therefore keep verifying long after the
+    analysis behind it stopped being the applicable one, which is the mixed-revision
+    disclosure this refusal exists to prevent.
+    """
     column, value = (
         ("governed_record_id", record_id) if assembly_id is None else ("assembly_id", assembly_id)
     )
@@ -394,14 +412,14 @@ def _authoritative_version(
         "SELECT assembly_id, governed_record_id, governed_record_version_id, domain_scope, "
         "content_json, content_digest "
         "FROM omnivia_authoritative_governed_versions AS v "
-        f"WHERE v.workspace_id = ? AND v.{column} = ? "
+        f"WHERE v.workspace_id = ? AND v.{column} = ? AND v.domain_scope <> ? "
         "AND v.authority_level = 'canonical' AND v.governance_disposition = 'accepted' "
         "AND NOT EXISTS ("
         "  SELECT 1 FROM omnivia_record_supersessions r "
         "  WHERE r.workspace_id = v.workspace_id "
         "  AND r.source_version_id = v.governed_record_version_id) "
         "ORDER BY v.append_ordinal DESC LIMIT 1",
-        (workspace_id, value),
+        (workspace_id, value, _CODE_ANALYSIS_DOMAIN),
     ).fetchone()
     return None if row is None else _Version(*(str(item) for item in row))
 

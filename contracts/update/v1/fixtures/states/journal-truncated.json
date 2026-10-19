@@ -1,0 +1,10 @@
+{
+  "case_id": "journal-truncated",
+  "case_kind": "state",
+  "case_version": "1.0",
+  "description": "A half-written journal. Corruption is a third answer and never conflated with 'no update has run'.",
+  "expected": {
+    "outcome": "record_corrupt"
+  },
+  "record_text": "{\"operation_id\": \"upd-00000000-0000-4000-8000-0000000"
+}

@@ -239,3 +239,133 @@ def test_the_service_not_the_cli_owns_the_writable_workspace_lease(home: Path) -
     assert after_descriptor["service_instance_id"] == before_descriptor["service_instance_id"]
     assert after_descriptor["fencing_generation"] == before_descriptor["fencing_generation"]
     assert _lease_payload(home) == before_lease
+
+
+def _application(home: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omnivia_core_cli.main",
+            "--installation-state",
+            str(home / "installation-state"),
+            "--workspace-id",
+            WORKSPACE_ID,
+            "--timeout-ms",
+            "60000",
+            *arguments,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+        env=_pinned_child_env(),
+    )
+
+
+def test_the_settings_commands_reach_the_service_and_are_refused_as_unavailable(
+    home: Path,
+) -> None:
+    """`settings list` and `settings set` are published, and this build does not serve them.
+
+    Each command declares a purpose, and the service refuses a request whose purpose is not one its
+    session holds. The answers below are therefore the service's own typed refusal and not a purpose
+    or authorization failure: both declared purposes are held by the settings family. Which purpose
+    belongs to which operation is held by the runtime test that reads the CLI table. A malformed
+    input is invalid rather than unavailable.
+    """
+    assert _cli(home, "start").returncode == 0
+
+    def answer(*arguments: str) -> dict[str, object]:
+        run = _application(home, *arguments, "--json")
+        assert run.returncode != 0 and run.stderr == "", run.stderr
+        return dict(dict(json.loads(run.stdout))["error"])
+
+    assert answer("settings", "list")["code"] == "dependency_unavailable"
+    assert answer("settings", "list", "--input-json", '{"prefix": "document"}')["code"] == (
+        "dependency_unavailable"
+    )
+    assert answer("settings", "list", "--input-json", '{"prefix": "Bad-Key"}')["code"] == (
+        "invalid_request"
+    )
+    change = '{"key": "document.processing", "value_json": "{}"}'
+    assert answer("settings", "set", "--input-json", change, "--idempotency-key", "idem-1")[
+        "code"
+    ] == "dependency_unavailable"
+    assert answer(
+        "settings", "set", "--input-json", '{"key": "Bad-Key", "value_json": "1"}',
+        "--idempotency-key", "idem-2",
+    )["code"] == "invalid_request"
+    assert _service_pid(home) is not None
+
+
+def test_the_code_analysis_commands_reach_the_service_through_the_generic_cli(
+    home: Path,
+) -> None:
+    """`code status`, `code policy` and `code import` against a real managed service.
+
+    The generic CLI transport, the service's own authorization and purposes, and the
+    families the commands land in: discovery answers for a repository with no analysis, an
+    owner registers a policy and replays it under the same key, and an import names a
+    snapshot this workspace never captured, so the service refuses it as `not_found` --
+    after the precondition the `--record-version` flag carried was accepted.
+    """
+    from omnivia_core_runtime.storage import code_analysis_python
+
+    assert _cli(home, "start").returncode == 0
+
+    def run(*arguments: str) -> tuple[int, dict[str, object]]:
+        completed = _application(home, *arguments, "--json")
+        assert completed.stderr == "", completed.stderr
+        return completed.returncode, dict(json.loads(completed.stdout))
+
+    code, status = run("code", "status", "--input-json", '{"repository_id": "repo-none"}')
+    assert code == 0, status
+    analyses = list(dict(status["result"])["analyses"])
+    assert [dict(entry)["readiness_reason"] for entry in analyses] == [
+        "no_active_import", "no_active_import",
+    ]
+    assert [dict(entry)["availability"] for entry in analyses] == ["available", "unavailable"]
+
+    profile = code_analysis_python.DEFAULT_PYTHON_PROFILE.digest
+    policy = json.dumps(
+        {
+            "policy_id": "owner.cli",
+            "policy_version": "1",
+            "producers": [
+                {"producer_id": "analyzer.python.stdlib", "producer_version": "1.0.0",
+                 "profile_digest": profile},
+            ],
+            "accepted_node_kinds": [
+                {"producer_id": "analyzer.python.stdlib", "node_kind": "function"},
+            ],
+            "accepted_relationships": [],
+            "allow_reduced_coverage": False,
+        }
+    )
+    code, registered = run("code", "policy", "--input-json", policy, "--idempotency-key", "p-1")
+    assert code == 0, registered
+    assert dict(registered["result"])["disposition"] == "registered"
+    code, replayed = run("code", "policy", "--input-json", policy, "--idempotency-key", "p-1")
+    assert code == 0 and replayed["result"] == registered["result"]
+
+    request = json.dumps(
+        {
+            "repository_id": "repo-none", "snapshot_id": "snap-none",
+            "producer_id": "analyzer.python.stdlib", "profile_digest": profile,
+            "policy_id": "owner.cli", "policy_version": "1",
+        }
+    )
+    code, refused = run(
+        "code", "import", "--input-json", request, "--idempotency-key", "i-1",
+        "--record-version", "0",
+    )
+    assert code != 0 and dict(refused["error"])["code"] == "not_found"
+    # An import with no expected activation is not sent at all: the catalogue requires the
+    # precondition, so the CLI refuses it as a usage error before the connection.
+    unfenced = _application(
+        home, "code", "import", "--input-json", request, "--idempotency-key", "i-2", "--json"
+    )
+    assert unfenced.returncode == 2 and unfenced.stdout == ""
+    assert unfenced.stderr.endswith("the command arguments are not valid\n")
+    assert _service_pid(home) is not None

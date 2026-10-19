@@ -131,7 +131,13 @@ class OperationContext:
 
 
 class OperationError(Exception):
-    """A handler failed in a way that maps to a contract error code."""
+    """A handler failed in a way that maps to a contract error code.
+
+    `details` is the contract's own `ApiError.details`: structured facts about this
+    refusal that the code alone does not carry. It is not a second vocabulary for the
+    failure -- the code still says what went wrong -- and nothing is put here that a
+    code already states.
+    """
 
     def __init__(
         self,
@@ -141,6 +147,7 @@ class OperationError(Exception):
         retry_class: str = "non_retryable",
         audit_reference: str | None = None,
         job_reference: JobReference | None = None,
+        details: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -148,6 +155,7 @@ class OperationError(Exception):
         self.retry_class = retry_class
         self.audit_reference = audit_reference
         self.job_reference = job_reference
+        self.details = details
 
 
 def application_refusal(
@@ -495,8 +503,14 @@ def failure(
     granted: tuple[str, ...] = (),
     audit_reference: str | None = None,
     job_reference: JobReference | None = None,
+    details: Mapping[str, Any] | None = None,
 ) -> ResponseEnvelope:
-    error = ApiError(code=code, message=message, retry_class=retry_class)
+    error = ApiError(
+        code=code,
+        message=message,
+        retry_class=retry_class,
+        details=None if details is None else dict(details),
+    )
     try:
         validate_error_value_domain(error)
         validate_error_retry_class(error)
