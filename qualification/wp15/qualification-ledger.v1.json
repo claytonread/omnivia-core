@@ -3243,14 +3243,48 @@
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc06_onlyoffice_nested_rtf.py",
           "symbol": "test_canonical_result_hash_matches_the_receipt",
           "covers": "The canonical extraction result hashes to the value the receipt records."
+        },
+        {
+          "path": "qualification/wp15/fixtures/doc06-onlyoffice-nested-receipt.json",
+          "covers": "Retained corpus receipt for the ONLYOFFICE producer: pins the source DOCX and the RTF by SHA-256 and records the converter, reader and expected extraction."
+        },
+        {
+          "path": "qualification/wp15/fixtures/doc06-apple-text-system-receipt.json",
+          "covers": "Retained corpus receipt for the Apple text-system producer (/usr/bin/textutil, macOS 27.0 build 26A428): pins the source HTML and the RTF by SHA-256 and records the converter, reader and expected extraction."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc06_apple_text_system_rtf.py",
+          "symbol": "test_receipt_binds_both_fixtures_the_converter_and_the_reader",
+          "covers": "The Apple receipt binds the source HTML, the textutil-produced RTF, the converter, the pinned reader and the text-only profile by SHA-256."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc06_apple_text_system_rtf.py",
+          "symbol": "test_the_rtf_holds_real_apple_markers_codepage_nested_table_and_field",
+          "covers": "The Apple RTF carries cocoartf and ansicpg1252 headers, a cp1252 hex escape, a Unicode escape, four table rows with itap2, nestcell and nestrow markers, and a real HYPERLINK field with field, fldinst and fldrslt controls."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc06_apple_text_system_rtf.py",
+          "symbol": "test_pinned_reader_extracts_the_rtf_deterministically",
+          "covers": "The production extract_rtf path with an absolute pinned Pandoc 3.12.1 reads the Apple RTF repeatably: cp1252 and Unicode body text, table and inner-table cell values, and the receipt's block, segment and inventory counts. Skips only without a host Pandoc 3.12.1."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc06_apple_text_system_rtf.py",
+          "symbol": "test_the_hyperlink_field_is_inventoried_and_never_resolved",
+          "covers": "The HYPERLINK field is inventoried as an unresolved https link and its target is never fetched."
+        },
+        {
+          "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_doc06_apple_text_system_rtf.py",
+          "symbol": "test_canonical_result_hash_matches_the_receipt",
+          "covers": "The canonical Apple extraction result hashes to the value the receipt records."
         }
       ],
-      "status": "blocked_external",
-      "missing_condition": "One application-produced nested-table RTF (ONLYOFFICE Desktop Editors 9.4.0, converted from a generated DOCX) is now read by the pinned Pandoc 3.12.1 and bound by a committed receipt. This external-fixture gate still needs an RTF corpus from further applications, such as Microsoft Word, Apple TextEdit and LibreOffice, and RTF sources exercising notes, revisions and object links as those applications write them.",
-      "limitations": "The ONLYOFFICE fixture is a single application's conversion of a generated DOCX, not an RTF the application authored from scratch. The pinned reader flattens nested tables into separate AST tables (8 AST tables against 12 nested-table markers in the scanner inventory), so nested structure is evidenced by cell text and counts rather than by a nesting tree. Reader-dependent tests skip on a host without Pandoc 3.12.1; CI installs it. The bounded scanner, inventories, real pinned-reader path and locator stability remain covered directly.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "The corpus is two producers, each a conversion of a generated source rather than an RTF written interactively: ONLYOFFICE Desktop Editors 9.4.0 from a generated DOCX and Apple's text system (textutil, macOS 27.0 build 26A428) from a small HTML file. It holds no Microsoft Word or LibreOffice output. Notes, revisions, binary groups and object links are exercised only by adversarial scanner fixtures, not by application-authored corpus; the Apple RTF carries one HYPERLINK field and no notes or revisions, and the ONLYOFFICE RTF carries one comment. The pinned reader does not preserve nested-table structure faithfully: it reports 8 AST tables for the ONLYOFFICE RTF against 12 nested-table markers in the scanner inventory, and for the Apple RTF it places the inner table in its own outer row instead of as a cell of the row that holds it, so nesting is evidenced by cell text, counts and locators rather than a faithful tree. Reader-dependent tests skip on a host without Pandoc 3.12.1; CI installs it. The bounded scanner, inventories, real pinned-reader path and locator stability remain covered directly.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/rtf_extractor.py",
-        "qualification/wp15/fixtures/doc06-onlyoffice-nested-receipt.json"
+        "qualification/wp15/fixtures/doc06-onlyoffice-nested-receipt.json",
+        "qualification/wp15/fixtures/doc06-apple-text-system-receipt.json"
       ]
     },
     {
@@ -3599,8 +3633,12 @@
       "evidence_type": "real_host_measurement",
       "evidence": [
         {
+          "path": "docs/development/qualification/doc13-packaged-runtime-macos-2026-10-20.json",
+          "covers": "The reproducing measurement: on arm64 macOS 27.0.0, a freshly assembled candidate whose 22 packaged resources were digest-verified recognised a generated English image and read an RTF through the production confined worker, with both engines run from an environment holding nothing but the operating system's own PATH. All eight gates passed, with the same engine builds and source digests as the first run."
+        },
+        {
           "path": "docs/development/qualification/doc13-packaged-runtime-macos-2026-10-16.json",
-          "covers": "The measurement itself: on arm64 macOS 27.0.0, an assembled candidate whose 23 packaged resources were digest-verified recognised a generated English image and read an RTF through the confined worker, with both engines run from an environment holding nothing but the operating system's own PATH."
+          "covers": "The first measurement, on the same host: a candidate of 23 packaged resources passed the same eight gates. The 2026-10-20 run reproduces it."
         },
         {
           "path": "scripts/check-doc13-packaged-runtime.py",
@@ -3610,7 +3648,7 @@
         {
           "path": "tests/test_doc13_packaged_runtime_qualification.py",
           "symbol": "test_the_committed_record_of_this_host_still_verifies",
-          "covers": "The committed record is re-verified offline on every repository run, so an edited record or a grown gate set fails rather than standing."
+          "covers": "Both committed records (2026-10-16 and 2026-10-20) are re-verified offline on every repository run and pinned to the same engine builds, source digests, packaged model digests, an unsigned candidate and no release eligibility, so an edited record or a grown gate set fails rather than standing."
         },
         {
           "path": "tests/test_packaged_runtime.py",
@@ -3653,9 +3691,9 @@
           "covers": "The service executor settles a missing language as needs-ocr-language rather than a failure or a success."
         }
       ],
-      "status": "blocked_external",
-      "missing_condition": "English now works offline, and the run is recorded rather than asserted: the committed record above was produced on this project's macOS host from an assembled candidate whose packaged Pandoc, Tesseract, relocated library closure and bundled English and orientation models were digest-verified first, and the recognition went through the production path -- the installation authority, the frozen resource identities and the confined worker -- not a harness around it. What the repository cannot do is make that measurement again. Pandoc and the Tesseract models are not redistributed here, so neither CI nor scripts/preflight has engine bytes to assemble a candidate from, and the lane refuses to run anywhere but macOS. The repository therefore re-verifies the record offline on every run and proves the packaging, verification, relocation, refusal and runtime-binding contracts with synthetic payloads, which is everything except repeating the recognition itself.",
-      "limitations": "The measurement is one host, one architecture and one engine build: arm64 macOS 27.0.0 with pandoc 3.12.1 and tesseract 5.5.3, whose source digests the record pins. Nothing has run on Intel. The resource manifest is not *signed*, which 11.12.2 asks for: the digests sit in plain JSON beside the payload, which catches a substituted file but not an attacker who rewrites both, and closing it needs the release owner WP-00 row 13 leaves unbound. The candidate is qualification-only, unsigned beyond the ad-hoc seal that makes a relocated Mach-O runnable on Apple silicon. A selection mixing a bundled language with a managed one is served by the managed cache alone, because one Tesseract invocation takes one model directory, so it reports English missing until that is installed through the managed route. The bundled models consume no managed-cache capacity and no second pool was introduced for them.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "One host, one architecture and one engine build, measured twice: arm64 macOS 27.0.0 with pandoc 3.12.1 and tesseract 5.5.3, whose source digests both records pin identically. Nothing has run on Intel and there is no full release matrix. The repository redistributes neither engine, so CI and scripts/preflight cannot repeat the measurement; they re-verify the committed records offline. The runs differ only in the licence notices supplied (22 resources against 23, the later lacking the leptonica notice), which this gate does not measure. The manifest is not signed, which 11.12.2 asks for, and the candidate is qualification-only, unsigned beyond the ad-hoc seal a relocated Mach-O needs on Apple silicon; both records say release_eligible is false. A selection mixing a bundled language with a managed one is served by the managed cache alone, so it reports English missing until that is installed through the managed route.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ocr_resources.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/raster_extractors.py"
@@ -3805,7 +3843,7 @@
       "gate_id": "DOC-16",
       "design_section": "20.2",
       "normative_summary": "Worker isolation. Attempted file and network reads from document fields or from dependencies reach nothing: only admitted input, packaged models and private scratch are accessible.",
-      "applicability": "Every qualified format processed by the document worker on every OS the Core runtime supports.",
+      "applicability": "Every qualified format processed by the document worker on macOS, the only supported document-extraction target. Linux and Windows are CI hosts for the portable runtime, not extraction targets: the decision plan (G-5, section 4.4) has them report the worker unavailable, and they must refuse rather than extract.",
       "evidence_type": "automated_repository_test",
       "evidence": [
         {
@@ -3846,7 +3884,7 @@
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
           "symbol": "test_a_platform_with_no_adapter_refuses_instead_of_running_unconfined",
-          "covers": "Asked to seal a process on a platform this build has no adapter for, the adapter raises rather than returning an unconfined process, so there is no code path on which a caller reads a hostile document unsealed."
+          "covers": "Asked to seal a process on a platform this build has no adapter for, the adapter raises rather than returning an unconfined process, so no caller reads a hostile document unsealed. test_linux_and_windows_are_unavailable_hosts_and_never_extract runs on every host and shows the production route refusing under worker_supervision_unavailable on linux and win32."
         },
         {
           "path": "packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py",
@@ -3929,9 +3967,9 @@
           "covers": "A relationship target outside the package is rejected."
         }
       ],
-      "status": "not_implemented",
-      "missing_condition": "The boundary exists and is enforced on macOS only. Production extraction runs in a child whose whole environment is seven fixed variables, under a bounded versioned JSON protocol, and the parent accounts that child's whole session group against the 1 GiB resident ceiling of 17.1 and one cumulative CPU budget per job. On macOS the child seals itself with a deny-by-default seatbelt profile before reading a source byte, and a real child-process test proves the seal denies the network and every read, write and stat outside the admitted source, the packaged code, the models, the packaged runtime root and the private scratch. The packaged-engine scope is now closed: 11.2's Pandoc and Tesseract, their relocated library closure and the bundled models are staged into the candidate, digest-pinned in the manifest and reached by absolute path, so the child's search path names no package-manager prefix. What remains is the platform: Linux and Windows have neither adapter and fail closed under worker_supervision_unavailable, so nothing is processed there -- a product gap, not evidence -- while the applicability above is every OS Core supports.",
-      "limitations": "Containment is proven by a probe inside the sealed process making the reads, stats, executions and connections itself, unsealed then sealed, so refusals are anchored against this host's unconfined behaviour. That is the worker's own authority, which a hostile parser holds too, but that path is not driven to one. mach-lookup stays open: dyld needs it and no bounded service list is qualified; the network denial closes what a looked-up service could offer. file-read-metadata is granted on the ancestors of in-scope paths, which macOS needs to resolve the /var symlink every scratch sits behind. The packaged payload is unsigned beyond an ad-hoc seal, which is what makes a relocated Mach-O runnable on Apple silicon and is not a release identity. Resident size is sampled every tenth of a second, which is the resolution of that ceiling and not a kernel-hard cap, and shared pages count once per mapping process, erring towards refusal. Cumulative CPU is charged in full for any descendant reaped inside the group, but one orphaned to launchd takes its unsampled tail with it.",
+      "status": "passed",
+      "missing_condition": null,
+      "limitations": "Containment is proven by a probe inside the sealed process making the reads, stats, executions and connections itself, unsealed then sealed, so refusals are anchored against this host's unconfined behaviour; that is the worker's own authority, which a hostile parser holds too, but that path is not driven to one. mach-lookup stays open: dyld needs it and no bounded service list is qualified; the network denial closes what a looked-up service could offer. file-read-metadata is granted on ancestors of in-scope paths, which macOS needs to resolve the /var symlink. The packaged payload is ad-hoc sealed, not a release identity. Resident size is sampled every tenth of a second, not a kernel-hard cap, and shared pages count once per mapping process. CPU of a descendant orphaned to launchd loses its unsampled tail. macOS only by decision: Linux and Windows refuse to extract and no isolation claim is made for them. The real-child suites run on the Phase 2 macOS row; a hosted runner is a different seatbelt environment, and that row's first run is the CI evidence.",
       "source_bindings": [
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/distribution/packaged_runtime.py",
         "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/document_processing.py",

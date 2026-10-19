@@ -23,9 +23,13 @@ checks, in order, and exits non-zero with one diagnostic per problem found:
    one evidence reference and no missing condition. Every other status must
    name a concrete missing condition. This is the rule that makes it impossible
    to record a passed signing, notarisation, Intel, older-macOS, VoiceOver,
-   visual, fixture, performance or real-host gate from a test run: those gates
-   declare an evidence class no test run can satisfy, and the check refuses the
-   combination rather than trusting the author.
+   visual, fixture or performance gate from a test run: those gates declare an
+   evidence class no test run can satisfy, and the check refuses the combination
+   rather than trusting the author. A real-host gate passes only while it cites a
+   measurement record retained under ``docs/development/qualification/``, and an
+   external-fixture gate only while it cites digest-bound receipts under
+   ``qualification/wp15/fixtures/`` from at least two distinct producers whose
+   pinned fixtures still hash to the recorded digests.
 4. **Evidence freshness.** Every referenced path must exist in this checkout,
    and every named symbol must still occur in that file. A renamed or deleted
    test is therefore a ledger failure rather than silent staleness.
@@ -44,6 +48,7 @@ stale installed copy of anything.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Mapping, Sequence
@@ -94,6 +99,19 @@ EVIDENCE_TYPES: Final = (
 REPOSITORY_PRODUCIBLE: Final = frozenset(
     {"automated_repository_test", "repository_checker"}
 )
+
+# The one other class a gate may pass on. A measured host cannot be repeated from
+# here, so the measurement is committed as a JSON record under this directory,
+# re-verified offline on every run, and cited as evidence. Without such a cited
+# record a real_host_measurement gate still cannot be passed.
+RETAINED_RECORD_DIR: Final = "docs/development/qualification/"
+
+# The third: an external fixture corpus. The fixtures are committed beside digest-
+# bound receipts naming the application that produced each one, and a gate passes
+# only while it cites receipts from at least two distinct producers whose pinned
+# files still hash to the recorded digests.
+CORPUS_RECEIPT_DIR: Final = "qualification/wp15/fixtures/"
+CORPUS_MINIMUM_PRODUCERS: Final = 2
 
 # A status that asserts something was observed needs something to have observed
 # it with. `blocked_external`, `not_executed` and `not_implemented` may carry
@@ -221,6 +239,68 @@ def check_counts(document: Mapping[str, Any]) -> list[str]:
     return findings
 
 
+def _pinned_files(node: object) -> list[Mapping[str, Any]]:
+    """Every ``{"file", "sha256"}`` object anywhere in a receipt."""
+    if isinstance(node, Mapping):
+        found = [node] if "file" in node and "sha256" in node else []
+        return found + [pin for value in node.values() for pin in _pinned_files(value)]
+    if isinstance(node, list):
+        return [pin for value in node for pin in _pinned_files(value)]
+    return []
+
+
+def check_corpus_receipts(gate_id: str, evidence: Sequence[Mapping[str, Any]]) -> list[str]:
+    """A corpus gate passes only on retained receipts from distinct producers.
+
+    Each cited receipt must name its producing application and pin at least one
+    fixture, and every pinned fixture beside it must still hash to its digest.
+    """
+    cited = sorted(
+        {
+            str(item["path"])
+            for item in evidence
+            if str(item["path"]).startswith(CORPUS_RECEIPT_DIR)
+            and str(item["path"]).endswith("-receipt.json")
+        }
+    )
+    findings: list[str] = []
+    producers: set[str] = set()
+    for raw in cited:
+        path = REPO_ROOT / raw
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            findings.append(f"{gate_id}: corpus receipt {raw} cannot be read: {error}")
+            continue
+        application = (record.get("authoring") or {}).get("application")
+        if not application:
+            findings.append(f"{gate_id}: corpus receipt {raw} names no authoring application")
+        else:
+            producers.add(str(application))
+        pins = _pinned_files(record)
+        if not pins:
+            findings.append(f"{gate_id}: corpus receipt {raw} pins no fixture by digest")
+        for pin in pins:
+            fixture = path.parent / str(pin["file"])
+            try:
+                actual = hashlib.sha256(fixture.read_bytes()).hexdigest()
+            except OSError:
+                findings.append(f"{gate_id}: {raw} pins {pin['file']}, which cannot be read")
+                continue
+            if actual != pin["sha256"]:
+                findings.append(
+                    f"{gate_id}: {raw} pins {pin['file']} at {pin['sha256']}, but the "
+                    f"file hashes to {actual}"
+                )
+    if len(producers) < CORPUS_MINIMUM_PRODUCERS:
+        findings.append(
+            f"{gate_id}: status is passed but the cited corpus receipts under "
+            f"{CORPUS_RECEIPT_DIR} name {len(producers)} distinct producing "
+            f"application(s); an external fixture corpus needs {CORPUS_MINIMUM_PRODUCERS}"
+        )
+    return findings
+
+
 def check_statuses(gates: Sequence[Mapping[str, Any]]) -> list[str]:
     """The fail-closed status rules.
 
@@ -259,13 +339,21 @@ def check_statuses(gates: Sequence[Mapping[str, Any]]) -> list[str]:
             )
 
         if status == "passed":
-            if evidence_type not in REPOSITORY_PRODUCIBLE:
+            retained_record = evidence_type == "real_host_measurement" and any(
+                str(item["path"]).startswith(RETAINED_RECORD_DIR)
+                and str(item["path"]).endswith(".json")
+                for item in evidence
+            )
+            if evidence_type == "external_fixture_corpus":
+                findings.extend(check_corpus_receipts(gate_id, evidence))
+            elif evidence_type not in REPOSITORY_PRODUCIBLE and not retained_record:
                 findings.append(
                     f"{gate_id}: status is passed but evidence_type is "
                     f"{evidence_type!r}, which this repository cannot produce. A gate "
-                    "needing an installed signed build, a measured host, an "
-                    "accessibility review or an external fixture corpus cannot be "
-                    "passed by a test run"
+                    "needing an installed signed build or an accessibility review cannot "
+                    "be passed by a test run, a measured host only through a retained "
+                    f"record under {RETAINED_RECORD_DIR}, and an external fixture corpus "
+                    f"only through digest-bound receipts under {CORPUS_RECEIPT_DIR}"
                 )
             if missing is not None:
                 findings.append(
@@ -455,9 +543,10 @@ OUT_OF_REACH: Final[tuple[tuple[str, str], ...]] = (
         "Strict-namespace and three Transitional-namespace OOXML packages (Word, "
         "Excel, PowerPoint) with the ONLYOFFICE x2t rewrite of each in both "
         "families and hash-pair conversion receipts, an ONLYOFFICE-produced "
-        "nested-table RTF with a digest-bound receipt, a macOS Image I/O HEIC and "
-        "digest-bound qualification receipts. DOC-01 is closed on those; DOC-06 "
-        "still requires RTF fixtures from further applications."),
+        "nested-table RTF and an Apple text-system RTF, each with a digest-bound "
+        "receipt, a macOS Image I/O HEIC and digest-bound qualification receipts. "
+        "DOC-01 and DOC-06 are closed on those. Notes and revisions in RTF remain "
+        "adversarial scanner fixtures, not application-authored corpus."),
     ),
     (
         "The pinned external binaries",
@@ -468,16 +557,11 @@ OUT_OF_REACH: Final[tuple[tuple[str, str], ...]] = (
         "digest-pins every byte in the component-set manifest, and production "
         "resolves them from the verified installation payload by absolute path. CI "
         "now installs Tesseract and a SHA-verified official Pandoc 3.12.1 build, "
-        "and a real macOS Tesseract run is committed. The repository still does not "
-        "redistribute either engine, so `scripts/preflight` cannot assemble a signed "
-        "candidate without separately supplied runtime payloads."),
-    ),
-    (
-        "Cross-platform worker isolation",
-        ("The production document worker has a deny-by-default macOS seatbelt adapter. "
-        "Linux and Windows deliberately fail closed because no equivalent production "
-        "isolation adapter is implemented; DOC-16 cannot pass on every supported OS "
-        "until those adapters exist or those operating systems leave the support set."),
+        "and real macOS Tesseract runs are committed, as are the DOC-13 packaged-"
+        "runtime measurements of 2026-10-16 and 2026-10-20 on one arm64 host. The "
+        "repository still does not redistribute either engine, so "
+        "`scripts/preflight` cannot assemble a candidate, repeat that measurement or "
+        "build a signed one without separately supplied runtime payloads."),
     ),
     (
         "Production model-manifest authority",
@@ -570,7 +654,13 @@ def render_report(ledger: Mapping[str, Any]) -> str:
         "The evidence class is what the design requires before a gate can be called\n"
         "met. Only the first two can be produced from this repository, so a gate in\n"
         "any other class cannot be recorded as passed from a test run -- the checker\n"
-        "refuses that combination.\n"
+        "refuses that combination. There are two exceptions. `real_host_measurement`\n"
+        "may pass only while it cites a measurement record retained under\n"
+        f"`{RETAINED_RECORD_DIR}`; the repository re-verifies that record but cannot\n"
+        "repeat the measurement. `external_fixture_corpus` may pass only while it\n"
+        f"cites digest-bound receipts under `{CORPUS_RECEIPT_DIR}` from at least\n"
+        f"{CORPUS_MINIMUM_PRODUCERS} distinct producing applications whose pinned\n"
+        "fixtures still hash to the recorded digests.\n"
     )
     evidence_rows = "\n".join(
         f"| {evidence_type} | "

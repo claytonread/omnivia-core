@@ -1,0 +1,55 @@
+{
+  "gate": "DOC-06",
+  "scope": "One RTF written by Apple's text system with cp1252 hex escapes, Unicode escapes, a nested table and a real HYPERLINK field, read by the pinned Pandoc 3.12.1 reader through the production extract_rtf path. With the ONLYOFFICE receipt it forms a two-producer RTF corpus.",
+  "source_fixture": {
+    "file": "doc06-apple-text-system-source.html",
+    "sha256": "3e7ccd97437acc7fac508b75689ce9352edcd94d9e6aa6d9db5f23f148a98526",
+    "note": "A small HTML document written for this qualification. Apple's text system did not author it; it only converted it."
+  },
+  "rtf_fixture": {
+    "file": "doc06-apple-text-system.rtf",
+    "sha256": "507b15759fe36a7c70d8153c60cab2d92213d882886fabd36734dd6f88f5d0a7",
+    "size_bytes": 4127
+  },
+  "authoring": {
+    "application": "Apple text system",
+    "version": "macOS 27.0",
+    "build": "26A428",
+    "platform": "macOS",
+    "operation": "Converted the source HTML to RTF; Apple's text system produced the RTF, not the HTML.",
+    "converter": "/usr/bin/textutil",
+    "converter_sha256": "c6ac9100c5df44fb740bac76738fbfe2f6e4431f7098406a12e38f9ee8518c0e",
+    "command_shape": "textutil -convert rtf -output OUTPUT SOURCE"
+  },
+  "reader": {
+    "name": "pandoc",
+    "version": "3.12.1",
+    "reader_build": "pandoc-3.12.1-rtf-json"
+  },
+  "extraction": {
+    "entry_point": "omnivia_core_runtime.service.rtf_extractor.extract_rtf",
+    "profile": "text_only",
+    "profile_source": "ocr_resources.text_only_settings() with an absolute pinned pandoc_path",
+    "capture_id": "doc06-apple-text-system",
+    "canonicalization": "json.dumps(dataclasses.asdict(extraction), sort_keys=True, separators=(',', ':'), ensure_ascii=False) encoded as UTF-8, then SHA-256",
+    "expected": {
+      "result_sha256": "a0ea3411a994024745c28edeb01a5188fb34978726761a218a464c8443dfa714",
+      "blocks": 4,
+      "segments": 11,
+      "scanner_inventory": {
+        "field": 1,
+        "field_instruction": 1,
+        "field_result": 1,
+        "nested_table": 14
+      },
+      "ast_inventory": {
+        "links": 1,
+        "tables": 2
+      }
+    }
+  },
+  "rtf_control_markers": ["cocoartf2907", "ansicpg1252", "itap2", "nestcell", "nestrow", "trowd", "field", "fldinst", "fldrslt"],
+  "sources": [
+    "https://github.com/jgm/pandoc/releases/tag/3.12.1"
+  ]
+}

@@ -126,6 +126,23 @@ jobs:
         # them and that the POSIX-only cases skip visibly (`-rs`).
         run: python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_analysis_worker.py -q -rs
 
+      - name: Run document worker isolation and supervision tests
+        # DOC-16. macOS is the only document-extraction target, so the real
+        # sealed-child and process-tree supervision cases run on the existing
+        # macOS row only; the runtime's own dependencies are installed above.
+        # Linux and Windows report the worker unavailable and refuse to extract,
+        # which `tests/phase3/runtime` also asserts on every host.
+        shell: bash
+        run: |
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            python -m pytest \
+              packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_isolation.py \
+              packages/omnivia-core-runtime/tests/phase3/runtime/test_document_worker_supervision.py \
+              -q -rs
+          else
+            echo "skipped: document worker isolation is qualified on macOS only"
+          fi
+
       - name: Qualify isolated-wheel MCP and CLI executables
         # Cross-platform by construction: this Python driver creates two clean
         # environments, installs wheels only, and invokes the actual console

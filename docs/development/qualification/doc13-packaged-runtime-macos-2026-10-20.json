@@ -1,0 +1,55 @@
+{
+  "candidate": {
+    "manifest_sha256": "65e2c2e52e95072659420aaad2b5c7229baa2cf14fe293e7d124cc6f17d7b037",
+    "path": "/private/tmp/omnivia-doc13-rerun-unrestricted-20261020/state/companion",
+    "release_eligible": false,
+    "resource_count": 22,
+    "signature_status": "unsigned"
+  },
+  "engine_versions": {
+    "pandoc": "pandoc 3.12.1",
+    "tesseract": "tesseract 5.5.3"
+  },
+  "environment": {
+    "machine": "arm64",
+    "offline_path": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "release": "27.0.0",
+    "system": "Darwin"
+  },
+  "findings": [],
+  "format": "omnivia.doc13-packaged-runtime.v1",
+  "gates": {
+    "bundle_coherent": true,
+    "candidate_assembled": true,
+    "engines_run_without_package_manager_path": true,
+    "english_recognised_offline": true,
+    "payload_resolves_inside_itself": true,
+    "payload_verified": true,
+    "rtf_read_offline": true,
+    "tampered_payload_refused": true
+  },
+  "production": {
+    "admitted_kind": "frozen",
+    "image_state": "succeeded",
+    "model_hashes": [
+      "sha256:7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+      "sha256:9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff"
+    ],
+    "packaged_languages": [
+      "eng",
+      "osd"
+    ],
+    "recognised": true,
+    "rtf_reader": "/private/tmp/omnivia-doc13-rerun-unrestricted-20261020/state/companion/OmniVia Core.app/Contents/Resources/omnivia-runtime/bin/pandoc",
+    "rtf_state": "succeeded",
+    "tessdata_dir": "/private/tmp/omnivia-doc13-rerun-unrestricted-20261020/state/companion/OmniVia Core.app/Contents/Resources/omnivia-runtime/tessdata",
+    "tesseract_path": "/private/tmp/omnivia-doc13-rerun-unrestricted-20261020/state/companion/OmniVia Core.app/Contents/Resources/omnivia-runtime/bin/tesseract"
+  },
+  "source_inputs": {
+    "pandoc": "692dfdcaf61fd1b9dcbf287f254c4ff0ef9a2f2283f4119125e54c0ff86be199",
+    "tessdata_eng": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+    "tessdata_osd": "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff",
+    "tesseract": "9fd3da5637e8d490182708c3689f15921cddb9beb469c1f128bc210033714ef9"
+  },
+  "verdict": "pass"
+}

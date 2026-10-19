@@ -144,12 +144,15 @@ def test_verify_refuses_an_unreadable_record(tmp_path: Path) -> None:
     assert module.main(["verify", "--record", str(tmp_path / "absent.json")]) == 1
 
 
-def test_the_committed_record_of_this_host_still_verifies() -> None:
+@pytest.mark.parametrize("stamp", ["2026-10-16", "2026-10-20"])
+def test_the_committed_record_of_this_host_still_verifies(stamp: str) -> None:
     """The evidence behind the ledger entry is checked, not merely stored.
 
     A record nobody re-reads is a claim with no gate behind it. This is the
-    offline half of the lane run over the committed file, so a record that was
+    offline half of the lane run over each committed file, so a record that was
     edited after the run -- or a gate set that has since grown -- fails here.
+    The second run reproduces the first: same host class, same engine builds,
+    same source digests, same packaged model digests.
     """
     module = _module()
     record = (
@@ -157,7 +160,7 @@ def test_the_committed_record_of_this_host_still_verifies() -> None:
         / "docs"
         / "development"
         / "qualification"
-        / "doc13-packaged-runtime-macos-2026-10-16.json"
+        / f"doc13-packaged-runtime-macos-{stamp}.json"
     )
 
     assert module.main(["verify", "--record", str(record)]) == 0
@@ -169,8 +172,18 @@ def test_the_committed_record_of_this_host_still_verifies() -> None:
         "pandoc": "pandoc 3.12.1",
         "tesseract": "tesseract 5.5.3",
     }
+    assert stored["environment"]["system"] == "Darwin"
+    assert stored["environment"]["machine"] == "arm64"
+    assert stored["source_inputs"] == {
+        "pandoc": "692dfdcaf61fd1b9dcbf287f254c4ff0ef9a2f2283f4119125e54c0ff86be199",
+        "tessdata_eng": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+        "tessdata_osd": "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff",
+        "tesseract": "9fd3da5637e8d490182708c3689f15921cddb9beb469c1f128bc210033714ef9",
+    }
+    assert stored["production"]["admitted_kind"] == "frozen"
     assert stored["production"]["packaged_languages"] == ["eng", "osd"]
     assert stored["production"]["recognised"] is True
+    assert stored["production"]["rtf_state"] == "succeeded"
     assert stored["candidate"]["signature_status"] == "unsigned"
     assert stored["candidate"]["release_eligible"] is False
 

@@ -577,6 +577,22 @@ def test_the_production_route_refuses_outright_where_nothing_can_be_supervised(
     assert failure.value.reason == document_worker.REASON_SUPERVISION
 
 
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_linux_and_windows_are_unavailable_hosts_and_never_extract(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    # The declared support boundary: document extraction is a macOS feature, and
+    # a Linux or Windows host (CI runs both for the portable runtime) reports the
+    # worker unavailable rather than extracting. Unlike the test above, this one
+    # runs on every host, so the macOS row proves the refusal as well as Linux.
+    monkeypatch.setattr(sys, "platform", platform)
+    with pytest.raises(DocumentWorkerFailed) as failure:
+        extract_document_isolated(
+            b"the admitted bytes", media_type="text/plain", capture_id=CAPTURE
+        )
+    assert failure.value.reason == document_worker.REASON_SUPERVISION
+
+
 def test_a_worker_failure_is_neither_of_the_two_document_verdicts() -> None:
     # What a caller must never do with a refused seal, a crash or a timeout is
     # record it as a verdict on the document, and the type system is the first
