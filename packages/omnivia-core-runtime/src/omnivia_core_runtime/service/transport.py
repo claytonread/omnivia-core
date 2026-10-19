@@ -5,10 +5,12 @@ conformance suite. One dispatcher with two transports in front of it is what mak
 that testable: if the transports shared no implementation, "the same suite" would be
 two suites that happen to agree today.
 
-The advertised local endpoint carries one OVC1 request and one OVC1 response on a
-fresh connection.  Unix sockets and Windows named pipes carry the eight-byte OVC1
-header and canonical body as raw bytes: no newline delimiter and no Python-private
-message prefix is part of the protocol.
+The advertised local endpoint normally carries one OVC1 request and one OVC1
+response on a fresh connection. Unix sockets additionally admit OVB1, a separate
+bounded binary document-stage request whose answer is one OVC1 descriptor document.
+OVB1 does not widen or reinterpret the frozen OVC1 frame. Unix sockets and Windows
+named pipes carry raw bytes: no newline delimiter and no Python-private message
+prefix is part of either protocol.
 
 No HTTP, no framework. ADR-036 keeps Core free of transport dependencies, and local
 IPC needs none. Two mechanisms carry the same frames: a Unix domain socket on POSIX,
@@ -78,6 +80,14 @@ from omnivia_core_runtime.service.protocol import (
 #: client that sends an unbounded frame is malfunctioning, and treating it as
 #: malfunctioning is safer than growing memory until something else fails.
 MAX_FRAME_BYTES = MAXIMUM_JSON_BYTES
+
+# OVB1 is a distinct, local-only binary staging protocol.  It deliberately does
+# not widen or reinterpret the frozen OVC1 frame.  One request is:
+# magic, uint32 canonical-JSON header length, uint64 content length, header, bytes.
+BINARY_TRANSFER_MAGIC = b"OVB1"
+BINARY_TRANSFER_HEADER_BYTES = 16
+BINARY_TRANSFER_MAX_HEADER_BYTES = 4096
+BINARY_TRANSFER_MAX_BYTES = 50 * 1024 * 1024
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
 
@@ -414,12 +424,28 @@ class _SocketChannel:
         timeout = self.connection.gettimeout()
         deadline = None if timeout is None else monotonic() + timeout
         try:
-            header = self._read_exact(HEADER_BYTES, allow_empty=True, deadline=deadline)
-            if header is None:
+            magic = self._read_exact(len(MAGIC), allow_empty=True, deadline=deadline)
+            if magic is None:
                 return None
-            if header[: len(MAGIC)] != MAGIC:
+            if magic == BINARY_TRANSFER_MAGIC:
+                lengths = self._read_exact(12, deadline=deadline)
+                assert lengths is not None
+                header_length = int.from_bytes(lengths[:4], "big")
+                content_length = int.from_bytes(lengths[4:], "big")
+                if not 1 <= header_length <= BINARY_TRANSFER_MAX_HEADER_BYTES:
+                    raise TransportError("connection declares an invalid OVB1 header length")
+                if not 1 <= content_length <= BINARY_TRANSFER_MAX_BYTES:
+                    raise TransportError("connection declares an invalid OVB1 content length")
+                body = self._read_exact(header_length + content_length, deadline=deadline)
+                assert body is not None
+                self.ensure_unary_boundary()
+                return magic + lengths + body
+            if magic != MAGIC:
                 raise TransportError("connection does not begin with the OVC1 magic")
-            length = int.from_bytes(header[len(MAGIC) :], "big")
+            length_bytes = self._read_exact(HEADER_BYTES - len(MAGIC), deadline=deadline)
+            assert length_bytes is not None
+            header = magic + length_bytes
+            length = int.from_bytes(length_bytes, "big")
             if length == 0:
                 raise TransportError("connection declares a zero-byte OVC1 body")
             if length > limit:
@@ -676,6 +702,7 @@ class LocalSocketServer:
     router: DocumentRouter | None = None
     authenticated: AuthenticatedDispatch | None = None
     mcp_administration: McpAdministration | None = None
+    binary_stage: Callable[[bytes, str, str], Mapping[str, Any]] | None = None
     #: The same gate the runner holds around its own use of the connection, or
     #: `None` for an embedder or test that owns no shared connection to protect.
     #: Held around dispatch and around service work so this thread and the lease
@@ -967,6 +994,9 @@ class LocalSocketServer:
         raw = channel.read_frame()
         if raw is None:
             return
+        if raw.startswith(BINARY_TRANSFER_MAGIC):
+            self._handle_binary_stage(channel, raw)
+            return
         document = decode_frame(raw)
         with self.gate if self.gate is not None else nullcontext():
             # A stop may be requested while the frame read or gate wait is in
@@ -991,6 +1021,41 @@ class LocalSocketServer:
         # immediately before the response write so traffic pipelined during dispatch
         # cannot receive a valid response. Both happen after the gate is released.
         channel.ensure_unary_boundary()
+        channel.send_frame(encode_frame(payload))
+
+    def _handle_binary_stage(self, channel: _Channel, raw: bytes) -> None:
+        """Stage one bounded snapshot without routing binary through OVC1 JSON."""
+        if self.binary_stage is None:
+            channel.send_frame(encode_frame({"ok": False, "code": "unsupported"}))
+            return
+        header_length = int.from_bytes(raw[4:8], "big")
+        content_length = int.from_bytes(raw[8:16], "big")
+        header_bytes = raw[16 : 16 + header_length]
+        content = raw[16 + header_length :]
+        if len(content) != content_length:
+            raise TransportError("OVB1 content length does not match its request")
+        try:
+            header = json.loads(header_bytes)
+            if (
+                not isinstance(header, dict)
+                or set(header) != {"version", "media_type", "transfer_key", "content_checksum"}
+                or header.get("version") != "1.0"
+                or not all(
+                    isinstance(header.get(name), str)
+                    for name in ("media_type", "transfer_key", "content_checksum")
+                )
+                or encode_frame(header)[HEADER_BYTES:] != header_bytes
+                or header["content_checksum"]
+                != "sha256:" + hashlib.sha256(content).hexdigest()
+            ):
+                raise TransportError("OVB1 header is not canonical or does not match content")
+            with self.gate if self.gate is not None else nullcontext():
+                descriptor = self.binary_stage(
+                    content, header["media_type"], header["transfer_key"]
+                )
+            payload: Mapping[str, Any] = {"ok": True, "source": dict(descriptor)}
+        except Exception:  # noqa: BLE001 - fixed, non-disclosing transfer refusal
+            payload = {"ok": False, "code": "transfer_refused"}
         channel.send_frame(encode_frame(payload))
 
     def _control(self, document: dict[str, Any]) -> dict[str, Any]:

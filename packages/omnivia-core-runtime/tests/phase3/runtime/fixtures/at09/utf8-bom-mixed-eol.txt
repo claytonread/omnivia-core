@@ -1,0 +1,5 @@
+﻿OmniVia AT-09 fixture
+café — naïve façade
+日本語のテキスト
+emoji 😀 and combining é
+lone CR linelast line, no terminator

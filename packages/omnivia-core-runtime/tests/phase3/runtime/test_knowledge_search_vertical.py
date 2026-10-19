@@ -63,6 +63,7 @@ import test_v06_5_s2_memory_family as s2
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service.application import (
     ANALYSIS_START_OPERATION,
+    CODE_QUERY_OPERATION,
     CONTEXT_PACK_BUILD_OPERATION,
     EVIDENCE_SEARCH_OPERATION,
     GRAPH_TRAVERSE_OPERATION,
@@ -1901,6 +1902,8 @@ SHIPPED_OPERATIONS = frozenset(
         GRAPH_TRAVERSE_OPERATION,
         CONTEXT_PACK_BUILD_OPERATION,
         ANALYSIS_START_OPERATION,
+        CODE_QUERY_OPERATION,
+        "code.status",
     }
 )
 

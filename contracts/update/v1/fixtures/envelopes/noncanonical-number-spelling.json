@@ -1,0 +1,28 @@
+{
+  "case_id": "noncanonical-number-spelling",
+  "case_kind": "envelope",
+  "case_version": "1.0",
+  "description": "A sequence written as a float. It parses, and it is outside the canonical number subset -- and a float compared against a replay floor is a question nobody asked.",
+  "document_text": "{\"channel\":\"stable\",\"sequence\":7.0}",
+  "expected": {
+    "outcome": "refused",
+    "refusal": "channel_noncanonical",
+    "release": null
+  },
+  "policy": {
+    "accept_unsigned_v1": false,
+    "expected_channel": "stable",
+    "expected_product_id": "omnivia-core",
+    "trusted_keys": [
+      {
+        "algorithm": "ed25519",
+        "key_id": "test-only-channel-2026a",
+        "not_after": "2027-01-01T00:00:00Z",
+        "not_before": "2026-01-01T00:00:00Z",
+        "public_key": "dSvKYg7jAospeOjJqx-8p8-USA70yDlPy0Q68m-yeQA",
+        "retired_at": null
+      }
+    ],
+    "verified_at": "2026-10-16T12:00:00Z"
+  }
+}

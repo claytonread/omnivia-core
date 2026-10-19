@@ -1,0 +1,28 @@
+{
+  "case_id": "unknown-envelope-member",
+  "case_kind": "envelope",
+  "case_version": "1.0",
+  "description": "An extra member inside the signed bytes. Ignoring it would mean verifying a signature over a document that was not read.",
+  "document_text": "{\"auto_install\":true,\"channel\":\"stable\",\"issued_at\":\"2026-10-16T09:00:00Z\",\"not_after\":\"2026-11-16T09:00:00Z\",\"not_before\":\"2026-10-16T09:00:00Z\",\"product_id\":\"omnivia-core\",\"release\":{\"bundle_sha256\":\"sha256:5cc9496b8ce7890fc01101ec3c469921bbe120fe118eed61854964559e870858\",\"packages\":{\"omnivia-core\":\"0.7.0\",\"omnivia-core-cli\":\"0.7.0\",\"omnivia-core-client\":\"0.7.0\",\"omnivia-core-mcp\":\"0.7.0\",\"omnivia-core-runtime\":\"0.7.0\"},\"release_url\":\"https://github.com/claytonread/omnivia-core/releases/tag/core-v0.7.0\",\"version\":\"0.7.0\"},\"schema_version\":\"omnivia-core-update.v2\",\"sequence\":7,\"signature\":\"IYnZ8aX4m07iH4JeuodipV7ujY2o1X8aw-HOUYmMfz0Crzr8ZFJLilFV6YRXFnO6GgVn4CNCabeeTsVvRslGDw\",\"signing\":{\"algorithm\":\"ed25519\",\"key_id\":\"test-only-channel-2026a\"}}",
+  "expected": {
+    "outcome": "refused",
+    "refusal": "channel_malformed",
+    "release": null
+  },
+  "policy": {
+    "accept_unsigned_v1": false,
+    "expected_channel": "stable",
+    "expected_product_id": "omnivia-core",
+    "trusted_keys": [
+      {
+        "algorithm": "ed25519",
+        "key_id": "test-only-channel-2026a",
+        "not_after": "2027-01-01T00:00:00Z",
+        "not_before": "2026-01-01T00:00:00Z",
+        "public_key": "dSvKYg7jAospeOjJqx-8p8-USA70yDlPy0Q68m-yeQA",
+        "retired_at": null
+      }
+    ],
+    "verified_at": "2026-10-16T12:00:00Z"
+  }
+}

@@ -239,7 +239,20 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "document.capture",
+        "document.history",
+        "document.reprocess",
+        "document.settings.get",
+        "document.settings.update",
+        "document.original.disconnect",
+        "document.original.relink",
+        "settings.list",
+        "settings.set",
+        "code.query",
+        "code.policy.register",
+        "code.import",
+        "code.status"
       ]
     },
     {
@@ -383,7 +396,15 @@
         "knowledge.share.decide",
         "task_context.export",
         "outcome.request.create",
-        "project.context.switch"
+        "project.context.switch",
+        "document.capture",
+        "document.reprocess",
+        "document.settings.update",
+        "document.original.disconnect",
+        "document.original.relink",
+        "settings.set",
+        "code.policy.register",
+        "code.import"
       ]
     },
     {
@@ -436,7 +457,15 @@
         "knowledge.share.decide",
         "task_context.export",
         "outcome.request.create",
-        "project.context.switch"
+        "project.context.switch",
+        "document.capture",
+        "document.reprocess",
+        "document.settings.update",
+        "document.original.disconnect",
+        "document.original.relink",
+        "settings.set",
+        "code.policy.register",
+        "code.import"
       ]
     },
     {
@@ -552,7 +581,20 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "document.capture",
+        "document.history",
+        "document.reprocess",
+        "document.settings.get",
+        "document.settings.update",
+        "document.original.disconnect",
+        "document.original.relink",
+        "settings.list",
+        "settings.set",
+        "code.query",
+        "code.policy.register",
+        "code.import",
+        "code.status"
       ]
     },
     {
@@ -641,7 +683,20 @@
         "outcome.request.create",
         "outcome.request.read",
         "project.context.read",
-        "project.context.switch"
+        "project.context.switch",
+        "document.capture",
+        "document.history",
+        "document.reprocess",
+        "document.settings.get",
+        "document.settings.update",
+        "document.original.disconnect",
+        "document.original.relink",
+        "settings.list",
+        "settings.set",
+        "code.query",
+        "code.policy.register",
+        "code.import",
+        "code.status"
       ]
     },
     {

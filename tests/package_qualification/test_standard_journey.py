@@ -671,6 +671,138 @@ def test_run_provisions_the_configuration_through_the_installed_cli() -> None:
     assert "_write_mcp_configuration" not in called
 
 
+SEEDED = ("rec-1", "ver-1", "evd-1")
+
+
+def _seeded_documents() -> dict[tuple[str, ...], dict[str, object]]:
+    """The three service results `_require_seeded_retrieval` reads, in accepted shape."""
+    record = {
+        "provenance": {"identity": {"record_id": SEEDED[0], "version": SEEDED[1]}}
+    }
+    other = {"provenance": {"identity": {"record_id": "rec-2", "version": "ver-1"}}}
+    return {
+        ("evidence", "search"): {
+            "evidence": [{"evidence_id": SEEDED[2]}, {"evidence_id": "evd-2"}]
+        },
+        ("knowledge", "search"): {"records": [record, other]},
+        ("context-pack", "build"): {
+            "citations": [
+                {
+                    "citation_id": "c-1",
+                    "record_reference": {"record_id": "rec-1", "version": "ver-1"},
+                },
+                {
+                    "citation_id": "c-2",
+                    "evidence_reference": {"evidence_id": SEEDED[2]},
+                },
+            ],
+            "sections": [{"kind": "governed_record", "citation_ids": ["c-1"]}],
+            "records": [record],
+            "evidence": [{"evidence_id": SEEDED[2]}],
+        },
+    }
+
+
+def _seeded_check(
+    module: ModuleType, monkeypatch: pytest.MonkeyPatch, documents
+) -> None:
+    def _fake_cli(executable, installation, workspace_id, path, *, payload=None, **_):
+        document = documents[tuple(path)]
+        return subprocess.CompletedProcess([], 0, json.dumps({"result": document}), "")
+
+    monkeypatch.setattr(module, "_cli", _fake_cli)
+    module._require_seeded_retrieval(
+        Path("omnivia"),
+        Path("installation-state"),
+        "ws-1",
+        record_id=SEEDED[0],
+        record_version=SEEDED[1],
+        evidence_id=SEEDED[2],
+    )
+
+
+def test_the_journey_asserts_the_seeded_record_ranks_first_and_is_cited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seeded_check(_module(), monkeypatch, _seeded_documents())
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda d: d[("evidence", "search")]["evidence"].reverse(),
+            id="evidence-second",
+        ),
+        pytest.param(
+            lambda d: d[("knowledge", "search")]["records"].reverse(),
+            id="record-second",
+        ),
+        pytest.param(
+            lambda d: d[("context-pack", "build")].update(citations=[]),
+            id="no-citation",
+        ),
+        pytest.param(
+            lambda d: d[("context-pack", "build")].update(sections=[]), id="no-section"
+        ),
+        pytest.param(
+            lambda d: d[("context-pack", "build")]["sections"][0].update(
+                kind="evidence"
+            ),
+            id="section-not-a-record",
+        ),
+        pytest.param(
+            lambda d: d[("context-pack", "build")]["citations"][0][
+                "record_reference"
+            ].update(version="ver-0"),
+            id="cites-another-version",
+        ),
+        pytest.param(
+            lambda d: d[("context-pack", "build")].update(records=[]),
+            id="pack-without-record",
+        ),
+    ],
+)
+def test_the_seeded_retrieval_check_refuses_each_way_the_journey_could_be_wrong(
+    monkeypatch: pytest.MonkeyPatch, mutate
+) -> None:
+    module = _module()
+    documents = _seeded_documents()
+    mutate(documents)
+
+    with pytest.raises(module.JourneyError):
+        _seeded_check(module, monkeypatch, documents)
+
+
+def test_the_seeded_retrieval_check_refuses_a_pack_that_changes_between_builds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    documents = _seeded_documents()
+    builds = [dict(documents[("context-pack", "build")]) for _ in range(2)]
+    builds[1]["records"] = [*builds[1]["records"], {"extra": True}]
+    answers = iter(builds)
+
+    def _fake_cli(executable, installation, workspace_id, path, *, payload=None, **_):
+        document = (
+            next(answers)
+            if tuple(path) == ("context-pack", "build")
+            else documents[tuple(path)]
+        )
+        return subprocess.CompletedProcess([], 0, json.dumps({"result": document}), "")
+
+    monkeypatch.setattr(module, "_cli", _fake_cli)
+    with pytest.raises(module.JourneyError, match="changed between builds"):
+        module._require_seeded_retrieval(
+            Path("omnivia"),
+            Path("installation-state"),
+            "ws-1",
+            record_id=SEEDED[0],
+            record_version=SEEDED[1],
+            evidence_id=SEEDED[2],
+        )
+
+
 def test_provisioned_configuration_calls_the_installed_administration_command(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

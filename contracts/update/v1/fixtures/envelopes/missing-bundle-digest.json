@@ -1,0 +1,28 @@
+{
+  "case_id": "missing-bundle-digest",
+  "case_kind": "envelope",
+  "case_version": "1.0",
+  "description": "A correctly signed envelope whose recommendation states no bundle digest. The signature is sound and the recommendation is not usable: an archive this installation cannot identify before unpacking it is an archive it must not unpack.",
+  "document_text": "{\"channel\":\"stable\",\"issued_at\":\"2026-10-16T09:00:00Z\",\"not_after\":\"2026-11-16T09:00:00Z\",\"not_before\":\"2026-10-16T09:00:00Z\",\"product_id\":\"omnivia-core\",\"release\":{\"packages\":{\"omnivia-core\":\"0.7.0\",\"omnivia-core-cli\":\"0.7.0\",\"omnivia-core-client\":\"0.7.0\",\"omnivia-core-mcp\":\"0.7.0\",\"omnivia-core-runtime\":\"0.7.0\"},\"release_url\":\"https://github.com/claytonread/omnivia-core/releases/tag/core-v0.7.0\",\"version\":\"0.7.0\"},\"schema_version\":\"omnivia-core-update.v2\",\"sequence\":7,\"signature\":\"j7iE8goqnwlg567xTXaONeYoct5stG7-jAwSqkFhIYE2w7IyRIgQBA9julaDnimpVRpenZmsZpSTH9SE1q5LAA\",\"signing\":{\"algorithm\":\"ed25519\",\"key_id\":\"test-only-channel-2026a\"}}",
+  "expected": {
+    "outcome": "refused",
+    "refusal": "channel_release_malformed",
+    "release": null
+  },
+  "policy": {
+    "accept_unsigned_v1": false,
+    "expected_channel": "stable",
+    "expected_product_id": "omnivia-core",
+    "trusted_keys": [
+      {
+        "algorithm": "ed25519",
+        "key_id": "test-only-channel-2026a",
+        "not_after": "2027-01-01T00:00:00Z",
+        "not_before": "2026-01-01T00:00:00Z",
+        "public_key": "dSvKYg7jAospeOjJqx-8p8-USA70yDlPy0Q68m-yeQA",
+        "retired_at": null
+      }
+    ],
+    "verified_at": "2026-10-16T12:00:00Z"
+  }
+}

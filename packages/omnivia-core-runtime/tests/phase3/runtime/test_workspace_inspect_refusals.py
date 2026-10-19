@@ -34,6 +34,7 @@ from omnivia_core_runtime.service import authorization
 from omnivia_core_runtime.service.application import (
     ANALYSIS_REQUEST_PURPOSE,
     ANALYSIS_START_OPERATION,
+    CODE_QUERY_OPERATION,
     CONTEXT_PACK_BUILD_OPERATION,
     EVIDENCE_SEARCH_OPERATION,
     GRAPH_TRAVERSE_OPERATION,
@@ -123,6 +124,8 @@ PRODUCTION_OPERATIONS = frozenset(
         GRAPH_TRAVERSE_OPERATION,
         CONTEXT_PACK_BUILD_OPERATION,
         ANALYSIS_START_OPERATION,
+        CODE_QUERY_OPERATION,
+        "code.status",
     }
 )
 
@@ -738,6 +741,8 @@ def test_5c_no_mutating_operation_is_registered_at_all() -> None:
             GRAPH_TRAVERSE_OPERATION,
             CONTEXT_PACK_BUILD_OPERATION,
             ANALYSIS_START_OPERATION,
+            CODE_QUERY_OPERATION,
+            "code.status",
         }
     )
     for name in registered:

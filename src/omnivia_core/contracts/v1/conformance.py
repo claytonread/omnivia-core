@@ -85,6 +85,8 @@ from omnivia_core.contracts.v1.semantics import (
     validate_workspace_compatibility,
 )
 from omnivia_core.contracts.v1.semantics_evidence import (
+    validate_document_history_input,
+    validate_document_history_result,
     validate_evidence_artifact,
     validate_evidence_capture_input,
     validate_evidence_capture_result,
@@ -189,6 +191,7 @@ _INPUT_SEMANTICS: Final[dict[str, Callable[[Any], None]]] = {
     "candidate.approve": validate_candidate_approve_input,
     "candidate.reject": validate_candidate_reject_input,
     "context_pack.build": validate_context_pack_build_input,
+    "document.history": validate_document_history_input,
     "evidence.capture": validate_evidence_capture_input,
     "evidence.search": validate_evidence_search_input,
     "graph.traverse": validate_graph_traversal_input,
@@ -2959,6 +2962,15 @@ def _result_semantics_table() -> dict[str, Callable[[_ResultContext], None]]:
         "candidate.approve": _governance_result(validate_candidate_approve_result),
         "candidate.reject": _governance_result(validate_candidate_reject_result),
         "record.supersede": _governance_result(validate_record_supersede_result),
+        # The document the request selected, from the request itself. Not a trusted
+        # fact: `document.history` answers for exactly one document the caller named,
+        # so the result's own `document_id` is checked against the caller's and
+        # nothing here invents a third value.
+        "document.history": lambda c: validate_document_history_result(
+            c.decoded_result,
+            c.decoded_input,
+            c.decoded_input.document_id,
+        ),
         "knowledge.propose": _governance_result(validate_knowledge_propose_result),
         "graph.traverse": lambda c: validate_graph_traversal_result(
             c.decoded_result,

@@ -38,6 +38,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import stat
 import sys
 import time
 from collections.abc import Mapping
@@ -54,6 +56,7 @@ from omnivia_core_client import (
     DeadlineExceededError,
     EndpointUnavailableError,
     InstallationServiceConfig,
+    LocalIpcTransport,
     ManagedStartError,
     OperationCancelledError,
     ServiceClient,
@@ -96,6 +99,7 @@ from omnivia_core_cli.surface import (
     ApplicationCommand,
     LifecycleCommand,
     McpCommand,
+    ProbeCommand,
     exit_code_for,
 )
 
@@ -109,6 +113,8 @@ DEFAULT_TIMEOUT_MS: Final = 10_000
 #: The empty input document. Read-only so the one instance shared by every
 #: invocation cannot be mutated by anything downstream.
 _EMPTY_INPUT: Final[Mapping[str, Any]] = MappingProxyType({})
+_MAXIMUM_STDIN_INPUT_BYTES: Final = 24 * 1024 * 1024
+_MAXIMUM_DOCUMENT_PAYLOAD_BYTES: Final = 50 * 1024 * 1024
 
 #: The `Namespace` attribute the leaf parser stores its frozen command on. The
 #: command object itself, not its name: nothing here re-derives a path.
@@ -117,6 +123,7 @@ _COMMAND: Final = "command"
 #: Every local diagnostic this module can print, one fixed sentence each. None
 #: is built from an argument, a document, an exception or a peer's words.
 _MANAGED_START_FAILED: Final = "the managed service could not be started"
+_NOT_RUNNING: Final = "the service is not running and was not started"
 _OUT_OF_TIME: Final = "the call ran out of time, or was cancelled"
 _NOT_AUTHENTICATED: Final = "the service did not accept this client's credential"
 _INCOMPATIBLE: Final = "this client and the service could not agree on a version"
@@ -316,6 +323,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument(
+        "--require-running",
+        action="store_true",
+        help=(
+            "attach to the service only: never start one. A stopped or absent "
+            "service is refused before anything is sent"
+        ),
+    )
+
     groups = parser.add_subparsers(dest="group", required=True)
     built: dict[str, Any] = {}
 
@@ -332,12 +348,26 @@ def build_parser() -> argparse.ArgumentParser:
         leaf = leaves(group).add_parser(
             leaf_name, allow_abbrev=False, help=application.operation
         )
-        leaf.add_argument(
+        input_group = leaf.add_mutually_exclusive_group()
+        input_group.add_argument(
             "--input-json",
             default=_EMPTY_INPUT,
             metavar="JSON_OBJECT",
             type=_input_object,
             help="the operation's input document (default {})",
+        )
+        if application.operation == "document.capture":
+            leaf.add_argument(
+                "--payload-file",
+                default=None,
+                metavar="ABSOLUTE_PATH",
+                type=_absolute_path,
+                help="stage the bounded snapshot from this local file before capture",
+            )
+        input_group.add_argument(
+            "--input-stdin",
+            action="store_true",
+            help="read one bounded JSON input object from standard input",
         )
         leaf.add_argument("--principal", default=None, help="the principal to claim")
         leaf.add_argument(
@@ -449,8 +479,20 @@ def main(
             # everything else, and still a usage error -- exit 2, before a socket
             # is opened -- rather than something discovered at the call.
             parser.error("--workspace-id is required for this command")
+        if arguments.require_running and not isinstance(
+            command, (ApplicationCommand, ProbeCommand)
+        ):
+            parser.error("--require-running applies to service calls only")
         if isinstance(command, ApplicationCommand):
             _check_mutation_metadata(parser, command, arguments)
+            if arguments.input_stdin:
+                raw = sys.stdin.buffer.read(_MAXIMUM_STDIN_INPUT_BYTES + 1)
+                if len(raw) > _MAXIMUM_STDIN_INPUT_BYTES:
+                    parser.error(_BAD_INPUT)
+                try:
+                    arguments.input_json = _input_object(raw.decode("utf-8"))
+                except (UnicodeDecodeError, argparse.ArgumentTypeError):
+                    parser.error(_BAD_INPUT)
     except SystemExit as requested:
         # argparse exits rather than returning, and this function is declared to
         # return a status. Both are the same number.
@@ -466,20 +508,47 @@ def main(
         deadline = Deadline.after_ms(arguments.timeout_ms)
         client = connected_client
         if client is None:
-            managed = connect_managed_local(
-                InstallationServiceConfig(
-                    installation_state=arguments.installation_state,
-                    workspace_id=arguments.workspace_id,
-                ),
-                deadline=deadline,
+            config = InstallationServiceConfig(
+                installation_state=arguments.installation_state,
+                workspace_id=arguments.workspace_id,
             )
-            client = managed.client
+            if arguments.require_running:
+                # Attach only: `connect_managed_local` would start a stopped
+                # service, which a deliberate Start Core stop must not undo.
+                try:
+                    client = ServiceClient.connect(config, deadline=deadline)
+                except EndpointUnavailableError:
+                    client = None
+                if client is None:
+                    return _refuse(_NOT_RUNNING, 1)
+            else:
+                client = connect_managed_local(config, deadline=deadline).client
         if isinstance(command, ApplicationCommand):
+            payload = arguments.input_json
+            payload_file = getattr(arguments, "payload_file", None)
+            if payload_file is not None:
+                if command.operation != "document.capture" or not isinstance(
+                    client.transport, LocalIpcTransport
+                ):
+                    return _refuse(_REFUSED_LOCALLY, 2)
+                content = _read_document_payload(payload_file)
+                media_type = payload.get("media_type")
+                transfer_key = arguments.idempotency_key
+                if not isinstance(media_type, str) or not isinstance(transfer_key, str):
+                    return _refuse(_REFUSED_LOCALLY, 2)
+                source = client.transport.stage_document(
+                    content,
+                    media_type=media_type,
+                    transfer_key=transfer_key,
+                    deadline=deadline,
+                )
+                payload = dict(payload)
+                payload["staged_source"] = dict(source)
             return _report_application(
                 dispatch_application(
                     client,
                     command,
-                    payload=arguments.input_json,
+                    payload=payload,
                     deadline=deadline,
                     principal=arguments.principal,
                     request_id=arguments.request_id,
@@ -506,6 +575,32 @@ def main(
         return _refuse(_REFUSED_LOCALLY, 2)
     except (ClientError, DispatchError, OSError):
         return _refuse(_NO_ANSWER, 1)
+
+
+def _read_document_payload(path: Path) -> bytes:
+    """Read one regular no-follow snapshot under the document transfer bound."""
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > _MAXIMUM_DOCUMENT_PAYLOAD_BYTES:
+            raise ValueError("document payload is not an accepted regular file")
+        chunks: list[bytes] = []
+        remaining = _MAXIMUM_DOCUMENT_PAYLOAD_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(descriptor)
+    content = b"".join(chunks)
+    if not content or len(content) > _MAXIMUM_DOCUMENT_PAYLOAD_BYTES:
+        raise ValueError("document payload is outside the accepted size bound")
+    return content
 
 
 def _safe_live_status(
@@ -610,24 +705,22 @@ def _run_update(
     """
     from omnivia_core_client.managed_local import spawn_detached_worker
     from omnivia_core_client.updates import (
+        default_fetch_bundle,
         default_fetch_channel,
         installed_packages,
     )
     from omnivia_core_client.updates_apply import coordinate_update
 
-    def fetch_bytes(address: str) -> bytes:
-        import urllib.request
-
-        with urllib.request.urlopen(address, timeout=600) as response:
-            data: bytes = response.read()
-        return data
-
+    # Both fetches go through the client's one approved reader: https only, TLS
+    # verified, no redirect followed, size-capped. This used to be a local
+    # `urllib.request.urlopen(address, timeout=600).read()` with none of those
+    # four properties.
     cli_executable = Path(sys.executable).parent / "omnivia"
     outcome = coordinate_update(
         installation_state=Path(arguments.installation_state),
         installed=installed_packages(),
         fetch_channel=default_fetch_channel,
-        fetch_bytes=fetch_bytes,
+        fetch_bytes=default_fetch_bundle,
         probe_running=lambda workspace_id: _probe_service_running(
             arguments, deadline
         ),

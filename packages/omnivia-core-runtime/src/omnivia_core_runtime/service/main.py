@@ -14,7 +14,9 @@ creates the workspace a service can then own, prints its own versioned result, a
 starts nothing. `--capture-source` briefly becomes the fenced workspace owner, commits
 one already-local file as immutable evidence, prints a redacted result, and exits;
 `--import-legacy` does the same for one legacy Engineering Memory note document,
-committing each note as a proposed candidate (`legacy_import`).
+committing each note as a proposed candidate (`legacy_import`). `--ocr-resources`
+administers this installation's managed OCR language resources -- the owner-local
+half of §14.5's language-resource flow -- without owning a workspace at all.
 Every other mode here belongs to a process that *is* the service.
 The CLI and, later, the MCP adapter reach both shared paths by launching this
 script -- never by importing the runtime -- so there is one implementation of
@@ -48,6 +50,7 @@ from omnivia_core_runtime.service.application import (
     build_job_application_dispatcher,
     build_knowledge_sharing_application_dispatcher,
     build_memory_application_dispatcher,
+    build_settings_application_dispatcher,
     build_skill_application_dispatcher,
     build_skill_resolution_application_dispatcher,
     build_task_context_application_dispatcher,
@@ -70,6 +73,8 @@ from omnivia_core_runtime.service.chat_generation_executor import (
 )
 from omnivia_core_runtime.service.chat_provider_route import provider_route_from_env
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.document_processing import DocumentProcessingExecutor
+from omnivia_core_runtime.service.document_transfer import stage_document_bytes
 from omnivia_core_runtime.service.engineering_conflict_execution import (
     EngineeringConflictExecutor,
 )
@@ -115,6 +120,18 @@ from omnivia_core_runtime.service.managed_start import (
 from omnivia_core_runtime.service.mcp_control import (
     AuthenticatedApplicationDispatch,
 )
+from omnivia_core_runtime.service.ocr_resource_lifecycle import (
+    OCR_RESOURCES_DIR,
+    ManagedOcrInventory,
+    ManagedOcrReconciliation,
+    ManagedOcrResources,
+    OcrResourceLifecycleRefused,
+)
+from omnivia_core_runtime.service.ocr_resource_store import (
+    OcrResourceIdentityInvalid,
+    OcrResourceSetIdentity,
+    OcrResourceStoreError,
+)
 from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
     server_capability_snapshot,
@@ -124,6 +141,7 @@ from omnivia_core_runtime.service.outcome_admission import (
     OutcomeAdmissionAuthority,
 )
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
+from omnivia_core_runtime.service.processing_settings import installation_catalogue
 from omnivia_core_runtime.service.protocol import DocumentRouter
 from omnivia_core_runtime.service.runner import (
     ServiceRunner,
@@ -176,6 +194,49 @@ LOCAL_PRINCIPAL = "local-user"
 #: under ``<home>/workspaces`` and never inside the portable workspace or the
 #: machine-local catalogue.
 WORKSPACE_STORAGE_DIRECTORY = "workspaces"
+
+#: The managed OCR resource administration actions, as `--ocr-resources` spells
+#: them. Closed: argparse `choices`, so anything else is a usage error before a
+#: path is opened or a state document read.
+OCR_RESOURCE_ACTIONS: Final[tuple[str, ...]] = (
+    "status",
+    "install",
+    "remove",
+    "reconcile",
+)
+
+#: The result document family `--ocr-resources` writes. Versioned for the same
+#: reason every other mode's is: the native settings surface reads this document,
+#: and a reader has to be able to tell which shape it is holding.
+OCR_RESOURCE_DOCUMENT_VERSION: Final = 1
+
+#: The identity fields `install` and `remove` require, spelled as the argparse
+#: destinations hold them. All five or none: a resource set is identified by the
+#: whole tuple, and a partial identity must never be completed by a default.
+_OCR_IDENTITY_ARGUMENTS: Final[tuple[str, ...]] = (
+    "ocr_language",
+    "ocr_engine_version",
+    "ocr_model_version",
+    "ocr_byte_size",
+    "ocr_sha256",
+)
+
+#: Every `--ocr-*` option besides the action itself, in the order a refusal names
+#: them.
+_OCR_OPTIONS: Final[tuple[str, ...]] = ("ocr_payload", *_OCR_IDENTITY_ARGUMENTS)
+
+#: Which of those options each action actually reads. Anything else supplied with
+#: an action is a usage fault rather than something quietly dropped: `status`
+#: taking an identity and reporting the whole cache, or `remove` taking a payload
+#: and removing without reading it, would both have looked like the caller's
+#: request was honoured. A caller naming an identity it believes it is acting on
+#: has to be told when the action does not act on one.
+_OCR_ACTION_OPTIONS: Final[dict[str, tuple[str, ...]]] = {
+    "status": (),
+    "reconcile": (),
+    "remove": _OCR_IDENTITY_ARGUMENTS,
+    "install": _OCR_OPTIONS,
+}
 
 
 class _ProbeFactsSource(Protocol):
@@ -273,7 +334,9 @@ def _default_chat_generation(started: ServiceRunner) -> ChatGenerationExecution 
         return None
     route = provider_route_from_env(os.environ)
     invoke, config = (
-        route if route is not None else (_no_provider_adapter, _UNCONFIGURED_PROVIDER_ROUTE)
+        route
+        if route is not None
+        else (_no_provider_adapter, _UNCONFIGURED_PROVIDER_ROUTE)
     )
     return ChatGenerationExecutor(
         connection=started.connection,
@@ -328,10 +391,12 @@ def _build_production_application_surface(
             installation_id=installation_id,
             workspace_id=started.workspace_id,
             operations=frozenset(
-                op for op in registry.operations
+                op
+                for op in registry.operations
                 if next(
                     e for e in OPERATION_CATALOGUE if e.name == op
-                ).scope.side_effect == "none"
+                ).scope.side_effect
+                == "none"
             ),
         ),
         binding=ServiceBinding(
@@ -356,6 +421,16 @@ def _build_production_application_surface(
         installation_id=installation_id,
         workspace_id=started.workspace_id,
         fallback=memory,
+        # The same managed cache the document-processing executor resolves against,
+        # from the installation being served. `document.history` offers the approved
+        # profiles and `document.reprocess` executes one, and both are resolved
+        # against installed OCR resources -- so a family composed without this
+        # reports installed languages unavailable and refuses a reprocess that
+        # named them. Read the way the document-settings handlers read it, and
+        # absent means the packaged fail-closed catalogue, which serves nothing.
+        catalogue_for=installation_catalogue(
+            getattr(getattr(started, "installation", None), "root", None)
+        ),
     )
     governance = build_governance_application_dispatcher(
         service=started,
@@ -479,6 +554,16 @@ def _build_production_application_surface(
         admission=admission_authority,
         clock=started.clock,
     )
+    # Stored application settings (Core Settings v2): the two `settings.*` operations are published
+    # and refused until a handler that serves them exists, so the family is composed and the surface
+    # is complete without any grant being widened to cover them.
+    settings = build_settings_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=task_context,
+    )
     return compose_production_application_surface(
         installation=installation,
         reads=reads,
@@ -494,6 +579,7 @@ def _build_production_application_surface(
         engineering=engineering,
         knowledge_sharing=knowledge_sharing,
         task_context=task_context,
+        settings=settings,
         probe=probe,
     )
 
@@ -605,6 +691,79 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--ocr-resources",
+        choices=OCR_RESOURCE_ACTIONS,
+        default=None,
+        metavar="ACTION",
+        help=(
+            "do not serve; administer this installation's managed OCR language "
+            "resources and print a versioned machine-readable result. 'status' "
+            "lists what is installed with its pins and remaining capacity, "
+            "'install' verifies and installs --ocr-payload under the identity "
+            "named by the --ocr-* fields, 'remove' removes that exact identity "
+            "when nothing pins it, and 'reconcile' repairs the managed bytes "
+            "against the state document. Owner-local administration: nothing "
+            "here is an operation, and no model can name it. Installs no "
+            "dependency and reaches no network. One action at a time per "
+            "installation: a concurrent one is refused with ocr_resource_busy "
+            "rather than waited on. An --ocr-* option the chosen action does not "
+            "read is a usage fault, never silently ignored"
+        ),
+    )
+    parser.add_argument(
+        "--ocr-payload",
+        type=Path,
+        default=None,
+        metavar="ABSOLUTE_PATH",
+        help=(
+            "the already-downloaded resource file --ocr-resources install reads. "
+            "Absolute, a regular file and not a symlink; it is copied, never "
+            "moved, and its path is not persisted. Read by 'install' alone"
+        ),
+    )
+    parser.add_argument(
+        "--ocr-language",
+        default=None,
+        help=(
+            "recognition language of the resource set being installed or "
+            "removed. Read by 'install' and 'remove' alone"
+        ),
+    )
+    parser.add_argument(
+        "--ocr-engine-version",
+        default=None,
+        help=(
+            "engine revision the resource set was built for. Read by 'install' "
+            "and 'remove' alone"
+        ),
+    )
+    parser.add_argument(
+        "--ocr-model-version",
+        default=None,
+        help=(
+            "model revision of the resource set. Read by 'install' and 'remove' "
+            "alone"
+        ),
+    )
+    parser.add_argument(
+        "--ocr-byte-size",
+        default=None,
+        type=int,
+        metavar="BYTES",
+        help=(
+            "exact declared byte size of the resource set. Read by 'install' and "
+            "'remove' alone"
+        ),
+    )
+    parser.add_argument(
+        "--ocr-sha256",
+        default=None,
+        help=(
+            "exact declared SHA-256 of the resource set, 64 lowercase hex "
+            "digits. Read by 'install' and 'remove' alone"
+        ),
+    )
+    parser.add_argument(
         "--managed-start-log",
         default=None,
         type=Path,
@@ -661,6 +820,16 @@ def _http_bind_to_serve(endpoint: str | None) -> HttpBind | None:
     if endpoint is None:
         return None
     return parse_http_endpoint(endpoint)
+
+
+def _compose_background_work(*passes: Callable[[], object]) -> Callable[[], None]:
+    """Compose bounded service-owned passes in a stable fairness order."""
+
+    def run() -> None:
+        for background_pass in passes:
+            background_pass()
+
+    return run
 
 
 def _serve_until_stopped(
@@ -839,6 +1008,259 @@ def _capture_source(args: argparse.Namespace) -> int:
     return 0
 
 
+def _refuse_irrelevant_ocr_options(args: argparse.Namespace) -> None:
+    """Refuse an action combined with options it does not read.
+
+    `argparse` makes every `--ocr-*` field optional, because `status` needs none
+    of them and `install` needs all of them, which left the flat parser silently
+    ignoring an identity handed to `status` or `reconcile` and a payload handed to
+    `remove`. Fail closed instead: the operator is told which option the action
+    does not read, and nothing is opened, read or written in the meantime.
+    """
+    admitted = set(_OCR_ACTION_OPTIONS[args.ocr_resources])
+    supplied = [
+        name
+        for name in _OCR_OPTIONS
+        if name not in admitted and getattr(args, name) is not None
+    ]
+    if supplied:
+        flags = ", ".join("--" + name.replace("_", "-") for name in supplied)
+        raise ValueError(
+            f"--ocr-resources {args.ocr_resources} does not read {flags}"
+        )
+
+
+def _ocr_identity(args: argparse.Namespace) -> OcrResourceSetIdentity:
+    """Build the resource identity from the five closed fields, or refuse.
+
+    All five or none. A resource set *is* the tuple, so completing a partial one
+    from a default would install or remove something the operator did not name --
+    exactly the silent substitution §18.4 forbids.
+    """
+    missing = [
+        name for name in _OCR_IDENTITY_ARGUMENTS if getattr(args, name) is None
+    ]
+    if missing:
+        flags = ", ".join("--" + name.replace("_", "-") for name in missing)
+        raise ValueError(f"the resource identity needs {flags}")
+    return OcrResourceSetIdentity(
+        language=args.ocr_language,
+        engine_version=args.ocr_engine_version,
+        model_version=args.ocr_model_version,
+        byte_size=args.ocr_byte_size,
+        sha256=args.ocr_sha256,
+    )
+
+
+def _ocr_identity_document(identity: OcrResourceSetIdentity) -> dict[str, Any]:
+    """One identity as the result document carries it."""
+    return {
+        "language": identity.language,
+        "engineVersion": identity.engine_version,
+        "modelVersion": identity.model_version,
+        "byteSize": identity.byte_size,
+        "sha256": identity.sha256,
+    }
+
+
+def _ocr_status_document(inventory: ManagedOcrInventory) -> dict[str, Any]:
+    """The installed inventory, its pins and the remaining managed capacity.
+
+    Deterministic: the state document sorts its entries by stable key and the
+    pins of each are sorted too, so the same cache always renders identically.
+
+    Takes the inventory rather than fetching one, so the caller decides which
+    moment is being rendered -- which is what lets the absent-cache answer be
+    rendered from the decision that found it absent instead of a second look.
+    """
+    return {
+        "capacityBytes": inventory.capacity_bytes,
+        "installedBytes": inventory.installed_bytes,
+        "availableBytes": inventory.available_bytes,
+        "resources": [
+            {
+                "identity": _ocr_identity_document(resource.identity),
+                "pinned": resource.pinned,
+                "pinnedBy": list(resource.pinned_by),
+                "bytesPresent": resource.bytes_present,
+            }
+            for resource in inventory.resources
+        ],
+    }
+
+
+def _ocr_action_document(
+    managed: ManagedOcrResources, args: argparse.Namespace
+) -> dict[str, Any]:
+    """Run one action and return what it did, without the envelope.
+
+    One coordinated view for the whole invocation. Every action but `status` also
+    renders the resulting inventory, and the two halves of the document have to
+    describe the same moment -- the lock is re-entrant, so the lifecycle call
+    inside joins this one rather than taking a second. `status` and `reconcile`
+    ask not to create the cache, because neither does anything to one that is not
+    there; `install` and `remove` establish it, since each has to be serialised
+    before it can so much as decide.
+
+    When that ask finds no cache at all the block yields uncoordinated, and the
+    document is then the empty one built from that very decision -- nothing under
+    the root is opened afterwards, so an install arriving in that instant cannot
+    be rendered half-made.
+    """
+    _refuse_irrelevant_ocr_options(args)
+    action = args.ocr_resources
+    with managed.coordinated(create=action in ("install", "remove")) as coordinated:
+        if not coordinated:
+            return _ocr_absent_document(managed, action)
+        return _ocr_performed_document(managed, args, action)
+
+
+def _ocr_absent_document(
+    managed: ManagedOcrResources, action: str
+) -> dict[str, Any]:
+    """`status` or `reconcile` over a cache that is not there.
+
+    The whole answer for the moment the root was found absent, derived from no
+    read: an empty inventory and a pass that repaired nothing.
+    """
+    inventory = managed.absent_inventory()
+    if action == "status":
+        return _ocr_status_document(inventory)
+    return _ocr_reconciliation_document(ManagedOcrReconciliation(), inventory)
+
+
+def _ocr_reconciliation_document(
+    outcome: ManagedOcrReconciliation, inventory: ManagedOcrInventory
+) -> dict[str, Any]:
+    """One reconciliation pass and the inventory it left behind."""
+    return {
+        "discardedStaging": list(outcome.discarded_staging),
+        "discardedUnreferenced": list(outcome.discarded_unreferenced),
+        "quarantined": [
+            _ocr_identity_document(identity) for identity in outcome.quarantined
+        ],
+        "unrecoverablePinned": [
+            _ocr_identity_document(identity)
+            for identity in outcome.unrecoverable_pinned
+        ],
+        "changed": outcome.changed,
+        **_ocr_status_document(inventory),
+    }
+
+
+def _ocr_performed_document(
+    managed: ManagedOcrResources, args: argparse.Namespace, action: str
+) -> dict[str, Any]:
+    """The one action, already coordinated by the caller."""
+    if action == "status":
+        return _ocr_status_document(managed.inventory())
+    if action == "reconcile":
+        outcome = managed.reconcile()
+        return _ocr_reconciliation_document(outcome, managed.inventory())
+    identity = _ocr_identity(args)
+    if action == "remove":
+        managed.remove(identity)
+        return {
+            "identity": _ocr_identity_document(identity),
+            "removed": True,
+            **_ocr_status_document(managed.inventory()),
+        }
+    if args.ocr_payload is None:
+        raise ValueError("--ocr-resources install needs --ocr-payload")
+    installed = managed.install(args.ocr_payload, identity)
+    return {
+        "identity": _ocr_identity_document(installed.identity),
+        "newlyInstalled": installed.newly_installed,
+        "installedBytes": installed.installed_bytes,
+        "availableBytes": installed.available_bytes,
+        # What fitting this install cost, if anything: the installed sets it
+        # reclaimed, of any language. Reported rather than left to be noticed in
+        # `resources`, because a deletion an operator did not ask for is the one
+        # outcome of an accepted install they have to be told about.
+        "evicted": [_ocr_identity_document(entry) for entry in installed.evicted],
+        "resources": _ocr_status_document(managed.inventory())["resources"],
+        "capacityBytes": managed.capacity_bytes,
+    }
+
+
+def _ocr_resources(args: argparse.Namespace) -> int:
+    """Administer the managed OCR language resources for this installation.
+
+    The owner-local half of §14.5's language-resource flow: the explicit install
+    action, the capacity and pin states it can refuse with, the removal, and the
+    repair pass. It serves nothing, owns no workspace and starts nothing -- the
+    managed cache is installation-local state, not one workspace's, so this mode
+    reads `--installation-state` and leaves `--workspace` alone.
+
+    Same output contract as every other mode here: the versioned result document
+    is the whole of stdout so the native settings surface can read it without a
+    parser that skips prose, and the operator's sentence goes to stderr. A
+    refusal carries the lifecycle's own stable `code`, so a caller branches on
+    `language_storage_full` rather than on a sentence. Exit 2 is a usage fault,
+    1 a refusal, 0 an accepted action.
+
+    One administrator at a time per installation, enforced by the lifecycle's
+    coordination lock rather than by this mode: a second invocation waits a
+    bounded time and is then refused with `ocr_resource_busy`, because a CLI that
+    blocked indefinitely on another operator's install would be indistinguishable
+    from one that had hung.
+
+    The managed root is derived here rather than chosen by the lifecycle, which
+    takes a root and never picks a location -- the same split
+    :class:`~omnivia_core_runtime.service.ocr_resource_store.OcrResourceStore`
+    keeps.
+    """
+    installation = args.installation_state
+    if not installation.is_absolute():
+        reason = "--installation-state must be absolute to administer OCR resources"
+        sys.stderr.write(reason + "\n")
+        return 2
+    try:
+        managed = ManagedOcrResources(installation / OCR_RESOURCES_DIR)
+        document = _ocr_action_document(managed, args)
+    except (ValueError, OcrResourceIdentityInvalid) as refused:
+        # A malformed or incomplete identity is the caller's usage fault, and it
+        # is reported before any byte is read or any state document written.
+        sys.stderr.write(f"{refused}\n")
+        return 2
+    except (OcrResourceLifecycleRefused, OcrResourceStoreError) as refused:
+        code = getattr(refused, "code", "ocr_resource_store_error")
+        document = {
+            "ocr_resource_result_version": OCR_RESOURCE_DOCUMENT_VERSION,
+            "action": args.ocr_resources,
+            "status": "refused",
+            "code": code,
+            "reason": str(refused),
+        }
+        # §18.4 requires the required capacity to be *visible*, so a capacity
+        # deferral states its figures as fields. The settings surface reads this
+        # document; making it parse the operator's sentence for the bytes it has
+        # to free would be reading a message as a contract.
+        required = getattr(refused, "required_bytes", None)
+        available = getattr(refused, "available_bytes", None)
+        if required is not None and available is not None:
+            document["requiredBytes"] = required
+            document["availableBytes"] = available
+        sys.stdout.write(json.dumps(document, sort_keys=True) + "\n")
+        sys.stdout.flush()
+        sys.stderr.write(f"{code}: {refused}\n")
+        return 1
+    sys.stdout.write(
+        json.dumps(
+            {
+                "ocr_resource_result_version": OCR_RESOURCE_DOCUMENT_VERSION,
+                "action": args.ocr_resources,
+                "status": "accepted",
+                **document,
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    sys.stdout.flush()
+    return 0
+
+
 def _import_legacy(args: argparse.Namespace) -> int:
     """Run the service-owned legacy note import with the same redacted output."""
     try:
@@ -928,11 +1350,26 @@ def main(
         # itself, and starts nothing.
         return _init(args)
 
-    if args.capture_source is not None and args.import_legacy is not None:
+    maintenance = [
+        name
+        for name, selected in (
+            ("--capture-source", args.capture_source is not None),
+            ("--import-legacy", args.import_legacy is not None),
+            ("--ocr-resources", args.ocr_resources is not None),
+        )
+        if selected
+    ]
+    if len(maintenance) > 1:
         sys.stderr.write(
-            "choose one maintenance mode: --capture-source or --import-legacy\n"
+            f"choose one maintenance mode: {' or '.join(maintenance)}\n"
         )
         return 2
+
+    if args.ocr_resources is not None:
+        # Installation-local administration: it owns no workspace, publishes no
+        # endpoint and commits no transaction, so it runs before the modes that
+        # fence one.
+        return _ocr_resources(args)
 
     if args.capture_source is not None:
         # A bounded maintenance process: it owns and fences the workspace exactly
@@ -1118,7 +1555,19 @@ def main(
             application=application,
             principal_id=LOCAL_PRINCIPAL,
         )
-        source_work = source_executor.run_pending
+        # The executor holds no recognition language of its own: which languages one
+        # capture wants is frozen on that capture's row. This is only how the
+        # installation answers whether it can serve them, asked at the moment the
+        # obligation runs and for that selection alone.
+        document_executor = DocumentProcessingExecutor(
+            runner=started,
+            catalogue_for=installation_catalogue(
+                started.settings.installation_root
+            ),
+        )
+        source_work = _compose_background_work(
+            source_executor.run_pending, document_executor.run_pending
+        )
         assessment_policy = relation_assessment_policy or RelationAssessmentPolicy()
         assessment_executor = (
             EngineeringRelationAssessmentExecutor(
@@ -1148,6 +1597,12 @@ def main(
                 seam=installation_authority, dispatcher=application
             ),
             mcp_administration=installation_authority,
+            binary_stage=lambda content, media_type, transfer_key: stage_document_bytes(
+                started,
+                content=content,
+                media_type=media_type,
+                transfer_key=transfer_key,
+            ),
             service_work=service_work,
             endpoint=endpoint,
             gate=started.sqlite_gate,

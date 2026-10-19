@@ -136,7 +136,10 @@ Rules enforced by `scripts/check-package-boundaries.py`:
   `omnivia-core` range — and nothing else, third-party libraries included, and
   imports no runtime, MCP, CLI, or legacy package. It is the shared protocol
   foundation the others may build on, so that edge only ever points the other
-  way.
+  way. It declares one *extra*, `update-trust`, which adds `cryptography` for
+  Ed25519 verification of the signed update channel envelope: an extra is not an
+  edge, so installing the client still pulls in nothing but `omnivia-core`, and
+  the import is lazy and refused rather than skipped when the library is absent.
 
 `omnivia-core-client` carries the OVC1 protocol **foundation** only:
 `framing`, `deadline`, `compatibility`, `errors`, and the `transport` protocol
@@ -188,7 +191,7 @@ It is a contract only: it introduces no handler, runtime, HTTP binding, CLI, or
 MCP implementation.
 
 The canonical `x-omnivia-operation-catalogue` annotation in
-`operations.schema.json` names exactly **80 application operations** and binds
+`operations.schema.json` names exactly **93 application operations** and binds
 each to its input/result schemas and its scope, capability, completion,
 pagination, idempotency, mutation-precondition, audit, and allowed-error
 posture.
@@ -199,12 +202,13 @@ Two are installation-scoped:
 workspace.create   workspace.list
 ```
 
-Seventy-eight are workspace-scoped:
+Ninety-one are workspace-scoped:
 
 ```text
 analysis.start                     candidate.approve                  candidate.reject
 chat.command                       chat.draft                         chat.events
-chat.snapshot
+chat.snapshot                      code.import                        code.policy.register
+code.query                         code.status
 context.priority.set               context_pack.build                 continuity.checkpoint.append
 continuity.handoff.read            continuity.session.close           continuity.session.register
 decision.definition.disable        decision.definition.get            decision.definition.list
@@ -214,21 +218,25 @@ decision.outcome.submit            decision.record.get                decision.r
 decision.result_use.evaluate       decision.settings.get              decision.settings.update
 decision.status                    engineering.context.build          engineering.expand
 engineering.repository.register    engineering.review.record          engineering.search
-engineering.source.capture.commit  engineering.source.record          evidence.capture
-evidence.search                    graph.traverse                     import.start
+engineering.source.capture.commit  engineering.source.record          document.capture
+document.history                   document.reprocess                 document.settings.get
+document.settings.update           document.original.disconnect       document.original.relink
+evidence.capture                   evidence.search                    graph.traverse
+import.start
 job.cancel                         job.events                         job.get
 job.retry                          knowledge.propose                  knowledge.search
 knowledge.share.decide             knowledge.share.lineage            knowledge.share.propose
 knowledge.share.read               memory.create                      memory.get
 memory.list                        memory.search                      outcome.request.create
 outcome.request.read               project.context.read               project.context.switch
-record.supersede                   skills.draft.create                skills.draft.update
-skills.install                     skills.proposal.submit             skills.remove
-skills.resolve                     skills.version.deprecate           skills.version.publish
-task_context.export                task_context.export.read           trigger.declare
-trigger.health                     trigger.ingest                     trigger.lifecycle
-workflow.control                   workflow.inspect                   workflow.review
-workflow.start                     workspace.inspect
+record.supersede                   settings.list                      settings.set
+skills.draft.create                skills.draft.update                skills.install
+skills.proposal.submit             skills.remove                      skills.resolve
+skills.version.deprecate           skills.version.publish             task_context.export
+task_context.export.read           trigger.declare                    trigger.health
+trigger.ingest                     trigger.lifecycle                  workflow.control
+workflow.inspect                   workflow.review                    workflow.start
+workspace.inspect
 ```
 
 `service.health`, `service.readiness`, and `service.discover` are **not** in

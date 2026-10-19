@@ -54,6 +54,21 @@ _PROFILE_TYPE: Final = "memory.fact"
 #: catalogue's own finding/risk/decision types under the engineering domain.
 _ENGINEERING_RECORD_TYPES: Final = ("knowledge.finding", "knowledge.risk", "knowledge.decision")
 _ENGINEERING_DOMAIN: Final = "engineering.codebase"
+#: The one governed domain the reads below never serve, whatever a caller asks for.
+#:
+#: Imported code-analysis facts (W12, migration 0074) are current only while the import
+#: that produced them is the *applicable* one for its repository, producer and profile --
+#: a currency rule 0074 holds in its own activation log, which `resolve_governed_versions`
+#: applies and the independent fold in this module does not. Teaching that fold a second
+#: copy of the rule would put one currency decision in two places; excluding the domain
+#: outright keeps it in one. Nothing is lost by it: code analysis is read through
+#: `code.query`, which binds a repository, snapshot, producer and profile and refuses a
+#: scope whose analysis is no longer applicable, and a memory read can bind none of those.
+#:
+#: Spelled here rather than imported from `storage/code_analysis_import.py` because that
+#: module pulls both producers in behind it; `test_code_context.py` pins the two strings
+#: equal so the separation cannot drift into a disagreement.
+_CODE_ANALYSIS_DOMAIN: Final = "engineering.code"
 #: The write-time content cap (§8.1): every engineering observation body is
 #: bounded to this many canonical UTF-8 bytes, so a caller-facing budget
 #: reasoner may use `count * ENGINEERING_CONTENT_CAP_BYTES` as a real,
@@ -689,7 +704,17 @@ def read_authorized_memory_frontier(
     )
     resolved_view = resolve_governed_record_view(view)
     with read_snapshot(connection):
-        domain_filter = "" if domain_scope is None else "AND domain_scope = ?"
+        # The exclusion is unconditional and first: a caller that names
+        # `engineering.code` as its own `domain_scope` gets the empty frontier, not the
+        # imported code graph read without its applicability.
+        domain_filter = "AND domain_scope <> ?" + (
+            "" if domain_scope is None else " AND domain_scope = ?"
+        )
+        domain_parameters: tuple[str, ...] = (
+            (_CODE_ANALYSIS_DOMAIN,)
+            if domain_scope is None
+            else (_CODE_ANALYSIS_DOMAIN, domain_scope)
+        )
         select_versions = (
             "SELECT assembly_id, governed_record_id, governed_record_version_id, layer, "
             "governance_disposition, authority_level, valid_from_us, valid_to_us, "
@@ -702,11 +727,7 @@ def read_authorized_memory_frontier(
                 f"{select_versions} WHERE workspace_id = ? AND recorded_at_us <= ? "
                 f"{domain_filter} "
                 "ORDER BY governed_record_id, recorded_at_us, append_ordinal, assembly_id",
-                (
-                    workspace_id,
-                    resolution_instant_us,
-                    *(() if domain_scope is None else (domain_scope,)),
-                ),
+                (workspace_id, resolution_instant_us, *domain_parameters),
             ).fetchall()
         else:
             rows = execute_in_rows(
@@ -717,7 +738,7 @@ def read_authorized_memory_frontier(
                 where_after=domain_filter,
                 leading=(workspace_id, resolution_instant_us),
                 ids=record_ids,
-                trailing=(() if domain_scope is None else (domain_scope,)),
+                trailing=domain_parameters,
                 order_key=lambda row: (
                     str(row[1]),
                     cast("int", row[8]),
@@ -1045,6 +1066,10 @@ def read_memory_record_id_page(
     workspaces. The caller holds the outer read snapshot, so every page sees the
     same sealed metadata and the subsequent scoped authorization fold cannot
     drift between pages.
+
+    `_CODE_ANALYSIS_DOMAIN` is excluded for the reason given there, and excluded here as
+    well as in the fold: a page of identities this module would not then authorize is a
+    page that tells a caller those records exist.
     """
     if not connection.in_transaction:
         raise ValueError("record-id paging requires the caller's active read snapshot")
@@ -1056,12 +1081,13 @@ def read_memory_record_id_page(
             "SELECT governed_record_id "
             "FROM omnivia_authoritative_governed_version_metadata "
             "WHERE workspace_id = ? AND recorded_at_us <= ? AND domain_scope = ? "
-            "AND governed_record_id > ? "
+            "AND domain_scope <> ? AND governed_record_id > ? "
             "GROUP BY governed_record_id ORDER BY governed_record_id LIMIT ?",
             (
                 workspace_id,
                 resolution_instant_us,
                 domain_scope,
+                _CODE_ANALYSIS_DOMAIN,
                 "" if after_record_id is None else after_record_id,
                 limit,
             ),

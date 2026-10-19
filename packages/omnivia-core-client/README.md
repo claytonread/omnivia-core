@@ -7,6 +7,16 @@ any of them can talk to a running service.
 It depends on the public `omnivia-core` contracts and on nothing else — not the
 runtime, not the CLI, not the MCP surface, and no third-party library.
 
+There is one declared **extra**, and it is deliberately not a dependency:
+`update-trust` adds `cryptography` for Ed25519 verification of the signed update
+channel envelope, in `update_trust.py` and nowhere else. Installing this package
+still pulls in nothing but `omnivia-core`; the import is lazy, and its absence is
+a refusal rather than a pass — a client without the extra reports that it could
+not verify a channel, never that it did. Every real Core installation already
+has the library, because `omnivia-core-runtime` requires the same pin and the
+update path refuses to run unless all five first-party distributions are
+installed.
+
 ## Dependency direction
 
 ```text
@@ -282,9 +292,10 @@ the default traceback rendering hides them.
 
 `http`, `ssl`, `urllib` and `ipaddress` are pinned by
 `tests/test_package_isolation.py` to this one module by name, exactly as
-`socket` is pinned to `local_ipc`. A third-party HTTP client stays forbidden
+`socket` is pinned to `local_ipc`, and `base64` and `cryptography` are pinned
+the same way to `update_trust`. A third-party HTTP client stays forbidden
 everywhere: the point was never that this package cannot speak HTTP, it is that
-it has exactly one dependency.
+its dependency edge is exactly the public Core contract.
 
 ### `compatibility` — what this build can talk to
 

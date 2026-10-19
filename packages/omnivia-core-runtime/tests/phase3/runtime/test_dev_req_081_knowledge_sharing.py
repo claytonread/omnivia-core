@@ -273,7 +273,7 @@ def test_the_four_operations_sit_at_their_frozen_positions_and_are_distinct() ->
         "knowledge.share.lineage",
     )
     assert SHARING_OPERATIONS == tuple(names[70:74])
-    assert len(names) == len(set(names)) == 80
+    assert len(names) == len(set(names)) == 93
 
 
 def test_appending_the_family_changed_no_earlier_operation_contract() -> None:
@@ -290,7 +290,7 @@ def test_the_production_registry_holds_the_four_operations_under_one_family(
 ) -> None:
     surface = harness.surface
     surface.registry.assert_complete()
-    assert len(surface.registry.operations) == 80
+    assert len(surface.registry.operations) == 93
     assert set(SHARING_OPERATIONS) <= surface.registry.operations
     families = {id(surface._routes[name]) for name in SHARING_OPERATIONS}
     assert len(families) == 1
@@ -324,6 +324,7 @@ def test_the_sharing_family_cannot_be_registered_twice_or_under_another_name(
         "skill_resolution": routes["skills.resolve"],
         "engineering": routes["engineering.search"],
         "knowledge_sharing": sharing,
+        "settings": routes["settings.list"],
         "probe": harness.surface.probe,
     }
     started = SimpleNamespace(**vars(harness.holder), workspace_id=WS, clock=SystemClock())

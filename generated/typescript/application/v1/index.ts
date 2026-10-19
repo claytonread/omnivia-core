@@ -21,6 +21,8 @@
 //   contracts/application/v1/schemas/chat.schema.json
 //   contracts/application/v1/schemas/decision.schema.json
 //   contracts/application/v1/schemas/engineering.schema.json
+//   contracts/application/v1/schemas/settings.schema.json
+//   contracts/application/v1/schemas/code.schema.json
 // Generator:
 //   scripts/generate-application-contracts.py
 //
@@ -112,6 +114,30 @@ export interface AnalysisOutputBounds {
  * inventing a second result type.
  */
 export interface AnalysisStartResult {
+}
+
+/**
+ * A producer's own key for one definition or one relationship candidate, such as
+ * `pkg.models.make` or `src/lib.ts:Base.run`. Bounded by length here; its grammar (a word
+ * character, `$` or `#`, then word characters and `._:/@+$#-`) is enforced by semantic
+ * validation, because ECMAScript and Python disagree on what a word character is.
+ */
+export type CodeSemanticKey = string;
+
+/**
+ * Files of the assessed snapshot that no declared producer reads, grouped by file suffix. They
+ * stay eligible for evidence and document retrieval; they are never structurally analysed, and
+ * their absence from the code graph says nothing about what they contain.
+ */
+export interface CodeUnsupportedFiles {
+  /**
+   * The file suffix including its dot, such as `.rs`; empty for files with none.
+   */
+  readonly suffix: string;
+  /**
+   * Files with that suffix.
+   */
+  readonly file_count: number;
 }
 
 /**
@@ -1427,6 +1453,15 @@ export function isMediaType(value: unknown): value is MediaType {
     value.length <= 255 &&
     new RegExp(MEDIA_TYPE_PATTERN).test(value)
   );
+}
+
+/**
+ * Input for `document.settings.get`. The caller names nothing: the settings read are those of
+ * the request envelope's selected workspace, and this payload carries no second workspace
+ * identifier, no principal and no selector of any kind. Passive -- it reads no document, opens
+ * no capture and changes nothing.
+ */
+export interface DocumentProcessingSettingsGetInput {
 }
 
 /**
@@ -3651,6 +3686,13 @@ export function isCoreSafeAction(value: unknown): value is CoreSafeAction {
 }
 
 /**
+ * The setting's value, JSON-encoded. A string rather than an open JSON value because a setting
+ * may hold a boolean, a number, a string or an object, and the wire type says which only by
+ * carrying the encoding. The bound is the stored column's own.
+ */
+export type SettingValueJson = string;
+
+/**
  * Open, dot-namespaced code naming a workspace's lifecycle status, such as `active` or
  * `provisioning` or `archived`. Open by design so a compatible minor release can add statuses
  * without breaking existing decoders.
@@ -3897,6 +3939,364 @@ export interface ChatDraftReadResult {
    * The Chat Contract v1 `ComposerDraftResult` document, carried verbatim.
    */
   readonly draft_result: JsonObject;
+}
+
+/**
+ * Where one fact was read, exactly as the import retained it: a repository-relative path, the
+ * content digest of the captured bytes and the producer's locator. With the result's repository
+ * and snapshot this opens the captured revision; it never names an absolute path.
+ * `start_byte`/`end_byte` are a half-open range over the captured bytes, present together or not
+ * at all.
+ */
+export interface CodeSourceSpan {
+  /**
+   * Canonical repository-relative path of the captured file.
+   */
+  readonly relative_path: string;
+  /**
+   * Digest of the captured file's exact bytes.
+   */
+  readonly content_digest: ContentChecksum;
+  /**
+   * One-based first line.
+   */
+  readonly start_line: number;
+  /**
+   * One-based first column, in the producer's stated column basis.
+   */
+  readonly start_column: number;
+  /**
+   * One-based last line.
+   */
+  readonly end_line: number;
+  /**
+   * One-based end column, in the producer's stated column basis.
+   */
+  readonly end_column: number;
+  /**
+   * Zero-based inclusive byte offset, when the producer recorded one.
+   */
+  readonly start_byte?: number;
+  /**
+   * Zero-based exclusive byte offset, when the producer recorded one.
+   */
+  readonly end_byte?: number;
+}
+
+/**
+ * The one code-analysis import a `code.query` answer was read from: the scope the request bound,
+ * the producer build, the batch, the acceptance policy and the activation that made it
+ * applicable. Every fact in the result comes from this import and from no other.
+ */
+export interface CodeAnalysisBinding {
+  /**
+   * Repository analysed.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * Sealed captured snapshot analysed.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Static analyser that produced the facts.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * That analyser's version.
+   */
+  readonly producer_version: Identifier;
+  /**
+   * Digest of the analyser profile the batch was produced under.
+   */
+  readonly profile_digest: ContentChecksum;
+  /**
+   * The applicable import.
+   */
+  readonly import_id: Identifier;
+  /**
+   * Digest of the verified batch the import accepted from.
+   */
+  readonly batch_digest: ContentChecksum;
+  /**
+   * Acceptance policy that decided which candidates became facts.
+   */
+  readonly policy_id: Identifier;
+  /**
+   * That policy's version.
+   */
+  readonly policy_version: Identifier;
+  /**
+   * Digest of that policy's exact rules.
+   */
+  readonly policy_digest: ContentChecksum;
+  /**
+   * Evidence artifact of the snapshot's sealed manifest, which every accepted fact cites.
+   */
+  readonly manifest_evidence_id: EvidenceId;
+  /**
+   * When this import became the applicable code graph for its scope.
+   */
+  readonly activated_at: Timestamp;
+}
+
+/**
+ * What the answer does and does not cover. `analysis` is always `static`: these are facts a
+ * static analyser read from source, not runtime behaviour and not test coverage -- a reference
+ * an accepted fact reads out of a test file is a static reference like any other and is never a
+ * statement that the subject is exercised at run time. `complete` is false when anything bounded
+ * the answer: a limit, the depth, diagnostics that bear on the subject, or graph expansion that
+ * did not run. `unattributed_inbound` is true for inbound intents, because an unresolved or
+ * dynamic occurrence elsewhere cannot be attributed to this subject by static analysis.
+ */
+export interface CodeQueryCoverage {
+  /**
+   * Always `static`.
+   */
+  readonly analysis: OpenCode;
+  /**
+   * True only when no limit, depth, diagnostic or unavailable expansion bounded the answer.
+   */
+  readonly complete: boolean;
+  /**
+   * True when a list was cut at `applied_limit`.
+   */
+  readonly truncated: boolean;
+  /**
+   * True when the traversal reached relations past `applied_depth` that it did not follow.
+   */
+  readonly depth_bounded: boolean;
+  /**
+   * True when callers or references may exist that static analysis could not attribute to the
+   * subject.
+   */
+  readonly unattributed_inbound: boolean;
+  /**
+   * The traversal depth applied; 0 for `definition`.
+   */
+  readonly applied_depth: number;
+  /**
+   * The per-list limit applied.
+   */
+  readonly applied_limit: PageLimit;
+  /**
+   * Whether relations were walked at all: `applied`, `not_requested` for an intent that walks
+   * nothing, or `unavailable` when the request named a seed this graph cannot expand. An
+   * answer never expands a stale seed silently; `unavailable` is always stated, never implied
+   * by an empty list.
+   */
+  readonly graph_expansion: OpenCode;
+  /**
+   * Why expansion was unavailable, such as `seed_binding_mismatch`. Present only with
+   * `graph_expansion` = `unavailable`.
+   */
+  readonly expansion_reason?: OpenCode;
+}
+
+/**
+ * A subject selection a lexical or semantic search produced, carrying the analysis it was
+ * produced against. A seed is identity only -- keys, and the exact repository, analysed
+ * snapshot, producer and profile they were selected from. The read compares that binding with
+ * the analysis applicable at the query instant and refuses to expand a seed taken from any other
+ * one: an old seed spliced onto a newer graph would walk edges the search never saw.
+ */
+export interface CodeContextSeed {
+  /**
+   * How the seed was selected: `lexical` or `semantic`. Wire-open by shape; semantic
+   * validation fails closed on any other value.
+   */
+  readonly origin: OpenCode;
+  /**
+   * Repository the seed was selected from.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * Analysed snapshot the seed was selected from.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Static analyser whose facts the seed names.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * Analyser profile the seed was selected under.
+   */
+  readonly profile_digest: ContentChecksum;
+  /**
+   * The definitions the search selected, in the caller's own order.
+   */
+  readonly semantic_keys: readonly CodeSemanticKey[];
+}
+
+/**
+ * One producer build and analyser profile an acceptance policy admits batches from. A batch from
+ * any other build or profile is refused whole, never partly accepted.
+ */
+export interface CodeProducerLock {
+  /**
+   * Static analyser.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * That analyser's version.
+   */
+  readonly producer_version: Identifier;
+  /**
+   * Digest of a profile this service declares for that analyser.
+   */
+  readonly profile_digest: ContentChecksum;
+}
+
+/**
+ * One producer's node kind an acceptance policy accepts as a governed definition.
+ */
+export interface CodePolicyNodeKind {
+  /**
+   * Static analyser whose kind this is.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * The producer's own node kind, such as `function`.
+   */
+  readonly node_kind: OpenCode;
+}
+
+/**
+ * One producer relationship, at one evidence strength, an acceptance policy accepts as a
+ * governed relation. Only `syntactic` and `resolved_static` can be accepted; unresolved,
+ * ambiguous, external and dynamically inferred candidates stay diagnostics under every policy.
+ */
+export interface CodePolicyRelationship {
+  /**
+   * Static analyser whose relationship this is.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * The producer's own relationship string, such as `calls`.
+   */
+  readonly relationship: OpenCode;
+  /**
+   * `syntactic` or `resolved_static`.
+   */
+  readonly evidence_strength: OpenCode;
+}
+
+/**
+ * One registered acceptance policy, by id, version and the digest of its exact rules.
+ */
+export interface CodePolicyReference {
+  /**
+   * Policy identity.
+   */
+  readonly policy_id: Identifier;
+  /**
+   * Policy version.
+   */
+  readonly policy_version: Identifier;
+  /**
+   * Digest of that version's exact rules.
+   */
+  readonly policy_digest: ContentChecksum;
+}
+
+/**
+ * How one captured snapshot stands against the newest admitted capture of the same stream -- the
+ * same checkout of the same repository on the same installation. `stale` means a newer capture
+ * the caller may see was admitted after it. Core compares captures only: `working_tree` is
+ * always `not_observed`, because the live checkout between captures is never read, so an edit
+ * made after the newest capture is not reflected here either.
+ */
+export interface CodeSnapshotFreshness {
+  /**
+   * `current` or `stale`.
+   */
+  readonly state: OpenCode;
+  /**
+   * The snapshot assessed.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * The newest admitted capture of its stream the caller may see; the assessed snapshot itself
+   * when `current`.
+   */
+  readonly newest_snapshot_id: Identifier;
+  /**
+   * Always `not_observed`.
+   */
+  readonly working_tree: OpenCode;
+}
+
+/**
+ * Input for `code.import`: analyse one sealed, complete captured snapshot of one repository with
+ * one producer under one profile this service declares, and make the facts one registered
+ * acceptance policy accepts the applicable analysis for that repository, producer and profile.
+ * Identity only: the request names no path, no executable code, no profile body, no principal
+ * and no workspace. The scope's expected activation is the envelope's `mutation_precondition`:
+ * the decimal activation sequence `code.status` reported for the scope (`0` when none), so an
+ * import planned against an analysis another import has since replaced is refused and writes
+ * nothing.
+ */
+export interface CodeImportInput {
+  /**
+   * Repository to analyse.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * Sealed captured snapshot of that repository.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Declared static analyser to run.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * Digest of the declared profile to run it under.
+   */
+  readonly profile_digest: ContentChecksum;
+  /**
+   * Registered acceptance policy to import under.
+   */
+  readonly policy_id: Identifier;
+  /**
+   * That policy's version.
+   */
+  readonly policy_version: Identifier;
+}
+
+/**
+ * Input for `code.status`: one repository, and optionally one of its sealed captured snapshots
+ * to assess readiness against. Workspace and principal come from the envelope.
+ */
+export interface CodeStatusInput {
+  /**
+   * Repository to report on.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * Sealed captured snapshot to assess. Absent reports each analysis against the snapshot it
+   * analysed.
+   */
+  readonly snapshot_id?: Identifier;
+}
+
+/**
+ * How much of the analysed snapshot's source the applicable analysis covers, counted over files
+ * the caller may see. `partial` means at least one such file the producer's profile admits
+ * contributed no fact -- it was oversize, undecodable, syntactically invalid or over budget --
+ * so its absence from every answer is not evidence that it has no definitions.
+ */
+export interface CodeAnalysisCoverage {
+  /**
+   * `complete` or `partial`.
+   */
+  readonly state: OpenCode;
+  /**
+   * Visible files of the snapshot the profile admits as source.
+   */
+  readonly admitted_file_count: number;
+  /**
+   * Of those, the files the import's facts were read from.
+   */
+  readonly analysed_file_count: number;
 }
 
 /**
@@ -5343,6 +5743,545 @@ export interface EvidenceCaptureInput {
    * Optional canonical observation-time claim.
    */
   readonly observed_at?: Timestamp;
+}
+
+/**
+ * Closed capture-head precondition. `creation` carries no capture id; `existing` carries the
+ * observed successful capture id when one existed and omits it when the observed head was
+ * explicitly empty.
+ */
+export interface DocumentCaptureBase {
+  /**
+   * Closed value `creation` or `existing`.
+   */
+  readonly kind: OpenCode;
+  /**
+   * Observed successful capture for an existing document, absent when explicitly empty.
+   */
+  readonly capture_id?: Identifier;
+}
+
+/**
+ * Opaque native-owner lineage for the snapshot; it contains no path or bookmark bytes.
+ */
+export interface DocumentOriginalBindingInput {
+  /**
+   * Opaque native access-owner reference.
+   */
+  readonly owner_ref: Identifier;
+  /**
+   * Expected native binding generation.
+   */
+  readonly generation: number;
+  /**
+   * Closed value `direct_file` or `root_member`.
+   */
+  readonly route_kind: OpenCode;
+  /**
+   * Opaque selected-root reference for a root member.
+   */
+  readonly root_ref?: Identifier;
+  /**
+   * Opaque frozen member reference under the selected root.
+   */
+  readonly member_ref?: Identifier;
+}
+
+/**
+ * Exact immutable processing profile selection frozen by the native caller.
+ */
+export interface DocumentProcessingProfileInput {
+  /**
+   * Immutable processing-profile reference.
+   */
+  readonly profile_ref: Identifier;
+  /**
+   * Exact selected profile revision.
+   */
+  readonly revision: Identifier;
+}
+
+/**
+ * One approved processing-profile selection a caller takes verbatim from `document.history` and
+ * sends back in `document.reprocess`. It is a separate type from
+ * `DocumentProcessingProfileInput` because it carries a third field that only a reprocess can
+ * have: the exact immutable profile the selection was reported to resolve to. A capture has no
+ * such digest to name -- its profile is resolved after admission -- so that input keeps its two
+ * fields. `expected_profile_digest` is a precondition, not a preference: Core recomputes the
+ * profile from the named reference, revision, the capture's media type and the installation's
+ * resources, and refuses the request before any execution when the recomputed identity differs,
+ * so a newer profile or newer resources are never substituted beneath a request that named this
+ * one.
+ */
+export interface DocumentReprocessProfileSelection {
+  /**
+   * Immutable processing-profile reference, exactly as `document.history` reported it approved
+   * for this capture.
+   */
+  readonly profile_ref: Identifier;
+  /**
+   * Exact approved profile revision reported with that reference.
+   */
+  readonly revision: Identifier;
+  /**
+   * The immutable profile identity Core reported this selection resolves to. Core refuses
+   * rather than executing a different one.
+   */
+  readonly expected_profile_digest: EvidenceChecksum;
+}
+
+/**
+ * Standing-consent lineage required for automatic capture.
+ */
+export interface DocumentConsentInput {
+  /**
+   * Canonical capture-subscription identifier.
+   */
+  readonly subscription_id: Identifier;
+  /**
+   * Acknowledged standing-consent generation.
+   */
+  readonly consent_generation: number;
+  /**
+   * Acknowledged subscription configuration generation.
+   */
+  readonly config_generation: number;
+  /**
+   * Native change epoch that authorised this snapshot.
+   */
+  readonly dirty_epoch: number;
+}
+
+/**
+ * Frozen one-off folder-run membership lineage.
+ */
+export interface DocumentBulkOriginInput {
+  /**
+   * Canonical bulk-run identifier.
+   */
+  readonly bulk_run_id: Identifier;
+  /**
+   * Exact frozen manifest revision.
+   */
+  readonly manifest_revision: Identifier;
+  /**
+   * Frozen member in the reviewed manifest.
+   */
+  readonly member_id: Identifier;
+}
+
+/**
+ * Canonical receipt for one document capture admission or exact replay.
+ */
+export interface DocumentCaptureResult {
+  /**
+   * Canonical immutable capture identifier.
+   */
+  readonly capture_id: Identifier;
+  /**
+   * Logical document associated with the capture.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Retained canonical evidence artifact.
+   */
+  readonly evidence_id: EvidenceId;
+  /**
+   * Core-computed SHA-256 identity of admitted bytes.
+   */
+  readonly source_digest: EvidenceChecksum;
+  /**
+   * Core-computed snapshot byte length.
+   */
+  readonly source_length_bytes: number;
+  /**
+   * Head-eligible or governed historical disposition.
+   */
+  readonly capture_disposition: OpenCode;
+  /**
+   * Whether this capture became the current successful capture.
+   */
+  readonly became_head: boolean;
+}
+
+/**
+ * Closed successful-extraction-head precondition for reprocessing. The object is always
+ * required; `extraction_id` is present when the caller observed a successful extraction head and
+ * absent when it explicitly observed no successful extraction.
+ */
+export interface DocumentExtractionBase {
+  /**
+   * Observed successful extraction revision, absent only for an explicitly empty extraction
+   * head.
+   */
+  readonly extraction_id?: Identifier;
+}
+
+/**
+ * Canonical terminal receipt for one retained-copy reprocess or exact replay.
+ */
+export interface DocumentReprocessResult {
+  /**
+   * Canonical immutable extraction revision identifier.
+   */
+  readonly extraction_revision_id: Identifier;
+  /**
+   * Logical document associated with the retained capture.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Exact retained capture that was reprocessed.
+   */
+  readonly capture_id: Identifier;
+  /**
+   * Core-computed identity of the immutable processing profile.
+   */
+  readonly profile_digest: EvidenceChecksum;
+  /**
+   * Closed terminal extraction state.
+   */
+  readonly result_state: OpenCode;
+  /**
+   * Whether this revision atomically replaced retrieval, remained historical, was superseded
+   * or was fenced.
+   */
+  readonly publication_disposition: OpenCode;
+  /**
+   * Whether this extraction became the document's successful retrieval head.
+   */
+  readonly became_head: boolean;
+  /**
+   * Digest of the qualified extraction output when the terminal state produced one.
+   */
+  readonly output_digest?: EvidenceChecksum;
+}
+
+/**
+ * One action Core states the availability of, with the exact reason when it is unavailable. A
+ * caller offers a control only for an action reported `available`, and otherwise shows the
+ * stated reason rather than a control that cannot work. v1 reports `reprocess_captured_copy`
+ * against one retained capture and `refresh_original` against the document. An action code this
+ * build does not recognise is preserved and not offered.
+ */
+export interface DocumentHistoryAction {
+  /**
+   * Open code naming the action, such as `reprocess_captured_copy` or `refresh_original`.
+   */
+  readonly action: OpenCode;
+  /**
+   * Whether Core will accept this action now.
+   */
+  readonly available: boolean;
+  /**
+   * Open code naming why the action is unavailable, present exactly when `available` is false
+   * -- enforcing that is a semantic-validation concern, not a wire-shape one.
+   */
+  readonly unavailable_reason?: OpenCode;
+}
+
+/**
+ * One processing-profile selection Core reports as approved and available for reprocessing this
+ * exact retained capture, and will accept in a `document.reprocess` request naming that capture.
+ * `profile_digest` is the immutable profile the selection resolves to for this capture's media
+ * type now, so a caller can prove the revision it was offered is the revision that ran, and a
+ * newer profile or newer resources are never substituted beneath a request that named this one.
+ * A caller never synthesises a reference or revision of its own.
+ */
+export interface DocumentReprocessProfileOption {
+  /**
+   * Immutable processing-profile reference to send in `document.reprocess`.
+   */
+  readonly profile_ref: Identifier;
+  /**
+   * Exact approved profile revision to send with that reference.
+   */
+  readonly revision: Identifier;
+  /**
+   * Closed value `text_only` or `text_and_local_ocr`, as this capture's media type resolves
+   * the selection.
+   */
+  readonly processing_mode: OpenCode;
+  /**
+   * Core-computed identity of the immutable profile this selection resolves to for this
+   * capture.
+   */
+  readonly profile_digest: EvidenceChecksum;
+}
+
+/**
+ * The immutable processing profile one extraction revision was produced under. `digest` is the
+ * profile's canonical identity and the only field a caller may compare for sameness.
+ * `decoder_build` is the exact decoder-build string the profile records, which carries the
+ * profile reference and revision the admitting request froze. The profile body itself -- its
+ * resource ceilings, pinned model hashes, parser feature list and unknown-feature rules -- is
+ * not exposed.
+ */
+export interface DocumentExtractionProfileSummary {
+  /**
+   * Core-computed identity of the immutable profile.
+   */
+  readonly digest: EvidenceChecksum;
+  /**
+   * The profile's exact recorded decoder build, including the frozen profile reference and
+   * revision.
+   */
+  readonly decoder_build: string;
+  /**
+   * Closed value `text_only` or `text_and_local_ocr`.
+   */
+  readonly processing_mode: OpenCode;
+  /**
+   * Whether this profile examined qualified embedded raster images for text.
+   */
+  readonly embedded_image_ocr: boolean;
+  /**
+   * The ordered recognition languages this profile selected, at most three. Empty when the
+   * profile ran no local OCR. Three is the normative maximum a selection may hold, so a
+   * summary naming a fourth describes a selection Core would itself have refused.
+   */
+  readonly ocr_languages: readonly OpenCode[];
+}
+
+/**
+ * The document's source side: its current successful capture when it has one, and the Core-owned
+ * generation that governs removal and suppression. Independent of the extraction head -- a new
+ * capture does not move the extraction head and a new extraction does not move this one.
+ * `original_binding_state` is a route fact only; it carries no opaque owner reference, no path
+ * and no bookmark material, and it is not a statement about whether any capture is retrievable.
+ */
+export interface DocumentSourceHeadState {
+  /**
+   * Closed value `active` or `removed` for the logical source.
+   */
+  readonly source_state: OpenCode;
+  /**
+   * Core-owned generation that advances on removal, suppression change and authorised
+   * restoration.
+   */
+  readonly source_removal_generation: number;
+  /**
+   * The document's current successful capture, absent when it explicitly has none.
+   */
+  readonly current_capture_id?: Identifier;
+  /**
+   * The sequence of the current successful capture, zero when there is none.
+   */
+  readonly capture_head_sequence: number;
+  /**
+   * Closed value `connected` when at least one original route for this document is connected,
+   * `disconnected` when routes exist but none is connected, or `none` when Core records no
+   * original route at all.
+   */
+  readonly original_binding_state: OpenCode;
+  /**
+   * When either head or the source state last changed.
+   */
+  readonly updated_at: Timestamp;
+}
+
+/**
+ * The document's extraction side: its current retrieval head when it has one, and whether
+ * retrieval rows are actually published for it. Independent of the source head.
+ * `retrieval_state` is `retrievable` only when Core currently publishes retrieval rows for this
+ * document; a pending, failed or historical-only extraction leaves whatever was already
+ * published in place rather than replacing it.
+ */
+export interface DocumentExtractionHeadState {
+  /**
+   * The document's current successful extraction, absent when it explicitly has none.
+   */
+  readonly current_extraction_id?: Identifier;
+  /**
+   * The document ordinal of the current successful extraction, zero when there is none.
+   */
+  readonly extraction_head_ordinal: number;
+  /**
+   * Closed value `retrievable` when Core publishes retrieval rows for this document now,
+   * otherwise `none`.
+   */
+  readonly retrieval_state: OpenCode;
+  /**
+   * When the published retrieval projection was written, absent when nothing is published.
+   */
+  readonly published_at?: Timestamp;
+}
+
+/**
+ * This workspace's durable document-processing preferences, as Core currently holds them. They
+ * decide what a *future* capture is admitted under and nothing else: a capture already admitted
+ * carries the exact settings snapshot it was admitted with, and changing these values never
+ * alters its queued work, its immutable profile or the identity that `document.history` reports
+ * for it. An already captured retained source changes only through the explicit
+ * `reprocess_captured_copy` action. `revision` is the compare-and-swap token: it is what
+ * `document.settings.update` must name, and it advances by one on every accepted change. Zero
+ * means nothing is stored and the reported values are the product defaults.
+ */
+export interface DocumentProcessingSettings {
+  /**
+   * Closed value `text_and_local_ocr` -- the default, which reads native text and recognises
+   * text in pages and images of a qualifying capture -- or `text_only`, the explicit faster
+   * alternate that recognises nothing. A media type that does not qualify for local OCR
+   * resolves to direct text under either value.
+   */
+  readonly mode: OpenCode;
+  /**
+   * The ordered recognition languages a future local-OCR capture selects, at most three and
+   * duplicate-free. Order is the selection order and is preserved into the immutable profile.
+   * `eng` alone is the product default. A selected language the managed installation has not
+   * installed is kept as selected and reported as unavailable by the extraction that needed
+   * it; it is never silently replaced by another language.
+   */
+  readonly recognition_languages: readonly OpenCode[];
+  /**
+   * Whether a future capture examines raster images embedded inside a Word, PowerPoint, Excel,
+   * RTF or local HTML source for text. False is the default. It applies to those formats only
+   * and to images carried inside the captured bytes only: a linked or external image is never
+   * loaded, and a media type that is itself an image or a PDF is covered by `mode` instead.
+   */
+  readonly embedded_image_ocr: boolean;
+  /**
+   * The compare-and-swap token for these settings. Zero when nothing is stored.
+   */
+  readonly revision: number;
+}
+
+/**
+ * Closed input for `document.settings.update`: one compare-and-swap change to this workspace's
+ * document-processing preferences. `revision` must equal the value the caller last read, so a
+ * change made since that read is refused as a conflict rather than silently overwritten; zero
+ * asserts that nothing is stored yet. Every other member is optional and an absent member leaves
+ * that preference exactly as it stands -- this is a partial update, not a replacement, so a
+ * caller cannot reset a preference it does not know about. The change takes effect for captures
+ * admitted after it, and never for one already admitted.
+ */
+export interface DocumentProcessingSettingsUpdateInput {
+  /**
+   * The settings revision the caller last observed. Zero asserts nothing is stored.
+   */
+  readonly revision: number;
+  /**
+   * New processing mode, `text_and_local_ocr` or `text_only`. Absent leaves it unchanged.
+   */
+  readonly mode?: OpenCode;
+  /**
+   * The new ordered recognition-language selection, at most three and duplicate-free. Absent
+   * leaves the selection unchanged; an empty array is refused rather than read as `eng`,
+   * because clearing a selection and selecting the default are different intents and only one
+   * of them is expressible.
+   */
+  readonly recognition_languages?: readonly OpenCode[];
+  /**
+   * Whether a future capture examines images embedded in a Word, PowerPoint, Excel, RTF or
+   * local HTML source. Absent leaves it unchanged.
+   */
+  readonly embedded_image_ocr?: boolean;
+}
+
+/**
+ * Closed input for `document.original.disconnect`. Names one opaque owner/device route of one
+ * document's original and asks Core to tombstone it at the generation Core currently holds; it
+ * carries no generation, path, URL or bookmark. A disconnect that arrives before any capture of
+ * the document records the tombstone anyway, so a stale later capture under that owner can never
+ * reactivate the route. Disconnecting a route that is already disconnected changes nothing.
+ */
+export interface DocumentOriginalDisconnectInput {
+  /**
+   * Logical document whose original route is disconnected.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Opaque native access-owner reference of the route.
+   */
+  readonly owner_ref: Identifier;
+  /**
+   * Closed value `direct_file` or `root_member`.
+   */
+  readonly route_kind: OpenCode;
+  /**
+   * Opaque selected-root reference for a root member.
+   */
+  readonly root_ref?: Identifier;
+  /**
+   * Opaque frozen member reference under the selected root.
+   */
+  readonly member_ref?: Identifier;
+}
+
+/**
+ * Canonical terminal receipt for one source-level disconnect or its exact replay: the route as
+ * Core now holds it.
+ */
+export interface DocumentOriginalDisconnectResult {
+  /**
+   * Logical document whose original route was disconnected.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Opaque native access-owner reference of the route.
+   */
+  readonly owner_ref: Identifier;
+  /**
+   * The binding generation Core tombstoned; a capture under it or an older one is historical
+   * only.
+   */
+  readonly binding_generation: number;
+  /**
+   * Closed value `disconnected`.
+   */
+  readonly connection_state: OpenCode;
+}
+
+/**
+ * Closed input for `document.original.relink`. Names one opaque owner/device route of one
+ * document's original (a direct file) and asks Core to move it to the new binding generation the
+ * companion reserved locally before it read any byte of the newly chosen file, connected. A
+ * capture claiming an older generation of that route is thereafter historical only and can never
+ * reactivate or promote under the new one. A relink that reaches Core before the first capture
+ * of the document is recorded anyway. It carries no path, URL or bookmark.
+ */
+export interface DocumentOriginalRelinkInput {
+  /**
+   * Logical document whose original route is relinked.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Opaque native access-owner reference of the direct-file route.
+   */
+  readonly owner_ref: Identifier;
+  /**
+   * The NEW binding generation the companion reserved locally before reading any byte of the
+   * newly chosen file.
+   */
+  readonly binding_generation: number;
+}
+
+/**
+ * Canonical terminal receipt for one source-level relink or its exact replay: the route as Core
+ * now holds it, connected at the named generation.
+ */
+export interface DocumentOriginalRelinkResult {
+  /**
+   * Logical document whose original route was relinked.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Opaque native access-owner reference of the route.
+   */
+  readonly owner_ref: Identifier;
+  /**
+   * The binding generation Core now holds connected; a capture under an older generation of
+   * this route is historical only.
+   */
+  readonly binding_generation: number;
+  /**
+   * Closed value `connected`.
+   */
+  readonly connection_state: OpenCode;
+  /**
+   * The document's current successful capture as Core held it when the relink committed;
+   * absent when the document has none. The companion bases its next refresh on it.
+   */
+  readonly current_capture_id?: Identifier;
 }
 
 /**
@@ -7983,6 +8922,62 @@ export function areCoreTargetV1AuthoritiesValid(value: readonly CoreTargetV1[]):
 }
 
 /**
+ * One stored setting as it currently stands. `record_version` is opaque and round-tripped: a
+ * caller that intends to replace this value passes it back as the envelope's
+ * `MutationPrecondition.record_version`.
+ */
+export interface SettingRecord {
+  /**
+   * The setting's key.
+   */
+  readonly key: OpenCode;
+  /**
+   * The stored value, JSON-encoded.
+   */
+  readonly value_json: SettingValueJson;
+  /**
+   * Opaque version of this setting as read. Returned for observability: a caller that re-reads
+   * and finds a different version knows another writer has been here.
+   */
+  readonly record_version: OpaqueToken;
+  /**
+   * When the service last stored this value.
+   */
+  readonly updated_at: Timestamp;
+  /**
+   * The component that last stored it, as the service recorded it.
+   */
+  readonly updated_by: Identifier;
+}
+
+/**
+ * Input for `settings.list`: every stored setting for the envelope-selected workspace, in key
+ * order. `prefix` narrows to one namespace and is matched literally, never as a pattern.
+ */
+export interface SettingsListInput {
+  /**
+   * Return only keys beginning with this literal prefix. Omit for every key.
+   */
+  readonly prefix?: OpenCode;
+}
+
+/**
+ * Input for `settings.set`: store `value_json` under `key` for the envelope-selected workspace.
+ * Identifies its target by key only; it carries no mutation precondition and replaces whatever
+ * is stored.
+ */
+export interface SettingsSetInput {
+  /**
+   * The setting to store.
+   */
+  readonly key: OpenCode;
+  /**
+   * The value to store, JSON-encoded.
+   */
+  readonly value_json: SettingValueJson;
+}
+
+/**
  * Exactly one governed analysis target: an exact metric revision or an exact Data View revision.
  * The union is discriminated by the required `kind` member unique to each branch.
  */
@@ -8088,6 +9083,428 @@ export interface ChatEventsResult {
    * `requires_resnapshot` is true.
    */
   readonly resnapshot_reason?: OpenCode;
+}
+
+/**
+ * One accepted definition: its producer key, kind, display name, where it is written and the
+ * governed record version that holds it.
+ */
+export interface CodeSymbol {
+  /**
+   * The producer's key for this definition, unique within the import.
+   */
+  readonly semantic_key: CodeSemanticKey;
+  /**
+   * The producer's kind for it, such as `function` or `class`.
+   */
+  readonly node_kind: OpenCode;
+  /**
+   * The name as the producer displays it. Not unique: two definitions may share one.
+   */
+  readonly display_name: string;
+  /**
+   * Where the definition is written.
+   */
+  readonly source: CodeSourceSpan;
+  /**
+   * The governed record version holding this fact.
+   */
+  readonly record: RecordVersionReference;
+  /**
+   * Shortest relation distance from the query's subject, on symbols a traversal reached.
+   * Absent on the subject itself and on ambiguous choices.
+   */
+  readonly depth?: number;
+}
+
+/**
+ * One accepted, resolved static relationship between two definitions of the same import, with
+ * the source span of the occurrence that asserts it.
+ */
+export interface CodeRelation {
+  /**
+   * The producer's key for this relationship candidate.
+   */
+  readonly edge_key: CodeSemanticKey;
+  /**
+   * Governed relation type, one of the `code.*` namespace.
+   */
+  readonly relation_type: OpenCode;
+  /**
+   * The producer's own relationship string, such as `type_imports`.
+   */
+  readonly producer_relationship: OpenCode;
+  /**
+   * True when the relationship exists only in the type system and has no runtime effect.
+   */
+  readonly type_only: boolean;
+  /**
+   * `syntactic` or `resolved_static`; nothing inferred is ever a relation.
+   */
+  readonly evidence_strength: OpenCode;
+  /**
+   * Key of the definition the relationship starts from.
+   */
+  readonly source_key: CodeSemanticKey;
+  /**
+   * Key of the definition it points at.
+   */
+  readonly target_key: CodeSemanticKey;
+  /**
+   * The traversal step at which this relationship was followed.
+   */
+  readonly depth: number;
+  /**
+   * The occurrence that asserts the relationship.
+   */
+  readonly source: CodeSourceSpan;
+  /**
+   * The governed relation record version holding this fact.
+   */
+  readonly record: RecordVersionReference;
+}
+
+/**
+ * One relationship candidate the import did not accept -- unresolved, ambiguous, external,
+ * inferred from dynamic dispatch, outside the policy, or a self-relation -- that bears on the
+ * query's subject. Coverage information only: a diagnostic is never a relation and is never
+ * traversed.
+ */
+export interface CodeDiagnostic {
+  /**
+   * The producer's key for the candidate.
+   */
+  readonly edge_key: CodeSemanticKey;
+  /**
+   * Why the import did not accept it.
+   */
+  readonly reason: OpenCode;
+  /**
+   * The producer's own relationship string.
+   */
+  readonly producer_relationship: OpenCode;
+  /**
+   * The producer's evidence strength for the candidate.
+   */
+  readonly evidence_strength: OpenCode;
+  /**
+   * The producer's resolution status for the candidate.
+   */
+  readonly resolution_status: OpenCode;
+  /**
+   * Key of the definition the candidate starts from.
+   */
+  readonly source_key: CodeSemanticKey;
+  /**
+   * Key of the definition it names, when the producer named one.
+   */
+  readonly target_key?: CodeSemanticKey;
+  /**
+   * The producer's description of an endpoint it could not resolve to a local definition.
+   */
+  readonly target_descriptor?: string;
+  /**
+   * The occurrence the candidate was read from.
+   */
+  readonly source: CodeSourceSpan;
+}
+
+/**
+ * The captured source of one disclosed definition, read by content address. The bytes come from
+ * the blob the span's `content_digest` names and are verified against that address before they
+ * are decoded; the working tree is never read and no absolute path is ever returned.
+ * `byte_length` is the span's full length in the captured file, so a `truncated` span states how
+ * much of itself it is.
+ */
+export interface CodeSpanContent {
+  /**
+   * The definition this span was read for.
+   */
+  readonly semantic_key: CodeSemanticKey;
+  /**
+   * The span read, exactly as the import retained it.
+   */
+  readonly source: CodeSourceSpan;
+  /**
+   * Length of the whole span in the captured file, in bytes.
+   */
+  readonly byte_length: number;
+  /**
+   * True when `text` carries a prefix of the span rather than all of it.
+   */
+  readonly truncated: boolean;
+  /**
+   * The captured bytes of the span, decoded as UTF-8.
+   */
+  readonly text: string;
+}
+
+/**
+ * Input for `code.query`. Names one closed intent -- `definition`, `references`, `callers`,
+ * `callees`, `dependencies` or `code_context` -- and binds it to exactly one repository,
+ * analysed snapshot, producer and profile. The subject is an exact `semantic_key`, a `name`
+ * matched exactly against display names, both (which must then name the same definition), or,
+ * for `code_context` only, a `seed` carrying its own binding. Workspace, principal and authority
+ * come from the envelope's authorized context only.
+ */
+export interface CodeQueryInput {
+  /**
+   * One of `definition`, `references`, `callers`, `callees`, `dependencies`, `code_context`.
+   * Wire-open by shape; semantic validation fails closed on any other value.
+   */
+  readonly intent: OpenCode;
+  /**
+   * Repository to query.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * Analysed snapshot the caller expects to be applicable.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Static analyser whose facts to read.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * Analyser profile whose facts to read.
+   */
+  readonly profile_digest: ContentChecksum;
+  /**
+   * Exact producer key of the subject.
+   */
+  readonly semantic_key?: CodeSemanticKey;
+  /**
+   * Display name of the subject, matched exactly. Several definitions sharing it are returned
+   * as choices, never resolved arbitrarily.
+   */
+  readonly name?: string;
+  /**
+   * Traversal depth for `callers`, `callees`, `dependencies` and `code_context`, 1 (direct) to
+   * 8. Absent means 1. Not accepted for `definition` or `references`.
+   */
+  readonly depth?: GraphDepthLimit;
+  /**
+   * For `dependencies` only: when true, type-only imports and references are neither returned
+   * nor followed. Absent means false.
+   */
+  readonly runtime_only?: boolean;
+  /**
+   * Maximum entries in each returned list. Absent means 100.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * For `code_context` only: the subject as a lexical or semantic search selected it, with the
+   * binding it was selected against.
+   */
+  readonly seed?: CodeContextSeed;
+  /**
+   * For `code_context` only, and required by it: the task-context request the architecture
+   * component is built from, in the Context Pack authority's own input shape.
+   */
+  readonly context?: ContextPackBuildInput;
+}
+
+/**
+ * Input for `code.policy.register`: one versioned, deterministic acceptance policy for code-
+ * analysis imports, authorised by the authenticated caller. The document is the rules only; who
+ * authorised it is the caller the envelope authenticated, never a field. A version identifies
+ * one set of rules forever: registering the same id and version again with the same rules is
+ * idempotent, and with different rules is a conflict. There is no default policy, and enabling
+ * analysis registers none.
+ */
+export interface CodePolicyRegisterInput {
+  /**
+   * Policy identity.
+   */
+  readonly policy_id: Identifier;
+  /**
+   * Policy version.
+   */
+  readonly policy_version: Identifier;
+  /**
+   * The producer builds and declared profiles whose batches this policy may accept.
+   */
+  readonly producers: readonly CodeProducerLock[];
+  /**
+   * Node kinds accepted as definitions.
+   */
+  readonly accepted_node_kinds: readonly CodePolicyNodeKind[];
+  /**
+   * Relationships accepted as relations; empty accepts definitions only.
+   */
+  readonly accepted_relationships: readonly CodePolicyRelationship[];
+  /**
+   * Whether a cutover may drop coverage of a file the new snapshot still holds. False refuses
+   * such a cutover.
+   */
+  readonly allow_reduced_coverage: boolean;
+  /**
+   * Largest batch, in candidates, this policy accepts. Absent means 10000.
+   */
+  readonly max_candidates?: number;
+}
+
+/**
+ * Result of `code.policy.register`: the policy as recorded, and whether this request recorded it
+ * or found it already recorded with the same rules.
+ */
+export interface CodePolicyRegisterResult {
+  /**
+   * The recorded policy.
+   */
+  readonly policy: CodePolicyReference;
+  /**
+   * `registered` or `already_registered`.
+   */
+  readonly disposition: OpenCode;
+  /**
+   * When that version was first recorded.
+   */
+  readonly registered_at: Timestamp;
+}
+
+/**
+ * Result of `code.import`: the activation receipt. The binding is the import now applicable for
+ * its scope; the counts are the import's own -- accepted definitions and relations, refused
+ * candidates and covered files -- and `coverage_decision` says whether the cutover was the
+ * scope's first, kept every still-present file, or dropped coverage the policy allowed it to
+ * drop. A replay of the same request returns this receipt unchanged.
+ */
+export interface CodeImportResult {
+  /**
+   * The import this request made applicable.
+   */
+  readonly binding: CodeAnalysisBinding;
+  /**
+   * The scope's activation sequence after this import; the next import's precondition.
+   */
+  readonly activation_sequence: number;
+  /**
+   * The import this one retired. Absent for the scope's first activation.
+   */
+  readonly previous_import_id?: Identifier;
+  /**
+   * `initial`, `complete` or `reduced_authorised`.
+   */
+  readonly coverage_decision: OpenCode;
+  /**
+   * Files the retired import covered that the new snapshot still holds and this import does
+   * not.
+   */
+  readonly reduced_file_count: number;
+  /**
+   * Accepted definitions.
+   */
+  readonly entity_count: number;
+  /**
+   * Accepted relations.
+   */
+  readonly relation_count: number;
+  /**
+   * Candidates the policy did not accept.
+   */
+  readonly diagnostic_count: number;
+  /**
+   * Captured files the import's candidates were read from.
+   */
+  readonly file_count: number;
+  /**
+   * How the analysed snapshot stood against its stream when the import settled.
+   */
+  readonly freshness: CodeSnapshotFreshness;
+}
+
+/**
+ * One declared producer profile's analysis of the repository. `availability` says whether this
+ * service can run the producer at all; `readiness` whether an applicable analysis answers
+ * `code.query` for the assessed snapshot, with the reason when not: `no_active_import`,
+ * `snapshot_not_active` (the applicable analysis is of another snapshot) or `no_admitted_source`
+ * (the assessed snapshot holds no file this producer analyses). `activation_sequence` is the
+ * scope's current activation, the precondition of the next `code.import`. An analysis the caller
+ * may not see is reported exactly as one that does not exist.
+ */
+export interface CodeAnalysisStatus {
+  /**
+   * Declared static analyser.
+   */
+  readonly producer_id: Identifier;
+  /**
+   * Its version.
+   */
+  readonly producer_version: Identifier;
+  /**
+   * Digest of the declared profile.
+   */
+  readonly profile_digest: ContentChecksum;
+  /**
+   * Languages the producer analyses structurally, such as `python`.
+   */
+  readonly languages: readonly OpenCode[];
+  /**
+   * `available` or `unavailable`.
+   */
+  readonly availability: OpenCode;
+  /**
+   * Why the producer cannot run here, such as `runtime_not_configured`. Present only when
+   * `unavailable`.
+   */
+  readonly availability_reason?: OpenCode;
+  /**
+   * `ready` or `not_ready`.
+   */
+  readonly readiness: OpenCode;
+  /**
+   * Why not ready. Present only when `not_ready`.
+   */
+  readonly readiness_reason?: OpenCode;
+  /**
+   * The scope's current activation sequence, 0 when it has none.
+   */
+  readonly activation_sequence: number;
+  /**
+   * The most recently registered policy that admits this producer build and profile. Absent
+   * when none does, in which case no import can run.
+   */
+  readonly policy?: CodePolicyReference;
+  /**
+   * The applicable import. Absent when there is none the caller may see.
+   */
+  readonly binding?: CodeAnalysisBinding;
+  /**
+   * How the analysed snapshot stands against its stream. Present with `binding`.
+   */
+  readonly freshness?: CodeSnapshotFreshness;
+  /**
+   * How much of the analysed snapshot the import covers. Present with `binding`.
+   */
+  readonly coverage?: CodeAnalysisCoverage;
+}
+
+/**
+ * The assessed snapshot: whether its capture was complete, how it stands against its stream, and
+ * which of its files no declared producer analyses.
+ */
+export interface CodeSnapshotStatus {
+  /**
+   * The assessed snapshot.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * `complete` or `incomplete`; only a complete capture can be analysed.
+   */
+  readonly capture_status: OpenCode;
+  /**
+   * How it stands against its stream.
+   */
+  readonly freshness: CodeSnapshotFreshness;
+  /**
+   * File groups no declared producer analyses, by suffix.
+   */
+  readonly unsupported: readonly CodeUnsupportedFiles[];
+  /**
+   * True when more suffix groups exist than `unsupported` lists.
+   */
+  readonly unsupported_truncated: boolean;
 }
 
 /**
@@ -9336,6 +10753,324 @@ export interface EvidenceCaptureResult {
 }
 
 /**
+ * Closed input for `document.capture`. Carries exactly one bounded inline snapshot or an
+ * immutable server-issued staged-source descriptor plus opaque lineage; no original path,
+ * bookmark, credential, parser name, arbitrary endpoint, principal, or workspace override is
+ * accepted. Exact-one content selection is enforced semantically.
+ */
+export interface DocumentCaptureInput {
+  /**
+   * Logical document identity selected before transfer.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Strict RFC 4648 base64 of a small complete immutable snapshot, bounded so the whole
+   * request remains inside OVC1.
+   */
+  readonly content_base64?: string;
+  /**
+   * Server-issued immutable descriptor for a snapshot transferred over the bounded local
+   * binary staging protocol.
+   */
+  readonly staged_source?: ImportSourceDescriptor;
+  /**
+   * Validated media type of the snapshot.
+   */
+  readonly media_type: MediaType;
+  /**
+   * Stable caller-selected source identity for this capture intent.
+   */
+  readonly requested_source_identity: Identifier;
+  /**
+   * Closed capture intent kind.
+   */
+  readonly intent_kind: OpenCode;
+  /**
+   * Frozen successful-head precondition.
+   */
+  readonly base: DocumentCaptureBase;
+  /**
+   * Trusted destination binding revision frozen before publication.
+   */
+  readonly target_binding_revision: Identifier;
+  /**
+   * Exact processing profile requested for the admitted capture.
+   */
+  readonly processing_profile: DocumentProcessingProfileInput;
+  /**
+   * Optional opaque original-access lineage.
+   */
+  readonly original_binding?: DocumentOriginalBindingInput;
+  /**
+   * Standing-consent lineage for automatic work.
+   */
+  readonly consent?: DocumentConsentInput;
+  /**
+   * Frozen folder-run lineage for bulk work.
+   */
+  readonly bulk_origin?: DocumentBulkOriginInput;
+  /**
+   * Untrusted display-only filename claim.
+   */
+  readonly display_name?: string;
+}
+
+/**
+ * Closed input for `document.reprocess`. Selects one already-retained immutable capture, one
+ * exact approved processing-profile revision together with the immutable profile identity that
+ * revision was reported to resolve to, and the observed successful extraction head. It accepts
+ * no source bytes, original path, URL, bookmark, parser implementation, arbitrary profile JSON,
+ * principal or workspace override.
+ */
+export interface DocumentReprocessInput {
+  /**
+   * Retained immutable capture to process again without rereading its original.
+   */
+  readonly capture_id: Identifier;
+  /**
+   * Exact approved processing profile selected for the new extraction revision, with the
+   * profile identity it must resolve to.
+   */
+  readonly processing_profile: DocumentReprocessProfileSelection;
+  /**
+   * Frozen successful-extraction-head precondition.
+   */
+  readonly expected_base: DocumentExtractionBase;
+}
+
+/**
+ * Closed input for `document.history`. Selects exactly one logical document owned by the request
+ * envelope's selected workspace; it carries no second workspace identifier and no path,
+ * bookmark, credential, principal, parser name or workspace override, and no selector that could
+ * widen the read past that one document. Pagination is deterministic: `limit` bounds each of the
+ * two returned histories separately, and `page` resumes an earlier read at the exact position it
+ * reached.
+ */
+export interface DocumentHistoryInput {
+  /**
+   * Logical document whose canonical intake history is read.
+   */
+  readonly document_id: Identifier;
+  /**
+   * Bounded maximum number of source captures, and of extraction revisions, to return in this
+   * page. Absent means the server's default.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Continuation position from a prior page, when paging.
+   */
+  readonly page?: PageMetadata;
+}
+
+/**
+ * One immutable source capture of this document, exactly as Core admitted it.
+ * `is_current_source` is read from the document's own source head and is never inferred from
+ * `capture_sequence`, from arrival order or from any timestamp. Retention is this capture's own
+ * disposition and moves independently of the document's source state. A capture that is not the
+ * current source keeps its full attribution rather than losing it. No source bytes, original
+ * filesystem path, bookmark material, credential or caller-supplied display claim appears here.
+ */
+export interface DocumentCaptureHistoryEntry {
+  /**
+   * Canonical immutable capture identifier, exactly as `document.reprocess` accepts it.
+   */
+  readonly capture_id: Identifier;
+  /**
+   * This capture's admission sequence within the document. An ordering fact, never a
+   * currentness claim.
+   */
+  readonly capture_sequence: number;
+  /**
+   * Retained canonical evidence artifact holding the captured bytes.
+   */
+  readonly evidence_id: EvidenceId;
+  /**
+   * Core-computed identity of the admitted bytes.
+   */
+  readonly source_digest: EvidenceChecksum;
+  /**
+   * Core-computed snapshot byte length.
+   */
+  readonly source_length_bytes: number;
+  /**
+   * Validated media type of the captured snapshot.
+   */
+  readonly media_type: MediaType;
+  /**
+   * Stable caller-selected source identity this capture was admitted under.
+   */
+  readonly requested_source_identity: Identifier;
+  /**
+   * Closed capture intent kind: `new_capture`, `refresh`, `automatic_capture` or
+   * `folder_capture`.
+   */
+  readonly intent_kind: OpenCode;
+  /**
+   * Closed value `snapshot_only`, `active_binding` or `historical_binding`.
+   */
+  readonly association_kind: OpenCode;
+  /**
+   * Closed value `head_eligible` or `historical_only`, as admission decided it.
+   */
+  readonly capture_disposition: OpenCode;
+  /**
+   * Closed reason the disposition was assigned: `eligible`, `removed_source`,
+   * `superseded_generation`, `disconnected_generation`, `creation_conflict` or `stale_base`.
+   */
+  readonly disposition_reason: OpenCode;
+  /**
+   * Whether this exact capture is the document's current source head, read from the head
+   * itself.
+   */
+  readonly is_current_source: boolean;
+  /**
+   * Closed value `retained`, `expired` or `deleted` for this capture's bytes.
+   */
+  readonly retention_state: OpenCode;
+  /**
+   * Core-owned generation of this capture's retained/eligible disposition.
+   */
+  readonly capture_retention_generation: number;
+  /**
+   * The logical-source removal generation frozen at this capture's admission.
+   */
+  readonly source_removal_generation: number;
+  /**
+   * The processing profile this capture requested when it was admitted. Its extractions are
+   * reported separately and may name a different profile.
+   */
+  readonly requested_profile: DocumentProcessingProfileInput;
+  /**
+   * Closed value `pending` while Core still owns an unsettled processing obligation for this
+   * capture, `settled` once that obligation has settled, or `not_queued` when none was
+   * recorded. Never a retrieval claim.
+   */
+  readonly processing_state: OpenCode;
+  /**
+   * The successful capture head this capture froze as its base, absent when it observed none.
+   */
+  readonly expected_base_capture_id?: Identifier;
+  /**
+   * When Core admitted this capture.
+   */
+  readonly captured_at: Timestamp;
+  /**
+   * When this capture's retention state last changed, absent when Core records no retention
+   * row.
+   */
+  readonly retention_changed_at?: Timestamp;
+  /**
+   * The actions Core states the availability of for this exact capture.
+   */
+  readonly actions: readonly DocumentHistoryAction[];
+  /**
+   * The approved profile selections Core will accept for reprocessing this capture. Empty when
+   * reprocessing is unavailable, in which case `actions` carries the reason.
+   */
+  readonly reprocess_profiles: readonly DocumentReprocessProfileOption[];
+}
+
+/**
+ * One immutable extraction revision over one of this document's captures.
+ * `is_current_extraction` is read from the document's own extraction head and is never inferred
+ * from `document_ordinal`, from arrival order or from any timestamp. The extraction head is
+ * independent of the source head: a revision over an older capture can never make that capture
+ * the current source, and a revision that reaches a terminal state without being promoted is
+ * historical-only rather than a success. `result_state` and `publication_disposition` are absent
+ * while no terminal result exists, which is a pending extraction and not a failed one.
+ */
+export interface DocumentExtractionHistoryEntry {
+  /**
+   * Canonical immutable extraction revision identifier, exactly as `document.reprocess`
+   * expects as a base.
+   */
+  readonly extraction_revision_id: Identifier;
+  /**
+   * The exact capture whose retained bytes this revision read.
+   */
+  readonly capture_id: Identifier;
+  /**
+   * This revision's ordering position among all of the document's extractions. An ordering
+   * fact, never a currentness claim.
+   */
+  readonly document_ordinal: number;
+  /**
+   * This revision's ordering position among the extractions of its own capture.
+   */
+  readonly extraction_sequence: number;
+  /**
+   * The exact immutable profile this revision ran under.
+   */
+  readonly profile: DocumentExtractionProfileSummary;
+  /**
+   * The successful extraction head this revision froze as its base, absent when it observed
+   * none.
+   */
+  readonly expected_base_extraction_id?: Identifier;
+  /**
+   * Whether admission found this revision's frozen base still current, which is the only way
+   * it could ever be promoted.
+   */
+  readonly head_eligible: boolean;
+  /**
+   * Whether this exact revision is the document's current retrieval head, read from the head
+   * itself.
+   */
+  readonly is_current_extraction: boolean;
+  /**
+   * Closed terminal state `succeeded`, `partial`, `unsupported` or `failed`. Absent while the
+   * revision has no terminal result.
+   */
+  readonly result_state?: OpenCode;
+  /**
+   * Closed value `promoted`, `superseded`, `historical_only`, `fenced_removal`,
+   * `fenced_retention` or `not_published`. Absent while the revision has no terminal result.
+   */
+  readonly publication_disposition?: OpenCode;
+  /**
+   * Digest of the qualified extraction output, present only when the terminal state produced
+   * one.
+   */
+  readonly output_digest?: EvidenceChecksum;
+  /**
+   * The worker build that produced the terminal result, absent while there is none.
+   */
+  readonly worker_build?: string;
+  /**
+   * When Core admitted this extraction revision.
+   */
+  readonly admitted_at: Timestamp;
+  /**
+   * When this revision reached its terminal result, absent while it has none.
+   */
+  readonly completed_at?: Timestamp;
+}
+
+/**
+ * Wraps one DocumentProcessingSettings document. The `revision` it carries is the one a
+ * subsequent `document.settings.update` must name.
+ */
+export interface DocumentProcessingSettingsGetResult {
+  /**
+   * DocumentProcessingSettings -- this workspace's durable document-processing preferences,
+   * which decide what a future capture is admitted under and never alter an admitted one.
+   */
+  readonly settings: DocumentProcessingSettings;
+}
+
+/**
+ * Wraps one DocumentProcessingSettings document: the settings as they now stand, carrying the
+ * advanced `revision` the next update must name.
+ */
+export interface DocumentProcessingSettingsUpdateResult {
+  /**
+   * DocumentProcessingSettings -- this workspace's durable document-processing preferences,
+   * which decide what a future capture is admitted under and never alter an admitted one.
+   */
+  readonly settings: DocumentProcessingSettings;
+}
+
+/**
  * Input for `graph.traverse`. Workspace-scoped: the workspace is the request envelope's selected
  * workspace; this payload never carries a second, independent workspace identifier. Absent
  * `view` defaults to `current_canonical`; only an explicit `view` selector may request
@@ -10563,6 +12298,29 @@ export function isCoreSafeStatusV1SemanticallyValid(value: CoreSafeStatusV1): bo
 }
 
 /**
+ * Result of `settings.list`: the matching settings in key order. An empty list means the
+ * workspace has stored none, which is not an error — a setting that has never been written has
+ * no row, and the caller applies its own default.
+ */
+export interface SettingsListResult {
+  /**
+   * The matching settings, in key order.
+   */
+  readonly settings: readonly SettingRecord[];
+}
+
+/**
+ * Result of `settings.set`: the setting as it now stands, including the version a subsequent
+ * replacement must carry.
+ */
+export interface SettingsSetResult {
+  /**
+   * The stored setting.
+   */
+  readonly setting: SettingRecord;
+}
+
+/**
  * The concrete workspace-format version a workspace is stored at, and the inclusive version
  * window this server build can read and write. Reuses the same `VersionWindow` and `OpenCode`
  * primitives `VersionCapabilityEnvelope` negotiates with, rather than inventing a second version
@@ -10656,6 +12414,32 @@ export interface AnalysisStartInput {
    * authorisation or policy checks.
    */
   readonly purpose_reference: Identifier;
+}
+
+/**
+ * Result of `code.status`: one entry per producer profile this service declares, in a fixed
+ * order, so a caller discovers what is applicable, ready, partial, stale or unavailable without
+ * already holding a receipt. No runtime path, database row, lock, lease or analyser location is
+ * ever part of it, and nothing a caller may not see -- a hidden file, a hidden analysis, a
+ * hidden newer capture -- moves any field.
+ */
+export interface CodeStatusResult {
+  /**
+   * The repository reported on.
+   */
+  readonly repository_id: Identifier;
+  /**
+   * The assessed snapshot. Present only when the request named one.
+   */
+  readonly snapshot?: CodeSnapshotStatus;
+  /**
+   * Every declared producer profile, in a fixed order.
+   */
+  readonly analyses: readonly CodeAnalysisStatus[];
+  /**
+   * The read instant.
+   */
+  readonly as_of: Timestamp;
 }
 
 /**
@@ -11098,6 +12882,62 @@ export interface RequestEnvelope {
    * Opaque operation payload.
    */
   readonly input: JsonObject;
+}
+
+/**
+ * Result of `document.history`: the authoritative Core intake history of one logical document.
+ * Immutable source captures and extraction revisions are reported as two separate histories with
+ * two separate heads, because they move independently; neither list's order states which member
+ * is current, and the two head states are the only statements of currentness. `capture_count`
+ * and `extraction_count` are the complete totals, so a caller paging through the histories can
+ * say truthfully how much it has seen. Nothing here carries source bytes, an original filesystem
+ * path, bookmark material, a credential, a raw profile body or any locally held delivery
+ * receipt: local activity remains a separate, non-canonical record.
+ */
+export interface DocumentHistoryResult {
+  /**
+   * The logical document this history describes.
+   */
+  readonly document_id: Identifier;
+  /**
+   * When Core created the logical document.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * The independent source head and source state.
+   */
+  readonly source: DocumentSourceHeadState;
+  /**
+   * The independent extraction head and retrieval state.
+   */
+  readonly extraction: DocumentExtractionHeadState;
+  /**
+   * This page of the document's immutable source captures, in ascending `capture_sequence`
+   * order.
+   */
+  readonly captures: readonly DocumentCaptureHistoryEntry[];
+  /**
+   * Total number of source captures this document has, across every page.
+   */
+  readonly capture_count: number;
+  /**
+   * This page of the document's immutable extraction revisions, in ascending
+   * `document_ordinal` order.
+   */
+  readonly extractions: readonly DocumentExtractionHistoryEntry[];
+  /**
+   * Total number of extraction revisions this document has, across every page.
+   */
+  readonly extraction_count: number;
+  /**
+   * The document-level actions Core states the availability of.
+   */
+  readonly actions: readonly DocumentHistoryAction[];
+  /**
+   * Continuation position for the next page. A continuation token means at least one of the
+   * two histories has more to read; `{}` means both are exhausted.
+   */
+  readonly page: PageMetadata;
 }
 
 /**
@@ -13015,6 +14855,33 @@ export interface MemorySearchResult {
 }
 
 /**
+ * The task-context and architecture knowledge component of a code context, kept apart from every
+ * code fact in the same answer. It is produced by the workspace's own Context Pack authority
+ * over independently accepted governed knowledge that carries accepted support, under the
+ * caller's own authorisation -- never by reading code facts as prose and never by reading prose
+ * as code. A caller that does not independently hold the context authority, or a workspace whose
+ * context projection cannot serve one, gets `availability` = `unavailable` with a reason and no
+ * members; it never gets a quietly empty component.
+ */
+export interface CodeArchitectureContext {
+  /**
+   * `available` when `pack` is present, `unavailable` otherwise.
+   */
+  readonly availability: OpenCode;
+  /**
+   * Why no component was produced, such as `subject_not_resolved`, `not_authorised`,
+   * `projection_unavailable`, `stale_projection`, `frontier_too_large` or
+   * `token_budget_exhausted`. Present only when `availability` is `unavailable`.
+   */
+  readonly reason?: OpenCode;
+  /**
+   * The content-addressed Context Pack this component is, built and judged by the same
+   * authority `context_pack.build` uses. Present only when `availability` is `available`.
+   */
+  readonly pack?: ContextPackBuildResult;
+}
+
+/**
  * Result of `graph.traverse`: the traversed nodes and edges, the traversal limits actually
  * applied (which may be tighter than requested but never looser), the projection
  * metadata/watermark this traversal was served from, and deterministic ordering evidence.
@@ -13071,6 +14938,80 @@ export interface GraphTraversalResult {
    * so a caller reads the same shape here as on every other paginated result in this contract.
    */
   readonly page: PageMetadata;
+}
+
+/**
+ * The `code_context` answer's assembled material: the captured source of the definitions the
+ * answer discloses, and the separately labelled architecture component. The graph neighbours are
+ * the result's own `symbols` and `relations`, which are accepted static relationships of the one
+ * applicable analysis and of no other; nothing in `architecture` is ever a code relationship,
+ * and no code fact is ever presented as architecture knowledge.
+ */
+export interface CodeContext {
+  /**
+   * Captured source for the subject and the neighbours the answer discloses, in the order
+   * those definitions appear.
+   */
+  readonly spans: readonly CodeSpanContent[];
+  /**
+   * The independently authorised task-context and architecture component.
+   */
+  readonly architecture: CodeArchitectureContext;
+}
+
+/**
+ * Result of `code.query`. `resolution` says how the subject was found: `semantic_key`,
+ * `unique_name`, `ambiguous` -- in which case `definitions` lists every qualified choice in key
+ * order and nothing was traversed -- or `seed_not_applicable`, when a seed named another
+ * analysis than the applicable one and nothing was traversed or disclosed. Otherwise
+ * `definitions` holds the one subject, `symbols` the definitions the intent reached (by depth,
+ * then key), `relations` the accepted static relationships followed (by depth, source, type,
+ * target, edge key) and `diagnostics` the unaccepted candidates that bear on the answer (by edge
+ * key). An analysis that is missing or not the applicable one is refused, never answered empty,
+ * and so is an answer whose disclosed members stopped being visible to the caller while it was
+ * being assembled.
+ */
+export interface CodeQueryResult {
+  /**
+   * The intent answered.
+   */
+  readonly intent: OpenCode;
+  /**
+   * The one import the answer was read from.
+   */
+  readonly binding: CodeAnalysisBinding;
+  /**
+   * `semantic_key`, `unique_name`, `ambiguous` or `seed_not_applicable`.
+   */
+  readonly resolution: OpenCode;
+  /**
+   * The subject, or every ambiguous choice.
+   */
+  readonly definitions: readonly CodeSymbol[];
+  /**
+   * Definitions the intent reached.
+   */
+  readonly symbols: readonly CodeSymbol[];
+  /**
+   * Accepted static relationships followed.
+   */
+  readonly relations: readonly CodeRelation[];
+  /**
+   * Unaccepted candidates bearing on the answer; coverage only.
+   */
+  readonly diagnostics: readonly CodeDiagnostic[];
+  /**
+   * What the answer covers.
+   */
+  readonly coverage: CodeQueryCoverage;
+  /**
+   * The read point: the query instant and the watermark of the facts read.
+   */
+  readonly freshness: ProjectionFreshness;
+  /**
+   * The assembled code context. Present only for the `code_context` intent.
+   */
+  readonly context?: CodeContext;
 }
 
 /**
@@ -15906,6 +17847,436 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "upgrade_required",
       "workspace_busy",
       "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.capture",
+    scope: { required_scopes: ["memory:write"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureResult",
+    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.history",
+    scope: { required_scopes: ["memory:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentHistoryInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentHistoryResult",
+    required_capability: { id: "evidence.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: true, max_page_size: 1000 },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.reprocess",
+    scope: { required_scopes: ["memory:write"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessResult",
+    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.settings.get",
+    scope: { required_scopes: ["memory:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsGetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsGetResult",
+    required_capability: { id: "evidence.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.settings.update",
+    scope: { required_scopes: ["memory:write"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsUpdateInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsUpdateResult",
+    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.original.disconnect",
+    scope: { required_scopes: ["memory:write"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalDisconnectInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalDisconnectResult",
+    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "document.original.relink",
+    scope: { required_scopes: ["memory:write"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalRelinkInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalRelinkResult",
+    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "settings.list",
+    scope: { required_scopes: ["workspace:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsListInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsListResult",
+    required_capability: { id: "workspace.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "settings.set",
+    scope: { required_scopes: ["workspace:write"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsSetInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsSetResult",
+    required_capability: { id: "workspace.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "code.query",
+    scope: { required_scopes: ["graph:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryResult",
+    required_capability: { id: "graph.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "projection_unavailable",
+      "rate_limited",
+      "size_limit_exceeded",
+      "stale_projection",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "code.policy.register",
+    scope: {
+      required_scopes: ["engineering:curate"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyRegisterInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyRegisterResult",
+    required_capability: { id: "engineering.curate", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "code.import",
+    scope: {
+      required_scopes: ["engineering:source"],
+      side_effect: "create",
+      scope_kind: "workspace",
+    },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeImportInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeImportResult",
+    required_capability: { id: "engineering.source", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: true, required: true },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "code.status",
+    scope: { required_scopes: ["graph:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeStatusInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeStatusResult",
+    required_capability: { id: "graph.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",
     ],

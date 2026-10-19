@@ -106,6 +106,8 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "chat",
     "decision",
     "engineering",
+    "settings",
+    "code",
 )
 REGISTRY_SCHEMA = "application-v1"
 ALL_SCHEMAS: tuple[str, ...] = (*SOURCE_SCHEMAS, REGISTRY_SCHEMA)
@@ -1225,6 +1227,24 @@ _IMPORT_START: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "size_limit_exceede
 _EVIDENCE_CAPTURE: tuple[str, ...] = tuple(
     sorted((*_CREATE_MUT, "conflict", "projection_unavailable", "stale_projection", "size_limit_exceeded"))
 )
+_DOCUMENT_CAPTURE: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "conflict", "size_limit_exceeded"))
+)
+_DOCUMENT_REPROCESS: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
+#: One compare-and-swap change to this workspace's document-processing preferences.
+#: `conflict` is the revision mismatch the caller re-reads and re-decides against. No
+#: `not_found`: an unstored preference is revision zero and the product defaults, not a
+#: missing record, so there is nothing for this operation to fail to find.
+_DOCUMENT_SETTINGS_UPDATE: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
+#: Tombstoning one owner route of one document's original. `conflict` is a route that is
+#: another document's, or on a different route; no `not_found`, because a disconnect that
+#: arrives before any capture records the tombstone rather than failing to find a document.
+_DOCUMENT_ORIGINAL_DISCONNECT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
+#: Moving one direct-file owner route to a newer generation. `conflict` is a route that is
+#: another document's or on a different route, or a generation that is not newer than the one
+#: Core holds (or too far ahead); no `not_found`, because a relink that arrives before any
+#: capture records the route rather than failing to find a document.
+_DOCUMENT_ORIGINAL_RELINK: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
 #: Deliberately excludes ``conflict``: a state-based cancel/retry refusal is a
 #: successful explicit disposition returning the unchanged handle, not an error.
 _JOB_CONTROL: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
@@ -1338,6 +1358,26 @@ _SHARE_READ: tuple[str, ...] = tuple(sorted((*_POINT_READ, "conflict")))
 #: its byte bound, is `size_limit_exceeded`. A stale or ineligible export is a `conflict`, and an export the
 #: workspace does not hold is `not_found`. `context_budget_insufficient` stays with engineering context.
 _TASK_CONTEXT_MUT: tuple[str, ...] = tuple(sorted((*_SHARE_MUT, "size_limit_exceeded")))
+#: Code-analysis acceptance policy (W13-C). A version identifies one set of rules
+#: forever, so the same id and version under different rules is a `conflict`; there is
+#: no record to fail to find and no precondition, because a policy version is never
+#: replaced, only followed by another version.
+_CODE_POLICY_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
+#: Code-analysis import (W13-C). It names a sealed snapshot and a registered policy that
+#: may not exist (`not_found`), states the activation it expects to retire as a mutation
+#: precondition, refuses a snapshot or policy whose state cannot carry the import
+#: (`conflict`), and bounds the analysis by the declared profile (`size_limit_exceeded`).
+_CODE_IMPORT_MUT: tuple[str, ...] = tuple(
+    sorted(
+        (
+            *_CREATE_MUT,
+            "conflict",
+            "mutation_precondition_failed",
+            "not_found",
+            "size_limit_exceeded",
+        )
+    )
+)
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ANALYSIS_START": _ANALYSIS_START,
     "BASE_INSTALL": _BASE_INSTALL,
@@ -1352,6 +1392,11 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "ENGINEERING_CONTEXT_READ": _ENGINEERING_CONTEXT_READ,
     "CREATE_MUT": _CREATE_MUT,
     "EVIDENCE_CAPTURE": _EVIDENCE_CAPTURE,
+    "DOCUMENT_CAPTURE": _DOCUMENT_CAPTURE,
+    "DOCUMENT_REPROCESS": _DOCUMENT_REPROCESS,
+    "DOCUMENT_SETTINGS_UPDATE": _DOCUMENT_SETTINGS_UPDATE,
+    "DOCUMENT_ORIGINAL_DISCONNECT": _DOCUMENT_ORIGINAL_DISCONNECT,
+    "DOCUMENT_ORIGINAL_RELINK": _DOCUMENT_ORIGINAL_RELINK,
     "GOV_MUT": _GOV_MUT,
     "CHAT_MUT": _CHAT_MUT,
     "IMPORT_START": _IMPORT_START,
@@ -1385,6 +1430,8 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "SHARE_MUT": _SHARE_MUT,
     "SHARE_READ": _SHARE_READ,
     "TASK_CONTEXT_MUT": _TASK_CONTEXT_MUT,
+    "CODE_POLICY_MUT": _CODE_POLICY_MUT,
+    "CODE_IMPORT_MUT": _CODE_IMPORT_MUT,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1419,7 +1466,7 @@ class FrozenOperation(NamedTuple):
     max_page_size: int = FROZEN_PAGE_SIZE
 
 
-#: The exact 79 application operations, in the frozen insertion order. Runtime
+#: The exact 93 application operations, in the frozen insertion order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1770,16 +1817,70 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "workspace", ("project_context:switch",), "update", "project_context.switch",
         "knowledge", "ProjectContextSwitch", "TASK_CONTEXT_MUT", False,
     ),
+    "document.capture": FrozenOperation(
+        "workspace", ("memory:write",), "create", "evidence.write",
+        "evidence", "DocumentCapture", "DOCUMENT_CAPTURE", False,
+    ),
+    "document.history": FrozenOperation(
+        "workspace", ("memory:read",), "none", "evidence.read",
+        "evidence", "DocumentHistory", "POINT_READ", True,
+    ),
+    "document.reprocess": FrozenOperation(
+        "workspace", ("memory:write",), "create", "evidence.write",
+        "evidence", "DocumentReprocess", "DOCUMENT_REPROCESS", False,
+    ),
+    "document.settings.get": FrozenOperation(
+        "workspace", ("memory:read",), "none", "evidence.read",
+        "evidence", "DocumentProcessingSettingsGet", "POINT_READ", False,
+    ),
+    "document.settings.update": FrozenOperation(
+        "workspace", ("memory:write",), "update", "evidence.write",
+        "evidence", "DocumentProcessingSettingsUpdate", "DOCUMENT_SETTINGS_UPDATE", False,
+    ),
+    "document.original.disconnect": FrozenOperation(
+        "workspace", ("memory:write",), "update", "evidence.write",
+        "evidence", "DocumentOriginalDisconnect", "DOCUMENT_ORIGINAL_DISCONNECT", False,
+    ),
+    "document.original.relink": FrozenOperation(
+        "workspace", ("memory:write",), "update", "evidence.write",
+        "evidence", "DocumentOriginalRelink", "DOCUMENT_ORIGINAL_RELINK", False,
+    ),
+    "settings.list": FrozenOperation(
+        "workspace", ("workspace:read",), "none", "workspace.read",
+        "settings", "SettingsList", "WORKSPACE_READ", False,
+    ),
+    "settings.set": FrozenOperation(
+        "workspace", ("workspace:write",), "update", "workspace.write",
+        "settings", "SettingsSet", "GOV_MUT", False,
+    ),
+    "code.query": FrozenOperation(
+        "workspace", ("graph:read",), "none", "graph.read",
+        "code", "CodeQuery", "GRAPH_READ", False,
+    ),
+    "code.policy.register": FrozenOperation(
+        "workspace", ("engineering:curate",), "create", "engineering.curate",
+        "code", "CodePolicyRegister", "CODE_POLICY_MUT", False,
+    ),
+    "code.import": FrozenOperation(
+        "workspace", ("engineering:source",), "create", "engineering.source",
+        "code", "CodeImport", "CODE_IMPORT_MUT", False,
+    ),
+    "code.status": FrozenOperation(
+        "workspace", ("graph:read",), "none", "graph.read",
+        "code", "CodeStatus", "POINT_READ", False,
+    ),
 }
 
 #: The four governance transitions that support and require a mutation
 #: precondition, plus `decision.settings.update`, whose compare-and-swap
 #: revision is a mutation precondition: a mismatch is a state the caller
-#: re-reads and re-decides against.
+#: re-reads and re-decides against. `code.import` states the activation it
+#: expects to retire the same way, so an import planned against an analysis
+#: another import has since replaced is refused rather than activated.
 FROZEN_PRECONDITION_OPERATIONS: frozenset[str] = frozenset(
     {"candidate.approve", "candidate.reject", "knowledge.propose", "record.supersede",
      "decision.settings.update", "continuity.session.close", "continuity.checkpoint.append",
-     "engineering.review.record"}
+     "engineering.review.record", "code.import"}
 )
 
 

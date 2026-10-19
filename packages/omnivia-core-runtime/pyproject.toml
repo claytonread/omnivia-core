@@ -36,6 +36,18 @@ dependencies = [
     # admits exactly those library-owned zones (proven by identity, never called),
     # so the exact reviewed pin lives here and in the wheelhouse constraints.
     "pytz==2026.5",
+    # Document processing is an offline, immutable-source worker surface. These
+    # exact pins are the qualified parser/decoder closure; capture never installs
+    # or upgrades them and no adapter is allowed to fetch document references.
+    "defusedxml==0.7.1",
+    "lxml==6.1.3",
+    "openpyxl==3.1.5",
+    "Pillow==12.3.0",
+    "pillow-heif==1.8.1",
+    "pypdfium2==5.14.0",
+    "pytesseract==0.3.13",
+    "python-docx==1.2.0",
+    "python-pptx==1.0.2",
 ]
 
 [project.scripts]
@@ -43,3 +55,10 @@ omnivia-core-service = "omnivia_core_runtime.service.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/omnivia_core_runtime"]
+
+# The TypeScript code-analysis producer runs its analyser on the pinned compiler it
+# ships with, never on a repository's `node_modules`. `hatch_build.py` copies that
+# compiler from the repository's `npm ci` install into
+# `omnivia_core_runtime/storage/typescript_compiler/` and refuses to build around any
+# other one. A wheel build therefore needs `npm ci` first; an editable install does not.
+[tool.hatch.build.targets.wheel.hooks.custom]

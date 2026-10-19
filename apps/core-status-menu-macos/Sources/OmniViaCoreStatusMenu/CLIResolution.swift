@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 enum CompanionConfigurationError: LocalizedError, Equatable {
@@ -5,6 +6,7 @@ enum CompanionConfigurationError: LocalizedError, Equatable {
     case missingRequired(String)
     case unknownArgument(String)
     case pathMustBeAbsolute(String)
+    case stateUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +18,8 @@ enum CompanionConfigurationError: LocalizedError, Equatable {
             return "unknown argument: \(argument)"
         case let .pathMustBeAbsolute(option):
             return "\(option) must be an absolute path"
+        case .stateUnavailable:
+            return "saved companion configuration is unavailable"
         }
     }
 }
@@ -69,18 +73,110 @@ struct CompanionConfiguration: Equatable {
             workspaceID: workspaceID
         )
     }
+
+    static func loadOrParse(
+        arguments: [String],
+        stateDirectory: URL = defaultStateDirectory()
+    ) throws -> CompanionConfiguration {
+        if arguments.count > 1 {
+            let configuration = try parse(arguments: arguments)
+            try persist(configuration, in: stateDirectory)
+            return configuration
+        }
+        return try load(from: stateDirectory)
+    }
+
+    private struct Stored: Codable {
+        let schema: String
+        let cliOverride: String?
+        let installationState: String
+        let workspaceID: String
+    }
+
+    private static func defaultStateDirectory() -> URL {
+        let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return applicationSupport.appendingPathComponent("com.omnivia.core.status", isDirectory: true)
+    }
+
+    private static func persist(_ value: CompanionConfiguration, in directory: URL) throws {
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            let stateFile = directory.appendingPathComponent("launch-configuration-v1.json")
+            let data = try JSONEncoder().encode(
+                Stored(
+                    schema: "omnivia.companion-launch.v1",
+                    cliOverride: value.cliOverride?.path,
+                    installationState: value.installationState.path,
+                    workspaceID: value.workspaceID
+                )
+            )
+            let temporary = directory.appendingPathComponent(".launch-configuration-\(UUID().uuidString).tmp")
+            try data.write(to: temporary, options: [.atomic])
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+            if FileManager.default.fileExists(atPath: stateFile.path) {
+                _ = try FileManager.default.replaceItemAt(stateFile, withItemAt: temporary)
+            } else {
+                try FileManager.default.moveItem(at: temporary, to: stateFile)
+            }
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
+        } catch {
+            throw CompanionConfigurationError.stateUnavailable
+        }
+    }
+
+    private static func load(from directory: URL) throws -> CompanionConfiguration {
+        do {
+            let stateFile = directory.appendingPathComponent("launch-configuration-v1.json")
+            let attributes = try FileManager.default.attributesOfItem(atPath: stateFile.path)
+            guard (attributes[.type] as? FileAttributeType) == .typeRegular,
+                  let size = attributes[.size] as? NSNumber,
+                  size.uint64Value <= 64 * 1024,
+                  let owner = attributes[.ownerAccountID] as? NSNumber,
+                  owner.uint32Value == Darwin.getuid(),
+                  let permissions = attributes[.posixPermissions] as? NSNumber,
+                  permissions.intValue & 0o077 == 0
+            else { throw CompanionConfigurationError.stateUnavailable }
+            let stored = try JSONDecoder().decode(
+                Stored.self,
+                from: Data(contentsOf: stateFile, options: [.mappedIfSafe])
+            )
+            guard stored.schema == "omnivia.companion-launch.v1",
+                  stored.installationState.hasPrefix("/"),
+                  !stored.workspaceID.isEmpty,
+                  stored.workspaceID.utf8.count <= 128,
+                  stored.cliOverride?.hasPrefix("/") != false
+            else { throw CompanionConfigurationError.stateUnavailable }
+            return CompanionConfiguration(
+                cliOverride: stored.cliOverride.map { URL(fileURLWithPath: $0).standardizedFileURL },
+                installationState: URL(fileURLWithPath: stored.installationState).standardizedFileURL,
+                workspaceID: stored.workspaceID
+            )
+        } catch let error as CompanionConfigurationError {
+            throw error
+        } catch {
+            throw CompanionConfigurationError.stateUnavailable
+        }
+    }
 }
 
 enum CLIResolutionError: LocalizedError, Equatable {
     case overrideIsNotExecutable(String)
-    case executableNotFound
+    case executableNotFound(String)
 
     var errorDescription: String? {
         switch self {
         case let .overrideIsNotExecutable(path):
             return "the --cli path is not executable: \(path)"
-        case .executableNotFound:
-            return "could not find the fixed 'omnivia' executable"
+        case let .executableNotFound(name):
+            return "could not find the fixed '\(name)' executable"
         }
     }
 }
@@ -94,8 +190,14 @@ struct CLIResolver {
         self.isExecutable = isExecutable
     }
 
+    /// `executableName` is the packaged executable to find. The companion
+    /// resolves two of them through this one path: the `omnivia` CLI, and the
+    /// `omnivia-core-service` that owns installation-local administration.
+    /// `override` is the `--cli` path and names the CLI only, so a service
+    /// lookup passes nil and takes the same candidate order.
     func resolve(
         override: URL?,
+        executableName: String = "omnivia",
         bundleURL: URL? = Bundle.main.bundleURL,
         companionExecutableURL: URL? = Bundle.main.executableURL,
         pathEnvironment: String? = ProcessInfo.processInfo.environment["PATH"],
@@ -114,22 +216,23 @@ struct CLIResolver {
                 bundleURL
                     .appendingPathComponent("Contents", isDirectory: true)
                     .appendingPathComponent("Resources", isDirectory: true)
-                    .appendingPathComponent("omnivia")
+                    .appendingPathComponent(executableName)
             )
         }
         if let companionExecutableURL {
             candidates.append(
-                companionExecutableURL.deletingLastPathComponent().appendingPathComponent("omnivia")
+                companionExecutableURL.deletingLastPathComponent()
+                    .appendingPathComponent(executableName)
             )
         }
-        candidates.append(URL(fileURLWithPath: "/opt/homebrew/bin/omnivia"))
-        candidates.append(URL(fileURLWithPath: "/usr/local/bin/omnivia"))
+        candidates.append(URL(fileURLWithPath: "/opt/homebrew/bin/\(executableName)"))
+        candidates.append(URL(fileURLWithPath: "/usr/local/bin/\(executableName)"))
 
         if let pathEnvironment {
             for entry in pathEnvironment.split(separator: ":", omittingEmptySubsequences: false) {
                 let directory = entry.isEmpty ? workingDirectory.path : String(entry)
                 let base = URL(fileURLWithPath: directory, relativeTo: workingDirectory)
-                candidates.append(base.appendingPathComponent("omnivia").standardizedFileURL)
+                candidates.append(base.appendingPathComponent(executableName).standardizedFileURL)
             }
         }
 
@@ -141,7 +244,7 @@ struct CLIResolver {
                 return URL(fileURLWithPath: path)
             }
         }
-        throw CLIResolutionError.executableNotFound
+        throw CLIResolutionError.executableNotFound(executableName)
     }
 }
 

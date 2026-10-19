@@ -1,0 +1,1002 @@
+@testable import DocumentIntakeMacOS
+import Foundation
+import XCTest
+
+/// WP-12 slice 2: the durable, restart-safe side of `AutomaticSchedulingStateMachine`.
+///
+/// Every test drives a real owner-only state directory, and rebuilds the owner from disk wherever
+/// restart matters — a second `AutomaticSchedulingStateMachine(stateDirectory:)` over the same
+/// directory *is* the next process, with a clock whose zero has moved. The restart assertions all
+/// claim at small `now` values on purpose: a fresh process's clock starts near zero, so work that
+/// had already served its quiet period before the restart could only be stranded there.
+final class AutomaticSchedulingDurabilityTests: XCTestCase {
+    private var root: URL!
+
+    private var stateDirectory: URL { root.appendingPathComponent("automatic-scheduling", isDirectory: true) }
+    private var stateFile: URL { stateDirectory.appendingPathComponent("automatic-scheduling-v1.json") }
+
+    private static let key = AutomaticSchedulingKey(
+        source: AutomaticSchedulingSource(workspaceRef: "workspace-a", sourceRef: "source-a"),
+        scopeKey: "scope-a"
+    )
+    /// The opaque queue ref a publication carries across a restart.
+    private static let ref = "intent-a"
+
+    override func setUpWithError() throws {
+        root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("omnivia-automatic-scheduling-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        // A read-only state directory from a write-failure test has to be writable again to go.
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: stateDirectory.path
+        )
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    /// The next process over the same durable state.
+    private func machine() throws -> AutomaticSchedulingStateMachine {
+        try AutomaticSchedulingStateMachine(stateDirectory: stateDirectory, gate: PublicationGate())
+    }
+
+    // MARK: - Restart recovery
+
+    func testRestartKeepsDirtyWorkDirtyAndImmediatelyDue() throws {
+        let first = try machine()
+        let generation = try first.signal(Self.key, priority: .user, at: 1_000)
+        // Still inside the quiet period when the process went away.
+        XCTAssertNil(try first.claim(at: 2_000))
+
+        let second = try machine()
+        let state = try XCTUnwrap(second.state(of: Self.key))
+        XCTAssertEqual(state.dirtyGeneration, generation)
+        XCTAssertEqual(state.priority, .user)
+        XCTAssertNil(state.activeGeneration)
+        XCTAssertFalse(state.published)
+        XCTAssertTrue(state.restoredFromRestart)
+        // No instant from the previous process's clock came across as if it were one of ours.
+        XCTAssertEqual(state.firstSignalMilliseconds, 0)
+        XCTAssertEqual(state.latestSignalMilliseconds, 0)
+
+        // Due the first time the new process looks, at a `now` where nothing raised in it could be.
+        let claim = try XCTUnwrap(second.claim(at: 0))
+        XCTAssertEqual(claim.generation, generation)
+        XCTAssertEqual(claim.priority, .user)
+        XCTAssertTrue(claim.restoredFromRestart)
+    }
+
+    func testRecoveredWorkStaysImmediatelyDueThroughAClaimAndCancel() throws {
+        let first = try machine()
+        let generation = try first.signal(Self.key, priority: .background, at: 0)
+
+        let second = try machine()
+        XCTAssertEqual(try second.claim(at: 0)?.generation, generation)
+        // Cancelled recovered work does not quietly acquire this process's clock and start waiting.
+        XCTAssertEqual(try second.cancel(Self.key, generation: generation, at: 1), generation)
+        XCTAssertTrue(try XCTUnwrap(second.state(of: Self.key)).restoredFromRestart)
+        XCTAssertEqual(try second.claim(at: 1)?.generation, generation)
+    }
+
+    func testSignalsRaisedAfterARestartServeTheFullQuietPeriod() throws {
+        let first = try machine()
+        let resolved = try first.signal(Self.key, priority: .background, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, resolved)
+        try first.markPublished(Self.key, generation: resolved, intentRef: Self.ref, at: 3_100)
+        try first.markCompleted(Self.key, generation: resolved, at: 3_200)
+
+        let second = try machine()
+        // A fully clean scope is not retained, so it spends no place in the bounds and its next
+        // signal is a first signal again.
+        XCTAssertNil(second.state(of: Self.key))
+        XCTAssertEqual(second.trackedScopes, 0)
+        XCTAssertEqual(try second.signal(Self.key, priority: .background, at: 0), 1)
+
+        // The 3-second quiet period governs it in full: recovery relaxes nothing for new work.
+        XCTAssertNil(try second.claim(at: 2_999))
+        XCTAssertEqual(try second.claim(at: 3_000)?.restoredFromRestart, false)
+    }
+
+    func testRepeatedSignalsRaisedAfterARestartStillWaitOutTheMaximumWait() throws {
+        let first = try machine()
+        let resolved = try first.signal(Self.key, priority: .background, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, resolved)
+        try first.markPublished(Self.key, generation: resolved, intentRef: Self.ref, at: 3_100)
+        try first.markCompleted(Self.key, generation: resolved, at: 3_200)
+
+        let second = try machine()
+        try second.signal(Self.key, priority: .background, at: 0)
+        for now in stride(from: Int64(2_500), through: 27_500, by: 2_500) {
+            try second.signal(Self.key, priority: .background, at: now)
+        }
+        XCTAssertNil(try second.claim(at: 29_999))
+        XCTAssertNotNil(try second.claim(at: 30_000))
+    }
+
+    func testAnUnpublishedCandidateSurvivesARestartAsARecoveredCandidate() throws {
+        let first = try machine()
+        let generation = try first.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, generation)
+        // The process went away carrying the candidate; nothing published it.
+
+        let second = try machine()
+        let state = try XCTUnwrap(second.state(of: Self.key))
+        // Its intent may already have committed to the queue, so it is not collapsed back into
+        // dirty and read a second time: it stays this scope's active, unpublished claim, holding
+        // exactly the generation it was claimed for, until reconciliation says which way it went.
+        XCTAssertEqual(state.activeGeneration, generation)
+        XCTAssertFalse(state.published)
+        XCTAssertTrue(state.restoredCandidate)
+        XCTAssertTrue(state.restoredFromRestart)
+        XCTAssertNil(state.intentRef)
+        XCTAssertFalse(state.legacyUnresolvedIntent)
+        // No dirty record at all, so there is no time from the previous process's clock either.
+        XCTAssertNil(state.dirtyGeneration)
+        XCTAssertNil(state.priority)
+        XCTAssertNil(state.firstSignalMilliseconds)
+        XCTAssertNil(state.latestSignalMilliseconds)
+        // It blocks a duplicate claim exactly as an unresolved publication does.
+        XCTAssertNil(try second.claim(at: 0))
+        XCTAssertNil(try second.claim(at: 60_000))
+        // Recovery minted no generation of its own: a signal behind it is simply the next one.
+        XCTAssertEqual(try second.signal(Self.key, priority: .background, at: 60_000), generation + 1)
+    }
+
+    func testAnUnpublishedCandidateWithWorkBehindItKeepsBothGenerations() throws {
+        let first = try machine()
+        let claimed = try first.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, claimed)
+        let later = try first.signal(Self.key, priority: .background, at: 4_000)
+
+        let second = try machine()
+        let state = try XCTUnwrap(second.state(of: Self.key))
+        // The candidate and the signal that accumulated behind it stay separate, so attaching the
+        // intent the candidate committed publishes `claimed` and never consumes `later`.
+        XCTAssertEqual(state.activeGeneration, claimed)
+        XCTAssertTrue(state.restoredCandidate)
+        XCTAssertFalse(state.published)
+        XCTAssertEqual(state.dirtyGeneration, later)
+        // The later record keeps its own background priority: nothing of the candidate is merged
+        // into it while the candidate is still in flight.
+        XCTAssertEqual(state.priority, .background)
+        XCTAssertEqual(state.firstSignalMilliseconds, 0)
+        XCTAssertEqual(state.latestSignalMilliseconds, 0)
+        XCTAssertTrue(state.restoredFromRestart)
+        // Nothing behind the candidate is claimable, and recovery minted no generation of its own.
+        XCTAssertNil(try second.claim(at: 0))
+        XCTAssertEqual(try second.signal(Self.key, priority: .background, at: 1), later + 1)
+    }
+
+    // MARK: - Reconciling a recovered candidate
+
+    func testAttachingARestoredPublicationPublishesTheCandidateAndKeepsTheWorkBehindIt() throws {
+        let first = try machine()
+        let claimed = try first.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, claimed)
+        let later = try first.signal(Self.key, priority: .background, at: 4_000)
+
+        // The queue holds the intent that candidate committed, so it is attached rather than read
+        // and published a second time.
+        let second = try machine()
+        try second.attachRestoredPublication(Self.key, generation: claimed, intentRef: Self.ref, at: 0)
+        let state = try XCTUnwrap(second.state(of: Self.key))
+        XCTAssertEqual(state.activeGeneration, claimed)
+        XCTAssertTrue(state.published)
+        XCTAssertEqual(state.intentRef, Self.ref)
+        XCTAssertEqual(state.dirtyGeneration, later)
+        XCTAssertNil(try second.claim(at: 0))
+        // Published once: the ref cannot be attached twice, by either route.
+        XCTAssertThrowsError(
+            try second.attachRestoredPublication(Self.key, generation: claimed, intentRef: "intent-b", at: 0)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .alreadyPublished) }
+
+        // Durable, so a further restart finds an ordinary unresolved publication: there is no
+        // candidate left for a second owner to adopt an intent against.
+        let third = try machine()
+        let recovered = try XCTUnwrap(third.state(of: Self.key))
+        XCTAssertTrue(recovered.published)
+        XCTAssertEqual(recovered.intentRef, Self.ref)
+        XCTAssertFalse(recovered.restoredCandidate)
+
+        // And the queue's outcome resolves the generation that was prepared, exposing the signal
+        // raised behind it with its own priority rather than the candidate's.
+        try third.markCompleted(Self.key, generation: claimed, at: 0)
+        let claim = try XCTUnwrap(third.claim(at: 0))
+        XCTAssertEqual(claim.generation, later)
+        XCTAssertEqual(claim.priority, .background)
+        XCTAssertTrue(claim.restoredFromRestart)
+    }
+
+    func testReleasingARestoredCandidateWithNoIntentReturnsItToDirtyWithTheWorkBehindIt() throws {
+        let first = try machine()
+        let claimed = try first.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, claimed)
+        let later = try first.signal(Self.key, priority: .background, at: 4_000)
+
+        // The queue holds no intent for it, so the work it was claimed for is still owed.
+        let second = try machine()
+        let pending = try second.releaseRestoredCandidateWithoutPublication(
+            Self.key, generation: claimed, at: 0
+        )
+        XCTAssertEqual(pending, later)
+        let state = try XCTUnwrap(second.state(of: Self.key))
+        XCTAssertNil(state.activeGeneration)
+        XCTAssertFalse(state.published)
+        // Merged exactly as a cancellation: the later generation keeps its number and the released
+        // candidate's user priority comes back with it.
+        XCTAssertEqual(state.dirtyGeneration, later)
+        XCTAssertEqual(state.priority, .user)
+        XCTAssertTrue(state.restoredFromRestart)
+        // The candidate's proof is gone with it, so no second owner can adopt an intent against
+        // work this one has taken responsibility for.
+        XCTAssertFalse(state.restoredCandidate)
+        XCTAssertThrowsError(
+            try second.releaseRestoredCandidateWithoutPublication(Self.key, generation: later, at: 0)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .notClaimed) }
+
+        // Still immediately due: the work is pending again rather than waiting out a fresh
+        // debounce on this process's clock.
+        let claim = try XCTUnwrap(second.claim(at: 0))
+        XCTAssertEqual(claim.generation, later)
+        XCTAssertEqual(claim.priority, .user)
+        XCTAssertTrue(claim.restoredFromRestart)
+        // An ordinary claim this process made itself is not a candidate to hand back.
+        XCTAssertThrowsError(
+            try second.releaseRestoredCandidateWithoutPublication(Self.key, generation: later, at: 0)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .notRestored) }
+    }
+
+    func testAFailedWriteRollsBackBothCandidateReconciliations() throws {
+        let first = try machine()
+        let claimed = try first.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, claimed)
+
+        let second = try machine()
+        let before = try XCTUnwrap(second.state(of: Self.key))
+        XCTAssertTrue(before.restoredCandidate)
+        let bytes = try Data(contentsOf: stateFile)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: stateDirectory.path
+        )
+
+        // Neither reconciliation may half-apply: a candidate that is still durably a candidate is
+        // one the retry can resolve, where a half-applied one is work duplicated or lost.
+        XCTAssertThrowsError(
+            try second.attachRestoredPublication(Self.key, generation: claimed, intentRef: Self.ref, at: 0)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .stateUnavailable) }
+        XCTAssertEqual(second.state(of: Self.key), before)
+        XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
+
+        XCTAssertThrowsError(
+            try second.releaseRestoredCandidateWithoutPublication(Self.key, generation: claimed, at: 0)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .stateUnavailable) }
+        XCTAssertEqual(second.state(of: Self.key), before)
+        XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: stateDirectory.path
+        )
+        // The candidate never stopped being one, so the retry attaches and this time it is durable.
+        try second.attachRestoredPublication(Self.key, generation: claimed, intentRef: Self.ref, at: 0)
+        let reopened = try XCTUnwrap(self.machine().state(of: Self.key))
+        XCTAssertTrue(reopened.published)
+        XCTAssertEqual(reopened.intentRef, Self.ref)
+    }
+
+    func testAPublishedGenerationStaysActiveAndBlocksADuplicateClaim() throws {
+        let first = try machine()
+        let published = try first.signal(Self.key, priority: .background, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, published)
+        try first.markPublished(Self.key, generation: published, intentRef: Self.ref, at: 3_100)
+
+        let second = try machine()
+        let state = try XCTUnwrap(second.state(of: Self.key))
+        XCTAssertEqual(state.activeGeneration, published)
+        XCTAssertTrue(state.published)
+        // The ref the publication was given is what the new process reconciles it against.
+        XCTAssertEqual(state.intentRef, Self.ref)
+        XCTAssertFalse(state.legacyUnresolvedIntent)
+        XCTAssertNil(state.dirtyGeneration)
+        // The published intent is still the scope's one unresolved intent, so nothing duplicates it
+        // — not at the new clock's zero and not long after the old periods would have elapsed.
+        XCTAssertNil(try second.claim(at: 0))
+        XCTAssertNil(try second.claim(at: 60_000))
+
+        // The queue/outcome reconciliation still resolves it, exactly as it would have before.
+        try second.markCompleted(Self.key, generation: published, at: 60_000)
+        XCTAssertNil(second.state(of: Self.key))
+    }
+
+    func testALaterDirtyGenerationBehindAPublishedOneSurvivesARestart() throws {
+        let first = try machine()
+        let published = try first.signal(Self.key, priority: .background, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, published)
+        try first.markPublished(Self.key, generation: published, intentRef: Self.ref, at: 3_100)
+        let later = try first.signal(Self.key, priority: .user, at: 4_000)
+
+        let second = try machine()
+        let state = try XCTUnwrap(second.state(of: Self.key))
+        XCTAssertEqual(state.activeGeneration, published)
+        XCTAssertTrue(state.published)
+        XCTAssertEqual(state.dirtyGeneration, later)
+        XCTAssertEqual(state.priority, .user)
+        XCTAssertNil(try second.claim(at: 0))
+
+        try second.markCompleted(Self.key, generation: published, at: 100)
+        let claim = try XCTUnwrap(second.claim(at: 100))
+        XCTAssertEqual(claim.generation, later)
+        XCTAssertEqual(claim.priority, .user)
+        XCTAssertTrue(claim.restoredFromRestart)
+    }
+
+    func testGenerationContinuityRunsThroughARecoveredPublishedClaim() throws {
+        let first = try machine()
+        let published = try first.signal(Self.key, priority: .background, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, published)
+        try first.markPublished(Self.key, generation: published, intentRef: Self.ref, at: 3_100)
+
+        // The published generation is the latest one issued even though no dirty record holds it,
+        // so a signal after the restart is the one after it rather than a first signal again.
+        let second = try machine()
+        XCTAssertEqual(try second.signal(Self.key, priority: .background, at: 0), published + 1)
+    }
+
+    func testGenerationsKeepRisingAcrossRepeatedRestarts() throws {
+        var generation: UInt64 = 0
+        for restart in 0..<4 {
+            generation = try machine().signal(Self.key, priority: .background, at: 0)
+            XCTAssertEqual(generation, UInt64(restart) + 1)
+        }
+        // And a claim across the last restart still sees the one accumulated record, not four.
+        XCTAssertEqual(try machine().claim(at: 0)?.generation, 4)
+        XCTAssertEqual(try machine().trackedScopes, 1)
+    }
+
+    func testRecoveredUserWorkIsStillSelectedBeforeRecoveredBackgroundWork() throws {
+        let background = Self.makeKey("scope-a")
+        // Last in the rotation order, so the rotation cannot be what explains the choice.
+        let user = Self.makeKey("scope-z")
+        let first = try machine()
+        try first.signal(background, priority: .background, at: 0)
+        try first.signal(user, priority: .user, at: 0)
+
+        let second = try machine()
+        let claim = try XCTUnwrap(second.claim(at: 0))
+        XCTAssertEqual(claim.key, user)
+        XCTAssertEqual(claim.priority, .user)
+        // The background work was passed over, not dropped.
+        XCTAssertEqual(try second.claim(at: 1)?.key, background)
+    }
+
+    func testTheBackgroundRotationCursorSurvivesARestart() throws {
+        let keys = ["scope-a", "scope-b", "scope-c"].map { Self.makeKey($0) }
+        let first = try machine()
+        for key in keys { try first.signal(key, priority: .background, at: 0) }
+        XCTAssertEqual(try first.claim(at: 3_000)?.key, keys[0])
+        try first.cancel(keys[0], generation: 1, at: 3_100)
+
+        // The new process resumes after scope-a instead of starting the rotation over, so no scope
+        // is served twice before the others have had their turn.
+        let second = try machine()
+        XCTAssertEqual(try second.claim(at: 0)?.key, keys[1])
+        try second.cancel(keys[1], generation: 1, at: 1)
+        XCTAssertEqual(try second.claim(at: 2)?.key, keys[2])
+        XCTAssertEqual(try second.claim(at: 3)?.key, keys[0])
+    }
+
+    // MARK: - The published intent ref
+
+    func testAPublishedIntentRefIsWrittenToTheDocumentAndSurvivesARestart() throws {
+        let first = try machine()
+        let published = try first.signal(Self.key, priority: .background, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, published)
+        try first.markPublished(Self.key, generation: published, intentRef: Self.ref, at: 3_100)
+        let written = try XCTUnwrap(entries().first)
+        XCTAssertEqual(written["intentRef"] as? String, Self.ref)
+        // A real ref is there, so nothing says this publication predates refs.
+        XCTAssertNil(written["legacyIntent"])
+
+        let second = try machine()
+        let state = try XCTUnwrap(second.state(of: Self.key))
+        XCTAssertEqual(state.intentRef, Self.ref)
+        XCTAssertTrue(state.published)
+        XCTAssertFalse(state.legacyUnresolvedIntent)
+        // Reconciled by ref rather than repeated: the intent is not claimed a second time, and the
+        // outcome the queue reports resolves it.
+        XCTAssertNil(try second.claim(at: 0))
+        try second.markCompleted(Self.key, generation: published, at: 0)
+        XCTAssertNil(second.state(of: Self.key))
+    }
+
+    func testAPriorV1PublicationWithNoRefIsRecoveredAsALegacyUnresolvedIntent() throws {
+        var document = try base()
+        // Exactly what the shipped v1 writer produced: published, with no field for a ref at all.
+        Self.editFirstEntry(&document) { $0.removeValue(forKey: "intentRef") }
+        try write(document)
+
+        let machine = try machine()
+        let state = try XCTUnwrap(machine.state(of: Self.key))
+        XCTAssertEqual(state.activeGeneration, 1)
+        XCTAssertTrue(state.published)
+        // There is nothing to look up in the queue, and the caller is told that rather than left to
+        // read an absent ref as "nothing was published".
+        XCTAssertNil(state.intentRef)
+        XCTAssertTrue(state.legacyUnresolvedIntent)
+        // It is still the scope's one unresolved intent, so the work behind it is not duplicated.
+        XCTAssertNil(try machine.claim(at: 0))
+        XCTAssertNil(try machine.claim(at: 60_000))
+        // And it is published, so it cannot acquire a ref after the fact either.
+        XCTAssertThrowsError(
+            try machine.markPublished(Self.key, generation: 1, intentRef: Self.ref, at: 60_000)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .alreadyPublished) }
+
+        // Resolving it by its generation works exactly as it does for a publication with a ref,
+        // which is how a legacy intent leaves without any work being repeated.
+        try machine.markCompleted(Self.key, generation: 1, at: 60_000)
+        XCTAssertEqual(try machine.claim(at: 60_000)?.generation, 2)
+    }
+
+    func testALegacyPublicationIsRewrittenWithAnExplicitMarkerAndStaysLegacy() throws {
+        var document = try base()
+        Self.editFirstEntry(&document) { $0.removeValue(forKey: "intentRef") }
+        try write(document)
+
+        // Any accepted transition rewrites the whole document, carrying the legacy publication with
+        // it. Published-with-no-ref is not a shape this owner may write, so the marker says so
+        // outright and the absence of a ref stops being ambiguous.
+        let machine = try machine()
+        try machine.signal(Self.key, priority: .user, at: 0)
+        let rewritten = try XCTUnwrap(entries().first)
+        XCTAssertNil(rewritten["intentRef"])
+        XCTAssertEqual(rewritten["legacyIntent"] as? Bool, true)
+
+        // Still legacy after another restart, and still blocking: nothing promoted it.
+        let reopened = try self.machine()
+        let state = try XCTUnwrap(reopened.state(of: Self.key))
+        XCTAssertTrue(state.legacyUnresolvedIntent)
+        XCTAssertNil(state.intentRef)
+        XCTAssertNil(try reopened.claim(at: 0))
+    }
+
+    func testAPublishedRefIsGoneFromTheDocumentOnceTheIntentIsCancelled() throws {
+        let machine = try machine()
+        let generation = try machine.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
+        try machine.markPublished(Self.key, generation: generation, intentRef: Self.ref, at: 3_100)
+
+        try machine.cancel(Self.key, generation: generation, at: 3_200)
+        let written = try XCTUnwrap(entries().first)
+        XCTAssertNil(written["intentRef"])
+        XCTAssertEqual(written["published"] as? Bool, false)
+        // Nothing durable claims an unresolved intent any more, so the restart does not go looking
+        // for one — and certainly does not come back as a legacy publication.
+        let state = try XCTUnwrap(try self.machine().state(of: Self.key))
+        XCTAssertFalse(state.published)
+        XCTAssertNil(state.intentRef)
+        XCTAssertFalse(state.legacyUnresolvedIntent)
+    }
+
+    // MARK: - Durable completion without a publication
+
+    func testACandidateWithNothingNewToPublishLeavesNoDurableRecord() throws {
+        let first = try machine()
+        let generation = try first.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, generation)
+        try first.markCompletedWithoutPublication(Self.key, generation: generation, at: 3_100)
+        XCTAssertEqual(try entries().count, 0)
+
+        // The claim is resolved durably, so the restart does not find an unpublished candidate to
+        // return to dirty and repeat the read for.
+        let second = try machine()
+        XCTAssertNil(second.state(of: Self.key))
+        XCTAssertEqual(second.trackedScopes, 0)
+        XCTAssertNil(try second.claim(at: 0))
+        // Untracked, so its next signal is a first signal serving the full quiet period.
+        XCTAssertEqual(try second.signal(Self.key, priority: .user, at: 0), 1)
+        XCTAssertNil(try second.claim(at: 2_999))
+        XCTAssertEqual(try second.claim(at: 3_000)?.restoredFromRestart, false)
+    }
+
+    func testALaterDirtyGenerationSurvivesACompletionWithoutAPublicationAndARestart() throws {
+        let first = try machine()
+        let claimed = try first.signal(Self.key, priority: .background, at: 0)
+        XCTAssertEqual(try first.claim(at: 3_000)?.generation, claimed)
+        let later = try first.signal(Self.key, priority: .user, at: 4_000)
+        try first.markCompletedWithoutPublication(Self.key, generation: claimed, at: 5_000)
+
+        let written = try XCTUnwrap(entries().first)
+        XCTAssertEqual((written["dirtyGeneration"] as? NSNumber)?.uint64Value, later)
+        XCTAssertEqual(written["dirtyPriority"] as? String, "user")
+        XCTAssertNil(written["activeGeneration"])
+        XCTAssertEqual(written["published"] as? Bool, false)
+        XCTAssertNil(written["intentRef"])
+
+        let second = try machine()
+        let state = try XCTUnwrap(second.state(of: Self.key))
+        XCTAssertEqual(state.dirtyGeneration, later)
+        XCTAssertEqual(state.priority, .user)
+        XCTAssertNil(state.activeGeneration)
+        XCTAssertFalse(state.published)
+        XCTAssertTrue(state.restoredFromRestart)
+        // Recovered dirty work is immediately due, and no generation was minted on either side of
+        // the restart.
+        XCTAssertEqual(try second.claim(at: 0)?.generation, later)
+        XCTAssertEqual(try second.signal(Self.key, priority: .background, at: 1), later + 1)
+    }
+
+    func testAFailedWriteWhileCompletingWithoutAPublicationLeavesTheClaimInFlight() throws {
+        let machine = try machine()
+        let generation = try machine.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
+        let before = try XCTUnwrap(machine.state(of: Self.key))
+        let bytes = try Data(contentsOf: stateFile)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: stateDirectory.path
+        )
+
+        XCTAssertThrowsError(
+            try machine.markCompletedWithoutPublication(Self.key, generation: generation, at: 3_100)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .stateUnavailable) }
+        XCTAssertEqual(machine.state(of: Self.key), before)
+        XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: stateDirectory.path
+        )
+        // The claim never left the in-flight slot, so the retry resolves it rather than tripping
+        // over a half-applied completion — and this time it is durable.
+        try machine.markCompletedWithoutPublication(Self.key, generation: generation, at: 3_200)
+        XCTAssertNil(try self.machine().state(of: Self.key))
+    }
+
+    // MARK: - Write failures
+
+    func testAFailedWriteLeavesThePriorDurableAndInMemoryStateUnchanged() throws {
+        let machine = try machine()
+        let generation = try machine.signal(Self.key, priority: .user, at: 0)
+        let before = try XCTUnwrap(machine.state(of: Self.key))
+        let bytes = try Data(contentsOf: stateFile)
+        // The atomic temp write cannot be created in a read-only directory.
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: stateDirectory.path
+        )
+
+        XCTAssertThrowsError(try machine.signal(Self.key, priority: .user, at: 1_000)) {
+            XCTAssertEqual($0 as? AutomaticSchedulingError, .stateUnavailable)
+        }
+        XCTAssertEqual(machine.state(of: Self.key), before)
+        XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: stateDirectory.path
+        )
+        // The refused call did not move the clock on either, so the quiet period is still measured
+        // from the signal that was accepted rather than from the one that failed.
+        XCTAssertNil(try machine.claim(at: 2_999))
+        XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
+        // Only the accepted signal and the claim it reached are durable, so the next process finds
+        // that claim as its recovered candidate — nothing of the refused signal is there.
+        let reopened = try XCTUnwrap(self.machine().state(of: Self.key))
+        XCTAssertEqual(reopened.activeGeneration, generation)
+        XCTAssertTrue(reopened.restoredCandidate)
+        XCTAssertNil(reopened.dirtyGeneration)
+    }
+
+    func testAFailedWriteWhilePublishingLeavesNothingPublishedAndNoRefAttached() throws {
+        let machine = try machine()
+        let generation = try machine.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try machine.claim(at: 3_000)?.generation, generation)
+        let before = try XCTUnwrap(machine.state(of: Self.key))
+        let bytes = try Data(contentsOf: stateFile)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: stateDirectory.path
+        )
+
+        // The publication and its ref are one transition, so neither half of it can land alone.
+        XCTAssertThrowsError(
+            try machine.markPublished(Self.key, generation: generation, intentRef: Self.ref, at: 3_100)
+        ) { XCTAssertEqual($0 as? AutomaticSchedulingError, .stateUnavailable) }
+        XCTAssertEqual(machine.state(of: Self.key), before)
+        XCTAssertNil(machine.state(of: Self.key)?.intentRef)
+        XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: stateDirectory.path
+        )
+        // The candidate is still in flight and unpublished, so the retry publishes rather than
+        // tripping over a half-applied one.
+        try machine.markPublished(Self.key, generation: generation, intentRef: Self.ref, at: 3_200)
+        XCTAssertEqual(try self.machine().state(of: Self.key)?.intentRef, Self.ref)
+    }
+
+    func testAFailedWriteWhileClaimingLeavesNothingClaimed() throws {
+        let machine = try machine()
+        try machine.signal(Self.key, priority: .user, at: 0)
+        let before = try XCTUnwrap(machine.state(of: Self.key))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: stateDirectory.path
+        )
+
+        XCTAssertThrowsError(try machine.claim(at: 3_000)) {
+            XCTAssertEqual($0 as? AutomaticSchedulingError, .stateUnavailable)
+        }
+        XCTAssertEqual(machine.state(of: Self.key), before)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: stateDirectory.path
+        )
+        // The rotation cursor rolled back with the rest, so the refused claim is still the next one.
+        XCTAssertEqual(try machine.claim(at: 3_000)?.key, Self.key)
+    }
+
+    func testAClaimThatFindsNothingDueWritesNothing() throws {
+        let machine = try machine()
+        try machine.signal(Self.key, priority: .user, at: 0)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: stateDirectory.path
+        )
+        // Nothing changed, so there is nothing to write and nothing to fail — a poll loop against
+        // an idle table does not touch the disk once per tick.
+        XCTAssertNil(try machine.claim(at: 1_000))
+    }
+
+    func testTheInMemoryInitializerWritesNothing() throws {
+        let machine = AutomaticSchedulingStateMachine()
+        try machine.signal(Self.key, priority: .user, at: 0)
+        XCTAssertNotNil(try machine.claim(at: 3_000))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stateDirectory.path))
+    }
+
+    // MARK: - Permissions
+
+    func testTheStateFileAndDirectoryAreOwnerOnly() throws {
+        let machine = try machine()
+        try machine.signal(Self.key, priority: .user, at: 0)
+        XCTAssertEqual(try permissions(stateFile), 0o600)
+        XCTAssertEqual(try permissions(stateDirectory), 0o700)
+        // And every rewrite after the first, which replaces an existing file rather than moving a
+        // new one into place, publishes the mode the temporary file was given.
+        try machine.signal(Self.key, priority: .user, at: 1_000)
+        XCTAssertEqual(try permissions(stateFile), 0o600)
+    }
+
+    func testAStateFileOthersCanReadIsRefused() throws {
+        let machine = try machine()
+        try machine.signal(Self.key, priority: .user, at: 0)
+        for mode in [0o640, 0o604, 0o666] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: mode], ofItemAtPath: stateFile.path
+            )
+            expectOpenFails(.invalidState, "mode \(String(mode, radix: 8))")
+        }
+    }
+
+    func testAStateDirectoryThatIsASymbolicLinkIsRefused() throws {
+        let target = root.appendingPathComponent("elsewhere", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: stateDirectory, withDestinationURL: target)
+        expectOpenFails(.stateUnavailable)
+    }
+
+    // MARK: - Schema and tampering
+
+    func testANewerBuildsDocumentIsRefusedAndLeftExactlyAsItWas() throws {
+        var document = try base()
+        document["schema"] = "omnivia.automatic-scheduling.v2"
+        document["unknownFutureField"] = ["whatever a later slice adds"]
+        let bytes = try write(document)
+
+        expectOpenFails(.unsupportedSchema)
+        // Refused, not downgraded and not repaired: the newer build's document is byte for byte
+        // what it was, so that build still reads its own state.
+        XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
+    }
+
+    func testASectionThisBuildDoesNotDefineIsRefusedWholeAndLeftExactlyAsItWas() throws {
+        var document = try base()
+        document["publicationLeases"] = [["whatever": "a later slice adds"]]
+        let bytes = try write(document)
+
+        expectOpenFails(.invalidState)
+        // The same schema name, so it cannot be refused by header. Reading it as the subset this
+        // build knows would drop the section on the next write.
+        XCTAssertEqual(try Data(contentsOf: stateFile), bytes)
+    }
+
+    func testMalformedAndTamperedStateIsRefusedWithoutRewritingTheFile() throws {
+        let cases: [(String, AutomaticSchedulingError, (inout [String: Any]) -> Void)] = [
+            ("missing schema", .invalidState, { $0.removeValue(forKey: "schema") }),
+            ("schema of the wrong type", .invalidState, { $0["schema"] = 7 }),
+            ("older schema", .unsupportedSchema, { $0["schema"] = "omnivia.automatic-scheduling.v0" }),
+            ("entries of the wrong type", .invalidState, { $0["entries"] = "nope" }),
+            ("duplicate keys", .invalidState, {
+                let entries = $0["entries"] as? [[String: Any]] ?? []
+                $0["entries"] = entries + entries
+            }),
+            ("entries out of order", .invalidState, {
+                let entries = $0["entries"] as? [[String: Any]] ?? []
+                var later = entries[0]
+                later["key"] = ["workspaceRef": "workspace-a", "sourceRef": "source-a", "scopeKey": "scope-z"]
+                $0["entries"] = [later] + entries
+            }),
+            ("a record for a clean scope", .invalidState, {
+                Self.editFirstEntry(&$0) {
+                    for field in ["dirtyGeneration", "dirtyPriority", "activeGeneration", "activePriority"] {
+                        $0.removeValue(forKey: field)
+                    }
+                    $0["published"] = false
+                }
+            }),
+            ("published with nothing in flight", .invalidState, {
+                Self.editFirstEntry(&$0) {
+                    $0.removeValue(forKey: "activeGeneration")
+                    $0.removeValue(forKey: "activePriority")
+                }
+            }),
+            ("a dirty generation with no priority", .invalidState, {
+                Self.editFirstEntry(&$0) { $0.removeValue(forKey: "dirtyPriority") }
+            }),
+            ("a dirty priority with no generation", .invalidState, {
+                Self.editFirstEntry(&$0) { $0.removeValue(forKey: "dirtyGeneration") }
+            }),
+            ("an active generation with no priority", .invalidState, {
+                Self.editFirstEntry(&$0) { $0.removeValue(forKey: "activePriority") }
+            }),
+            ("dirty work no later than the claim it accumulated behind", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["dirtyGeneration"] = 1 }
+            }),
+            ("a claim later than the dirty work behind it", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["activeGeneration"] = 3 }
+            }),
+            ("generation zero", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["activeGeneration"] = 0 }
+            }),
+            ("a generation past the bound", .invalidState, {
+                Self.editFirstEntry(&$0) {
+                    $0["dirtyGeneration"] = AutomaticSchedulingStateMachine.maximumGeneration + 1
+                }
+            }),
+            ("an unknown priority", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["dirtyPriority"] = "urgent" }
+            }),
+            ("a published marker of the wrong type", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["published"] = "yes" }
+            }),
+            ("a ref shaped like a path", .invalidState, {
+                Self.editFirstEntry(&$0) {
+                    $0["key"] = ["workspaceRef": "workspace-a", "sourceRef": "source-a", "scopeKey": "a/b"]
+                }
+            }),
+            ("an empty ref", .invalidState, {
+                Self.editFirstEntry(&$0) {
+                    $0["key"] = ["workspaceRef": "", "sourceRef": "source-a", "scopeKey": "scope-a"]
+                }
+            }),
+            ("an over-long ref", .invalidState, {
+                Self.editFirstEntry(&$0) {
+                    $0["key"] = [
+                        "workspaceRef": "workspace-a",
+                        "sourceRef": String(
+                            repeating: "a", count: AutomaticSchedulingStateMachine.maximumRefBytes + 1
+                        ),
+                        "scopeKey": "scope-a",
+                    ]
+                }
+            }),
+            ("a missing ref", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["key"] = ["workspaceRef": "workspace-a"] }
+            }),
+            ("an intent ref with nothing published", .invalidState, {
+                Self.editFirstEntry(&$0) {
+                    $0.removeValue(forKey: "activeGeneration")
+                    $0.removeValue(forKey: "activePriority")
+                    $0["published"] = false
+                }
+            }),
+            ("an intent ref shaped like a path", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["intentRef"] = "intent/a" }
+            }),
+            ("an empty intent ref", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["intentRef"] = "" }
+            }),
+            ("an over-long intent ref", .invalidState, {
+                Self.editFirstEntry(&$0) {
+                    $0["intentRef"] = String(
+                        repeating: "a", count: AutomaticSchedulingStateMachine.maximumRefBytes + 1
+                    )
+                }
+            }),
+            ("an intent ref of the wrong type", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["intentRef"] = 7 }
+            }),
+            // The legacy marker means "published before refs existed", so it is a contradiction
+            // beside a ref and meaningless without a publication.
+            ("a legacy marker beside an intent ref", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["legacyIntent"] = true }
+            }),
+            ("a legacy marker with nothing published", .invalidState, {
+                Self.editFirstEntry(&$0) {
+                    $0.removeValue(forKey: "intentRef")
+                    $0["legacyIntent"] = true
+                    $0["published"] = false
+                }
+            }),
+            ("a legacy marker of the wrong type", .invalidState, {
+                Self.editFirstEntry(&$0) { $0["legacyIntent"] = "yes" }
+            }),
+            ("a rotation cursor that is not an opaque ref", .invalidState, {
+                $0["backgroundCursor"] = [
+                    "workspaceRef": "workspace-a", "sourceRef": "source-a", "scopeKey": "/etc",
+                ]
+            }),
+        ]
+
+        for (name, expected, change) in cases {
+            var document = try base()
+            change(&document)
+            let bytes = try write(document)
+            expectOpenFails(expected, name)
+            // Fail closed means fail quietly: the file a human or another build may still need to
+            // look at is not rewritten on the way out.
+            XCTAssertEqual(try Data(contentsOf: stateFile), bytes, name)
+        }
+    }
+
+    func testStateThatIsNotJSONAtAllIsRefused() throws {
+        _ = try base()
+        for junk in ["", "{", "[]", "null", "{\"schema\""] {
+            try Data(junk.utf8).write(to: stateFile)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: stateFile.path
+            )
+            expectOpenFails(.invalidState, junk)
+        }
+    }
+
+    // MARK: - Bounds
+
+    func testADocumentOverTheSourceOrScopeBoundsIsRefused() throws {
+        _ = try base()
+        let sources = AutomaticSchedulingStateMachine.maximumTrackedSources
+        let scopes = AutomaticSchedulingStateMachine.maximumScopesPerSource
+
+        // One source over the bound, each with one scope. Padded so the on-disk order, which is by
+        // scope key then source, is the lexicographic one the loader insists on.
+        var document = try base()
+        document["entries"] = (0...sources).map { Self.record(scope: "scope-a", source: "source-\(Self.pad($0))") }
+        document["backgroundCursor"] = nil
+        try write(document)
+        expectOpenFails(.invalidState, "sources")
+
+        // One scope over the bound on a single source.
+        document = try base()
+        document["entries"] = (0...scopes).map { Self.record(scope: "scope-\(Self.pad($0))", source: "source-a") }
+        document["backgroundCursor"] = nil
+        try write(document)
+        expectOpenFails(.invalidState, "scopes")
+    }
+
+    func testAStateFileOverTheSizeBoundIsRefusedBeforeItIsParsed() throws {
+        _ = try base()
+        try Data(
+            repeating: UInt8(ascii: "x"), count: AutomaticSchedulingStateMachine.maximumStateBytes + 1
+        ).write(to: stateFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
+        expectOpenFails(.invalidState)
+    }
+
+    func testASignalPastTheGenerationBoundIsRefusedRatherThanWrappedRound() throws {
+        let machine = try machine()
+        try machine.signal(Self.key, priority: .background, at: 0)
+        var document = try self.document()
+        Self.editFirstEntry(&document) {
+            $0["dirtyGeneration"] = AutomaticSchedulingStateMachine.maximumGeneration
+        }
+        try write(document)
+
+        let reopened = try self.machine()
+        let bound = AutomaticSchedulingStateMachine.maximumGeneration
+        XCTAssertEqual(reopened.state(of: Self.key)?.dirtyGeneration, bound)
+        XCTAssertThrowsError(try reopened.signal(Self.key, priority: .background, at: 0)) {
+            XCTAssertEqual($0 as? AutomaticSchedulingError, .generationExhausted)
+        }
+        // The work that is there is untouched and still claimable; only the new signal was refused.
+        XCTAssertEqual(reopened.state(of: Self.key)?.dirtyGeneration, bound)
+        XCTAssertEqual(try reopened.claim(at: 0)?.generation, bound)
+    }
+
+    // MARK: - Environment
+
+    func testTheEnvironmentOwnsADurableSchedulerThatSurvivesARestart() throws {
+        let stateRoot = root.appendingPathComponent("state", isDirectory: true)
+        let generation = try DocumentIntakeEnvironment(stateRoot: stateRoot)
+            .automaticScheduling.signal(Self.key, priority: .user, at: 0)
+        let second = try DocumentIntakeEnvironment(stateRoot: stateRoot)
+        XCTAssertEqual(second.automaticScheduling.state(of: Self.key)?.dirtyGeneration, generation)
+        XCTAssertEqual(try second.automaticScheduling.claim(at: 0)?.generation, generation)
+    }
+
+    // MARK: - Helpers
+
+    private static func makeKey(
+        _ scopeKey: String,
+        workspace: String = "workspace-a",
+        source: String = "source-a"
+    ) -> AutomaticSchedulingKey {
+        AutomaticSchedulingKey(
+            source: AutomaticSchedulingSource(workspaceRef: workspace, sourceRef: source),
+            scopeKey: scopeKey
+        )
+    }
+
+    /// A real document holding one entry with every field populated: a published claim with a later
+    /// dirty generation accumulated behind it, plus a rotation cursor. Every tampering case starts
+    /// from this, so each one changes exactly the thing it is named for.
+    private func base() throws -> [String: Any] {
+        try? FileManager.default.removeItem(at: stateDirectory)
+        let machine = try machine()
+        let published = try machine.signal(Self.key, priority: .background, at: 0)
+        XCTAssertEqual(try machine.claim(at: 3_000)?.generation, published)
+        try machine.markPublished(Self.key, generation: published, intentRef: Self.ref, at: 3_100)
+        try machine.signal(Self.key, priority: .user, at: 4_000)
+        return try document()
+    }
+
+    /// A minimal valid record, for the bounds cases that need more entries than a real run makes.
+    private static func record(scope: String, source: String) -> [String: Any] {
+        [
+            "key": ["workspaceRef": "workspace-a", "sourceRef": source, "scopeKey": scope],
+            "dirtyGeneration": 1,
+            "dirtyPriority": "background",
+            "published": false,
+        ]
+    }
+
+    private static func pad(_ value: Int) -> String { String(format: "%04d", value) }
+
+    private static func editFirstEntry(
+        _ document: inout [String: Any],
+        _ change: (inout [String: Any]) -> Void
+    ) {
+        var entries = document["entries"] as? [[String: Any]] ?? []
+        guard !entries.isEmpty else { return }
+        change(&entries[0])
+        document["entries"] = entries
+    }
+
+    private func entries() throws -> [[String: Any]] {
+        try XCTUnwrap(document()["entries"] as? [[String: Any]])
+    }
+
+    private func document() throws -> [String: Any] {
+        try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: stateFile)) as? [String: Any]
+        )
+    }
+
+    @discardableResult
+    private func write(_ document: [String: Any]) throws -> Data {
+        let data = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+        try data.write(to: stateFile)
+        // Owner-only, so the permission check is never what a tampering case trips over.
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
+        return data
+    }
+
+    private func permissions(_ url: URL) throws -> Int? {
+        (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?
+            .intValue
+    }
+
+    private func expectOpenFails(
+        _ expected: AutomaticSchedulingError,
+        _ message: String = "",
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertThrowsError(try machine(), message, file: file, line: line) {
+            XCTAssertEqual($0 as? AutomaticSchedulingError, expected, message, file: file, line: line)
+        }
+    }
+}

@@ -37,7 +37,9 @@ assembly, which is the same fact that decided the view -- rather than a second r
 the same row under a different rule. It describes the read point rather than the wall
 clock, so a fact sealed after the transaction closed cannot appear in the watermark of an
 answer it also cannot appear in. A second, later query for it would be exactly the drift
-this whole shape prevents.
+this whole shape prevents. A fourth fact joins them only when code analysis has been
+imported: 0074's activation instant, because an activation changes which code versions the
+view holds (see `governed.py`) without writing a version of its own.
 
 **Two kinds of edge, one materialization (Amendment 010).** An *ordinary* edge comes from
 `omnivia_governed_relation_endpoints`: the endpoints a sealed `knowledge.relation` record
@@ -116,6 +118,7 @@ RELATION_TYPE_SUPERSEDED: Final = "record.superseded"
 
 _VIEW: Final = "omnivia_authoritative_governed_versions"
 _ENDPOINTS: Final = "omnivia_governed_relation_endpoints"
+_ACTIVATIONS: Final = "omnivia_code_analysis_activations"
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +230,24 @@ def read_graph_snapshot(
                 f"FROM {_VIEW} WHERE workspace_id = ? AND recorded_at_us <= ?",
                 (workspace_id, resolution_instant_us),
             ).fetchone()
+            # A code-analysis activation changes which code versions the view holds
+            # without writing a version -- re-activating an earlier import does exactly
+            # that -- so its instant is a fact this answer rests on too. `0` when no
+            # import was ever activated, or on a schema migrated short of 0074, which
+            # leaves every other watermark unchanged.
+            activations = fenced.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (_ACTIVATIONS,),
+            ).fetchone()
+            activation_watermark = (
+                (0,)
+                if activations is None
+                else fenced.execute(
+                    "SELECT COALESCE(MAX(activated_at_us), 0) "
+                    f"FROM {_ACTIVATIONS} WHERE workspace_id = ? AND activated_at_us <= ?",
+                    (workspace_id, resolution_instant_us),
+                ).fetchone()
+            )
         # Inside the transaction, outside that fence: it opens its own read-only one. Both
         # queries above and this one therefore read from the single snapshot this
         # transaction pinned, which is what makes a mid-read correction wholly visible or
@@ -284,6 +305,7 @@ def read_graph_snapshot(
     return GraphSnapshot(
         watermark_us=max(
             int(version_watermark[0]),
+            int(activation_watermark[0]),
             *(int(row[7]) for row in endpoint_rows),
             *(fact.effective_at_us for fact in supersessions),
             0,

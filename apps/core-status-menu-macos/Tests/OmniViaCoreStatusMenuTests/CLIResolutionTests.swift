@@ -86,4 +86,30 @@ final class CLIResolutionTests: XCTestCase {
             )
         )
     }
+
+    func testManagedLaunchPersistsOwnerOnlyConfigurationForOSColdStart() throws {
+        let state = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omnivia-launch-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: state) }
+        let expected = try CompanionConfiguration.loadOrParse(
+            arguments: [
+                "menu",
+                "--cli", "/opt/omnivia/bin/omnivia",
+                "--installation-state", "/tmp/omnivia/installation-state",
+                "--workspace-id", "workspace-1",
+            ],
+            stateDirectory: state
+        )
+
+        let loaded = try CompanionConfiguration.loadOrParse(
+            arguments: ["menu"],
+            stateDirectory: state
+        )
+
+        XCTAssertEqual(loaded, expected)
+        let file = state.appendingPathComponent("launch-configuration-v1.json")
+        let mode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions]
+            as? NSNumber
+        XCTAssertEqual(mode?.intValue, 0o600)
+    }
 }

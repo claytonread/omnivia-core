@@ -1,0 +1,11 @@
+{
+  "case_id": "journal-admitted",
+  "case_kind": "state",
+  "case_version": "1.0",
+  "description": "A well-formed record in flight. A reader gets the phase it says.",
+  "expected": {
+    "outcome": "record_admitted",
+    "phase": "installing"
+  },
+  "record_text": "{\n  \"approved_release_ref\": {\n    \"bundle_sha256\": \"sha256:5cc9496b8ce7890fc01101ec3c469921bbe120fe118eed61854964559e870858\",\n    \"version\": \"0.7.0\"\n  },\n  \"installation_ref\": \"/installations/test-only\",\n  \"operation_id\": \"upd-00000000-0000-4000-8000-000000000001\",\n  \"phase\": \"installing\",\n  \"product_id\": \"omnivia-core\",\n  \"started_at\": \"2026-10-16T12:00:00Z\"\n}\n"
+}

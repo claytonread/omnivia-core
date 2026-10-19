@@ -24,7 +24,9 @@
     "https://contracts.omnivia.dev/application/v1/runtime.schema.json",
     "https://contracts.omnivia.dev/application/v1/chat.schema.json",
     "https://contracts.omnivia.dev/application/v1/decision.schema.json",
-    "https://contracts.omnivia.dev/application/v1/engineering.schema.json"
+    "https://contracts.omnivia.dev/application/v1/engineering.schema.json",
+    "https://contracts.omnivia.dev/application/v1/settings.schema.json",
+    "https://contracts.omnivia.dev/application/v1/code.schema.json"
   ],
   "$defs": {
     "ContractVersion": {
@@ -495,6 +497,35 @@
     "EvidenceCaptureResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceCaptureResult"
     },
+    "DocumentCaptureBase": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureBase"},
+    "DocumentOriginalBindingInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalBindingInput"},
+    "DocumentProcessingProfileInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingProfileInput"},
+    "DocumentConsentInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentConsentInput"},
+    "DocumentBulkOriginInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentBulkOriginInput"},
+    "DocumentCaptureInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureInput"},
+    "DocumentCaptureResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureResult"},
+    "DocumentExtractionBase": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentExtractionBase"},
+    "DocumentReprocessProfileSelection": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessProfileSelection"},
+    "DocumentReprocessInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessInput"},
+    "DocumentReprocessResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessResult"},
+    "DocumentHistoryInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentHistoryInput"},
+    "DocumentHistoryAction": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentHistoryAction"},
+    "DocumentReprocessProfileOption": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentReprocessProfileOption"},
+    "DocumentExtractionProfileSummary": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentExtractionProfileSummary"},
+    "DocumentCaptureHistoryEntry": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentCaptureHistoryEntry"},
+    "DocumentExtractionHistoryEntry": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentExtractionHistoryEntry"},
+    "DocumentSourceHeadState": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentSourceHeadState"},
+    "DocumentExtractionHeadState": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentExtractionHeadState"},
+    "DocumentHistoryResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentHistoryResult"},
+    "DocumentProcessingSettings": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettings"},
+    "DocumentProcessingSettingsGetInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsGetInput"},
+    "DocumentProcessingSettingsGetResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsGetResult"},
+    "DocumentProcessingSettingsUpdateInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsUpdateInput"},
+    "DocumentProcessingSettingsUpdateResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentProcessingSettingsUpdateResult"},
+    "DocumentOriginalDisconnectInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalDisconnectInput"},
+    "DocumentOriginalDisconnectResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalDisconnectResult"},
+    "DocumentOriginalRelinkInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalRelinkInput"},
+    "DocumentOriginalRelinkResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalRelinkResult"},
     "GovernanceRationale": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/GovernanceRationale"
     },
@@ -1436,6 +1467,108 @@
     },
     "ProjectContextSwitchResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/ProjectContextSwitchResult"
+    },
+    "SettingValueJson": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingValueJson"
+    },
+    "SettingRecord": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingRecord"
+    },
+    "SettingsListInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsListInput"
+    },
+    "SettingsListResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsListResult"
+    },
+    "SettingsSetInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsSetInput"
+    },
+    "SettingsSetResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/settings.schema.json#/$defs/SettingsSetResult"
+    },
+    "CodeSemanticKey": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSemanticKey"
+    },
+    "CodeSourceSpan": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSourceSpan"
+    },
+    "CodeAnalysisBinding": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeAnalysisBinding"
+    },
+    "CodeSymbol": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSymbol"
+    },
+    "CodeRelation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeRelation"
+    },
+    "CodeDiagnostic": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeDiagnostic"
+    },
+    "CodeQueryCoverage": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryCoverage"
+    },
+    "CodeContextSeed": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeContextSeed"
+    },
+    "CodeSpanContent": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSpanContent"
+    },
+    "CodeArchitectureContext": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeArchitectureContext"
+    },
+    "CodeContext": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeContext"
+    },
+    "CodeQueryInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryInput"
+    },
+    "CodeQueryResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeQueryResult"
+    },
+    "CodeProducerLock": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeProducerLock"
+    },
+    "CodePolicyNodeKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyNodeKind"
+    },
+    "CodePolicyRelationship": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyRelationship"
+    },
+    "CodePolicyReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyReference"
+    },
+    "CodePolicyRegisterInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyRegisterInput"
+    },
+    "CodePolicyRegisterResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodePolicyRegisterResult"
+    },
+    "CodeSnapshotFreshness": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSnapshotFreshness"
+    },
+    "CodeImportInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeImportInput"
+    },
+    "CodeImportResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeImportResult"
+    },
+    "CodeStatusInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeStatusInput"
+    },
+    "CodeAnalysisCoverage": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeAnalysisCoverage"
+    },
+    "CodeAnalysisStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeAnalysisStatus"
+    },
+    "CodeUnsupportedFiles": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeUnsupportedFiles"
+    },
+    "CodeSnapshotStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeSnapshotStatus"
+    },
+    "CodeStatusResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/code.schema.json#/$defs/CodeStatusResult"
     }
   }
 }

@@ -1148,6 +1148,246 @@
       }
     },
     {
+      "description": "document.capture admits one immutable transferred snapshot.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "document.capture/primary-success",
+      "operation": "document.capture",
+      "request": {
+        "input": {
+          "document_id": "doc-1",
+          "content_base64": "aGVsbG8=",
+          "media_type": "text/plain",
+          "requested_source_identity": "source-1",
+          "intent_kind": "new_capture",
+          "base": {
+            "kind": "creation"
+          },
+          "target_binding_revision": "target-binding-1",
+          "processing_profile": {
+            "profile_ref": "profile-1",
+            "revision": "revision-1"
+          },
+          "original_binding": {
+            "owner_ref": "access-1",
+            "generation": 1,
+            "route_kind": "direct_file"
+          },
+          "display_name": "hello.txt"
+        },
+        "metadata": {
+          "idempotency_key": "idem-document.capture",
+          "request_id": "req-document.capture-success",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.capture"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-document.capture",
+          "request_id": "req-document.capture-success"
+        },
+        "result": {
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "document_id": "doc-1",
+          "evidence_id": "ev-document-1",
+          "source_digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+          "source_length_bytes": 5,
+          "capture_disposition": "head_eligible",
+          "became_head": true
+        }
+      }
+    },
+    {
+      "description": "document.reprocess creates one terminal extraction over retained capture bytes.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "document.reprocess/primary-success",
+      "operation": "document.reprocess",
+      "request": {
+        "input": {
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "processing_profile": {
+            "profile_ref": "profile-2",
+            "revision": "revision-1",
+            "expected_profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expected_base": {}
+        },
+        "metadata": {
+          "idempotency_key": "idem-document.reprocess",
+          "request_id": "req-document.reprocess-success",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.reprocess"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-document.reprocess",
+          "request_id": "req-document.reprocess-success"
+        },
+        "result": {
+          "extraction_revision_id": "dext-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "document_id": "doc-1",
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "result_state": "succeeded",
+          "publication_disposition": "promoted",
+          "became_head": true,
+          "output_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "description": "document.history reads one page of a document's two separate histories: one immutable source capture, which is the current source head and offers reprocessing, and one extraction revision, which is the current extraction head. A continuation token is issued because at least one history has more to read.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "document.history/primary-success",
+      "operation": "document.history",
+      "request": {
+        "input": {
+          "document_id": "doc-1",
+          "limit": 1
+        },
+        "metadata": {
+          "request_id": "req-document.history-success",
+          "required_capabilities": [
+            {
+              "id": "evidence.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.history"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-document.history",
+          "request_id": "req-document.history-success"
+        },
+        "result": {
+          "document_id": "doc-1",
+          "created_at": "2026-10-05T09:00:00Z",
+          "source": {
+            "source_state": "active",
+            "source_removal_generation": 1,
+            "current_capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "capture_head_sequence": 1,
+            "original_binding_state": "connected",
+            "updated_at": "2026-10-05T09:02:00Z"
+          },
+          "extraction": {
+            "current_extraction_id": "dext-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "extraction_head_ordinal": 1,
+            "retrieval_state": "retrievable",
+            "published_at": "2026-10-05T09:02:00Z"
+          },
+          "captures": [
+            {
+              "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "capture_sequence": 1,
+              "evidence_id": "evd-1",
+              "source_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "source_length_bytes": 11,
+              "media_type": "text/plain",
+              "requested_source_identity": "source-1",
+              "intent_kind": "new_capture",
+              "association_kind": "active_binding",
+              "capture_disposition": "head_eligible",
+              "disposition_reason": "eligible",
+              "is_current_source": true,
+              "retention_state": "retained",
+              "capture_retention_generation": 1,
+              "source_removal_generation": 1,
+              "requested_profile": {
+                "profile_ref": "document-default",
+                "revision": "1"
+              },
+              "processing_state": "settled",
+              "captured_at": "2026-10-05T09:00:30Z",
+              "retention_changed_at": "2026-10-05T09:00:30Z",
+              "actions": [
+                {
+                  "action": "reprocess_captured_copy",
+                  "available": true
+                }
+              ],
+              "reprocess_profiles": [
+                {
+                  "profile_ref": "document-default",
+                  "revision": "1",
+                  "processing_mode": "text_only",
+                  "profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              ]
+            }
+          ],
+          "capture_count": 2,
+          "extractions": [
+            {
+              "extraction_revision_id": "dext-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "document_ordinal": 1,
+              "extraction_sequence": 1,
+              "profile": {
+                "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "decoder_build": "document-default:1:plain-text-2",
+                "processing_mode": "text_only",
+                "embedded_image_ocr": false,
+                "ocr_languages": []
+              },
+              "head_eligible": true,
+              "is_current_extraction": true,
+              "result_state": "succeeded",
+              "publication_disposition": "promoted",
+              "output_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "worker_build": "core-portable-text-1",
+              "admitted_at": "2026-10-05T09:01:00Z",
+              "completed_at": "2026-10-05T09:02:00Z"
+            }
+          ],
+          "extraction_count": 2,
+          "actions": [
+            {
+              "action": "refresh_original",
+              "available": true
+            }
+          ],
+          "page": {
+            "continuation_token": "cursor-document.history-1"
+          }
+        }
+      }
+    },
+    {
       "description": "evidence.capture answers a well-formed request on the success branch.",
       "expect": {
         "branch": "success"
@@ -3606,6 +3846,234 @@
       }
     },
     {
+      "description": "document.capture exact replay returns the stored canonical receipt.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "document.capture/primary-success"
+      },
+      "id": "document.capture/honest-replay",
+      "operation": "document.capture",
+      "request": {
+        "input": {
+          "document_id": "doc-1",
+          "content_base64": "aGVsbG8=",
+          "media_type": "text/plain",
+          "requested_source_identity": "source-1",
+          "intent_kind": "new_capture",
+          "base": {
+            "kind": "creation"
+          },
+          "target_binding_revision": "target-binding-1",
+          "processing_profile": {
+            "profile_ref": "profile-1",
+            "revision": "revision-1"
+          },
+          "original_binding": {
+            "owner_ref": "access-1",
+            "generation": 1,
+            "route_kind": "direct_file"
+          },
+          "display_name": "hello.txt"
+        },
+        "metadata": {
+          "idempotency_key": "idem-document.capture",
+          "request_id": "req-document.capture-replay",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.capture"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-document.capture",
+          "request_id": "req-document.capture-replay"
+        },
+        "result": {
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "document_id": "doc-1",
+          "evidence_id": "ev-document-1",
+          "source_digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+          "source_length_bytes": 5,
+          "capture_disposition": "head_eligible",
+          "became_head": true
+        }
+      }
+    },
+    {
+      "description": "document.capture refuses reuse of its operation key for different bytes.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "document.capture/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "document.capture/idempotency-conflict",
+      "operation": "document.capture",
+      "request": {
+        "input": {
+          "document_id": "doc-1",
+          "content_base64": "d29ybGQ=",
+          "media_type": "text/plain",
+          "requested_source_identity": "source-1",
+          "intent_kind": "new_capture",
+          "base": {
+            "kind": "creation"
+          },
+          "target_binding_revision": "target-binding-1",
+          "processing_profile": {
+            "profile_ref": "profile-1",
+            "revision": "revision-1"
+          },
+          "original_binding": {
+            "owner_ref": "access-1",
+            "generation": 1,
+            "route_kind": "direct_file"
+          }
+        },
+        "metadata": {
+          "idempotency_key": "idem-document.capture",
+          "request_id": "req-document.capture-conflict",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.capture"
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "audit_reference": "audit-document.capture",
+          "request_id": "req-document.capture-conflict"
+        }
+      }
+    },
+    {
+      "description": "document.reprocess exact replay returns the stored canonical terminal receipt.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "document.reprocess/primary-success"
+      },
+      "id": "document.reprocess/honest-replay",
+      "operation": "document.reprocess",
+      "request": {
+        "input": {
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "processing_profile": {
+            "profile_ref": "profile-2",
+            "revision": "revision-1",
+            "expected_profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expected_base": {}
+        },
+        "metadata": {
+          "idempotency_key": "idem-document.reprocess",
+          "request_id": "req-document.reprocess-replay",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.reprocess"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-document.reprocess",
+          "request_id": "req-document.reprocess-replay"
+        },
+        "result": {
+          "extraction_revision_id": "dext-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "document_id": "doc-1",
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "result_state": "succeeded",
+          "publication_disposition": "promoted",
+          "became_head": true,
+          "output_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "description": "document.reprocess refuses reuse of its operation key for a different profile revision.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "document.reprocess/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "document.reprocess/idempotency-conflict",
+      "operation": "document.reprocess",
+      "request": {
+        "input": {
+          "capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "processing_profile": {
+            "profile_ref": "profile-2",
+            "revision": "revision-2",
+            "expected_profile_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "expected_base": {}
+        },
+        "metadata": {
+          "idempotency_key": "idem-document.reprocess",
+          "request_id": "req-document.reprocess-conflict",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.reprocess"
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "audit_reference": "audit-document.reprocess",
+          "request_id": "req-document.reprocess-conflict"
+        }
+      }
+    },
+    {
       "description": "evidence.capture repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
       "expect": {
         "branch": "success",
@@ -5055,6 +5523,130 @@
         "metadata": {
           "audit_reference": "audit-workspace.create",
           "request_id": "req-workspace.create-conflict"
+        }
+      }
+    },
+    {
+      "description": "document.history second page: the request presents exactly the continuation token the first page issued. Both histories advance independently to their next member, the heads are restated unchanged, and no further token is issued because both are now exhausted. The second capture is historical-only and the second extraction is a reverse-order completion over it, so neither is current.",
+      "expect": {
+        "branch": "success",
+        "page_of": "document.history/primary-success"
+      },
+      "id": "document.history/page-2",
+      "operation": "document.history",
+      "request": {
+        "input": {
+          "document_id": "doc-1",
+          "limit": 1,
+          "page": {
+            "continuation_token": "cursor-document.history-1"
+          }
+        },
+        "metadata": {
+          "request_id": "req-document.history-page2",
+          "required_capabilities": [
+            {
+              "id": "evidence.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.history"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-document.history-page2",
+          "request_id": "req-document.history-page2"
+        },
+        "result": {
+          "document_id": "doc-1",
+          "created_at": "2026-10-05T09:00:00Z",
+          "source": {
+            "source_state": "active",
+            "source_removal_generation": 1,
+            "current_capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "capture_head_sequence": 1,
+            "original_binding_state": "connected",
+            "updated_at": "2026-10-05T09:02:00Z"
+          },
+          "extraction": {
+            "current_extraction_id": "dext-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "extraction_head_ordinal": 1,
+            "retrieval_state": "retrievable",
+            "published_at": "2026-10-05T09:02:00Z"
+          },
+          "captures": [
+            {
+              "capture_id": "dcap-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "capture_sequence": 2,
+              "evidence_id": "evd-2",
+              "source_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "source_length_bytes": 12,
+              "media_type": "text/plain",
+              "requested_source_identity": "source-1",
+              "intent_kind": "refresh",
+              "association_kind": "active_binding",
+              "capture_disposition": "historical_only",
+              "disposition_reason": "stale_base",
+              "is_current_source": false,
+              "retention_state": "expired",
+              "capture_retention_generation": 2,
+              "source_removal_generation": 1,
+              "requested_profile": {
+                "profile_ref": "document-default",
+                "revision": "1"
+              },
+              "processing_state": "settled",
+              "expected_base_capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "captured_at": "2026-10-05T09:03:00Z",
+              "retention_changed_at": "2026-10-05T09:05:00Z",
+              "actions": [
+                {
+                  "action": "reprocess_captured_copy",
+                  "available": false,
+                  "unavailable_reason": "source_not_retained"
+                }
+              ],
+              "reprocess_profiles": []
+            }
+          ],
+          "capture_count": 2,
+          "extractions": [
+            {
+              "extraction_revision_id": "dext-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "capture_id": "dcap-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "document_ordinal": 2,
+              "extraction_sequence": 1,
+              "profile": {
+                "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "decoder_build": "document-default:1:plain-text-2",
+                "processing_mode": "text_only",
+                "embedded_image_ocr": false,
+                "ocr_languages": []
+              },
+              "head_eligible": false,
+              "is_current_extraction": false,
+              "result_state": "succeeded",
+              "publication_disposition": "historical_only",
+              "output_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "worker_build": "core-portable-text-1",
+              "admitted_at": "2026-10-05T09:03:30Z",
+              "completed_at": "2026-10-05T09:04:00Z"
+            }
+          ],
+          "extraction_count": 2,
+          "actions": [
+            {
+              "action": "refresh_original",
+              "available": true
+            }
+          ],
+          "page": {}
         }
       }
     },
@@ -13614,6 +14206,1453 @@
           "code": "idempotency_conflict",
           "message": "This idempotency key was already used for a different request.",
           "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "document.settings.get/primary-success",
+      "operation": "document.settings.get",
+      "description": "document.settings.get reports this workspace's durable document-processing preferences. Revision zero means nothing is stored and the values reported are the product defaults.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.settings.get-primary-success",
+          "required_capabilities": [
+            {
+              "id": "evidence.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "document.settings.get",
+        "input": {}
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.settings.get-primary-success",
+          "audit_reference": "audit-document.settings.get"
+        },
+        "result": {
+          "settings": {
+            "mode": "text_and_local_ocr",
+            "recognition_languages": [
+              "eng"
+            ],
+            "embedded_image_ocr": false,
+            "revision": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "document.settings.update/primary-success",
+      "operation": "document.settings.update",
+      "description": "document.settings.update changes one preference under the revision the caller last read. The members it does not name are held, and the returned revision is the one the next update must state.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.settings.update-primary-success",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.settings.update"
+        },
+        "operation": "document.settings.update",
+        "input": {
+          "revision": 0,
+          "mode": "text_only"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.settings.update-primary-success",
+          "audit_reference": "audit-document.settings.update"
+        },
+        "result": {
+          "settings": {
+            "mode": "text_only",
+            "recognition_languages": [
+              "eng"
+            ],
+            "embedded_image_ocr": false,
+            "revision": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "document.settings.update/honest-replay",
+      "operation": "document.settings.update",
+      "description": "document.settings.update repeated with the same idempotency key and the same change: the recorded settings are returned without advancing the revision a second time.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "document.settings.update/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.settings.update-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.settings.update"
+        },
+        "operation": "document.settings.update",
+        "input": {
+          "revision": 0,
+          "mode": "text_only"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.settings.update-honest-replay",
+          "audit_reference": "audit-document.settings.update"
+        },
+        "result": {
+          "settings": {
+            "mode": "text_only",
+            "recognition_languages": [
+              "eng"
+            ],
+            "embedded_image_ocr": false,
+            "revision": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "document.settings.update/idempotency-conflict",
+      "operation": "document.settings.update",
+      "description": "document.settings.update reusing one idempotency key for a different change: refused rather than resolved to the first change's answer.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "document.settings.update/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.settings.update-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.settings.update"
+        },
+        "operation": "document.settings.update",
+        "input": {
+          "revision": 0,
+          "embedded_image_ocr": true
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.settings.update-idempotency-conflict",
+          "audit_reference": "audit-document.settings.update"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "document.original.disconnect/primary-success",
+      "operation": "document.original.disconnect",
+      "description": "document.original.disconnect tombstones one owner route of a document's original at the generation Core holds, and returns the route as Core now holds it, disconnected.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.original.disconnect-primary-success",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.original.disconnect"
+        },
+        "operation": "document.original.disconnect",
+        "input": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-1",
+          "route_kind": "direct_file"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.original.disconnect-primary-success",
+          "audit_reference": "audit-document.original.disconnect"
+        },
+        "result": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-1",
+          "binding_generation": 1,
+          "connection_state": "disconnected"
+        }
+      }
+    },
+    {
+      "id": "document.original.disconnect/honest-replay",
+      "operation": "document.original.disconnect",
+      "description": "document.original.disconnect repeated with the same idempotency key and the same route: the recorded receipt is returned and the binding is not written a second time.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "document.original.disconnect/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.original.disconnect-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.original.disconnect"
+        },
+        "operation": "document.original.disconnect",
+        "input": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-1",
+          "route_kind": "direct_file"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.original.disconnect-honest-replay",
+          "audit_reference": "audit-document.original.disconnect"
+        },
+        "result": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-1",
+          "binding_generation": 1,
+          "connection_state": "disconnected"
+        }
+      }
+    },
+    {
+      "id": "document.original.disconnect/idempotency-conflict",
+      "operation": "document.original.disconnect",
+      "description": "document.original.disconnect reusing one idempotency key for a different route: refused rather than resolved to the first route's answer.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "document.original.disconnect/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.original.disconnect-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.original.disconnect"
+        },
+        "operation": "document.original.disconnect",
+        "input": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-2",
+          "route_kind": "direct_file"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.original.disconnect-idempotency-conflict",
+          "audit_reference": "audit-document.original.disconnect"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "document.original.relink/primary-success",
+      "operation": "document.original.relink",
+      "description": "document.original.relink moves one owner route of a document's original to the named newer generation, connected, and returns the route as Core now holds it; a capture claiming an older generation of that route is thereafter historical only.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.original.relink-primary-success",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.original.relink"
+        },
+        "operation": "document.original.relink",
+        "input": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-1",
+          "binding_generation": 2
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.original.relink-primary-success",
+          "audit_reference": "audit-document.original.relink"
+        },
+        "result": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-1",
+          "binding_generation": 2,
+          "connection_state": "connected",
+          "current_capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    },
+    {
+      "id": "document.original.relink/honest-replay",
+      "operation": "document.original.relink",
+      "description": "document.original.relink repeated with the same idempotency key and the same relink: the recorded receipt is returned and the binding is not written a second time.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "document.original.relink/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.original.relink-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.original.relink"
+        },
+        "operation": "document.original.relink",
+        "input": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-1",
+          "binding_generation": 2
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.original.relink-honest-replay",
+          "audit_reference": "audit-document.original.relink"
+        },
+        "result": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-1",
+          "binding_generation": 2,
+          "connection_state": "connected",
+          "current_capture_id": "dcap-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    },
+    {
+      "id": "document.original.relink/idempotency-conflict",
+      "operation": "document.original.relink",
+      "description": "document.original.relink reusing one idempotency key for a different owner route: refused rather than resolved to the first route's answer.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "document.original.relink/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-document.original.relink-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-document.original.relink"
+        },
+        "operation": "document.original.relink",
+        "input": {
+          "document_id": "doc-1",
+          "owner_ref": "owner-2",
+          "binding_generation": 2
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-document.original.relink-idempotency-conflict",
+          "audit_reference": "audit-document.original.relink"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "description": "settings.list answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "settings.list/primary-success",
+      "operation": "settings.list",
+      "request": {
+        "input": {
+          "prefix": "backup"
+        },
+        "metadata": {
+          "request_id": "req-settings.list-success",
+          "required_capabilities": [
+            {
+              "id": "workspace.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workspace:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "settings.list"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-settings.list-success"
+        },
+        "result": {
+          "settings": [
+            {
+              "key": "backup.schedule",
+              "value_json": "\"weekly\"",
+              "record_version": "setting-version-1",
+              "updated_at": "2024-01-01T00:00:00Z",
+              "updated_by": "omnivia-core-settings"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "description": "settings.set answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "settings.set/primary-success",
+      "operation": "settings.set",
+      "request": {
+        "input": {
+          "key": "backup.schedule",
+          "value_json": "\"weekly\""
+        },
+        "metadata": {
+          "request_id": "req-settings.set-success",
+          "required_capabilities": [
+            {
+              "id": "workspace.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workspace:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-settings.set"
+        },
+        "operation": "settings.set"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-settings.set",
+          "request_id": "req-settings.set-success"
+        },
+        "result": {
+          "setting": {
+            "key": "backup.schedule",
+            "value_json": "\"weekly\"",
+            "record_version": "setting-version-1",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "updated_by": "omnivia-core-settings"
+          }
+        }
+      }
+    },
+    {
+      "description": "settings.set repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without storing again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "settings.set/primary-success"
+      },
+      "id": "settings.set/honest-replay",
+      "operation": "settings.set",
+      "request": {
+        "input": {
+          "key": "backup.schedule",
+          "value_json": "\"weekly\""
+        },
+        "metadata": {
+          "request_id": "req-settings.set-replay",
+          "required_capabilities": [
+            {
+              "id": "workspace.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workspace:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-settings.set"
+        },
+        "operation": "settings.set"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-settings.set",
+          "request_id": "req-settings.set-replay"
+        },
+        "result": {
+          "setting": {
+            "key": "backup.schedule",
+            "value_json": "\"weekly\"",
+            "record_version": "setting-version-1",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "updated_by": "omnivia-core-settings"
+          }
+        }
+      }
+    },
+    {
+      "description": "settings.set reusing one idempotency key for a different value: the key no longer identifies a single request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "settings.set/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "settings.set/idempotency-conflict",
+      "operation": "settings.set",
+      "request": {
+        "input": {
+          "key": "backup.schedule",
+          "value_json": "\"daily\""
+        },
+        "metadata": {
+          "request_id": "req-settings.set-conflict",
+          "required_capabilities": [
+            {
+              "id": "workspace.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workspace:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-settings.set"
+        },
+        "operation": "settings.set"
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "That idempotency key was used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "request_id": "req-settings.set-conflict"
+        }
+      }
+    },
+    {
+      "description": "code.query answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "code.query/primary-success",
+      "operation": "code.query",
+      "request": {
+        "input": {
+          "intent": "definition",
+          "repository_id": "repo-code",
+          "snapshot_id": "snap-1",
+          "producer_id": "analyzer.python.stdlib",
+          "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "name": "make"
+        },
+        "metadata": {
+          "request_id": "req-code.query-success",
+          "required_capabilities": [
+            {
+              "id": "graph.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "graph:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "code.query"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.query-success"
+        },
+        "result": {
+          "intent": "definition",
+          "binding": {
+            "repository_id": "repo-code",
+            "snapshot_id": "snap-1",
+            "producer_id": "analyzer.python.stdlib",
+            "producer_version": "1.0.0",
+            "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "import_id": "cai-1",
+            "batch_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "policy_id": "owner.code-import",
+            "policy_version": "1",
+            "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "manifest_evidence_id": "ev-manifest-1",
+            "activated_at": "2024-01-01T00:00:00Z"
+          },
+          "resolution": "unique_name",
+          "definitions": [
+            {
+              "semantic_key": "pkg.models.make",
+              "node_kind": "function",
+              "display_name": "make",
+              "source": {
+                "relative_path": "pkg/models.py",
+                "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "start_line": 14,
+                "start_column": 1,
+                "end_line": 15,
+                "end_column": 23
+              },
+              "record": {
+                "record_id": "rec-make",
+                "version": "ver-make"
+              }
+            }
+          ],
+          "symbols": [],
+          "relations": [],
+          "diagnostics": [],
+          "coverage": {
+            "analysis": "static",
+            "complete": true,
+            "truncated": false,
+            "depth_bounded": false,
+            "unattributed_inbound": false,
+            "applied_depth": 0,
+            "applied_limit": 100,
+            "graph_expansion": "not_requested"
+          },
+          "freshness": {
+            "as_of": "2024-01-01T00:00:01Z",
+            "projection_versions": {
+              "code.analysis": "1"
+            },
+            "projection_watermarks": {
+              "code.analysis": "1704067200000000"
+            },
+            "stale": false
+          }
+        }
+      }
+    },
+    {
+      "description": "code.query assembles a code context: captured spans, same-analysis neighbours and the separately labelled architecture component.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "code.query/code-context",
+      "operation": "code.query",
+      "request": {
+        "input": {
+          "intent": "code_context",
+          "repository_id": "repo-code",
+          "snapshot_id": "snap-1",
+          "producer_id": "analyzer.python.stdlib",
+          "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "semantic_key": "pkg.models.make",
+          "context": {
+            "query": "service boundaries",
+            "mode": "deterministic_view",
+            "token_budget": 4000
+          }
+        },
+        "metadata": {
+          "request_id": "req-code.query-context",
+          "required_capabilities": [
+            {
+              "id": "graph.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "graph:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "code.query"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.query-context"
+        },
+        "result": {
+          "intent": "code_context",
+          "binding": {
+            "repository_id": "repo-code",
+            "snapshot_id": "snap-1",
+            "producer_id": "analyzer.python.stdlib",
+            "producer_version": "1.0.0",
+            "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "import_id": "cai-1",
+            "batch_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "policy_id": "owner.code-import",
+            "policy_version": "1",
+            "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "manifest_evidence_id": "ev-manifest-1",
+            "activated_at": "2024-01-01T00:00:00Z"
+          },
+          "resolution": "semantic_key",
+          "definitions": [
+            {
+              "semantic_key": "pkg.models.make",
+              "node_kind": "function",
+              "display_name": "make",
+              "source": {
+                "relative_path": "pkg/models.py",
+                "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "start_line": 14,
+                "start_column": 1,
+                "end_line": 15,
+                "end_column": 23
+              },
+              "record": {
+                "record_id": "rec-make",
+                "version": "ver-make"
+              }
+            }
+          ],
+          "symbols": [
+            {
+              "semantic_key": "pkg.service.run",
+              "node_kind": "function",
+              "display_name": "run",
+              "source": {
+                "relative_path": "pkg/service.py",
+                "content_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "start_line": 5,
+                "start_column": 1,
+                "end_line": 8,
+                "end_column": 24
+              },
+              "record": {
+                "record_id": "rec-run",
+                "version": "ver-run"
+              },
+              "depth": 1
+            }
+          ],
+          "relations": [
+            {
+              "edge_key": "pkg.service.run->pkg.models.make",
+              "relation_type": "code.calls",
+              "producer_relationship": "calls",
+              "type_only": false,
+              "evidence_strength": "resolved_static",
+              "source_key": "pkg.service.run",
+              "target_key": "pkg.models.make",
+              "depth": 1,
+              "source": {
+                "relative_path": "pkg/service.py",
+                "content_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "start_line": 6,
+                "start_column": 14,
+                "end_line": 6,
+                "end_column": 23
+              },
+              "record": {
+                "record_id": "rec-run-calls-make",
+                "version": "ver-run-calls-make"
+              }
+            }
+          ],
+          "diagnostics": [],
+          "coverage": {
+            "analysis": "static",
+            "complete": false,
+            "truncated": false,
+            "depth_bounded": false,
+            "unattributed_inbound": true,
+            "applied_depth": 1,
+            "applied_limit": 100,
+            "graph_expansion": "applied"
+          },
+          "freshness": {
+            "as_of": "2024-01-01T00:00:01Z",
+            "projection_versions": {
+              "code.analysis": "1"
+            },
+            "projection_watermarks": {
+              "code.analysis": "1704067200000000"
+            },
+            "stale": false
+          },
+          "context": {
+            "spans": [
+              {
+                "semantic_key": "pkg.models.make",
+                "source": {
+                  "relative_path": "pkg/models.py",
+                  "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "start_line": 14,
+                  "start_column": 1,
+                  "end_line": 15,
+                  "end_column": 23
+                },
+                "byte_length": 52,
+                "truncated": false,
+                "text": "def make(key: str) -> Record:\n    return Record(key)"
+              },
+              {
+                "semantic_key": "pkg.service.run",
+                "source": {
+                  "relative_path": "pkg/service.py",
+                  "content_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                  "start_line": 5,
+                  "start_column": 1,
+                  "end_line": 8,
+                  "end_column": 24
+                },
+                "byte_length": 70,
+                "truncated": false,
+                "text": "def run(table: dict[str, object], key: str) -> object:\n    return make(key)"
+              }
+            ],
+            "architecture": {
+              "availability": "unavailable",
+              "reason": "not_authorised"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code.policy.register/primary-success",
+      "operation": "code.policy.register",
+      "description": "code.policy.register records one owner-authorised, versioned code-analysis acceptance policy on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.policy.register-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.curate",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:curate"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-code.policy.register"
+        },
+        "operation": "code.policy.register",
+        "input": {
+          "policy_id": "owner.code-import",
+          "policy_version": "1",
+          "producers": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "producer_version": "1.0.0",
+              "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ],
+          "accepted_node_kinds": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "node_kind": "function"
+            },
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "node_kind": "module"
+            }
+          ],
+          "accepted_relationships": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "relationship": "calls",
+              "evidence_strength": "resolved_static"
+            },
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "relationship": "defines",
+              "evidence_strength": "syntactic"
+            }
+          ],
+          "allow_reduced_coverage": false
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.policy.register-success",
+          "audit_reference": "audit-code.policy.register"
+        },
+        "result": {
+          "policy": {
+            "policy_id": "owner.code-import",
+            "policy_version": "1",
+            "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "disposition": "registered",
+          "registered_at": "2024-01-01T00:00:00Z"
+        }
+      }
+    },
+    {
+      "id": "code.policy.register/honest-replay",
+      "operation": "code.policy.register",
+      "description": "code.policy.register repeated with the same idempotency key and the same policy: the recorded registration is returned without recording again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "code.policy.register/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.policy.register-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.curate",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:curate"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-code.policy.register"
+        },
+        "operation": "code.policy.register",
+        "input": {
+          "policy_id": "owner.code-import",
+          "policy_version": "1",
+          "producers": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "producer_version": "1.0.0",
+              "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ],
+          "accepted_node_kinds": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "node_kind": "function"
+            },
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "node_kind": "module"
+            }
+          ],
+          "accepted_relationships": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "relationship": "calls",
+              "evidence_strength": "resolved_static"
+            },
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "relationship": "defines",
+              "evidence_strength": "syntactic"
+            }
+          ],
+          "allow_reduced_coverage": false
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.policy.register-replay",
+          "audit_reference": "audit-code.policy.register"
+        },
+        "result": {
+          "policy": {
+            "policy_id": "owner.code-import",
+            "policy_version": "1",
+            "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "disposition": "registered",
+          "registered_at": "2024-01-01T00:00:00Z"
+        }
+      }
+    },
+    {
+      "id": "code.policy.register/idempotency-conflict",
+      "operation": "code.policy.register",
+      "description": "code.policy.register reusing one idempotency key for different rules: refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "code.policy.register/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.policy.register-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.curate",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:curate"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-code.policy.register"
+        },
+        "operation": "code.policy.register",
+        "input": {
+          "policy_id": "owner.code-import",
+          "policy_version": "1",
+          "producers": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "producer_version": "1.0.0",
+              "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ],
+          "accepted_node_kinds": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "node_kind": "function"
+            },
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "node_kind": "module"
+            }
+          ],
+          "accepted_relationships": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "relationship": "calls",
+              "evidence_strength": "resolved_static"
+            },
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "relationship": "defines",
+              "evidence_strength": "syntactic"
+            }
+          ],
+          "allow_reduced_coverage": true
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.policy.register-conflict",
+          "audit_reference": "audit-code.policy.register"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "code.import/primary-success",
+      "operation": "code.import",
+      "description": "code.import analyses one sealed captured snapshot with a declared producer and activates the facts the named policy accepts, returning the activation receipt, on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.import-success",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-code.import",
+          "mutation_precondition": {
+            "record_version": "0"
+          }
+        },
+        "operation": "code.import",
+        "input": {
+          "repository_id": "repo-code",
+          "snapshot_id": "snap-1",
+          "producer_id": "analyzer.python.stdlib",
+          "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "policy_id": "owner.code-import",
+          "policy_version": "1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.import-success",
+          "audit_reference": "audit-code.import"
+        },
+        "result": {
+          "binding": {
+            "repository_id": "repo-code",
+            "snapshot_id": "snap-1",
+            "producer_id": "analyzer.python.stdlib",
+            "producer_version": "1.0.0",
+            "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "import_id": "cai-1",
+            "batch_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "policy_id": "owner.code-import",
+            "policy_version": "1",
+            "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "manifest_evidence_id": "ev-manifest-1",
+            "activated_at": "2024-01-01T00:00:00Z"
+          },
+          "activation_sequence": 1,
+          "coverage_decision": "initial",
+          "reduced_file_count": 0,
+          "entity_count": 12,
+          "relation_count": 9,
+          "diagnostic_count": 3,
+          "file_count": 4,
+          "freshness": {
+            "state": "current",
+            "snapshot_id": "snap-1",
+            "newest_snapshot_id": "snap-1",
+            "working_tree": "not_observed"
+          }
+        }
+      }
+    },
+    {
+      "id": "code.import/honest-replay",
+      "operation": "code.import",
+      "description": "code.import repeated with the same idempotency key and the same request: the recorded activation receipt is returned without analysing or activating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "code.import/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.import-replay",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-code.import",
+          "mutation_precondition": {
+            "record_version": "0"
+          }
+        },
+        "operation": "code.import",
+        "input": {
+          "repository_id": "repo-code",
+          "snapshot_id": "snap-1",
+          "producer_id": "analyzer.python.stdlib",
+          "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "policy_id": "owner.code-import",
+          "policy_version": "1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.import-replay",
+          "audit_reference": "audit-code.import"
+        },
+        "result": {
+          "binding": {
+            "repository_id": "repo-code",
+            "snapshot_id": "snap-1",
+            "producer_id": "analyzer.python.stdlib",
+            "producer_version": "1.0.0",
+            "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "import_id": "cai-1",
+            "batch_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "policy_id": "owner.code-import",
+            "policy_version": "1",
+            "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "manifest_evidence_id": "ev-manifest-1",
+            "activated_at": "2024-01-01T00:00:00Z"
+          },
+          "activation_sequence": 1,
+          "coverage_decision": "initial",
+          "reduced_file_count": 0,
+          "entity_count": 12,
+          "relation_count": 9,
+          "diagnostic_count": 3,
+          "file_count": 4,
+          "freshness": {
+            "state": "current",
+            "snapshot_id": "snap-1",
+            "newest_snapshot_id": "snap-1",
+            "working_tree": "not_observed"
+          }
+        }
+      }
+    },
+    {
+      "id": "code.import/idempotency-conflict",
+      "operation": "code.import",
+      "description": "code.import reusing one idempotency key for another snapshot: refused rather than resolved, and nothing is analysed.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "code.import/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.import-conflict",
+          "required_capabilities": [
+            {
+              "id": "engineering.source",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "engineering:source"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-code.import",
+          "mutation_precondition": {
+            "record_version": "0"
+          }
+        },
+        "operation": "code.import",
+        "input": {
+          "repository_id": "repo-code",
+          "snapshot_id": "snap-2",
+          "producer_id": "analyzer.python.stdlib",
+          "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "policy_id": "owner.code-import",
+          "policy_version": "1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.import-conflict",
+          "audit_reference": "audit-code.import"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
+    },
+    {
+      "id": "code.status/primary-success",
+      "operation": "code.status",
+      "description": "code.status reports every declared producer profile's availability, readiness, binding, freshness and coverage for one repository and snapshot on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-code.status-success",
+          "required_capabilities": [
+            {
+              "id": "graph.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "graph:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "code.status",
+        "input": {
+          "repository_id": "repo-code",
+          "snapshot_id": "snap-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-code.status-success"
+        },
+        "result": {
+          "repository_id": "repo-code",
+          "snapshot": {
+            "snapshot_id": "snap-1",
+            "capture_status": "complete",
+            "freshness": {
+              "state": "current",
+              "snapshot_id": "snap-1",
+              "newest_snapshot_id": "snap-1",
+              "working_tree": "not_observed"
+            },
+            "unsupported": [
+              {
+                "suffix": ".rs",
+                "file_count": 2
+              }
+            ],
+            "unsupported_truncated": false
+          },
+          "analyses": [
+            {
+              "producer_id": "analyzer.python.stdlib",
+              "producer_version": "1.0.0",
+              "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "languages": [
+                "python"
+              ],
+              "availability": "available",
+              "readiness": "ready",
+              "activation_sequence": 1,
+              "policy": {
+                "policy_id": "owner.code-import",
+                "policy_version": "1",
+                "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+              },
+              "binding": {
+                "repository_id": "repo-code",
+                "snapshot_id": "snap-1",
+                "producer_id": "analyzer.python.stdlib",
+                "producer_version": "1.0.0",
+                "profile_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "import_id": "cai-1",
+                "batch_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "policy_id": "owner.code-import",
+                "policy_version": "1",
+                "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "manifest_evidence_id": "ev-manifest-1",
+                "activated_at": "2024-01-01T00:00:00Z"
+              },
+              "freshness": {
+                "state": "current",
+                "snapshot_id": "snap-1",
+                "newest_snapshot_id": "snap-1",
+                "working_tree": "not_observed"
+              },
+              "coverage": {
+                "state": "complete",
+                "admitted_file_count": 4,
+                "analysed_file_count": 4
+              }
+            },
+            {
+              "producer_id": "analyzer.typescript.checker",
+              "producer_version": "1.0.0",
+              "profile_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "languages": [
+                "javascript",
+                "typescript"
+              ],
+              "availability": "unavailable",
+              "availability_reason": "runtime_not_configured",
+              "readiness": "not_ready",
+              "readiness_reason": "no_active_import",
+              "activation_sequence": 0
+            }
+          ],
+          "as_of": "2024-01-01T00:00:01Z"
         }
       }
     }

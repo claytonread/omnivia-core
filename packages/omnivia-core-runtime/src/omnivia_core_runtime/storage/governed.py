@@ -61,6 +61,16 @@ Natural row order is not stable across index changes (packet §8.2), so every qu
 a total `ORDER BY` and the fold picks its winner by an explicit key rather than by
 whichever row arrived last.
 
+**Imported code is current only while its import is applicable.** A version 0074 enrolled
+as a member of a code-analysis import is in `current_canonical` exactly when that import
+is the one the applicability log names as active for its repository, producer and profile
+at the resolution instant. A retired import's versions are not superseded -- nothing
+replaced them version for version -- so they are not `history` either; an earlier
+instant, at which their import was active, is how they are read again. Every version no
+import enrolled resolves exactly as it always did: the applicability column is NULL for it
+and nothing below consults it. The log is read in the same statement as the versions, so
+an activation committed mid-read is wholly visible or wholly invisible.
+
 **The frontier is a value.** A tuple of frozen slotted dataclasses: nothing a later
 ranking, selection or projection step can mutate, and no handle it could read more rows
 through.
@@ -137,6 +147,20 @@ _ARTIFACTS: Final = "omnivia_evidence_artifacts"
 _SPANS: Final = "omnivia_normalized_source_spans"
 _APPLICATION_CLAIMS: Final = "omnivia_application_claim_lineage"
 _APPLICATION_TRANSITIONS: Final = "omnivia_application_governance_transitions"
+_CODE_MEMBERS: Final = "omnivia_code_analysis_import_members"
+
+#: The import 0074's applicability log names as active, at the resolution instant, for the
+#: scope of member row `m`: the newest activation of that repository, producer and profile
+#: recorded by then. Correlated on `m`, and bound to the instant by its one parameter.
+_ACTIVE_CODE_IMPORT: Final = (
+    "SELECT a.import_id FROM omnivia_code_analysis_activations a "
+    "JOIN omnivia_code_analysis_imports i "
+    "  ON i.workspace_id = m.workspace_id AND i.import_id = m.import_id "
+    "WHERE a.workspace_id = i.workspace_id AND a.repository_id = i.repository_id "
+    "  AND a.producer_id = i.producer_id AND a.profile_digest = i.profile_digest "
+    "  AND a.activated_at_us <= ? "
+    "ORDER BY a.activation_sequence DESC LIMIT 1"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,12 +386,39 @@ def resolve_governed_versions(
         connection.execute("BEGIN")
     try:
         with authorised(connection, mutations=False, ddl=False) as fenced:
+            # The last column is each version's code applicability at the instant: NULL
+            # for a version no code-analysis import enrolled -- every governed version
+            # that is not imported code -- and otherwise whether its import is the one
+            # 0074's applicability log names as active for its scope at the instant. A
+            # schema migrated short of 0074 has no import to consult, so every version
+            # there gets NULL and resolves exactly as it did before 0074.
+            code_members = fenced.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (_CODE_MEMBERS,),
+            ).fetchone()
+            applicability, members_join, parameters = (
+                ("NULL", "", (workspace_id, resolution_instant_us))
+                if code_members is None
+                else (
+                    (
+                        "CASE WHEN m.import_id IS NULL THEN NULL "
+                        f"     WHEN m.import_id IS ({_ACTIVE_CODE_IMPORT}) THEN 1 ELSE 0 END"
+                    ),
+                    (
+                        f"LEFT JOIN {_CODE_MEMBERS} m "
+                        "  ON m.workspace_id = v.workspace_id "
+                        " AND m.governed_record_version_id = v.governed_record_version_id "
+                    ),
+                    (resolution_instant_us, workspace_id, resolution_instant_us),
+                )
+            )
             rows = fenced.execute(
-                f"SELECT {', '.join(_COLUMNS)} FROM {_VIEW} "
-                "WHERE workspace_id = ? AND recorded_at_us <= ? "
-                "ORDER BY governed_record_id ASC, recorded_at_us ASC, append_ordinal ASC, "
-                "assembly_id ASC",
-                (workspace_id, resolution_instant_us),
+                f"SELECT {', '.join('v.' + column for column in _COLUMNS)}, {applicability} "
+                f"FROM {_VIEW} v {members_join}"
+                "WHERE v.workspace_id = ? AND v.recorded_at_us <= ? "
+                "ORDER BY v.governed_record_id ASC, v.recorded_at_us ASC, "
+                "v.append_ordinal ASC, v.assembly_id ASC",
+                parameters,
             ).fetchall()
             # The supersession rule is not restated here: the seal join, the exact-target
             # join and the effective instant are one rule about what counts as a
@@ -400,7 +451,10 @@ def resolve_governed_versions(
         if ended_at is None or fact.effective_at_us < ended_at:
             replaced_at[fact.source_version_id] = fact.effective_at_us
 
-    versions = tuple(GovernedVersion(*row) for row in rows)
+    versions = tuple(GovernedVersion(*row[:-1]) for row in rows)
+    retired_code = frozenset(
+        str(row[4]) for row in rows if row[-1] is not None and int(row[-1]) != 1
+    )
 
     if resolved == GOVERNED_RECORD_VIEW_CANDIDATES:
         return tuple(
@@ -422,6 +476,8 @@ def resolve_governed_versions(
         if _replaced_by(version, replaced_at, resolution_instant_us):
             continue
         if not _valid_at(version, resolution_instant_us):
+            continue
+        if version.governed_record_version_id in retired_code:
             continue
         incumbent = frontier.get(version.governed_record_id)
         if incumbent is None or _precedence(version) > _precedence(incumbent):

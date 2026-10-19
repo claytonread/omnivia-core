@@ -161,6 +161,7 @@ class Dispatcher:
                 retry_class=error.retry_class,
                 principal=self.grant.principal,
                 granted=tuple(sorted(self.grant.operations)),
+                details=error.details,
             )
         if isinstance(result, AuditedOperationResult):
             result = result.result

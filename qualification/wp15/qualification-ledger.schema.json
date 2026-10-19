@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omnivia.dev/schemas/qualification/wp15-qualification-ledger.schema.json",
+  "title": "WP-15 acceptance and qualification ledger",
+  "description": "Structural schema for qualification/wp15/qualification-ledger.v1.json: one entry per behaviour gate in section 20 of the complete native macOS document intake design v2.0, with the evidence class the design requires, the evidence this checkout actually holds, and an explicit result. This schema checks shape, types, enums, required fields and gate-id uniqueness only. The gate-set completeness check (every AT/NAT/DOC/MON/END id present exactly once, against counts pinned from the design), the family-to-section agreement, the fail-closed status rules, and the existence and freshness of every referenced repository path and symbol are enforced by scripts/check-wp15-qualification.py. A schema pass is therefore not a ledger pass.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "design_source",
+    "work_package",
+    "expected_counts",
+    "gates"
+  ],
+  "properties": {
+    "format_version": {
+      "description": "Ledger format version. Bump when the on-disk shape changes.",
+      "const": 1
+    },
+    "work_package": {
+      "description": "The work package that owns this ledger.",
+      "const": "WP-15"
+    },
+    "design_source": {
+      "description": "The governing design document and the sections this ledger transcribes. The document is not checked into this repository, so the gate set is pinned by expected_counts rather than reparsed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["document", "revision", "sections"],
+      "properties": {
+        "document": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "description": "Design revision this transcription was taken from.",
+          "type": "string",
+          "minLength": 1
+        },
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/section" }
+        }
+      }
+    },
+    "expected_counts": {
+      "description": "Pinned gate counts. The design states complete-solution acceptance contains 130 identified behaviour gates: 50 AT, 17 NAT, 19 DOC, 38 MON and 6 END. The checker holds these literals independently, so a drift in this object fails rather than redefining the gate set.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gates", "AT", "NAT", "DOC", "MON", "END"],
+      "properties": {
+        "gates": { "const": 130 },
+        "AT": { "const": 50 },
+        "NAT": { "const": 17 },
+        "DOC": { "const": 19 },
+        "MON": { "const": 38 },
+        "END": { "const": 6 }
+      }
+    },
+    "gates": {
+      "description": "One entry per behaviour gate, ordered by family (AT, NAT, DOC, MON, END) then by ordinal ascending.",
+      "type": "array",
+      "minItems": 130,
+      "maxItems": 130,
+      "items": { "$ref": "#/$defs/gate" }
+    }
+  },
+  "$defs": {
+    "section": {
+      "type": "string",
+      "enum": ["20", "20.1", "20.2", "20.3", "20.4"]
+    },
+    "repositoryPath": {
+      "description": "Path relative to the repository root. No leading slash, no parent traversal.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "pattern": "^[A-Za-z0-9_.][A-Za-z0-9_./-]*$",
+      "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+    },
+    "evidenceReference": {
+      "description": "One repository artefact offered as evidence for this gate. The checker fails if the path does not exist, or if a named symbol does not occur in that file -- so a renamed or deleted test is a ledger failure rather than silent staleness.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "covers"],
+      "properties": {
+        "path": { "$ref": "#/$defs/repositoryPath" },
+        "symbol": {
+          "description": "Exact test function, method or declaration name that must still occur in the file. Omitted only when the whole file or script is the evidence.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "covers": {
+          "description": "Which named condition of the gate this reference actually demonstrates. Not a restatement of the test name.",
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 600
+        }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_id",
+        "design_section",
+        "normative_summary",
+        "applicability",
+        "evidence_type",
+        "evidence",
+        "status",
+        "missing_condition",
+        "limitations",
+        "source_bindings"
+      ],
+      "properties": {
+        "gate_id": {
+          "description": "Exact gate identifier as the design writes it.",
+          "type": "string",
+          "pattern": "^(AT|NAT|DOC|MON|END)-[0-9]{2}$"
+        },
+        "design_section": { "$ref": "#/$defs/section" },
+        "normative_summary": {
+          "description": "The gate's scenario and required result, transcribed from the design. Condensed, never weakened: every named condition the gate requires stays named here, because the status rules are judged against this text.",
+          "type": "string",
+          "minLength": 30,
+          "maxLength": 1200
+        },
+        "applicability": {
+          "description": "The qualified capability and OS matrix rows this gate applies to, and the surface it is a gate on.",
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 600
+        },
+        "evidence_type": {
+          "description": "The strongest class of evidence the design requires before this gate can be called met. automated_repository_test and repository_checker are the only two classes this checkout can produce; the other four are recorded precisely so a gate that needs them can never be reported as passed from a test run. installed_signed_build: a signed, notarised, installed companion with OS-registered extensions. real_host_measurement: measured resource, timing or architecture evidence on a named hardware and OS row. accessibility_review: VoiceOver, keyboard, appearance, scaling or display behaviour on a real build. external_fixture_corpus: application-authored or licensed fixture files this repository does not hold.",
+          "enum": [
+            "automated_repository_test",
+            "repository_checker",
+            "installed_signed_build",
+            "real_host_measurement",
+            "accessibility_review",
+            "external_fixture_corpus"
+          ]
+        },
+        "evidence": {
+          "description": "Repository artefacts supporting the recorded status. A non-passed gate may still list partial evidence; that is useful and is not a claim of coverage.",
+          "type": "array",
+          "maxItems": 24,
+          "items": { "$ref": "#/$defs/evidenceReference" }
+        },
+        "status": {
+          "description": "passed: direct production-path coverage of every condition named in normative_summary, running unconditionally in this repository's validation. failed: evidence exists and shows the required result is not met. blocked_external: the implementation is present but the evidence class cannot be produced in this repository or its CI. not_executed: the evidence class is obtainable in principle but the required scope has not been demonstrated here. not_implemented: the production path this gate names does not exist in this checkout.",
+          "enum": [
+            "passed",
+            "failed",
+            "blocked_external",
+            "not_executed",
+            "not_implemented"
+          ]
+        },
+        "missing_condition": {
+          "description": "Exactly what is absent before this gate could be called met. Required to be a concrete sentence for every status other than passed, and required to be null when the status is passed.",
+          "type": ["string", "null"],
+          "minLength": 20,
+          "maxLength": 1200
+        },
+        "limitations": {
+          "description": "The honest scope limit of whatever evidence is listed, including for a passed gate: injected engines, stubbed codecs, synthetic fixtures, unsigned processes, unrecorded host versions.",
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 1200
+        },
+        "source_bindings": {
+          "description": "The production code in this checkout the gate binds to, per section 22. Empty only when the gate names a production path that does not exist yet.",
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/repositoryPath" }
+        }
+      }
+    }
+  }
+}

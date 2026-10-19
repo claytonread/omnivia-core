@@ -1,0 +1,208 @@
+{
+  "base64url": [
+    {
+      "accepted": true,
+      "decoded_hex": "752bca620ee3028b2978e8c9ab1fbca7cf94480ef4c8394fcb443af26fb27900",
+      "expected_bytes": 32,
+      "name": "canonical-32-byte-key",
+      "text": "dSvKYg7jAospeOjJqx-8p8-USA70yDlPy0Q68m-yeQA"
+    },
+    {
+      "accepted": true,
+      "decoded_hex": "63",
+      "expected_bytes": 1,
+      "name": "canonical-one-byte",
+      "text": "Yw"
+    },
+    {
+      "accepted": false,
+      "expected_bytes": 1,
+      "name": "non-zero-trailing-bits",
+      "reason": "the unused trailing bits of a final partial group must be zero, or one byte string has more than one spelling",
+      "text": "Yx"
+    },
+    {
+      "accepted": false,
+      "expected_bytes": 32,
+      "name": "padded",
+      "reason": "padding is not part of the canonical spelling",
+      "text": "dSvKYg7jAospeOjJqx-8p8-USA70yDlPy0Q68m-yeQA="
+    },
+    {
+      "accepted": false,
+      "expected_bytes": 32,
+      "name": "standard-alphabet",
+      "reason": "+ and / are not the base64url alphabet",
+      "text": "dSvKYg7jAospeOjJqx+8p8+USA70yDlPy0Q68m+yeQA"
+    },
+    {
+      "accepted": false,
+      "expected_bytes": 32,
+      "name": "wrong-length",
+      "reason": "not 32 bytes of base64url",
+      "text": "Yw"
+    }
+  ],
+  "canonicalisation": [
+    {
+      "accepted": true,
+      "canonical": "{\"a\":[3,1,2]}",
+      "json": "{\"a\": [3, 1, 2]}",
+      "name": "array-order-is-significant",
+      "sha256": "d934227f5a9f29b31bd6a8ceed3213dd498a07ce32bdfa9ae2488de0c0ab68f1"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"a\":\"\\u001f\\n\\\"\"}",
+      "json": "{\"a\": \"\\u001f\\n\\\"\"}",
+      "name": "control-characters-are-escaped",
+      "sha256": "c65c65ceb4f9715f7c48007ff50a213ceeaea6029f5bd4500450ac7fc799a139"
+    },
+    {
+      "accepted": false,
+      "json": "{\"a\": 1, \"a\": 2}",
+      "name": "duplicate-object-name",
+      "reason": "duplicate object name"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"a\":{},\"b\":[]}",
+      "json": "{\"a\": {}, \"b\": []}",
+      "name": "empty-containers",
+      "sha256": "aeeba1e56a144077f89e26c930dad7cf933e9383cfb8e33ddff618233b29be76"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"a\":1000}",
+      "json": "{\"a\": 1e3}",
+      "name": "exponent-canonicalises-to-digits",
+      "sha256": "ac51767992e3cb0372bd2e1f602ac58babccc85d03871731790d0950e2b75e51"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"a\":1.5}",
+      "json": "{\"a\": 1.5}",
+      "name": "fractional-number",
+      "sha256": "3b1cb40b22933d83e9242f8ac724f114d812ddd49909917b365375c24b69a455"
+    },
+    {
+      "accepted": false,
+      "json": "{\"a\": Infinity}",
+      "name": "infinity",
+      "reason": "Infinity is not JSON"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"a\":1}",
+      "json": "{\"a\": 1.0}",
+      "name": "integral-float-canonicalises-to-an-integer",
+      "sha256": "015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"a\":-1,\"b\":0,\"c\":1}",
+      "json": "{\"a\": -1, \"b\": 0, \"c\": 1}",
+      "name": "negative-and-zero-integers",
+      "sha256": "4bcffd0601392e0b1b34c43cc6a58c6e4b5a4bf667ae3569a944fb903ae9f14c"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"a\":0}",
+      "json": "{\"a\": -0.0}",
+      "name": "negative-zero-canonicalises-to-zero",
+      "sha256": "45b619e97b5d9b029af4522e9ffb02fa99ff2bf226c82ee22a7cc10269a557e8"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"outer\":{\"z\":[1,2,{\"x\":null,\"y\":true}]}}",
+      "json": "{\"outer\": {\"z\": [1, 2, {\"y\": true, \"x\": null}]}}",
+      "name": "nested-objects-and-arrays",
+      "sha256": "284ff2e333e561eb616a4dfc6842f8c064280aa24f1f7cf661ac203069ccb033"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"k\u00e9y\":\"v\u00e4lue\"}",
+      "json": "{\"k\\u00e9y\": \"v\\u00e4lue\"}",
+      "name": "non-ascii-is-not-escaped",
+      "sha256": "1ff6da0a71554dcac5682e8ce3a259d3e0fee156e267551b1911ab870e2022fa"
+    },
+    {
+      "accepted": false,
+      "json": "{\"a\": NaN}",
+      "name": "not-a-number",
+      "reason": "NaN is not JSON"
+    },
+    {
+      "accepted": false,
+      "json": "{\"a\": 1e400}",
+      "name": "number-outside-binary64",
+      "reason": "a number that is not a finite binary64 is not expressible in JSON"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"C\":3,\"a\":2,\"b\":1}",
+      "json": "{\"b\":1,\"a\":2,\"C\":3}",
+      "name": "sorted-object-names",
+      "sha256": "27e01c26743085bff8e4a98d76dca93ebdb6c805f8136fae1216ee257d33f5c5"
+    }
+  ],
+  "signature_domain": "omnivia.update-channel.v2",
+  "signatures": [
+    {
+      "envelope_json": "{\"channel\":\"stable\",\"issued_at\":\"2026-10-16T09:00:00Z\",\"not_after\":\"2026-11-16T09:00:00Z\",\"not_before\":\"2026-10-16T09:00:00Z\",\"product_id\":\"omnivia-core\",\"release\":{\"bundle_sha256\":\"sha256:5cc9496b8ce7890fc01101ec3c469921bbe120fe118eed61854964559e870858\",\"packages\":{\"omnivia-core\":\"0.7.0\",\"omnivia-core-cli\":\"0.7.0\",\"omnivia-core-client\":\"0.7.0\",\"omnivia-core-mcp\":\"0.7.0\",\"omnivia-core-runtime\":\"0.7.0\"},\"release_url\":\"https://github.com/claytonread/omnivia-core/releases/tag/core-v0.7.0\",\"version\":\"0.7.0\"},\"schema_version\":\"omnivia-core-update.v2\",\"sequence\":7,\"signing\":{\"algorithm\":\"ed25519\",\"key_id\":\"test-only-channel-2026a\"}}",
+      "name": "valid",
+      "product_id": "omnivia-core",
+      "public_key": "dSvKYg7jAospeOjJqx-8p8-USA70yDlPy0Q68m-yeQA",
+      "signature": "U0q-Nw-7HCmRS_rmh63oPHXdmHUbUNku-UaR0ty_LIuWR6W8djZVYsMk678DgZbxTLRIopBjAjD_kazJxSJ6Dw",
+      "verifies": true
+    },
+    {
+      "envelope_json": "{\"channel\":\"stable\",\"issued_at\":\"2026-10-16T09:00:00Z\",\"not_after\":\"2026-11-16T09:00:00Z\",\"not_before\":\"2026-10-16T09:00:00Z\",\"product_id\":\"omnivia-core\",\"release\":{\"bundle_sha256\":\"sha256:5cc9496b8ce7890fc01101ec3c469921bbe120fe118eed61854964559e870858\",\"packages\":{\"omnivia-core\":\"0.7.0\",\"omnivia-core-cli\":\"0.7.0\",\"omnivia-core-client\":\"0.7.0\",\"omnivia-core-mcp\":\"0.7.0\",\"omnivia-core-runtime\":\"0.7.0\"},\"release_url\":\"https://github.com/claytonread/omnivia-core/releases/tag/core-v0.7.0\",\"version\":\"0.7.0\"},\"schema_version\":\"omnivia-core-update.v2\",\"sequence\":7,\"signing\":{\"algorithm\":\"ed25519\",\"key_id\":\"test-only-channel-2026a\"}}",
+      "name": "other-product-domain",
+      "product_id": "omnivia-core",
+      "public_key": "dSvKYg7jAospeOjJqx-8p8-USA70yDlPy0Q68m-yeQA",
+      "reason": "signed under another product's domain prefix over the same body",
+      "signature": "JZdfT6v-Hg995pCc8XbsEHuGVYQZIG0KhqkT9T5uftzn1-CJlklAJfDwVsVtAMr1A_hrY_PzKaZTO763MS7XBA",
+      "verifies": false
+    },
+    {
+      "envelope_json": "{\"channel\":\"stable\",\"issued_at\":\"2026-10-16T09:00:00Z\",\"not_after\":\"2026-11-16T09:00:00Z\",\"not_before\":\"2026-10-16T09:00:00Z\",\"product_id\":\"omnivia-core\",\"release\":{\"bundle_sha256\":\"sha256:5cc9496b8ce7890fc01101ec3c469921bbe120fe118eed61854964559e870858\",\"packages\":{\"omnivia-core\":\"0.7.0\",\"omnivia-core-cli\":\"0.7.0\",\"omnivia-core-client\":\"0.7.0\",\"omnivia-core-mcp\":\"0.7.0\",\"omnivia-core-runtime\":\"0.7.0\"},\"release_url\":\"https://github.com/claytonread/omnivia-core/releases/tag/core-v0.7.0\",\"version\":\"0.7.0\"},\"schema_version\":\"omnivia-core-update.v2\",\"sequence\":7,\"signing\":{\"algorithm\":\"ed25519\",\"key_id\":\"test-only-channel-2026a\"}}",
+      "name": "other-key",
+      "product_id": "omnivia-core",
+      "public_key": "dSvKYg7jAospeOjJqx-8p8-USA70yDlPy0Q68m-yeQA",
+      "reason": "signed by a different key",
+      "signature": "BqL7VXmsSX4paLDsqLDWXTBCGRtWn3cDRz56vuzrtq-rh0p3U-L_Qew82CgZ-Etsd-NZCkLh19zoYLUI0rs7Dw",
+      "verifies": false
+    },
+    {
+      "envelope_json": "{\"channel\":\"stable\",\"issued_at\":\"2026-10-16T09:00:00Z\",\"not_after\":\"2026-11-16T09:00:00Z\",\"not_before\":\"2026-10-16T09:00:00Z\",\"product_id\":\"omnivia-core\",\"release\":{\"bundle_sha256\":\"sha256:5cc9496b8ce7890fc01101ec3c469921bbe120fe118eed61854964559e870858\",\"packages\":{\"omnivia-core\":\"0.7.0\",\"omnivia-core-cli\":\"0.7.0\",\"omnivia-core-client\":\"0.7.0\",\"omnivia-core-mcp\":\"0.7.0\",\"omnivia-core-runtime\":\"0.7.0\"},\"release_url\":\"https://github.com/claytonread/omnivia-core/releases/tag/core-v0.7.0\",\"version\":\"0.7.0\"},\"schema_version\":\"omnivia-core-update.v2\",\"sequence\":7,\"signing\":{\"algorithm\":\"ed25519\",\"key_id\":\"test-only-channel-2026a\"}}",
+      "name": "flipped-bit",
+      "product_id": "omnivia-core",
+      "public_key": "dSvKYg7jAospeOjJqx-8p8-USA70yDlPy0Q68m-yeQA",
+      "reason": "one bit of the signature changed",
+      "signature": "U0q-Nw-7HCmRS_rmh63oPHXdmHUbUNku-UaR0ty_LIuWR6W8djZVYsMk678DgZbxTLRIopBjAjD_kazJxSJ6Dg",
+      "verifies": false
+    }
+  ],
+  "signing_input": [
+    {
+      "envelope_json": "{\"channel\":\"stable\",\"issued_at\":\"2026-10-16T09:00:00Z\",\"not_after\":\"2026-11-16T09:00:00Z\",\"not_before\":\"2026-10-16T09:00:00Z\",\"product_id\":\"omnivia-core\",\"release\":{\"bundle_sha256\":\"sha256:5cc9496b8ce7890fc01101ec3c469921bbe120fe118eed61854964559e870858\",\"packages\":{\"omnivia-core\":\"0.7.0\",\"omnivia-core-cli\":\"0.7.0\",\"omnivia-core-client\":\"0.7.0\",\"omnivia-core-mcp\":\"0.7.0\",\"omnivia-core-runtime\":\"0.7.0\"},\"release_url\":\"https://github.com/claytonread/omnivia-core/releases/tag/core-v0.7.0\",\"version\":\"0.7.0\"},\"schema_version\":\"omnivia-core-update.v2\",\"sequence\":7,\"signing\":{\"algorithm\":\"ed25519\",\"key_id\":\"test-only-channel-2026a\"}}",
+      "name": "baseline",
+      "product_id": "omnivia-core",
+      "signing_input_sha256": "74d5f68a9a747b136f22d7ec9a0b8129d4901a73b86ce2ca5c30aac9fc0bbe6d"
+    },
+    {
+      "envelope_json": "{\"channel\":\"stable\",\"issued_at\":\"2026-10-16T09:00:00Z\",\"not_after\":\"2026-11-16T09:00:00Z\",\"not_before\":\"2026-10-16T09:00:00Z\",\"product_id\":\"omnivia-core\",\"release\":null,\"schema_version\":\"omnivia-core-update.v2\",\"sequence\":7,\"signing\":{\"algorithm\":\"ed25519\",\"key_id\":\"test-only-channel-2026a\"}}",
+      "name": "paused-channel",
+      "product_id": "omnivia-core",
+      "signing_input_sha256": "c19f190ac3e82decd1165d1f24242b0ab6180c5151181d9da2cf1a316b9f84fc"
+    },
+    {
+      "envelope_json": "{\"channel\":\"stable\",\"issued_at\":\"2026-10-16T09:00:00Z\",\"not_after\":\"2026-11-16T09:00:00Z\",\"not_before\":\"2026-10-16T09:00:00Z\",\"product_id\":\"omnivia-core\",\"release\":{\"bundle_sha256\":\"sha256:5cc9496b8ce7890fc01101ec3c469921bbe120fe118eed61854964559e870858\",\"packages\":{\"omnivia-core\":\"0.7.0\",\"omnivia-core-cli\":\"0.7.0\",\"omnivia-core-client\":\"0.7.0\",\"omnivia-core-mcp\":\"0.7.0\",\"omnivia-core-runtime\":\"0.7.0\"},\"release_url\":\"https://github.com/claytonread/omnivia-core/releases/tag/core-v0.7.0\",\"version\":\"0.7.0\"},\"schema_version\":\"omnivia-core-update.v2\",\"sequence\":7,\"signing\":{\"algorithm\":\"ed25519\",\"key_id\":\"test-only-channel-2026a\"}}",
+      "name": "other-product-domain",
+      "product_id": "omnivia-apps",
+      "signing_input_sha256": "fa2aea675924de51554cd317f723f715ea11412fe0d42b7ea268aa937db21c77"
+    }
+  ],
+  "vectors_version": "1.0"
+}

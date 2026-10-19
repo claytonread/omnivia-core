@@ -1,12 +1,16 @@
 """One lock interface with POSIX and Windows implementations (T-0629D, ADR-037).
 
-Three lock roles, deliberately distinct because they grant different things:
+Four lock roles, deliberately distinct because they grant different things:
 
 - **bootstrap mutex** — short-lived launcher coordination. Any client may hold it
   to prevent duplicate service startup. It grants no storage ownership and no
   write authority.
 - **takeover coordination** — held only while evaluating and performing a takeover,
   so two would-be successors cannot both decide they have won.
+- **resource coordination** — held for the length of one operation over an
+  installation-local managed resource cache, so two administrators cannot both act
+  on the same bytes and capacity accounting. It grants no storage ownership and no
+  write authority: it serialises operations over files that are not the workspace.
 - **lifetime storage lock** — held by the owning service for the entire writable
   ownership lifetime. This is the one that, with the sole exclusive SQLite
   connection, constitutes storage ownership.
@@ -37,6 +41,10 @@ class LockRole(str, Enum):
 
     BOOTSTRAP_MUTEX = "bootstrap_mutex"
     TAKEOVER_COORDINATION = "takeover_coordination"
+    #: Serialises operations over one installation-local managed resource cache.
+    #: Narrow on purpose: it is not lifetime storage ownership, grants no write
+    #: authority over a workspace, and must never be used as a stand-in for either.
+    RESOURCE_COORDINATION = "resource_coordination"
     LIFETIME_STORAGE = "lifetime_storage"
 
     @property
