@@ -244,7 +244,9 @@ _MESSAGE_ERASE_REFUSED: Final = (
 _MESSAGE_ERASE_UNAVAILABLE: Final = (
     "the evidence store could not complete the erasure; repeat the request"
 )
-_MESSAGE_ERASED_EVIDENCE: Final = "this evidence was erased and cannot be captured again by replay"
+_MESSAGE_ERASED_EVIDENCE: Final = (
+    "this evidence was erased and cannot be captured again by replay"
+)
 
 
 def evidence_search(context: OperationContext) -> Mapping[str, Any]:
@@ -735,7 +737,9 @@ class EvidenceHandlers:
                 raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_ERASE_REFUSED)
             return EvidenceEraseResult(
                 evidence_id=request.evidence_id,
-                erase_disposition="already_erased" if erased.already_erased else "erased",
+                erase_disposition="already_erased"
+                if erased.already_erased
+                else "erased",
                 content_disposition=erased.content_disposition,
             ).to_wire()
 
@@ -1144,8 +1148,7 @@ def _capture_idempotency_equivalences(
     for spelling in (original, text_form):
         candidate = equivalence_for(spelling)
         if candidate.fingerprint != primary.fingerprint and all(
-            candidate.fingerprint != existing.fingerprint
-            for existing in alternatives
+            candidate.fingerprint != existing.fingerprint for existing in alternatives
         ):
             alternatives.append(candidate)
     return primary, tuple(alternatives)

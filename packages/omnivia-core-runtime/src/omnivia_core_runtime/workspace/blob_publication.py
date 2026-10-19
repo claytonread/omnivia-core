@@ -177,7 +177,9 @@ def blob_path(blobs_root: Path, digest: str) -> Path:
     `sha256:[0-9a-f]{64}` -- which admits no separator, no `..` and no absolute path.
     """
     if DIGEST_PATTERN.fullmatch(digest) is None:
-        raise BlobPublicationRefused("blob digest is outside the accepted address domain")
+        raise BlobPublicationRefused(
+            "blob digest is outside the accepted address domain"
+        )
     return blobs_root / "sha256" / digest.removeprefix("sha256:")
 
 
@@ -276,7 +278,9 @@ def publish_blob(blobs_root: Path, digest: str, content: bytes) -> Path:
             view = memoryview(content)
             while view:
                 written = os.write(descriptor, view)
-                if written <= 0:  # pragma: no cover - defensive operating-system failure
+                if (
+                    written <= 0
+                ):  # pragma: no cover - defensive operating-system failure
                     raise OSError("short write while publishing blob")
                 view = view[written:]
             os.fsync(descriptor)

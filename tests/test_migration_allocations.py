@@ -325,10 +325,9 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0074 is governed code-analysis import and repository applicability (W12),
     # pinned to the commit that carries its SQL.
     74: "68c20da67de76e5f16fc011228aeb2f85a481d09",
-    # 0075 is physical erasure of direct-captured evidence (LEX-01). PROVISIONAL:
-    # pinned to the pre-commit HEAD because the file is not committed yet; repin
-    # to the commit that carries its SQL once it lands.
-    75: "00b4424490ec211c529ff9055be971b48bf1c201",
+    # 0075 is physical erasure of direct-captured evidence (LEX-01), pinned to
+    # the commit that introduced its SQL.
+    75: "b8777c16f0f1ee58a2ec89bd7e3754a1aca7e0e6",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
@@ -396,7 +395,9 @@ def test_the_exact_option_b_allocation_is_pinned() -> None:
 
 
 def test_every_allocation_belongs_to_this_repository() -> None:
-    assert {entry["repository"] for entry in _document()["allocations"]} == {"omnivia-core"}
+    assert {entry["repository"] for entry in _document()["allocations"]} == {
+        "omnivia-core"
+    }
 
 
 def test_agent_runtime_migrations_are_accepted_at_the_frozen_landing() -> None:
@@ -422,7 +423,9 @@ def test_reserved_sql_is_absent_from_the_tree() -> None:
     directory = guard.MIGRATION_DIR
     for number, filename, _owner, state in EXPECTED_ALLOCATION:
         if state == "reserved":
-            assert not (directory / filename).exists(), f"{number} is reserved, not written"
+            assert not (directory / filename).exists(), (
+                f"{number} is reserved, not written"
+            )
 
 
 def test_the_repository_authority_passes_the_guard() -> None:
@@ -574,7 +577,9 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "filename is not an ordered migration name",
-        lambda document, present: _entry(document, 21).update({"filename": "context_models.sql"}),
+        lambda document, present: _entry(document, 21).update(
+            {"filename": "context_models.sql"}
+        ),
         "not of the form NNNN_name.sql",
     ),
     (
@@ -611,17 +616,23 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "accepted allocation pins no introducing commit",
-        lambda document, present: _entry(document, 18).update({"introduced_commit": None}),
+        lambda document, present: _entry(document, 18).update(
+            {"introduced_commit": None}
+        ),
         "accepted allocation must pin a 40-character introducing commit",
     ),
     (
         "accepted allocation pins no accepted commit",
-        lambda document, present: _entry(document, 18).update({"accepted_commit": None}),
+        lambda document, present: _entry(document, 18).update(
+            {"accepted_commit": None}
+        ),
         "accepted allocation must pin a 40-character accepted commit",
     ),
     (
         "accepted allocation pins malformed accepted commit",
-        lambda document, present: _entry(document, 18).update({"accepted_commit": "HEAD"}),
+        lambda document, present: _entry(document, 18).update(
+            {"accepted_commit": "HEAD"}
+        ),
         "accepted allocation must pin a 40-character accepted commit",
     ),
     (
@@ -680,7 +691,9 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "colliding file under an unallocated name",
-        lambda document, present: present.update({"0021_chat_foundation.sql": "e" * 64}),
+        lambda document, present: present.update(
+            {"0021_chat_foundation.sql": "e" * 64}
+        ),
         "allocated to nobody",
     ),
     (
@@ -690,17 +703,23 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "accepted predecessor filename is not a name",
-        lambda document, present: document["accepted_predecessor"].update({"filename": ["x"]}),
+        lambda document, present: document["accepted_predecessor"].update(
+            {"filename": ["x"]}
+        ),
         "filename must be a non-empty string",
     ),
     (
         "accepted predecessor number is not an integer",
-        lambda document, present: document["accepted_predecessor"].update({"number": "17"}),
+        lambda document, present: document["accepted_predecessor"].update(
+            {"number": "17"}
+        ),
         "number must be an integer",
     ),
     (
         "accepted predecessor filename does not name its own number",
-        lambda document, present: document["accepted_predecessor"].update({"number": 20}),
+        lambda document, present: document["accepted_predecessor"].update(
+            {"number": 20}
+        ),
         "does not name migration 0020",
     ),
     (
@@ -959,7 +978,9 @@ def test_the_checked_head_must_descend_from_the_accepted_commit() -> None:
     document["frozen_source_head"] = head_before_acceptance
     findings = guard.check_history(json.dumps(document), head=head_before_acceptance)
     assert len(findings) == 3, findings
-    assert all("does not descend from the accepted lineage" in finding for finding in findings)
+    assert all(
+        "does not descend from the accepted lineage" in finding for finding in findings
+    )
 
 
 def test_the_accepted_commit_must_contain_the_migration_blob(
@@ -1004,7 +1025,9 @@ def test_history_findings_reach_the_process_exit_code(
     provoked, because provoking it for real would mean writing a false pin into the
     repository's own authority file."""
     monkeypatch.setattr(
-        guard, "check_history", lambda text: ["authority: frozen_source_head is a fiction"]
+        guard,
+        "check_history",
+        lambda text: ["authority: frozen_source_head is a fiction"],
     )
     assert guard.main() == 1
     assert "frozen_source_head is a fiction" in capsys.readouterr().err
@@ -1017,7 +1040,9 @@ def test_a_fact_the_guard_cannot_establish_fails_the_process(
     with a message, not a check that is quietly skipped."""
 
     def unavailable(*_arguments: object, **_keywords: object) -> dict[str, str]:
-        raise guard.GuardError("git could not be run: [Errno 2] No such file or directory")
+        raise guard.GuardError(
+            "git could not be run: [Errno 2] No such file or directory"
+        )
 
     monkeypatch.setattr(guard, "migration_files", unavailable)
     assert guard.main() == 1

@@ -417,8 +417,12 @@ def test_lex_01_erased_evidence_is_physically_gone_and_never_found_again(
         source_version=VERSION_MARKER,
     )
     target_blob = cap.blob_file(
-        owned, cap.rows(owned, f"SELECT blob_content_digest FROM {ARTIFACTS} "
-                        f"WHERE evidence_id = ?", target)[0][0]
+        owned,
+        cap.rows(
+            owned,
+            f"SELECT blob_content_digest FROM {ARTIFACTS} WHERE evidence_id = ?",
+            target,
+        )[0][0],
     )
     assert target_blob.is_file()
     # Before: both are found, by their content and by their identity, and the pack cites.
@@ -429,7 +433,11 @@ def test_lex_01_erased_evidence_is_physically_gone_and_never_found_again(
     tick(clock)
     response = erase(router, target)
     result = erased(response)
-    assert (result.evidence_id, result.erase_disposition, result.content_disposition) == (
+    assert (
+        result.evidence_id,
+        result.erase_disposition,
+        result.content_disposition,
+    ) == (
         target,
         "erased",
         "erased",
@@ -438,17 +446,23 @@ def test_lex_01_erased_evidence_is_physically_gone_and_never_found_again(
 
     # Physically: every row, the file, every projection document, and the session index.
     for table in (ARTIFACTS, PROVENANCE, "omnivia_evidence_permission_labels"):
-        assert cap.rows(
-            owned, f"SELECT 1 FROM {table} WHERE evidence_id = ?", target
-        ) == []
-    assert cap.rows(owned, f"SELECT 1 FROM {STAGED} WHERE source_version = ?",
-                    VERSION_MARKER) == []
+        assert (
+            cap.rows(owned, f"SELECT 1 FROM {table} WHERE evidence_id = ?", target)
+            == []
+        )
+    assert (
+        cap.rows(
+            owned, f"SELECT 1 FROM {STAGED} WHERE source_version = ?", VERSION_MARKER
+        )
+        == []
+    )
     assert not target_blob.exists()
     assert cap.count(owned, BLOBS) == 1  # only the keeper's
     assert cap.count(owned, INTEGRITY) == 1
-    assert cap.rows(
-        owned, f"SELECT 1 FROM {DOCUMENTS} WHERE evidence_id = ?", target
-    ) == []
+    assert (
+        cap.rows(owned, f"SELECT 1 FROM {DOCUMENTS} WHERE evidence_id = ?", target)
+        == []
+    )
     session = fts.session_search_projection(owned.connection)
     assert session is not None and target not in session.material
     assert keeper in session.material
@@ -504,7 +518,10 @@ def test_lex_01_erasure_removes_every_row_the_evidence_owns_and_only_those(
     erased(erase(router, target))
 
     for table in owned_tables:
-        assert cap.rows(owned, f"SELECT 1 FROM {table} WHERE evidence_id = ?", target) == []
+        assert (
+            cap.rows(owned, f"SELECT 1 FROM {table} WHERE evidence_id = ?", target)
+            == []
+        )
         assert cap.rows(owned, f"SELECT 1 FROM {table} WHERE evidence_id = ?", keeper)
     assert cap.found(router, TARGET_WORD) == ()
     assert cap.found(router, KEEPER_WORD) == (keeper,)
@@ -630,7 +647,9 @@ def test_lex_01_bytes_a_survivor_shares_are_kept_until_the_last_holder_is_erased
     first = capture(router, clock, "note-first", text, n=1)
     second = capture(router, clock, "note-second", text, n=2)
     digest = cap.rows(
-        owned, f"SELECT blob_content_digest FROM {ARTIFACTS} WHERE evidence_id = ?", first
+        owned,
+        f"SELECT blob_content_digest FROM {ARTIFACTS} WHERE evidence_id = ?",
+        first,
     )[0][0]
     shared = cap.blob_file(owned, digest)
     assert cap.found(router, TARGET_WORD) == (second, first)
@@ -688,9 +707,9 @@ def test_lex_01_every_erasure_starts_a_new_projection_run_and_reclaims_the_old_o
     erased(erase(router, newest, request_id="req-e1", key="idem-e1"))
     run_2, epoch_2, checkpoint_2 = checkpoint_and_run(owned)
     assert run_2 != run and epoch_2 > epoch and int(checkpoint_2) < int(checkpoint)
-    assert {row[0] for row in cap.rows(owned, f"SELECT DISTINCT run_id FROM {DOCUMENTS}")} == {
-        run_2
-    }
+    assert {
+        row[0] for row in cap.rows(owned, f"SELECT DISTINCT run_id FROM {DOCUMENTS}")
+    } == {run_2}
 
     # An older item: the checkpoint does not move, and the run still changes.
     tick(clock)
@@ -709,7 +728,11 @@ def test_lex_01_every_erasure_starts_a_new_projection_run_and_reclaims_the_old_o
         fencing_generation=guard.fencing_generation,
         now_us=10**18,
     )
-    assert (outcome.run_id, outcome.activated, outcome.document_count) == (run_3, False, 1)
+    assert (outcome.run_id, outcome.activated, outcome.document_count) == (
+        run_3,
+        False,
+        1,
+    )
     assert cap.found(router, KEEPER_WORD) == (middle,)
 
 
@@ -743,7 +766,9 @@ def test_lex_01_a_failure_after_the_commit_is_retryable_and_the_same_key_repairs
     assert calls
 
     # Committed: the artifact is gone; the projection has not caught up.
-    assert cap.rows(owned, f"SELECT 1 FROM {ARTIFACTS} WHERE evidence_id = ?", older) == []
+    assert (
+        cap.rows(owned, f"SELECT 1 FROM {ARTIFACTS} WHERE evidence_id = ?", older) == []
+    )
     assert len(cap.rows(owned, f"SELECT 1 FROM {ERASURES}")) == 1
     assert cap.rows(owned, f"SELECT 1 FROM {DOCUMENTS} WHERE evidence_id = ?", older)
     # And the erased evidence is already unreachable: the frontier is the artifacts table.
@@ -755,9 +780,14 @@ def test_lex_01_a_failure_after_the_commit_is_retryable_and_the_same_key_repairs
     monkeypatch.setattr(evidence_handlers, "build_search_projection", real)
     tick(clock)
     result = erased(erase(router, older))
-    assert (result.erase_disposition, result.content_disposition) == ("erased", "erased")
+    assert (result.erase_disposition, result.content_disposition) == (
+        "erased",
+        "erased",
+    )
     assert len(cap.rows(owned, f"SELECT 1 FROM {ERASURES}")) == 1
-    assert cap.rows(owned, f"SELECT 1 FROM {DOCUMENTS} WHERE evidence_id = ?", older) == []
+    assert (
+        cap.rows(owned, f"SELECT 1 FROM {DOCUMENTS} WHERE evidence_id = ?", older) == []
+    )
     session = fts.session_search_projection(owned.connection)
     assert session is not None and older not in session.material
     assert keeper in session.material
@@ -798,7 +828,9 @@ def test_lex_01_a_restart_after_a_half_finished_erasure_converges_without_a_requ
         now_us=10**18,
     )
     assert outcome.activated and outcome.run_id != run_before
-    assert cap.rows(owned, f"SELECT 1 FROM {DOCUMENTS} WHERE evidence_id = ?", older) == []
+    assert (
+        cap.rows(owned, f"SELECT 1 FROM {DOCUMENTS} WHERE evidence_id = ?", older) == []
+    )
     projection = fts.open_search_projection(owned.connection, workspace_id=WORKSPACE_ID)
     assert older not in projection.material and projection.document_count == 2
 
@@ -885,14 +917,22 @@ def test_lex_01_a_malformed_erase_request_is_refused_before_any_write(
 # --- authority ---------------------------------------------------------------------------
 
 
-def untouched(owned: cap.Served, router: ApplicationDispatcher, evidence_id: str) -> None:
+def untouched(
+    owned: cap.Served, router: ApplicationDispatcher, evidence_id: str
+) -> None:
     """Nothing about this evidence moved: its rows, its file, its search and its receipt."""
-    assert cap.rows(owned, f"SELECT 1 FROM {ARTIFACTS} WHERE evidence_id = ?", evidence_id)
-    assert cap.rows(owned, f"SELECT 1 FROM {PROVENANCE} WHERE evidence_id = ?", evidence_id)
+    assert cap.rows(
+        owned, f"SELECT 1 FROM {ARTIFACTS} WHERE evidence_id = ?", evidence_id
+    )
+    assert cap.rows(
+        owned, f"SELECT 1 FROM {PROVENANCE} WHERE evidence_id = ?", evidence_id
+    )
     assert cap.count(owned, ERASURES) == 0
     assert cap.found(router, TARGET_WORD) == (evidence_id,)
     digest = cap.rows(
-        owned, f"SELECT blob_content_digest FROM {ARTIFACTS} WHERE evidence_id = ?", evidence_id
+        owned,
+        f"SELECT blob_content_digest FROM {ARTIFACTS} WHERE evidence_id = ?",
+        evidence_id,
     )[0][0]
     assert cap.blob_file(owned, digest).is_file()
 
@@ -923,7 +963,11 @@ def test_lex_01_unauthorized_and_cross_workspace_erasure_is_refused_and_changes_
 
     # Another workspace: refused by the binding, and by the session grant.
     elsewhere = erase(
-        router, target, request_id="req-w", key="idem-w", workspace_id=OTHER_WORKSPACE_ID
+        router,
+        target,
+        request_id="req-w",
+        key="idem-w",
+        workspace_id=OTHER_WORKSPACE_ID,
     )
     assert code_of(elsewhere) == "workspace_not_granted"
     untouched(owned, router, target)
@@ -944,13 +988,18 @@ def test_lex_01_unauthorized_and_cross_workspace_erasure_is_refused_and_changes_
     request = erase_request(target, request_id="req-c", key="idem-c")
     narrowed = replace(
         request,
-        metadata=replace(request.metadata, principal_claim=PrincipalClaim(claimed_roles=())),
+        metadata=replace(
+            request.metadata, principal_claim=PrincipalClaim(claimed_roles=())
+        ),
     )
     assert code_of(router.dispatch(narrowed)) == "authorization_denied"
     untouched(owned, router, target)
 
     # And a replay is authorised afresh: the erase that succeeds is the one under a grant.
-    assert erased(erase(router, target, request_id="req-ok", key="idem-ok")).evidence_id == target
+    assert (
+        erased(erase(router, target, request_id="req-ok", key="idem-ok")).evidence_id
+        == target
+    )
 
 
 def test_lex_01_evidence_that_is_not_a_direct_capture_is_refused_and_left_whole(
@@ -985,8 +1034,12 @@ def test_lex_01_evidence_that_is_not_a_direct_capture_is_refused_and_left_whole(
     audits = cap.count(owned, AUDIT)
     response = erase(router, "evd-foreign-1")
     assert code_of(response) == "conflict"
-    assert cap.rows(owned, f"SELECT 1 FROM {ARTIFACTS} WHERE evidence_id = 'evd-foreign-1'")
-    assert cap.rows(owned, f"SELECT 1 FROM {PROVENANCE} WHERE evidence_id = 'evd-foreign-1'")
+    assert cap.rows(
+        owned, f"SELECT 1 FROM {ARTIFACTS} WHERE evidence_id = 'evd-foreign-1'"
+    )
+    assert cap.rows(
+        owned, f"SELECT 1 FROM {PROVENANCE} WHERE evidence_id = 'evd-foreign-1'"
+    )
     assert cap.count(owned, ERASURES) == 0 and cap.count(owned, AUDIT) == audits
 
 
@@ -1030,11 +1083,16 @@ def test_lex_01_a_capture_replayed_after_its_evidence_was_erased_is_refused(
     text = f"The {TARGET_WORD} entry."
     tick(clock)
     request = cap.capture_request(
-        request_id="req-cap-1", key="idem-cap-1", source_native_id="note-target", text=text
+        request_id="req-cap-1",
+        key="idem-cap-1",
+        source_native_id="note-target",
+        text=text,
     )
     target = cap.captured(router.dispatch(request)).evidence_id
     digest = cap.rows(
-        owned, f"SELECT blob_content_digest FROM {ARTIFACTS} WHERE evidence_id = ?", target
+        owned,
+        f"SELECT blob_content_digest FROM {ARTIFACTS} WHERE evidence_id = ?",
+        target,
     )[0][0]
     tick(clock)
     erased(erase(router, target))
@@ -1178,7 +1236,9 @@ def _apply(connection: sqlite3.Connection, *, through: int) -> None:
             connection.executescript(migration.sql)
 
 
-def test_lex_01_migration_0075_is_the_successor_of_0074_and_replaces_exactly_nine_guards() -> None:
+def test_lex_01_migration_0075_is_the_successor_of_0074_and_replaces_exactly_nine_guards() -> (
+    None
+):
     versions = [migration.version for migration in load_migrations()]
     assert versions[-1] == 75 and versions[-2] == 74
     connection = sqlite3.connect(":memory:")
@@ -1202,7 +1262,9 @@ def test_lex_01_migration_0075_is_the_successor_of_0074_and_replaces_exactly_nin
     finally:
         connection.close()
     changed = {name for name in before if after[name] != before[name]}
-    assert changed == {f"omnivia_guard_{t[len('omnivia_'):]}_delete" for t in GUARDED_BY_RECEIPT}
+    assert changed == {
+        f"omnivia_guard_{t[len('omnivia_') :]}_delete" for t in GUARDED_BY_RECEIPT
+    }
     added = set(after) - set(before)
     assert added == {
         "omnivia_guard_evidence_erasures_insert",
@@ -1211,7 +1273,9 @@ def test_lex_01_migration_0075_is_the_successor_of_0074_and_replaces_exactly_nin
     }
 
 
-def test_lex_01_migration_0075_refuses_a_database_whose_delete_guards_are_not_0008s() -> None:
+def test_lex_01_migration_0075_refuses_a_database_whose_delete_guards_are_not_0008s() -> (
+    None
+):
     """The migration replaces a guard it has first proved is the one it expects."""
     connection = sqlite3.connect(":memory:")
     try:
