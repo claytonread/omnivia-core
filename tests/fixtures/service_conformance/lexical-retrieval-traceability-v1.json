@@ -34,13 +34,11 @@
     {
       "clause_id": "LEX-03",
       "clause": "A workspace backed up and restored returns the same ranked results.",
-      "state": "pending",
-      "evidence": [],
-      "partial_evidence": [
-        "packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py::test_lb_l20_reopening_rebuilds_the_index_from_the_durable_rows",
-        "packages/omnivia-core-runtime/tests/phase2/test_migration_backup_restore.py::test_mb21_mb22_rollback_restores_the_exact_schema_counts_and_values"
+      "state": "covered",
+      "evidence": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_lexical_retrieval_workspaces.py::test_lex_03_a_restored_workspace_returns_the_same_ranked_results"
       ],
-      "pending_reason": "No test restores a verified backup of a workspace that holds a built search projection and compares a ranked search before and after. The reopen test re-derives the index in the same database file; the backup test restores the pre-upgrade legacy database and never searches it. The standard lifecycle script restores that same legacy database, so it cannot carry the assertion either."
+      "covers": "A workspace with a built search projection is backed up with the production online-backup path, verified, restored into a fresh directory with the source deleted, and reopened as the service starts. The restored run is current (the start-up build activates nothing) with the same run id, build digest, checkpoint and document count, the artifact checksums are unchanged, and evidence.search returns byte-identical pages, including a relevance order, a recency tie-break, an empty result and a paged result, for six queries."
     },
     {
       "clause_id": "LEX-04",
@@ -56,28 +54,22 @@
     {
       "clause_id": "LEX-05",
       "clause": "BM25 scoring uses statistics from the authorised frontier only, and new evidence starts a fresh projection run.",
-      "state": "pending",
-      "evidence": [],
-      "partial_evidence": [
-        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_search_vertical.py::test_lb_v9_an_excluded_artifact_cannot_move_the_order_of_authorized_members",
-        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_search_vertical.py::test_lb_v8_an_excluded_artifact_is_never_scored_even_when_the_page_is_identical",
-        "packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py::test_lb_l24_the_narrowing_addresses_the_frontier_and_never_the_corpus",
-        "packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py::test_lb_l7_new_evidence_starts_a_fresh_run_that_supersedes_and_reclaims"
+      "state": "covered",
+      "evidence": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_lexical_retrieval_workspaces.py::test_lex_05_statistics_follow_the_authorised_frontier_as_evidence_comes_and_goes",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_lexical_retrieval_workspaces.py::test_lex_05_the_rare_term_matrix_follows_document_frequency"
       ],
-      "pending_reason": "No test adds and removes evidence and checks BM25 statistics, and none runs the rare-term matrix. The adjacent tests show that an excluded artifact with a very long text and 340 occurrences of the term cannot reorder the authorised members, that it is never given to the ranker, and that adding evidence supersedes the previous run. None removes evidence from the corpus (LEX-01 has no such operation) or varies term rarity."
+      "covers": "Through evidence.search, evidence is added (a stale-projection refusal until a fresh run is built), tombstoned, un-tombstoned, restricted and released, and the order of the same matching items follows the average length of the authorised frontier at each step: unmatched filler lifts it and reverses the order, removing the filler reverses it back, and a 340-occurrence restricted item moves nothing until its label is withdrawn. The rare-term matrix shows document frequency in the match set as holders of a rare term come and go, restricted holders never counted. BM25's idf is one constant per single-phrase query, so it cannot reorder a result and is not claimed here."
     },
     {
       "clause_id": "LEX-06",
       "clause": "A search in one workspace cannot return another workspace's evidence, and no cache is shared between workspaces.",
-      "state": "pending",
-      "evidence": [],
-      "partial_evidence": [
-        "packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py::test_lb_l18_a_frontier_from_another_workspace_is_refused",
-        "packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py::test_lb_l19_the_index_lives_in_temp_and_touches_no_persisted_schema",
-        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_search_vertical.py::test_another_workspaces_evidence_is_never_returned",
-        "tests/service_conformance/test_lexical_retrieval_traceability.py::test_the_lexical_path_holds_no_cache"
+      "state": "covered",
+      "evidence": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_lexical_retrieval_workspaces.py::test_lex_06_two_live_workspaces_never_share_results_counts_ranks_or_state",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_lexical_retrieval_workspaces.py::test_lex_06_a_continuation_minted_in_one_workspace_is_refused_in_the_other"
       ],
-      "pending_reason": "No test searches two live workspaces in one process or exercises a cache-isolation scenario. The adjacent tests show that a foreign frontier is refused, that the index lives in a per-connection temp table, that the evidence read is workspace-scoped, and that fts.py, retrieval.py and the evidence handler contain no cache (a static check, not isolation)."
+      "covers": "Two migrated workspaces open in one process with the same evidence ids, native ids, checksums, checkpoint and projection run id. Interleaved and repeated searches return each workspace's own evidence, count and rank; the other workspace's request is refused by the binding; each connection's session projection holds only its own documents; new evidence in one workspace leaves the other level and unchanged; and a continuation token minted in one workspace is refused in the other even though both rankings have the same snapshot, so the process-wide token store is isolated by workspace."
     },
     {
       "clause_id": "LEX-07",

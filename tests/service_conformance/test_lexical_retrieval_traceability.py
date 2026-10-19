@@ -46,7 +46,7 @@ LEXICAL_SOURCES = (
 )
 CLAUSE_IDS = [f"LEX-{ordinal:02d}" for ordinal in range(1, 8)]
 #: Exact: closing a gap moves a clause out of this set and opening one moves it in.
-PENDING = {"LEX-01", "LEX-03", "LEX-05", "LEX-06"}
+PENDING = {"LEX-01"}
 CLAUSE_KEYS = {"clause_id", "clause", "state", "evidence"}
 REFUSED_MARKERS = {"skip", "skipif", "xfail"}
 
