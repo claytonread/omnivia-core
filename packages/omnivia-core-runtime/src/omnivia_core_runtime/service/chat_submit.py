@@ -86,9 +86,12 @@ from omnivia_core_runtime.storage.chat import (
     ChatWriter,
     QueuedSubmission,
     StaleVersion,
+    message_exists,
+    read_active_draft,
     read_active_queue_for_actor,
     read_branch,
     read_conversation,
+    read_draft_by_id,
     read_generation_attempt_outcome,
     read_generation_attempts,
     read_generation_events,
@@ -102,9 +105,11 @@ from omnivia_core_runtime.storage.chat import (
 __all__ = [
     "CANCEL_QUEUED_SUBMISSION_COMMAND",
     "CREATE_CONVERSATION_COMMAND",
+    "DISCARD_DRAFT_COMMAND",
     "ENQUEUE_MESSAGE_COMMAND",
     "REORDER_QUEUED_SUBMISSION_COMMAND",
     "RETRY_GENERATION_COMMAND",
+    "SAVE_DRAFT_COMMAND",
     "STOP_GENERATION_COMMAND",
     "SUBMIT_MESSAGE_COMMAND",
     "UPDATE_QUEUED_SUBMISSION_COMMAND",
@@ -114,9 +119,11 @@ __all__ = [
 
 CANCEL_QUEUED_SUBMISSION_COMMAND: Final = "CancelQueuedSubmission"
 CREATE_CONVERSATION_COMMAND: Final = "CreateConversation"
+DISCARD_DRAFT_COMMAND: Final = "DiscardDraft"
 ENQUEUE_MESSAGE_COMMAND: Final = "EnqueueMessage"
 REORDER_QUEUED_SUBMISSION_COMMAND: Final = "ReorderQueuedSubmission"
 RETRY_GENERATION_COMMAND: Final = "RetryGeneration"
+SAVE_DRAFT_COMMAND: Final = "SaveDraft"
 STOP_GENERATION_COMMAND: Final = "StopGeneration"
 SUBMIT_MESSAGE_COMMAND: Final = "SubmitMessage"
 UPDATE_QUEUED_SUBMISSION_COMMAND: Final = "UpdateQueuedSubmission"
@@ -125,6 +132,9 @@ UPDATE_QUEUED_SUBMISSION_COMMAND: Final = "UpdateQueuedSubmission"
 #: (D07 `CommandResultEnvelope.resultRef`), naming the row `EnqueueMessage` just
 #: wrote so a caller can address it without a second read-back operation.
 _QUEUED_SUBMISSION_RESULT_REF_PREFIX: Final = "queued-submission:"
+#: `chat-draft:<draftId>` names the draft row a `SaveDraft` just wrote, the same
+#: opaque resultRef convention the queued row's ref uses.
+_DRAFT_RESULT_REF_PREFIX: Final = "chat-draft:"
 
 #: The domain event kind the outbox row carries. A member of the Chat contract's own
 #: durable event vocabulary rather than a name invented here, because the delivery
@@ -240,6 +250,41 @@ _ENQUEUE_FIELDS: Final = frozenset(
         "targetReference",
     }
 )
+_DISCARD_DRAFT_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "actorId",
+        "draftId",
+    }
+)
+_SAVE_DRAFT_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "actorId",
+        "draftId",
+        "mode",
+        "sourceMessageId",
+        "text",
+        "attachmentReferences",
+        "contextReferences",
+        "targetReference",
+        "expectedVersion",
+    }
+)
+#: 0029's own `mode` CHECK on `omnivia_chat_drafts` -- the same three modes the
+#: `ComposerDraftMode` contract value admits.
+_DRAFT_MODES: Final = frozenset({"normal", "edit_message", "reuse_message"})
+#: The optional members whose *presence* names work this build cannot perform for a
+#: draft: the references split is owned by the attachment/context work, and a draft
+#: carrying one is UNIMPLEMENTED (`dependency_unavailable`) rather than malformed.
+_SAVE_UNSUPPORTED_FIELDS: Final = ("targetReference",)
+_SAVE_UNSUPPORTED_REFERENCES: Final = ("attachmentReferences", "contextReferences")
 _UPDATE_QUEUE_FIELDS: Final = frozenset(
     {
         "protocolVersion",
@@ -291,6 +336,17 @@ _MESSAGE_QUEUE_CONTENT: Final = (
 _MESSAGE_QUEUE_DRAINED: Final = (
     "the queued submission this command names has already been drained by another "
     "SubmitMessage"
+)
+_MESSAGE_DRAFT: Final = (
+    "the draft this command names is not this actor's active draft of that "
+    "conversation and mode"
+)
+_MESSAGE_DRAFT_STALE: Final = (
+    "the draft is not at the version this command expects, or the command would "
+    "overwrite an existing draft without stating the version it saw"
+)
+_MESSAGE_SOURCE_MESSAGE: Final = (
+    "the message this edit/reuse draft names does not exist in that conversation"
 )
 
 
@@ -377,6 +433,38 @@ class _CreateConversation:
     workspace_id: str
     actor_id: str
     title: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _SaveDraft:
+    """One decoded `SaveDraftRequest`, in the variant this build serves.
+
+    `expected_version` is `None` together with a fresh draft (the INSERT case)
+    and REQUIRED against an existing row (the CAS case); the decoder leaves both
+    shapes constructible and the command refuses the overwrite-without-CAS
+    against the row it actually reads.
+    """
+
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
+    mode: str
+    draft_id: str | None
+    source_message_id: str | None
+    text: str
+    expected_version: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _DiscardDraft:
+    """One decoded `DiscardDraftRequest`."""
+
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
+    draft_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -802,6 +890,94 @@ def _decode_create_conversation(command: Mapping[str, Any]) -> _CreateConversati
         workspace_id=_identifier(command, "workspaceId"),
         actor_id=_identifier(command, "actorId"),
         title=None if "title" not in command else str(title),
+    )
+
+
+def _decode_save_draft(command: Mapping[str, Any]) -> _SaveDraft:
+    """Decode one `SaveDraftRequest`, or refuse it as an invalid request.
+
+    Held to `commands.schema.json#/$defs/SaveDraftRequest`'s exact closed field
+    set. The slice this build serves is a TEXT-ONLY draft: non-empty
+    `attachmentReferences`/`contextReferences`, or a stated `targetReference`,
+    are contract members this build has no read-back for yet, so such a request
+    is UNIMPLEMENTED (`None`) rather than malformed -- the same rule `_submit`
+    applies to its own reference members.
+
+    `mode` must agree with `sourceMessageId` exactly as 0029's own CHECK does:
+    a `normal` draft names no message, and an `edit_message`/`reuse_message`
+    draft names the one it edits or reuses. `draftId` and `expectedVersion` are
+    optional together in the INSERT shape; the CAS shape is the command's own
+    decision against the row it reads.
+    """
+    unknown = sorted(set(command) - _SAVE_DRAFT_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+    mode = command.get("mode")
+    if not isinstance(mode, str) or mode not in _DRAFT_MODES:
+        raise _invalid("mode", "is not a mode this contract defines")
+    text = command.get("text")
+    if (
+        not isinstance(text, str)
+        or len(text.encode("utf-8")) > _MAX_PART_PAYLOAD_BYTES
+        or "\x00" in text
+    ):
+        raise _invalid("text", "is not a string of at most 262144 bytes")
+    source_message_id = None
+    if mode != "normal":
+        source_message_id = _identifier(command, "sourceMessageId")
+    elif "sourceMessageId" in command:
+        raise _invalid(
+            "sourceMessageId",
+            "names a message but the draft's mode is not one that edits or reuses one",
+        )
+    draft_id = None
+    if "draftId" in command:
+        draft_id = _derivable_identifier(command, "draftId")
+    expected_version = None
+    if "expectedVersion" in command:
+        expected_version = _positive_integer(command, "expectedVersion")
+    return _SaveDraft(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        actor_id=_identifier(command, "actorId"),
+        mode=mode,
+        draft_id=draft_id,
+        source_message_id=source_message_id,
+        text=text,
+        expected_version=expected_version,
+    )
+
+
+def _decode_discard_draft(command: Mapping[str, Any]) -> _DiscardDraft:
+    """Decode one `DiscardDraftRequest`, or refuse it as an invalid request.
+
+    Held to `commands.schema.json#/$defs/DiscardDraftRequest`'s exact closed
+    field set: six fields, and `draftId` is required.
+    """
+    unknown = sorted(set(command) - _DISCARD_DRAFT_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+    return _DiscardDraft(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        actor_id=_identifier(command, "actorId"),
+        draft_id=_identifier(command, "draftId"),
     )
 
 
@@ -1356,6 +1532,149 @@ def _create_conversation(request: _CreateConversation) -> ChatCommand:
                 graph_revision=_INITIAL_GRAPH_REVISION,
                 latest_conversation_sequence=_INITIAL_CONVERSATION_SEQUENCE,
             ),
+        )
+
+    return command
+
+
+def _save_draft(request: _SaveDraft) -> ChatCommand:
+    """One decoded `SaveDraftRequest`, as the command the seam runs.
+
+    Writes exactly one draft row and nothing else: no Message, no branch, no
+    queued submission, no generation job and no outbox event -- the draft is
+    UNSENT composition state (REF-042 §7.8), never a node of the committed
+    graph. One row per (actor, device, mode): a first save INSERTs at version 1
+    under the request's own `draftId`, derived from the command id when the
+    request states none; a save over an existing row CASes on the row's current
+    `version`, which the request must state as `expectedVersion` -- a command
+    that would overwrite an existing draft without stating the version it saw
+    is refused (`_MESSAGE_DRAFT_STALE`) rather than silently clobbering
+    whatever the actor last composed. An `edit_message`/`reuse_message` draft
+    names an existing committed Message, read and refused before any write.
+
+    The references are the empty lists this slice serves: 0029's draft row
+    keeps `references_json` as one array and the contract's read-back carries
+    the two lists separately, so a non-empty set waits for the reference
+    work that owns that split -- the decoder has already refused it as
+    unimplemented before this command runs.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        now = settlement.settled_at_us
+        conversation = read_conversation(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
+        if conversation is None or conversation.state != "active":
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
+
+        if request.source_message_id is not None and not message_exists(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+            message_id=request.source_message_id,
+        ):
+            raise ChatAggregateConflict(_MESSAGE_SOURCE_MESSAGE)
+
+        existing = read_active_draft(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+            actor_id=request.actor_id,
+            now_us=now,
+            mode=request.mode,
+        )
+        if existing is None:
+            draft_id = request.draft_id or f"{request.command_id}.draft"
+            writer.insert_draft(
+                draft_id=draft_id,
+                conversation_id=request.conversation_id,
+                actor_id=request.actor_id,
+                mode=request.mode,
+                text_content=request.text,
+                references=(),
+                schema_version=1,
+                updated_at_us=now,
+                source_message_id=request.source_message_id,
+            )
+        else:
+            if (
+                request.expected_version is None
+                or request.expected_version != existing.version
+                or (request.draft_id is not None and request.draft_id != existing.draft_id)
+            ):
+                raise ChatAggregateConflict(_MESSAGE_DRAFT_STALE)
+            draft_id = existing.draft_id
+            writer.update_draft(
+                draft_id=draft_id,
+                expected_version=existing.version,
+                text_content=request.text,
+                references=(),
+                updated_at_us=now,
+            )
+        return _ack(
+            SAVE_DRAFT_COMMAND,
+            request.command_id,
+            request.conversation_id,
+            result_ref=f"{_DRAFT_RESULT_REF_PREFIX}{draft_id}",
+        )
+
+    return command
+
+
+def _discard_draft(request: _DiscardDraft) -> ChatCommand:
+    """One decoded `DiscardDraftRequest`, as the command the seam runs.
+
+    The draft table forbids DELETE outright (0029's own guard has no writer
+    allowance for it), so a discard is the row's own expiry, written through the
+    writer. The command finds its target by `draftId` -- the row's primary key
+    within the workspace, and the one identity the request carries -- and then
+    holds it to this actor's own draft space: a row that names another actor,
+    another conversation, or another `draftId` than the request's is a stale
+    view, refused rather than discarded blind.
+
+    IDEMPOTENT BY GOAL STATE: no active row for this `draftId` is already the
+    discarded state, and the command completes without touching anything.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        now = settlement.settled_at_us
+        conversation = read_conversation(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
+        if conversation is None or conversation.state != "active":
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
+
+        existing = read_draft_by_id(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            draft_id=request.draft_id,
+        )
+        if (
+            existing is not None
+            and existing.expires_at_us is not None
+            and existing.expires_at_us <= now
+        ):
+            # Already expired: the discarded state, whatever wrote it.
+            existing = None
+        if existing is not None:
+            if (
+                existing.actor_id != request.actor_id
+                or existing.conversation_id != request.conversation_id
+            ):
+                raise ChatAggregateConflict(_MESSAGE_DRAFT)
+            writer.discard_draft(draft_id=existing.draft_id, updated_at_us=now)
+        return _ack(
+            DISCARD_DRAFT_COMMAND,
+            request.command_id,
+            request.conversation_id,
         )
 
     return command
@@ -1946,4 +2265,26 @@ def resolve_chat_command(
         if retry_generation.workspace_id != context.workspace_id:
             raise _invalid("workspaceId", "is not the workspace this request was authorized for")
         return _retry_generation(retry_generation)
+    if request.command_name == SAVE_DRAFT_COMMAND:
+        save = _decode_save_draft(request.command)
+        if save.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if save.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        if any(field in request.command for field in _SAVE_UNSUPPORTED_FIELDS) or any(
+            request.command.get(field) for field in _SAVE_UNSUPPORTED_REFERENCES
+        ):
+            return None
+        return _save_draft(save)
+    if request.command_name == DISCARD_DRAFT_COMMAND:
+        discard = _decode_discard_draft(request.command)
+        if discard.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if discard.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        return _discard_draft(discard)
     return None

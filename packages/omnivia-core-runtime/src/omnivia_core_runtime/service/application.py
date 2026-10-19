@@ -84,6 +84,7 @@ from omnivia_core_runtime.service.document_processing import CatalogueSource
 from omnivia_core_runtime.service.handlers.analysis import analysis_start
 from omnivia_core_runtime.service.handlers.chat import (
     CHAT_COMMAND_OPERATION,
+    CHAT_DRAFT_OPERATION,
     CHAT_EVENTS_OPERATION,
     CHAT_FAMILY_OPERATIONS,
     CHAT_SNAPSHOT_OPERATION,
@@ -444,6 +445,7 @@ CHAT_OBSERVATION_PURPOSE: Final = "chat_observation"
 CHAT_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         CHAT_COMMAND_OPERATION: MUTATION_PURPOSES[CHAT_COMMAND_OPERATION],
+        CHAT_DRAFT_OPERATION: CHAT_OBSERVATION_PURPOSE,
         CHAT_EVENTS_OPERATION: CHAT_OBSERVATION_PURPOSE,
         CHAT_SNAPSHOT_OPERATION: CHAT_OBSERVATION_PURPOSE,
     }
@@ -1542,6 +1544,9 @@ def build_chat_registry(handlers: ChatHandlers) -> ApplicationOperationRegistry:
     )
     registry.register(
         CHAT_SNAPSHOT_OPERATION, cast(OperationHandler, handlers.chat_snapshot)
+    )
+    registry.register(
+        CHAT_DRAFT_OPERATION, cast(OperationHandler, handlers.chat_draft_read)
     )
     return registry
 
