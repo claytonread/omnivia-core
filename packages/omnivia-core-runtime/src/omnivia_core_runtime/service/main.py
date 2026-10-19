@@ -46,7 +46,12 @@ from omnivia_core_runtime.service.application import (
     build_engineering_application_dispatcher,
     build_governance_application_dispatcher,
     build_job_application_dispatcher,
+    build_knowledge_sharing_application_dispatcher,
     build_memory_application_dispatcher,
+    build_skill_application_dispatcher,
+    build_skill_resolution_application_dispatcher,
+    build_task_context_application_dispatcher,
+    build_trigger_application_dispatcher,
     build_workflow_application_dispatcher,
     compose_production_application_surface,
     local_owner_session,
@@ -92,6 +97,11 @@ from omnivia_core_runtime.service.installation_bootstrap import (
 from omnivia_core_runtime.service.installation_host import (
     InstallationAuthorityCoordinator,
 )
+from omnivia_core_runtime.service.knowledge_projects import (
+    KnowledgeProjectsRefused,
+    load_project_documents,
+)
+from omnivia_core_runtime.service.knowledge_sharing import NO_PROJECTS, ProjectAuthority
 from omnivia_core_runtime.service.legacy_import import (
     LegacyImportRefused,
     LegacyImportResult,
@@ -108,6 +118,10 @@ from omnivia_core_runtime.service.mcp_control import (
 from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
     server_capability_snapshot,
+)
+from omnivia_core_runtime.service.outcome_admission import (
+    NO_OUTCOME_ADMISSIONS,
+    OutcomeAdmissionAuthority,
 )
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
@@ -280,6 +294,8 @@ def _build_production_application_surface(
     execute_chat_generation: ChatGenerationExecution | None = None,
     resolve_workflow_release: WorkflowReleaseResolver | None = None,
     workflow_wait_policy: WaitResolutionPolicy | None = None,
+    project_authority: ProjectAuthority = NO_PROJECTS,
+    admission_authority: OutcomeAdmissionAuthority = NO_OUTCOME_ADMISSIONS,
 ) -> ProductionApplicationSurface:
     """Compose the exact production route for one live service.
 
@@ -294,6 +310,12 @@ def _build_production_application_surface(
 
     `resolve_workflow_release` is an override rather than a dependency: left out, the
     Workflow release authority is composed here (founder Ruling 2). See below.
+
+    `project_authority` is the server's Project binding for cross-Project knowledge sharing
+    (DEV-REQ-081): who owns a Project's domain scope and who is a member of it. It is composition
+    state, not a request field. `serve` takes it from the installation's own Project document
+    (`service/knowledge_projects.py`), and a service with no document binds no Project, so every
+    `knowledge.share.*` operation refuses.
     """
     if started.workspace_id is None:
         raise ValueError("a production application surface needs a workspace")
@@ -370,6 +392,13 @@ def _build_production_application_surface(
     # `dependency_unavailable`, which is the honest answer for a build that cannot say
     # whether a resolution was approved. Fabricating one would resolve a wait nobody
     # approved.
+    release_authority = (
+        resolve_workflow_release
+        if resolve_workflow_release is not None
+        else WorkspaceWorkflowReleaseAuthority(
+            service=started, workspace_id=started.workspace_id
+        )
+    )
     workflow = build_workflow_application_dispatcher(
         service=started,
         principal_id=LOCAL_PRINCIPAL,
@@ -377,21 +406,44 @@ def _build_production_application_surface(
         workspace_id=started.workspace_id,
         fallback=chat,
         clock=started.clock,
-        resolve_release=(
-            resolve_workflow_release
-            if resolve_workflow_release is not None
-            else WorkspaceWorkflowReleaseAuthority(
-                service=started, workspace_id=started.workspace_id
-            )
-        ),
+        resolve_release=release_authority,
         wait_policy=workflow_wait_policy,
+    )
+    # The trigger family sits beside the workflow family it belongs to, and confirms a
+    # declared Workflow version against the same release authority `workflow.start` uses.
+    trigger = build_trigger_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=workflow,
+        clock=started.clock,
+        resolve_release=release_authority,
     )
     decision = build_decision_application_dispatcher(
         service=started,
         principal_id=LOCAL_PRINCIPAL,
         installation_id=installation_id,
         workspace_id=started.workspace_id,
-        fallback=workflow,
+        fallback=trigger,
+        clock=started.clock,
+    )
+    # The Managed Skills families sit beside the decision family. The mutations hold the three
+    # skill roles; the restricted resolution read holds none and sits in front of them.
+    skill = build_skill_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=decision,
+        clock=started.clock,
+    )
+    skill_resolution = build_skill_resolution_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=skill,
         clock=started.clock,
     )
     engineering = build_engineering_application_dispatcher(
@@ -399,13 +451,33 @@ def _build_production_application_surface(
         principal_id=LOCAL_PRINCIPAL,
         installation_id=installation_id,
         workspace_id=started.workspace_id,
-        fallback=decision,
+        fallback=skill_resolution,
         local_continuity_association=TrustedContinuityAssociation(
             association_id="core-local-application",
             principal_id=LOCAL_PRINCIPAL,
             workspace_id=started.workspace_id,
             provenance=ContinuityAssociationProvenance.CORE_LOCAL_CONNECTION,
         ),
+    )
+    knowledge_sharing = build_knowledge_sharing_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=engineering,
+        projects=project_authority,
+        clock=started.clock,
+    )
+    # The task-context family sits beside knowledge sharing: an export and an outcome request are the
+    # routine-flow writes, and their reads are observations under their own purpose.
+    task_context = build_task_context_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=knowledge_sharing,
+        admission=admission_authority,
+        clock=started.clock,
     )
     return compose_production_application_surface(
         installation=installation,
@@ -415,8 +487,13 @@ def _build_production_application_surface(
         governance=governance,
         chat=chat,
         workflow=workflow,
+        trigger=trigger,
         decision=decision,
+        skill=skill,
+        skill_resolution=skill_resolution,
         engineering=engineering,
+        knowledge_sharing=knowledge_sharing,
+        task_context=task_context,
         probe=probe,
     )
 
@@ -904,6 +981,21 @@ def main(
         )
         return 2
 
+    # The Project bindings each served workspace is composed with. Read here, before anything can be
+    # advertised, and not for --check-only, which serves nothing. A refusal is a refusal to start.
+    # Both authorities come from one read of the same document, so sharing and admission cannot disagree about who
+    # is in a Project. Nothing else reads it.
+    project_authorities: Mapping[str, ProjectAuthority] = {}
+    admission_authorities: Mapping[str, OutcomeAdmissionAuthority] = {}
+    if not args.check_only:
+        try:
+            project_authorities, admission_authorities = load_project_documents(
+                settings.installation_root
+            )
+        except KnowledgeProjectsRefused as refused:
+            sys.stderr.write(f"refusing to serve: {refused}\n")
+            return 2
+
     source_work: Callable[[], object] | None = None
 
     def serve(started: ServiceRunner) -> None:
@@ -984,6 +1076,12 @@ def main(
             installation=installation,
             resolve_workflow_release=resolve_workflow_release,
             workflow_wait_policy=workflow_wait_policy,
+            project_authority=project_authorities.get(
+                started.workspace_id, NO_PROJECTS
+            ),
+            admission_authority=admission_authorities.get(
+                started.workspace_id, NO_OUTCOME_ADMISSIONS
+            ),
         )
         # One router, handed to both transports. That is the whole of how HTTP shares
         # the probe router and the application dispatcher rather than growing its own:

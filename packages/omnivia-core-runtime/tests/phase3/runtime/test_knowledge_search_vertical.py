@@ -1930,8 +1930,8 @@ def test_lc_b13_the_shipped_operations_are_exactly_the_catalogue_handlers() -> N
     # OPERATION_PURPOSES is the local-owner read policy: every registered read,
     # and no mutation -- the decision stubs' mutations are excluded by design.
     # OPERATION_PURPOSES is the workspace read policy: the seven reads this
-    # registry serves plus the decision family's reads (its own session derives
-    # its purposes from the same table).
+    # registry serves plus the decision and trigger families' reads (each family's
+    # own session derives its purposes from the same table).
     assert SHIPPED_OPERATIONS <= set(OPERATION_PURPOSES)
     assert set(OPERATION_PURPOSES) - SHIPPED_OPERATIONS == {
         "decision.record.get",
@@ -1948,6 +1948,9 @@ def test_lc_b13_the_shipped_operations_are_exactly_the_catalogue_handlers() -> N
         "engineering.search",
         "engineering.expand",
         "engineering.context.build",
+        # The trigger family's health read is a workspace read under its own session,
+        # and its purpose comes from the same table (C21).
+        "trigger.health",
     }
     for name in SHIPPED_OPERATIONS:
         entry = get_operation_metadata(name)

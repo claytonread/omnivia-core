@@ -64,6 +64,10 @@ from omnivia_core_runtime.execution.workflow import (
 )
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
+from omnivia_core_runtime.storage.completion_decisions import (
+    CompletionDecisionInvalid,
+    read_decision,
+)
 from omnivia_core_runtime.storage.connection import StorageError
 from omnivia_core_runtime.storage.workflow_runtime_hardening import (
     BoundRunAdmission,
@@ -1182,20 +1186,41 @@ def read_workflow_run(
             (workspace_id, run_id),
         ).fetchall()
     )
+    # The Runtime's accepted decision is the completion authority for a gated run (0066). Its
+    # digest is the audit identity the projection states, since the decision is the audit record.
+    # The 0027 row is read only for a run that carries no such decision, and nothing writes both.
+    try:
+        runtime_decision = read_decision(
+            connection, workspace_id=workspace_id, run_id=run_id
+        )
+    except CompletionDecisionInvalid as error:
+        raise StorageError(
+            f"run {run_id!r} carries a completion decision that does not verify"
+        ) from error
     completion_row = connection.execute(
         f"SELECT outcome, decided_at_us, audit_ref FROM {_COMPLETIONS} "
         "WHERE workspace_id = ? AND run_id = ?",
         (workspace_id, run_id),
     ).fetchone()
-    completion = (
-        None
-        if completion_row is None
-        else RunCompletionRecord(
+    completion: RunCompletionRecord | None
+    if runtime_decision is not None and completion_row is not None:
+        # Migration 0066 refuses this pair on write, so reaching it means the database was edited
+        # outside the guards. Two authorities for one run are refused rather than ranked.
+        raise StorageError(f"run {run_id!r} carries two completion authorities")
+    if runtime_decision is not None:
+        completion = RunCompletionRecord(
+            outcome=COMPLETION_OUTCOME_SUCCEEDED,
+            decided_at_us=runtime_decision.decided_at_us,
+            audit_ref=runtime_decision.decision_digest,
+        )
+    elif completion_row is not None:
+        completion = RunCompletionRecord(
             outcome=str(completion_row[0]),
             decided_at_us=int(completion_row[1]),
             audit_ref=str(completion_row[2]),
         )
-    )
+    else:
+        completion = None
 
     return WorkflowRunView(
         binding=binding,

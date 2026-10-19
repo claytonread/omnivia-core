@@ -59,6 +59,33 @@ RUNTIME_TABLES = (
 )
 
 
+def without_audit(counts: dict[str, int]) -> dict[str, int]:
+    """The counts a refused resolution must leave alone.
+
+    The audit trail is the one table a refusal adds to: a refused external signal is
+    recorded there, with its wait-signal observation, in a fenced write of its own.
+    """
+    return {
+        table: count
+        for table, count in counts.items()
+        if table != "omnivia_application_audit_events"
+    }
+
+
+def refused_signals(connection: Any) -> list[tuple[str, str]]:
+    """Each dead-lettered signal on record, as its reason and its audit outcome."""
+    return [
+        (str(row[0]), str(row[1]))
+        for row in connection.execute(
+            "SELECT o.delivery_reason, a.outcome_class "
+            "FROM omnivia_runtime_wait_signal_observations o "
+            "JOIN omnivia_application_audit_events a "
+            "ON a.audit_ref = o.audit_ref AND a.workspace_id = o.workspace_id "
+            "WHERE o.delivery_status = 'dead_lettered' ORDER BY o.observation_sequence"
+        )
+    ]
+
+
 def timestamp(value: int) -> str:
     moment = datetime.fromtimestamp(value / 1_000_000, tz=UTC)
     milliseconds = moment.microsecond // 1_000
@@ -456,7 +483,8 @@ def test_non_timer_resolution_after_deadline_is_expired_not_resolved(
         )
 
     assert policy.calls == 0
-    assert rt104.counts(running.connection) == before
+    assert without_audit(rt104.counts(running.connection)) == without_audit(before)
+    assert refused_signals(running.connection) == [("deadline_passed", "refused")]
 
 
 def test_stale_digest_is_rejected_before_policy(running: m1.Owned) -> None:
@@ -472,7 +500,8 @@ def test_stale_digest_is_rejected_before_policy(running: m1.Owned) -> None:
         )
 
     assert policy.calls == 0
-    assert rt104.counts(running.connection) == before
+    assert without_audit(rt104.counts(running.connection)) == without_audit(before)
+    assert refused_signals(running.connection) == [("payload_rejected", "refused")]
 
 
 def test_resolution_kind_mismatch_is_rejected_before_policy(
@@ -554,7 +583,8 @@ def test_conflicting_second_key_is_rejected_before_policy(running: m1.Owned) -> 
         )
 
     assert policy.calls == 0
-    assert rt104.counts(running.connection) == before
+    assert without_audit(rt104.counts(running.connection)) == without_audit(before)
+    assert refused_signals(running.connection) == [("wait_already_resolved", "refused")]
 
 
 def test_result_refusal_rolls_back_resolution_state_and_event(

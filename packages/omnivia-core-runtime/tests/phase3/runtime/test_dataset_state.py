@@ -536,9 +536,10 @@ def test_a_populated_0061_workspace_upgrades_to_0062_without_data_loss(tmp_path:
 
     upgraded = m2.take_ownership(path)
     try:
-        assert_guards_intact(upgraded.connection)
-        # The oracle is the catalogue through 0062: 0063 (engineering) is a later step.
+        # The oracle is the catalogue through 0062: 0063 (engineering) and 0064 (Skills)
+        # are later steps, so their guards must not be expected here.
         with m2.migration_catalogue_through(MIGRATION_VERSION):
+            assert_guards_intact(upgraded.connection)
             assert fingerprint_schema(upgraded.connection).matches(canonical_schema_fingerprint())
         assert _observe(upgraded, _observation(), at_us=BASE_US + 1) == 1
         assert integrity_check(upgraded.connection) == []

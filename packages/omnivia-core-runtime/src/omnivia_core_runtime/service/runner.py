@@ -48,6 +48,7 @@ from omnivia_core_runtime.ownership.locks import (
     qualify_filesystem,
 )
 from omnivia_core_runtime.service.bootstrap import refuse_incompatible_workspace
+from omnivia_core_runtime.service.completion_gate import CompletionGate
 from omnivia_core_runtime.service.lifecycle import (
     ReadinessRefused,
     ReadinessRequirements,
@@ -169,12 +170,21 @@ class ServiceRunner:
     #: (which never calls `__init__`) still reads a real starting cursor
     #: instead of raising `AttributeError` on first tick.
     _invalidation_cursor: str | None = None
+    #: The Runtime's authority for final completion (DEV-REQ-137), or `None` when this instance was
+    #: not composed with one. A class-level default so the `__new__`-built harness reads `None` too,
+    #: which refuses Workflow claims and settlements rather than running them unproven.
+    completion: CompletionGate | None = None
 
     def __init__(
-        self, settings: ServiceSettings, *, clock: Clock | None = None
+        self,
+        settings: ServiceSettings,
+        *,
+        clock: Clock | None = None,
+        completion: CompletionGate | None = None,
     ) -> None:
         self.settings = settings
         self.clock: Clock = clock or SystemClock()
+        self.completion = completion
         self.layout = WorkspaceLayout(root=settings.workspace_root)
         self.installation = InstallationLayout(root=settings.installation_root)
         self.lifecycle = ServiceLifecycle()
@@ -566,6 +576,7 @@ class ServiceRunner:
             workspace_id=self.workspace_id,
             fencing_generation=self.generation,
             clock=self.clock,
+            completion=self.completion,
         )
 
     def _recover(self, connection: sqlite3.Connection) -> bool:

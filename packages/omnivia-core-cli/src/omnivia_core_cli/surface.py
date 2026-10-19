@@ -7,8 +7,8 @@ maps to. It dispatches nothing and calls nothing.
 
 Three properties are held here rather than left to a reader:
 
-*Bijection with the catalogue.* The twenty-eight application commands map onto the
-twenty-eight operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
+*Bijection with the catalogue.* The seventy-nine application commands map onto the
+seventy-nine operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
 command reaching an operation the contract does not publish -- or an operation
 published with no command reaching it -- is an import-time refusal, not a
 runtime surprise. That also closes the door on the legacy `core.*` operation names,
@@ -250,6 +250,74 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ),
     ApplicationCommand(
         ("decisions", "result-use"), "decision.result_use.evaluate", "decision_result_use"
+    ),
+    ApplicationCommand(
+        ("trigger", "declare"), "trigger.declare", "trigger_configuration"
+    ),
+    ApplicationCommand(
+        ("trigger", "lifecycle"), "trigger.lifecycle", "trigger_configuration"
+    ),
+    ApplicationCommand(("trigger", "ingest"), "trigger.ingest", "trigger_ingestion"),
+    ApplicationCommand(("trigger", "health"), "trigger.health", "trigger_observation"),
+    # Managed Skills (C17). Each purpose is the service's own for the operation it names:
+    # authoring, publication, installation and resolution are four separate authorities.
+    ApplicationCommand(
+        ("skills", "draft-create"), "skills.draft.create", "skill_authoring"
+    ),
+    ApplicationCommand(
+        ("skills", "draft-update"), "skills.draft.update", "skill_authoring"
+    ),
+    ApplicationCommand(
+        ("skills", "propose"), "skills.proposal.submit", "skill_authoring"
+    ),
+    ApplicationCommand(
+        ("skills", "publish"), "skills.version.publish", "skill_publication"
+    ),
+    ApplicationCommand(
+        ("skills", "deprecate"), "skills.version.deprecate", "skill_publication"
+    ),
+    ApplicationCommand(("skills", "install"), "skills.install", "skill_installation"),
+    ApplicationCommand(("skills", "remove"), "skills.remove", "skill_installation"),
+    ApplicationCommand(("skills", "resolve"), "skills.resolve", "skill_resolution"),
+    # Cross-Project knowledge sharing (DEV-REQ-081). Proposing and deciding share one purpose; the
+    # recipient read and the owner's lineage read are observations, which no sharing grant carries.
+    ApplicationCommand(
+        ("knowledge", "share-propose"), "knowledge.share.propose", "knowledge_sharing"
+    ),
+    ApplicationCommand(
+        ("knowledge", "share-decide"), "knowledge.share.decide", "knowledge_sharing"
+    ),
+    ApplicationCommand(
+        ("knowledge", "share-read"), "knowledge.share.read", "knowledge_share_observation"
+    ),
+    ApplicationCommand(
+        ("knowledge", "share-lineage"),
+        "knowledge.share.lineage",
+        "knowledge_share_observation",
+    ),
+    # Task-context exports and outcome requests (DEV-REQ-159, DEV-REQ-008). Exporting and requesting an
+    # outcome are separate acts, and a read of either is an observation that no writing grant carries.
+    ApplicationCommand(
+        ("task-context", "export"), "task_context.export", "task_context_export"
+    ),
+    ApplicationCommand(
+        ("task-context", "export-read"),
+        "task_context.export.read",
+        "task_context_observation",
+    ),
+    ApplicationCommand(
+        ("outcome", "request-create"), "outcome.request.create", "outcome_request"
+    ),
+    ApplicationCommand(
+        ("outcome", "request-read"), "outcome.request.read", "task_context_observation"
+    ),
+    # The project context: a read of the active Project is an observation, and switching it is a
+    # mutation under its own purpose.
+    ApplicationCommand(
+        ("project-context", "read"), "project.context.read", "task_context_observation"
+    ),
+    ApplicationCommand(
+        ("project-context", "switch"), "project.context.switch", "project_context"
     ),
 )
 

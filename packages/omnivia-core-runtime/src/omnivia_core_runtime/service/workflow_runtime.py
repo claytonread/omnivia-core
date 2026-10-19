@@ -48,6 +48,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
+from omnivia_core_runtime.service.completion_gate import CompletionGate
 from omnivia_core_runtime.service.runtime_scheduler import (
     RuntimeScheduler,
     _lineage_id,
@@ -404,6 +405,7 @@ def workflow_runtime_scheduler(
     workspace_id: str,
     fencing_generation: int,
     clock: Clock,
+    completion: CompletionGate | None = None,
 ) -> RuntimeScheduler:
     """The one scheduler, told what this workspace's sealed Workflow plans require.
 
@@ -411,6 +413,10 @@ def workflow_runtime_scheduler(
     settlement, terminalization and recovery are RT-106's, unchanged, and the only thing
     added is the dependency gate and the plan observation. A build that composed this for
     a workspace with no Workflow runs would behave exactly as the bare scheduler does.
+
+    `completion` is the final-settlement authority, and this scheduler requires it: left as `None`
+    the scheduler refuses to claim or settle any work before it writes anything, so a process
+    without proof configured cannot take a Workflow job it could never finish.
     """
     # The assignment is also where `WorkflowStepPlan` is checked against
     # `RuntimeStepPlan`: the scheduler's field is typed as the protocol, so a signature
@@ -423,4 +429,6 @@ def workflow_runtime_scheduler(
         fencing_generation=fencing_generation,
         clock=clock,
         plan=WorkflowStepPlan(workspace_id),
+        completion=completion,
+        requires_completion=True,
     )

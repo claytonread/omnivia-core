@@ -107,6 +107,28 @@ EXPECTED_COMMANDS = (
         "decision.result_use.evaluate",
         "decision_result_use",
     ),
+    (("trigger", "declare"), "trigger.declare", "trigger_configuration"),
+    (("trigger", "lifecycle"), "trigger.lifecycle", "trigger_configuration"),
+    (("trigger", "ingest"), "trigger.ingest", "trigger_ingestion"),
+    (("trigger", "health"), "trigger.health", "trigger_observation"),
+    (("skills", "draft-create"), "skills.draft.create", "skill_authoring"),
+    (("skills", "draft-update"), "skills.draft.update", "skill_authoring"),
+    (("skills", "propose"), "skills.proposal.submit", "skill_authoring"),
+    (("skills", "publish"), "skills.version.publish", "skill_publication"),
+    (("skills", "deprecate"), "skills.version.deprecate", "skill_publication"),
+    (("skills", "install"), "skills.install", "skill_installation"),
+    (("skills", "remove"), "skills.remove", "skill_installation"),
+    (("skills", "resolve"), "skills.resolve", "skill_resolution"),
+    (("knowledge", "share-propose"), "knowledge.share.propose", "knowledge_sharing"),
+    (("knowledge", "share-decide"), "knowledge.share.decide", "knowledge_sharing"),
+    (("knowledge", "share-read"), "knowledge.share.read", "knowledge_share_observation"),
+    (("knowledge", "share-lineage"), "knowledge.share.lineage", "knowledge_share_observation"),
+    (("task-context", "export"), "task_context.export", "task_context_export"),
+    (("task-context", "export-read"), "task_context.export.read", "task_context_observation"),
+    (("outcome", "request-create"), "outcome.request.create", "outcome_request"),
+    (("outcome", "request-read"), "outcome.request.read", "task_context_observation"),
+    (("project-context", "read"), "project.context.read", "task_context_observation"),
+    (("project-context", "switch"), "project.context.switch", "project_context"),
 )
 
 EXPECTED_PROBES = (
@@ -155,14 +177,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_fifty_six_application_commands_are_declared_in_order() -> None:
+def test_the_seventy_nine_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 57
+    assert len(APPLICATION_COMMANDS) == 79
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:
