@@ -3530,16 +3530,30 @@ class HostDriver:
         result = self._run(tool, arguments, pause_before=True, on_paused=on_paused)
         summary = result.summary
         digest = arguments_digest(arguments)
-        if (
-            not result.paused
-            or not summary.paused
-            or summary.initialized_after_pause
-            or tuple(summary.requests) != ((tool, digest),)
-            or tuple(summary.called) != (tool,)
-            or [(name, refusal) for name, refusal, _ in summary.outcomes]
-            != [(tool, "credential_missing")]
-            or summary.succeeded
-        ):
+        # Diagnostic only: the first failing predicate is named before the general label.
+        failed = next(
+            (
+                label
+                for label, bad in (
+                    ("host_refusal_pause_unobserved", not result.paused or not summary.paused),
+                    ("host_refusal_initialized_after_pause", summary.initialized_after_pause),
+                    (
+                        "host_refusal_request_shape_mismatch",
+                        tuple(summary.requests) != ((tool, digest),) or tuple(summary.called) != (tool,),
+                    ),
+                    ("host_refusal_unexpected_success", bool(summary.succeeded)),
+                    (
+                        "host_refusal_class_mismatch",
+                        [(name, refusal) for name, refusal, _ in summary.outcomes]
+                        != [(tool, "credential_missing")],
+                    ),
+                )
+                if bad
+            ),
+            None,
+        )
+        if failed is not None:
+            self.progress(failed)
             self.progress("host_refusal_mismatch")
             raise QualificationError(ReasonCode.GATE_FAILED)
         if (

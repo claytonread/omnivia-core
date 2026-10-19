@@ -3413,13 +3413,13 @@ _REFUSED = q.canonical_result_digest(None)
     ("mode", "progress"),
     [
         ("exact", None),
-        ("not_called", "host_refusal_mismatch"),
-        ("other_tool", "host_refusal_mismatch"),
-        ("extra_request", "host_refusal_mismatch"),
-        ("wrong_arguments", "host_refusal_mismatch"),
-        ("succeeded", "host_refusal_mismatch"),
-        ("generic_error", "host_refusal_mismatch"),
-        ("initialized_after_pause", "host_refusal_mismatch"),
+        ("not_called", "host_refusal_pause_unobserved"),
+        ("other_tool", "host_refusal_request_shape_mismatch"),
+        ("extra_request", "host_refusal_request_shape_mismatch"),
+        ("wrong_arguments", "host_refusal_request_shape_mismatch"),
+        ("succeeded", "host_refusal_unexpected_success"),
+        ("generic_error", "host_refusal_class_mismatch"),
+        ("initialized_after_pause", "host_refusal_initialized_after_pause"),
         ("timed_out", "host_completion_mismatch"),
     ],
 )
@@ -3472,7 +3472,9 @@ def test_refuse_revoked_requires_the_one_exact_request_refused_as_credential_mis
         driver.refuse_revoked(_REVOKED_TOOL, _REVOKED_ARGUMENTS, on_paused=lambda: revoked.append(True))
     expected = Reason.HOST_OUTPUT_AMBIGUOUS if progress == "host_completion_mismatch" else Reason.GATE_FAILED
     assert _code(error) is expected
-    assert log == [progress]
+    # The predicate-specific label comes first; the general label stays terminal.
+    general = [] if progress == "host_completion_mismatch" else ["host_refusal_mismatch"]
+    assert log == [progress, *general]
 
 
 @pytest.mark.parametrize("drift", [None, "configuration", "principal"])
@@ -4693,18 +4695,18 @@ def test_a_journey_that_violates_one_observation_is_refused(
     ("tamper", "progress"),
     [
         # The paused session never reaches its request, so nothing can be revoked under it.
-        ("target_not_called", "host_refusal_mismatch"),
+        ("target_not_called", "host_refusal_pause_unobserved"),
         # The session serves a different tool, or the target plus an extra request.
-        ("other_tool_called", "host_refusal_mismatch"),
-        ("extra_request", "host_refusal_mismatch"),
+        ("other_tool_called", "host_refusal_request_shape_mismatch"),
+        ("extra_request", "host_refusal_request_shape_mismatch"),
         # The request is served with arguments other than the exact planned ones.
-        ("changed_arguments", "host_refusal_mismatch"),
+        ("changed_arguments", "host_refusal_request_shape_mismatch"),
         # The refusal is a different class than credential_missing.
-        ("wrong_refusal", "host_refusal_mismatch"),
+        ("wrong_refusal", "host_refusal_class_mismatch"),
         # A second initialize after the pause means the process was substituted.
-        ("initialized_after_pause", "host_refusal_mismatch"),
+        ("initialized_after_pause", "host_refusal_initialized_after_pause"),
         # An accepted replay or read after revocation is a failure, not a pass.
-        ("revocation_ignored", "host_refusal_mismatch"),
+        ("revocation_ignored", "host_refusal_unexpected_success"),
         # The paused session never completes; that is a completion failure, not a retry.
         ("times_out", "host_completion_mismatch"),
     ],
@@ -4718,6 +4720,8 @@ def test_a_post_revocation_session_that_deviates_is_refused_at_its_own_gate(
     expected = Reason.HOST_OUTPUT_AMBIGUOUS if progress == "host_completion_mismatch" else Reason.GATE_FAILED
     assert _code(error) is expected
     assert progress in log
+    if progress != "host_completion_mismatch":
+        assert log[log.index(progress) + 1] == "host_refusal_mismatch"
     # The first paused session is the one that fails: no regrant, no later session.
     tail = log[log.index("host:evidence_capture:pause") :]
     assert [entry for entry in tail if entry.endswith(":pause")] == ["host:evidence_capture:pause"]
