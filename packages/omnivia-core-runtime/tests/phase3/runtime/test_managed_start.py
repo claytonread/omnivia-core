@@ -115,6 +115,18 @@ def _pinned_child_env() -> dict[str, str]:
     return env
 
 
+@pytest.fixture
+def pinned_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This interpreter's own console scripts first on `PATH`, in-process.
+
+    An in-process `managed_start` resolves the service through `PATH` (its
+    `sys.argv[0]` is pytest), so without this a same-named script from an unrelated
+    environment -- e.g. a user-global install whose interpreter cannot import this
+    checkout -- is what the child runs, and the refusal under test never happens.
+    """
+    monkeypatch.setenv("PATH", _pinned_child_env()["PATH"])
+
+
 def _locate() -> str:
     """The service console script, or skip: these tests are about the real one.
 
@@ -650,7 +662,7 @@ def test_a_manifest_changed_before_the_launcher_reads_it_is_refused(home: Path) 
 
 
 def test_a_manifest_changed_between_launcher_and_service_is_refused(
-    home: Path, monkeypatch: pytest.MonkeyPatch
+    home: Path, monkeypatch: pytest.MonkeyPatch, pinned_service: None
 ) -> None:
     """The launcher forwards the binding; its successful read is not the last check."""
     workspace = home / "workspace"
@@ -681,7 +693,7 @@ def test_a_manifest_changed_between_launcher_and_service_is_refused(
 
 
 def test_a_registered_manifest_appearing_before_the_service_read_is_refused(
-    home: Path, monkeypatch: pytest.MonkeyPatch
+    home: Path, monkeypatch: pytest.MonkeyPatch, pinned_service: None
 ) -> None:
     """Legacy fallback stays conditional until the service consumes its snapshot."""
     workspace = home / "workspace"
@@ -712,7 +724,9 @@ def test_a_registered_manifest_appearing_before_the_service_read_is_refused(
     assert _service_pids(home) == []
 
 
-def test_a_spawn_that_cannot_serve_is_a_deterministic_spawn_failure(home: Path) -> None:
+def test_a_spawn_that_cannot_serve_is_a_deterministic_spawn_failure(
+    home: Path, pinned_service: None
+) -> None:
     """The child refuses its endpoint before startup, and says so through the result."""
     result = managed_start(
         workspace_root=home / "workspace",

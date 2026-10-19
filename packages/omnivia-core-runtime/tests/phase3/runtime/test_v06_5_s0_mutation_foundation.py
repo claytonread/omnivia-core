@@ -749,7 +749,7 @@ def _grant_facts(grant: MutationGrant) -> tuple[Any, ...]:
 
 
 def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
-    """Exactly the fifty, explicitly, with a mismatch failing closed for each."""
+    """Exactly the fifty-three, explicitly, with a mismatch failing closed for each."""
     assert set(MUTATION_PURPOSES) == {
         "workflow.start",
         "workflow.control",
@@ -803,10 +803,11 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
         "settings.set",
         "code.policy.register",
         "code.import",
+        "evidence.erase",
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 52
+    assert len(MUTATION_PURPOSES) == 53
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -841,8 +842,9 @@ def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
     # Document processing adds one of its own: writing the workspace's processing
     # preferences is `document_configuration`, deliberately not the ingestion purpose
     # capture and reprocess share, so a grant to submit a document never changes how
-    # every future document is read.
-    assert len(set(MUTATION_PURPOSES.values())) == 28
+    # every future document is read. Evidence erasure adds `evidence_erasure`, held by
+    # `evidence.erase` alone, so a capture grant never physically erases evidence.
+    assert len(set(MUTATION_PURPOSES.values())) == 29
 
     # Every operation is exercised: the declared purpose is what the grant carries, and
     # any other purpose the session may act for is refused.
@@ -1854,6 +1856,7 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "settings.set": "workspace_contributor",
         "code.policy.register": "knowledge_reviewer",
         "code.import": "workspace_contributor",
+        "evidence.erase": "workspace_contributor",
     }
     assert set(MUTATION_ROLES) == MUTATING_OPERATIONS
 

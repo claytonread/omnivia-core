@@ -418,6 +418,7 @@ def test_the_primitive_writes_no_database_and_captures_no_source() -> None:
         "DIGEST_PATTERN",
         "BlobPublicationRefused",
         "blob_path",
+        "erase_blob",
         "publish_blob",
     ]
     assert list(inspect.signature(publish_blob).parameters) == [

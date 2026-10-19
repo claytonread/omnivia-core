@@ -224,8 +224,11 @@ def records(result: dict[str, Any]) -> set[tuple[str, str]]:
 
 def test_code_query_is_a_shipped_read_beside_graph_traverse() -> None:
     entry = get_operation_metadata(CODE_QUERY_OPERATION)
-    # W13-C appended code.policy.register, code.import and code.status after it.
-    assert OPERATION_CATALOGUE[-4].name == CODE_QUERY_OPERATION
+    # Registered once, and appended after graph.traverse rather than slotted among the
+    # frozen operations; later appended operations do not move it relative to that.
+    names = [operation.name for operation in OPERATION_CATALOGUE]
+    assert names.count(CODE_QUERY_OPERATION) == 1
+    assert names.index(CODE_QUERY_OPERATION) > names.index("graph.traverse")
     assert entry.scope.side_effect == "none" and entry.scope.required_scopes == ("graph:read",)
     assert entry.required_capability.id == "graph.read"
     assert CODE_QUERY_OPERATION in build_application_registry().operations
