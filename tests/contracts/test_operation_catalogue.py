@@ -76,7 +76,7 @@ def _load_schema(name: str) -> dict[str, Any]:
 FROZEN = _load_fixture()
 FROZEN_NAMES = [entry["name"] for entry in FROZEN]
 #: ``(name, expected wire object)`` for the data-driven per-operation tests, so a
-#: failure names the operation rather than an index into a list of sixty-one.
+#: failure names the operation rather than an index into a list of eighty.
 FROZEN_CASES = list(zip(FROZEN_NAMES, FROZEN))
 FROZEN_BY_NAME = dict(FROZEN_CASES)
 
@@ -144,7 +144,8 @@ def test_the_catalogue_holds_exactly_the_frozen_eighty_operations_in_order() -> 
     # The original twenty-eight are alphabetical; the fifteen Decision Runtime
     # operations from ADR-042, the ten engineering-memory operations
     # (SPEC-CORE-ENGMEM-001) and the repository registration operation (spec
-    # §16.3) are appended after them in amendment order.
+    # §16.3) and the ComposerDraft read-back (chat.draft, C5A) are appended
+    # after them in amendment order.
     assert len(set(FROZEN_NAMES)) == 80
 
 

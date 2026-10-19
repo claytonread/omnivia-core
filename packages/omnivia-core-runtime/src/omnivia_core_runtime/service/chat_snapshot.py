@@ -72,6 +72,7 @@ from omnivia_core_runtime.storage.chat import (
     Branch,
     Conversation,
     ConversationSnapshotInputs,
+    Draft,
     Message,
     MessagePart,
     ViewState,
@@ -79,7 +80,7 @@ from omnivia_core_runtime.storage.chat import (
     read_draft_by_id,
 )
 
-__all__ = ["resolve_chat_snapshot", "resolve_chat_draft"]
+__all__ = ["resolve_chat_draft", "resolve_chat_snapshot"]
 
 #: `common.schema.json#/$defs/WorkspaceScopedId`, the grammar every identifier in this
 #: query is spelled in. The same pattern `service/chat_submit.py` holds a command's
@@ -515,18 +516,16 @@ def resolve_chat_draft(
     draft = read_draft_by_id(
         connection, workspace_id=context.workspace_id, draft_id=draft_id
     )
-    if draft is not None:
-        if (
-            draft.actor_id != actor_id
-            or draft.conversation_id != request.draft_query["conversationId"]
-            or (draft.expires_at_us is not None and draft.expires_at_us <= now_us)
-        ):
-            # Absent, rather than disclosing: a row that names another actor or
-            # conversation reads back as not found, and an expired one reads
-            # back as gone because the expiry is the discard's mechanism.
-            draft = None
+    if draft is not None and (
+        draft.actor_id != actor_id
+        or draft.conversation_id != request.draft_query["conversationId"]
+        or (draft.expires_at_us is not None and draft.expires_at_us <= now_us)
+    ):
+        # Absent, rather than disclosing: a row that names another actor or
+        # conversation reads back as not found, and an expired one reads
+        # back as gone because the expiry is the discard's mechanism.
+        draft = None
     result: dict[str, Any] = {"found": draft is not None}
     if draft is not None:
         result["draft"] = _composer_draft(draft)
     return {"conversation_id": request.draft_query["conversationId"], "draft_result": result}
-

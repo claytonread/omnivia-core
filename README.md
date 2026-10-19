@@ -204,8 +204,8 @@ Seventy-eight are workspace-scoped:
 ```text
 analysis.start                     candidate.approve                  candidate.reject
 chat.command                       chat.draft                         chat.events
-chat.snapshot                      context.priority.set               context_pack.build
-continuity.checkpoint.append
+chat.snapshot
+context.priority.set               context_pack.build                 continuity.checkpoint.append
 continuity.handoff.read            continuity.session.close           continuity.session.register
 decision.definition.disable        decision.definition.get            decision.definition.list
 decision.definition.publish        decision.evaluate                  decision.model.activate

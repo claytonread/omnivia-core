@@ -651,21 +651,22 @@
       }
     },
     {
-      "description": "chat.draft answers a well-formed request on the success branch.",
+      "id": "chat.draft/primary-success",
+      "description": "chat.draft answers a well-formed request on the success branch: the actor's saved ComposerDraft reads back.",
+      "operation": "chat.draft",
       "expect": {
         "branch": "success"
       },
-      "id": "chat.draft/primary-success",
-      "operation": "chat.draft",
       "request": {
+        "operation": "chat.draft",
         "input": {
           "draft_id": "draft-chat-1",
           "draft_query": {
-            "actorId": "actor-alice",
+            "requestId": "req-chat-draft-read-1",
+            "workspaceId": "ws-1",
             "conversationId": "conv-chat-1",
-            "draftId": "draft-chat-1",
-            "requestId": "req-chat-draft-1",
-            "workspaceId": "ws-1"
+            "actorId": "actor-alice",
+            "draftId": "draft-chat-1"
           }
         },
         "metadata": {
@@ -681,8 +682,7 @@
             "chat:read"
           ],
           "workspace_id": "ws-1"
-        },
-        "operation": "chat.draft"
+        }
       },
       "response": {
         "metadata": {
@@ -691,26 +691,22 @@
         "result": {
           "conversation_id": "conv-chat-1",
           "draft_result": {
+            "found": true,
             "draft": {
-              "actorId": "actor-alice",
-              "attachmentReferences": [],
-              "contextReferences": [],
+              "workspaceId": "ws-1",
               "conversationId": "conv-chat-1",
+              "actorId": "actor-alice",
               "draftId": "draft-chat-1",
               "mode": "normal",
               "schemaVersion": 1,
-              "text": "Review the supplier proposal",
-              "updatedAt": "2024-01-01T00:00:00Z",
+              "text": "hello, saved as a draft",
+              "attachmentReferences": [],
+              "contextReferences": [],
               "version": 1,
-              "workspaceId": "ws-1"
-            },
-            "found": true
+              "updatedAt": "2026-10-06T00:00:00Z"
+            }
           }
         }
-      },
-      "trusted": {
-        "conversation_id": "conv-chat-1",
-        "workspace_id": "ws-1"
       }
     },
     {
