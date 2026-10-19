@@ -104,7 +104,7 @@ def _corpus_document() -> dict[str, Any]:
 def test_the_corpus_loads_and_is_internally_coherent(
     corpus: tuple[AdapterConformanceCase, ...],
 ) -> None:
-    assert len(corpus) == 156
+    assert len(corpus) == 157
     assert len(validate_case_collection(corpus)) == len(corpus)
     assert all(case.operation in CATALOGUE for case in corpus)
 
@@ -116,7 +116,7 @@ def test_the_corpus_declares_its_format() -> None:
 def test_the_amended_corpus_has_the_accepted_byte_identity() -> None:
     corpus_path = CANONICAL_FIXTURES_DIR / ADAPTER_CONFORMANCE_CORPUS_FILE
     assert hashlib.sha256(corpus_path.read_bytes()).hexdigest() == (
-        "0c1f6a501b070f9cc1046968027200e864a73f1e2b644e63a640a32d61e73782"
+        "88aa90f3fbef8760e4ef3725cdf333b32c67a83a65371860ab9ac66ac1e0df06"
     )
 
 

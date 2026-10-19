@@ -1404,6 +1404,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "workspace", ("chat:read",), "none", "chat.read",
         "chat", "ChatSnapshot", "POINT_READ", False,
     ),
+    "chat.draft": FrozenOperation(
+        "workspace", ("chat:read",), "none", "chat.read",
+        "chat", "ChatDraftRead", "POINT_READ", False,
+    ),
     "context_pack.build": FrozenOperation(
         "workspace", ("memory:read",), "none", "context_pack.build",
         "context-pack", "ContextPackBuild", "CONTEXT_READ", False,
