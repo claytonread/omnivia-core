@@ -3201,8 +3201,10 @@ def _tool_prompt(tool: str, arguments: Mapping[str, Any], marker: str) -> str:
         f"{SERVER_KEY} MCP server. Call exactly one tool named {tool}; it may be "
         f"displayed as {claude_tool_name(tool)}. Use it now with exactly the JSON "
         "arguments below; do not add, remove, rewrite or infer values. "
-        "Do not call another tool. Whether the tool succeeds or returns an error, "
-        f"after it finishes output exactly {marker} and nothing else.\nJSON:{payload}"
+        "Invoke it exactly once. Do not call another tool, and never retry or "
+        "repeat the same call, whether it succeeds or returns an error. "
+        f"After the single call output exactly {marker} and nothing else."
+        f"\nJSON:{payload}"
     )
 
 

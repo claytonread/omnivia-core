@@ -3674,6 +3674,9 @@ def test_each_owner_page_is_read_by_its_own_fresh_session_with_the_token_its_hos
     for index, prompt in enumerate(prompts):
         payload = json.dumps(_page_request(index), sort_keys=True, separators=(",", ":"))
         assert "Call exactly one tool named job_events" in prompt
+        assert "Invoke it exactly once." in prompt
+        assert "never retry or repeat the same call" in prompt
+        assert "succeeds or returns an error" in prompt
         assert prompt.endswith(f"JSON:{payload}")
     # Page two carries page one's host token: distinct from the owner's ``t0``.
     assert _page_request(1)["page"]["continuation_token"] == "h0"
