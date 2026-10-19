@@ -67,6 +67,7 @@ EXPECTED_COMMANDS = (
     (("chat", "command"), "chat.command", "chat_authoring"),
     (("chat", "events"), "chat.events", "chat_observation"),
     (("chat", "snapshot"), "chat.snapshot", "chat_observation"),
+    (("chat", "draft"), "chat.draft", "chat_observation"),
     (("workflow", "start"), "workflow.start", "workflow_execution"),
     (("workflow", "inspect"), "workflow.inspect", "workflow_observation"),
     (("workflow", "control"), "workflow.control", "workflow_control"),
@@ -191,14 +192,14 @@ EXPECTED_EXITS = {
 }
 
 
-def test_the_ninety_two_application_commands_are_declared_in_order() -> None:
+def test_the_ninety_four_application_commands_are_declared_in_order() -> None:
     """Order is surface: it is the order help output and documentation follow."""
     declared = tuple(
         (command.path, command.operation, command.purpose)
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 93
+    assert len(APPLICATION_COMMANDS) == 94
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

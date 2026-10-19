@@ -651,6 +651,65 @@
       }
     },
     {
+      "id": "chat.draft/primary-success",
+      "description": "chat.draft answers a well-formed request on the success branch: the actor's saved ComposerDraft reads back.",
+      "operation": "chat.draft",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "operation": "chat.draft",
+        "input": {
+          "draft_id": "draft-chat-1",
+          "draft_query": {
+            "requestId": "req-chat-draft-read-1",
+            "workspaceId": "ws-1",
+            "conversationId": "conv-chat-1",
+            "actorId": "actor-alice",
+            "draftId": "draft-chat-1"
+          }
+        },
+        "metadata": {
+          "request_id": "req-chat.draft-success",
+          "required_capabilities": [
+            {
+              "id": "chat.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "chat:read"
+          ],
+          "workspace_id": "ws-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-chat.draft-success"
+        },
+        "result": {
+          "conversation_id": "conv-chat-1",
+          "draft_result": {
+            "found": true,
+            "draft": {
+              "workspaceId": "ws-1",
+              "conversationId": "conv-chat-1",
+              "actorId": "actor-alice",
+              "draftId": "draft-chat-1",
+              "mode": "normal",
+              "schemaVersion": 1,
+              "text": "hello, saved as a draft",
+              "attachmentReferences": [],
+              "contextReferences": [],
+              "version": 1,
+              "updatedAt": "2026-10-06T00:00:00Z"
+            }
+          }
+        }
+      }
+    },
+    {
       "description": "context_pack.build answers a well-formed request on the success branch.",
       "expect": {
         "branch": "success"

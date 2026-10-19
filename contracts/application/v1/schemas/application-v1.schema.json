@@ -906,6 +906,12 @@
     "ChatSnapshotResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotResult"
     },
+    "ChatDraftReadInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatDraftReadInput"
+    },
+    "ChatDraftReadResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatDraftReadResult"
+    },
     "DecisionSchemaVersion": {
       "$ref": "https://contracts.omnivia.dev/application/v1/decision.schema.json#/$defs/DecisionSchemaVersion"
     },

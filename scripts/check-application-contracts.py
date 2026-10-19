@@ -1483,7 +1483,7 @@ class FrozenOperation(NamedTuple):
     max_page_size: int = FROZEN_PAGE_SIZE
 
 
-#: The exact 93 application operations, in the frozen insertion order. Runtime
+#: The exact 94 application operations, in the frozen insertion order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1506,6 +1506,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "chat.snapshot": FrozenOperation(
         "workspace", ("chat:read",), "none", "chat.read",
         "chat", "ChatSnapshot", "POINT_READ", False,
+    ),
+    "chat.draft": FrozenOperation(
+        "workspace", ("chat:read",), "none", "chat.read",
+        "chat", "ChatDraftRead", "POINT_READ", False,
     ),
     "context_pack.build": FrozenOperation(
         "workspace", ("memory:read",), "none", "context_pack.build",

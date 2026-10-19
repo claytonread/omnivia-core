@@ -337,7 +337,11 @@ def test_draft_cas_rejects_a_stale_expected_version(owned: m1.Owned) -> None:
         )
 
     draft = chat.read_active_draft(
-        owned.connection, workspace_id=WORKSPACE_ID, conversation_id=CONVERSATION_ID, actor_id=ACTOR_ID
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=ACTOR_ID,
+        now_us=BASE_US + 100,
     )
     assert draft is not None
     assert draft.version == 1

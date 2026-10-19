@@ -202,13 +202,13 @@ Two are installation-scoped:
 workspace.create   workspace.list
 ```
 
-Ninety-one are workspace-scoped:
+Ninety-two are workspace-scoped:
 
 ```text
 analysis.start                     candidate.approve                  candidate.reject
-chat.command                       chat.events                        chat.snapshot
-code.import                        code.policy.register               code.query
-code.status
+chat.command                       chat.draft                         chat.events
+chat.snapshot                      code.import                        code.policy.register
+code.query                         code.status
 context.priority.set               context_pack.build                 continuity.checkpoint.append
 continuity.handoff.read            continuity.session.close           continuity.session.register
 decision.definition.disable        decision.definition.get            decision.definition.list
