@@ -98,11 +98,30 @@ MainActor.assumeIsolated {
             }
         }
 
+    // Optional, so General > Updates can run its read-only check against a real
+    // installation:
+    //   --cli <path to omnivia> --installation-state <path> --workspace-id <id>
+    // The CLI needs the installation state and a workspace to run a `service`
+    // command at all. Without --cli the row says it has no route, which is the
+    // truth here. There is no stub: a fabricated result would be a claim about
+    // what the channel recommends.
+    let updates = (argument("--cli").map { URL(fileURLWithPath: $0) })
+        .flatMap { cli in
+            argument("--installation-state").flatMap { state in
+                CoreUpdateCommandRunner(
+                    executable: cli,
+                    installationState: URL(fileURLWithPath: state),
+                    workspaceRef: workspace
+                )
+            }
+        }
+
     let controller = SettingsWindowController(
         coordinator: coordinator,
         mcp: mcp,
         ocr: ocr,
-        documentProcessing: documentProcessing
+        documentProcessing: documentProcessing,
+        updates: updates
     )
 
     // Optional, so the sidebar footer's service states can be looked at

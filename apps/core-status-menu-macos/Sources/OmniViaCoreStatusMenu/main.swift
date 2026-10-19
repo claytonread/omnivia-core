@@ -156,6 +156,9 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     /// workspace's document-processing preferences. Nil when the CLI could not
     /// be found, which the Document processing pane then states.
     private let documentProcessing: DocumentProcessingAdministering?
+    /// The same resolved `omnivia` once more, for the read-only update check.
+    /// Nil when the CLI could not be found, which General > Updates then states.
+    private let updates: CoreUpdateAdministering?
 
     init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
         self.configuration = configuration
@@ -199,6 +202,14 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         )).flatMap {
             OcrResourceCommandRunner(
                 executable: $0, installationState: configuration.installationState
+            )
+        }
+        // Check Now runs only `service update-check`, which installs nothing.
+        self.updates = resolvedExecutable.flatMap {
+            CoreUpdateCommandRunner(
+                executable: $0,
+                installationState: configuration.installationState,
+                workspaceRef: configuration.workspaceID
             )
         }
         coordinator = LifecycleCoordinator(runner: runner)
@@ -747,7 +758,8 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
                 coordinator: ReadinessCoordinator(context: context),
                 mcp: mcp,
                 ocr: ocr,
-                documentProcessing: documentProcessing
+                documentProcessing: documentProcessing,
+                updates: updates
             )
         }
         if let lastSnapshot { reportServiceState(lastSnapshot) }
