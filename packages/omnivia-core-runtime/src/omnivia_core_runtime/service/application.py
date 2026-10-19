@@ -119,6 +119,7 @@ from omnivia_core_runtime.service.handlers.document_settings import (
 from omnivia_core_runtime.service.handlers.engineering import EngineeringHandlers
 from omnivia_core_runtime.service.handlers.evidence import (
     EVIDENCE_CAPTURE_OPERATION,
+    EVIDENCE_ERASE_OPERATION,
     EvidenceHandlers,
     evidence_search,
 )
@@ -399,6 +400,7 @@ DOCUMENT_OBSERVATION_PURPOSE: Final = "document_observation"
 DOCUMENT_SETTINGS_PURPOSE: Final = "document_settings"
 INGESTION_FAMILY_OPERATIONS: Final[frozenset[str]] = JOB_FAMILY_OPERATIONS | {
     EVIDENCE_CAPTURE_OPERATION,
+    EVIDENCE_ERASE_OPERATION,
     DOCUMENT_CAPTURE_OPERATION,
     DOCUMENT_HISTORY_OPERATION,
     DOCUMENT_ORIGINAL_DISCONNECT_OPERATION,
@@ -411,6 +413,7 @@ JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         IMPORT_START_OPERATION: MUTATION_PURPOSES[IMPORT_START_OPERATION],
         EVIDENCE_CAPTURE_OPERATION: MUTATION_PURPOSES[EVIDENCE_CAPTURE_OPERATION],
+        EVIDENCE_ERASE_OPERATION: MUTATION_PURPOSES[EVIDENCE_ERASE_OPERATION],
         DOCUMENT_CAPTURE_OPERATION: MUTATION_PURPOSES[DOCUMENT_CAPTURE_OPERATION],
         DOCUMENT_REPROCESS_OPERATION: MUTATION_PURPOSES[DOCUMENT_REPROCESS_OPERATION],
         DOCUMENT_ORIGINAL_DISCONNECT_OPERATION: MUTATION_PURPOSES[
@@ -912,6 +915,9 @@ def build_job_registry(
     )
     registry.register(
         EVIDENCE_CAPTURE_OPERATION, cast(OperationHandler, evidence.evidence_capture)
+    )
+    registry.register(
+        EVIDENCE_ERASE_OPERATION, cast(OperationHandler, evidence.evidence_erase)
     )
     registry.register(
         DOCUMENT_CAPTURE_OPERATION,
@@ -2961,6 +2967,7 @@ __all__ = [
     "ENGINEERING_FAMILY_PURPOSES",
     "ENGINEERING_SEARCH_PURPOSE",
     "EVIDENCE_CAPTURE_OPERATION",
+    "EVIDENCE_ERASE_OPERATION",
     "EVIDENCE_SEARCH_OPERATION",
     "GOVERNANCE_FAMILY_PURPOSES",
     "GRAPH_TRAVERSE_OPERATION",

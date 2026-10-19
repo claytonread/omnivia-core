@@ -1245,6 +1245,22 @@ _DOCUMENT_ORIGINAL_DISCONNECT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "co
 #: Core holds (or too far ahead); no `not_found`, because a relink that arrives before any
 #: capture records the route rather than failing to find a document.
 _DOCUMENT_ORIGINAL_RELINK: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict")))
+#: Physically erasing one directly captured evidence artifact. `not_found` is evidence that
+#: never existed in this workspace; `conflict` is evidence a governed record cites or that
+#: did not come from `evidence.capture`. The two projection codes are the post-commit barrier
+#: that makes the search index level with the erasure before success is reported, exactly as
+#: `evidence.capture`'s barrier does.
+_EVIDENCE_ERASE: tuple[str, ...] = tuple(
+    sorted(
+        (
+            *_CREATE_MUT,
+            "conflict",
+            "not_found",
+            "projection_unavailable",
+            "stale_projection",
+        )
+    )
+)
 #: Deliberately excludes ``conflict``: a state-based cancel/retry refusal is a
 #: successful explicit disposition returning the unchanged handle, not an error.
 _JOB_CONTROL: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
@@ -1397,6 +1413,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "DOCUMENT_SETTINGS_UPDATE": _DOCUMENT_SETTINGS_UPDATE,
     "DOCUMENT_ORIGINAL_DISCONNECT": _DOCUMENT_ORIGINAL_DISCONNECT,
     "DOCUMENT_ORIGINAL_RELINK": _DOCUMENT_ORIGINAL_RELINK,
+    "EVIDENCE_ERASE": _EVIDENCE_ERASE,
     "GOV_MUT": _GOV_MUT,
     "CHAT_MUT": _CHAT_MUT,
     "IMPORT_START": _IMPORT_START,
@@ -1466,7 +1483,7 @@ class FrozenOperation(NamedTuple):
     max_page_size: int = FROZEN_PAGE_SIZE
 
 
-#: The exact 92 application operations, in the frozen insertion order. Runtime
+#: The exact 93 application operations, in the frozen insertion order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1864,6 +1881,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "code.status": FrozenOperation(
         "workspace", ("graph:read",), "none", "graph.read",
         "code", "CodeStatus", "POINT_READ", False,
+    ),
+    "evidence.erase": FrozenOperation(
+        "workspace", ("memory:write",), "update", "evidence.write",
+        "evidence", "EvidenceErase", "EVIDENCE_ERASE", False,
     ),
 }
 

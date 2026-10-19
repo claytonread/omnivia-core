@@ -161,7 +161,7 @@ def test_the_production_surface_is_complete_with_both_operations_in_one_family(
 ) -> None:
     surface = harness.surface
     surface.registry.assert_complete()
-    assert len(surface.registry.operations) == 92
+    assert len(surface.registry.operations) == 93
     families = {id(surface._routes[name]) for name in SETTINGS}
     assert len(families) == 1
     for name, handler in zip(SETTINGS, (settings_handlers.settings_list, settings_handlers.settings_set)):
@@ -174,9 +174,15 @@ def test_the_catalogue_appends_the_two_operations_last(harness: Harness) -> None
     from omnivia_core.contracts.v1.generated import OPERATION_CATALOGUE
 
     names = [entry.name for entry in OPERATION_CATALOGUE]
-    assert names[-6:-4] == list(SETTINGS)
-    assert names[-7] == "document.original.relink"
-    assert names[-4:] == ["code.query", "code.policy.register", "code.import", "code.status"]
+    assert names[-7:-5] == list(SETTINGS)
+    assert names[-8] == "document.original.relink"
+    assert names[-5:] == [
+        "code.query",
+        "code.policy.register",
+        "code.import",
+        "code.status",
+        "evidence.erase",
+    ]
 
 
 def test_the_family_session_grants_exactly_these_two_operations(harness: Harness) -> None:

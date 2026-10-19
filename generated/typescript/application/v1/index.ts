@@ -6246,6 +6246,46 @@ export interface DocumentOriginalRelinkResult {
 }
 
 /**
+ * Closed input for `evidence.erase`. Names one directly captured evidence artifact (one
+ * `evidence.capture` stored) in the selected workspace and asks Core to physically erase it: the
+ * artifact, its permission labels, provenance, references and normalized records, its search
+ * projection document, and its stored bytes when no other artifact, staged source or document
+ * capture holds the same content address. Erasure is not a tombstone: nothing about the evidence
+ * remains to be searched, listed or cited. Evidence a governed record cites, or that did not
+ * come from `evidence.capture`, is refused rather than partly erased. It carries no query, path,
+ * URL, workspace, principal or storage option.
+ */
+export interface EvidenceEraseInput {
+  /**
+   * The evidence artifact to erase.
+   */
+  readonly evidence_id: Identifier;
+}
+
+/**
+ * Canonical terminal receipt for one erasure or its exact replay. `erase_disposition` is
+ * `erased` for the request that removed the evidence and `already_erased` for a later request
+ * naming evidence an earlier one erased, under a new idempotency key. `content_disposition` is
+ * `erased` when the stored bytes were removed with the evidence and `retained_shared` when
+ * another artifact, staged source or document capture still holds the same content address, so
+ * the bytes were kept for it and nothing of this evidence was kept with them.
+ */
+export interface EvidenceEraseResult {
+  /**
+   * The evidence artifact that was erased.
+   */
+  readonly evidence_id: Identifier;
+  /**
+   * Closed values `erased` and `already_erased`.
+   */
+  readonly erase_disposition: OpenCode;
+  /**
+   * Closed values `erased` and `retained_shared`.
+   */
+  readonly content_disposition: OpenCode;
+}
+
+/**
  * The identity of one asynchronous job: what it is, which application operation started it, its
  * immutable audit linkage, and, when applicable, which workspace it runs against.
  */
@@ -18208,6 +18248,42 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "not_found",
       "rate_limited",
       "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "evidence.erase",
+    scope: { required_scopes: ["memory:write"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceEraseInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceEraseResult",
+    required_capability: { id: "evidence.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "projection_unavailable",
+      "rate_limited",
+      "stale_projection",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
       "workspace_migration_required",
       "workspace_not_granted",
     ],

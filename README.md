@@ -191,7 +191,7 @@ It is a contract only: it introduces no handler, runtime, HTTP binding, CLI, or
 MCP implementation.
 
 The canonical `x-omnivia-operation-catalogue` annotation in
-`operations.schema.json` names exactly **92 application operations** and binds
+`operations.schema.json` names exactly **93 application operations** and binds
 each to its input/result schemas and its scope, capability, completion,
 pagination, idempotency, mutation-precondition, audit, and allowed-error
 posture.
@@ -202,7 +202,7 @@ Two are installation-scoped:
 workspace.create   workspace.list
 ```
 
-Ninety are workspace-scoped:
+Ninety-one are workspace-scoped:
 
 ```text
 analysis.start                     candidate.approve                  candidate.reject
@@ -221,8 +221,8 @@ engineering.repository.register    engineering.review.record          engineerin
 engineering.source.capture.commit  engineering.source.record          document.capture
 document.history                   document.reprocess                 document.settings.get
 document.settings.update           document.original.disconnect       document.original.relink
-evidence.capture                   evidence.search                    graph.traverse
-import.start
+evidence.capture                   evidence.erase                     evidence.search
+graph.traverse                     import.start
 job.cancel                         job.events                         job.get
 job.retry                          knowledge.propose                  knowledge.search
 knowledge.share.decide             knowledge.share.lineage            knowledge.share.propose

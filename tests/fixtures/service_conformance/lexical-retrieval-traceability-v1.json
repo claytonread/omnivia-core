@@ -13,12 +13,17 @@
     {
       "clause_id": "LEX-01",
       "clause": "Erased or purged evidence is not found by a later search.",
-      "state": "pending",
-      "evidence": [],
-      "partial_evidence": [
-        "tests/service_conformance/test_lexical_retrieval_traceability.py::test_no_application_operation_erases_or_purges_searchable_evidence"
+      "state": "covered",
+      "evidence": [
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_erase_vertical.py::test_lex_01_erased_evidence_is_physically_gone_and_never_found_again",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_erase_vertical.py::test_lex_01_erasure_removes_every_row_the_evidence_owns_and_only_those",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_erase_vertical.py::test_lex_01_the_database_file_and_log_hold_no_trace_of_what_was_erased",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_erase_vertical.py::test_lex_01_surviving_evidence_ranks_as_if_the_erased_evidence_never_existed",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_erase_vertical.py::test_lex_01_bytes_a_survivor_shares_are_kept_until_the_last_holder_is_erased",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_erase_vertical.py::test_lex_01_every_erasure_starts_a_new_projection_run_and_reclaims_the_old_one",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_evidence_erase_vertical.py::test_lex_01_unauthorized_and_cross_workspace_erasure_is_refused_and_changes_nothing"
       ],
-      "pending_reason": "The application catalogue has no operation that erases or purges evidence, documents or records, so there is no erase-then-search path to run. Tombstoned evidence is excluded (LEX-02) but a tombstone is not an erase."
+      "covers": "Through the evidence.erase operation, a directly captured artifact and every row it owns (permission labels, provenance, normalized records and spans, its own staged source and the blob bytes when no survivor shares them) are physically deleted under a receipt, and evidence.search no longer finds it; the database file and log hold no trace of the erased text; survivors rank as if the erased evidence never existed; every erasure starts a new projection run and reclaims the old one; an unauthorised or cross-workspace request is refused and changes nothing."
     },
     {
       "clause_id": "LEX-02",

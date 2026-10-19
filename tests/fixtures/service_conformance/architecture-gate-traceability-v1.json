@@ -251,7 +251,8 @@
         "code.query",
         "code.policy.register",
         "code.import",
-        "code.status"
+        "code.status",
+        "evidence.erase"
       ]
     },
     {
@@ -403,7 +404,8 @@
         "document.original.relink",
         "settings.set",
         "code.policy.register",
-        "code.import"
+        "code.import",
+        "evidence.erase"
       ]
     },
     {
@@ -464,7 +466,8 @@
         "document.original.relink",
         "settings.set",
         "code.policy.register",
-        "code.import"
+        "code.import",
+        "evidence.erase"
       ]
     },
     {
@@ -592,7 +595,8 @@
         "code.query",
         "code.policy.register",
         "code.import",
-        "code.status"
+        "code.status",
+        "evidence.erase"
       ]
     },
     {
@@ -693,7 +697,8 @@
         "code.query",
         "code.policy.register",
         "code.import",
-        "code.status"
+        "code.status",
+        "evidence.erase"
       ]
     },
     {

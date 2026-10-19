@@ -93,6 +93,7 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     ERROR_CODE_INTERNAL_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
+    ERROR_CODE_NOT_FOUND,
     ERROR_CODE_PROJECTION_UNAVAILABLE,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     ERROR_CODE_STALE_PROJECTION,
@@ -105,6 +106,8 @@ from omnivia_core.contracts.v1 import (
     EvidenceCaptureInput,
     EvidenceCaptureResult,
     EvidenceCaptureSizeLimitError,
+    EvidenceEraseInput,
+    EvidenceEraseResult,
     EvidenceSearchInput,
     EvidenceSearchResult,
     IdempotencyEquivalence,
@@ -114,6 +117,7 @@ from omnivia_core.contracts.v1 import (
     decode_evidence_capture_input,
     decode_evidence_search_input,
     idempotency_equivalence,
+    is_identifier,
     to_canonical_json,
     validate_evidence_capture_result,
 )
@@ -136,6 +140,15 @@ from omnivia_core_runtime.service.operations import (
 from omnivia_core_runtime.service.pagination import (
     PROCESS_CONTINUATION_TOKENS,
     token_digest,
+)
+from omnivia_core_runtime.storage.evidence_erasure import (
+    EvidenceNotErasable,
+    EvidenceNotFound,
+    address_in_use,
+    erase_evidence,
+    read_receipt,
+    secure_delete,
+    truncate_wal,
 )
 from omnivia_core_runtime.storage.memory import IdentifierAllocator
 from omnivia_core_runtime.storage.projections.fts import (
@@ -164,6 +177,7 @@ from omnivia_core_runtime.storage.retrieval import (
 )
 from omnivia_core_runtime.workspace.blob_publication import (
     BlobPublicationRefused,
+    erase_blob,
     publish_blob,
 )
 
@@ -196,6 +210,7 @@ _TOKEN_KEYS: Final = frozenset({"b", "o", "s", "t", "v"})
 #: map and the registry all read the same strings.
 EVIDENCE_SEARCH_OPERATION: Final = "evidence.search"
 EVIDENCE_CAPTURE_OPERATION: Final = "evidence.capture"
+EVIDENCE_ERASE_OPERATION: Final = "evidence.erase"
 
 #: The one `source_kind` a capture writes, from the contract rather than restated here.
 CAPTURE_SOURCE_KIND: Final = EVIDENCE_CAPTURE_SOURCE_KIND
@@ -220,6 +235,16 @@ _MESSAGE_BLOB_UNPUBLISHED: Final = (
 _MESSAGE_CAPTURE_TOO_LARGE: Final = (
     "the submitted content exceeds the evidence capture size limit"
 )
+_MESSAGE_INVALID_ERASE: Final = "the request payload is not a valid evidence erase"
+_MESSAGE_ERASE_NOT_FOUND: Final = "no such evidence in this workspace"
+_MESSAGE_ERASE_REFUSED: Final = (
+    "this evidence is in use by other records or was not captured directly, "
+    "so it is not erased"
+)
+_MESSAGE_ERASE_UNAVAILABLE: Final = (
+    "the evidence store could not complete the erasure; repeat the request"
+)
+_MESSAGE_ERASED_EVIDENCE: Final = "this evidence was erased and cannot be captured again by replay"
 
 
 def evidence_search(context: OperationContext) -> Mapping[str, Any]:
@@ -602,6 +627,15 @@ class EvidenceHandlers:
             allocate_identifier=self.allocate_identifier,
         )
         if outcome.replayed:
+            # A replay of a capture whose evidence has since been erased must not publish
+            # its bytes again: that would put erased content back in the blob root with no
+            # record to own it. The stored success is a true statement about the past and
+            # a false one about the workspace now, so it is refused rather than served.
+            replayed_id = outcome.result.get("evidence_id")
+            if isinstance(replayed_id, str) and self._erased(
+                connection, workspace_id=context.workspace_id, evidence_id=replayed_id
+            ):
+                raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_ERASED_EVIDENCE)
             # Replays deliberately skip the domain callback. Verify/repair their already
             # settled object here, after the idempotency check accepted the exact body and
             # before the projection barrier can report the stored success.
@@ -620,6 +654,225 @@ class EvidenceHandlers:
             witness=witness,
         )
         return AuditedOperationResult(outcome.result, outcome.audit_ref)
+
+    def evidence_erase(self, context: OperationContext) -> AuditedOperationResult:
+        """Physically erase one directly captured evidence artifact, then make search level.
+
+        The order is the operation, and it mirrors `evidence_capture`:
+
+        1. **decode, then the grant**, from server state, on every attempt -- a replay is
+           re-authorized rather than served from the stored answer, so a principal whose
+           authority was withdrawn between two identical calls is refused at the second.
+        2. **one durable transaction**, through the standard coordinator: the audit event,
+           the idempotency claim, the erasure receipt, every delete the receipt licenses and
+           the outcome commit together or not at all. A refusal -- no such evidence, evidence
+           in use, evidence this operation does not own -- rolls all of it back, so a refused
+           request leaves the workspace exactly as it found it.
+        3. **convergence, after that commit and outside it**, on every attempt including a
+           same-key replay and a fresh-key repeat: unlink the blob when nothing else holds the
+           address, start the projection run that no longer describes the erased document and
+           materialise the session index from it, and checkpoint the write-ahead log so no
+           earlier page image survives in it. Each step is derived from the database, so a
+           crash after the commit is finished by the next request naming this evidence, and a
+           failure is a retryable refusal rather than a success `evidence.search` would
+           contradict.
+
+        `secure_delete` spans both, so the rows the commit deletes and the projection rows the
+        rebuild reclaims are zeroed in their pages and not merely unlinked from the b-tree.
+        """
+        request = self._decode_erase(context)
+        connection = getattr(self.service, "connection", None)
+        identity = getattr(self.service, "identity", None)
+        layout = getattr(self.service, "layout", None)
+        blobs_root = getattr(layout, "blobs_path", None)
+        guard = None if connection is None else read_guard(connection)
+        if (
+            connection is None
+            or identity is None
+            or guard is None
+            or not isinstance(blobs_root, Path)
+            or context.authorization is None
+        ):
+            raise OperationError(
+                ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE
+            )
+        equivalence = idempotency_equivalence(
+            context.request.operation,
+            context.request.metadata,
+            request.to_wire(),
+            principal_id=context.principal,
+            workspace_id=context.workspace_id,
+        )
+        grant = issue_mutation_grant(
+            context.authorization,
+            session=self.session,
+            binding=self.binding,
+            guard=guard,
+            equivalence=equivalence,
+            clock=self.clock,
+        )
+
+        def mutate(
+            fenced: Any, settlement: MutationSettlementContext
+        ) -> Mapping[str, Any]:
+            refusal: str | None = None
+            erased = None
+            try:
+                erased = erase_evidence(
+                    fenced,
+                    workspace_id=context.workspace_id,
+                    evidence_id=request.evidence_id,
+                    audit_ref=settlement.audit_ref,
+                    erased_at_us=settlement.settled_at_us,
+                )
+            except EvidenceNotFound:
+                refusal = ERROR_CODE_NOT_FOUND
+            except EvidenceNotErasable:
+                refusal = ERROR_CODE_CONFLICT
+            if refusal == ERROR_CODE_NOT_FOUND:
+                raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_ERASE_NOT_FOUND)
+            if refusal is not None or erased is None:
+                raise OperationError(ERROR_CODE_CONFLICT, _MESSAGE_ERASE_REFUSED)
+            return EvidenceEraseResult(
+                evidence_id=request.evidence_id,
+                erase_disposition="already_erased" if erased.already_erased else "erased",
+                content_disposition=erased.content_disposition,
+            ).to_wire()
+
+        def valid_result(wire: Mapping[str, Any]) -> bool:
+            try:
+                result = EvidenceEraseResult.from_wire(wire)
+            except ContractDecodeError:
+                return False
+            return result.evidence_id == request.evidence_id and (
+                result.erase_disposition in ("erased", "already_erased")
+                and result.content_disposition in ("erased", "retained_shared")
+            )
+
+        with secure_delete(connection):
+            outcome = execute_mutation(
+                connection,
+                identity,
+                grant=grant,
+                context=context.authorization,
+                equivalence=equivalence,
+                mutate=mutate,
+                validate_result=valid_result,
+                clock=self.clock,
+                allocate_identifier=self.allocate_identifier,
+            )
+            self._converge_erasure(
+                connection,
+                identity,
+                workspace_id=context.workspace_id,
+                blobs_root=blobs_root,
+                evidence_id=request.evidence_id,
+            )
+        return AuditedOperationResult(outcome.result, outcome.audit_ref)
+
+    def _converge_erasure(
+        self,
+        connection: sqlite3.Connection,
+        identity: Any,
+        *,
+        workspace_id: str,
+        blobs_root: Path,
+        evidence_id: str,
+    ) -> None:
+        """Finish an erasure from durable state, or refuse retryably. Idempotent by construction.
+
+        The three steps are the ones the committed receipt makes necessary and nothing else:
+        the bytes (only when the receipt says they went with the evidence and no record has
+        since come to hold the address -- the same content captured again after the erase
+        keeps its file), a projection run and session index built from artifacts that no longer
+        include the erased one, and a checkpoint that truncates the log. It finishes by
+        proving, in the rows themselves, that no projection document names the evidence.
+        """
+        failed = False
+        try:
+            receipt = read_receipt(
+                connection, workspace_id=workspace_id, evidence_id=evidence_id
+            )
+            guard = read_guard(connection)
+            if receipt is None or guard is None:
+                failed = True
+            else:
+                digest = receipt.blob_content_digest
+                if digest is not None and not address_in_use(
+                    connection, workspace_id=workspace_id, digest=digest
+                ):
+                    erase_blob(blobs_root, digest)
+                build_search_projection(
+                    connection,
+                    identity,
+                    workspace_id=workspace_id,
+                    fencing_generation=guard.fencing_generation,
+                    now_us=int(self.clock.wall_time().timestamp() * 1_000_000),
+                )
+                projection = open_search_projection(
+                    connection, workspace_id=workspace_id, blobs_root=blobs_root
+                )
+                lingering = connection.execute(
+                    "SELECT 1 FROM omnivia_evidence_search_documents "
+                    "WHERE workspace_id = ? AND evidence_id = ? LIMIT 1",
+                    (workspace_id, evidence_id),
+                ).fetchone()
+                if (
+                    evidence_id in projection.material
+                    or lingering is not None
+                    or not truncate_wal(connection)
+                ):
+                    failed = True
+        except (
+            BlobPublicationRefused,
+            ProjectionError,
+            sqlite3.Error,
+            OSError,
+        ):
+            # Contained rather than chained: these messages name paths, run ids and
+            # checkpoints, and the refusal below travels to a caller.
+            failed = True
+        if not failed:
+            return
+        code = self._projection_refusal(connection, workspace_id=workspace_id)
+        raise OperationError(
+            code,
+            _MESSAGE_STALE_PROJECTION
+            if code == ERROR_CODE_STALE_PROJECTION
+            else _MESSAGE_ERASE_UNAVAILABLE,
+            retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
+        )
+
+    @staticmethod
+    def _erased(
+        connection: sqlite3.Connection, *, workspace_id: str, evidence_id: str
+    ) -> bool:
+        """Whether this evidence id was erased and is not currently an artifact again."""
+        present = connection.execute(
+            "SELECT 1 FROM omnivia_evidence_artifacts "
+            "WHERE workspace_id = ? AND evidence_id = ?",
+            (workspace_id, evidence_id),
+        ).fetchone()
+        return (
+            present is None
+            and read_receipt(
+                connection, workspace_id=workspace_id, evidence_id=evidence_id
+            )
+            is not None
+        )
+
+    def _decode_erase(self, context: OperationContext) -> EvidenceEraseInput:
+        """The payload as a validated erase input, or a refusal that quotes nothing."""
+        decoded: EvidenceEraseInput | None = None
+        payload = context.request.input
+        if isinstance(payload, Mapping) and set(payload) == {"evidence_id"}:
+            try:
+                decoded = EvidenceEraseInput.from_wire(payload)
+            except ContractDecodeError:
+                decoded = None
+        if decoded is None or not is_identifier(decoded.evidence_id):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_ERASE)
+        return decoded
 
     def _publish_projection(
         self,

@@ -206,6 +206,12 @@ EXPECTED_ALLOCATION = (
         "Evidence Runtime",
         "candidate",
     ),
+    (
+        75,
+        "0075_evidence_erasure.sql",
+        "Evidence Runtime",
+        "candidate",
+    ),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -319,6 +325,10 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0074 is governed code-analysis import and repository applicability (W12),
     # pinned to the commit that carries its SQL.
     74: "68c20da67de76e5f16fc011228aeb2f85a481d09",
+    # 0075 is physical erasure of direct-captured evidence (LEX-01). PROVISIONAL:
+    # pinned to the pre-commit HEAD because the file is not committed yet; repin
+    # to the commit that carries its SQL once it lands.
+    75: "00b4424490ec211c529ff9055be971b48bf1c201",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

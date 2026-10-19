@@ -634,6 +634,17 @@
       "sha256": "62c2bfc2acbaecff7e341e274d36d1ba1cb1c332b3b9ea52172150669ebd0997",
       "introduced_commit": "68c20da67de76e5f16fc011228aeb2f85a481d09",
       "accepted_commit": null
+    },
+    {
+      "number": 75,
+      "filename": "0075_evidence_erasure.sql",
+      "owner": "Evidence Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 74,
+      "sha256": "e65e4fe08ca16cc51ed5f8588f8f147592682a782b9516207c68955848c370cf",
+      "introduced_commit": "00b4424490ec211c529ff9055be971b48bf1c201",
+      "accepted_commit": null
     }
   ]
 }

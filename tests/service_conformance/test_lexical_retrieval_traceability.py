@@ -46,7 +46,7 @@ LEXICAL_SOURCES = (
 )
 CLAUSE_IDS = [f"LEX-{ordinal:02d}" for ordinal in range(1, 8)]
 #: Exact: closing a gap moves a clause out of this set and opening one moves it in.
-PENDING = {"LEX-01"}
+PENDING: set[str] = set()
 CLAUSE_KEYS = {"clause_id", "clause", "state", "evidence"}
 REFUSED_MARKERS = {"skip", "skipif", "xfail"}
 
@@ -114,12 +114,33 @@ def test_every_named_test_exists_and_is_not_skipped() -> None:
     assert seen
 
 
-def test_no_application_operation_erases_or_purges_searchable_evidence() -> None:
-    """The reason LEX-01 is pending. An operation like this needs its own test first."""
-    names = [operation["contract"]["name"] for operation in OPERATIONS]
+def test_evidence_erase_is_the_one_erasing_operation_and_lex_01_cites_its_tests() -> (
+    None
+):
+    """LEX-01 rests on `evidence.erase`: the operation exists, writes, and is covered."""
+    erase = [
+        op["contract"]
+        for op in OPERATIONS
+        if op["contract"]["name"] == "evidence.erase"
+    ]
+    assert len(erase) == 1
+    assert erase[0]["scope"]["side_effect"] == "update"
+    assert erase[0]["scope"]["required_scopes"] == ["memory:write"]
+    assert erase[0]["idempotency"]["required"] is True
+    assert erase[0]["audit"]["audited"] is True
     families = ("evidence.", "document.", "knowledge.", "memory.", "context_pack.")
     erasing = re.compile(r"erase|purge|delete|forget|remove|retention")
-    assert [n for n in names if n.startswith(families) and erasing.search(n)] == []
+    names = [op["contract"]["name"] for op in OPERATIONS]
+    assert [n for n in names if n.startswith(families) and erasing.search(n)] == [
+        "evidence.erase"
+    ]
+    lex_01 = next(c for c in _clauses() if c["clause_id"] == "LEX-01")
+    assert lex_01["state"] == "covered"
+    assert lex_01["evidence"]
+    assert all(
+        "test_evidence_erase_vertical.py::test_lex_01_" in reference
+        for reference in lex_01["evidence"]
+    )
 
 
 def test_the_lexical_path_holds_no_cache() -> None:

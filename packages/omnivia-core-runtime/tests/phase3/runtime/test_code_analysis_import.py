@@ -1016,9 +1016,11 @@ def test_the_seam_requires_the_callers_fenced_transaction(
 # --- migration 0074 ------------------------------------------------------------------
 
 
-def test_0074_is_the_head_and_adds_six_guarded_tables(workspace: Any) -> None:
-    assert max(m.version for m in load_migrations()) == 74
-    assert max(applied_migrations(workspace.holder.connection)) == 74
+def test_0074_adds_six_guarded_tables_below_the_head(workspace: Any) -> None:
+    # 0075 (evidence erasure) is the head; 0074 is still applied beneath it.
+    assert max(m.version for m in load_migrations()) == 75
+    assert max(applied_migrations(workspace.holder.connection)) == 75
+    assert 74 in applied_migrations(workspace.holder.connection)
     assert set(CODE_TABLES) <= set(canonical_schema_tables())
     assert set(CODE_TABLES) <= set(guarded_tables())
     assert_guards_intact(workspace.holder.connection)
@@ -1066,7 +1068,7 @@ def test_0074_upgrades_a_0073_workspace_and_keeps_its_governed_graph(
     ).fetchall()
     try:
         applied = _upgrade(old)
-        assert [m.version for m in applied] == [74]
+        assert [m.version for m in applied] == [74, 75]
         assert fingerprint_schema(old.holder.connection).matches(canonical_schema_fingerprint())
         assert integrity_check(old.holder.connection) == [] or integrity_check(old.holder.connection) == ["ok"]
         assert foreign_key_check(old.holder.connection) == []
