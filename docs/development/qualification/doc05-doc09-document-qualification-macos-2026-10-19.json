@@ -1,0 +1,168 @@
+{
+  "engines": {
+    "pptx": {
+      "build": "pptx-ooxml-2",
+      "path": "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/ooxml_extractors.py",
+      "sha256": "bba08966b0fdd9b92ce498bf0b13f26a28281be169907e14c72467ada69626e7"
+    },
+    "raster": {
+      "build": "pillow-12.3.0+pillow_heif-1.8.1+libheif-1.23.6",
+      "path": "packages/omnivia-core-runtime/src/omnivia_core_runtime/service/raster_extractors.py",
+      "sha256": "de6aef7df88b5e4fda1dbb87353ae38dca1cbb79495553e908443863c2bba68e"
+    }
+  },
+  "fixtures": {
+    "doc05KeynotePptx": {
+      "authoredBy": "Keynote export to Microsoft PowerPoint",
+      "path": "qualification/wp15/fixtures/doc05-keynote-authored.pptx",
+      "privacy": "comment author normalised to OmniVia QA",
+      "sha256": "a38b479c29c2ffa8166af387c216d20e64e1be4921ad79d8beb13bc844706dec"
+    },
+    "doc09ImageIoHeic": {
+      "authoredBy": "macOS sips/Image I/O HEIC encoder",
+      "path": "qualification/wp15/fixtures/doc09-imageio-authored.heic",
+      "sha256": "329f2a623cd6fd619668b9eea662d1a6175973820efbe492f9d47cb175b7a28b"
+    }
+  },
+  "host": {
+    "machine": "arm64",
+    "python": "3.11.15",
+    "release": "27.0.0",
+    "system": "Darwin"
+  },
+  "profiles": {
+    "heic": {
+      "sha256": "sha256:f30c420b1486e9fd2c1ab2669c038dd39ab485ba037574b6be68c4d0d821f644",
+      "value": {
+        "adapter": "pillow-image-ocr",
+        "adapterVersion": "2",
+        "completenessPolicy": "explicit_unit_coverage",
+        "decoderBuild": "document-text-only:1:pillow-12.3.0+pillow_heif-1.8.1+libheif-1.23.6",
+        "deduplicationVersion": "none-1",
+        "delimited": {
+          "delimiter": "media_default",
+          "encoding": "bom_or_utf-8",
+          "quote": "\""
+        },
+        "embeddedImageOcr": false,
+        "formulaPolicy": "expression_and_saved_cache_without_calculation",
+        "html": {
+          "encoding": "utf-8"
+        },
+        "limits": {
+          "containerEntries": 10000,
+          "decodedPixels": 64000000,
+          "expandedBytes": 536870912,
+          "memoryBytes": 1073741824,
+          "outputStructuredBytes": 134217728,
+          "outputTextBytes": 33554432,
+          "sourceBytes": 52428800,
+          "temporaryBytes": 2147483648,
+          "timeMs": 120000
+        },
+        "ocr": {
+          "engine": "none",
+          "engineRevision": "none",
+          "languages": [],
+          "modelHashes": []
+        },
+        "parserFeatures": [
+          "direct_text",
+          "frame_inventory",
+          "frame_orientation",
+          "inert_references",
+          "located_segments"
+        ],
+        "processingMode": "text_only",
+        "readingOrderVersion": "display-top-left-1",
+        "revisionView": "current_text_with_separate_annotations",
+        "schema": "omnivia.extraction-profile.v1",
+        "secondaryContentPolicy": "preserve_role_and_visibility",
+        "unknownFeaturePolicy": "partial"
+      }
+    },
+    "pptx": {
+      "sha256": "sha256:bc8b4117c985d580bff950cfc05606c0fe224d8daa350c185abad93c5ebdf4c2",
+      "value": {
+        "adapter": "pptx-ooxml",
+        "adapterVersion": "2",
+        "completenessPolicy": "explicit_unit_coverage",
+        "decoderBuild": "document-text-only:1:pptx-ooxml-2",
+        "deduplicationVersion": "none-1",
+        "delimited": {
+          "delimiter": "media_default",
+          "encoding": "bom_or_utf-8",
+          "quote": "\""
+        },
+        "embeddedImageOcr": false,
+        "formulaPolicy": "expression_and_saved_cache_without_calculation",
+        "html": {
+          "encoding": "utf-8"
+        },
+        "limits": {
+          "containerEntries": 10000,
+          "decodedPixels": 1,
+          "expandedBytes": 536870912,
+          "memoryBytes": 1073741824,
+          "outputStructuredBytes": 134217728,
+          "outputTextBytes": 33554432,
+          "sourceBytes": 52428800,
+          "temporaryBytes": 2147483648,
+          "timeMs": 120000
+        },
+        "ocr": {
+          "engine": "none",
+          "engineRevision": "none",
+          "languages": [],
+          "modelHashes": []
+        },
+        "parserFeatures": [
+          "direct_text",
+          "inert_references",
+          "located_segments"
+        ],
+        "processingMode": "text_only",
+        "readingOrderVersion": "source-order-1",
+        "revisionView": "current_text_with_separate_annotations",
+        "schema": "omnivia.extraction-profile.v1",
+        "secondaryContentPolicy": "preserve_role_and_visibility",
+        "unknownFeaturePolicy": "partial"
+      }
+    }
+  },
+  "recordedAt": "2026-10-19T11:39:10.576087+00:00",
+  "resources": {
+    "cpuSeconds": 0.008074000000000026,
+    "external": [],
+    "peakRssBytes": 72581120,
+    "reason": "text-only decoder qualification invokes no OCR model",
+    "scope": "whole recorder process high-water mark and measured extraction interval",
+    "wallSeconds": 0.013110125000821427
+  },
+  "results": {
+    "doc05": {
+      "expected": 1,
+      "failedUnits": 0,
+      "roles": [
+        "body",
+        "chart",
+        "comment",
+        "note",
+        "object_inventory"
+      ],
+      "segments": 24,
+      "segmentsSha256": "sha256:4bd7a14fc1f262c0d3febb8be9d7976a1914b7a0d556326c15a37fe75a59ecf0",
+      "state": "succeeded"
+    },
+    "doc09": {
+      "expected": 1,
+      "failedUnits": 0,
+      "format": "HEIF",
+      "primaryFrames": 1,
+      "segmentsSha256": "sha256:979b25eab66b12677b446b800dcc994c6f4490e0c8d256500c389dc0d2964e1e",
+      "state": "succeeded",
+      "visited": 1
+    }
+  },
+  "schema": "omnivia.doc05-doc09.document-qualification.v1"
+}

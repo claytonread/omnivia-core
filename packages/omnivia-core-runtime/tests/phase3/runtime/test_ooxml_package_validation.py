@@ -222,9 +222,18 @@ def test_rejects_a_package_without_a_content_types_part() -> None:
 )
 def test_rejects_a_member_that_is_itself_an_archive(embedded: bytes) -> None:
     with pytest.raises(OOXMLInvalid, match="itself an archive"):
-        extract_docx(
-            package({"word/embeddings/oleObject1.bin": embedded}), capture_id=CAPTURE
-        )
+        extract_docx(package({"word/media/archive.bin": embedded}), capture_id=CAPTURE)
+
+
+def test_an_embedded_ooxml_package_is_bounded_but_left_inert() -> None:
+    """A real embedded workbook is legal content, never a recursive input."""
+    embedded = package(document=b"<not-workbook>never parsed</not-workbook>")
+
+    result = extract_docx(
+        package({"word/embeddings/chart-data.xlsx": embedded}), capture_id=CAPTURE
+    )
+
+    assert [item.text for item in result.segments] == ["Body"]
 
 
 def test_rejects_a_compression_bomb_at_the_shipped_limits() -> None:

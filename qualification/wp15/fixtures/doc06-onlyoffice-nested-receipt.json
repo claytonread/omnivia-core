@@ -1,0 +1,54 @@
+{
+  "gate": "DOC-06",
+  "scope": "One application-produced RTF with real nested tables, read by the pinned Pandoc 3.12.1 reader through the production extract_rtf path. This is a single-application fixture; it is not the full external RTF corpus.",
+  "source_fixture": {
+    "file": "doc06-onlyoffice-nested-source.docx",
+    "sha256": "280ffc537bedc667c446604b55baf85c994443234b31706e32a477c0fca7260c",
+    "note": "A generated DOCX input to the conversion. It was not authored by ONLYOFFICE."
+  },
+  "rtf_fixture": {
+    "file": "doc06-onlyoffice-nested.rtf",
+    "sha256": "ab53917936a759e081cbef235398305d41f74fc959c9b486dd84599df6dd896c",
+    "size_bytes": 396972
+  },
+  "authoring": {
+    "application": "ONLYOFFICE Desktop Editors",
+    "version": "9.4.0",
+    "build": "563",
+    "platform": "macOS",
+    "operation": "Converted the source DOCX to RTF; ONLYOFFICE produced the RTF, not the DOCX.",
+    "converter": "x2t",
+    "converter_sha256": "52e8752a9989fcb7c6dbbb481d217f893cf4985569f72ff66f72f0eaca1d9d60",
+    "command_shape": "x2t <source.docx> <output.rtf>"
+  },
+  "reader": {
+    "name": "pandoc",
+    "version": "3.12.1",
+    "reader_build": "pandoc-3.12.1-rtf-json"
+  },
+  "extraction": {
+    "entry_point": "omnivia_core_runtime.service.rtf_extractor.extract_rtf",
+    "profile": "text_only",
+    "profile_source": "ocr_resources.text_only_settings() with an absolute pinned pandoc_path",
+    "capture_id": "doc06-onlyoffice",
+    "canonicalization": "json.dumps(dataclasses.asdict(extraction), sort_keys=True, separators=(',', ':'), ensure_ascii=False) encoded as UTF-8, then SHA-256",
+    "expected": {
+      "result_sha256": "d753932b2a82da463712dcf2d84cf29d0658fc58de0e7667a643c3442ff157b8",
+      "blocks": 23,
+      "segments": 22,
+      "scanner_inventory": {
+        "comment": 1,
+        "nested_table": 12
+      },
+      "ast_inventory": {
+        "tables": 8
+      }
+    }
+  },
+  "rtf_control_markers": ["nesttableprops", "nestrow", "itap2"],
+  "sources": [
+    "https://github.com/ONLYOFFICE-QA/x2t-testing/blob/master/README.md",
+    "https://github.com/ONLYOFFICE/core",
+    "https://github.com/jgm/pandoc/releases/tag/3.12.1"
+  ]
+}

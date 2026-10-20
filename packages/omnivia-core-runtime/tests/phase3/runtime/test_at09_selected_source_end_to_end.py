@@ -69,6 +69,15 @@ def test_extraction_of_the_fixture_keeps_every_character() -> None:
 def home() -> Iterator[Path]:
     root = Path(tempfile.mkdtemp(prefix=managed.HOME_PREFIX, dir="/tmp"))
     managed._bootstrap(root)
+    # This legacy-migration fixture predates the managed client's owner-private
+    # descriptor provenance requirement. A current `--init` installation creates
+    # these directories as 0700; reproduce that production precondition here.
+    for directory in (
+        root / "installation-state",
+        root / "installation-state" / "runtime",
+        managed._runtime_directory(root),
+    ):
+        directory.chmod(0o700)
     try:
         yield root
     finally:
@@ -81,6 +90,10 @@ def home() -> Iterator[Path]:
 
 
 def _omnivia(home: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    environment = dict(os.environ)
+    environment["PATH"] = os.pathsep.join(
+        [str(Path(sys.executable).parent), environment.get("PATH", "")]
+    )
     return subprocess.run(
         [
             sys.executable,
@@ -96,6 +109,7 @@ def _omnivia(home: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=240,
         check=False,
+        env=environment,
     )
 
 
@@ -107,6 +121,17 @@ def test_selected_source_reaches_core_exact_and_is_left_unchanged(home: Path) ->
     cli = home / "omnivia"
     cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m omnivia_core_cli.main "$@"\n')
     cli.chmod(0o755)
+    # Production delivery is deliberately attach-only (`--require-running`):
+    # capture must never start a stopped Core as a side effect. Stand the managed
+    # service up explicitly before crossing the native delivery boundary.
+    started = _omnivia(home, "service", "health", "--json")
+    service_log = home / "run" / "service.log"
+    diagnostic = (
+        service_log.read_text(encoding="utf-8", errors="replace")
+        if service_log.is_file()
+        else "service log absent"
+    )
+    assert started.returncode == 0, started.stdout + started.stderr + "\n" + diagnostic
     report = home / "report.json"
     # The companion's delivery is attach-only (`--require-running`): it can never
     # start a service, so one is started here. The `home` fixture kills it.

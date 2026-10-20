@@ -247,6 +247,7 @@ def _header(attempt: dict[str, Any], **overrides: Any) -> dict[str, Any]:
 # -- the production route ----------------------------------------------------
 
 
+@pytest.mark.production_document_worker
 def test_the_production_extraction_route_is_the_isolated_worker() -> None:
     # Both production call sites -- the capture outbox and the reprocess
     # handler -- resolve their extraction seam to the confined child, so the
@@ -569,6 +570,22 @@ def test_the_production_route_refuses_outright_where_nothing_can_be_supervised(
     # `test_a_platform_with_no_adapter_refuses_instead_of_running_unconfined`,
     # and the child's own half of it by
     # `test_a_refused_seal_refuses_the_extraction_before_a_byte_is_read`.
+    with pytest.raises(DocumentWorkerFailed) as failure:
+        extract_document_isolated(
+            b"the admitted bytes", media_type="text/plain", capture_id=CAPTURE
+        )
+    assert failure.value.reason == document_worker.REASON_SUPERVISION
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_linux_and_windows_are_unavailable_hosts_and_never_extract(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    # The declared support boundary: document extraction is a macOS feature, and
+    # a Linux or Windows host (CI runs both for the portable runtime) reports the
+    # worker unavailable rather than extracting. Unlike the test above, this one
+    # runs on every host, so the macOS row proves the refusal as well as Linux.
+    monkeypatch.setattr(sys, "platform", platform)
     with pytest.raises(DocumentWorkerFailed) as failure:
         extract_document_isolated(
             b"the admitted bytes", media_type="text/plain", capture_id=CAPTURE

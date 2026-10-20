@@ -67,6 +67,9 @@ packages = ["src/omnivia_core"]
 [tool.pytest.ini_options]
 testpaths = ["services", "tests", "packages", "baseline/tests", "benchmarks/tests", "qualification/semantic_index/q1/tests"]
 pythonpath = ["src"]
+markers = [
+    "production_document_worker: keep the production confined-worker binding instead of the portable in-process test seam",
+]
 
 # Ruff resolves the *nearest* `[tool.ruff]` above each file, so this section is
 # the configuration for every canonical tree -- `src`, `packages`, `baseline`,

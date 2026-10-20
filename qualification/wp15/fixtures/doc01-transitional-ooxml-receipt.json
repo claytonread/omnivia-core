@@ -1,0 +1,80 @@
+{
+  "gate": "DOC-01",
+  "scope": "Transitional-namespace slice: three Microsoft Office-authored packages (Word, Excel, PowerPoint) and, for each, the output of a compatible-application converter run on that exact input, compared before and after through the production OOXML extractors. It adds no Strict compatible-application fixture; the Strict slice is doc01-strict-ooxml-provenance.json.",
+  "upstream": {
+    "name": "Open XML SDK",
+    "repository": "https://github.com/dotnet/Open-XML-SDK",
+    "revision": "431ab05cf160248cc3885a4a766026d4f8243792",
+    "licence": "MIT, Copyright (c) .NET Foundation and Contributors",
+    "licence_file": "doc01-openxml-sdk-LICENSE.txt",
+    "licence_source": "https://github.com/dotnet/Open-XML-SDK/blob/431ab05cf160248cc3885a4a766026d4f8243792/LICENSE"
+  },
+  "converter": {
+    "application": "ONLYOFFICE Desktop Editors",
+    "version": "9.4.0",
+    "build": "563",
+    "platform": "macOS",
+    "converter": "x2t",
+    "converter_sha256": "52e8752a9989fcb7c6dbbb481d217f893cf4985569f72ff66f72f0eaca1d9d60",
+    "command_shape": "x2t <input.ext> <output.ext>, run separately for each same-extension pair",
+    "operation": "Each output was rewritten by the converter from the Microsoft Office-authored input. It was not authored from scratch in the ONLYOFFICE GUI."
+  },
+  "metadata_caveat": "x2t preserved the Microsoft docProps/app.xml byte for byte, so each output still names Microsoft Word, Excel or PowerPoint. That metadata is not evidence of ONLYOFFICE authorship. The conversion receipt is this file: the exact input and output hashes, the installed application version and build, the converter hash and the command shape.",
+  "pairs": [
+    {
+      "format": "docx",
+      "input": {
+        "file": "doc01-transitional-ms-word.docx",
+        "sha256": "5fcdf446f45ab45906fb1f3728ac706cea78a3b47ea96fb4d365986327f6eb2a",
+        "upstream_path": "test/DocumentFormat.OpenXml.Tests.Assets/assets/TestFiles/HelloWorld.docx",
+        "upstream_url": "https://github.com/dotnet/Open-XML-SDK/blob/431ab05cf160248cc3885a4a766026d4f8243792/test/DocumentFormat.OpenXml.Tests.Assets/assets/TestFiles/HelloWorld.docx",
+        "upstream_git_blob_sha1": "da1798225a9c497b6836d1bafc94df036ef7803f",
+        "app_xml": {"Application": "Microsoft Office Word", "AppVersion": "16.0000"}
+      },
+      "output": {
+        "file": "doc01-transitional-onlyoffice-word.docx",
+        "sha256": "c9377462da3ed2f7e07858226c35f311881498f4da758b67f93325dcd47aaf12"
+      },
+      "main_part": "word/document.xml",
+      "expected": {"unit_type": "document_block", "segments": 1, "texts": ["Hello World!"]}
+    },
+    {
+      "format": "xlsx",
+      "input": {
+        "file": "doc01-transitional-ms-excel.xlsx",
+        "sha256": "13221d4d2569b6f8822fc17d9a1720a272628e914dc8025465285059e4b97d92",
+        "upstream_path": "test/DocumentFormat.OpenXml.Tests.Assets/assets/TestFiles/basicspreadsheet.xlsx",
+        "upstream_url": "https://github.com/dotnet/Open-XML-SDK/blob/431ab05cf160248cc3885a4a766026d4f8243792/test/DocumentFormat.OpenXml.Tests.Assets/assets/TestFiles/basicspreadsheet.xlsx",
+        "upstream_git_blob_sha1": "399848870cd789bd7b67d734e427562039dcf080",
+        "app_xml": {"Application": "Microsoft Excel", "AppVersion": "12.0000"}
+      },
+      "output": {
+        "file": "doc01-transitional-onlyoffice-excel.xlsx",
+        "sha256": "0d53438b697f9b5ef04ce96154f1ecaec20f6d71442b5ef78e7b1a7baf12ee51"
+      },
+      "main_part": "xl/workbook.xml",
+      "expected": {"unit_type": "workbook_cell", "segments": 103}
+    },
+    {
+      "format": "pptx",
+      "input": {
+        "file": "doc01-transitional-ms-powerpoint.pptx",
+        "sha256": "a2f6471c8eb640ad15044315aa31f88dc9cffedea7722f3265f586c544f190d6",
+        "upstream_path": "test/DocumentFormat.OpenXml.Tests.Assets/assets/TestFiles/mcppt.pptx",
+        "upstream_url": "https://github.com/dotnet/Open-XML-SDK/blob/431ab05cf160248cc3885a4a766026d4f8243792/test/DocumentFormat.OpenXml.Tests.Assets/assets/TestFiles/mcppt.pptx",
+        "upstream_git_blob_sha1": "3b3ce44575afb53958b85cb416101afe9e784484",
+        "app_xml": {"Application": "Microsoft Office PowerPoint", "AppVersion": "12.0000"}
+      },
+      "output": {
+        "file": "doc01-transitional-onlyoffice-powerpoint.pptx",
+        "sha256": "bc69ba13b81788eaca5ffcbcfb0dbdd65088e32ef185ee4a7e6710fb7e24c662"
+      },
+      "main_part": "ppt/presentation.xml",
+      "expected": {"unit_type": "slide", "segments": 2, "texts": ["abc", "def"]}
+    }
+  ],
+  "comparison": {
+    "bytes": "Each output differs byte for byte from its paired input.",
+    "extraction": "Production extract_docx, extract_xlsx and extract_pptx with capture_id doc01 return exactly equal results for input and output, with zero failed units and no limit breach."
+  }
+}

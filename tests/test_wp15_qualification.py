@@ -147,7 +147,10 @@ def test_no_passed_gate_rests_on_evidence_this_repository_cannot_produce() -> No
     """
     for gate in _ledger()["gates"]:
         if gate["status"] == "passed":
-            assert gate["evidence_type"] in guard.REPOSITORY_PRODUCIBLE, gate["gate_id"]
+            assert gate["evidence_type"] in guard.REPOSITORY_PRODUCIBLE | {
+                "real_host_measurement",
+                "external_fixture_corpus",
+            }, gate["gate_id"]
             assert gate["evidence"], gate["gate_id"]
             assert gate["missing_condition"] is None, gate["gate_id"]
         else:
@@ -181,8 +184,21 @@ def test_the_ledger_claims_no_signing_notarisation_or_measured_evidence() -> Non
         "external_fixture_corpus",
     }
     for gate in _ledger()["gates"]:
-        if gate["evidence_type"] in unproducible:
-            assert gate["status"] != "passed", gate["gate_id"]
+        if gate["evidence_type"] in unproducible and gate["status"] == "passed":
+            # The two allowed exceptions: a measured host, through a record
+            # retained in the repository and cited as evidence, and a fixture
+            # corpus, through digest-bound receipts from distinct producers.
+            if gate["evidence_type"] == "real_host_measurement":
+                assert any(
+                    item["path"].startswith(guard.RETAINED_RECORD_DIR)
+                    and item["path"].endswith(".json")
+                    for item in gate["evidence"]
+                ), gate["gate_id"]
+            else:
+                assert gate["evidence_type"] == "external_fixture_corpus", gate["gate_id"]
+                assert not guard.check_corpus_receipts(
+                    gate["gate_id"], gate["evidence"]
+                ), gate["gate_id"]
 
 
 def test_every_cited_path_and_symbol_resolves_in_this_checkout() -> None:
@@ -253,6 +269,38 @@ def _fabricated_signed_pass(document: dict[str, Any]) -> None:
     gate = _unmet(document)
     gate["status"] = "passed"
     gate["missing_condition"] = None
+
+
+def _fabricated_measured_host_pass(document: dict[str, Any]) -> None:
+    # A measured-host gate passes only on a retained record, so one with only a
+    # test cited stays refused.
+    gate = next(
+        g
+        for g in document["gates"]
+        if g["evidence_type"] == "real_host_measurement" and g["gate_id"] != "DOC-13"
+    )
+    gate["status"] = "passed"
+    gate["missing_condition"] = None
+    gate["evidence"] = [
+        item
+        for item in gate["evidence"]
+        if not item["path"].startswith(guard.RETAINED_RECORD_DIR)
+    ] or [{"path": "tests/test_wp15_qualification.py", "covers": "a test, not a measurement"}]
+
+
+def _corpus_pass_on_a_single_producer(document: dict[str, Any]) -> None:
+    # A corpus is two producers; dropping one receipt leaves one, so it is refused.
+    gate = next(g for g in document["gates"] if g["gate_id"] == "DOC-06")
+    gate["evidence"] = [
+        item for item in gate["evidence"] if "apple-text-system-receipt" not in item["path"]
+    ]
+
+
+def _corpus_pass_with_no_receipt(document: dict[str, Any]) -> None:
+    gate = next(g for g in document["gates"] if g["gate_id"] == "DOC-06")
+    gate["evidence"] = [
+        item for item in gate["evidence"] if not item["path"].endswith("-receipt.json")
+    ]
 
 
 def _passed_still_claiming_a_gap(document: dict[str, Any]) -> None:
@@ -327,6 +375,21 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
         "this repository cannot produce",
     ),
     (
+        "a_measured_host_pass_without_a_retained_record",
+        _fabricated_measured_host_pass,
+        "this repository cannot produce",
+    ),
+    (
+        "a_corpus_pass_on_a_single_producer",
+        _corpus_pass_on_a_single_producer,
+        "1 distinct producing application",
+    ),
+    (
+        "a_corpus_pass_with_no_receipt",
+        _corpus_pass_with_no_receipt,
+        "0 distinct producing application",
+    ),
+    (
         "a_passed_gate_still_claiming_a_gap",
         _passed_still_claiming_a_gap,
         "a passed gate has nothing missing",
@@ -369,6 +432,41 @@ def test_the_guard_rejects(mutate: Mutation, expected: str) -> None:
     findings = guard.check(document, _schema())
     assert findings, "the mutation was accepted"
     assert any(expected in finding for finding in findings), findings
+
+
+def _write_receipt(root: Path, name: str, application: str, content: bytes, digest: str) -> str:
+    folder = root / guard.CORPUS_RECEIPT_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{name}.rtf").write_bytes(content)
+    (folder / f"{name}-receipt.json").write_text(
+        json.dumps(
+            {
+                "authoring": {"application": application},
+                "rtf_fixture": {"file": f"{name}.rtf", "sha256": digest},
+            }
+        )
+    )
+    return f"{guard.CORPUS_RECEIPT_DIR}{name}-receipt.json"
+
+
+def test_corpus_receipts_pass_only_on_matching_digests_from_two_producers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    monkeypatch.setattr(guard, "REPO_ROOT", tmp_path)
+    good = hashlib.sha256(b"a").hexdigest()
+    one = _write_receipt(tmp_path, "one", "App A", b"a", good)
+    two = _write_receipt(tmp_path, "two", "App B", b"a", good)
+    same = _write_receipt(tmp_path, "same", "App A", b"a", good)
+    bad = _write_receipt(tmp_path, "bad", "App C", b"tampered", good)
+
+    def cited(*paths: str) -> list[dict[str, str]]:
+        return [{"path": path} for path in paths]
+
+    assert guard.check_corpus_receipts("DOC-06", cited(one, two)) == []
+    assert any("distinct" in f for f in guard.check_corpus_receipts("DOC-06", cited(one, same)))
+    assert any("hashes to" in f for f in guard.check_corpus_receipts("DOC-06", cited(one, bad)))
 
 
 def test_completeness_catches_a_missing_gate_without_the_schemas_help() -> None:

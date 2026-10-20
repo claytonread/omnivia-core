@@ -860,6 +860,15 @@ def test_phase2_workflow_keeps_every_platform_row_and_stays_fail_closed() -> Non
     assert "swift test --package-path apps/core-status-menu-macos" in companion
     assert (REPO_ROOT / "scripts" / "check-platform-lock-coverage.py").is_file()
 
+    # DOC-16: the real sealed-child and supervision suites run on the macOS row
+    # only, whole files rather than a selection, behind the same RUNNER_OS guard.
+    isolation = " ".join(
+        _commands(_step(steps, "Run document worker isolation and supervision tests"))
+    )
+    assert 'if [ "${RUNNER_OS}" = "macOS" ]; then' in isolation
+    for suite in ("test_document_worker_isolation.py", "test_document_worker_supervision.py"):
+        assert f"packages/omnivia-core-runtime/tests/phase3/runtime/{suite}" in isolation
+
     # V06-6 requires the installed MCP and CLI console scripts to be invoked in
     # every row. An editable install or import check is explicitly insufficient.
     executable_step = _step(steps, "Qualify isolated-wheel MCP and CLI executables")

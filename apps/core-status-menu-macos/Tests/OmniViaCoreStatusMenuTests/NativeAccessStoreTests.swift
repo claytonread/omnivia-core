@@ -186,6 +186,64 @@ final class NativeAccessStoreTests: XCTestCase {
         ) { XCTAssertEqual($0 as? NativeAccessError, .memberOutsideRoot) }
     }
 
+    func testAT45SystemBookmarkAllowsSelectedMemberAndRefusesInjectedEscape() throws {
+        let state = try temporaryDirectory()
+        let container = state.deletingLastPathComponent()
+        let root = container.appendingPathComponent("selected-root", isDirectory: true)
+        let outside = container.appendingPathComponent("outside", isDirectory: true)
+        let selected = root.appendingPathComponent("selected.txt")
+        let secret = outside.appendingPathComponent("secret.txt")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("selected".utf8).write(to: selected)
+        try Data("secret".utf8).write(to: secret)
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("escape"),
+            withDestinationURL: outside
+        )
+
+        // Exercise the production Foundation security-scoped bookmark codec, not
+        // the path-encoding test double used by the narrower store unit tests.
+        let store = try NativeAccessStore(stateDirectory: state)
+        let rootGrant = try store.adoptRoot(
+            rootRef: "root-at45",
+            ownerRef: "run-at45",
+            selectedURL: root,
+            binding: Self.binding
+        )
+        let valid = try store.adoptRootMember(
+            accessRef: "access-valid",
+            linkedDocumentID: "doc-valid",
+            rootRef: "root-at45",
+            memberRef: "member-valid",
+            relativeComponents: ["selected.txt"],
+            expectedRootGeneration: rootGrant.generation
+        )
+        let injected = try store.adoptRootMember(
+            accessRef: "access-injected",
+            linkedDocumentID: "doc-injected",
+            rootRef: "root-at45",
+            memberRef: "member-injected",
+            relativeComponents: ["escape", "secret.txt"],
+            expectedRootGeneration: rootGrant.generation
+        )
+
+        let selectedContents = try store.withReadAccess(
+            accessRef: valid.accessRef,
+            expectedGeneration: valid.generation,
+            expectedRootBindingGeneration: rootGrant.generation
+        ) { try String(contentsOf: $0, encoding: .utf8) }
+        XCTAssertEqual(selectedContents, "selected")
+
+        XCTAssertThrowsError(
+            try store.withReadAccess(
+                accessRef: injected.accessRef,
+                expectedGeneration: injected.generation,
+                expectedRootBindingGeneration: rootGrant.generation
+            ) { try Data(contentsOf: $0) }
+        ) { XCTAssertEqual($0 as? NativeAccessError, .memberOutsideRoot) }
+    }
+
     func testRootMembersShareOnePersistedBookmarkUntilLastOwnerAndMemberRelease() throws {
         let state = try temporaryDirectory()
         let root = state.deletingLastPathComponent().appendingPathComponent("root", isDirectory: true)

@@ -7,3 +7,9 @@ packages/omnivia-core-runtime/src/omnivia_core_runtime/storage/code_analysis_typ
 # terminator; its bytes are pinned by a recorded SHA-256. Neither Git's EOL
 # conversion nor `git diff --check` may treat it as ordinary text.
 packages/omnivia-core-runtime/tests/phase3/runtime/fixtures/at09/utf8-bom-mixed-eol.txt -text -whitespace
+
+# The DOC-06 RTF fixtures' bytes (and the Apple source HTML) are pinned by SHA-256 in
+# their receipts; no EOL conversion.
+qualification/wp15/fixtures/doc06-onlyoffice-nested.rtf -text
+qualification/wp15/fixtures/doc06-apple-text-system.rtf -text -whitespace
+qualification/wp15/fixtures/doc06-apple-text-system-source.html -text -whitespace

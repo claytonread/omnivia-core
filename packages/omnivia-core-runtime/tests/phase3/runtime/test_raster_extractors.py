@@ -49,6 +49,10 @@ from PIL import Image, ImageDraw, ImageFont, TiffImagePlugin
 
 CAPTURE = "dcap-" + "a" * 64
 SAMPLE_PDF = "services/omnivia-memory/tests/fixtures/sample.pdf"
+AT35_MIXED_PDF = (
+    "packages/omnivia-core-runtime/tests/phase3/runtime/fixtures/"
+    "at35-mixed-ten-page.pdf"
+)
 PAGE_WIDTH_POINTS = 595.0
 #: The model names the tests install into their own trusted directory.
 MODEL_NAMES = ("eng", "deu", "fra", "osd")
@@ -67,6 +71,11 @@ SCAN_LINES = (
 @pytest.fixture(scope="module")
 def sample_pdf(pytestconfig: pytest.Config) -> bytes:
     return (pytestconfig.rootpath / SAMPLE_PDF).read_bytes()
+
+
+@pytest.fixture(scope="module")
+def at35_mixed_pdf(pytestconfig: pytest.Config) -> bytes:
+    return (pytestconfig.rootpath / AT35_MIXED_PDF).read_bytes()
 
 
 @pytest.fixture(scope="module")
@@ -992,6 +1001,48 @@ def test_text_only_profile_shows_the_exact_pages_it_did_not_examine(
     assert result.excluded_units == 1 and result.useful_units == 0
 
 
+def test_at35_text_only_names_all_five_image_only_pages(
+    at35_mixed_pdf: bytes,
+) -> None:
+    result = extract_pdf(
+        at35_mixed_pdf, capture_id=CAPTURE, settings=ocr.text_only_settings()
+    )
+
+    assert result.expected == 10 and result.visited == 10
+    assert outcomes(result) == {
+        OUTCOME_EMBEDDED_TEXT: 5,
+        OUTCOME_EXCLUDED_BY_PROFILE: 5,
+    }
+    assert result.useful_units == 5 and result.excluded_units == 5
+    excluded = [
+        unit["number"]
+        for unit in result.limitations["units"]
+        if unit["outcome"] == OUTCOME_EXCLUDED_BY_PROFILE
+    ]
+    assert excluded == [2, 4, 6, 8, 10]
+
+
+def test_at35_two_page_ocr_failure_keeps_exact_ten_page_coverage(
+    at35_mixed_pdf: bytes,
+) -> None:
+    engine = FakeOcr(
+        words=[("Qualified reading", 90.0, (72.0, 140.0, 250.0, 34.0))],
+        raise_after=8,
+    )
+
+    result = extract_pdf(at35_mixed_pdf, capture_id=CAPTURE, ocr_engine=engine)
+
+    assert result.expected == 10 and result.visited == 10
+    assert result.failed_units == 2
+    assert outcomes(result)[OUTCOME_PROCESSING_FAILURE] == 2
+    failed = [
+        unit["number"]
+        for unit in result.limitations["units"]
+        if unit["outcome"] == OUTCOME_PROCESSING_FAILURE
+    ]
+    assert failed == [9, 10]
+
+
 # --------------------------------------------------------------------------- #
 # DOC-09: image decoding, orientation and frames
 # --------------------------------------------------------------------------- #
@@ -1426,6 +1477,35 @@ def test_local_tesseract_deduplicates_the_sample_pdf_once(sample_pdf: bytes) -> 
     assert sorted(result.limitations["ocrModelHashes"]) == sorted(
         f"sha256:{digest}" for digest in host.installed.values()
     )
+
+
+@pytest.mark.skipif(
+    _HOST_TESSDATA is None, reason="no local OCR engine and model directory"
+)
+def test_at35_real_tesseract_reads_all_ten_mixed_pages_exactly_once(
+    at35_mixed_pdf: bytes,
+) -> None:
+    assert _HOST_TESSDATA is not None
+    host = catalogue_over(_HOST_TESSDATA, "eng", "osd")
+
+    result = extract_pdf(
+        at35_mixed_pdf,
+        capture_id=CAPTURE,
+        settings=ocr.local_ocr_settings(catalogue=host),
+    )
+
+    assert result.expected == 10 and result.visited == 10
+    assert result.failed_units == 0 and result.useful_units == 10
+    text = "\n".join(searchable(result)).casefold()
+    for number in range(1, 11):
+        label = (
+            f"Native page {number} qualified"
+            if number % 2
+            else f"Scanned page {number}"
+        )
+        assert text.count(label.casefold()) == 1
+    assert result.limitations["ocrEngine"].startswith("tesseract-")
+    assert result.limitations["ocrLanguages"] == ["eng"]
 
 
 def _image_outcome(engine: ocr.OcrEngine) -> Any:

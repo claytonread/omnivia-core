@@ -14,7 +14,7 @@ This document is generated from
 `qualification/wp15/qualification-ledger.v1.json` and is verified against it
 by `scripts/check-wp15-qualification.py`. It records what this checkout can
 show and what it cannot. **It is not a claim that the release is qualified.**
-68 of 130 gates have direct production-path coverage
+82 of 130 gates have direct production-path coverage
 of every condition they name; the rest carry the exact condition still
 missing.
 
@@ -22,38 +22,44 @@ missing.
 
 | Status | Gates | Meaning |
 |---|---|---|
-| passed | 68 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
+| passed | 82 | Direct production-path coverage of every condition named, running unconditionally in this repository's validation. |
 | failed | 0 | Evidence exists and shows the required result is not met. |
 | blocked_external | 47 | The implementation is present, but the evidence class cannot be produced in this repository or its CI. |
-| not_executed | 15 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
+| not_executed | 1 | The evidence class is obtainable in principle, but the required scope has not been demonstrated here. |
 | not_implemented | 0 | The production path the gate names does not exist in this checkout. |
 
 ## Counts by family and status
 
 | Family | Section | Gates | passed | failed | blocked_external | not_executed | not_implemented |
 |---|---|---|---|---|---|---|---|
-| AT | 20 | 50 | 25 | 0 | 19 | 6 | 0 |
+| AT | 20 | 50 | 31 | 0 | 19 | 0 | 0 |
 | NAT | 20.1 | 17 | 0 | 0 | 17 | 0 | 0 |
-| DOC | 20.2 | 19 | 11 | 0 | 1 | 7 | 0 |
+| DOC | 20.2 | 19 | 19 | 0 | 0 | 0 | 0 |
 | MON | 20.3 | 38 | 28 | 0 | 10 | 0 | 0 |
-| END | 20.4 | 6 | 4 | 0 | 0 | 2 | 0 |
-| **total** | | **130** | 68 | 0 | 47 | 15 | 0 |
+| END | 20.4 | 6 | 4 | 0 | 1 | 1 | 0 |
+| **total** | | **130** | 82 | 0 | 47 | 1 | 0 |
 
 ## Counts by required evidence class
 
 The evidence class is what the design requires before a gate can be called
 met. Only the first two can be produced from this repository, so a gate in
 any other class cannot be recorded as passed from a test run -- the checker
-refuses that combination.
+refuses that combination. There are two exceptions. `real_host_measurement`
+may pass only while it cites a measurement record retained under
+`docs/development/qualification/`; the repository re-verifies that record but cannot
+repeat the measurement. `external_fixture_corpus` may pass only while it
+cites digest-bound receipts under `qualification/wp15/fixtures/` from at least
+2 distinct producing applications whose pinned
+fixtures still hash to the recorded digests.
 
 | Evidence class | Gates | Producible here |
 |---|---|---|
-| automated_repository_test | 79 | yes |
+| automated_repository_test | 81 | yes |
 | repository_checker | 1 | yes |
 | installed_signed_build | 39 | no |
 | real_host_measurement | 2 | no |
 | accessibility_review | 6 | no |
-| external_fixture_corpus | 3 | no |
+| external_fixture_corpus | 1 | no |
 
 ## Gates with direct coverage
 
@@ -70,6 +76,8 @@ each one's scope limits.
 | AT-11 | A known eligible local target while offline. |
 | AT-12 | A missing, revoked or incompatible target. |
 | AT-13 | The principal or the target profile changes before the first send or during recovery, including a cached Share. |
+| AT-16 | Extension termination before or after publication. |
+| AT-17 | Companion termination during publication. |
 | AT-18 | A crash after the Core commit but before the local receipt. |
 | AT-19 | A timeout, an expired replay or an unknown admission. |
 | AT-20 | A native queue capacity race across the Share and manual routes. |
@@ -82,20 +90,32 @@ each one's scope limits.
 | AT-31 | Two refreshes finish in reverse order. |
 | AT-32 | A refresh fails after a previous success. |
 | AT-33 | The same bytes, but the evidence has expired or been revoked. |
+| AT-34 | A text-bearing PDF. |
+| AT-35 | A mixed ten-page PDF fixture. |
+| AT-36 | Image-only, encrypted, corrupt and limit-exceeding PDFs. |
 | AT-37 | One item fails before local publication, and separately a partial Core processing case. |
+| AT-45 | A native-to-Core arbitrary path injection attempt. |
 | AT-46 | Source and derived claims retrieval. |
 | AT-47 | An earlier snapshot is admitted after a newer capture succeeds. |
 | AT-48 | A descriptor expires with a known-no-effect outcome, versus an ambiguous admission. |
 | AT-49 | An external access-owner call against a candidate or a provisional binding. |
 | AT-50 | Evidence is retrievable while the requested linkage is pending. |
+| DOC-01 | Office variants. |
 | DOC-02 | DOCX body and annotations. |
 | DOC-03 | XLSX formulas. |
 | DOC-04 | XLSX sparse and hidden content. |
+| DOC-05 | PPTX. |
+| DOC-06 | RTF. |
 | DOC-07 | HTML. |
+| DOC-08 | Delimited text. |
+| DOC-09 | Raster formats. |
+| DOC-10 | PDF mixed page. |
 | DOC-11 | PDF OCR conflicts. |
 | DOC-12 | OCR confidence. |
+| DOC-13 | OCR language. |
 | DOC-14 | Embedded document image profile. |
 | DOC-15 | Resource adversaries. |
+| DOC-16 | Worker isolation. |
 | DOC-17 | Reprocess races. |
 | DOC-18 | Retrieval publication. |
 | DOC-19 | Governance. |
@@ -142,11 +162,12 @@ not contain:
 - **Peer code-signing verification.** Only the input-validation path is covered. Verifying a genuinely signed peer, and rejecting a forged claim, needs signing identities.
 - **The two extensions.** `Extensions/` is outside the Swift test target, has no tests, and CI does not even typecheck it.
 - **Accessibility, appearance and displays.** There is no VoiceOver, keyboard-reachability, snapshot, text-scaling or multi-display test anywhere.
-- **Performance.** No p95 measurement exists for popover opening, publication, extraction or folder scanning, and no CPU, memory, wakeup or disk peak is recorded.
+- **Performance.** No p95 measurement exists for popover opening, publication, extraction or folder scanning. The DOC-05/09 receipt records extraction CPU, wall time and process peak RSS, but no installed UI CPU, memory, wakeup or disk peak has been measured.
 - **Intel and older macOS.** The package declares macOS 13, but nothing has run below the CI runner's version, and the build targets `arm64` only.
 - **Real providers and volumes.** There is no iCloud, File Provider, network or removable-volume fixture, and CI mounts none.
-- **Fixtures.** Every Office package is built in memory with `zipfile` and every image with PIL. No application-authored document and no HEIC file exists in the repository, and there is no fixture-hash manifest, which sections 11.15 and 22 require alongside results.
-- **The pinned external binaries.** RTF extraction needs `pandoc 3.12.1` and OCR needs `tesseract` with the bundled English and orientation models. Both are now packaged: `scripts/build-core-companion-app.py` stages them, their relocated native library closure and their licence notices into the candidate and digest-pins every byte in the component-set manifest, and production resolves them from the verified installation payload by absolute path. What the repository still cannot do is make those bytes: neither engine is redistributed here, so neither CI workflow nor `scripts/preflight` can assemble a candidate, the real-engine cases skip where the host has no engine, and the one real offline run is the committed record behind `scripts/check-doc13-packaged-runtime.py`.
+- **Fixtures.** The repository now holds a Keynote-authored PPTX, three Microsoft Office Strict-namespace and three Transitional-namespace OOXML packages (Word, Excel, PowerPoint) with the ONLYOFFICE x2t rewrite of each in both families and hash-pair conversion receipts, an ONLYOFFICE-produced nested-table RTF and an Apple text-system RTF, each with a digest-bound receipt, a macOS Image I/O HEIC and digest-bound qualification receipts. DOC-01 and DOC-06 are closed on those. Notes and revisions in RTF remain adversarial scanner fixtures, not application-authored corpus.
+- **The pinned external binaries.** RTF extraction needs `pandoc 3.12.1` and OCR needs `tesseract` with the bundled English and orientation models. Both are now packaged: `scripts/build-core-companion-app.py` stages them, their relocated native library closure and their licence notices into the candidate and digest-pins every byte in the component-set manifest, and production resolves them from the verified installation payload by absolute path. CI now installs Tesseract and a SHA-verified official Pandoc 3.12.1 build, and real macOS Tesseract runs are committed, as are the DOC-13 packaged-runtime measurements of 2026-10-16 and 2026-10-20 on one arm64 host. The repository still does not redistribute either engine, so `scripts/preflight` cannot assemble a candidate, repeat that measurement or build a signed one without separately supplied runtime payloads.
+- **Production model-manifest authority.** END-02's cache and pinning mechanisms are implemented and tested with the explicit development anchor, but no product-owned production trust anchor has been published. The repository cannot invent that release authority.
 - **Companion to Core, end to end.** No test has a real companion talking to a real Core service. Swift tests stop at a fake delivery client; Python tests call the service directly.
 - **Platform coexistence.** Platform does not exist in this repository, so its four states cannot be produced.
 

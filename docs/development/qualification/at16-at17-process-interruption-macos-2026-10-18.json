@@ -1,0 +1,52 @@
+{
+  "binary": {
+    "path": "apps/core-status-menu-macos/.build/out/Products/Debug/omnivia-core-capture-harness",
+    "sha256": "94e1868bec4a163c2dc34f75edf03003769abfad090b033595616fca4bd3d5fd"
+  },
+  "cases": {
+    "queue-after": {
+      "identity": "durability-item",
+      "observed": {
+        "items": [
+          "durability-item"
+        ],
+        "payloadsReadable": true,
+        "states": [
+          "pending"
+        ]
+      }
+    },
+    "queue-before": {
+      "identity": "durability-item",
+      "observed": {
+        "items": [],
+        "payloadsReadable": true,
+        "states": []
+      }
+    },
+    "share-after": {
+      "identity": "5910ddac-2852-4c7d-b928-2edab268da6c",
+      "observed": {
+        "complete": true,
+        "pending": [
+          "5910ddac-2852-4c7d-b928-2edab268da6c"
+        ]
+      }
+    },
+    "share-before": {
+      "identity": "4be6ea7f-c383-46f1-98bc-71b71d43c0fa",
+      "observed": {
+        "complete": true,
+        "pending": []
+      }
+    }
+  },
+  "host": {
+    "machine": "arm64",
+    "release": "27.0.0",
+    "system": "Darwin"
+  },
+  "recordedAt": "2026-10-17T23:51:53.663375+00:00",
+  "schema": "omnivia.at16-at17.process-interruption.v1",
+  "signal": "SIGKILL"
+}

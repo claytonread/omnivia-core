@@ -345,6 +345,34 @@ def test_pending_text_capture_becomes_a_searchable_projection(
     assert outbox is not None and outbox.outbox_state == store.OUTBOX_SETTLED
 
 
+def test_at34_pending_text_pdf_is_retrievable_before_added(
+    runner: ServiceRunner, pytestconfig: pytest.Config
+) -> None:
+    content = (
+        pytestconfig.rootpath / "services/omnivia-memory/tests/fixtures/sample.pdf"
+    ).read_bytes()
+    set_preferences(runner, mode=MODE_TEXT_ONLY)
+    capture = capture_document_bytes(
+        runner,
+        content=content,
+        document_id="doc-at34-text-pdf",
+        expected_base_capture_id=None,
+        operation_key="capture-at34-text-pdf",
+        media_type="application/pdf",
+        intent_kind=store.INTENT_NEW_CAPTURE,
+    )
+
+    results = process_capture_outbox(runner)
+
+    assert [result.result_state for result in results] == ["succeeded"]
+    projected = read_extraction_projection(
+        runner, document_id="doc-at34-text-pdf", query="Test PDF Document"
+    )
+    assert [segment.text for segment in projected] == ["Test PDF Document"]
+    assert json.loads(projected[0].source_locator_json)["page"] == 1
+    assert read_retained_source(runner, capture_id=capture.capture.capture_id) == content
+
+
 def test_corrupt_pdf_is_preserved_and_settled_without_projection(
     runner: ServiceRunner,
 ) -> None:
@@ -424,6 +452,7 @@ def test_a_worker_that_produced_no_outcome_settles_under_its_own_reason(
     )
 
 
+@pytest.mark.production_document_worker
 def test_the_production_extraction_seam_is_the_confined_worker() -> None:
     # DOC-16. The in-process adapters are not a production route: the name this
     # module's extraction goes through is the isolated worker's entry point.
