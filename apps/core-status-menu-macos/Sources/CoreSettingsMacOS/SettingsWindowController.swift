@@ -407,6 +407,12 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// the installed client and holds the states.
     private let processing: DocumentProcessingModel
 
+    // MARK: Update check (General > Updates)
+    /// The last manual check of the installed client's read-only owner. Nothing
+    /// runs it but the Check Now button: there is no check on open and no
+    /// automatic-check preference, because no durable owner of one exists.
+    private let updates: CoreUpdateCheckModel
+
     // MARK: - Routes (design `core-routes.js`)
 
     /// The six panes of Core Settings v2, in `CoreRoutes.PANES` order.
@@ -589,7 +595,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         notificationCenter: UNUserNotificationCenter? = nil,
         mcp: McpAdministering? = nil,
         ocr: OcrResourceAdministering? = nil,
-        documentProcessing: DocumentProcessingAdministering? = nil
+        documentProcessing: DocumentProcessingAdministering? = nil,
+        updates: CoreUpdateAdministering? = nil
     ) {
         self.coordinator = coordinator
         self.navigator = navigator
@@ -605,6 +612,9 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         // the pane says it has no route rather than showing a default as a
         // setting somebody chose.
         processing = DocumentProcessingModel(administering: documentProcessing)
+        // The same for the installed `omnivia`'s read-only update check. Nil
+        // means the row says there is no route and offers no button.
+        self.updates = CoreUpdateCheckModel(administering: updates)
         // Resolve lazily and bundle-guarded: UNUserNotificationCenter.current()
         // raises when the process has no bundle identity (§13.2 honest states).
         if let notificationCenter {
@@ -617,6 +627,7 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         super.init()
         languages.onChange = { [weak self] in self?.render() }
         processing.onChange = { [weak self] in self?.render() }
+        self.updates.onChange = { [weak self] in self?.render() }
         // Pick up the stored preference rather than starting from false every
         // launch. The companion's own preferences stay machine-local: they
         // must work while Core is stopped, and they should not travel with a
@@ -1363,9 +1374,11 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// binding register (§7) names each of these.
     private static let missingOwner: [String: String] = [
         "models":
-            "Choose, download and manage supported models. Acquiring a model needs "
-            + "verification, quarantine, load and health reporting, and a resource "
-            + "manifest for its size. Core advertises none of that.",
+            "Choose, download and manage supported models. Core has a selected model "
+            + "target and mechanisms for trusting a manifest and caching resources, but "
+            + "this build has no production trust anchor or catalogue, no approved "
+            + "artifact pins, no packaged runtime or backend qualification, and no owner "
+            + "that installs or enables a model. No model controls are offered.",
         "search":
             "Find passages even when the question uses different words. This needs "
             + "workspace enablement, a backfill request and per-stage coverage counters, "
@@ -2064,13 +2077,8 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         )
 
         // `CoreUpdates.group(s)` (B-UPD-01).
-        let updates = card(content, header: "Updates", scope: "This Mac")
-        notBuiltRow(
-            into: updates,
-            title: "Check for updates",
-            detail: "Update checks and installation belong to an updater that names the "
-                + "component it is updating. This build has none."
-        )
+        let updatesCard = card(content, header: "Updates", scope: "This Mac")
+        renderUpdatesRows(into: updatesCard)
 
         // `SG("Opening code", "This Mac")` (B-EDT-01).
         let editor = card(content, header: "Opening code", scope: "This Mac")
@@ -2142,6 +2150,98 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
 
         generalClosingNote(content)
+    }
+
+    /// Updates: one manual, read-only check and what it last said. Nothing here
+    /// installs, downloads or schedules anything, and the rows say so rather
+    /// than leaving an absent control to be guessed at.
+    private func renderUpdatesRows(into card: NSStackView) {
+        let model = updates
+        let checkButton = button(
+            "Check Now", style: .bordered, action: #selector(checkForUpdates),
+            subject: "updates"
+        )
+        checkButton.isEnabled = model.canCheck
+        let body = row(
+            into: card,
+            title: "Check for updates",
+            detail: "Asks the OmniVia update channel whether a newer release exists. This only "
+                + "checks: nothing is downloaded or installed, and installing an update is "
+                + "not offered here.",
+            trailing: checkButton
+        )
+        let (text, tone, detail) = updateStatus(model.state)
+        body.addArrangedSubview(ovSpacer(2))
+        body.addArrangedSubview(chip(text, tone: tone))
+        if let detail {
+            let d = NSTextField(wrappingLabelWithString: detail)
+            d.font = OvFont.sans(11.5)
+            d.textColor = Ov.textTertiary
+            body.addArrangedSubview(d)
+            wrap(d, within: body, inset: body.edgeInsets.left + body.edgeInsets.right)
+        }
+
+        notBuiltRow(
+            into: card,
+            title: "Automatic checks",
+            detail: "Core keeps no saved choice about checking on its own, so it never "
+                + "checks unless you choose Check Now.",
+            status: "Unavailable"
+        )
+    }
+
+    private static let checkedAtFormat: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    /// The chip and sentence for one state of the check. Every status has its
+    /// own words: a failure is never worded as "up to date", and an available
+    /// update never promises that it can be installed from here.
+    private func updateStatus(
+        _ state: CoreUpdateCheckModel.State
+    ) -> (String, ChipTone, String?) {
+        switch state {
+        case .neverChecked:
+            return ("Not checked yet", .neutral, "Nothing has been checked in this window.")
+        case .checking:
+            return ("Checking\u{2026}", .checking, nil)
+        case .failed(let error):
+            return ("Couldn\u{2019}t check", .attention, error.sentence)
+        case .result(let result):
+            let checked = "Checked \(Self.checkedAtFormat.string(from: result.checkedAt))."
+            let reason = result.safeReason.map { " \($0)" } ?? ""
+            switch result.status {
+            case .upToDate:
+                return ("Up to date", .ok,
+                        "The installed release matches the one the channel recommends. \(checked)")
+            case .updateAvailable:
+                let version = result.candidateVersion.map { "Version \($0)" } ?? "A newer release"
+                return ("Update available", .approval,
+                        "\(version) is available. Installing it is not offered here. \(checked)")
+            case .aheadOfChannel:
+                return ("Ahead of channel", .neutral,
+                        "The installed release is newer than the one the channel recommends. "
+                            + "\(checked)")
+            case .noRelease:
+                return ("No release published", .neutral,
+                        "The channel currently recommends no release. \(checked)")
+            case .checkFailed:
+                return ("Check failed", .attention,
+                        "The update channel could not be read, so nothing is known about "
+                            + "updates.\(reason) \(checked)")
+            case .unsupportedInstall:
+                return ("Can\u{2019}t compare this install", .blocked,
+                        "This installation can\u{2019}t be compared with the channel.\(reason) "
+                            + "\(checked)")
+            }
+        }
+    }
+
+    @objc private func checkForUpdates() {
+        Task { @MainActor in await updates.checkNow() }
     }
 
     /// Start Core at login (companion login / Core background are distinct
@@ -3410,8 +3510,9 @@ public final class SettingsWindowController: NSObject, NSWindowDelegate {
         notBuiltRow(
             into: core,
             title: "Updates",
-            detail: "Installed with the OmniVia installer. No updater is available here.",
-            status: "Not in this build"
+            detail: "Check for updates in General \u{203A} Updates. Installing an update is "
+                + "unavailable in this build.",
+            status: "Install unavailable"
         )
 
         let diagnostics = card(content, header: "Diagnostics")

@@ -15655,6 +15655,132 @@
           "as_of": "2024-01-01T00:00:01Z"
         }
       }
+    },
+    {
+      "id": "evidence.erase/primary-success",
+      "operation": "evidence.erase",
+      "description": "evidence.erase physically removes one directly captured evidence artifact, its derived search state and, when nothing else holds the address, its stored bytes, and returns the receipt.",
+      "expect": {
+        "branch": "success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-evidence.erase-primary-success",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-evidence.erase"
+        },
+        "operation": "evidence.erase",
+        "input": {
+          "evidence_id": "evd-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-evidence.erase-primary-success",
+          "audit_reference": "audit-evidence.erase"
+        },
+        "result": {
+          "evidence_id": "evd-1",
+          "erase_disposition": "erased",
+          "content_disposition": "erased"
+        }
+      }
+    },
+    {
+      "id": "evidence.erase/honest-replay",
+      "operation": "evidence.erase",
+      "description": "evidence.erase repeated with the same idempotency key and the same evidence id: the recorded receipt is returned and nothing is erased a second time.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "evidence.erase/primary-success"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-evidence.erase-honest-replay",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-evidence.erase"
+        },
+        "operation": "evidence.erase",
+        "input": {
+          "evidence_id": "evd-1"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-evidence.erase-honest-replay",
+          "audit_reference": "audit-evidence.erase"
+        },
+        "result": {
+          "evidence_id": "evd-1",
+          "erase_disposition": "erased",
+          "content_disposition": "erased"
+        }
+      }
+    },
+    {
+      "id": "evidence.erase/idempotency-conflict",
+      "operation": "evidence.erase",
+      "description": "evidence.erase reusing one idempotency key for different evidence: refused rather than resolved to the first erasure's answer.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "evidence.erase/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "request": {
+        "metadata": {
+          "request_id": "req-evidence.erase-idempotency-conflict",
+          "required_capabilities": [
+            {
+              "id": "evidence.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "memory:write"
+          ],
+          "workspace_id": "ws-1",
+          "idempotency_key": "idem-evidence.erase"
+        },
+        "operation": "evidence.erase",
+        "input": {
+          "evidence_id": "evd-2"
+        }
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-evidence.erase-idempotency-conflict",
+          "audit_reference": "audit-evidence.erase"
+        },
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        }
+      }
     }
   ],
   "contract_version": "1.0",

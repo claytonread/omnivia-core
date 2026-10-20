@@ -526,6 +526,8 @@
     "DocumentOriginalDisconnectResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalDisconnectResult"},
     "DocumentOriginalRelinkInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalRelinkInput"},
     "DocumentOriginalRelinkResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/DocumentOriginalRelinkResult"},
+    "EvidenceEraseInput": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceEraseInput"},
+    "EvidenceEraseResult": {"$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceEraseResult"},
     "GovernanceRationale": {
       "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/GovernanceRationale"
     },

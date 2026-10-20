@@ -177,7 +177,9 @@ def blob_path(blobs_root: Path, digest: str) -> Path:
     `sha256:[0-9a-f]{64}` -- which admits no separator, no `..` and no absolute path.
     """
     if DIGEST_PATTERN.fullmatch(digest) is None:
-        raise BlobPublicationRefused("blob digest is outside the accepted address domain")
+        raise BlobPublicationRefused(
+            "blob digest is outside the accepted address domain"
+        )
     return blobs_root / "sha256" / digest.removeprefix("sha256:")
 
 
@@ -276,7 +278,9 @@ def publish_blob(blobs_root: Path, digest: str, content: bytes) -> Path:
             view = memoryview(content)
             while view:
                 written = os.write(descriptor, view)
-                if written <= 0:  # pragma: no cover - defensive operating-system failure
+                if (
+                    written <= 0
+                ):  # pragma: no cover - defensive operating-system failure
                     raise OSError("short write while publishing blob")
                 view = view[written:]
             os.fsync(descriptor)
@@ -293,9 +297,27 @@ def publish_blob(blobs_root: Path, digest: str, content: bytes) -> Path:
     return target
 
 
+def erase_blob(blobs_root: Path, digest: str) -> None:
+    """Remove the one object at `digest`; an object that is already absent is already erased.
+
+    The inverse of :func:`publish_blob` and as narrow: it resolves the address exactly as
+    `blob_path` does, so no caller value reaches the filesystem outside the accepted digest
+    domain, and it unlinks the name and nothing it might point at. Whether any record still
+    needs the bytes is the caller's question -- this primitive knows no database, exactly as
+    its sibling knows none.
+    """
+    target = blob_path(blobs_root, digest)
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        return
+    fsync_directory(target.parent)
+
+
 __all__ = [
     "DIGEST_PATTERN",
     "BlobPublicationRefused",
     "blob_path",
+    "erase_blob",
     "publish_blob",
 ]

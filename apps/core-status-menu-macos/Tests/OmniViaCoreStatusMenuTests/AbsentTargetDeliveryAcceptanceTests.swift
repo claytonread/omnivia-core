@@ -852,14 +852,20 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
             "packages/omnivia-core-mcp/src",
             "packages/omnivia-core-client/src",
         ].map { repository.appendingPathComponent($0).path }.joined(separator: ":")
-        let launcher = root.appendingPathComponent("omnivia")
-        try """
-        #!/bin/sh
-        export PYTHONPATH='\(path)'
-        exec '\(python)' -B -m omnivia_core_cli.main "$@"
-        """.write(to: launcher, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
-        return launcher
+        // The service launcher sits beside the CLI launcher, built from this
+        // checkout's packages, so no installed `omnivia-core-service` is consulted.
+        func launcher(_ name: String, _ module: String) throws -> URL {
+            let url = root.appendingPathComponent(name)
+            try """
+            #!/bin/sh
+            export PYTHONPATH='\(path)'
+            exec '\(python)' -B -m \(module) "$@"
+            """.write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+            return url
+        }
+        _ = try launcher("omnivia-core-service", "omnivia_core_runtime.service.main")
+        return try launcher("omnivia", "omnivia_core_cli.main")
     }
 
     /// A real, initialised installation whose service has been started and then
@@ -876,6 +882,12 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
                 "--installation-state", state.path, "--workspace-id", workspaceID,
                 "service", action, "--json",
             ]
+            // `service start` finds the service with `which`; put the pinned CLI's
+            // directory first so it finds the paired launcher, not a stray one.
+            var environment = ProcessInfo.processInfo.environment
+            environment["PATH"] = [cli.deletingLastPathComponent().path, environment["PATH"]]
+                .compactMap { $0 }.joined(separator: ":")
+            process.environment = environment
             process.standardOutput = output
             process.standardError = FileHandle.nullDevice
             try process.run()
@@ -894,10 +906,13 @@ final class AbsentTargetDeliveryAcceptanceTests: NativeHandoffTestCase {
     }
 
     private func installStoppedCore(_ cli: URL) throws -> InstalledCore {
-        let path = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":")
-            .map { URL(fileURLWithPath: String($0)).appendingPathComponent("omnivia-core-service") }
-            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
-        guard let service = path else { throw XCTSkip("omnivia-core-service must be on PATH") }
+        // The service beside the pinned `omnivia`, so a stray `omnivia-core-service`
+        // elsewhere on PATH (another checkout's interpreter) is never picked up.
+        let service = cli.deletingLastPathComponent().appendingPathComponent("omnivia-core-service")
+        try XCTSkipUnless(
+            FileManager.default.isExecutableFile(atPath: service.path),
+            "omnivia-core-service must be installed beside omnivia (\(cli.deletingLastPathComponent().path))"
+        )
         // Unix socket paths are short; the ambient TMPDIR is too deep for one.
         let home = URL(fileURLWithPath: "/tmp/at11-\(UUID().uuidString.prefix(8))", isDirectory: true)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)

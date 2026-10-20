@@ -7,8 +7,8 @@ maps to. It dispatches nothing and calls nothing.
 
 Three properties are held here rather than left to a reader:
 
-*Bijection with the catalogue.* The ninety-three application commands map onto the
-ninety-three operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
+*Bijection with the catalogue.* The ninety-four application commands map onto the
+ninety-four operations of `OPERATION_CATALOGUE`, one to one, checked at import. A
 command reaching an operation the contract does not publish -- or an operation
 published with no command reaching it -- is an import-time refusal, not a
 runtime surprise. That also closes the door on the legacy `core.*` operation names,
@@ -144,6 +144,8 @@ APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
         "document.original.relink",
         "content_ingestion",
     ),
+    # Physical erasure of one directly captured evidence artifact (LEX-01).
+    ApplicationCommand(("evidence", "erase"), "evidence.erase", "evidence_erasure"),
     ApplicationCommand(
         ("evidence", "search"), "evidence.search", "knowledge_retrieval"
     ),

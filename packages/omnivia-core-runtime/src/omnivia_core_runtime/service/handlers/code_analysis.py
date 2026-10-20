@@ -33,10 +33,17 @@ the same thing again inside the transaction. The request's deadline is honoured 
 files: an analysis still running when it passes is abandoned as `deadline_exceeded` with
 nothing written, and a later attempt under the same key starts afresh.
 
-**Only Python runs here.** The TypeScript producer is declared, so its availability is
-stated rather than hidden, but this service has no verified Node runtime to run its
-packaged analyser on: a request for it is `dependency_unavailable` with
-`runtime_not_configured`, never a silent fallback and never a guess at `PATH`.
+**Python always runs; TypeScript runs when the service is provisioned for it.** Both
+producers are declared, so availability is stated rather than hidden. The TypeScript
+producer needs an absolute Node executable from the service's own trusted configuration
+(`ServiceSettings.typescript_node_executable`, set by the installation, never by a request,
+`PATH`, a project file or a project's `node_modules`), plus the packaged compiler and
+analyser, each checked against its pinned digest. Anything less -- not configured, a
+relative or missing path, a tampered compiler or analyser, a Node that will not run it -- is
+`dependency_unavailable` with a precise reason in `code.import` and `availability_reason`
+in `code.status`, never a silent fallback. It then runs exactly like Python: the same
+heartbeat (which also renews the lease while Node works), deadline, policy, atomic import
+and projection barrier.
 
 **The file evidence must be searchable before success is reported.** An import adds one L0
 artifact per captured file it read, which moves the evidence checkpoint, so it runs the
@@ -194,7 +201,7 @@ _MESSAGE_POLICY_INVALID: Final = (
 )
 _MESSAGE_POLICY_CONFLICT: Final = "that policy id and version is already a different policy"
 _MESSAGE_NOT_DECLARED: Final = "no producer profile this service declares matches the request"
-_MESSAGE_RUNTIME: Final = "this service cannot run that producer: its runtime is not configured"
+_MESSAGE_RUNTIME: Final = "this service cannot run that producer: its runtime is not available"
 _MESSAGE_POLICY_NOT_FOUND: Final = "no acceptance policy of that id and version is registered"
 _MESSAGE_POLICY_DOES_NOT_ADMIT: Final = (
     "that acceptance policy does not admit this producer build and profile"
@@ -226,9 +233,9 @@ _MESSAGE_NOT_SEARCHABLE: Final = (
 class DeclaredProducer:
     """One producer and profile this service declares, and whether it can run it here.
 
-    `analyse` is None for a producer whose runtime this service does not have; such a
-    producer is still declared, so its absence is a stated capability rather than a
-    language that silently looks unanalysed.
+    `runtime_refusal` says why this service cannot run the producer right now, or None.
+    A producer it cannot run is still declared, so its absence is a stated capability
+    rather than a language that silently looks unanalysed.
     """
 
     producer_id: str
@@ -239,8 +246,8 @@ class DeclaredProducer:
     admits: Callable[[str], bool]
     #: Every suffix the profile reads at all, source or configuration.
     suffixes: tuple[str, ...]
-    analyse: Callable[..., VerifiedCodeAnalysisBatch | None] | None
-    unavailable_reason: str | None = None
+    analyse: Callable[..., VerifiedCodeAnalysisBatch | None]
+    runtime_refusal: Callable[[Any], str | None] = lambda service: None
 
     @property
     def lock(self) -> tuple[str, str, str]:
@@ -255,6 +262,7 @@ def _analyse_python(
     snapshot_id: str,
     blobs_root: Path,
     heartbeat: Callable[[], object],
+    service: Any,
 ) -> VerifiedCodeAnalysisBatch | None:
     profile = code_analysis_python.DEFAULT_PYTHON_PROFILE
     return code_analysis_python.analyse_python_snapshot(
@@ -271,6 +279,57 @@ def _analyse_python(
 
 _PYTHON_PROFILE: Final = code_analysis_python.DEFAULT_PYTHON_PROFILE
 _TYPESCRIPT_PROFILE: Final = code_analysis_typescript.DEFAULT_TYPESCRIPT_PROFILE
+
+
+def _typescript_runtime(service: Any) -> code_analysis_typescript.TypeScriptRuntime:
+    """The service's configured Node plus the packaged compiler, verified, or raises.
+
+    Re-verified on every call -- a status read or an import -- so a compiler or analyser
+    that changed on disk after startup is never trusted on the strength of an earlier look.
+    """
+    node = getattr(getattr(service, "settings", None), "typescript_node_executable", None)
+    if node is None:
+        raise code_analysis_typescript.TypeScriptRuntimeUnavailable(
+            RUNTIME_NOT_CONFIGURED, "no Node executable is configured for this service"
+        )
+    runtime = code_analysis_typescript.TypeScriptRuntime(
+        node_executable=Path(node), typescript_root=code_analysis_typescript.PACKAGED_TYPESCRIPT_ROOT
+    )
+    runtime.resolved(_TYPESCRIPT_PROFILE)
+    return runtime
+
+
+def _typescript_refusal(service: Any) -> str | None:
+    try:
+        _typescript_runtime(service)
+    except code_analysis_typescript.TypeScriptRuntimeUnavailable as unavailable:
+        return unavailable.reason
+    return None
+
+
+def _analyse_typescript(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    repository_id: str,
+    snapshot_id: str,
+    blobs_root: Path,
+    heartbeat: Callable[[], object],
+    service: Any,
+) -> VerifiedCodeAnalysisBatch | None:
+    profile = _TYPESCRIPT_PROFILE
+    return code_analysis_typescript.analyse_typescript_snapshot(
+        connection,
+        workspace_id=workspace_id,
+        repository_id=repository_id,
+        snapshot_id=snapshot_id,
+        blobs_root=blobs_root,
+        runtime=_typescript_runtime(service),
+        profile=profile,
+        expected_profile_digest=profile.digest,
+        heartbeat=heartbeat,
+    ).verified
+
 
 #: Every producer profile this service declares, in the order `code.status` reports them.
 DECLARED_PRODUCERS: Final[tuple[DeclaredProducer, ...]] = (
@@ -290,8 +349,8 @@ DECLARED_PRODUCERS: Final[tuple[DeclaredProducer, ...]] = (
         languages=("javascript", "typescript"),
         admits=lambda path: _TYPESCRIPT_PROFILE.role(path) == "source",
         suffixes=_TYPESCRIPT_PROFILE.include_suffixes + _TYPESCRIPT_PROFILE.config_suffixes,
-        analyse=None,
-        unavailable_reason=RUNTIME_NOT_CONFIGURED,
+        analyse=_analyse_typescript,
+        runtime_refusal=_typescript_refusal,
     ),
 )
 
@@ -314,6 +373,15 @@ def import_idempotency_key(principal_id: str, idempotency_key: str) -> str:
     caller is folded in: two principals reusing one key are two imports, never one.
     """
     return "cik-" + hashlib.sha256(f"{principal_id}\x00{idempotency_key}".encode()).hexdigest()
+
+
+def _runtime_unavailable(reason: str) -> OperationError:
+    return OperationError(
+        ERROR_CODE_DEPENDENCY_UNAVAILABLE,
+        _MESSAGE_RUNTIME,
+        retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
+        details={"reason": reason},
+    )
 
 
 class _Abandoned(Exception):
@@ -551,13 +619,6 @@ class CodeAnalysisHandlers:
         declared = declared_producer(request.producer_id, request.profile_digest)
         if declared is None:
             raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_NOT_DECLARED)
-        if declared.analyse is None:
-            raise OperationError(
-                ERROR_CODE_DEPENDENCY_UNAVAILABLE,
-                _MESSAGE_RUNTIME,
-                retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
-                details={"reason": declared.unavailable_reason},
-            )
         storage = self._storage()
         connection, identity, _guard = storage
         blobs_root = self._blobs_root()
@@ -571,6 +632,12 @@ class CodeAnalysisHandlers:
             # and not the producer, whose answer is already fixed.
             settled = import_receipt(reader, workspace_id=workspace_id, idempotency_key=key)
             if settled is None:
+                # After the replay check, so a settled import is still answered from its
+                # receipt when the runtime has since gone; before the policy lookup, so
+                # an unprovisioned producer is never told its policy is missing.
+                runtime_reason = declared.runtime_refusal(self.service)
+                if runtime_reason is not None:
+                    raise _runtime_unavailable(runtime_reason)
                 policy = read_import_policy(
                     reader,
                     workspace_id=workspace_id,
@@ -683,7 +750,6 @@ class CodeAnalysisHandlers:
         it keeps this instance's workspace lease current through a long analysis, and it
         abandons the analysis as soon as the request's own deadline has passed.
         """
-        assert declared.analyse is not None
         deadline_ms = getattr(context.authorization, "deadline_ms", None)
         started = time.monotonic()
         renew = getattr(self.service, "renew_lease_if_due", None)
@@ -716,6 +782,7 @@ class CodeAnalysisHandlers:
                         snapshot_id=request.snapshot_id,
                         blobs_root=blobs_root,
                         heartbeat=heartbeat,
+                        service=self.service,
                     )
                 except _Abandoned:
                     refusal = OperationError(
@@ -723,7 +790,13 @@ class CodeAnalysisHandlers:
                         _MESSAGE_DEADLINE,
                         retry_class=DEFAULT_RETRY_CLASSIFICATION[ERROR_CODE_DEADLINE_EXCEEDED],
                     )
-                except code_analysis_python.PythonAnalysisRefused:
+                except code_analysis_typescript.TypeScriptRuntimeUnavailable as unavailable:
+                    # Gone or changed since the availability check above.
+                    refusal = _runtime_unavailable(unavailable.reason)
+                except (
+                    code_analysis_python.PythonAnalysisRefused,
+                    code_analysis_typescript.TypeScriptAnalysisRefused,
+                ):
                     refusal = application_refusal(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_TOO_LARGE)
                 except CodeAnalysisBindingError:
                     refusal = application_refusal(ERROR_CODE_CONFLICT, _MESSAGE_SNAPSHOT_UNVERIFIABLE)
@@ -798,6 +871,12 @@ def code_status(context: OperationContext) -> Mapping[str, Any]:
     workspace_id = context.workspace_id
     instant_us = time.time_ns() // 1_000_000 * 1000
     grant = _grant(context)
+    # Before the read transaction opens: verifying a runtime starts Node and hashes the
+    # compiler, which must not hold a database snapshot open.
+    refusals = {
+        declared.producer_id: declared.runtime_refusal(getattr(context, "service", None))
+        for declared in DECLARED_PRODUCERS
+    }
     owns_transaction = not connection.in_transaction
     if owns_transaction:
         connection.execute("BEGIN")
@@ -822,6 +901,7 @@ def code_status(context: OperationContext) -> Mapping[str, Any]:
                 grant=grant,
                 evidence_labels=evidence_labels,
                 instant_us=instant_us,
+                unavailable_reason=refusals[declared.producer_id],
             )
             for declared in DECLARED_PRODUCERS
         )
@@ -905,6 +985,7 @@ def _analysis_status(
     grant: EvidenceLabelGrant,
     evidence_labels: Mapping[str, tuple[str, ...]],
     instant_us: int,
+    unavailable_reason: str | None,
 ) -> CodeAnalysisStatus:
     """One declared producer profile's availability, readiness, binding and coverage.
 
@@ -950,8 +1031,8 @@ def _analysis_status(
         producer_version=declared.producer_version,
         profile_digest=declared.profile_digest,
         languages=declared.languages,
-        availability=AVAILABLE if declared.analyse is not None else UNAVAILABLE,
-        availability_reason=declared.unavailable_reason if declared.analyse is None else None,
+        availability=AVAILABLE if unavailable_reason is None else UNAVAILABLE,
+        availability_reason=unavailable_reason,
         readiness=READY if reason is None else NOT_READY,
         readiness_reason=reason,
         activation_sequence=0 if active is None else active[1],

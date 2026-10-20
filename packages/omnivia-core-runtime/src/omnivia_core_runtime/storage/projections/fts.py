@@ -913,6 +913,21 @@ def _plan_run(
             "WHERE workspace_id = ? AND projection_id = ?",
             (workspace_id, PROJECTION_ID),
         ).fetchone()
+        # An erased artifact leaves its document behind in the run that was active when
+        # it went, and the checkpoint is a high-water mark an erase may not move. The
+        # orphan is the durable fact that this run no longer describes the workspace, so
+        # it is read from the rows rather than remembered, and a crash between an erase
+        # and its rebuild converges at the next start.
+        orphaned = fenced.execute(
+            f"SELECT 1 FROM {DOCUMENTS_TABLE} d "
+            "JOIN omnivia_projection_ledger l "
+            "  ON l.projection_id = d.projection_id AND l.active_run_id = d.run_id "
+            "WHERE d.workspace_id = ? AND d.projection_id = ? "
+            "  AND NOT EXISTS (SELECT 1 FROM omnivia_evidence_artifacts a "
+            "                  WHERE a.workspace_id = d.workspace_id "
+            "                    AND a.evidence_id = d.evidence_id) LIMIT 1",
+            (workspace_id, PROJECTION_ID),
+        ).fetchone()
 
     in_flight_compatible = in_flight is not None and (
         str(in_flight[4]) == SCHEMA_VERSION and str(in_flight[5]) == PROFILE_VERSION
@@ -957,7 +972,12 @@ def _plan_run(
     active_compatible = ledger is not None and (
         str(ledger[2]) == SCHEMA_VERSION and str(ledger[3]) == PROFILE_VERSION
     )
-    if in_flight is None and active_checkpoint == checkpoint and active_compatible:
+    if (
+        in_flight is None
+        and active_checkpoint == checkpoint
+        and active_compatible
+        and orphaned is None
+    ):
         return None
 
     # Failed declarations are append-preserved too.  Advancing only from the active

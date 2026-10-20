@@ -425,6 +425,8 @@ __all__ = [
     "EvidenceCaptureResult",
     "EvidenceChecksum",
     "EvidenceDisposition",
+    "EvidenceEraseInput",
+    "EvidenceEraseResult",
     "EvidenceId",
     "EvidenceItem",
     "EvidenceQuery",
@@ -10583,6 +10585,101 @@ class DocumentOriginalRelinkResult:
             binding_generation=field_binding_generation,
             connection_state=field_connection_state,
             current_capture_id=field_current_capture_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceEraseInput:
+    """Closed input for `evidence.erase`. Names one directly captured evidence artifact (one
+    `evidence.capture` stored) in the selected workspace and asks Core to physically erase
+    it: the artifact, its permission labels, provenance, references and normalized records,
+    its search projection document, and its stored bytes when no other artifact, staged
+    source or document capture holds the same content address. Erasure is not a tombstone:
+    nothing about the evidence remains to be searched, listed or cited. Evidence a governed
+    record cites, or that did not come from `evidence.capture`, is refused rather than partly
+    erased. It carries no query, path, URL, workspace, principal or storage option.
+    """
+
+    evidence_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["evidence_id"] = self.evidence_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "EvidenceEraseInput") -> EvidenceEraseInput:
+        """Decode a wire payload into a EvidenceEraseInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_evidence_id = _decode_str(
+            _require_field(mapping, "evidence_id", path),
+            f"{path}.evidence_id",
+        )
+        return cls(
+            evidence_id=field_evidence_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceEraseResult:
+    """Canonical terminal receipt for one erasure or its exact replay. `erase_disposition` is
+    `erased` for the request that removed the evidence and `already_erased` for a later
+    request naming evidence an earlier one erased, under a new idempotency key.
+    `content_disposition` is `erased` when the stored bytes were removed with the evidence
+    and `retained_shared` when another artifact, staged source or document capture still
+    holds the same content address, so the bytes were kept for it and nothing of this
+    evidence was kept with them.
+    """
+
+    evidence_id: Identifier
+    erase_disposition: OpenCode
+    content_disposition: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["evidence_id"] = self.evidence_id
+        wire["erase_disposition"] = self.erase_disposition
+        wire["content_disposition"] = self.content_disposition
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "EvidenceEraseResult") -> EvidenceEraseResult:
+        """Decode a wire payload into a EvidenceEraseResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_evidence_id = _decode_str(
+            _require_field(mapping, "evidence_id", path),
+            f"{path}.evidence_id",
+        )
+        field_erase_disposition = _decode_str(
+            _require_field(mapping, "erase_disposition", path),
+            f"{path}.erase_disposition",
+        )
+        field_content_disposition = _decode_str(
+            _require_field(mapping, "content_disposition", path),
+            f"{path}.content_disposition",
+        )
+        return cls(
+            evidence_id=field_evidence_id,
+            erase_disposition=field_erase_disposition,
+            content_disposition=field_content_disposition,
         )
 
 
@@ -35191,6 +35288,63 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "not_found",
             "rate_limited",
             "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="evidence.erase",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/EvidenceEraseInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/EvidenceEraseResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "projection_unavailable",
+            "rate_limited",
+            "stale_projection",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
             "workspace_migration_required",
             "workspace_not_granted",
         ),

@@ -100,6 +100,9 @@ from omnivia_core_runtime.service.operations import OperationError
 WORKSPACE_ADMINISTRATION_PURPOSE: Final = "workspace_administration"
 MEMORY_AUTHORING_PURPOSE: Final = "memory_authoring"
 CONTENT_INGESTION_PURPOSE: Final = "content_ingestion"
+#: Physically erasing evidence. Deliberately not `CONTENT_INGESTION_PURPOSE`: a grant to bring
+#: content in is not a grant to destroy it, and the two are issued for opposite acts.
+EVIDENCE_ERASURE_PURPOSE: Final = "evidence_erasure"
 JOB_CONTROL_PURPOSE: Final = "job_control"
 KNOWLEDGE_GOVERNANCE_PURPOSE: Final = "knowledge_governance"
 CHAT_AUTHORING_PURPOSE: Final = "chat_authoring"
@@ -170,6 +173,7 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         # the bytes, so they are served under the one ingestion purpose rather than a
         # purpose that would merely restate the operation name.
         "evidence.capture": CONTENT_INGESTION_PURPOSE,
+        "evidence.erase": EVIDENCE_ERASURE_PURPOSE,
         "document.capture": CONTENT_INGESTION_PURPOSE,
         "document.reprocess": CONTENT_INGESTION_PURPOSE,
         "document.original.disconnect": CONTENT_INGESTION_PURPOSE,
@@ -248,6 +252,10 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # Contributing content to one workspace: it reviews nothing, administers
         # nothing, and reaches outside no workspace it does not name.
         "evidence.capture": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Erasing is contributor work only in the sense that no role model exists to say
+        # otherwise; what separates it from capturing is its own purpose, which a capture
+        # grant never carries.
+        "evidence.erase": WORKSPACE_CONTRIBUTOR_ROLE,
         "document.capture": WORKSPACE_CONTRIBUTOR_ROLE,
         "document.reprocess": WORKSPACE_CONTRIBUTOR_ROLE,
         "document.original.disconnect": WORKSPACE_CONTRIBUTOR_ROLE,
