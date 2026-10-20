@@ -549,11 +549,15 @@ def test_lex_01_the_database_file_and_log_hold_no_trace_of_what_was_erased(
         source_version=VERSION_MARKER,
     )
     assert VERSION_MARKER.encode() in file_bytes(owned)
+    initial_secure_delete = owned.connection.execute("PRAGMA secure_delete").fetchone()[0]
 
     erased(tick_then_erase(router, clock, target))
 
     assert VERSION_MARKER.encode() not in file_bytes(owned)
-    assert owned.connection.execute("PRAGMA secure_delete").fetchone()[0] == 0
+    assert (
+        owned.connection.execute("PRAGMA secure_delete").fetchone()[0]
+        == initial_secure_delete
+    )
 
 
 # --- statistics: the erased evidence is not in any number the ranking is computed from -----
