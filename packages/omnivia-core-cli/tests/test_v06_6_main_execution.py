@@ -66,6 +66,7 @@ from omnivia_core.contracts.v1 import (
     RequestEnvelope,
     ServiceProbeRequest,
     ServiceProbeResult,
+    SuccessResponseEnvelope,
     codec,
     encode_service_probe_result,
 )
@@ -173,6 +174,82 @@ def test_an_application_success_puts_one_document_on_stdout(
     assert captured.err == ""
     assert only_document(captured.out) == render(
         codec.encode_response(success(sent(transport)))
+    )
+
+
+#: The three `chat.query` reads, each with the result document the service answers it
+#: with. The CLI carries the query as opaque input and prints the answer unchanged.
+CHAT_QUERIES = {
+    "BranchListQuery": (
+        {"conversationId": "conv-1", "pageSize": 2},
+        {
+            "branches": [
+                {
+                    "branchId": "branch-1",
+                    "currentHeadMessageId": "msg-1",
+                    "headVersion": 1,
+                    "originKind": "original",
+                    "state": "open",
+                }
+            ],
+            "hasMore": False,
+        },
+    ),
+    "DescendantsQuery": (
+        {"conversationId": "conv-1", "fromMessageId": "msg-1", "pageSize": 2},
+        {"messages": [], "hasMore": False},
+    ),
+    "ConversationListQuery": (
+        {"pageSize": 2, "searchText": "plan"},
+        {
+            "conversations": [
+                {"conversationId": "conv-1", "graphRevision": 2, "state": "active"}
+            ],
+            "hasMore": False,
+        },
+    ),
+}
+
+
+@pytest.mark.parametrize("name", CHAT_QUERIES)
+def test_chat_query_carries_each_query_verbatim_and_prints_the_service_result(
+    name: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`omnivia chat query` is the generic application dispatch, not a second executor."""
+    fields, query_result = CHAT_QUERIES[name]
+    query = {
+        "requestId": "req-chat-query-cli",
+        "workspaceId": WORKSPACE,
+        "actorId": "actor-1",
+        **fields,
+    }
+    result = {"query_name": name, "query_result": query_result}
+
+    def answer(request: RequestEnvelope) -> Any:
+        return SuccessResponseEnvelope(
+            metadata=response_metadata(request), result=result
+        )
+
+    transport = RecordingTransport(answer=answer)
+    argv = [
+        "chat",
+        "query",
+        "--request-id",
+        "req-chat-query-cli",
+        "--input-json",
+        json.dumps({"query_name": name, "query": query}),
+        "--json",
+    ]
+    assert invoke(argv, transport) == 0
+    request = sent(transport)
+    assert request.operation == "chat.query"
+    assert request.metadata.purpose == "chat_observation"
+    assert request.metadata.request_id == "req-chat-query-cli"
+    assert dict(request.input) == {"query_name": name, "query": query}
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert only_document(captured.out) == codec.to_canonical_json(
+        codec.encode_response(answer(request))
     )
 
 

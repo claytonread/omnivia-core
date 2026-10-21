@@ -159,8 +159,10 @@ def _walk(node: object) -> Iterator[dict[str, object]]:
 def test_the_validation_metadata_covers_every_bounded_record() -> None:
     schemas = generator.extract_validation_schemas()
     assert set(generator.VALIDATION_ROOTS) == {
-        "ChatEvent", "CommandError", "CommandResultEnvelope", "Direction", "ProviderInvocationRecord",
-        "ProviderInvocationRequest", "ResnapshotResponse", "SubmitSteeringInputRequest",
+        "BranchListQuery", "BranchListResult", "ChatEvent", "CommandError", "CommandResultEnvelope",
+        "ConversationListQuery", "ConversationListResult", "DescendantsQuery", "DescendantsResult",
+        "Direction", "ProviderInvocationRecord", "ProviderInvocationRequest", "ResnapshotResponse",
+        "SubmitSteeringInputRequest",
     }
     for root in generator.VALIDATION_ROOTS.values():
         assert root in schemas

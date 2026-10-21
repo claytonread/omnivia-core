@@ -1770,6 +1770,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
         "workspace", ("chat:read",), "none", "chat.read",
         "chat", "ChatDraft", "POINT_READ", False,
     ),
+    "chat.query": FrozenOperation(
+        "workspace", ("chat:read",), "none", "chat.read",
+        "chat", "ChatQuery", "POINT_READ", False,
+    ),
 }
 
 #: The four governance transitions that support and require a mutation

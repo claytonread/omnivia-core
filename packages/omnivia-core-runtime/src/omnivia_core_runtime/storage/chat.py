@@ -76,6 +76,7 @@ __all__ = [
     "ActiveQueueEntry",
     "Branch",
     "BranchHeadEvent",
+    "BranchListEntry",
     "ChatToolCall",
     "ChatToolLifecycleEvent",
     "ChatToolResult",
@@ -84,6 +85,7 @@ __all__ = [
     "ChatWaitDecision",
     "ChatWriter",
     "Conversation",
+    "ConversationListEntry",
     "ConversationSnapshotInputs",
     "Direction",
     "Draft",
@@ -4983,3 +4985,246 @@ def read_conversation_snapshot_inputs(
     if owns_transaction:
         connection.execute("COMMIT")
     return result
+
+
+# --- bounded list reads for `chat.query` -----------------------------------------
+#
+# Three reads, each keyset-paged on a persisted sort key and a unique tiebreaker, so
+# a page is a bounded index range and a cursor is a position, never an offset. All
+# parameterised; the only text spliced into SQL is the fixed fragments below.
+#
+# A message is *accessible* when it is not tombstoned and not `internal`. There is no
+# per-conversation ACL in this model (the snapshot reader scopes by workspace and the
+# authenticated actor alone), so visibility here is exactly those two durable facts.
+
+_ACCESSIBLE_MESSAGE = "tombstoned_at_us IS NULL AND visibility <> 'internal'"
+
+
+def _prefixed(columns: str, alias: str) -> str:
+    return ", ".join(f"{alias}.{column.strip()}" for column in columns.split(","))
+
+
+@dataclass(frozen=True, slots=True)
+class BranchListEntry:
+    branch: Branch
+    last_advanced_at_us: int | None
+
+
+def read_branch_page(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    include_archived: bool,
+    after: tuple[int, str] | None,
+    limit: int,
+) -> tuple[BranchListEntry, ...]:
+    """Branch rows of one conversation by `(created_at_us, branch_id)`, tombstoned excluded.
+
+    Reads the branch row and its head event's instant only; no message is loaded, so
+    listing branches never touches an inactive transcript.
+    """
+    sql = (
+        f"SELECT {_prefixed(_BRANCH_COLUMNS, 'b')}, "
+        "(SELECT e.occurred_at_us FROM omnivia_chat_branch_head_events e "
+        "WHERE e.workspace_id = b.workspace_id AND e.branch_id = b.branch_id "
+        "AND e.head_version = b.head_version) "
+        "FROM omnivia_chat_message_branches b "
+        "WHERE b.workspace_id = ? AND b.conversation_id = ? AND b.state IN (?, ?)"
+    )
+    params: list[Any] = [
+        workspace_id,
+        conversation_id,
+        "open",
+        "archived" if include_archived else "open",
+    ]
+    if after is not None:
+        sql += " AND (b.created_at_us > ? OR (b.created_at_us = ? AND b.branch_id > ?))"
+        params += [after[0], after[0], after[1]]
+    sql += " ORDER BY b.created_at_us, b.branch_id LIMIT ?"
+    params.append(limit)
+    return tuple(
+        BranchListEntry(branch=_branch_from_row(row[:17]), last_advanced_at_us=row[17])
+        for row in connection.execute(sql, params).fetchall()
+    )
+
+
+def read_message_ancestry_accessible(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    message_id: str,
+) -> bool | None:
+    """Whether a message and every ancestor to the root are accessible; `None` if absent.
+
+    `UNION` rather than `UNION ALL` so a malformed parent cycle terminates.
+    """
+    row = connection.execute(
+        "WITH RECURSIVE up(message_id, parent_message_id, ok) AS ("
+        "SELECT message_id, parent_message_id, "
+        f"({_ACCESSIBLE_MESSAGE}) FROM omnivia_chat_messages "
+        "WHERE workspace_id = ? AND conversation_id = ? AND message_id = ? "
+        "UNION "
+        "SELECT m.message_id, m.parent_message_id, "
+        "(m.tombstoned_at_us IS NULL AND m.visibility <> 'internal') "
+        "FROM omnivia_chat_messages m JOIN up ON m.message_id = up.parent_message_id "
+        "WHERE m.workspace_id = ? AND m.conversation_id = ?) "
+        "SELECT COUNT(*), MIN(ok) FROM up",
+        (workspace_id, conversation_id, message_id, workspace_id, conversation_id),
+    ).fetchone()
+    if row[0] == 0:
+        return None
+    return bool(row[1] == 1)
+
+
+def read_accessible_descendants(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    from_message_id: str,
+    after_sequence: int,
+    limit: int,
+) -> tuple[tuple[Message, tuple[MessagePart, ...]], ...]:
+    """The strict subtree under `from_message_id`, by `conversation_sequence`, with parts.
+
+    The walk descends only through accessible messages, so a descendant reachable
+    solely through a tombstoned or internal one is never returned. Internal parts are
+    dropped. The traversal is bounded by the subtree, not the page; the page is bounded
+    by `limit`. ponytail: re-walks the subtree per page, a materialised path column is
+    the upgrade if a single divergence ever holds more than a few thousand messages.
+    """
+    rows = connection.execute(
+        "WITH RECURSIVE sub(message_id) AS ("
+        "SELECT message_id FROM omnivia_chat_messages "
+        f"WHERE workspace_id = ? AND conversation_id = ? AND parent_message_id = ? "
+        f"AND {_ACCESSIBLE_MESSAGE} "
+        "UNION "
+        "SELECT m.message_id FROM omnivia_chat_messages m "
+        "JOIN sub ON m.parent_message_id = sub.message_id "
+        "WHERE m.workspace_id = ? AND m.conversation_id = ? "
+        "AND m.tombstoned_at_us IS NULL AND m.visibility <> 'internal') "
+        f"SELECT {_MESSAGE_COLUMNS} FROM omnivia_chat_messages "
+        "WHERE workspace_id = ? AND conversation_id = ? AND conversation_sequence > ? "
+        "AND message_id IN (SELECT message_id FROM sub) "
+        "ORDER BY conversation_sequence LIMIT ?",
+        (
+            workspace_id,
+            conversation_id,
+            from_message_id,
+            workspace_id,
+            conversation_id,
+            workspace_id,
+            conversation_id,
+            after_sequence,
+            limit,
+        ),
+    ).fetchall()
+    messages = tuple(_message_from_row(row) for row in rows)
+    return tuple(
+        (
+            message,
+            tuple(
+                part
+                for part in read_message_parts(
+                    connection, workspace_id=workspace_id, message_id=message.message_id
+                )
+                if part.visibility != "internal"
+            ),
+        )
+        for message in messages
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationListEntry:
+    conversation: Conversation
+    active_branch_id: str | None
+    matched_message_id: str | None
+    matched_branch_id: str | None
+
+
+_TEXT_MATCH_FROM = (
+    "FROM omnivia_chat_messages m "
+    "JOIN omnivia_chat_message_parts p "
+    "ON p.workspace_id = m.workspace_id AND p.message_id = m.message_id "
+    "LEFT JOIN omnivia_chat_message_branches b "
+    "ON b.workspace_id = m.workspace_id AND b.branch_id = m.created_on_branch_id "
+    "WHERE m.workspace_id = ? AND m.conversation_id = {conversation} "
+    "AND m.tombstoned_at_us IS NULL AND m.visibility <> 'internal' "
+    "AND p.part_type = 'text' AND p.visibility <> 'internal' "
+    "AND (b.branch_id IS NULL OR b.state <> 'tombstoned') "
+    "AND CASE WHEN json_valid(p.payload_json) "
+    "THEN json_extract(p.payload_json, '$.text') END LIKE ? ESCAPE '\\'"
+)
+
+
+def _like_pattern(text: str) -> str:
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def read_conversation_page(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    actor_id: str,
+    state: str,
+    search_text: str | None,
+    after: tuple[int, str] | None,
+    limit: int,
+) -> tuple[ConversationListEntry, ...]:
+    """Conversations in one state by `(updated_at_us DESC, conversation_id DESC)`.
+
+    `omnivia_idx_chat_conversations_list` serves the order. A search keeps a
+    conversation whose title, or any accessible `text` part, contains `search_text`
+    (case-insensitive for ASCII, a literal substring, never a pattern), and names the
+    newest accessible matching message. Hidden messages and parts never match.
+    ponytail: a substring scan with no FTS index; bounded by the page limit per
+    conversation but linear in a conversation's text, so FTS is the upgrade if
+    workspaces grow large.
+    """
+    sql = (
+        f"SELECT {_prefixed(_CONVERSATION_COLUMNS, 'c')}, "
+        "COALESCE(v.active_branch_id, c.default_branch_id) "
+        "FROM omnivia_chat_conversations c "
+        "LEFT JOIN omnivia_chat_conversation_view_states v "
+        "ON v.workspace_id = c.workspace_id AND v.conversation_id = c.conversation_id "
+        "AND v.actor_id = ? AND v.device_id = '' "
+        "WHERE c.workspace_id = ? AND c.state = ?"
+    )
+    params: list[Any] = [actor_id, workspace_id, state]
+    if after is not None:
+        sql += " AND (c.updated_at_us < ? OR (c.updated_at_us = ? AND c.conversation_id < ?))"
+        params += [after[0], after[0], after[1]]
+    pattern = None if search_text is None else _like_pattern(search_text)
+    if pattern is not None:
+        sql += (
+            " AND (c.title LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 "
+            + _TEXT_MATCH_FROM.format(conversation="c.conversation_id")
+            + "))"
+        )
+        params += [pattern, workspace_id, pattern]
+    sql += " ORDER BY c.updated_at_us DESC, c.conversation_id DESC LIMIT ?"
+    params.append(limit)
+    entries: list[ConversationListEntry] = []
+    for row in connection.execute(sql, params).fetchall():
+        conversation = _conversation_from_row(row[:14])
+        matched: tuple[str, str | None] | None = None
+        if pattern is not None:
+            matched = connection.execute(
+                "SELECT m.message_id, m.created_on_branch_id "
+                + _TEXT_MATCH_FROM.format(conversation="?")
+                + " ORDER BY m.conversation_sequence DESC LIMIT 1",
+                (workspace_id, conversation.conversation_id, pattern),
+            ).fetchone()
+        entries.append(
+            ConversationListEntry(
+                conversation=conversation,
+                active_branch_id=row[14],
+                matched_message_id=None if matched is None else matched[0],
+                matched_branch_id=None if matched is None else matched[1],
+            )
+        )
+    return tuple(entries)

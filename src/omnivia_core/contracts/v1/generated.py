@@ -205,6 +205,8 @@ __all__ = [
     "ChatEventsInput",
     "ChatEventsResult",
     "ChatGenerationEvent",
+    "ChatQueryInput",
+    "ChatQueryResult",
     "ChatSnapshotInput",
     "ChatSnapshotResult",
     "CheckpointReceipt",
@@ -4989,6 +4991,102 @@ class ChatDraftResult:
         return cls(
             found=field_found,
             draft=field_draft,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatQueryInput:
+    """Input for `chat.query`: one of exactly three Chat Contract v1 list reads the hosted UI
+    needs, and nothing else. `query_name` is a closed enumeration -- `BranchListQuery`,
+    `DescendantsQuery` or `ConversationListQuery` -- and `query` is that query's own
+    document, carried verbatim and opaque to this envelope, for the same reason
+    `chat.command` carries its command that way: the query shapes are already frozen in
+    `contracts/chat/v1`, and restating them here would create a second, drifting copy. The
+    runtime validates `query` against the exact Chat Contract definition `query_name` selects
+    and refuses a name that does not match its document. This is deliberately not a generic
+    query operation: a name outside the enumeration is not a query this boundary serves at
+    any version, and no query carries a SQL fragment, an offset or a table name. Workspace-
+    scoped through the request envelope's selected workspace, so this payload never carries a
+    second, independent workspace identifier.
+    """
+
+    query_name: str
+    query: JsonObject
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["query_name"] = self.query_name
+        wire["query"] = _encode_json_object(self.query)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatQueryInput") -> ChatQueryInput:
+        """Decode a wire payload into a ChatQueryInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_query_name = _decode_str(
+            _require_field(mapping, "query_name", path),
+            f"{path}.query_name",
+        )
+        field_query = _decode_json_object(_require_field(mapping, "query", path), f"{path}.query")
+        return cls(
+            query_name=field_query_name,
+            query=field_query,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatQueryResult:
+    """Result of `chat.query`: the Chat Contract v1 result document the named query produced --
+    `BranchListResult`, `DescendantsResult` or `ConversationListResult` -- carried opaquely
+    for the same reason the request is, and echoed with the query name it answers. Every page
+    is bounded and cursor-paginated by the Chat Contract's own `PageSize` and `OpaqueCursor`:
+    the cursor is server-issued, signed, and bound to the query name, the trusted workspace
+    and actor, and the filter and sort the page was read under, so it is refused when
+    replayed under any other.
+    """
+
+    query_name: str
+    query_result: JsonObject
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["query_name"] = self.query_name
+        wire["query_result"] = _encode_json_object(self.query_result)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatQueryResult") -> ChatQueryResult:
+        """Decode a wire payload into a ChatQueryResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_query_name = _decode_str(
+            _require_field(mapping, "query_name", path),
+            f"{path}.query_name",
+        )
+        field_query_result = _decode_json_object(
+            _require_field(mapping, "query_result", path),
+            f"{path}.query_result",
+        )
+        return cls(
+            query_name=field_query_name,
+            query_result=field_query_result,
         )
 
 
@@ -29894,6 +29992,57 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
         result_schema_ref=(
             "https://contracts.omnivia.dev/application/v1/chat.schema.json"
             "#/$defs/ChatDraftResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="chat.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="chat.query",
+        scope=OperationScope(
+            required_scopes=("chat:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatQueryInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatQueryResult"
         ),
         required_capability=CapabilityRequirement(
             id="chat.read",

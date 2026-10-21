@@ -3904,6 +3904,52 @@ export interface ChatDraftResult {
 }
 
 /**
+ * Input for `chat.query`: one of exactly three Chat Contract v1 list reads the hosted UI needs,
+ * and nothing else. `query_name` is a closed enumeration -- `BranchListQuery`,
+ * `DescendantsQuery` or `ConversationListQuery` -- and `query` is that query's own document,
+ * carried verbatim and opaque to this envelope, for the same reason `chat.command` carries its
+ * command that way: the query shapes are already frozen in `contracts/chat/v1`, and restating
+ * them here would create a second, drifting copy. The runtime validates `query` against the
+ * exact Chat Contract definition `query_name` selects and refuses a name that does not match its
+ * document. This is deliberately not a generic query operation: a name outside the enumeration
+ * is not a query this boundary serves at any version, and no query carries a SQL fragment, an
+ * offset or a table name. Workspace-scoped through the request envelope's selected workspace, so
+ * this payload never carries a second, independent workspace identifier.
+ */
+export interface ChatQueryInput {
+  /**
+   * The Chat Contract v1 query this request carries. Closed: it selects which Chat Contract
+   * definition `query` is validated against.
+   */
+  readonly query_name: string;
+  /**
+   * The Chat Contract v1 query document for `query_name`, carried verbatim. Decoded and
+   * validated against the chat contract, never against this one.
+   */
+  readonly query: JsonObject;
+}
+
+/**
+ * Result of `chat.query`: the Chat Contract v1 result document the named query produced --
+ * `BranchListResult`, `DescendantsResult` or `ConversationListResult` -- carried opaquely for
+ * the same reason the request is, and echoed with the query name it answers. Every page is
+ * bounded and cursor-paginated by the Chat Contract's own `PageSize` and `OpaqueCursor`: the
+ * cursor is server-issued, signed, and bound to the query name, the trusted workspace and actor,
+ * and the filter and sort the page was read under, so it is refused when replayed under any
+ * other.
+ */
+export interface ChatQueryResult {
+  /**
+   * The Chat Contract v1 query name this result answers. Echoes the request.
+   */
+  readonly query_name: string;
+  /**
+   * The Chat Contract v1 result document for `query_name`, carried verbatim.
+   */
+  readonly query_result: JsonObject;
+}
+
+/**
  * Self-declared identity of the calling client. Diagnostic and compatibility input only; never
  * an authorization input.
  */
@@ -15889,6 +15935,36 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
     scope: { required_scopes: ["chat:read"], side_effect: "none", scope_kind: "workspace" },
     input_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatDraftInput",
     result_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatDraftResult",
+    required_capability: { id: "chat.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "chat.query",
+    scope: { required_scopes: ["chat:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatQueryInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatQueryResult",
     required_capability: { id: "chat.read", minimum_version: "1.0", required: true },
     job: { completion_mode: "synchronous" },
     pagination: { paginated: false },

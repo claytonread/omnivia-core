@@ -93,6 +93,7 @@ from omnivia_core.chat_contract.v1.generated import (
 )
 
 __all__ = [
+    "CHAT_QUERY_NAMES",
     "ChatContractDecodeError",
     "ChatEvent",
     "CommandError",
@@ -106,6 +107,8 @@ __all__ = [
     "negotiate_protocol_version",
     "to_canonical_json",
     "to_canonical_json_document",
+    "validate_chat_query",
+    "validate_chat_query_result",
     "validate_direction",
     "validate_direction_content",
     "validate_direction_content_hash",
@@ -291,6 +294,36 @@ def validate_direction(document: Mapping[str, Any]) -> None:
         raise ChatContractDecodeError(
             "application.attemptId", "must differ from targetAttemptId (applied by a successor Attempt)"
         )
+
+
+#: The three Chat Contract v1 list reads the Application `chat.query` operation
+#: serves, each mapped to its query and result validation roots. Closed on
+#: purpose: a name outside it is not a read this codec will validate.
+_CHAT_QUERY_ROOTS: Final[Mapping[str, tuple[str, str]]] = {
+    "BranchListQuery": ("BranchListQuery", "BranchListResult"),
+    "DescendantsQuery": ("DescendantsQuery", "DescendantsResult"),
+    "ConversationListQuery": ("ConversationListQuery", "ConversationListResult"),
+}
+CHAT_QUERY_NAMES: Final[frozenset[str]] = frozenset(_CHAT_QUERY_ROOTS)
+
+
+def _chat_query_root(name: str, index: int) -> str:
+    roots = _CHAT_QUERY_ROOTS.get(name)
+    if roots is None:
+        raise ChatContractDecodeError("query_name", "is not a Chat Contract v1 list query")
+    return roots[index]
+
+
+def validate_chat_query(name: str, document: Mapping[str, Any]) -> None:
+    """Refuse a query document that is not exactly the Chat Contract v1 query ``name``."""
+    root = _chat_query_root(name, 0)
+    _require_governed_emission(document, RECORD_VALIDATION_REFS[root], root)
+
+
+def validate_chat_query_result(name: str, document: Mapping[str, Any]) -> None:
+    """Refuse a result document that is not exactly the result of the query ``name``."""
+    root = _chat_query_root(name, 1)
+    _require_governed_emission(document, RECORD_VALIDATION_REFS[root], root)
 
 
 # --------------------------------------------------------------------------

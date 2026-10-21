@@ -1,6 +1,7 @@
-"""Production handlers for ``chat.command``, ``chat.events`` and ``chat.snapshot``.
+"""Production handlers for the chat family: ``chat.command``, ``chat.events``,
+``chat.snapshot``, ``chat.draft`` and ``chat.query``.
 
-Three operations, and none of them owns any Chat rule of its own. `chat.events` is
+The five operations, and none of them owns any Chat rule of its own. `chat.events` is
 the wire projection of :func:`~service.chat_generation.replay_generation_events`;
 `chat.snapshot` is the wire projection of
 :func:`~service.chat_snapshot.resolve_chat_snapshot`; `chat.command` is the
@@ -47,6 +48,7 @@ from omnivia_core.contracts.v1.generated import (
     ChatEventsInput,
     ChatEventsResult,
     ChatGenerationEvent,
+    ChatQueryInput,
     ChatSnapshotInput,
 )
 from omnivia_core_runtime.ownership.fencing import read_guard
@@ -62,6 +64,7 @@ from omnivia_core_runtime.service.chat_command import (
     is_governed_command_result,
 )
 from omnivia_core_runtime.service.chat_generation import replay_generation_events
+from omnivia_core_runtime.service.chat_query import resolve_chat_query
 from omnivia_core_runtime.service.chat_snapshot import (
     resolve_chat_snapshot,
     resolve_draft_readback,
@@ -93,12 +96,14 @@ from omnivia_core_runtime.storage.memory import IdentifierAllocator
 CHAT_COMMAND_OPERATION: Final = "chat.command"
 CHAT_DRAFT_OPERATION: Final = "chat.draft"
 CHAT_EVENTS_OPERATION: Final = "chat.events"
+CHAT_QUERY_OPERATION: Final = "chat.query"
 CHAT_SNAPSHOT_OPERATION: Final = "chat.snapshot"
 CHAT_FAMILY_OPERATIONS: Final = frozenset(
     {
         CHAT_COMMAND_OPERATION,
         CHAT_DRAFT_OPERATION,
         CHAT_EVENTS_OPERATION,
+        CHAT_QUERY_OPERATION,
         CHAT_SNAPSHOT_OPERATION,
     }
 )
@@ -560,12 +565,30 @@ class ChatHandlers:
         connection, _identity, _guard = self._authority()
         return resolve_draft_readback(connection, request, context)
 
+    def chat_query(self, context: OperationContext) -> Mapping[str, Any]:
+        """One `chat.query` list read: the same thin shape as `chat_snapshot`.
+
+        The three Chat Contract list queries, their identity checks, cursors and
+        storage reads are all owned by
+        :func:`~service.chat_query.resolve_chat_query`.
+        """
+        request: ChatQueryInput | None = None
+        try:
+            request = ChatQueryInput.from_wire(context.request.input)
+        except (ContractDecodeError, ContractSemanticError):
+            pass
+        if request is None:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        connection, _identity, _guard = self._authority()
+        return resolve_chat_query(connection, request, context)
+
 
 __all__ = [
     "CHAT_COMMAND_OPERATION",
     "CHAT_DRAFT_OPERATION",
     "CHAT_EVENTS_OPERATION",
     "CHAT_FAMILY_OPERATIONS",
+    "CHAT_QUERY_OPERATION",
     "CHAT_SNAPSHOT_OPERATION",
     "ChatCommandResolver",
     "ChatGenerationExecution",

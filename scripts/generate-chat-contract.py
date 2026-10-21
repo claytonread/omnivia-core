@@ -777,9 +777,15 @@ def extract_chat_event_field_metadata() -> tuple[
 #: no ``$def`` of its own: the contract states its shape inline as
 #: ``CommandResultEnvelope.properties.error``, so that is the pointer used.
 VALIDATION_ROOTS: dict[str, str] = {
+    "BranchListQuery": "queries.schema.json#/$defs/BranchListQuery",
+    "BranchListResult": "queries.schema.json#/$defs/BranchListResult",
     "ChatEvent": "events.schema.json#/$defs/ChatEvent",
     "CommandError": "commands.schema.json#/$defs/CommandResultEnvelope/properties/error",
     "CommandResultEnvelope": "commands.schema.json#/$defs/CommandResultEnvelope",
+    "ConversationListQuery": "queries.schema.json#/$defs/ConversationListQuery",
+    "ConversationListResult": "queries.schema.json#/$defs/ConversationListResult",
+    "DescendantsQuery": "queries.schema.json#/$defs/DescendantsQuery",
+    "DescendantsResult": "queries.schema.json#/$defs/DescendantsResult",
     "Direction": "generation.schema.json#/$defs/Direction",
     "ProviderInvocationRecord": "provider.schema.json#/$defs/ProviderInvocationRecord",
     "ProviderInvocationRequest": "provider.schema.json#/$defs/ProviderInvocationRequest",

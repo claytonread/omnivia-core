@@ -87,6 +87,7 @@ from omnivia_core_runtime.service.handlers.chat import (
     CHAT_DRAFT_OPERATION,
     CHAT_EVENTS_OPERATION,
     CHAT_FAMILY_OPERATIONS,
+    CHAT_QUERY_OPERATION,
     CHAT_SNAPSHOT_OPERATION,
     ChatCommandResolver,
     ChatGenerationExecution,
@@ -386,6 +387,7 @@ CHAT_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         CHAT_COMMAND_OPERATION: MUTATION_PURPOSES[CHAT_COMMAND_OPERATION],
         CHAT_EVENTS_OPERATION: CHAT_OBSERVATION_PURPOSE,
         CHAT_DRAFT_OPERATION: CHAT_OBSERVATION_PURPOSE,
+        CHAT_QUERY_OPERATION: CHAT_OBSERVATION_PURPOSE,
         CHAT_SNAPSHOT_OPERATION: CHAT_OBSERVATION_PURPOSE,
     }
 )
@@ -1437,6 +1439,9 @@ def build_chat_registry(handlers: ChatHandlers) -> ApplicationOperationRegistry:
     )
     registry.register(
         CHAT_EVENTS_OPERATION, cast(OperationHandler, handlers.chat_events)
+    )
+    registry.register(
+        CHAT_QUERY_OPERATION, cast(OperationHandler, handlers.chat_query)
     )
     registry.register(
         CHAT_SNAPSHOT_OPERATION, cast(OperationHandler, handlers.chat_snapshot)

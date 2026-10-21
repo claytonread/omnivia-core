@@ -13617,6 +13617,65 @@
         "draft_id": "cmd-chat-draft-save.draft",
         "workspace_id": "ws-1"
       }
+    },
+    {
+      "description": "chat.query answers a well-formed branch-list read on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "chat.query/primary-success",
+      "operation": "chat.query",
+      "request": {
+        "input": {
+          "query": {
+            "actorId": "actor-alice",
+            "conversationId": "conv-chat-1",
+            "pageSize": 50,
+            "requestId": "req-chat.query-success",
+            "workspaceId": "ws-1"
+          },
+          "query_name": "BranchListQuery"
+        },
+        "metadata": {
+          "request_id": "req-chat.query-success",
+          "required_capabilities": [
+            {
+              "id": "chat.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "chat:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "chat.query"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-chat.query-success"
+        },
+        "result": {
+          "query_name": "BranchListQuery",
+          "query_result": {
+            "branches": [
+              {
+                "branchId": "branch-chat-1",
+                "currentHeadMessageId": "msg-chat-1",
+                "headVersion": 1,
+                "lastAdvancedAt": "2024-01-01T00:00:00Z",
+                "originKind": "original",
+                "state": "open"
+              }
+            ],
+            "hasMore": false
+          }
+        }
+      },
+      "trusted": {
+        "workspace_id": "ws-1"
+      }
     }
   ],
   "contract_version": "1.0",

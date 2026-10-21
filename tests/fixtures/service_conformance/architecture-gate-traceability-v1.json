@@ -239,7 +239,8 @@
         "outcome.request.read",
         "project.context.read",
         "project.context.switch",
-        "chat.draft"
+        "chat.draft",
+        "chat.query"
       ]
     },
     {
@@ -552,7 +553,8 @@
         "outcome.request.read",
         "project.context.read",
         "project.context.switch",
-        "chat.draft"
+        "chat.draft",
+        "chat.query"
       ]
     },
     {
@@ -641,7 +643,8 @@
         "outcome.request.read",
         "project.context.read",
         "project.context.switch",
-        "chat.draft"
+        "chat.draft",
+        "chat.query"
       ]
     },
     {

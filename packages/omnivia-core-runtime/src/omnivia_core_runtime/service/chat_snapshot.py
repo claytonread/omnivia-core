@@ -104,7 +104,13 @@ from omnivia_core_runtime.storage.chat import (
 from omnivia_core_runtime.storage.chat_attachments import draft_attachment_references
 from omnivia_core_runtime.storage.connection import StorageError
 
-__all__ = ["composer_draft", "resolve_chat_snapshot", "resolve_draft_readback"]
+__all__ = [
+    "composer_draft",
+    "message_document",
+    "resolve_chat_snapshot",
+    "resolve_draft_readback",
+    "timestamp",
+]
 
 #: `common.schema.json#/$defs/WorkspaceScopedId`, the grammar every identifier in this
 #: query is spelled in. The same pattern `service/chat_submit.py` holds a command's
@@ -175,6 +181,11 @@ def _timestamp(value: int) -> str:
     if milliseconds == 0:
         return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
     return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{milliseconds:03d}Z"
+
+
+def timestamp(value: int) -> str:
+    """One durable microsecond instant as the contract's `Timestamp`, shared by `chat.query`."""
+    return _timestamp(value)
 
 
 def _digest(value: str) -> str:
@@ -289,6 +300,13 @@ def _message(message: Message, parts: tuple[MessagePart, ...]) -> Mapping[str, A
     if message.tombstoned_at_us is not None:
         document["tombstonedAt"] = _timestamp(message.tombstoned_at_us)
     return document
+
+
+def message_document(
+    message: Message, parts: tuple[MessagePart, ...]
+) -> Mapping[str, Any]:
+    """One `Message` document, shared with the `chat.query` descendants read."""
+    return _message(message, parts)
 
 
 def _conversation(conversation: Conversation) -> Mapping[str, Any]:

@@ -953,9 +953,15 @@ ADDITIVE_DECODE_VOCABULARIES: Final[Mapping[str, tuple[str, ...]]] = MappingProx
 #: Bounded codec validation root name -> the VALIDATION_SCHEMAS key of the exact canonical subschema its emitted document must satisfy.
 RECORD_VALIDATION_REFS: Final[Mapping[str, str]] = MappingProxyType(
     {
+        'BranchListQuery': 'queries.schema.json#/$defs/BranchListQuery',
+        'BranchListResult': 'queries.schema.json#/$defs/BranchListResult',
         'ChatEvent': 'events.schema.json#/$defs/ChatEvent',
         'CommandError': 'commands.schema.json#/$defs/CommandResultEnvelope/properties/error',
         'CommandResultEnvelope': 'commands.schema.json#/$defs/CommandResultEnvelope',
+        'ConversationListQuery': 'queries.schema.json#/$defs/ConversationListQuery',
+        'ConversationListResult': 'queries.schema.json#/$defs/ConversationListResult',
+        'DescendantsQuery': 'queries.schema.json#/$defs/DescendantsQuery',
+        'DescendantsResult': 'queries.schema.json#/$defs/DescendantsResult',
         'Direction': 'generation.schema.json#/$defs/Direction',
         'ProviderInvocationRecord': 'provider.schema.json#/$defs/ProviderInvocationRecord',
         'ProviderInvocationRequest': 'provider.schema.json#/$defs/ProviderInvocationRequest',
@@ -1197,6 +1203,14 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
         'common.schema.json#/$defs/AttachmentReferenceId': {
             '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
         },
+        'common.schema.json#/$defs/AuthorType': {
+            'enum': [
+                'human',
+                'service',
+                'provider',
+                'system',
+            ],
+        },
         'common.schema.json#/$defs/BranchHeadCause': {
             'enum': [
                 'branch_created',
@@ -1219,11 +1233,25 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
                 'import',
             ],
         },
+        'common.schema.json#/$defs/BranchState': {
+            'enum': [
+                'open',
+                'archived',
+                'tombstoned',
+            ],
+        },
         'common.schema.json#/$defs/CausationId': {
             '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
         },
         'common.schema.json#/$defs/CommandId': {
             '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
+        },
+        'common.schema.json#/$defs/CompletionStatus': {
+            'enum': [
+                'complete',
+                'interrupted',
+                'failed_partial',
+            ],
         },
         'common.schema.json#/$defs/ContentHash': {
             'pattern': '^[a-f0-9]{64}$(?![\\s\\S])',
@@ -1256,6 +1284,13 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
             'maximum': 9007199254740991,
             'minimum': 1,
             'type': 'integer',
+        },
+        'common.schema.json#/$defs/ConversationState': {
+            'enum': [
+                'active',
+                'archived',
+                'tombstoned',
+            ],
         },
         'common.schema.json#/$defs/CorrelationId': {
             '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
@@ -1423,12 +1458,22 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
         'common.schema.json#/$defs/MessageId': {
             '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
         },
+        'common.schema.json#/$defs/MessagePartId': {
+            '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
+        },
         'common.schema.json#/$defs/MessageRole': {
             'enum': [
                 'user',
                 'assistant',
                 'system',
                 'tool',
+            ],
+        },
+        'common.schema.json#/$defs/MessageVisibility': {
+            'enum': [
+                'standard',
+                'user_only',
+                'internal',
             ],
         },
         'common.schema.json#/$defs/OpaqueCursor': {
@@ -1441,6 +1486,16 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
             'minLength': 1,
             'pattern': '^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])',
             'type': 'string',
+        },
+        'common.schema.json#/$defs/PageSize': {
+            'maximum': 200,
+            'minimum': 1,
+            'type': 'integer',
+        },
+        'common.schema.json#/$defs/PartIndex': {
+            'maximum': 4095,
+            'minimum': 0,
+            'type': 'integer',
         },
         'common.schema.json#/$defs/ProtocolVersion': {
             'allOf': [
@@ -1472,6 +1527,9 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
             'type': 'string',
         },
         'common.schema.json#/$defs/ProviderPartId': {
+            '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
+        },
+        'common.schema.json#/$defs/RequestId': {
             '$ref': 'common.schema.json#/$defs/WorkspaceScopedId',
         },
         'common.schema.json#/$defs/RequestManifestId': {
@@ -2822,6 +2880,146 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
             ],
             'type': 'object',
         },
+        'graph.schema.json#/$defs/Message': {
+            'additionalProperties': False,
+            'properties': {
+                'authorId': {
+                    '$ref': 'common.schema.json#/$defs/ActorId',
+                },
+                'authorType': {
+                    '$ref': 'common.schema.json#/$defs/AuthorType',
+                },
+                'committedAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'completionStatus': {
+                    '$ref': 'common.schema.json#/$defs/CompletionStatus',
+                },
+                'contentHash': {
+                    '$ref': 'common.schema.json#/$defs/ContentHash',
+                },
+                'conversationId': {
+                    '$ref': 'common.schema.json#/$defs/ConversationId',
+                },
+                'conversationSequence': {
+                    '$ref': 'common.schema.json#/$defs/ConversationSequence',
+                },
+                'createdAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'createdOnBranchId': {
+                    '$ref': 'common.schema.json#/$defs/BranchId',
+                },
+                'messageId': {
+                    '$ref': 'common.schema.json#/$defs/MessageId',
+                },
+                'parentMessageId': {
+                    '$ref': 'common.schema.json#/$defs/MessageId',
+                },
+                'parts': {
+                    'items': {
+                        '$ref': 'graph.schema.json#/$defs/MessagePart',
+                    },
+                    'maxItems': 4096,
+                    'minItems': 0,
+                    'type': 'array',
+                },
+                'role': {
+                    '$ref': 'common.schema.json#/$defs/MessageRole',
+                },
+                'schemaVersion': {
+                    '$ref': 'common.schema.json#/$defs/SchemaVersion',
+                },
+                'tombstonedAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'visibility': {
+                    '$ref': 'common.schema.json#/$defs/MessageVisibility',
+                },
+                'workspaceId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceId',
+                },
+            },
+            'required': [
+                'authorType',
+                'completionStatus',
+                'committedAt',
+                'contentHash',
+                'conversationId',
+                'conversationSequence',
+                'createdAt',
+                'messageId',
+                'parts',
+                'role',
+                'schemaVersion',
+                'visibility',
+                'workspaceId',
+            ],
+            'type': 'object',
+        },
+        'graph.schema.json#/$defs/MessagePart': {
+            'additionalProperties': False,
+            'properties': {
+                'contentHash': {
+                    '$ref': 'common.schema.json#/$defs/ContentHash',
+                },
+                'conversationId': {
+                    '$ref': 'common.schema.json#/$defs/ConversationId',
+                },
+                'createdAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'index': {
+                    '$ref': 'common.schema.json#/$defs/PartIndex',
+                },
+                'messageId': {
+                    '$ref': 'common.schema.json#/$defs/MessageId',
+                },
+                'partId': {
+                    '$ref': 'common.schema.json#/$defs/MessagePartId',
+                },
+                'payload': {
+                    'additionalProperties': True,
+                    'type': 'object',
+                },
+                'provenance': {
+                    'enum': [
+                        'human',
+                        'ai',
+                        'import',
+                        'migration',
+                        'system',
+                    ],
+                    'type': 'string',
+                },
+                'schemaVersion': {
+                    '$ref': 'common.schema.json#/$defs/SchemaVersion',
+                },
+                'type': {
+                    '$ref': 'common.schema.json#/$defs/OpenCode',
+                },
+                'visibility': {
+                    '$ref': 'common.schema.json#/$defs/MessageVisibility',
+                },
+                'workspaceId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceId',
+                },
+            },
+            'required': [
+                'contentHash',
+                'conversationId',
+                'createdAt',
+                'index',
+                'messageId',
+                'partId',
+                'payload',
+                'schemaVersion',
+                'type',
+                'visibility',
+                'workspaceId',
+            ],
+            'type': 'object',
+        },
         'provider.schema.json#/$defs/AdmittedProviderRoute': {
             'additionalProperties': False,
             'properties': {
@@ -3948,6 +4146,242 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
                     'type': 'integer',
                 },
             },
+            'type': 'object',
+        },
+        'queries.schema.json#/$defs/BranchListQuery': {
+            'additionalProperties': False,
+            'properties': {
+                'actorId': {
+                    '$ref': 'common.schema.json#/$defs/ActorId',
+                },
+                'conversationId': {
+                    '$ref': 'common.schema.json#/$defs/ConversationId',
+                },
+                'cursor': {
+                    '$ref': 'common.schema.json#/$defs/OpaqueCursor',
+                },
+                'includeArchived': {
+                    'type': 'boolean',
+                },
+                'pageSize': {
+                    '$ref': 'common.schema.json#/$defs/PageSize',
+                },
+                'requestId': {
+                    '$ref': 'common.schema.json#/$defs/RequestId',
+                },
+                'workspaceId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceId',
+                },
+            },
+            'required': [
+                'actorId',
+                'conversationId',
+                'pageSize',
+                'requestId',
+                'workspaceId',
+            ],
+            'type': 'object',
+        },
+        'queries.schema.json#/$defs/BranchListResult': {
+            'additionalProperties': False,
+            'properties': {
+                'branches': {
+                    'items': {
+                        '$ref': 'queries.schema.json#/$defs/BranchSummary',
+                    },
+                    'maxItems': 200,
+                    'type': 'array',
+                },
+                'hasMore': {
+                    'type': 'boolean',
+                },
+                'nextCursor': {
+                    '$ref': 'common.schema.json#/$defs/OpaqueCursor',
+                },
+            },
+            'required': [
+                'branches',
+                'hasMore',
+            ],
+            'type': 'object',
+        },
+        'queries.schema.json#/$defs/BranchSummary': {
+            'additionalProperties': False,
+            'properties': {
+                'branchId': {
+                    '$ref': 'common.schema.json#/$defs/BranchId',
+                },
+                'currentHeadMessageId': {
+                    '$ref': 'common.schema.json#/$defs/MessageId',
+                },
+                'headVersion': {
+                    '$ref': 'common.schema.json#/$defs/HeadVersion',
+                },
+                'lastAdvancedAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'originKind': {
+                    '$ref': 'common.schema.json#/$defs/BranchOriginKind',
+                },
+                'state': {
+                    '$ref': 'common.schema.json#/$defs/BranchState',
+                },
+            },
+            'required': [
+                'branchId',
+                'currentHeadMessageId',
+                'headVersion',
+                'originKind',
+                'state',
+            ],
+            'type': 'object',
+        },
+        'queries.schema.json#/$defs/ConversationListQuery': {
+            'additionalProperties': False,
+            'properties': {
+                'actorId': {
+                    '$ref': 'common.schema.json#/$defs/ActorId',
+                },
+                'cursor': {
+                    '$ref': 'common.schema.json#/$defs/OpaqueCursor',
+                },
+                'pageSize': {
+                    '$ref': 'common.schema.json#/$defs/PageSize',
+                },
+                'requestId': {
+                    '$ref': 'common.schema.json#/$defs/RequestId',
+                },
+                'searchText': {
+                    'maxLength': 1024,
+                    'type': 'string',
+                },
+                'state': {
+                    '$ref': 'common.schema.json#/$defs/ConversationState',
+                },
+                'workspaceId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceId',
+                },
+            },
+            'required': [
+                'actorId',
+                'pageSize',
+                'requestId',
+                'workspaceId',
+            ],
+            'type': 'object',
+        },
+        'queries.schema.json#/$defs/ConversationListResult': {
+            'additionalProperties': False,
+            'properties': {
+                'conversations': {
+                    'items': {
+                        '$ref': 'queries.schema.json#/$defs/ConversationSummary',
+                    },
+                    'maxItems': 200,
+                    'type': 'array',
+                },
+                'hasMore': {
+                    'type': 'boolean',
+                },
+                'nextCursor': {
+                    '$ref': 'common.schema.json#/$defs/OpaqueCursor',
+                },
+            },
+            'required': [
+                'conversations',
+                'hasMore',
+            ],
+            'type': 'object',
+        },
+        'queries.schema.json#/$defs/ConversationSummary': {
+            'additionalProperties': False,
+            'properties': {
+                'activeBranchId': {
+                    '$ref': 'common.schema.json#/$defs/BranchId',
+                },
+                'conversationId': {
+                    '$ref': 'common.schema.json#/$defs/ConversationId',
+                },
+                'graphRevision': {
+                    '$ref': 'common.schema.json#/$defs/GraphRevision',
+                },
+                'matchedBranchId': {
+                    '$ref': 'common.schema.json#/$defs/BranchId',
+                },
+                'matchedMessageId': {
+                    '$ref': 'common.schema.json#/$defs/MessageId',
+                },
+                'state': {
+                    '$ref': 'common.schema.json#/$defs/ConversationState',
+                },
+                'title': {
+                    'maxLength': 512,
+                    'type': 'string',
+                },
+            },
+            'required': [
+                'conversationId',
+                'graphRevision',
+                'state',
+            ],
+            'type': 'object',
+        },
+        'queries.schema.json#/$defs/DescendantsQuery': {
+            'additionalProperties': False,
+            'properties': {
+                'actorId': {
+                    '$ref': 'common.schema.json#/$defs/ActorId',
+                },
+                'conversationId': {
+                    '$ref': 'common.schema.json#/$defs/ConversationId',
+                },
+                'cursor': {
+                    '$ref': 'common.schema.json#/$defs/OpaqueCursor',
+                },
+                'fromMessageId': {
+                    '$ref': 'common.schema.json#/$defs/MessageId',
+                },
+                'pageSize': {
+                    '$ref': 'common.schema.json#/$defs/PageSize',
+                },
+                'requestId': {
+                    '$ref': 'common.schema.json#/$defs/RequestId',
+                },
+                'workspaceId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceId',
+                },
+            },
+            'required': [
+                'actorId',
+                'conversationId',
+                'fromMessageId',
+                'pageSize',
+                'requestId',
+                'workspaceId',
+            ],
+            'type': 'object',
+        },
+        'queries.schema.json#/$defs/DescendantsResult': {
+            'additionalProperties': False,
+            'properties': {
+                'hasMore': {
+                    'type': 'boolean',
+                },
+                'messages': {
+                    'items': {
+                        '$ref': 'graph.schema.json#/$defs/Message',
+                    },
+                    'maxItems': 200,
+                    'type': 'array',
+                },
+                'nextCursor': {
+                    '$ref': 'common.schema.json#/$defs/OpaqueCursor',
+                },
+            },
+            'required': [
+                'hasMore',
+                'messages',
+            ],
             'type': 'object',
         },
     }
