@@ -652,6 +652,8 @@ def claim_queued_generation(
         or existing_job.trigger_message_id != trigger_message_id
         or existing_job.graph_revision_observed != conversation.graph_revision
         or existing_job.idempotency_key != submission.idempotency_key
+        or existing_job.provider_connection_id != submission.provider_connection_id
+        or existing_job.provider_model_id != submission.provider_model_id
         or existing_job.state != "queued"
         or existing_job.lease_epoch != 0
         or existing_job.current_attempt_id is not None
@@ -699,6 +701,8 @@ def claim_queued_generation(
                 schema_version=1,
                 created_at_us=now_us,
                 updated_at_us=now_us,
+                provider_connection_id=submission.provider_connection_id,
+                provider_model_id=submission.provider_model_id,
             )
             writer.insert_generation_job_status_projection(
                 generation_job_id=generation_job_id,

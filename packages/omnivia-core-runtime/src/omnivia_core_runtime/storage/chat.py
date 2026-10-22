@@ -478,6 +478,9 @@ class QueuedSubmission:
     sanitized_error_detail: str | None
     created_at_us: int
     updated_at_us: int
+    #: The host-authorized Provider route pinned at enqueue time (0074); both or neither.
+    provider_connection_id: str | None = None
+    provider_model_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -504,6 +507,10 @@ class GenerationJob:
     updated_at_us: int
     started_at_us: int | None
     finished_at_us: int | None
+    #: The Provider route snapshotted onto the job (0074); both or neither. Neither
+    #: means the executor's startup configuration, the pre-0074 behaviour.
+    provider_connection_id: str | None = None
+    provider_model_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1229,6 +1236,8 @@ class ChatWriter:
         created_at_us: int,
         updated_at_us: int,
         version: int = 1,
+        provider_connection_id: str | None = None,
+        provider_model_id: str | None = None,
     ) -> None:
         """0029 requires a queued submission to be inserted in `queued` state, so
         that is fixed here rather than accepted as a parameter.
@@ -1237,8 +1246,9 @@ class ChatWriter:
             "INSERT INTO omnivia_chat_queued_submissions "
             "(workspace_id, conversation_id, actor_id, queued_submission_id, "
             "queue_sequence, branch_id, editable_parts_json, references_json, "
-            "idempotency_key, state, version, created_at_us, updated_at_us) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
+            "idempotency_key, state, version, created_at_us, updated_at_us, "
+            "provider_connection_id, provider_model_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
             (
                 self.workspace_id,
                 conversation_id,
@@ -1252,6 +1262,8 @@ class ChatWriter:
                 version,
                 created_at_us,
                 updated_at_us,
+                provider_connection_id,
+                provider_model_id,
             ),
         )
 
@@ -1269,6 +1281,8 @@ class ChatWriter:
         updated_at_us: int,
         lease_epoch: int = 0,
         last_event_sequence: int = 0,
+        provider_connection_id: str | None = None,
+        provider_model_id: str | None = None,
     ) -> None:
         """0029 requires a generation job to be inserted in `queued` state, so that
         is fixed here rather than accepted as a parameter.
@@ -1278,7 +1292,8 @@ class ChatWriter:
             "(workspace_id, conversation_id, branch_id, trigger_message_id, "
             "generation_job_id, state, graph_revision_observed, idempotency_key, "
             "lease_epoch, last_event_sequence, schema_version, created_at_us, "
-            "updated_at_us) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
+            "updated_at_us, provider_connection_id, provider_model_id) "
+            "VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 self.workspace_id,
                 conversation_id,
@@ -1292,6 +1307,8 @@ class ChatWriter:
                 schema_version,
                 created_at_us,
                 updated_at_us,
+                provider_connection_id,
+                provider_model_id,
             ),
         )
 
@@ -3604,7 +3621,7 @@ _QUEUED_SUBMISSION_COLUMNS = (
     "branch_id, editable_parts_json, references_json, idempotency_key, state, "
     "version, claimed_by, claim_epoch, claim_expires_at_us, submitted_message_id, "
     "submitted_generation_job_id, sanitized_error_code, sanitized_error_detail, "
-    "created_at_us, updated_at_us"
+    "created_at_us, updated_at_us, provider_connection_id, provider_model_id"
 )
 
 
@@ -3630,6 +3647,8 @@ def _queued_submission_from_row(row: tuple[Any, ...]) -> QueuedSubmission:
         sanitized_error_detail=row[17],
         created_at_us=row[18],
         updated_at_us=row[19],
+        provider_connection_id=row[20],
+        provider_model_id=row[21],
     )
 
 
@@ -3659,7 +3678,8 @@ def read_next_queued_submission(
         "q.queue_sequence, q.branch_id, q.editable_parts_json, q.references_json, "
         "q.idempotency_key, q.state, q.version, q.claimed_by, q.claim_epoch, "
         "q.claim_expires_at_us, q.submitted_message_id, q.submitted_generation_job_id, "
-        "q.sanitized_error_code, q.sanitized_error_detail, q.created_at_us, q.updated_at_us "
+        "q.sanitized_error_code, q.sanitized_error_detail, q.created_at_us, q.updated_at_us, "
+        "q.provider_connection_id, q.provider_model_id "
         "FROM omnivia_chat_queued_submissions q "
         "LEFT JOIN omnivia_chat_queue_order_projection p "
         "ON p.workspace_id = q.workspace_id "
@@ -3706,7 +3726,8 @@ def read_next_executable_queued_submission(
         "q.queue_sequence, q.branch_id, q.editable_parts_json, q.references_json, "
         "q.idempotency_key, q.state, q.version, q.claimed_by, q.claim_epoch, "
         "q.claim_expires_at_us, q.submitted_message_id, q.submitted_generation_job_id, "
-        "q.sanitized_error_code, q.sanitized_error_detail, q.created_at_us, q.updated_at_us "
+        "q.sanitized_error_code, q.sanitized_error_detail, q.created_at_us, q.updated_at_us, "
+        "q.provider_connection_id, q.provider_model_id "
         "FROM omnivia_chat_queued_submissions q "
         "LEFT JOIN omnivia_chat_queue_order_projection p "
         "ON p.workspace_id = q.workspace_id "
@@ -3810,6 +3831,7 @@ def read_active_queue_for_actor(
         "q.idempotency_key, q.state, q.version, q.claimed_by, q.claim_epoch, "
         "q.claim_expires_at_us, q.submitted_message_id, q.submitted_generation_job_id, "
         "q.sanitized_error_code, q.sanitized_error_detail, q.created_at_us, q.updated_at_us, "
+        "q.provider_connection_id, q.provider_model_id, "
         "p.queue_position, p.version, p.updated_by_actor_id, p.updated_at_us, "
         "g.generation_job_id "
         "FROM omnivia_chat_queued_submissions q "
@@ -3832,18 +3854,18 @@ def read_active_queue_for_actor(
     ).fetchall()
     entries = []
     for row in rows:
-        submission = _queued_submission_from_row(row[0:20])
+        submission = _queued_submission_from_row(row[0:22])
         order = QueueOrderProjection(
             workspace_id=row[0],
             conversation_id=row[1],
             queued_submission_id=row[3],
-            queue_position=row[20],
-            version=row[21],
-            updated_by_actor_id=row[22],
-            updated_at_us=row[23],
+            queue_position=row[22],
+            version=row[23],
+            updated_by_actor_id=row[24],
+            updated_at_us=row[25],
         )
         entries.append(
-            ActiveQueueEntry(submission=submission, order=order, generation_job_id=row[24])
+            ActiveQueueEntry(submission=submission, order=order, generation_job_id=row[26])
         )
     return tuple(entries)
 
@@ -3899,7 +3921,7 @@ _GENERATION_JOB_COLUMNS = (
     "result_message_id, lease_owner, lease_epoch, lease_expires_at_us, "
     "heartbeat_at_us, last_event_sequence, sanitized_error_code, "
     "sanitized_error_detail, schema_version, created_at_us, updated_at_us, "
-    "started_at_us, finished_at_us"
+    "started_at_us, finished_at_us, provider_connection_id, provider_model_id"
 )
 
 
@@ -3927,6 +3949,8 @@ def _generation_job_from_row(row: tuple[Any, ...]) -> GenerationJob:
         updated_at_us=row[19],
         started_at_us=row[20],
         finished_at_us=row[21],
+        provider_connection_id=row[22],
+        provider_model_id=row[23],
     )
 
 

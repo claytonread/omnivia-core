@@ -74,6 +74,7 @@
           "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision",
           "description": "Optional. Never itself an authority grant; used only as an optimistic staleness hint (REF-042 §13.3)."
         },
+        "providerRoute": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/ProviderRouteBinding" },
         "clientCorrelationHint": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ClientCorrelationHint" },
         "requestedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
       }

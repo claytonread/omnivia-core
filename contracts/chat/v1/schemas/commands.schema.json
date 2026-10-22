@@ -223,7 +223,8 @@
         "editableParts": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/amendment.schema.json#/$defs/EditablePartInput" }, "minItems": 1, "maxItems": 4096 },
         "attachmentReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReference" }, "maxItems": 64 },
         "contextReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ContextReference" }, "maxItems": 64 },
-        "targetReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TargetReference" }
+        "targetReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TargetReference" },
+        "providerRoute": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/ProviderRouteBinding" }
       }
     },
     "QueuedSubmissionResult": {
@@ -316,6 +317,7 @@
         "attachmentReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReference" }, "maxItems": 64 },
         "contextReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ContextReference" }, "maxItems": 64 },
         "targetReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TargetReference" },
+        "providerRoute": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/ProviderRouteBinding" },
         "fromQueuedSubmissionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/QueuedSubmissionId" },
         "clientCorrelationHint": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ClientCorrelationHint" }
       }
@@ -381,6 +383,17 @@
         "idempotentReplay": { "type": "boolean" }
       }
     },
+    "ProviderRouteBinding": {
+      "title": "ProviderRouteBinding",
+      "description": "The host-authorized Provider route a Generation Job executes on, snapshotted durably onto the job (and onto a queued submission) when it is created, so queued work, retries, continuations and crash recovery keep the route chosen for that job while later jobs may use a different one. Execution authority supplied by the trusted host, never renderer display state: it is not projected into any snapshot or query result. Both members are required; a partial route is refused.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connectionId", "modelId"],
+      "properties": {
+        "connectionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderConnectionId" },
+        "modelId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderModelId" }
+      }
+    },
     "RegenerateResponseRequest": {
       "title": "RegenerateResponseRequest",
       "description": "Creates a sibling assistant Message under the same user parent with a `regeneration` derivation relation (ADR-022 §4.14, REF-042 §9.4). The original assistant Message and its descendants remain (REF-042 §9.4).",
@@ -394,7 +407,8 @@
         "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
         "sourceMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
         "newBranchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
-        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" }
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "providerRoute": { "$ref": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/ProviderRouteBinding" }
       }
     },
     "RegenerationStartedResult": {

@@ -427,6 +427,16 @@
 #     PLATFORM'S HALF IS NOT HERE. A 3.0-pinned host refuses these messages
 #     whole, by design; that half lands with the pin, the constants and the
 #     decoders together.
+#   commands.schema.json#/$defs/ProviderRouteBinding -- a new closed $def
+#     (`connectionId`, `modelId`, the existing ProviderConnectionId and
+#     ProviderModelId scalars) and one new OPTIONAL `providerRoute` member on
+#     SubmitMessageRequest, EnqueueMessageRequest, RegenerateResponseRequest and
+#     amendment.schema.json#/$defs/CommitMessageAmendmentRequest, so the trusted
+#     host can select a Provider route per Generation Job without a Core restart.
+#     It is execution authority, snapshotted onto the job (and the queued row)
+#     and never projected into a snapshot or query result. No version change:
+#     every document that validated before still validates and no required
+#     member moves.
 # The first five are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
 # COMPATIBILITY-AND-MIGRATION.md §3, as is the sixth above; the F2b carrier
 # rename, the three bridge protocol changes and the two D07 protocol changes are
@@ -531,7 +541,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES = 16384
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "933363c7e7ae5e43bcbd30a794598323c19ca51d48a27a8c0b018996aa562df1"
+    "e0c373d232fba8b7b71371e6906ad570737d84bd2996ced7a66a67cc9f62a1bf"
 )
 
 

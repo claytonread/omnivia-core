@@ -916,14 +916,15 @@ class ChatGenerationExecutor:
         messages = (*request_context.messages, *_hop_messages(hops))
         if len(messages) > _MAX_REQUEST_MESSAGES:
             raise _DirectionRefusedError("rejected", "boundary_unavailable")
+        connection_id, model_id = self._effective_route(job)
         request = ProviderInvocationRequest(
             invocation_id=_stable_id("provider-inv", f"{job.generation_job_id}:{attempt_id}"),
             workspace_id=self.workspace_id,
             conversation_id=job.conversation_id,
             job_id=job.generation_job_id,
             attempt_id=attempt_id,
-            connection_id=self.config.connection_id,
-            model_id=self.config.model_id,
+            connection_id=connection_id,
+            model_id=model_id,
             operation="language.stream",
             messages=messages,
             response_format={"kind": "text"},
@@ -960,7 +961,7 @@ class ChatGenerationExecutor:
         lease_expires_at_us = _now_us(self.clock) + self._lease_duration_us()
         requested_at = self.clock.wall_time()
         try:
-            self._resolve_route()
+            self._resolve_route(job)
             manifest_timestamps = _existing_manifest_timestamps(
                 self.connection,
                 workspace_id=self.workspace_id,
@@ -1267,8 +1268,18 @@ class ChatGenerationExecutor:
         deadline_us = (self.config.deadline_seconds + _LEASE_MARGIN_SECONDS) * 1_000_000
         return max(DEFAULT_LEASE_US, deadline_us)
 
-    def _resolve_route(self) -> None:
-        """Refuse before invoking when the configured route cannot name a provider.
+    def _effective_route(self, job: chat.GenerationJob) -> tuple[str, str]:
+        """The route this job runs on: the one pinned on the job (0074), else the
+        executor's startup configuration for a legacy job that pinned none. Every
+        attempt and continuation of the job resolves the same pair, because it is read
+        from the job and the job's route is immutable.
+        """
+        if job.provider_connection_id is not None and job.provider_model_id is not None:
+            return job.provider_connection_id, job.provider_model_id
+        return self.config.connection_id, self.config.model_id
+
+    def _resolve_route(self, job: chat.GenerationJob) -> None:
+        """Refuse before invoking when the job's effective route cannot name a provider.
 
         Deliberately AFTER the claim, not before it. The owner's distinction is that a
         workspace with an executor installed but no reachable route must still produce
@@ -1276,7 +1287,7 @@ class ChatGenerationExecutor:
         swallowing the submission. Refusing before mutation is the separate case where
         no executor boundary is installed at all, and that belongs to the handler.
         """
-        if not self.config.connection_id or not self.config.model_id:
+        if not all(self._effective_route(job)):
             raise ProviderRouteUnavailable("no provider route is configured")
 
     def _fail_generation(

@@ -269,6 +269,7 @@ _FIELDS: Final = frozenset(
         "attachmentReferences",
         "contextReferences",
         "targetReference",
+        "providerRoute",
         "fromQueuedSubmissionId",
         "clientCorrelationHint",
     }
@@ -305,6 +306,7 @@ _AMENDMENT_FIELDS: Final = frozenset(
         "clientObservedGraphRevision",
         "clientCorrelationHint",
         "targetReference",
+        "providerRoute",
     }
 )
 _REGENERATE_RESPONSE_FIELDS: Final = frozenset(
@@ -316,6 +318,7 @@ _REGENERATE_RESPONSE_FIELDS: Final = frozenset(
         "actorId",
         "sourceMessageId",
         "newBranchId",
+        "providerRoute",
     }
 )
 #: `SelectConversationPathRequest` and `SetDefaultConversationPathRequest`
@@ -396,6 +399,7 @@ _ENQUEUE_FIELDS: Final = frozenset(
         "attachmentReferences",
         "contextReferences",
         "targetReference",
+        "providerRoute",
     }
 )
 _UPDATE_QUEUE_FIELDS: Final = frozenset(
@@ -418,6 +422,10 @@ _UNSUPPORTED_REFERENCES: Final = ("contextReferences",)
 #: `EnqueueMessageRequest` carries the same unsupported `targetReference` member as
 #: `SubmitMessageRequest`; its non-empty references are refused by the same rule.
 _ENQUEUE_UNSUPPORTED_FIELDS: Final = ("targetReference",)
+#: `common.schema.json#/$defs/ProviderModelId`: 1..256 provider-safe characters that never
+#: contain the `://` URL-scheme marker. The connection id is an ordinary `_IDENTIFIER`.
+_PROVIDER_MODEL_ID: Final = re.compile(r"(?!.*://)[A-Za-z0-9][A-Za-z0-9/._:@-]{0,255}")
+_PROVIDER_ROUTE_FIELDS: Final = frozenset({"connectionId", "modelId"})
 _PART_FIELDS: Final = frozenset({"type", "payload", "visibility"})
 _REFERENCE_FIELDS: Final = frozenset({"referenceId", "sourceRevision"})
 _TARGET_FIELDS: Final = frozenset({"kind", "referenceId"})
@@ -445,6 +453,10 @@ _MESSAGE_QUEUE_ROW: Final = (
 _MESSAGE_QUEUE_CONTENT: Final = (
     "the queued submission is not updatable, or the request does not exactly match its "
     "current content, identity or head"
+)
+_MESSAGE_QUEUE_ROUTE: Final = (
+    "the request's provider route differs from the route the queued submission pinned "
+    "at enqueue time"
 )
 _MESSAGE_QUEUE_DRAINED: Final = (
     "the queued submission this command names has already been drained by another "
@@ -477,6 +489,14 @@ class _Part:
 
 
 @dataclass(frozen=True, slots=True)
+class _ProviderRoute:
+    """One decoded `ProviderRouteBinding`: execution authority from the trusted host."""
+
+    connection_id: str
+    model_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class _SubmitMessage:
     """One decoded `SubmitMessageRequest`, in the variant this build serves.
 
@@ -497,6 +517,7 @@ class _SubmitMessage:
     content_hash: str
     from_queued_submission_id: str | None
     attachment_references: tuple[Mapping[str, Any], ...]
+    provider_route: _ProviderRoute | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -516,6 +537,7 @@ class _EnqueueMessage:
     actor_id: str
     parts: tuple[_Part, ...]
     attachment_references: tuple[Mapping[str, Any], ...]
+    provider_route: _ProviderRoute | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -599,6 +621,7 @@ class _MessageAmendment:
     parts: tuple[Any, ...]
     content_hash: str
     expected_source_content_hash: str | None
+    provider_route: _ProviderRoute | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -611,6 +634,7 @@ class _RegenerateResponse:
     actor_id: str
     source_message_id: str
     new_branch_id: str
+    provider_route: _ProviderRoute | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -850,6 +874,34 @@ def _target_reference(value: object) -> None:
     _identifier(value, "referenceId")
 
 
+def _provider_route(command: Mapping[str, Any]) -> _ProviderRoute | None:
+    """The optional `providerRoute`: closed, both members required, never partial."""
+    if "providerRoute" not in command:
+        return None
+    field = "providerRoute"
+    value = command["providerRoute"]
+    if not isinstance(value, Mapping):
+        raise _invalid(field, "is not a JSON object")
+    unknown = sorted(set(value) - _PROVIDER_ROUTE_FIELDS)
+    if unknown:
+        raise _invalid(f"{field}.{unknown[0]}", "is not a field of this route")
+    connection_id = value.get("connectionId")
+    if not isinstance(connection_id, str) or _IDENTIFIER.fullmatch(connection_id) is None:
+        raise _invalid(f"{field}.connectionId", "is not a provider connection identifier")
+    model_id = value.get("modelId")
+    if not isinstance(model_id, str) or _PROVIDER_MODEL_ID.fullmatch(model_id) is None:
+        raise _invalid(f"{field}.modelId", "is not a provider model identifier")
+    return _ProviderRoute(connection_id=connection_id, model_id=model_id)
+
+
+def _route_columns(route: _ProviderRoute | None) -> dict[str, str | None]:
+    """The two nullable storage columns a route is written to, both or neither."""
+    return {
+        "provider_connection_id": None if route is None else route.connection_id,
+        "provider_model_id": None if route is None else route.model_id,
+    }
+
+
 def _editable_part_wire(part: _Part) -> Mapping[str, Any]:
     return {
         "type": part.part_type,
@@ -950,6 +1002,7 @@ def _decode(command: Mapping[str, Any]) -> _SubmitMessage:
         content_hash=_digest(f"[{','.join(canonical for _, canonical in decoded)}]"),
         from_queued_submission_id=from_queued_submission_id,
         attachment_references=attachment_references,
+        provider_route=_provider_route(command),
     )
 
 
@@ -1000,6 +1053,7 @@ def _decode_enqueue(command: Mapping[str, Any]) -> _EnqueueMessage:
         actor_id=_identifier(command, "actorId"),
         parts=tuple(part for part, _ in decoded),
         attachment_references=attachment_references,
+        provider_route=_provider_route(command),
     )
 
 
@@ -1331,6 +1385,7 @@ def _decode_amendment(command: Mapping[str, Any]) -> _MessageAmendment:
         expected_source_content_hash=(
             None if "expectedSourceContentHash" not in command else str(expected_hash)
         ),
+        provider_route=_provider_route(command),
     )
 
 
@@ -1353,6 +1408,7 @@ def _decode_regenerate_response(command: Mapping[str, Any]) -> _RegenerateRespon
         actor_id=_identifier(command, "actorId"),
         source_message_id=_identifier(command, "sourceMessageId"),
         new_branch_id=_identifier(command, "newBranchId"),
+        provider_route=_provider_route(command),
     )
 
 
@@ -1694,6 +1750,7 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
 
         queued_row: QueuedSubmission | None = None
         submitted_references = request.attachment_references
+        job_route = request.provider_route
         if request.from_queued_submission_id is not None:
             queued_row = read_queued_submission(
                 writer.connection,
@@ -1727,6 +1784,21 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
                 # never substitute, drop, add, reorder or re-pin one.
                 raise ChatAggregateConflict(_MESSAGE_QUEUE_CONTENT)
             submitted_references = queued_references
+            # Pinned at enqueue time, including the legacy/null meaning "use the
+            # executor startup route". A drain may omit the route and inherit that
+            # pin, but may never state a different one (or add one to a null-pinned
+            # row) and silently re-route queued work.
+            row_route = (
+                None
+                if queued_row.provider_connection_id is None
+                else _ProviderRoute(
+                    connection_id=queued_row.provider_connection_id,
+                    model_id=str(queued_row.provider_model_id),
+                )
+            )
+            if request.provider_route not in (None, row_route):
+                raise ChatAggregateConflict(_MESSAGE_QUEUE_ROUTE)
+            job_route = row_route
             if _generation_job_exists_for_idempotency_key(
                 writer.connection,
                 workspace_id=writer.workspace_id,
@@ -1914,6 +1986,7 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
                 idempotency_key=request.command_id,
                 created_at_us=now,
                 updated_at_us=now,
+                **_route_columns(job_route),
             )
             writer.insert_queue_order_projection(
                 queued_submission_id=queued_submission_id,
@@ -1936,6 +2009,7 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
             schema_version=1,
             created_at_us=now,
             updated_at_us=now,
+            **_route_columns(job_route),
         )
         # The Job's C6 control token starts here, at version 1.
         writer.insert_generation_job_status_projection(
@@ -2382,6 +2456,7 @@ def _commit_message_amendment(request: _MessageAmendment) -> ChatCommand:
             schema_version=1,
             created_at_us=now,
             updated_at_us=now,
+            **_route_columns(request.provider_route),
         )
         writer.insert_generation_job_status_projection(
             generation_job_id=generation_job_id,
@@ -2504,6 +2579,7 @@ def _regenerate_response(request: _RegenerateResponse) -> ChatCommand:
             schema_version=1,
             created_at_us=now,
             updated_at_us=now,
+            **_route_columns(request.provider_route),
         )
         writer.insert_generation_job_status_projection(
             generation_job_id=generation_job_id,
@@ -2820,6 +2896,7 @@ def _enqueue_message(
             idempotency_key=request.command_id,
             created_at_us=now,
             updated_at_us=now,
+            **_route_columns(request.provider_route),
         )
         writer.insert_queue_order_projection(
             queued_submission_id=queued_submission_id,

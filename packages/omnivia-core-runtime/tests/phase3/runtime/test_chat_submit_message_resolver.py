@@ -640,6 +640,73 @@ def test_gb01_production_chat_command_submits_message_and_opens_generation(
     assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
+def test_submit_snapshots_the_host_authorized_provider_route_on_all_created_work(
+    seeded: m1.Owned,
+) -> None:
+    route = {"connectionId": "connection-openai", "modelId": "openai/gpt-5.2"}
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _submit_command(command_id="cmd-provider-route", providerRoute=route),
+            idempotency_key="idem-provider-route",
+            request_id="req-provider-route",
+        )
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    queued = chat.read_queued_submission(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        queued_submission_id="cmd-provider-route.sub",
+    )
+    job = chat.read_generation_job(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id="cmd-provider-route.gen",
+    )
+    assert queued is not None and job is not None
+    assert (queued.provider_connection_id, queued.provider_model_id) == (
+        "connection-openai",
+        "openai/gpt-5.2",
+    )
+    assert (job.provider_connection_id, job.provider_model_id) == (
+        "connection-openai",
+        "openai/gpt-5.2",
+    )
+
+
+@pytest.mark.parametrize(
+    "route",
+    (
+        {"connectionId": "connection-openai"},
+        {"modelId": "openai/gpt-5.2"},
+        {"connectionId": "connection-openai", "modelId": "https://not-a-model"},
+        {
+            "connectionId": "connection-openai",
+            "modelId": "openai/gpt-5.2",
+            "unexpected": "field",
+        },
+    ),
+)
+def test_submit_refuses_a_malformed_provider_route_before_writing(
+    seeded: m1.Owned,
+    route: Mapping[str, str],
+) -> None:
+    before = _counts(seeded)
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _submit_command(command_id="cmd-invalid-provider-route", providerRoute=route),
+            idempotency_key="idem-invalid-provider-route",
+            request_id="req-invalid-provider-route",
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "invalid_request"
+    assert _counts(seeded) == before
+
+
 def test_reorder_queued_submission_updates_authoritative_worker_order(
     seeded: m1.Owned,
 ) -> None:
@@ -1858,6 +1925,8 @@ def _run_executor(
     provider: Any,
     config: GenerationExecutorConfig,
     command_id: str,
+    *,
+    provider_route: Mapping[str, str] | None = None,
 ) -> Any:
     executor = ChatGenerationExecutor(
         connection=seeded.connection,
@@ -1868,7 +1937,7 @@ def _run_executor(
         invoke=provider,
         config=config,
     )
-    response = build_chat_application_dispatcher(
+    dispatcher = build_chat_application_dispatcher(
         service=seeded,
         principal_id=PRINCIPAL,
         installation_id=INSTALLATION_ID,
@@ -1876,7 +1945,11 @@ def _run_executor(
         fallback=_fallback(),
         clock=clock,
         execute_generation=executor.execute_submission,
-    ).dispatch(_request(_submit_command(command_id=command_id)))
+    )
+    command = _submit_command(command_id=command_id)
+    if provider_route is not None:
+        command["providerRoute"] = dict(provider_route)
+    response = dispatcher.dispatch(_request(command))
     assert isinstance(response, SuccessResponseEnvelope), response
     return chat.read_generation_job(
         seeded.connection,
@@ -1911,6 +1984,50 @@ def _stream(request: Any, deltas: tuple[str, ...], *, finish: bool = True) -> It
             "eventType": "finish",
             "finishReason": "stop",
         }
+
+
+def test_job_route_overrides_the_executor_startup_route(
+    seeded: m1.Owned,
+) -> None:
+    observed: list[tuple[str, str]] = []
+
+    def provider(request: Any) -> Iterator[Any]:
+        observed.append((request.connection_id, request.model_id))
+        yield from _stream(request, ("answer",))
+
+    routed = _run_executor(
+        seeded,
+        FakeClock(wall=WALL),
+        provider,
+        _executor_config(connection_id="startup-connection", model_id="startup-model"),
+        "cmd-provider-route-executor",
+        provider_route={
+            "connectionId": "selected-connection",
+            "modelId": "anthropic/claude-sonnet-4.6",
+        },
+    )
+    assert routed is not None and routed.state == "succeeded"
+    assert observed == [("selected-connection", "anthropic/claude-sonnet-4.6")]
+
+
+def test_a_legacy_job_without_a_route_keeps_the_startup_fallback(
+    seeded: m1.Owned,
+) -> None:
+    observed: list[tuple[str, str]] = []
+
+    def provider(request: Any) -> Iterator[Any]:
+        observed.append((request.connection_id, request.model_id))
+        yield from _stream(request, ("answer",))
+
+    legacy = _run_executor(
+        seeded,
+        FakeClock(wall=WALL),
+        provider,
+        _executor_config(connection_id="legacy-connection", model_id="legacy-model"),
+        "cmd-provider-route-legacy",
+    )
+    assert legacy is not None and legacy.state == "succeeded"
+    assert observed == [("legacy-connection", "legacy-model")]
 
 
 def test_a_non_contiguous_provider_ordinal_fails_the_generation(

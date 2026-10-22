@@ -146,10 +146,14 @@ def _enqueue(
     command_id: str = "cmd-gb05-enqueue",
     text: str = "queued offline",
     request_id: str | None = None,
+    provider_route: Mapping[str, str] | None = None,
 ) -> SuccessResponseEnvelope:
+    command = _enqueue_command(command_id=command_id, text=text)
+    if provider_route is not None:
+        command["providerRoute"] = dict(provider_route)
     response = _dispatcher(holder).dispatch(
         _request(
-            _enqueue_command(command_id=command_id, text=text),
+            command,
             command_name="EnqueueMessage",
             idempotency_key=f"idem-{command_id}",
             request_id=request_id or f"req-{command_id}",
@@ -841,6 +845,108 @@ def test_submit_message_drains_a_queued_submission_exactly_once(seeded: m1.Owned
     assert claimed.submission.submitted_message_id == "cmd-gb05-drain.msg"
     assert claimed.job.state == "running"
     assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_a_queued_submission_keeps_its_enqueue_time_route_when_drained(
+    seeded: m1.Owned,
+) -> None:
+    route = {
+        "connectionId": "connection-anthropic",
+        "modelId": "anthropic/claude-sonnet-4.6",
+    }
+    _enqueue(seeded, text="route me later", provider_route=route)
+
+    queued = chat.read_queued_submission(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        queued_submission_id="cmd-gb05-enqueue.sub",
+    )
+    assert queued is not None
+    assert (queued.provider_connection_id, queued.provider_model_id) == (
+        "connection-anthropic",
+        "anthropic/claude-sonnet-4.6",
+    )
+
+    # The drain intentionally does not inject the renderer's current selection.
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _submit_command(
+                command_id="cmd-gb05-route-drain",
+                message_id="cmd-gb05-route-drain.msg",
+                actorId=PRINCIPAL,
+                editable_parts=({"type": "text", "payload": {"text": "route me later"}},),
+                fromQueuedSubmissionId="cmd-gb05-enqueue.sub",
+            ),
+            idempotency_key="idem-gb05-route-drain",
+            request_id="req-gb05-route-drain",
+        )
+    )
+    assert isinstance(response, SuccessResponseEnvelope), response
+
+    job = chat.read_generation_job(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id="cmd-gb05-enqueue.gen",
+    )
+    assert job is not None
+    assert (job.provider_connection_id, job.provider_model_id) == (
+        "connection-anthropic",
+        "anthropic/claude-sonnet-4.6",
+    )
+
+
+def test_drain_refuses_to_replace_a_queued_submissions_provider_route(
+    seeded: m1.Owned,
+) -> None:
+    _enqueue(
+        seeded,
+        text="keep route",
+        provider_route={"connectionId": "connection-a", "modelId": "provider/model-a"},
+    )
+    before = _counts(seeded)
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _submit_command(
+                command_id="cmd-gb05-route-mismatch",
+                message_id="cmd-gb05-route-mismatch.msg",
+                actorId=PRINCIPAL,
+                editable_parts=({"type": "text", "payload": {"text": "keep route"}},),
+                fromQueuedSubmissionId="cmd-gb05-enqueue.sub",
+                providerRoute={"connectionId": "connection-b", "modelId": "provider/model-b"},
+            ),
+            idempotency_key="idem-gb05-route-mismatch",
+            request_id="req-gb05-route-mismatch",
+        )
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(seeded) == before
+
+
+def test_drain_refuses_to_add_a_route_to_a_null_pinned_queued_submission(
+    seeded: m1.Owned,
+) -> None:
+    _enqueue(seeded, text="keep startup route")
+    before = _counts(seeded)
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _submit_command(
+                command_id="cmd-gb05-null-route-mismatch",
+                message_id="cmd-gb05-null-route-mismatch.msg",
+                actorId=PRINCIPAL,
+                editable_parts=({"type": "text", "payload": {"text": "keep startup route"}},),
+                fromQueuedSubmissionId="cmd-gb05-enqueue.sub",
+                providerRoute={"connectionId": "connection-new", "modelId": "provider/model-new"},
+            ),
+            idempotency_key="idem-gb05-null-route-mismatch",
+            request_id="req-gb05-null-route-mismatch",
+        )
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(seeded) == before
 
 
 def test_drain_refuses_mismatched_content_without_writing(seeded: m1.Owned) -> None:

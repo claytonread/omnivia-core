@@ -169,6 +169,37 @@ def test_a_fork_hint_claims_the_job_and_the_provider_settles_it(
 
 
 @pytest.mark.parametrize("kind", ["regenerate", "amend"])
+def test_a_fork_job_snapshots_and_executes_on_its_command_route(
+    seeded: m1.Owned, kind: str
+) -> None:
+    route = {
+        "connectionId": "connection-selected",
+        "modelId": "anthropic/claude-sonnet-4.6",
+    }
+    if kind == "regenerate":
+        _seed_assistant_reply(seeded)
+        response = _regenerate(seeded, providerRoute=route)
+        job_id = REGEN_JOB
+    else:
+        response = _amend(seeded, providerRoute=route)
+        job_id = AMEND_JOB
+    assert isinstance(response, SuccessResponseEnvelope), response
+    queued = _job(seeded, job_id)
+    assert (queued.provider_connection_id, queued.provider_model_id) == (
+        "connection-selected",
+        "anthropic/claude-sonnet-4.6",
+    )
+
+    requests: list[Any] = []
+    _executor(seeded, requests).execute(
+        generation_job_id=job_id, trigger_message_id=_trigger(kind)
+    )
+    assert [(request.connection_id, request.model_id) for request in requests] == [
+        ("connection-selected", "anthropic/claude-sonnet-4.6")
+    ]
+
+
+@pytest.mark.parametrize("kind", ["regenerate", "amend"])
 def test_a_repeated_hint_neither_claims_nor_invokes_a_second_time(
     seeded: m1.Owned, kind: str
 ) -> None:
