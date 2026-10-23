@@ -1260,9 +1260,12 @@ def test_the_direction_state_changed_event_is_identity_only() -> None:
 def test_the_snapshot_projections_are_required_and_bounded() -> None:
     snapshot = _def("queries", "ConversationSnapshotResult")
     assert set(snapshot["required"]) == {"conversation", "directions", "generationJobs", "path", "viewState"}
-    for name, target in (("generationJobs", "GenerationJob"), ("directions", "Direction")):
+    for name, target, maximum in (
+        ("generationJobs", "GenerationJob", 512),
+        ("directions", "Direction", 200),
+    ):
         member = snapshot["properties"][name]
-        assert member["type"] == "array" and member["maxItems"] == 200
+        assert member["type"] == "array" and member["maxItems"] == maximum
         assert member["items"]["$ref"].endswith(f"generation.schema.json#/$defs/{target}")
     assert "version" in _def("generation", "GenerationJob")["required"]
 
